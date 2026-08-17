@@ -6,7 +6,7 @@
  * update_member.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { backupAndResetRegistry, restoreRegistry, makeConfigAwareExec } from './test-helpers.js';
 import { registerMember } from '../src/tools/register-member.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
@@ -58,7 +58,7 @@ describe('register_member: agent provisioning integration', () => {
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     // Generic execCommand fallback for OS detect / CLI checks / mkdir.
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
     mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
     mockGetInstanceState.mockResolvedValue('running');
   });
@@ -69,9 +69,10 @@ describe('register_member: agent provisioning integration', () => {
 
   it('provisions agent files for a reachable remote member and reports the count', async () => {
     // Remote agents dir is empty -> both canonical files are pushed.
+    const exec = makeConfigAwareExec();
     mockExecCommand.mockImplementation(async (cmd: string) => {
       if (cmd.includes('find . -type f')) return { stdout: '', stderr: '', code: 0 };
-      return { stdout: 'Linux', stderr: '', code: 0 };
+      return exec(cmd);
     });
     mockUploadContentToHome.mockResolvedValue({ success: ['planner.md', 'doer.md'], failed: [] });
 
@@ -80,7 +81,7 @@ describe('register_member: agent provisioning integration', () => {
       member_type: 'remote',
       host: '192.168.1.110',
       username: 'akhil',
-      work_folder: '~/git/prov-test',
+      work_folder: '/home/testuser/git/prov-test',
       auth_type: 'password',
       password: 'pw',
     });
@@ -91,9 +92,10 @@ describe('register_member: agent provisioning integration', () => {
   });
 
   it('appends a warning but still registers the member when provisioning (probe) fails', async () => {
+    const exec = makeConfigAwareExec();
     mockExecCommand.mockImplementation(async (cmd: string) => {
       if (cmd.includes('find . -type f')) return { stdout: '', stderr: 'boom', code: 1 };
-      return { stdout: 'Linux', stderr: '', code: 0 };
+      return exec(cmd);
     });
 
     const result = await registerMember({
@@ -101,7 +103,7 @@ describe('register_member: agent provisioning integration', () => {
       member_type: 'remote',
       host: '192.168.1.111',
       username: 'akhil',
-      work_folder: '~/git/prov-fail-test',
+      work_folder: '/home/testuser/git/prov-fail-test',
       auth_type: 'password',
       password: 'pw',
     });
@@ -119,7 +121,7 @@ describe('register_member: agent provisioning integration', () => {
       member_type: 'remote',
       host: '192.168.1.112',
       username: 'akhil',
-      work_folder: '~/git/cloud-test',
+      work_folder: '/home/testuser/git/cloud-test',
       auth_type: 'key',
       key_path: '~/.ssh/id_rsa',
       cloud_provider: 'aws',
@@ -143,7 +145,7 @@ describe('register_member: invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)'
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
     mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
     mockGetInstanceState.mockResolvedValue('running');
   });
@@ -160,7 +162,7 @@ describe('register_member: invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)'
       member_type: 'remote',
       host: '192.168.1.120',
       username: 'akhil',
-      work_folder: '~/git/trust-reg-test',
+      work_folder: '/home/testuser/git/trust-reg-test',
       auth_type: 'password',
       password: 'pw',
     });
@@ -170,7 +172,7 @@ describe('register_member: invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)'
     // seed, and once more inside the compose_permissions auto-run
     // (apra-fleet-5oo.1) which self-heals trust on every run (apra-fleet-eft.40.2).
     expect(spy).toHaveBeenCalledTimes(2);
-    expect(spy).toHaveBeenCalledWith('~/git/trust-reg-test', expect.any(Function), 'linux');
+    expect(spy).toHaveBeenCalledWith('/home/testuser/git/trust-reg-test', expect.any(Function), 'linux');
     spy.mockRestore();
   });
 
@@ -182,7 +184,7 @@ describe('register_member: invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)'
       member_type: 'remote',
       host: '192.168.1.121',
       username: 'akhil',
-      work_folder: '~/git/trust-fail-test',
+      work_folder: '/home/testuser/git/trust-fail-test',
       auth_type: 'password',
       password: 'pw',
     });

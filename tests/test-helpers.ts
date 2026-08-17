@@ -5,7 +5,55 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { Agent } from '../src/types.js';
+import type { Agent, SSHExecResult } from '../src/types.js';
+
+/**
+ * Decode a `powershell -EncodedCommand <base64>` string back to the underlying
+ * script so a test can assert on its content. wrapPowerShellEncoded()
+ * (src/os/windows.ts) base64/utf16le-encodes PowerShell scripts to survive
+ * re-tokenization by an intermediate shell; returns `cmd` unchanged if it is
+ * not an -EncodedCommand-wrapped string (e.g. a POSIX command).
+ */
+export function decodePowerShellEncodedCommand(cmd: string): string {
+  const m = cmd.match(/-EncodedCommand (\S+)/);
+  if (!m) return cmd;
+  return Buffer.from(m[1], 'base64').toString('utf16le');
+}
+
+/**
+ * A strategy.execCommand implementation that simulates a real member filesystem
+ * for the config files compose_permissions delivers.
+ *
+ * compose_permissions now reads every config file back after writing it and
+ * fails loudly if the intended content did not land (apra-fleet-k4sc). Tests
+ * that drive the REAL compose_permissions (e.g. via register_member) through a
+ * generic `execCommand` stub used to pass only because the write was a silent
+ * no-op; with verification in place they must serve a written file back on read.
+ *
+ * This handler records what a write persists (POSIX heredoc or Windows
+ * WriteAllText) and returns it on the matching read (cat / Get-Content). Any
+ * other command returns `defaultStdout` (default 'Linux', matching the OS-detect
+ * stub these tests already relied on) with exit code 0.
+ */
+export function makeConfigAwareExec(defaultStdout = 'Linux'): (cmd: string, ...rest: unknown[]) => Promise<SSHExecResult> {
+  const files = new Map<string, string>();
+  return async (cmd: string): Promise<SSHExecResult> => {
+    // POSIX write (heredoc)
+    let m = cmd.match(/^cat > (.+?) << 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/);
+    if (m) { files.set(m[1], m[2]); return { stdout: '', stderr: '', code: 0 }; }
+    // Windows write (WriteAllText); PowerShell single-quote escaping doubles quotes
+    m = cmd.match(/\[System\.IO\.File\]::WriteAllText\("(.+?)", '([\s\S]*)', \(New-Object System\.Text\.UTF8Encoding\(\$false\)\)\)/);
+    if (m) { files.set(m[1], m[2].replace(/''/g, "'")); return { stdout: '', stderr: '', code: 0 }; }
+    // POSIX read (cat <path> 2>/dev/null ...) -- merge-read and read-back
+    m = cmd.match(/^cat (.+?) 2>\/dev\/null/);
+    if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
+    // Windows read (Get-Content -Raw "<path>" ...)
+    m = cmd.match(/Get-Content -Raw "(.+?)"/);
+    if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
+    // OS detection, CLI checks, mkdir, ls, workspace-trust, everything else
+    return { stdout: defaultStdout, stderr: '', code: 0 };
+  };
+}
 
 export const FLEET_DIR = process.env.APRA_FLEET_DATA_DIR ?? path.join(os.tmpdir(), 'apra-fleet-test-data');
 export const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');

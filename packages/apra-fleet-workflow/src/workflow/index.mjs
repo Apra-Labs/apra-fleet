@@ -386,10 +386,14 @@ export class FleetWorkflow extends EventEmitter {
      * @param {import('../fleet-client/api.mjs').ApraFleet} fleetApi 
      * @param {any} args 
      */
-    constructor(fleetApi, args = {}) {
+    constructor(fleetApi, args = {}, logPrefix = '') {
         super();
         this.fleetApi = fleetApi;
         this.args = args;
+        // (apra-fleet-20i.1.1) Optional per-run scenario label prepended to
+        // the [Workflow Log]/[Dispatch]/[Command] console.log lines below.
+        // Defaults to '' so existing callers get byte-identical output.
+        this.logPrefix = logPrefix;
         this.currentPhase = null;
         this.budget = {
             total: null,
@@ -503,7 +507,7 @@ export class FleetWorkflow extends EventEmitter {
     }
 
     log(msg) {
-        console.log(`[Workflow Log] ${msg}`);
+        console.log(`${this.logPrefix}[Workflow Log] ${msg}`);
         this.emit('log', { phase: this._currentPhase(), msg, runId: this._currentRunId() });
     }
 
@@ -632,7 +636,7 @@ export class FleetWorkflow extends EventEmitter {
         const effectivePhase = opts.phase || this._currentPhase();
         const runId = this._currentRunId();
         if (effectivePhase) {
-            console.log(`[Dispatch] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
+            console.log(`${this.logPrefix}[Dispatch] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
         }
 
         let compiledSchema = null;
@@ -1113,7 +1117,7 @@ export class FleetWorkflow extends EventEmitter {
         const effectivePhase = opts.phase || this._currentPhase();
         const runId = this._currentRunId();
         if (!opts.silent) {
-            console.log(`[Command] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
+            console.log(`${this.logPrefix}[Command] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
         }
 
         let finalCmd = cmd;

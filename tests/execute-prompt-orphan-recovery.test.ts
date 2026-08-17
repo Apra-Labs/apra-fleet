@@ -4,7 +4,21 @@ import { addAgent } from '../src/services/registry.js';
 import { executePrompt, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
 import { getOsCommands } from '../src/os/index.js';
 import { getProvider } from '../src/providers/index.js';
+import { isRemoteProcessAlive, readDurableOutput } from '../src/services/orphan-recovery.js';
 import type { SSHExecResult } from '../src/types.js';
+
+/**
+ * monitor-task.ts / remove-member.ts wrap Windows-bound scripts as
+ * `powershell -EncodedCommand <base64 utf16le>` (wrapPowerShellEncoded);
+ * orphan-recovery.ts's Windows branch does too. Decode back to the
+ * underlying script so assertions can inspect it -- mirrors the helper in
+ * tests/tools-windows-command-safety.test.ts.
+ */
+function decodeIfEncoded(cmd: string): string {
+  const m = cmd.match(/^powershell -EncodedCommand (.+)$/);
+  if (!m) return cmd;
+  return Buffer.from(m[1], 'base64').toString('utf16le');
+}
 
 /**
  * apra-fleet-6z8.1 -- lease-of-life recovery for a FALSE-ALARM empty_response.
@@ -191,5 +205,83 @@ describe('durable stdout mirror companion change (apra-fleet-6z8.1)', () => {
       promptFile: '.fleet-task.md',
     });
     expect(cmd).not.toContain('tee');
+  });
+});
+
+/**
+ * Windows-member OS-branching for orphan-recovery.ts's pid-alive and durable
+ * file-read probes. Before this fix, isRemoteProcessAlive/readDurableOutput
+ * always dispatched POSIX `kill -0`/`cat` regardless of the member's OS --
+ * on a Windows member `kill -0` never emits ALIVE, so a genuinely-live
+ * session's lock got wrongly treated as reclaimable (findDeadLockPid in
+ * execute-prompt.ts). These pin the Windows branch to a valid PowerShell
+ * command using the same Get-Process/Get-Content idiom monitor-task.ts
+ * already uses, and confirm the POSIX branch stays byte-identical.
+ */
+describe('orphan-recovery.ts OS-branched probe commands', () => {
+  it('isRemoteProcessAlive dispatches a POSIX kill -0 for a linux/macos member (unchanged)', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: 'ALIVE\n', stderr: '', code: 0 });
+    const strategy = { execCommand: exec } as any;
+
+    await isRemoteProcessAlive(strategy, 4242, 'linux');
+
+    expect(exec).toHaveBeenCalledWith('kill -0 4242 2>/dev/null && echo ALIVE || echo DEAD', expect.any(Number));
+  });
+
+  it('isRemoteProcessAlive dispatches valid PowerShell (Get-Process, no POSIX tokens) for a windows member', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: 'ALIVE\n', stderr: '', code: 0 });
+    const strategy = { execCommand: exec } as any;
+
+    const alive = await isRemoteProcessAlive(strategy, 4242, 'windows');
+
+    expect(alive).toBe(true);
+    const raw = exec.mock.calls[0][0] as string;
+    const decoded = decodeIfEncoded(raw);
+    expect(raw).not.toBe(decoded); // must be -EncodedCommand wrapped
+    expect(decoded).toContain('Get-Process -Id 4242 -ErrorAction SilentlyContinue');
+    expect(decoded).not.toContain('kill -0');
+    expect(decoded).not.toContain('2>/dev/null');
+  });
+
+  it('isRemoteProcessAlive reports DEAD from the windows branch when Get-Process finds nothing', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: 'DEAD\n', stderr: '', code: 0 });
+    const strategy = { execCommand: exec } as any;
+
+    const alive = await isRemoteProcessAlive(strategy, 4242, 'windows');
+
+    expect(alive).toBe(false);
+  });
+
+  it('readDurableOutput dispatches a POSIX cat for a linux/macos member (unchanged)', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: 'the output', stderr: '', code: 0 });
+    const strategy = { execCommand: exec } as any;
+
+    await readDurableOutput(strategy, '/tmp/.fleet-out-abc.json', 'linux');
+
+    expect(exec).toHaveBeenCalledWith('cat "/tmp/.fleet-out-abc.json" 2>/dev/null', expect.any(Number));
+  });
+
+  it('readDurableOutput dispatches valid PowerShell (Get-Content, no POSIX tokens) for a windows member', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: 'the output', stderr: '', code: 0 });
+    const strategy = { execCommand: exec } as any;
+
+    const out = await readDurableOutput(strategy, 'C:\\Users\\fleet\\.fleet-out-abc.json', 'windows');
+
+    expect(out).toBe('the output');
+    const raw = exec.mock.calls[0][0] as string;
+    const decoded = decodeIfEncoded(raw);
+    expect(raw).not.toBe(decoded);
+    expect(decoded).toContain('Get-Content -Path "C:\\Users\\fleet\\.fleet-out-abc.json" -Raw');
+    expect(decoded).not.toContain('cat "');
+    expect(decoded).not.toContain('2>/dev/null');
+  });
+
+  it('defaults to the POSIX branch when os is omitted (back-compat)', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: 'ALIVE\n', stderr: '', code: 0 });
+    const strategy = { execCommand: exec } as any;
+
+    await isRemoteProcessAlive(strategy, 99, undefined as any);
+
+    expect(exec.mock.calls[0][0]).toBe('kill -0 99 2>/dev/null && echo ALIVE || echo DEAD');
   });
 });

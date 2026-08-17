@@ -19,7 +19,7 @@ workforce -- on any machine, anywhere, using every LLM provider at once.
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Apra-Labs/apra-fleet)
 
-[Quick Start](#quick-start-5-minutes) - [Live Demo](#watch-a-fleet-work) - [How It Works](#how-it-works) - [fleet-sprint Getting Started Guide](docs/fleet-sprint-getting-started.md) - [Docs](https://apra-labs.github.io/apra-fleet)
+[Quick Start](#quick-start-5-minutes) - [Live Demo](#watch-a-fleet-work) - [How It Works](#how-it-works) - [fleet-sprint Getting Started Guide](docs/fleet-sprint-getting-started.md) - [Website](https://apra-labs.github.io/apra-fleet)
 
 </div>
 
@@ -58,7 +58,7 @@ One control plane. Any device. Any model. Any workflow. Any domain.
 
 | Pillar | Concretely |
 |---|---|
-| **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. |
+| **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. Windows members are fully supported for dispatch, command execution, and background long-running tasks (launched detached via WMI). |
 | **Any model** | Claude, Codex, Gemini, Copilot, Antigravity, local models (any OpenAI-compatible endpoint via OpenCode) -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. Cross-provider review is a quality mechanism: a different model, with different blind spots, checks every change. |
 | **Any workflow** | Workflows are durable programs, not prompt chains: multi-hour, resumable, observable, with member reservations and atomic state. Write your own; ship it to the fleet. |
 | **Any domain** | Not just software development. The pattern fits wherever work decomposes into agent-sized pieces that need orchestration and an audit trail: nightly retail replenishment (reconcile inventory deltas, draft purchase orders for sign-off), logistics exception handling (triage a delayed shipment, re-book, notify), healthcare intake (summarize referrals, check completeness, route), back-office runs (invoice matching, compliance evidence collection). Software engineering is the vertical running today -- your domain is a workflow away. |
@@ -143,9 +143,9 @@ apra-fleet workflow fleet-sprint \
 Open the dashboard, watch your fleet PLAN->BUILD->REVIEW->TEST->SHIP in a loop till closure
 
 > **New to fleet-sprint?** Read the
-> [fleet-sprint Getting Started Guide](docs/fleet-sprint-getting-started.md)
-> ([HTML](docs/fleet-sprint-getting-started.html) -
-> [PDF](docs/fleet-sprint-getting-started.pdf)) -- a plain-English walkthrough
+> [fleet-sprint Getting Started Guide](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html)
+> ([Markdown](docs/fleet-sprint-getting-started.md) if you're reading this on
+> GitHub -- [PDF](docs/fleet-sprint-getting-started.pdf)) -- a plain-English walkthrough
 > of what it does, what you need to prepare (beads backlog, `deploy.md`,
 > test playbooks, member registration), how to launch and monitor a sprint,
 > and what's automated versus what's still your call.
@@ -251,7 +251,11 @@ Secrets are entered out-of-band into a credential store and referenced as
 any LLM or log. Credentials scope to members, expire on TTL, and can carry
 a network egress policy (allow / deny / confirm). Every member runs with
 composed, provider-native permission files -- allow-listed tools, not
-god-mode. VCS access is provisioned and revocable per member.
+god-mode. VCS access is provisioned and revocable per member. Permission
+composition verifies its own delivery: a grant is read back off the target
+member and structurally compared against what was intended before it is
+reported as applied, so a failed or partial write is surfaced as an
+explicit failure rather than a false success.
 
 ## Email Configuration
 
@@ -357,7 +361,7 @@ third-party verticals.
 
 | Topic | Link |
 |-------|------|
-| **fleet-sprint Getting Started Guide (start here, plain English)** | [Markdown](docs/fleet-sprint-getting-started.md) - [HTML](docs/fleet-sprint-getting-started.html) - [PDF](docs/fleet-sprint-getting-started.pdf) |
+| **fleet-sprint Getting Started Guide (start here, plain English)** | [Website](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html) - [Markdown](docs/fleet-sprint-getting-started.md) - [PDF](docs/fleet-sprint-getting-started.pdf) |
 | Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
 | Choosing a provider (roles, gotchas, mixing providers, OpenCode/local models) | [docs/provider-guide.md](docs/provider-guide.md) |

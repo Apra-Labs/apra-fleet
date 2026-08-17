@@ -172,7 +172,11 @@ describe('execBdSync', () => {
       out = err instanceof Error ? String((err as { stdout?: unknown }).stdout ?? err.message) : String(err);
     }
     expect(out).not.toMatch(/INJECTED-BY-TEST/);
-  });
+    // Real `bd` subprocess spawn on a shared CI runner has been observed to
+    // exceed vitest's default 5000ms under load (GitHub Actions build-and-test,
+    // 2026-08-12) -- this is a real subprocess call, not a mock, so give it
+    // headroom rather than tightening timing assumptions on a shared runner.
+  }, 20000);
 });
 
 // Tests for apra-fleet-xuo.2: execBdAsync, the async counterpart used by

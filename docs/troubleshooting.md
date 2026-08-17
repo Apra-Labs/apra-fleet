@@ -29,6 +29,15 @@ For VCS tokens specifically, re-run `provision_vcs_auth`.
 Check what actually happened on the member:
 ask Fleet to run `cat progress.json` on it.
 
+**Long-running background task fails to launch on a Windows member**
+
+`execute_command`'s `long_running` mode on Windows launches the task
+detached via `Invoke-CimMethod Win32_Process.Create` (WMI). If this fails,
+check that the WMI service (`Winmgmt`) is running on the member and that the
+fleet SSH user has permission to create processes via WMI -- `monitor_task`
+will otherwise report the task as immediately failed/missing rather than
+running.
+
 ## Permissions
 
 **Permission denied on a member**

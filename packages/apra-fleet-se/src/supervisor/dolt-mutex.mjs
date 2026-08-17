@@ -337,11 +337,14 @@ export function registerDoltMutexRoutes(supervisor, mutex, http) {
  * (single-process/dev/test): the push is unguarded because there is, by
  * definition, no second sprint to conflict with. Keeps the D-push call sites
  * uniform -- they always acquire/release, and only the client wiring differs.
- * @returns {{ acquire: Function, release: Function }}
+ * @returns {{ acquire: Function, release: Function, renew: Function }}
  */
 export function nullDoltPushMutexClient() {
     return {
         async acquire() { return { token: null }; },
         async release() { return true; },
+        // Shape parity with the real clients (docs/dolt-sync-redesign.md Part
+        // 3.4): there is no lease to renew when there is no mutex.
+        async renew() { return true; },
     };
 }

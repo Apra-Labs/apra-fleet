@@ -1,6 +1,6 @@
 {
   "name": "@apralabs/apra-fleet",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "MCP server for orchestrating multiple agentic AI instances (Claude, Gemini, Codex, Copilot, AGY) across machines via SSH",
   "author": "Apra Labs",
   "homepage": "https://github.com/Apra-Labs/apra-fleet",
@@ -47,7 +47,8 @@
     "access": "public"
   },
   "overrides": {
-    "undici": "^7.29.0"
+    "undici": "^7.29.0",
+    "fast-uri": "4.1.2"
   },
   "scripts": {
     "build": "npm run build:contract && tsc",
@@ -61,7 +62,7 @@
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "pretest": "npm run build:contract",
-    "test": "vitest run",
+    "test": "node scripts/run-all-tests.mjs",
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
     "prepare": "node scripts/install-hooks.mjs",

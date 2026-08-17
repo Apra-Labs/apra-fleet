@@ -15,6 +15,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
+import { getCachedMemberPathContext } from '../services/member-home.js';
 import { provisionAgents, remoteAgentsDir, loadCanonicalAgentSet } from '../services/agent-provisioner.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
@@ -72,6 +73,7 @@ export interface ExecutePromptResult {
 export const executePromptSchema = z.object({
   ...memberIdentifier,
   prompt: z.string().describe('The prompt to send to the LLM on the remote member'),
+  session_id: z.string().optional().describe('Shorthand for explicit session resume. Equivalent to resume: "<session_id>". If provided, takes precedence over resume.'),
   resume: z.union([z.boolean(), z.string()]).default(true).describe(
     'Session-resume control (default: true). ' +
     'true = best-effort resume of the member\'s stored last session (a stale/unknown stored session transparently falls back to a fresh session). ' +
@@ -345,7 +347,7 @@ async function findDeadLockPid(agent: Agent, workspaceId: string): Promise<numbe
   if (subprocessPid !== undefined) {
     const alive = agent.agentType === 'local'
       ? isPidAlive(subprocessPid)
-      : await isRemoteProcessAlive(getStrategy(agent), subprocessPid);
+      : await isRemoteProcessAlive(getStrategy(agent), subprocessPid, getAgentOS(agent));
     if (!alive) return subprocessPid;
   }
 
@@ -763,7 +765,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   //              on that session's context, so an unknown/expired id is a
   //              TERMINAL session_not_found (handled just below) and NO
   //              fresh-session fallback is ever applied (see the retry paths).
-  const explicitResumeId = typeof input.resume === 'string' && input.resume.length > 0 ? input.resume : undefined;
+  const explicitResumeId = (typeof input.session_id === 'string' && input.session_id.trim().length > 0)
+    ? input.session_id.trim()
+    : (typeof input.resume === 'string' && input.resume.length > 0 ? input.resume : undefined);
   const resumeRequested = input.resume === true || explicitResumeId !== undefined;
   const resumeTargetId = explicitResumeId ?? agent.sessionId;
   // An explicit-id resume must never silently degrade to a fresh session: that
@@ -771,7 +775,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // resume=false keep their pre-existing transparent recovery.
   const allowFreshSessionFallback = explicitResumeId === undefined;
   const resuming = !!(resumeRequested && resumeTargetId && provider.supportsResume());
-  const mintedId = (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy')
+  const isCallerMinted = provider.sessionIdStrategy().type === 'caller-minted';
+  const mintedId = isCallerMinted
     ? (resuming ? resumeTargetId! : uuid())
     : (resuming ? resumeTargetId : undefined);
 
@@ -809,6 +814,35 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     inv: scope.getInv(),
     agentName: input.agent,
   };
+
+  // apra-fleet issue #390: session log paths live on the MEMBER's machine, under
+  // the MEMBER's home directory, joined with the MEMBER's OS convention. Before
+  // this, every remote member got a HUB-home path (os.homedir()) joined with the
+  // HUB's path convention -- a path that can never exist on the member, which
+  // silently disabled stall detection for Claude/Gemini and manufactured
+  // false-positive stall kills for AGY/OpenCode.
+  //
+  // This resolution is deliberately SYNCHRONOUS (cached probe result, else the
+  // member's known login username's default home): the dispatch path must not
+  // add a remote round trip, and a wrong guess here can only cost detection
+  // fidelity, never cause a kill. The kill-capable directory poll in
+  // stall-poller.ts uses the probe-backed async resolver instead.
+  const memberPathCtx = getCachedMemberPathContext(agent);
+
+  const activePreSpawnSid = resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined);
+  let resolvedLogPath: string | null = null;
+  if (activePreSpawnSid) {
+    try {
+      resolvedLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', activePreSpawnSid, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
+    } catch {
+      resolvedLogPath = null;
+    }
+  }
+  stallDetector.update(agent.id, {
+    sessionId: activePreSpawnSid,
+    logFilePath: resolvedLogPath,
+    provisional: !resolvedLogPath,
+  });
 
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
 
@@ -965,14 +999,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     capturedPid = pid;
     scope.info(`pid=${pid}`);
     if (mintedId) {
+      let logPath: string | null = null;
       try {
-        const logPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', mintedId, agent.workFolder);
-        stallDetector.update(agent.id, {
-          sessionId: mintedId,
-          logFilePath: logPath,
-          provisional: false,
-        });
-      } catch { /* copilot/codex: no log path resolution */ }
+        logPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', mintedId, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
+      } catch {
+        logPath = null;
+      }
+      stallDetector.update(agent.id, {
+        sessionId: mintedId,
+        logFilePath: logPath,
+        provisional: !logPath,
+      });
     }
   };
 
@@ -1036,7 +1073,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (budget.exhausted) throw dispatchErr;
       scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
       await tryKillPid(agent, strategy, cmds);
-      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+      const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
     }
@@ -1069,7 +1106,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (!staleBudget.exhausted) {
         scope.info(`[${resolvedModel}] retrying -- stale session`);
         await tryKillPid(agent, strategy, cmds);
-        const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+        const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
         parsed = provider.parseResponse(result);
@@ -1088,7 +1125,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         scope.info(`[${resolvedModel}] retrying -- server overloaded`);
         await tryKillPid(agent, strategy, cmds);
         await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-        const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+        const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
         parsed = provider.parseResponse(result);
@@ -1164,6 +1201,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         pid: capturedPid,
         durablePath,
         unsupported: getAgentOS(agent) === 'windows',
+        os: getAgentOS(agent),
         maxWaitMs: maxTotalMs !== undefined ? Math.max(maxTotalMs - (Date.now() - dispatchStartedAt), 0) : undefined,
         scope,
       });
@@ -1200,6 +1238,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // onAuthFailure shape: a repeat failure after the heal is terminal, not
       // looped).
       if ((!parsed.result || parsed.result.trim() === '')
+        && allowFreshSessionFallback
         && provider.classifyError(result.stderr || result.stdout) === 'workspace_not_trusted'
         && !trustHealAttempted) {
         trustHealAttempted = true;
@@ -1208,7 +1247,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const healBudget = retryBudget();
         if (!healBudget.exhausted) {
           await tryKillPid(agent, strategy, cmds);
-          const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+          const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
           const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
           result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
           parsed = provider.parseResponse(result);
@@ -1229,26 +1268,64 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
 
     // Session-id assertion: returned id must match the one we minted/resumed
-    // Exception: AGY owns its session generation, so we always accept its returned ID
-    if (provider.name !== 'agy' && mintedId && parsed.sessionId && parsed.sessionId !== mintedId) {
-      scope.info(`session-id mismatch: expected=${mintedId} got=${parsed.sessionId} -- not persisting`);
+    const expectedSid = resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined);
+    const isMismatch = expectedSid && parsed.sessionId && parsed.sessionId !== expectedSid;
+    if (isMismatch) {
+      scope.info(`session-id mismatch: expected=${expectedSid} got=${parsed.sessionId} -- not persisting`);
+      if (!allowFreshSessionFallback && explicitResumeId !== undefined) {
+        inFlightAgents.delete(agent.id);
+        stallDetector.remove(agent.id);
+        writeStatusline(new Map([[agent.id, 'idle']]));
+        clearStoredPid(agent.id);
+        if (parsed.sessionId) {
+          recordKnownSession(agent.id, parsed.sessionId);
+        }
+        if (parsed.usage) {
+          const prev = agent.tokenUsage ?? { input: 0, output: 0 };
+          updateAgent(agent.id, {
+            tokenUsage: {
+              input: prev.input + parsed.usage.input_tokens,
+              output: prev.output + parsed.usage.output_tokens,
+            },
+          });
+          recordSessionUsage(parsed.sessionId ?? expectedSid, parsed.usage);
+          if (budgetScope) {
+            await recordAndEvaluate({ scope: budgetScope, agent, provider, tier: resolvedTier, usage: parsed.usage });
+          }
+        }
+        return {
+          text: `[FAIL] execute_prompt on "${agent.friendlyName}" failed -- resumed session mismatch. Expected session "${expectedSid}", but provider returned "${parsed.sessionId}".`,
+          structuredContent: {
+            isError: true,
+            reason: 'session_not_found',
+            sessionId: expectedSid,
+            returnedSessionId: parsed.sessionId,
+            ...(parsed.usage ? { usage: { ...parsed.usage, total_tokens: parsed.usage.input_tokens + parsed.usage.output_tokens } } : {}),
+          },
+        };
+      }
       touchAgent(agent.id, undefined);
     } else {
-      touchAgent(agent.id, parsed.sessionId ?? mintedId);
+      touchAgent(agent.id, parsed.sessionId ?? expectedSid);
     }
     // apra-fleet-eft.78.1: mark the session this dispatch actually landed on as
     // known/resumable for this member, so a later explicit-id resume of it
     // passes the terminal session_not_found gate above instead of being
     // rejected as unknown.
-    recordKnownSession(agent.id, parsed.sessionId ?? mintedId);
-    if (mintedId) {
+    const finalSid = parsed.sessionId ?? expectedSid;
+    if (finalSid) {
+      recordKnownSession(agent.id, finalSid);
+      let postLogPath: string | null = null;
       try {
-        stallDetector.update(agent.id, {
-          sessionId: mintedId,
-          logFilePath: resolveSessionLogPath(agent.llmProvider ?? 'claude', mintedId, agent.workFolder),
-          provisional: false,
-        });
-      } catch { /* copilot/codex: no log path resolution */ }
+        postLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', finalSid, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
+      } catch {
+        postLogPath = null;
+      }
+      stallDetector.update(agent.id, {
+        sessionId: finalSid,
+        logFilePath: postLogPath,
+        provisional: !postLogPath,
+      });
     }
     clearStoredPid(agent.id);
 

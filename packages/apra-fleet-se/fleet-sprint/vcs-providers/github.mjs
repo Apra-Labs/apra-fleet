@@ -31,9 +31,22 @@ const GITHUB_API = 'https://api.github.com';
 const REDACTED = '***REDACTED***';
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
-/** Single-quote a string for embedding in a POSIX shell command,
- *  closing/reopening the quote around any embedded single quotes. */
-function shQuote(value) {
+/** Single-quote a string for embedding in a shell command. The built curl
+ *  command is dispatched through the member's own shell -- POSIX sh/bash
+ *  closes/reopens the quote around an embedded single quote ('\''), but
+ *  Windows PowerShell (the shell every Windows member's commands actually
+ *  run through -- see wrapPowerShellEncoded()/isWindows in
+ *  src/tools/remove-member.ts) escapes an embedded single quote inside a
+ *  single-quoted string by DOUBLING it (''), not by backslash-closing. Using
+ *  the POSIX form on a Windows member breaks the quoting outright (observed
+ *  live: Publish PR crashing on any title/body containing an apostrophe).
+ *  `os` is one of resolveMemberOs()'s return values ('windows'/'linux'/
+ *  'darwin'); anything other than 'windows' keeps the POSIX behavior
+ *  byte-identical to before this branch existed. */
+function shQuote(value, os) {
+    if (os === 'windows') {
+        return `'${String(value).replace(/'/g, "''")}'`;
+    }
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
@@ -56,7 +69,7 @@ function assertToken(token) {
 /** Build the GitHub REST "create pull request" curl command.
  *  POST /repos/{owner}/{repo}/pulls -- see
  *  https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request */
-function buildGitHubCreatePrCommand({ repo, base, head, title, body, token }) {
+function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os }) {
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
@@ -70,12 +83,12 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token }) {
 
     const buildCurl = (authToken) => [
         'curl -sS -X POST',
-        `-H ${shQuote(`Authorization: Bearer ${authToken}`)}`,
-        `-H ${shQuote('Accept: application/vnd.github+json')}`,
-        `-H ${shQuote('Content-Type: application/json')}`,
-        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28')}`,
-        `-d ${shQuote(payloadJson)}`,
-        `-w ${shQuote('\n%{http_code}')}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os)}`,
+        `-H ${shQuote('Content-Type: application/json', os)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os)}`,
+        `-d ${shQuote(payloadJson, os)}`,
+        `-w ${shQuote('\n%{http_code}', os)}`,
         url,
     ].join(' ');
 
@@ -103,7 +116,7 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token }) {
  *  raised (rather than opening a second PR for the same head).
  *  POST /repos/{owner}/{repo}/issues/{issue_number}/comments -- see
  *  https://docs.github.com/en/rest/issues/comments#create-an-issue-comment */
-function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token }) {
+function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token, os }) {
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     if (!issueNumber) throw new Error('ERROR: VCSModule: "issue_number" is required to build a comment command.');
@@ -114,12 +127,12 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
 
     const buildCurl = (authToken) => [
         'curl -sS -X POST',
-        `-H ${shQuote(`Authorization: Bearer ${authToken}`)}`,
-        `-H ${shQuote('Accept: application/vnd.github+json')}`,
-        `-H ${shQuote('Content-Type: application/json')}`,
-        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28')}`,
-        `-d ${shQuote(payloadJson)}`,
-        `-w ${shQuote('\n%{http_code}')}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os)}`,
+        `-H ${shQuote('Content-Type: application/json', os)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os)}`,
+        `-d ${shQuote(payloadJson, os)}`,
+        `-w ${shQuote('\n%{http_code}', os)}`,
         url,
     ].join(' ');
 

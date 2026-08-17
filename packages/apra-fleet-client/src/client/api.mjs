@@ -7,14 +7,29 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [model] - Model tier ("cheap", "standard", "premium") or a specific model ID
- * @property {boolean} [resume] - Resume the previous session if one exists. Defaults to
+ * @property {boolean|string} [resume] - Resume the previous session if one exists. Defaults to
  *   true at this client/transport layer when the field is omitted entirely. NOTE: the
  *   FleetWorkflow.agent() workflow layer (packages/apra-fleet-workflow/src/workflow/index.mjs)
  *   always sends this field explicitly, defaulting it to `false` for workflow-authored
  *   prompts (see AgentOptions.resume there and apra-fleet-unw.3 / F10) -- so workflow
  *   callers effectively opt out of this client-level default unless they ask for resume.
+ * @property {string} [session_id] - Optional explicit session ID to resume (shorthand alias for resume: "<sessionId>")
  * @property {Record<string, string>} [substitutions] - Optional map of token name to replacement value
  * @property {number} [timeout_s] - Inactivity timeout in seconds (default: 300)
+ * @property {number} [expected_context_tokens] - Optional estimate (apra-fleet-eft.81.1) of how many
+ *   tokens this dispatch will add to the target session's context. When set (or context_size is
+ *   set), the server compares it against the session's remaining context-window headroom BEFORE
+ *   invoking the LLM: too little headroom rejects the call with {reason:
+ *   "insufficient_context_headroom", detail: {demand, headroom, window}} and no spawn; a fit that
+ *   lands inside the safety margin still proceeds but attaches a structured contextWarning. Wins
+ *   over context_size when both are set. Omitting both fields disables the check entirely --
+ *   pre-existing behavior is unchanged. Matches src/tools/execute-prompt.ts's
+ *   expected_context_tokens field exactly (number, optional).
+ * @property {'S'|'M'|'L'} [context_size] - Optional size-bucket shorthand for
+ *   expected_context_tokens (apra-fleet-eft.81.1): S/M/L map to configured token estimates (fleet
+ *   defaults, overridable via config.json's contextAdmission.sizeBucketTokens). Ignored when
+ *   expected_context_tokens is also set. Matches src/tools/execute-prompt.ts's context_size field
+ *   exactly (enum 'S'|'M'|'L', optional).
  * @property {number} [timeoutMs] - Client-side request timeout override (ms). Not sent to
  *   the server; consumed locally by McpClient.request(). When omitted, a default is derived
  *   from max_total_s/timeout_s (see deriveTimeoutMs in this file).
@@ -26,7 +41,12 @@
 /**
  * @typedef {Object} ExecuteCommandOptions
  * @property {string} command - The shell command to execute
- * @property {boolean} [long_running] - Run as background task
+ * @property {boolean} [long_running] - Run as background task. Supported on linux and windows
+ *   members. Windows launches the task detached via `Invoke-CimMethod Win32_Process.Create`
+ *   (WMI provider host / session 0), independent of the SSH session's job object, since a plain
+ *   background launch dies with the SSH channel there. darwin gets an advisory warning (the
+ *   wrapper script is designed for Linux) but is not blocked. Matches
+ *   src/tools/execute-command.ts's long_running branch exactly.
  * @property {number} [max_retries] - Max crash retries (long_running only)
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -72,7 +92,7 @@
 /**
  * @typedef {Object} RegisterMemberOptions
  * @property {string} friendly_name - Human-friendly name for this member (required)
- * @property {string} work_folder - Working directory on the target machine (required)
+ * @property {string} work_folder - Working directory on the target machine (required). For remote members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
  * @property {"local" | "remote"} [member_type] - Member type (default: "remote")
  * @property {string} [host] - IP address or hostname of the remote machine
  * @property {string} [username] - SSH username
@@ -91,7 +111,7 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [friendly_name] - New friendly name
- * @property {string} [work_folder] - New working directory
+ * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
  * @property {string} [host] - New host
  * @property {string} [username] - New SSH username
  * @property {number} [port] - New SSH port

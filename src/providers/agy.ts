@@ -1,9 +1,11 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { stripAnsi } from '../utils/ansi.js';
+import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -67,7 +69,7 @@ export class AgyProvider implements ProviderAdapter {
     const tier = inputTier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', tier) ?? AGY_MODEL_FOR_TIER[tier];
 
-    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}"`;
+    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}" --output-format json`;
     if (agentName) {
       cmd += ` --agent "${escapeDoubleQuoted(agentName)}"`;
     }
@@ -111,9 +113,68 @@ export class AgyProvider implements ProviderAdapter {
       extractedSessionId = sessionMatch[1].trim();
     }
 
-    // Primary path: extract response from the transcript JSONL that agy writes after
-    // completing its task. This is more reliable than PTY/ANSI capture because agy
-    // writes its LLM response to CONOUT$ (not stdout), but always writes a transcript file.
+    // Primary path: parse AGY's native JSON envelope from stdout
+    // Format: {"conversation_id":"...","status":"SUCCESS"|"ERROR","response":"...","usage":{"input_tokens":...,"output_tokens":...}}
+    try {
+      const strippedForJson = stripAnsi(raw)
+        .replace(/FLEET_TRANSCRIPT_START[\s\S]*?FLEET_TRANSCRIPT_END/g, '')
+        .replace(/^FLEET_PID:\d+\r?\n/m, '')
+        .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
+        .trim();
+
+      const lines = strippedForJson.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      let parsedObj: any = null;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (line.startsWith('{') && line.endsWith('}')) {
+          try {
+            const candidate = JSON.parse(line);
+            const isEnvelopeStatus = candidate && (candidate.status === 'SUCCESS' || candidate.status === 'ERROR');
+            const hasEnvelopeKeys = candidate && typeof candidate === 'object' && ('conversation_id' in candidate || isEnvelopeStatus) && ('response' in candidate || 'error' in candidate);
+            if (hasEnvelopeKeys) {
+              parsedObj = candidate;
+              break;
+            }
+          } catch { /* keep looking */ }
+        }
+      }
+
+      if (!parsedObj) {
+        const jsonMatch = strippedForJson.match(/\{[\s\S]*?"response"\s*:[\s\S]*?\}/);
+        if (jsonMatch) {
+          try {
+            parsedObj = JSON.parse(jsonMatch[0]);
+          } catch { /* fallthrough */ }
+        }
+      }
+
+      if (parsedObj) {
+        const convId = parsedObj.conversation_id && typeof parsedObj.conversation_id === 'string' && parsedObj.conversation_id.trim()
+          ? parsedObj.conversation_id.trim()
+          : undefined;
+
+        const errString = typeof parsedObj.error === 'string' ? parsedObj.error.trim() : '';
+        const resultText = (parsedObj.response && typeof parsedObj.response === 'string' && parsedObj.response.trim())
+          ? parsedObj.response.trim()
+          : errString;
+        const isError = result.code !== 0 || parsedObj.status === 'ERROR';
+
+        return {
+          result: resultText,
+          sessionId: convId ?? extractedSessionId,
+          isError,
+          raw,
+          usage: parsedObj.usage && typeof parsedObj.usage === 'object' ? {
+            input_tokens: parsedObj.usage.input_tokens ?? 0,
+            output_tokens: parsedObj.usage.output_tokens ?? 0,
+          } : undefined,
+        };
+      }
+    } catch { /* fallthrough */ }
+
+    // Secondary path: diagnostic warning on non-JSON fallthrough
+    logWarn('agy_provider', 'No valid native JSON envelope found in AGY output; falling back to transcript/ANSI parsing');
+
     const startMarker = 'FLEET_TRANSCRIPT_START';
     const endMarker = 'FLEET_TRANSCRIPT_END';
     const startIdx = raw.indexOf(startMarker);
@@ -175,6 +236,22 @@ export class AgyProvider implements ProviderAdapter {
 
   supportsMaxTurns(): boolean {
     return false;
+  }
+
+  sessionIdStrategy(): SessionIdStrategy {
+    return { type: 'provider-minted' };
+  }
+
+  resolveSessionLogPath(sessionId: string, _workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return '';
+    return joinForOS(targetOs, home, '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+  }
+
+  resolveSessionLogDir(_workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return null;
+    return joinForOS(targetOs, home, '.gemini', 'antigravity-cli', 'brain');
   }
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {
@@ -261,7 +338,7 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   jsonOutputFlag(): string {
-    return '';
+    return '--output-format json';
   }
 
   headlessInvocation(promptLiteral: string): string {

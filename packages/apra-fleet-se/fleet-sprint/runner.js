@@ -24,11 +24,13 @@ const POST_DISPATCH_SYNC_RETRY_DELAYS_MS = [0, 5000, 15000];
 const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF === '1';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
-// apra-fleet-vkc.1: the dolt conflict recovery ladder (Path A -> Path B ->
-// Tier 2). syncMemberAfterOrdered() builds it and threads it through
-// DoltSync.syncAfter() so a wedged beads clone at the post-dispatch D-push
-// terminal attempts recovery before surfacing BEADS_SYNC_CONFLICT.
-import { buildDoltRecoveryLadder } from './dolt-recovery-tier2.mjs';
+// The deterministic dolt conflict settlement callback (docs/dolt-sync-
+// redesign.md). It REPLACES the retired Path A -> Path B -> Tier 2 ladder at
+// BOTH divergence terminals: the post-dispatch D-push bracket
+// (syncMemberAfterOrdered) and the pre-dispatch D-pull / readiness gate, so a
+// wedged beads clone self-heals instead of surfacing BEADS_SYNC_CONFLICT or
+// hard-aborting the run at its readiness gate.
+import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
 import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict } from './vcs-module.mjs';
 
@@ -1114,33 +1116,22 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     // ordering above exists to prevent, and would erase the
     // BEADS_SYNC_CONFLICT terminal reason the dashboard reports.
     //
-    // apra-fleet-vkc.1: before that fatal divergence surfaces, attempt the
-    // Path A -> Tier 2 recovery ladder (Path B deliberately disabled here --
-    // see below). Path A's resolve-in-place sql runtime is not injected here
-    // (runner.js has no live dolt sql-server client), so in production Path A
-    // is reached and cleanly self-defers; Tier 2 dispatches through `agent`
-    // when one is available. The ladder only fails the streak
-    // (DoltDivergedError -> BEADS_SYNC_CONFLICT) if every enabled tier fails
-    // to close the clone.
+    // Before that fatal divergence surfaces, run the deterministic settle
+    // (settleDoltConflicts, dolt-settle.mjs). It is TOTAL over row-level
+    // conflicts -- no gates, no allowlist, no LLM escalation -- and a resolved
+    // settle is a VERIFIED recovery, because settle republishes (bd dolt pull
+    // + push) and checks the push actually landed before returning. The streak
+    // only fails (DoltDivergedError -> BEADS_SYNC_CONFLICT) when settle itself
+    // hits an operational failure (no usable dolt binary, the ephemeral server
+    // would not start, a SQL statement errored).
     //
-    // Path B (discard-and-re-bootstrap) is explicitly disabled
-    // (enablePathB: false) at THIS call site -- post-review fix, apra-fleet-
-    // vkc.1. syncMemberAfterOrdered() wraps an arbitrary, possibly
-    // multi-command agent dispatch (a doer/reviewer/planner streak), so there
-    // is no single well-defined `pendingMutation` this bracket could capture
-    // and replay. Without one, Path B's "replay the one pending mutation"
-    // step (dolt-recovery-path-b.mjs step 6) is a no-op, so firing it here
-    // would discard whatever bead mutations the dispatch just made on
-    // `member` and still report the D-push as recovered -- silent data loss
-    // masquerading as success. Path A (safe, gated, zero data loss when it
-    // fires) and Tier 2 (records + escalates, never discards) remain wired;
-    // only the unsafe fallback is turned off. See buildDoltRecoveryLadder's
-    // own doc comment (dolt-recovery-tier2.mjs) for the general hazard this
-    // guards against, and DoltSync.repair() for an explicit, operator-driven
-    // entry point where a real pendingMutation and member-scoped
-    // readConfig/removePath/listLocalState CAN be supplied deliberately.
-    const recover = buildDoltRecoveryLadder(member, { command, agent, log, model: resolveConflictModel, enablePathB: false });
-    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, recover });
+    // Notably, the data-loss hazard that forced the old ladder's Path B to be
+    // disabled at THIS call site does not exist for settle: it never discards
+    // and re-bootstraps a clone, so an arbitrary multi-command dispatch's bead
+    // mutations cannot be silently thrown away here. There is no pendingMutation
+    // to capture and replay because nothing is ever dropped.
+    const settle = buildSettleCallback(member, { command, log });
+    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, settle });
     return { ok: true, member, gPush, dPush };
 }
 
@@ -1210,6 +1201,22 @@ export function createHttpDoltPushMutexClient(opts = {}) {
                 // Non-fatal: the holder's lease expiry will reclaim the mutex
                 // even if this release never lands. Surface it for diagnostics.
                 log(`[dolt-mutex] release failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+        // Lease renewal (docs/dolt-sync-redesign.md Part 3.4): doltPushAfter()
+        // renews on an interval while it holds the mutex, so a legitimately
+        // long hold (push + reconcile + settle) is never force-evicted by the
+        // supervisor's 60s lease expiry while this sprint is still pushing.
+        async renew(token) {
+            if (token == null) return false;
+            const id = boundSprintId;
+            if (!id) throw new Error('[dolt-mutex] renew requires a bound sprintId');
+            try {
+                const payload = await postJson(routeFor(id, 'renew'), { token });
+                return Boolean(payload.renewed);
+            } catch (err) {
+                log(`[dolt-mutex] renew failed (non-fatal; the lease may expire): ${err.message}`);
                 return false;
             }
         },
@@ -1379,6 +1386,18 @@ export function createMcpDoltPushMutexClient(opts = {}) {
                 // Non-fatal: the holder's lease expiry reclaims the mutex even
                 // if this release never lands (same posture as the HTTP client).
                 log(`[dolt-mutex/mcp] release failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+        // Same lease-renewal contract as the HTTP client above (design doc
+        // Part 3.4); the fleet tool exposes action 'renew'.
+        async renew(token) {
+            if (token == null) return false;
+            try {
+                const payload = await call({ action: 'renew', token });
+                return Boolean(payload.renewed);
+            } catch (err) {
+                log(`[dolt-mutex/mcp] renew failed (non-fatal; the lease may expire): ${err.message}`);
                 return false;
             }
         },
@@ -1681,7 +1700,10 @@ async function provisionPrCapableAuthForMember({ fleetApi, command, member, log 
 // `label` is passed (src/tools/provision-vcs-auth.ts: `label = input.label ??
 // input.provider`) -- the PR-raising call sites never pass a label either, so
 // the deployed git-credential-helper file is always
-// $HOME/.fleet-git-credential-github for the 'github' provider.
+// $HOME/.fleet-git-credential-github for the 'github' provider on POSIX
+// (src/os/linux.ts gitCredentialHelperWrite), and
+// $env:USERPROFILE\.fleet-git-credential-github.bat on Windows
+// (src/os/windows.ts:279-294).
 const GITHUB_VCS_CREDENTIAL_LABEL = 'github';
 
 // Typed marker returned by finalizeAbort() (and logged by the Publish PR step)
@@ -1692,9 +1714,165 @@ const GITHUB_VCS_CREDENTIAL_LABEL = 'github';
 // this exact reason string. See apra-fleet-tfx.8.1.
 const PR_SKIPPED_NO_MCP_CLIENT = 'pr-skipped-no-mcp-client';
 
+// memberName -> resolved target OS ('windows' | 'linux' | 'darwin' | ...),
+// cached for the lifetime of the runner process: a member's OS never changes
+// mid-sprint, and member_detail performs a live connectivity check, so this
+// must not be re-dispatched per credential read (raiseVcsPrForMember can call
+// it twice on the auth-retry path alone).
+const memberOsCache = new Map();
+
+// Test seam: the OS cache is process-lifetime state, so a test exercising two
+// different member OSes for the same member name must be able to clear it.
+export function clearMemberOsCache() {
+    memberOsCache.clear();
+}
+
+// Resolves `member`'s OS from the fleet member registry via
+// fleetApi.memberDetail() ('member_detail' is the only MCP surface exposing
+// Agent.os -- src/tools/member-detail.ts:40; it does NOT expose a homeDir).
+// Mirrors VCSModule.resolveProvider()'s member_detail JSON-parsing shape.
+//
+// Unlike resolveProvider, an unresolvable OS is NOT a hard error here: the
+// ONLY behavioral difference it drives is which shell string the credential
+// read is built as, and the historical (POSIX) string must stay byte-identical
+// for every non-Windows member and for any caller that has no memberDetail
+// wired. So a missing/unparseable/absent-`os` response degrades to 'linux'
+// (the pre-existing behavior) and is logged, never thrown.
+// @param {{ fleetApi?: object, member: string, log?: Function }} opts
+// @returns {Promise<string>}
+export async function resolveMemberOs({ fleetApi, member, log = () => {} }) {
+    if (memberOsCache.has(member)) return memberOsCache.get(member);
+    try {
+        if (!fleetApi || typeof fleetApi.memberDetail !== 'function') {
+            throw new Error('no fleetApi.memberDetail() injected');
+        }
+        const res = await fleetApi.memberDetail({ member_name: member, format: 'json' });
+        const text = typeof res === 'string'
+            ? res
+            : (res && Array.isArray(res.content) && res.content[0] && typeof res.content[0].text === 'string')
+                ? res.content[0].text
+                : '';
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed.os === 'string' && parsed.os.trim()) {
+            const os = parsed.os.trim().toLowerCase();
+            // Only a genuine member_detail-derived OS is cached. Caching the
+            // 'linux' fallback below would permanently pin a member that hit a
+            // transient failure (asleep, flaky SSH, MCP hiccup) to POSIX
+            // command construction for the rest of the runner process --
+            // including the auth-retry credential read at raiseVcsPrForMember,
+            // whose entire purpose is to recover from exactly this kind of
+            // transient failure. See apra-fleet-ot2z.13.
+            memberOsCache.set(member, os);
+            return os;
+        }
+        throw new Error('member_detail response carried no "os" field');
+    } catch (err) {
+        log(`Could not resolve OS for member '${member}' from member_detail (${err && err.message ? err.message : err}); assuming POSIX ('linux') for member-bound command construction.`);
+        return 'linux';
+    }
+}
+
+// Wraps a PowerShell script the same way src/os/windows.ts
+// wrapPowerShellEncoded() does: the guard clause makes a non-terminating
+// PowerShell failure surface as a non-zero exit (apra-fleet-ot2z.9's fix),
+// -EncodedCommand (base64 UTF-16LE) removes every quoting question about
+// which shell the transport hands the string to, and the $LASTEXITCODE check
+// before the trailing `exit 0` preserves a native command's exit code (e.g.
+// this file's own credential-read `& "<helper>.bat"` invocation below) that
+// would otherwise be masked -- without it, a broken credential-helper .bat
+// silently reports success with no `password=` line. runner.js is a separate
+// package and cannot import src/os/windows.ts, so the shape is mirrored
+// here, not reused.
+// @param {string} psScript
+// @returns {string}
+function wrapPowerShellEncodedForMember(psScript) {
+    const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`;
+    return `powershell -EncodedCommand ${Buffer.from(guarded, 'utf16le').toString('base64')}`;
+}
+
+// Builds the member-bound command that RUNS the deployed git-credential-helper
+// and the human-readable descriptor used in this function's error messages
+// (the descriptor must stay readable -- the Windows command itself is an
+// opaque base64 blob).
+//
+// SHELL CONTRACT (confirmed, not assumed -- apra-fleet-ot2z.1):
+//   execute_command hands the caller's string to
+//   cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, cmd)) and then straight
+//   to the strategy's execCommand (src/tools/execute-command.ts:273 ->
+//   src/services/ssh.ts execCommand, which does NO shell branching of its
+//   own). wrapInWorkFolder/wrapPidCapture (src/os/windows.ts:328-335) still
+//   emit RAW PowerShell text (`Set-Location "<folder>"; ...`,
+//   `Write-Output "FLEET_PID:$pid"; ...`), NOT shell-normalized/encoded --
+//   they are NOT wrapped with -EncodedCommand, so on a Windows member whose
+//   sshd default shell is cmd.exe (not PowerShell) that outer wrapping is
+//   still garbage regardless of what this function returns. This function's
+//   own return value (the inner payload wrapPidCapture/wrapInWorkFolder wrap
+//   around) IS explicitly -EncodedCommand and is valid to launch from either
+//   PowerShell or cmd.exe on its own -- but that only protects the inner
+//   payload, not the outer Set-Location/Write-Output wrapper the codebase
+//   composes around it. Correctness end-to-end still depends on the target
+//   member's default shell being PowerShell.
+//   TODO: normalize wrapInWorkFolder/wrapPidCapture (and
+//   gitCredentialHelperWrite/gitCredentialHelperRemove/deploySSHPublicKey,
+//   which have the same raw-PowerShell issue on the write side) through a
+//   single shell-detecting wrapper so the whole composite string -- not just
+//   this function's inner payload -- is shell-agnostic.
+//
+// WHY $env:USERPROFILE AND NOT A JS-RESOLVED HOME PATH: the WRITE side
+// (src/os/windows.ts:289 gitCredentialHelperWrite) writes the helper to
+// `"$env:USERPROFILE\.fleet-git-credential-<label>.bat"` -- expanded ON THE
+// MEMBER at write time. The read must resolve the home directory the same way
+// the write did, or an independently-probed home could point somewhere the
+// file was never written. This mirrors member-home.ts probeCommandFor(), which
+// likewise resolves the OS in JS and interpolates a shell-appropriate string
+// that still contains $env:USERPROFILE.
+// RUNNER-WIDE POSIX-EXPANSION SWEEP (apra-fleet-ot2z.1, WORK item 2): every
+// runner.js string passed to command()/execute_command was audited for `$VAR`,
+// `~/`, backticks, `$( )` and POSIX-only shell plumbing (`&&`/`||` chains,
+// `2>/dev/null`, `test -f`, pipes). Result: the credential read below was the
+// ONLY member-bound string carrying a shell expansion. The surviving `$`
+// occurrences in this file are all justified in place --
+//   - NOT_DONE_STATUSES (~line 278): quoting note about PowerShell's $OFS, a
+//     comment, not an expansion in the dispatched string;
+//   - wrapPowerShellEncodedForMember (~line 1761) and the Windows branch
+//     below: deliberately PowerShell, base64-encoded so no host shell ever
+//     re-parses them;
+//   - the POSIX branch below: `$HOME` expanded by the POSIX member's own
+//     shell, matching what src/os/linux.ts wrote.
+// Everything else dispatched to a member is plain `git`/`bd`/`node -e`
+// argv-shaped text (see stageCommandBodyMemberSide ~line 2195 and the
+// two-sequential-calls note at ~line 5685, which already document why they
+// avoid `&&` and `$`), inert across POSIX, PowerShell and cmd.exe.
+// @param {string} os
+// @param {string} label
+// @returns {{ command: string, descriptor: string }}
+export function buildCredentialReadCommand(os, label) {
+    if (os === 'windows') {
+        // The label is interpolated into a PowerShell double-quoted string and
+        // a filename; the POSIX branch below is unvalidated for byte-identical
+        // back-compat, but there is no reason to admit shell metacharacters on
+        // the branch being introduced here.
+        if (!/^[A-Za-z0-9._-]+$/.test(String(label))) {
+            throw new Error(`Refusing to build a Windows credential-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
+        }
+        const descriptor = `$env:USERPROFILE\\.fleet-git-credential-${label}.bat`;
+        // `& "<path>"` -- the call operator, so PowerShell EXECUTES the batch
+        // file (and its "password=<token>" line reaches stdout) instead of
+        // echoing the path as a string.
+        return { command: wrapPowerShellEncodedForMember(`& "$env:USERPROFILE\\.fleet-git-credential-${label}.bat"`), descriptor };
+    }
+    // POSIX (linux/darwin): byte-identical to the pre-apra-fleet-ot2z.1
+    // string. $HOME (not `~`) matches what src/os/linux.ts
+    // gitCredentialHelperWrite() wrote and chmod +x'd.
+    const credFile = `$HOME/.fleet-git-credential-${label}`;
+    return { command: credFile, descriptor: credFile };
+}
+
 // Reads the raw token back out of the git-credential-helper script
 // provision_vcs_auth just deployed onto `member`'s filesystem
-// ($HOME/.fleet-git-credential-<label>, an executable script that PRINTS
+// ($HOME/.fleet-git-credential-<label> on POSIX, or
+// $env:USERPROFILE\.fleet-git-credential-<label>.bat on Windows -- see
+// buildCredentialReadCommand above; an executable script that PRINTS
 // "protocol=...\nhost=...\nusername=...\npassword=<token>\n" when run -- see
 // src/os/linux.ts gitCredentialHelperWrite()/src/os/windows.ts). This is the
 // ONLY way an orchestrator-side caller (VCSModule's runner.js callers) can
@@ -1706,11 +1884,14 @@ const PR_SKIPPED_NO_MCP_CLIENT = 'pr-skipped-no-mcp-client';
 // itself is never logged/echoed anywhere (the token value briefly transits
 // this one command's captured stdout, held only in-process, and is used
 // immediately to build the VCSModule command).
-// @param {{ command: Function, member: string, label?: string }} opts
+// Both the POSIX helper script and the Windows .bat print the same
+// "password=<token>" line, so the extraction regex below is OS-independent.
+// @param {{ command: Function, member: string, label?: string, fleetApi?: object, log?: Function }} opts
 // @returns {Promise<string>}
-async function readMemberVcsCredentialToken({ command, member, label = GITHUB_VCS_CREDENTIAL_LABEL }) {
-    const credFile = `$HOME/.fleet-git-credential-${label}`;
-    const res = await command(`${credFile}`, {
+async function readMemberVcsCredentialToken({ command, member, label = GITHUB_VCS_CREDENTIAL_LABEL, fleetApi, log = () => {} }) {
+    const os = await resolveMemberOs({ fleetApi, member, log });
+    const { command: credCommand, descriptor: credFile } = buildCredentialReadCommand(os, label);
+    const res = await command(credCommand, {
         member_name: member,
         silent: true,
         failSoft: true,
@@ -1792,12 +1973,13 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
     if (!repo) {
         throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
     }
-    let token = await readMemberVcsCredentialToken({ command, member });
+    let token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
+    const os = await resolveMemberOs({ fleetApi, member, log });
 
     let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token });
+        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token, os });
 
         const res = await command(built.command, {
             member_name: member,
@@ -1837,7 +2019,7 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
             try {
                 const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix });
                 if (reprov.repo) repo = reprov.repo;
-                token = await readMemberVcsCredentialToken({ command, member });
+                token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
             } catch (healErr) {
                 log(`${logPrefix}: PR auth self-heal failed for member '${member}'; not retrying further: ${healErr.message}`);
                 return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}`, authFailure: true };
@@ -2244,7 +2426,7 @@ export async function verifyDoerStreakClosed({ command, orchestratorMember, bead
     // closes. Routed through the single dolt-sync module's purpose-based BEFORE
     // bracket (apra-fleet-417.2.1); behavior is identical to the previous
     // direct doltPullBefore() call.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
     const label = `bd show ${beadIds.join(' ')} --json`;
     const showRes = await command(label, { member_name: orchestratorMember, silent: true });
     const showBeads = parseBdJson(showRes, label);
@@ -3646,8 +3828,8 @@ export function normalizeTierToken(raw) {
  * validation, so a description is not rejected wholesale over characters that
  * lose no meaning when normalized. This is a fixed substitution table, not a
  * general Unicode stripper: anything still outside the allowlist afterwards is
- * still a hard rejection. Deliberately scoped to description only -- title
- * stays on the tighter SAFE_TEXT_RE shell-safety allowlist.
+ * still a hard rejection. See sanitizeNewTaskTitle() below for title's own,
+ * stricter table.
  * @param {string} description
  * @returns {string}
  */
@@ -3657,6 +3839,38 @@ export function sanitizeNewTaskDescription(description) {
         .replace(/[\u2018\u2019]/g, "'") // curly single quotes (\u2018 \u2019)
         .replace(/[\u201C\u201D]/g, '"') // curly double quotes (\u201C \u201D)
         .replace(/\u2026/g, '...'); // horizontal ellipsis (\u2026)
+}
+
+/**
+ * Same idea as sanitizeNewTaskDescription() above, for title -- but with a
+ * STRICTER substitution table, since title still has to pass the tighter
+ * SAFE_TEXT_RE shell-safety allowlist afterwards (it is interpolated inline
+ * into a `bd create "..."` command; description is not). Every substitution
+ * here maps to a character SAFE_TEXT_RE already admits, so this never
+ * reopens the injection surface that allowlist exists to close -- it only
+ * rescues titles that would otherwise be needlessly rejected over benign,
+ * common LLM punctuation choices. Observed live (apra-fleet-vk0a's sibling
+ * finding): a reviewer wrote a title referencing a CLI command in backticks
+ * (`` `apra-fleet status` ``, ordinary Markdown inline-code style), which
+ * SAFE_TEXT_RE rejects outright (backtick is excluded as a POSIX
+ * command-substitution risk) -- the finding was then silently demoted to a
+ * freetext note on the parent bead instead of becoming its own actionable
+ * task. Backtick has no special meaning in a bd title (bd has no
+ * code-formatting concept), so it is rewritten to a single quote here rather
+ * than dropped or preserved. A literal `"`/`$`/backslash in a title is NOT
+ * rewritten (there is no safe ASCII stand-in that preserves meaning without
+ * reopening the injection question) -- those still hard-reject via
+ * SAFE_TEXT_RE below, exactly as before this function existed.
+ * @param {string} title
+ * @returns {string}
+ */
+export function sanitizeNewTaskTitle(title) {
+    return String(title ?? '')
+        .replace(/[\u2014\u2013]/g, '--') // em dash (\u2014), en dash (\u2013)
+        .replace(/[\u2018\u2019]/g, "'") // curly single quotes (\u2018 \u2019)
+        .replace(/[\u201C\u201D]/g, "'") // curly double quotes -> single quote (a literal `"` stays disallowed in title, unlike description)
+        .replace(/\u2026/g, '...') // horizontal ellipsis (\u2026)
+        .replace(/`/g, "'"); // backtick (Markdown inline-code marker) -> single quote
 }
 
 /**
@@ -3676,7 +3890,7 @@ export function validateNewTask(newTask) {
     if (!SAFE_PRIORITY_RE.test(priority)) {
         return { ok: false, reason: `priority '${priority}' does not match required pattern ${SAFE_PRIORITY_RE}` };
     }
-    const title = String(newTask && newTask.title);
+    const title = sanitizeNewTaskTitle(newTask && newTask.title);
     if (!title || !SAFE_TEXT_RE.test(title)) {
         return { ok: false, reason: `title fails safe-character allowlist ${SAFE_TEXT_RE} (or is empty): ${JSON.stringify(title)}` };
     }
@@ -5023,7 +5237,7 @@ async function runSprintCycle(context) {
             // EXPLICITLY FATAL (apra-fleet-417.3.1): a pre-dispatch D-pull that
             // silently degraded would hand the agent a STALE beads clone and
             // let it act on it -- worse than not dispatching at all.
-            await DoltSync.syncBefore(member, { command, log, skipRefresh: skipPreDispatchDoltPull, onAuthFailure, fatal: true });
+            await DoltSync.syncBefore(member, { command, log, skipRefresh: skipPreDispatchDoltPull, onAuthFailure, fatal: true, settle: buildSettleCallback(member, { command, log }) });
         }
         // The teardown is deliberately NOT a `finally`. A throw out of a
         // `finally` replaces the (successful) dispatch result and is
@@ -5542,7 +5756,7 @@ async function runSprintCycle(context) {
     // Routed through the single dolt-sync module (apra-fleet-417.2.1):
     // readinessGate (apra-fleet-417.5 rename of healthGate) selects the
     // pre-flight variant of the BEFORE bracket.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
@@ -5807,6 +6021,23 @@ async function runSprintCycle(context) {
             const { sprintTasks: sprintPlaced, backlogTasks } = partitionByGoalMembership(sprintTasks, validated.goal);
             const payload = { sprintTasks: sprintPlaced };
             if (backlogTasks.length > 0) payload.backlogTasks = backlogTasks;
+            // apra-fleet-x8r.4: plumbs the SAME two axes runner.js's own
+            // completion gate (~line 8134: bdListScoped(--priority-max=
+            // goalMax) MINUS decomposedParentIds()) filters on, so the
+            // viewer's computeSprintProgress() required/closed counts match
+            // what actually gates sprint exit -- never re-derived
+            // client-side. Not `const goalMax` from the outer closure: this
+            // function's FIRST call happens before that `const` initializes
+            // (TDZ), so the numeric max is derived fresh here instead, from
+            // the same pure goalPriorityMax() helper.
+            payload.goalMax = Number(goalPriorityMax(validated.goal).slice(1));
+            // sprintTasks is already this cycle's `bdListScoped('')` result
+            // (any status, full scope) -- decomposedParentIds() re-derives
+            // from that same no-args query, so building the set directly off
+            // sprintTasks here is identical output with no extra `bd` call.
+            payload.decomposedParentIds = [...new Set(
+                sprintTasks.filter((b) => b && b.parent).map((b) => b.parent)
+            )];
             publishState('beads', payload);
         }
     }
@@ -5833,7 +6064,7 @@ async function runSprintCycle(context) {
     // doer's work, so pull again immediately before the verification read.
     // DoltSync.syncBefore() is a benign no-op when the clone is current and
     // when no dolt remote is configured at all.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
 
     await updateDashboard();
 
@@ -8121,7 +8352,7 @@ async function runSprintCycle(context) {
         // counts so the completion/stall math reads the current cross-member
         // beads state (every member's D-pushed closes) rather than the
         // orchestrator's stale local copy.
-        await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
+        await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -8401,7 +8632,7 @@ async function runSprintCycle(context) {
     // the sprint's closing evidence (finalOpenAtGoal / finalClosedCount)
     // reflects every member's D-pushed beads state, not the orchestrator's
     // stale local copy.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
     const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),

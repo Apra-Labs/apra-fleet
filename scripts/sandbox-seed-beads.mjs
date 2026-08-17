@@ -90,6 +90,38 @@ function parseArgs(argv) {
     return out;
 }
 
+// bd's dolt-remote-history probe runs a `git` command against `remote`
+// (a directory this script just created via mkdirSync moments earlier), and
+// on a resource-constrained CI runner that probe has been observed to return
+// a non-zero exit under I/O latency; bd conservatively treats a failed probe
+// as "assume history exists" and refuses `--from-jsonl` init entirely
+// (observed message: "bd init refuses: remote 'origin' already has Dolt
+// history (refs/dolt/data)"), even though we know deterministically the
+// directory is empty -- we created it ourselves synchronously just above.
+// Retrying is therefore safe (not error-masking): a real "actually has
+// history" refusal is not something a retry could produce, since nothing
+// else writes to this sandbox-local directory between attempts.
+function initFromJsonlWithRetry(repo, prefix, remoteUrl, attempts = 3, delayMs = 500) {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        try {
+            execBdSync(['init', '--from-jsonl', '--prefix', prefix, '--remote', remoteUrl, '--non-interactive'], {
+                cwd: repo,
+                stdio: 'inherit',
+                shell: true,
+            });
+            return;
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const isProbeRaceRefusal = /already has Dolt history/.test(message);
+            if (!isProbeRaceRefusal || attempt === attempts) {
+                throw err;
+            }
+            console.warn(`[sandbox-seed] bd init dolt-remote-history probe raced a fresh directory (attempt ${attempt}/${attempts}), retrying in ${delayMs}ms...`);
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+        }
+    }
+}
+
 function main() {
     const args = parseArgs(process.argv.slice(2));
     const hostRepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -146,11 +178,7 @@ function main() {
     mkdirSync(remote, { recursive: true });
     const resolvedRemote = realpathSync(remote);
     const remoteUrl = pathToFileURL(resolvedRemote).href;
-    execBdSync(['init', '--from-jsonl', '--prefix', args.prefix, '--remote', remoteUrl, '--non-interactive'], {
-        cwd: repo,
-        stdio: 'inherit',
-        shell: true,
-    });
+    initFromJsonlWithRetry(repo, args.prefix, remoteUrl);
     execBdSync(['dolt', 'push'], { cwd: repo, stdio: 'inherit' });
     console.log(`[sandbox-seed] OK: seeded '${repo}' with sync.remote '${remoteUrl}' (all paths inside the sandbox root)`);
 }

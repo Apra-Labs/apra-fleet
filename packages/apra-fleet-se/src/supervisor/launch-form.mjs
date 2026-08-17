@@ -65,6 +65,44 @@ const ORCHESTRATOR_ROLE = 'orchestrator';
 /** Every role assignable from the form's per-member role <select>. */
 export const FORM_ROLE_OPTIONS = Object.freeze([...ROLES, ORCHESTRATOR_ROLE]);
 
+/** Characters used for the random suffix of an auto-generated branch name. */
+const BRANCH_SUFFIX_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+/**
+ * Sanitizes a member name into the '[a-z0-9-]+' shape used by the repo's
+ * branch-naming convention (matches the ARG_CONTRACT-style branch validation
+ * elsewhere in the codebase, /^[A-Za-z0-9._/-]+$/): lowercased, any run of
+ * characters outside [a-z0-9-] collapsed to a single '-', and leading/
+ * trailing '-' trimmed. Falls back to 'member' if nothing usable remains
+ * (e.g. a name made entirely of stripped characters).
+ * @param {string} name
+ * @returns {string}
+ */
+function sanitizeForBranch(name) {
+    const cleaned = String(name)
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    return cleaned.length > 0 ? cleaned : 'member';
+}
+
+/**
+ * Generates 'fleet-sprint/<member>-<xxx>' where <member> is the sanitized
+ * first selected member name and <xxx> is exactly 3 characters drawn from
+ * [a-z0-9] -- used to fill in the branch field when it is left blank (see
+ * apra-fleet-d3r). The suffix is random per call, so repeated launches
+ * against the same member do not collide.
+ * @param {string} member
+ * @returns {string}
+ */
+function generateBranchName(member) {
+    let suffix = '';
+    for (let i = 0; i < 3; i += 1) {
+        suffix += BRANCH_SUFFIX_CHARS[Math.floor(Math.random() * BRANCH_SUFFIX_CHARS.length)];
+    }
+    return `fleet-sprint/${sanitizeForBranch(member)}-${suffix}`;
+}
+
 /**
  * Pure client-side validation + request-body construction for the Launch
  * Sprint form. Never talks to the network -- callers POST `result.body` to
@@ -103,9 +141,9 @@ export function buildLaunchRequestBody(input) {
     if (!GOAL_OPTIONS.includes(opts.goal)) {
         return { ok: false, error: `Goal must be one of: ${GOAL_OPTIONS.join(', ')}.` };
     }
-    const branch = typeof opts.branch === 'string' ? opts.branch.trim() : '';
+    let branch = typeof opts.branch === 'string' ? opts.branch.trim() : '';
     if (branch.length === 0) {
-        return { ok: false, error: 'Branch name is required.' };
+        branch = generateBranchName(members[0]);
     }
     const base = typeof opts.base === 'string' ? opts.base.trim() : '';
     if (base.length === 0) {

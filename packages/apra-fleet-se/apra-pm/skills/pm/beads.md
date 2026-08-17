@@ -132,6 +132,12 @@ reset it with `bd update <id> --status=open`. See `sprint.md` Recovery.
 
 ## Rules
 
+- **Title is plain text only** -- letters, digits, space, and `. , : ; ! ? ( ) ' _ / [ ] -`.
+  No backticks, double quotes, `$`, or backslash: every `bd create ... "<title>"` /
+  `--title="..."` is shell-interpolated verbatim. Put any command/flag/filename or other
+  formatted detail in `--description` instead, which has no such restriction. Applies to
+  every role that creates beads directly (planner, integ-test-runner,
+  regression-test-runner, backlog-groomer), not just reviewer's `newTasks`.
 - **Check before create** (sprint root and task) -- `bd search ... --status all`; reuse if
   found, never duplicate.
 - **Check before claim** -- dispatch only if the task is `open`.

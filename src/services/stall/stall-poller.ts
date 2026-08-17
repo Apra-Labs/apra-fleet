@@ -2,6 +2,9 @@ import { getAgent } from '../registry.js';
 import { getStrategy, type AgentStrategy } from '../strategy.js';
 import { getAgentOS } from '../../utils/agent-helpers.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
+import { getProvider } from '../../providers/index.js';
+import { getMemberPathContext } from '../member-home.js';
+import { escapeDoubleQuoted } from '../../os/os-commands.js';
 
 export interface PollResult {
   lastTimestamp: string | null;
@@ -24,6 +27,115 @@ export interface PollResult {
   mtimeMs?: number | null;
 }
 
+export interface DirectoryActivity {
+  /** Newest file mtime under the provider's log dir, or null when nothing could
+   *  be read (directory absent, empty, or command failed). */
+  mtimeMs: number | null;
+  /**
+   * apra-fleet issue #390 / apra-fleet-igoe: whether this member+provider has a
+   * WORKING activity-signal mechanism at all.
+   *
+   * false means there is no log directory to poll -- either the provider has
+   * none (codex/copilot/none always) or the member's home directory could not
+   * be resolved. In that case a `mtimeMs: null` is NOT evidence of inactivity,
+   * it is the absence of evidence, and the stall detector must not treat it as
+   * a stall (that is precisely the false-kill this distinction exists to stop).
+   */
+  signalAvailable: boolean;
+}
+
+const NO_SIGNAL: DirectoryActivity = { mtimeMs: null, signalAvailable: false };
+
+/** Throwaway home dir used only to ask "does this provider build a log dir at
+ *  all?" without doing a member-side home-dir probe first. Never used to build
+ *  a path that is actually read. */
+const HOME_CAPABILITY_SENTINEL = '/__fleet_capability_probe__';
+
+/**
+ * Polling for directory-level file activity for provisional sessions where a
+ * specific session file is not yet known before spawn (e.g. AGY fresh turns).
+ */
+export async function pollDirectoryActivity(memberId: string): Promise<DirectoryActivity> {
+  const agent = getAgent(memberId);
+  if (!agent) return NO_SIGNAL;
+
+  const provider = agent.llmProvider ?? 'claude';
+  const adapter = getProvider(provider);
+  const isWindows = getAgentOS(agent) === 'windows';
+
+  // Capability check FIRST, with a sentinel home dir: does this provider have a
+  // pollable log directory at all? codex/copilot/none return null for any home
+  // dir whatsoever. Asking here (a pure function call) means we never pay for a
+  // member-side home-dir probe whose answer could not be used.
+  if (adapter.resolveSessionLogDir(agent.workFolder, HOME_CAPABILITY_SENTINEL, isWindows ? 'windows' : 'linux') === null) {
+    return NO_SIGNAL;
+  }
+
+  // apra-fleet issue #390: the log dir lives on the MEMBER's machine, under the
+  // MEMBER's home dir, joined with the MEMBER's OS convention. Resolving it with
+  // this process's os.homedir()/path.join produced a directory that could not
+  // exist on any remote member, which is what made the provisional
+  // baseline-timeout check fire against perfectly healthy dispatches.
+  const { homeDir, targetOs, source } = await getMemberPathContext(agent);
+  const logDir = adapter.resolveSessionLogDir(agent.workFolder, homeDir, targetOs);
+  // homeDir === null lands here too: no honest path to poll, so report "no
+  // signal available" rather than polling a fabricated hub path.
+  if (!logDir) return NO_SIGNAL;
+
+  // A home dir that came from the username FALLBACK (the probe failed) is a
+  // guess. We still poll it -- if the guess is right, full stall protection is
+  // preserved -- but a guessed directory that yields NOTHING is not evidence of
+  // a stall, it is an unverified path. Only an authoritative directory (local
+  // member, or a probed home dir) may report "signal available" on an empty
+  // result and thereby license a kill.
+  const authoritative = source === 'local' || source === 'probe';
+
+  const strategy = getStrategy(agent);
+
+  const escapedWinDir = logDir.replace(/'/g, "''");
+  const escapedPosixDir = escapeDoubleQuoted(logDir);
+
+  // apra-fleet: avoid any intermediate `$variable` in this one-liner -- on at
+  // least one Windows member (fleet-win-dev1), the SSH exec path silently
+  // strips bare `$name` tokens (e.g. `$i`) out of the command string before
+  // the nested `powershell -c` ever parses it, turning this into a parse
+  // error on every poll and killing the mtime-based stall signal.
+  //
+  // Two prior attempts at a $-free one-liner both hung (and leaked an
+  // unkillable remote powershell.exe -- `ssh.ts`'s killRemoteTree() is a
+  // no-op here, no FLEET_PID marker is ever emitted by this command):
+  // feeding a possibly-empty `Get-ChildItem -Depth ...` pipeline result
+  // straight into `[DateTimeOffset]::new(...)` or `Get-Date -Format o`.
+  // Live reproduction (Start-Job + Wait-Job -Timeout, isolating each
+  // pipeline stage) traced the hang specifically to `Get-ChildItem -Depth`
+  // against a NONEXISTENT path with errors suppressed -- not to anything
+  // downstream, and not to an existing-but-empty directory (`-Depth`
+  // against a real, empty dir returns instantly). A `Test-Path` guard
+  // (itself instant either way, verified live) skips `Get-ChildItem`
+  // entirely when the directory does not exist -- the common case here,
+  // since this polls the log dir before a session's first turn creates it.
+  // `Get-Date -Format o` as the terminal stage (rather than a constructor
+  // call) means a zero-object pipeline just produces no output, no error.
+  const cmd = isWindows
+    ? `powershell -c "if (Test-Path -Path '${escapedWinDir}') { Get-ChildItem -Path '${escapedWinDir}' -Depth 5 -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1 -ExpandProperty LastWriteTimeUtc | Get-Date -Format o }"`
+    : `find "${escapedPosixDir}" -maxdepth 5 -type f -exec stat -c %Y {} + 2>/dev/null | sort -nr | head -n1`;
+
+  try {
+    const result = await strategy.execCommand(cmd, 5000);
+    const trimmed = result.stdout.trim();
+    if (!trimmed) return { mtimeMs: null, signalAvailable: authoritative };
+    // Windows emits an ISO-8601 timestamp (`Get-Date -Format o`); POSIX
+    // emits whole seconds since epoch.
+    const ms = isWindows ? Date.parse(trimmed) : Number(trimmed) * 1000;
+    if (!Number.isFinite(ms) || ms <= 0) return { mtimeMs: null, signalAvailable: authoritative };
+    // A guessed directory that actually produced an mtime IS verified: real
+    // files were found there, so from here on it is a genuine signal source.
+    return { mtimeMs: ms, signalAvailable: true };
+  } catch {
+    return { mtimeMs: null, signalAvailable: authoritative };
+  }
+}
+
 /**
  * apra-fleet-iuc.2: fetch the transcript file's own OS mtime, independent of
  * (and in addition to) the content-based timestamp extraction below. Never
@@ -36,8 +148,10 @@ async function fetchMtimeMs(
   logFilePath: string,
   isWindows: boolean
 ): Promise<number | null> {
+  // See the matching note in pollDirectoryActivity above: no intermediate
+  // `$variable` here either, for the same reason.
   const cmd = isWindows
-    ? `powershell -c "$i = Get-Item -LiteralPath '${logFilePath}' -ErrorAction SilentlyContinue; if ($i) { [DateTimeOffset]::new($i.LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds() }"`
+    ? `powershell -c "[DateTimeOffset]::new((Get-Item -LiteralPath '${logFilePath}' -ErrorAction SilentlyContinue).LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds()"`
     // GNU stat (`-c %Y`) first; BSD/macOS stat (`-f %m`) as a fallback -- both report whole seconds.
     : `stat -c %Y "${logFilePath}" 2>/dev/null || stat -f %m "${logFilePath}" 2>/dev/null`;
 

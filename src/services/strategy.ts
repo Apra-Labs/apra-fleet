@@ -8,6 +8,7 @@ import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -48,8 +49,7 @@ class RemoteStrategy implements AgentStrategy {
       if (agentOs === 'windows') {
         const files = relativePaths.map(p => `"${escapeWindowsArg(p)}"`).join(', ');
         const psScript = `Set-Location "${escapeWindowsArg(folder)}"; Remove-Item ${files} -Force -ErrorAction SilentlyContinue`;
-        const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-        await this.execCommand(`powershell -EncodedCommand ${encoded}`, 10000);
+        await this.execCommand(wrapPowerShellEncoded(psScript), 10000);
       } else {
         const files = relativePaths.map(p => `"${escapeDoubleQuoted(p)}"`).join(' ');
         await this.execCommand(`cd "${escapeDoubleQuoted(folder)}" && rm -f ${files}`, 10000);

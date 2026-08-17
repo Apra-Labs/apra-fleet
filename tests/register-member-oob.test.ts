@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { backupAndResetRegistry, restoreRegistry, makeConfigAwareExec } from './test-helpers.js';
 import { registerMember } from '../src/tools/register-member.js';
 import { encryptPassword } from '../src/utils/crypto.js';
 import { credentialResolve, credentialDelete } from '../src/services/credential-store.js';
@@ -46,7 +46,7 @@ describe('register_member: anonymous OOB password (Test 3)', () => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
   });
 
   afterEach(() => {
@@ -62,7 +62,7 @@ describe('register_member: anonymous OOB password (Test 3)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test',
+      work_folder: '/home/testuser/git/test',
       auth_type: 'password',
     });
 
@@ -79,7 +79,7 @@ describe('register_member: anonymous OOB password (Test 3)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test2',
+      work_folder: '/home/testuser/git/test2',
       auth_type: 'password',
     });
 
@@ -96,7 +96,7 @@ describe('register_member: anonymous OOB password (Test 3)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test3',
+      work_folder: '/home/testuser/git/test3',
       auth_type: 'password',
     });
 
@@ -110,7 +110,7 @@ describe('register_member: anonymous OOB password (Test 3)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test4',
+      work_folder: '/home/testuser/git/test4',
       auth_type: 'password',
       password: 'my-password',
     });
@@ -129,7 +129,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
     // Clean up any stale credentials from prior runs
     credentialDelete('MyLinPass');
     credentialDelete('PersistCred');
@@ -150,7 +150,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test5',
+      work_folder: '/home/testuser/git/test5',
       auth_type: 'password',
       password: '{{secure.MyLinPass}}',
     });
@@ -173,7 +173,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test6',
+      work_folder: '/home/testuser/git/test6',
       auth_type: 'password',
       password: '{{secure.PersistCred}}',
     });
@@ -195,7 +195,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test7',
+      work_folder: '/home/testuser/git/test7',
       auth_type: 'password',
       password: '{{secure.SessionCred}}',
     });
@@ -215,7 +215,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test8',
+      work_folder: '/home/testuser/git/test8',
       auth_type: 'password',
       password: '{{secure.FailCred}}',
     });

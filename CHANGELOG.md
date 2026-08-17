@@ -2,6 +2,135 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- compose_permissions silent write no-op fix
+
+Sprint goal: fix a bug where `compose_permissions` could report a grant as
+successful while the underlying provider settings file on the target member
+was never actually updated -- a silent no-op reproduced live on a Windows
+member, though the underlying defect was not platform-specific. All in-scope
+work closed. The sprint's own final verdict is FAIL (a reviewer dispatch
+stalled and could not be repaired after a retry), and a same-day regression
+pass also failed for the same stall reason; no carry-over beads were filed
+from the regression pass.
+
+What shipped:
+
+- The config-delivery path used by `compose_permissions` now checks the exit
+  code of every remote directory-creation and write command, and reads the
+  written file back to structurally confirm the intended content actually
+  landed (parsed-and-compared for JSON, substring-matched for TOML/string
+  content) before treating a grant as delivered. Any failure -- a nonzero
+  exit code or a read-back mismatch -- is surfaced as an explicit failure
+  string from `compose_permissions`; the permissions ledger is left
+  untouched in that case, so a failed write can no longer be recorded as if
+  it had succeeded.
+- A new regression test suite drives the real, unmocked local command
+  execution path against a scratch filesystem and asserts on file content
+  read from disk with the standard filesystem API, covering a fresh grant,
+  a grant merged onto an existing settings file (preserving unrelated
+  entries), and a forced write failure. This closes the coverage gap left by
+  the existing test suite, which only asserted on the generated command
+  string and could not have caught this class of bug.
+- Verification note: this sprint's test run exercised the POSIX write path
+  end-to-end on a real filesystem. The Windows write path is covered by
+  code inspection and by existing mocked-command-string assertions, but was
+  not executed end-to-end against a real Windows filesystem in this sprint
+  -- that gap is called out explicitly rather than claimed as covered.
+- Also included on this branch: a fix to the stall-poller's Windows
+  liveness/staleness polling, which removed an intermediate PowerShell
+  `$variable` from a remote one-liner (observed to be silently stripped by
+  the SSH execution path on at least one Windows member, breaking the mtime
+  signal on every poll) and replaced a directory-enumeration pattern that
+  could hang against a nonexistent path with an existence guard ahead of it.
+
+Carried forward: the write-level verification added here does not by
+itself guarantee that a provider CLI reads and honors a correctly-written
+settings file (a separate, already-tracked concern -- see the
+workspace-trust caveat in `docs/missing-grant-recovery-and-playbook-evolution.md`),
+and concurrent grant application against the same member remains an
+unlocked read-modify-write. Both remain open, tracked items.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $2.7463.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1223 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 12 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+## [Unreleased] -- cross-shell member-bound command construction audit
+
+Sprint goal: fix a PowerShell parse failure that broke PR lookup on a
+Windows fleet member during sprint-abort finalization, then perform a
+holistic, codebase-wide audit for the same underlying bug class -- any
+command string built with POSIX-only shell syntax (bare `$VAR`/`$HOME`
+expansion, `sed`, `xargs`, `tail`, `nohup`) and sent to a member whose
+remote shell may actually be PowerShell rather than bash. All in-scope work
+closed except one coverage-extension task that remains open. The sprint's
+own final verdict is FAIL: the final reviewer dispatch stalled and could not
+be repaired, and a same-day regression pass also failed for the same
+stalled-dispatch reason. No deploy succeeded this sprint -- every deploy
+attempt was blocked at the dependency-install step by a locked native
+build artifact unrelated to this sprint's source changes, so nothing here
+has been rebuilt/repackaged or smoke-tested as a shipped artifact; the
+changes below are described as implemented and unit/integration-tested in
+the source tree, not as verified-deployed.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $14.3110.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 36 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped:
+
+- The credential-file read used during sprint-abort finalization on Windows
+  members no longer relies on POSIX-style `$HOME` path expansion, which
+  PowerShell either parses incorrectly or rejects outright. The value is now
+  resolved to a concrete, OS-appropriate path before the command is built.
+- A shared `wrapPowerShellEncoded` helper now backs every Windows-bound
+  PowerShell script construction site (text/JSON file writes, credential
+  file read/write, recursive file hashing, member-bound file deletion, and
+  the tools below). It base64-encodes the script as a `-EncodedCommand`
+  invocation (removing an entire class of shell-quoting bugs) and forces
+  `$ErrorActionPreference = 'Stop'` with a try/catch so a script-opted-out
+  `-ErrorAction SilentlyContinue` failure stays suppressed while every other
+  failure surfaces correctly, including a native command's exit code (via
+  `$LASTEXITCODE`), which the wrapper's own `exit 0` previously masked.
+- Remote task monitoring, remote log tailing, and member removal's
+  authorized-keys cleanup are now OS-branched: each builds either a POSIX
+  command or a PowerShell command depending on the target member's OS,
+  instead of a single POSIX-flavored string that silently misbehaved (or
+  was silently corrupted in transit) on a PowerShell target. Member removal
+  now also surfaces a warning when the authorized-keys cleanup step fails,
+  instead of failing silently.
+- Long-running background tasks are now supported on Windows members: the
+  task is launched detached via `Invoke-CimMethod Win32_Process.Create`
+  (spawned under the WMI provider host's own session, independent of the
+  SSH session's job object -- a plain background launch dies with the SSH
+  channel on Windows), running a PowerShell wrapper script that mirrors the
+  POSIX bash wrapper's status.json/task.pid/task.log/activity-marker/retry
+  behavior. `monitor_task` reads the same task-directory shape on both OSes.
+- Remote pid-liveness and durable-output-file probes (the orphan-recovery
+  lease-of-life gate) are now OS-branched the same way -- previously they
+  always dispatched POSIX `kill -0`/`cat`, so on a Windows member the probe
+  could never report a genuinely-alive process as alive.
+- Member OS detection no longer caches a guessed/fallback value on
+  detection failure -- only a successful, authoritative detection is
+  memoized, so a member is not permanently misrouted to the wrong OS branch
+  after one failed detection attempt.
+- The root test command now also runs the fleet-sprint workspace's own
+  `node --test` suite, which was previously invisible to the root gate
+  because it used a different test runner than the rest of the monorepo; a
+  green root test run previously did not actually exercise this workspace
+  at all.
+
+Carried forward: one coverage-extension task (adding live PowerShell
+exit-code tests for the remaining `wrapPowerShellEncoded` call sites beyond
+the ones this sprint directly touched) remains open and unclosed.
+
 ## [Unreleased] -- npm-install dependency-packaging fixes
 
 Sprint goal: unblock npm-installed (published-tarball, non-workspace) consumers

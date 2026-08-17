@@ -76,11 +76,23 @@ jobs:
       # a REAL `bd --version`/`bd list`/etc via scripts/lib/exec-bd.mjs, with
       # no CI-skip guard -- they need `bd` on PATH by the time "Run tests"
       # starts, not just by the later workspace-tests step.
+      # Pinned to 1.1.2 (2026-08-12), matching src/cli/install.ts's own
+      # installer pin (bumped together from 1.0.4 -> 1.1.2): an unpinned
+      # `npm install -g @beads/bd` here previously picked up 1.2.1, which
+      # changed the dolt-remote-history probe's behavior against a freshly-
+      # created (never `git init`'d) local directory -- the probe's `git`
+      # call now returns non-zero there, and bd conservatively treats a
+      # failed probe as "assume history exists", so `bd init --from-jsonl
+      # --remote <fresh-dir>` now deterministically refuses where 1.1.2
+      # succeeds. Broke every PR's CI simultaneously the moment 1.2.1 became
+      # "latest". Re-verify against a newer bd release before bumping this
+      # pin; see tests/2cc-win-bd-invocation-integ.test.ts,
+      # tests/smoke-test-flow-e2e-integ.test.ts, and scripts/sandbox-seed-beads.mjs.
       - name: Install bd CLI (required by apra-fleet-se tests and tests/exec-bd.test.ts)
         env:
           CI: ''
         run: |
-          npm install -g @beads/bd --foreground-scripts
+          npm install -g @beads/bd@1.1.2 --foreground-scripts
           bd --version
 
       # serve-wiring-integration.test.mjs and supervisor-dashboard-

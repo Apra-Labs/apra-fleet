@@ -1,0 +1,699 @@
+<!-- Landing page draft for apra-fleet. Source of truth for claims: Apra-Labs/apra-fleet origin/main @ v0.4.0.
+     Local source: C:\Users\akhil\.claude\scratchpad\fleet-site\template.html (built to apra-fleet-landing-v2.html) -->
+<title>apra-fleet -- run a fleet of AI agents across your machines</title>
+<style>
+  @font-face {
+    font-family: "Poppins";
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url(assets/poppins-400.woff2) format("woff2");
+  }
+  @font-face {
+    font-family: "Poppins";
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url(assets/poppins-600.woff2) format("woff2");
+  }
+  :root {
+    --bg: #ffffff;
+    --bg-deep: #f8f8f8;
+    --surface: #ffffff;
+    --console: #191C13;
+    --console-ink: #E9ECE2;
+    --console-line: #2E3226;
+    --console-accent: #8CC63F;
+    --console-ok: #94BA33;
+    --ink: #222222;
+    --muted: #666666;
+    --beacon: #5a7a10;
+    --beacon-bright: #94BA33;
+    --beacon-soft: #DFEAC1;
+    --steel: #5a7a10;
+    --line: #e0e0e0;
+    --ok: #5a7a10;
+    --warn: #8F5B1D;
+    --show-light: block;
+    --show-dark: none;
+    --link-hover: #465e0c;
+    --display: "Poppins", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --body: "Poppins", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171814; --bg-deep: #111210; --surface: #1E201B;
+      --ink: #ECEEE8; --muted: #A3A89C;
+      --beacon: #94BA33; --beacon-bright: #94BA33; --beacon-soft: #262d13;
+      --steel: #94BA33; --line: #2C2E28;
+      --ok: #94BA33; --warn: #D9A45C;
+      --show-light: none; --show-dark: block;
+      --link-hover: #8CC63F;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #171814; --bg-deep: #111210; --surface: #1E201B;
+    --ink: #ECEEE8; --muted: #A3A89C;
+    --beacon: #94BA33; --beacon-bright: #94BA33; --beacon-soft: #262d13;
+    --steel: #94BA33; --line: #2C2E28;
+    --ok: #94BA33; --warn: #D9A45C;
+    --show-light: none; --show-dark: block;
+    --link-hover: #8CC63F;
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --bg-deep: #f8f8f8; --surface: #ffffff;
+    --ink: #222222; --muted: #666666;
+    --beacon: #5a7a10; --beacon-bright: #94BA33; --beacon-soft: #DFEAC1;
+    --steel: #5a7a10; --line: #e0e0e0;
+    --ok: #5a7a10; --warn: #8F5B1D;
+    --show-light: block; --show-dark: none;
+    --link-hover: #465e0c;
+  }
+
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--body); line-height: 1.65; font-size: 1rem;
+  }
+  .wrap { max-width: 68rem; margin: 0 auto; padding: 0 1.5rem; }
+  a { color: var(--steel); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { color: var(--link-hover); text-underline-offset: 4px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--beacon); outline-offset: 2px; }
+  code { font-family: var(--mono); font-size: 0.9em; }
+  img { max-width: 100%; height: auto; }
+  .img-light { display: var(--show-light); }
+  .img-dark { display: var(--show-dark); }
+
+  /* ---------- nav ---------- */
+  nav {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 1rem; padding: 1.4rem 0; border-bottom: 1px solid var(--line);
+  }
+  .brand {
+    font-family: var(--display); font-size: 1.15rem; letter-spacing: 0.04em;
+    color: var(--ink); text-decoration: none; font-weight: 600;
+  }
+  .brand .tick { color: var(--beacon); }
+  nav .links { display: flex; gap: 1.4rem; font-size: 0.88rem; flex-wrap: wrap; }
+  nav .links a { text-decoration: none; color: var(--muted); }
+  nav .links a:hover { color: var(--beacon); }
+
+  /* ---------- hero ---------- */
+  .hero {
+    display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    gap: 3rem; align-items: center; padding: 4.5rem 0 4rem;
+  }
+  @media (max-width: 52rem) { .hero { grid-template-columns: 1fr; gap: 2.5rem; padding-top: 3rem; } }
+  .eyebrow {
+    font-family: var(--display); font-size: 0.78rem; letter-spacing: 0.13em;
+    text-transform: uppercase; color: var(--beacon); margin: 0 0 1rem;
+    display: flex; align-items: center; gap: 0.6rem;
+  }
+  .eyebrow::before { content: ""; width: 1.4rem; height: 2px; background: var(--beacon-bright); }
+  .hero h1 {
+    font-family: var(--display); font-weight: 600; margin: 0 0 1.1rem;
+    font-size: clamp(2rem, 4.5vw, 2.85rem); line-height: 1.14;
+    letter-spacing: -0.01em; text-wrap: balance;
+  }
+  .hero h1 em { font-style: normal; color: var(--beacon); }
+  .hero .sub { color: var(--muted); max-width: 34rem; margin: 0 0 1.8rem; font-size: 1.06rem; }
+  .install {
+    display: inline-flex; align-items: center; gap: 0.9rem; flex-wrap: wrap;
+    background: var(--console); color: var(--console-ink);
+    border: 1px solid var(--console-line); border-radius: 6px;
+    padding: 0.7rem 1.1rem; font-family: var(--mono); font-size: 0.92rem;
+  }
+  .install .ps1 { color: var(--console-accent); user-select: none; }
+  .chips { display: flex; gap: 0.55rem 1.4rem; flex-wrap: wrap; margin-top: 1.6rem; font-size: 0.8rem; color: var(--muted); }
+  .chips span::before { content: "+ "; color: var(--beacon); font-weight: 700; }
+
+  /* ---------- manifest console ---------- */
+  .console {
+    background: var(--console); color: var(--console-ink);
+    border: 1px solid var(--console-line); border-radius: 10px;
+    font-family: var(--mono); font-size: 0.82rem; overflow: hidden;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 1px 0 rgba(200,200,200,0.30);
+  }
+  .console header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.55rem 1rem; border-bottom: 1px solid var(--console-line);
+    font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase;
+    color: #9AA18F;
+  }
+  .console header .live { color: var(--console-ok); }
+  .console table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+  .console td {
+    padding: 0.62rem 0.55rem; border-bottom: 1px solid var(--console-line);
+    white-space: nowrap; vertical-align: middle;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .console td:first-child { padding-left: 1rem; width: 36%; }
+  .console td:last-child { padding-right: 1rem; width: 28%; }
+  .console td:nth-child(2) { width: 16%; }
+  .console td:nth-child(3) { width: 20%; }
+  .console tr:last-child td { border-bottom: none; }
+  .console .dot {
+    display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%;
+    background: var(--console-ok); margin-right: 0.55rem;
+    animation: pulse 2.6s ease-in-out infinite;
+  }
+  .console tr:nth-child(2) .dot { animation-delay: 0.6s; }
+  .console tr:nth-child(3) .dot { animation-delay: 1.2s; }
+  .console tr:nth-child(4) .dot { animation-delay: 1.8s; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .console .name { color: #F2F4EC; font-weight: 600; }
+  .console .tier { color: var(--console-accent); }
+  .console .role { color: #9AA18F; }
+  .console .model { color: #9AA18F; }
+  .console tr { animation: rise 0.5s ease-out backwards; }
+  .console tr:nth-child(1) { animation-delay: 0.15s; }
+  .console tr:nth-child(2) { animation-delay: 0.3s; }
+  .console tr:nth-child(3) { animation-delay: 0.45s; }
+  .console tr:nth-child(4) { animation-delay: 0.6s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .console tr, .console .dot { animation: none; }
+  }
+  .console-caption { font-size: 0.78rem; color: var(--muted); margin: 0.7rem 0 0; }
+  .console-wrap { overflow-x: auto; }
+
+  /* ---------- multi-scene console ---------- */
+  .scenes { position: relative; min-height: 13.4rem; }
+  .scene {
+    position: absolute; inset: 0; padding: 1.1rem 1.1rem 1rem;
+    opacity: 0; animation: scene-cycle 15s ease-in-out infinite;
+  }
+  .scene-1 { animation-delay: 0s; }
+  .scene-2 { animation-delay: 5s; }
+  .scene-3 { animation-delay: 10s; }
+  @keyframes scene-cycle {
+    0% { opacity: 0; }
+    3% { opacity: 1; }
+    28% { opacity: 1; }
+    34% { opacity: 0; }
+    100% { opacity: 0; }
+  }
+  .scene-label {
+    font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #9AA18F; margin: 0 0 0.7rem;
+  }
+  .scene .term-inline {
+    margin: 0; background: none; border: none; padding: 0;
+    font-family: var(--mono); font-size: 0.82rem; line-height: 1.6;
+    color: var(--console-ink); white-space: pre-wrap;
+  }
+  .scene .term-inline .q { color: var(--console-accent); }
+  .scene .term-inline .c { color: #8B9282; }
+  .scene table { border-collapse: collapse; width: 100%; }
+  .scene td { padding: 0.4rem 0 0.4rem 0; white-space: nowrap; vertical-align: middle; font-size: 0.8rem; }
+  @media (prefers-reduced-motion: reduce) {
+    .scenes { min-height: 0; }
+    .scene { position: static; inset: auto; opacity: 1; animation: none; border-bottom: 1px solid var(--console-line); }
+    .scene:last-child { border-bottom: none; }
+  }
+
+  /* ---------- sections ---------- */
+  section { padding: 3.8rem 0; }
+  section.deep { background: var(--bg-deep); }
+  h2 {
+    font-family: var(--display); font-weight: 600;
+    font-size: clamp(1.5rem, 3vw, 2rem); letter-spacing: -0.01em; line-height: 1.15;
+    margin: 0.4rem 0 1rem; text-wrap: balance;
+  }
+  .lede { color: var(--muted); max-width: 44rem; margin: 0 0 2rem; font-size: 1.02rem; }
+  p { margin: 0.7rem 0; }
+
+  .qgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1.1rem; }
+  .qgrid .q {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 1.1rem 1.25rem;
+    box-shadow: 0 1px 2px rgba(34,34,34,0.04), 0 4px 12px rgba(34,34,34,0.06);
+  }
+  .qgrid .q h3 { font-family: var(--display); text-transform: uppercase; letter-spacing: 0.035em; font-size: 0.92rem; margin: 0 0 0.4rem; color: var(--beacon); }
+  .qgrid .q p { margin: 0; font-size: 0.92rem; color: var(--muted); }
+
+  .diff { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
+  @media (max-width: 52rem) { .diff { grid-template-columns: 1fr; } }
+  .diff article {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 1.4rem 1.5rem;
+    box-shadow: 0 1px 2px rgba(34,34,34,0.04), 0 4px 12px rgba(34,34,34,0.06);
+  }
+  .diff h3 { font-family: var(--display); font-weight: 600; letter-spacing: normal; font-size: 1.02rem; margin: 0 0 0.5rem; }
+  .diff p { font-size: 0.94rem; color: var(--muted); margin: 0; }
+  .diff p strong { color: var(--ink); }
+  .diff .ref { display: block; margin-top: 0.8rem; font-family: var(--mono); font-size: 0.72rem; color: var(--steel); word-break: break-all; }
+
+  .figure { margin: 2rem 0 0; }
+  .figure figcaption { font-size: 0.8rem; color: var(--muted); margin-top: 0.6rem; max-width: 44rem; }
+
+  .stats { display: flex; gap: 2.5rem 3.5rem; flex-wrap: wrap; margin: 2rem 0 0; }
+  .stat .n { font-family: var(--display); font-size: 2rem; font-weight: 600; color: var(--beacon); font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: 0.82rem; color: var(--muted); max-width: 13rem; }
+
+  /* ---------- role cards ---------- */
+  .rolegrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11.5rem, 1fr)); gap: 1rem; margin: 1.8rem 0 0; }
+  .rolegrid .role { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.15rem; box-shadow: 0 1px 2px rgba(34,34,34,0.04), 0 4px 12px rgba(34,34,34,0.06); }
+  .rolegrid .role .tag { font-family: var(--display); text-transform: uppercase; letter-spacing: 0.03em; font-size: 0.82rem; color: var(--beacon); margin: 0 0 0.4rem; }
+  .rolegrid .role p { margin: 0; font-size: 0.86rem; color: var(--muted); }
+  .role-note { font-size: 0.9rem; color: var(--muted); margin: 1.2rem 0 0; max-width: 44rem; }
+  .role-note strong { color: var(--ink); }
+
+  /* ---------- quickstart ---------- */
+  .steps { counter-reset: step; display: grid; gap: 1.1rem; max-width: 46rem; }
+  .step { display: grid; grid-template-columns: 2.4rem 1fr; gap: 1rem; }
+  .step::before {
+    counter-increment: step; content: counter(step);
+    font-family: var(--display); font-size: 1.3rem; font-weight: 600;
+    color: var(--beacon); border-top: 2px solid var(--beacon-bright);
+    padding-top: 0.3rem;
+  }
+  .step h3 { margin: 0 0 0.35rem; font-size: 1rem; }
+  .step p { margin: 0 0 0.5rem; font-size: 0.92rem; color: var(--muted); }
+  pre.term {
+    background: var(--console); color: var(--console-ink);
+    border: 1px solid var(--console-line); border-radius: 6px;
+    padding: 0.8rem 1rem; font-family: var(--mono); font-size: 0.84rem;
+    overflow-x: auto; margin: 0.4rem 0; line-height: 1.55;
+  }
+  pre.term .c { color: #8B9282; }
+  pre.term .q { color: var(--console-accent); }
+
+  /* ---------- honest state ---------- */
+  .state { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; }
+  @media (max-width: 52rem) { .state { grid-template-columns: 1fr; } }
+  .state h3 {
+    font-family: var(--display); text-transform: uppercase; letter-spacing: 0.05em;
+    font-size: 0.95rem; margin: 0 0 0.8rem;
+  }
+  .state ul { margin: 0; padding: 0; list-style: none; }
+  .state li { padding: 0.5rem 0 0.5rem 1.4rem; position: relative; font-size: 0.94rem; border-bottom: 1px solid #d5d5d5; }
+  .state li:last-child { border-bottom: none; }
+  .state .works li::before { content: "+"; position: absolute; left: 0; color: var(--ok); font-weight: 700; }
+  .state .rough li::before { content: "~"; position: absolute; left: 0; color: var(--warn); font-weight: 700; }
+  .state .tagchip {
+    font-family: var(--display); font-size: 0.68rem; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--warn); border: 1px solid var(--warn);
+    border-radius: 999px; padding: 0 0.5rem; margin-left: 0.4rem; white-space: nowrap;
+  }
+
+  /* ---------- compare ---------- */
+  .tablewrap { overflow-x: auto; }
+  table.cmp { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  table.cmp th {
+    font-family: var(--display); text-transform: uppercase; letter-spacing: 0.05em;
+    font-size: 0.72rem; color: var(--muted); text-align: left;
+    padding: 0.5rem 0.9rem; border-bottom: 2px solid var(--ink);
+  }
+  table.cmp td { padding: 0.65rem 0.9rem; border-bottom: 1px solid #d5d5d5; vertical-align: top; }
+  table.cmp td:first-child { font-weight: 600; }
+  table.cmp .cat-eg { display: block; font-weight: 400; font-size: 0.78rem; color: var(--muted); margin-top: 0.2rem; white-space: normal; }
+
+  /* ---------- footer ---------- */
+  footer { border-top: 1px solid var(--line); padding: 2.5rem 0 3.5rem; font-size: 0.85rem; color: var(--muted); }
+  footer .cols { display: flex; justify-content: space-between; gap: 2rem; flex-wrap: wrap; }
+  footer .flinks { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  footer a { color: var(--muted); }
+  footer .trace { margin-top: 1.6rem; font-size: 0.76rem; max-width: 52rem; }
+  footer .built-by { display: flex; align-items: center; gap: 0.7rem; margin-top: 0.3rem; }
+  footer .apra-logo-wrap { display: inline-flex; }
+  footer .apra-logo-wrap img { display: block; width: 72px; height: auto; }
+  @media (prefers-color-scheme: dark) {
+    footer .apra-logo-wrap { background: #F8F8F8; border-radius: 10px; padding: 0.6rem 0.9rem; }
+  }
+  :root[data-theme="dark"] footer .apra-logo-wrap { background: #F8F8F8; border-radius: 10px; padding: 0.6rem 0.9rem; }
+  :root[data-theme="light"] footer .apra-logo-wrap { background: none; border-radius: 0; padding: 0; }
+</style>
+
+<div class="wrap">
+<nav>
+  <a class="brand" href="#top"><span class="tick">&gt;_</span> apra-fleet</a>
+  <div class="links">
+    <a href="https://github.com/Apra-Labs/apra-fleet">GitHub</a>
+    <a href="https://www.npmjs.com/package/@apralabs/apra-fleet">npm</a>
+    <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/fleet-sprint-getting-started.md">Getting started</a>
+    <a href="https://deepwiki.com/Apra-Labs/apra-fleet">Ask the codebase</a>
+    <a href="https://github.com/Apra-Labs/apra-fleet/discussions">Discussions</a>
+  </div>
+</nav>
+
+<div class="hero" id="top">
+  <div>
+    <p class="eyebrow">Open source -- Apache-2.0 -- v0.4.0</p>
+    <h1>Run a fleet of AI agents across <em>your</em> machines</h1>
+    <p class="sub">What Kubernetes did for containers, apra-fleet does for AI
+    agents: scheduling, credentials, isolation, and observability for an
+    agentic workforce -- on hardware you already own, mixing every LLM
+    provider at once.</p>
+    <div class="install"><span class="ps1">$</span><span>npm install -g @apralabs/apra-fleet</span></div>
+    <div class="chips">
+      <span>Windows / macOS / Linux</span>
+      <span>Node.js 22+</span>
+      <span>MCP-compatible</span>
+      <span>No paid tier -- bring your own LLM keys</span>
+    </div>
+  </div>
+  <div>
+    <div class="console-wrap">
+    <div class="console" role="img" aria-label="Three real apra-fleet moments, cycling: registering members in plain language, the resulting fleet manifest, and the command that launches a fleet-sprint run">
+      <header><span>fleet console</span><span class="live">live loop</span></header>
+      <div class="scenes">
+        <div class="scene scene-1">
+          <p class="scene-label">register members -- plain language</p>
+          <pre class="term-inline"><span class="q">"Register a local member called doer. Register
+another called reviewer. Pair them."</span></pre>
+        </div>
+        <div class="scene scene-2">
+          <p class="scene-label">fleet manifest -- 4 members registered</p>
+          <table>
+            <tr><td><span class="dot"></span><span class="name">doer-1</span></td><td>claude</td><td class="tier">standard</td><td class="model">sonnet</td></tr>
+            <tr><td><span class="dot"></span><span class="name">reviewer-1</span></td><td>claude</td><td class="tier">premium</td><td class="model">opus</td></tr>
+            <tr><td><span class="dot"></span><span class="name" title="integration-test-gpu">integration-test-gpu</span></td><td>agy</td><td class="tier">standard</td><td class="model" title="gemini-3.5-flash">gemini-3.5-flash</td></tr>
+            <tr><td><span class="dot"></span><span class="name">harvester</span></td><td>claude</td><td class="tier">standard</td><td class="model">sonnet</td></tr>
+          </table>
+        </div>
+        <div class="scene scene-3">
+          <p class="scene-label">launch a sprint</p>
+          <pre class="term-inline">apra-fleet workflow fleet-sprint \
+  --issue my-project-epic --members doer \
+  --branch fleet-sprint/first-run --base main</pre>
+        </div>
+      </div>
+    </div>
+    </div>
+    <p class="console-caption">Three real moments, not a mockup: the
+    registration wording, the manifest, and the launch command are all
+    quoted from the project README.</p>
+  </div>
+</div>
+</div>
+
+<section class="deep">
+<div class="wrap">
+  <p class="eyebrow">The problem</p>
+  <h2>One agent is a demo. Fifty is an operations problem.</h2>
+  <p class="lede">A laptop in the office, a GPU box in the lab, a few VMs, and
+  several provider subscriptions -- nobody's single-agent tool answers the
+  questions that show up next:</p>
+  <div class="qgrid">
+    <div class="q"><h3>Which machine?</h3><p>Real devices you already own --
+    registered, credentialed, health-checked members. Local or over SSH, on
+    Windows, macOS, or Linux.</p></div>
+    <div class="q"><h3>Which model?</h3><p>Claude for review, a cheap tier for
+    mechanical edits, a local model for private data -- one fleet, routed by
+    cost tier, switchable per task.</p></div>
+    <div class="q"><h3>Who watches?</h3><p>Durable workflows with watchdogs,
+    stall detection, reservations, and live dashboards. Dead agents get
+    detected; stalled work gets resumed.</p></div>
+    <div class="q"><h3>Who holds the keys?</h3><p>Secrets entered out-of-band,
+    never visible to any model. Composed, allow-listed permissions per member
+    -- not god-mode.</p></div>
+  </div>
+</div>
+</section>
+
+<section>
+<div class="wrap">
+  <p class="eyebrow">What it is</p>
+  <h2>One control plane. Any device. Any model.</h2>
+  <p class="lede">apra-fleet is an MCP server + CLI. Any MCP-capable agent --
+  Claude Code, Gemini, Codex, Copilot, OpenCode, Antigravity -- becomes the
+  orchestrator of a fleet: it registers machines as members, dispatches
+  commands and prompts to them, moves files, and brokers credentials. You
+  drive it in plain language: <em>"Register a local member called doer.
+  Register another called reviewer. Pair them."</em></p>
+  <figure class="figure">
+    <img class="img-light" src="assets/topo-light.svg" alt="apra-fleet topology: one control plane dispatching to heterogeneous member devices across providers and operating systems">
+    <img class="img-dark" src="assets/topo-dark.svg" alt="apra-fleet topology: one control plane dispatching to heterogeneous member devices across providers and operating systems">
+    <figcaption>The fleet topology, from the repository's own docs: a control
+    plane (server, workflow engine, supervisor) dispatching to members that
+    each pair a real machine with a provider CLI.</figcaption>
+  </figure>
+</div>
+</section>
+
+<section class="deep">
+<div class="wrap">
+  <p class="eyebrow">The architecture</p>
+  <h2>Six layers. Software engineering is only the top one.</h2>
+  <p class="lede">The architecture overview: layer by layer -- from OS primitives and provider CLIs up through the fleet MCP server, agent roles, and client runners. Note where the seam sits: Layer 4, apra-fleet-workflow, is a domain-agnostic engine; Layer 5, apra-fleet-se, is the software-engineering vertical built on top of it.</p>
+  <figure class="figure">
+    <img class="img-light" src="assets/stack-light.svg" alt="apra-fleet layered architecture stack: six layers from operating systems and LLM CLIs, through the fleet MCP server, agent roles, and client runners, to the generic apra-fleet-workflow engine and the apra-fleet-se software-engineering vertical on top">
+    <img class="img-dark" src="assets/stack-dark.svg" alt="apra-fleet layered architecture stack: six layers from operating systems and LLM CLIs, through the fleet MCP server, agent roles, and client runners, to the generic apra-fleet-workflow engine and the apra-fleet-se software-engineering vertical on top">
+    <figcaption>The layered stack, from the repository's own README: fleet-supervisor and fleet-sprint (Layer 5) sit on the generic workflow engine (Layer 4) -- a seam you can check. The runner executes any authored workflow directory (<a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/authoring-workflows.md">docs/authoring-workflows.md</a>) -- software engineering is just the one wired up.</figcaption>
+  </figure>
+</div>
+</section>
+
+<section>
+<div class="wrap">
+  <p class="eyebrow">Why it's different</p>
+  <h2>Built as an operations layer, not another agent framework</h2>
+  <p class="lede">Each of these is checkable in the repository -- file paths
+  included.</p>
+  <div class="diff">
+    <article>
+      <h3>Across machines and vendors</h3>
+      <p>Agent frameworks compose agents inside one process. apra-fleet's unit of execution is a <strong>member</strong>: a machine plus a provider CLI, swappable at registration. Every provider sits behind one strategy interface, which is what makes mixing Claude, Gemini, Codex, Copilot, Antigravity, and local models genuinely work.</p>
+      <span class="ref">src/providers/ -- AgentStrategy</span>
+    </article>
+    <article>
+      <h3>Explore with agents, operate with programs</h3>
+      <p>Discover a workflow with an LLM orchestrating -- flexible and
+      token-hungry. Then harden it into a deterministic program:
+      <strong>shell, git, and file steps run at zero tokens</strong>; models
+      are invoked only at judgment nodes (review this diff, plan this
+      backlog, decide this exception).</p>
+      <span class="ref">execute_command / execute_prompt -- README, docs/cost-model.md</span>
+    </article>
+    <article>
+      <h3>Durable workflows with a real ops layer</h3>
+      <p>Workflows are resumable programs with execution journals, turn
+      budgets, stall detection, crash watchdogs, member reservations, and
+      self-healing for credential auth and orphaned CLI processes -- the
+      unglamorous layer that lets <strong>multi-hour unattended runs actually
+      finish</strong>.</p>
+      <span class="ref">packages/apra-fleet-workflow/ -- src/services/orphan-recovery.ts</span>
+    </article>
+    <article>
+      <h3>Credentials no model ever sees</h3>
+      <p>Secrets are typed into a <strong>separate terminal</strong>, encrypted
+      at rest, and resolved server-side at execution time. Credentials scope to
+      members, expire on TTL, and carry per-credential network egress policy.
+      Members run with composed, provider-native, allow-listed permissions.</p>
+      <span class="ref">docs/features/oob-auth.md -- docs/architecture.md</span>
+    </article>
+  </div>
+</div>
+</section>
+
+<section class="deep">
+<div class="wrap">
+  <p class="eyebrow">The cost curve</p>
+  <h2>Pay to discover a workflow. Then run it for pennies.</h2>
+  <p class="lede">One measured example, from this repository's own e2e
+  setup-and-teardown step: four real LLM-orchestrated runs cost $0.46 to
+  $3.05 each. Hardened into a deterministic workflow, the same step now runs
+  at roughly $0 -- the model is simply no longer in the loop for mechanical
+  steps. Development tokens are not operating tokens.</p>
+  <figure class="figure">
+    <img class="img-light" src="assets/cost-light.svg" alt="Chart: cost per e2e run, four LLM-driven runs between $0.46 and $3.05, then approximately zero dollars per run after conversion to a deterministic workflow">
+    <img class="img-dark" src="assets/cost-dark.svg" alt="Chart: cost per e2e run, four LLM-driven runs between $0.46 and $3.05, then approximately zero dollars per run after conversion to a deterministic workflow">
+    <figcaption>Real measurements from the repo's own e2e step, before and
+    after hardening -- a single documented example, not a benchmark suite.</figcaption>
+  </figure>
+</div>
+</section>
+
+<section>
+<div class="wrap">
+  <p class="eyebrow">The existence proof</p>
+  <h2>This project is built by the product itself</h2>
+  <p class="lede">apra-fleet's flagship workflow, <strong>fleet-sprint</strong>,
+  develops software autonomously: plan -&gt; develop -&gt; review -&gt; deploy
+  -&gt; integration-test -&gt; harvest, in cycles, against an issue tracker.
+  It is how this codebase ships.</p>
+  <div class="rolegrid">
+    <div class="role"><p class="tag">Planner</p><p>Turns a sprint goal into a beads feature+task DAG with acceptance criteria. No structured verdict -- the DAG itself is the output.</p></div>
+    <div class="role"><p class="tag">Doer</p><p>Works an assigned list of ready task beads, committing after each. Never closes a feature or bug issue itself -- that is another role's job.</p></div>
+    <div class="role"><p class="tag">Reviewer</p><p>Reviews each commit
+    against the task's acceptance criteria; can reopen work. Never closes
+    issues either -- only reports a verdict.</p></div>
+    <div class="role"><p class="tag">Integ-Test-Runner</p><p>Runs the integration playbook, closes features and verify-set beads against real evidence, and files bugs for what fails.</p></div>
+    <div class="role"><p class="tag">Harvester</p><p>Extracts durable
+    knowledge into docs, updates the README and changelog, and defers
+    what's still low priority.</p></div>
+  </div>
+  <p class="role-note">Each role is a separate dispatch, and each dispatch
+  can land on a different provider -- in the manifest above, <code>doer-1</code>
+  runs on Sonnet (claude), <code>integration-test-gpu</code> on Antigravity
+  (agy), <code>reviewer-1</code> on Opus (claude). That's not incidental:
+  <strong>cross-provider review is a quality mechanism</strong> -- a
+  different model, with different blind spots, checks every change (README,
+  "Any model"). Role definitions live at
+  <code>packages/apra-fleet-se/apra-pm/agents/&lt;role&gt;.md</code>.</p>
+  <figure class="figure">
+    <img src="assets/dashboard-demo.gif" alt="apra-fleet fleet-sprint dashboard, real recording: the sprint's own integration tester finds two real bugs, files them against itself, then a second cycle plans, fixes, and closes them -- captions burned in">
+    <figcaption>The fleet-sprint dashboard during a real autonomous run,
+    captured live: the sprint's own integration tester finds two real bugs,
+    files them against itself, and a second cycle plans, fixes, and closes
+    them. Captions are burned into the recording.</figcaption>
+  </figure>
+  <div class="stats">
+    <div class="stat"><div class="n">2,300+</div><div class="l">unit tests in the codebase the fleet maintains</div></div>
+    <div class="stat"><div class="n">81</div><div class="l">files in the integration suite run against real backends</div></div>
+    <div class="stat"><div class="n">6</div><div class="l">provider CLIs: Claude, Gemini, Codex, Copilot, Antigravity, OpenCode (local models)</div></div>
+  </div>
+</div>
+</section>
+
+<section class="deep">
+<div class="wrap">
+  <p class="eyebrow">Quickstart</p>
+  <h2>Five minutes to a working fleet</h2>
+  <div class="steps">
+    <div class="step"><div>
+      <h3>Install</h3>
+      <p>Via npm (Node.js 22+), or grab the standalone installer for your
+      platform from <a href="https://github.com/Apra-Labs/apra-fleet/releases">Releases</a>.</p>
+      <pre class="term">npm install -g @apralabs/apra-fleet
+apra-fleet
+cd ~/.apra-fleet/bin && apra-fleet start</pre>
+    </div></div>
+    <div class="step"><div>
+      <h3>Connect your agent</h3>
+      <p>Load the fleet server in Claude Code with <code>/mcp</code>. Your
+      agent now has a fleet.</p>
+    </div></div>
+    <div class="step"><div>
+      <h3>Register members -- in plain language</h3>
+      <pre class="term"><span class="q">"Register a local member called doer. Register another
+ called reviewer. Pair them."</span>
+<span class="q">"Register 192.168.1.10 as build-server. Username joe,
+ work folder /home/joe/projects/myapp."</span></pre>
+      <p>Remote passwords are collected out-of-band -- typed into a separate
+      terminal, used once to set up SSH keys, then forgotten.</p>
+    </div></div>
+    <div class="step"><div>
+      <h3>Run a workflow</h3>
+      <pre class="term">apra-fleet workflow hello-world
+apra-fleet workflow fleet-sprint \
+  --issue my-project-epic --members doer \
+  --branch fleet-sprint/first-run --base main</pre>
+      <p>Open the dashboard and watch the fleet plan, build, review, test,
+      and ship in a loop. New to fleet-sprint? Start with the
+      <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/fleet-sprint-getting-started.md">plain-English
+      getting-started guide</a>.</p>
+    </div></div>
+  </div>
+  <p class="role-note" style="border-top: 1px solid var(--line); padding-top: 1.2rem; margin-top: 1.8rem;">
+  This walkthrough uses Claude Code, but the same install and workflow
+  commands work with any supported provider. For Antigravity/AGY:
+  <code>apra-fleet --llm agy</code>, then restart Antigravity to load the
+  fleet MCP server. For OpenCode: <code>apra-fleet --llm opencode</code>.
+  Codex, Copilot, and Gemini are also supported -- see
+  <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/install.md">docs/install.md</a>
+  for the full provider list.</p>
+</div>
+</section>
+
+<section>
+<div class="wrap">
+  <p class="eyebrow">Current state -- v0.4.0</p>
+  <h2>What works today, and what's still rough</h2>
+  <p class="lede">An honest status page beats a surprised user. This list
+  comes from the v0.4.0 release notes, unedited in substance.</p>
+  <div class="state">
+    <div class="works">
+      <h3>Daily-driver solid</h3>
+      <ul>
+        <li>Registering and operating a mixed-provider fleet, local and over SSH, on Windows / macOS / Linux</li>
+        <li>Single autonomous fleet-sprint runs -- multi-hour, unattended, with stall detection and crash recovery; this is how the project builds itself</li>
+        <li>Out-of-band credentials, {{secure.NAME}} substitution, composed per-member permissions</li>
+        <li>npm install works end to end; standalone installer binaries for each platform</li>
+        <li>Tier-based cost routing and cross-provider review</li>
+      </ul>
+    </div>
+    <div class="rough">
+      <h3>Preview / early -- treat accordingly</h3>
+      <ul>
+        <li>Multi-sprint supervisor dashboard <span class="tagchip">preview</span> -- runs concurrent sprints with reservations, but its end-to-end smoke test has not yet passed cleanly</li>
+        <li>Hub-spoke cloud mode (<code>apra-fleet join</code> / <code>spoke</code>) <span class="tagchip">groundwork</span> -- API contract and identity model landed; not yet usable end-to-end</li>
+        <li>Default install expects the <code>claude</code> CLI to be on PATH -- install Claude Code first, or pass <code>--llm</code> / <code>--transport http</code></li>
+      </ul>
+    </div>
+  </div>
+</div>
+</section>
+
+<section class="deep">
+<div class="wrap">
+  <p class="eyebrow">Positioning</p>
+  <h2>Compare to alternatives</h2>
+  <div class="tablewrap">
+  <table class="cmp">
+    <tr><th>Category</th><th>Overlap</th><th>Where apra-fleet differs</th></tr>
+    <tr>
+      <td>AI pair programmers<span class="cat-eg">e.g. Cursor, Windsurf</span></td>
+      <td>AI writes code</td>
+      <td>A fleet adds agents that review, test, and deploy each other's work -- across vendors.</td>
+    </tr>
+    <tr>
+      <td>CI self-hosted runners<span class="cat-eg">e.g. GitHub Actions self-hosted runners, Jenkins agents</span></td>
+      <td>Runs work on other machines</td>
+      <td>Conversational and stateful, not pipeline-triggered; agents carry context between phases.</td>
+    </tr>
+    <tr>
+      <td>Multi-machine compute schedulers<span class="cat-eg">e.g. SkyPilot, dstack</span></td>
+      <td>Multi-machine compute</td>
+      <td>Coordinates agents and their context, credentials, and permissions -- not just jobs.</td>
+    </tr>
+    <tr>
+      <td>Agent-to-agent protocols<span class="cat-eg">e.g. Google A2A</span></td>
+      <td>Agent-to-agent messaging</td>
+      <td>An opinionated orchestration and operations layer, not just a transport.</td>
+    </tr>
+    <tr>
+      <td>Multi-agent orchestration frameworks<span class="cat-eg">e.g. LangGraph, CrewAI, AutoGen</span></td>
+      <td>Multi-agent logic</td>
+      <td>Those compose agents inside one process; apra-fleet operates agents across real machines, providers, and days-long workflows.</td>
+    </tr>
+  </table>
+  </div>
+  <p class="lede" style="margin-top:1.5rem">The "Overlap" and "Where apra-fleet differs" text is quoted from the project README's own comparison table; the category labels are generalized restatements, and the example tools per category are common, widely-known names for orientation, not a repo claim about those specific products.</p>
+  <p class="lede" style="margin-top:1rem">Who is it for? Developers already
+  paying for more than one AI subscription who want them working as one team;
+  teams with idle real hardware; anyone whose agent runs are long enough to
+  need babysitting; anyone who won't paste credentials into a model chat.
+  When <em>not</em> to use it: a one-off single-file change needs no fleet.</p>
+</div>
+</section>
+
+<footer>
+<div class="wrap">
+  <div class="cols">
+    <div>
+      <strong style="color:var(--ink); font-family:var(--display); letter-spacing:0.04em;">&gt;_ apra-fleet</strong><br>
+      Apache-2.0 -- built by <a href="https://github.com/Apra-Labs">Apra Labs</a>, and by itself.
+      <div class="built-by">
+        <a class="apra-logo-wrap" href="https://github.com/Apra-Labs">
+          <img src="assets/apralabs-logo.png" alt="Apra Labs" width="113" height="77">
+        </a>
+      </div>
+    </div>
+    <div class="flinks">
+      <a href="https://github.com/Apra-Labs/apra-fleet">GitHub</a>
+      <a href="https://www.npmjs.com/package/@apralabs/apra-fleet">npm</a>
+      <a href="https://github.com/Apra-Labs/apra-fleet/releases">Releases</a>
+      <a href="https://github.com/Apra-Labs/apra-fleet/issues">Issues</a>
+      <a href="https://github.com/Apra-Labs/apra-fleet/discussions">Discussions</a>
+      <a href="https://deepwiki.com/Apra-Labs/apra-fleet">DeepWiki</a>
+    </div>
+  </div>
+  <p class="trace">Every claim on this page traces to the repository's
+  <code>main</code> branch at v0.4.0 -- README, release notes, docs, and
+  source. The dashboard imagery is from real runs; the cost figures are a
+  single measured example, not a benchmark; and the preview labels above are
+  the project's own.</p>
+</div>
+</footer>

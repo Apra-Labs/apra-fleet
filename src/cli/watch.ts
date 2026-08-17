@@ -18,7 +18,10 @@ import {
   readRecentActivity,
   type RecentActivity,
 } from '../services/watch/fleet-log.js';
-import { escapeShellArg } from '../utils/shell-escape.js';
+import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
+import { getMemberPathContext } from '../services/member-home.js';
+import { getAgentOS } from '../utils/agent-helpers.js';
+import type { RemoteOS } from '../utils/platform.js';
 import type { Agent } from '../types.js';
 
 const ACTIVE_WINDOW_MS = 90_000; // a member is "active" if it produced activity within this window
@@ -41,8 +44,9 @@ const useColor = (): boolean => process.stdout.isTTY === true && !process.env.NO
 //   2. Provider transcript (local members) -- the LLM session's rich
 //      reasoning/edits/output, tailed per local member from the local FS.
 //   3. Remote provider transcript (remote Claude members) -- the same rich
-//      session detail, streamed over a dedicated long-lived `tail -F` SSH
-//      channel since the .jsonl lives on the member's own disk (ensureRemoteTail).
+//      session detail, streamed over a dedicated long-lived follow channel
+//      (`tail -F` on POSIX, `Get-Content -Wait` on Windows) since the .jsonl
+//      lives on the member's own disk (ensureRemoteTail).
 // ---------------------------------------------------------------------------
 
 interface Follower {
@@ -387,11 +391,70 @@ function pumpTranscript(f: Follower, single: boolean, tailN: number, verbose: bo
 }
 
 /**
- * Build the `tail -F` command for a remote transcript file. `file` is untrusted
- * (it comes from `ls -t` on the member's disk), so it is shell-escaped before
- * interpolation. `startFlag` is caller-controlled (`-n0` / `-n +1`).
+ * Build the newest-transcript listing command for a remote member (apra-fleet-
+ * ot2z.3). `dir` is the member-side .claude/projects/<enc> directory, ALREADY
+ * concrete for Windows (see ensureRemoteTail: the member's home directory is
+ * resolved in JS via getMemberPathContext, mirroring member-home.ts's
+ * probeCommandFor pattern) -- a member command must never carry a bare
+ * `$HOME`/`~` for a Windows member, since PowerShell parses `$HOME/...` as
+ * `$HOME` followed by a `/` operator and dies with a ParserError.
+ *
+ *  - POSIX: byte-identical to the pre-ot2z.3 string.
+ *  - Windows: PowerShell, launched EXPLICITLY via `powershell -NoProfile
+ *    -Command "..."` (member-home.ts's probe prefix), because a Windows
+ *    member's default SSH exec shell is NOT guaranteed to be PowerShell and
+ *    execCommand/execStream hand this string to that shell unwrapped.
+ *    `-NoProfile` also keeps a chatty user profile out of stdout.
+ *    `-ErrorAction SilentlyContinue` is the `2>/dev/null` equivalent: a project
+ *    directory that does not exist yet must yield empty stdout, not an error.
  */
-export function buildTailCommand(startFlag: string, file: string): string {
+export function buildNewestTranscriptCommand(targetOs: RemoteOS, dir: string): string {
+  if (targetOs === 'windows') {
+    // The path goes in as a single-quoted PowerShell literal (quote-doubling
+    // escape), so a directory name containing a quote or a space cannot break
+    // out of the argument. The outer double quotes are stripped as real quoting
+    // by both cmd.exe and PowerShell; `|` and spaces inside them are inert.
+    // (A literal `$` in the path could still be expanded if -- and only if --
+    // the member's exec shell is itself PowerShell; Claude project dirs are
+    // `[^a-zA-Z0-9] -> '-'` encoded (encodeClaudeProjectDir), so the only
+    // possible source is the probed home directory, which is a real profile
+    // path.)
+    return `powershell -NoProfile -Command "${
+      `Get-ChildItem -LiteralPath ${escapePowerShellArg(dir)} -Filter *.jsonl -File -ErrorAction SilentlyContinue ` +
+      `| Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName`
+    }"`;
+  }
+  return `ls -t "${dir}"/*.jsonl 2>/dev/null | head -1`;
+}
+
+/**
+ * Build the follow-the-transcript command for a remote transcript file. `file`
+ * is untrusted (it comes from a listing on the member's disk), so it is escaped
+ * for the target shell before interpolation on BOTH branches. `startFlag` is
+ * caller-controlled (`-n0` = start at EOF, `-n +1` = start from the top).
+ *
+ * `targetOs` defaults to POSIX so the linux/darwin string -- and every existing
+ * caller/test -- is byte-identical to the pre-ot2z.3 behavior. On Windows there
+ * is no `tail`, so the equivalent is `Get-Content -Wait` under the same
+ * `powershell -NoProfile -Command` prefix used above:
+ *   - `-n0`   -> `-Tail 0`, i.e. follow from the end, emitting no history
+ *                (`-Tail 0` is accepted and selects zero existing lines, which
+ *                is the exact `-n0` equivalent);
+ *   - `-n +1` -> no `-Tail`, i.e. emit the whole file first, then follow.
+ * `-Encoding UTF8` because the transcript is UTF-8 JSON and Windows
+ * PowerShell 5.1 would otherwise read it as ANSI.
+ * Note the consumer contract: PowerShell writes CRLF, so the chunk splitter
+ * (splitTranscriptChunk) must tolerate `\r\n` -- not just `\n`.
+ */
+export function buildTailCommand(startFlag: string, file: string, targetOs: RemoteOS = 'linux'): string {
+  if (targetOs === 'windows') {
+    // '-n +1' is the only "from the top" start position this module emits; any
+    // other flag means "from the end" (today's `-n0` prime).
+    const fromTop = startFlag.includes('+1');
+    return `powershell -NoProfile -Command "${
+      `Get-Content -LiteralPath ${escapePowerShellArg(file)} -Encoding UTF8 -Wait${fromTop ? '' : ' -Tail 0'}`
+    }"`;
+  }
   return `tail ${startFlag} -F ${escapeShellArg(file)}`;
 }
 
@@ -400,21 +463,41 @@ export function buildTailCommand(startFlag: string, file: string): string {
 // (the tail streams that on its own). Rotations are rare, so this stays light.
 const RT_CHECK_EVERY_TICKS = 5;
 
+/**
+ * Split a streamed transcript chunk into complete lines plus the trailing
+ * partial line to carry into the next chunk. Pure + exported so the Windows
+ * consumer contract can be asserted directly (apra-fleet-ot2z.3/.5).
+ *
+ * Splits on /\r?\n/, NOT '\n': a Windows member is followed with PowerShell's
+ * `Get-Content -Wait`, which emits CRLF. Lines are trimmed so a lone `\r` left
+ * at a chunk boundary never reaches the JSON parser. A chunk that ends exactly
+ * on the `\r` of a `\r\n` pair is handled too -- the CR stays in `leftover` and
+ * rejoins its `\n` on the next chunk.
+ */
+export function splitTranscriptChunk(leftover: string, chunk: string): { lines: string[]; leftover: string } {
+  const parts = (leftover + chunk).split(/\r?\n/);
+  const rest = parts.pop() ?? '';
+  return { lines: parts.map((l) => l.trim()), leftover: rest };
+}
+
 /** Feed a chunk of tailed transcript bytes out as formatted lines, keeping any trailing partial line. */
 function processRemoteChunk(f: Follower, chunk: string, single: boolean, verbose: boolean): void {
-  const parts = (f.rtLeftover + chunk).split('\n');
-  f.rtLeftover = parts.pop() ?? '';
-  for (const line of parts) {
+  const { lines, leftover } = splitTranscriptChunk(f.rtLeftover, chunk);
+  f.rtLeftover = leftover;
+  for (const line of lines) {
     for (const ev of formatTranscriptLine(f.provider, line, verbose)) emit(f, ev, single);
   }
 }
 
 /**
- * Ensure a remote Claude member has a live `tail -F` channel on its newest
- * session transcript. The transcript .jsonl lives on the member's own disk, so
- * we stream it over a dedicated long-lived SSH channel (push, not poll). This
- * runs once at startup and then only periodically -- just to (re)open a channel
- * that died or to follow a session rotation. A cheap `ls` finds the newest file:
+ * Ensure a remote Claude member has a live follow channel on its newest session
+ * transcript. The transcript .jsonl lives on the member's own disk, so we stream
+ * it over a dedicated long-lived SSH channel (push, not poll). This runs once at
+ * startup and then only periodically -- just to (re)open a channel that died or
+ * to follow a session rotation. Every member-bound string here is built per the
+ * member's OS (apra-fleet-ot2z.3): POSIX gets today's exact `ls -t`/`tail -F`
+ * strings, Windows gets the PowerShell equivalents against a JS-resolved home
+ * directory. A cheap listing finds the newest file:
  *   - first open primes to EOF (`-n0`) so no history is dumped;
  *   - a rotation opens the new session from its top (`-n +1`) so nothing is missed.
  * Fails soft: connect/exec errors leave rtStream null and the next check retries.
@@ -423,9 +506,33 @@ async function ensureRemoteTail(f: Follower, single: boolean, verbose: boolean):
   if (!f.rtEnc || f.rtBusy) return;
   f.rtBusy = true;
   try {
-    const dir = `"$HOME/.claude/projects/${f.rtEnc}"`;
-    const res = await execCommand(f.agent, `ls -t ${dir}/*.jsonl 2>/dev/null | head -1`, 8000);
-    const newest = res.stdout.trim().split('\n')[0]?.trim();
+    const targetOs = getAgentOS(f.agent);
+    let dir: string;
+    if (targetOs === 'windows') {
+      // Resolve the member's home in JS and interpolate the CONCRETE path --
+      // never `$HOME`/`~`, which PowerShell cannot parse (apra-fleet-ot2z).
+      // getMemberPathContext probes once and caches; a null home means "not
+      // known yet" (member asleep, probe failed), so skip this round and let
+      // the next periodic check retry rather than guessing the hub's home.
+      // NOTE: `homeDir` may be a `username-fallback` GUESS (C:\Users\<user>)
+      // rather than a probe result. That is safe here: a wrong guess simply
+      // lists an empty/absent directory, which fails soft to "no transcript
+      // yet" and is retried on the next periodic check -- it is never treated
+      // as authoritative, and the hub's own home is never substituted.
+      const { homeDir } = await getMemberPathContext(f.agent);
+      if (!homeDir) return;
+      dir = `${homeDir.replace(/[\\/]+$/, '')}\\.claude\\projects\\${f.rtEnc}`;
+    } else {
+      dir = `$HOME/.claude/projects/${f.rtEnc}`;
+    }
+    const res = await execCommand(f.agent, buildNewestTranscriptCommand(targetOs, dir), 8000);
+    // Windows: take the LAST non-empty line. `-NoProfile` should already keep
+    // profile/banner noise out, but if any leaks it is emitted BEFORE the
+    // command's own output, never after it -- the same defensive rule
+    // member-home.ts's home-dir probe uses. POSIX keeps today's first-line
+    // behavior (`ls -t | head -1` prints exactly one path).
+    const lines = res.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const newest = targetOs === 'windows' ? lines[lines.length - 1] : lines[0];
     if (!newest) return;
     if (f.rtStream && newest === f.rtFile) return; // already tailing the current session
 
@@ -439,7 +546,7 @@ async function ensureRemoteTail(f: Follower, single: boolean, verbose: boolean):
     const onEnd = () => { if (f.rtStream === stream) f.rtStream = null; }; // channel died -> next check reopens
     stream = await execStream(
       f.agent,
-      buildTailCommand(startFlag, newest),
+      buildTailCommand(startFlag, newest, targetOs),
       (chunk) => processRemoteChunk(f, chunk, single, verbose),
       onEnd,
     );
