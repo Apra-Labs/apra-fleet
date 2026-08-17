@@ -396,7 +396,7 @@ describe('preflightCheck', () => {
     expect(result.ok).toBe(true);
     expect(mockLogLineFn).toHaveBeenCalledWith(
       'preflight',
-      expect.stringContaining('OAuth freshness check not implemented for provider gemini'),
+      expect.stringContaining('OAuth file present but unparseable for provider gemini'),
       agent,
     );
   });

@@ -302,7 +302,13 @@ async function ensureAgentFilesProvisioned(agent: Agent): Promise<void> {
 // (d) AbortSignal/MCP client cancellation -> abortHandler kills PID, execCommand resolves, finally clears
 // (e) stale session retry -> retried without session ID; finally clears on success or failure
 // (f) server overload retry -> retried after delay; finally clears on success or failure
-// (g) early returns before inFlightAgents.add: busy state never entered
+// (g) early returns before inFlightAgents.add (busy-rejection, reservation
+//     conflict, no-LLM member): busy state never entered
+// (h) preflight-check failure: the lock IS entered (claimed just before the
+//     preflight await, to close the busy-check-to-lock-claim race window) but
+//     this return happens before the interactive/subprocess split's own
+//     add+finally cleanup, so it releases the lock explicitly inline instead
+//     of relying on a finally block
 
 /**
  * apra-fleet-idb: liveness probe for a busy-locked member's backing process.
@@ -573,6 +579,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     return `[FAIL] "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
   }
 
+  // Claim the busy lock BEFORE the preflight await, not after (as it
+  // originally was further below at the interactive/subprocess split).
+  // preflightCheck can take up to ~30s on a cache miss; leaving the busy-check
+  // (line ~546) and the lock claim ~150 lines apart left a window where two
+  // near-simultaneous dispatches to the same member could both pass the busy
+  // check (neither had claimed the lock yet), both await preflight, and both
+  // proceed to double-dispatch. Every return path from here to the
+  // interactive/subprocess split below (currently only the preflight-failure
+  // return immediately following) must release this lock explicitly, since
+  // it now returns AFTER the lock is claimed instead of before.
+  inFlightAgents.add(agent.id);
+
   // Peek at session state early so the preflight check can skip interactive
   // members whose dispatch routes through a live MCP push channel, not SSH.
   const earlyWorkspaceId = getTokenIssuer().workspaceId();
@@ -599,6 +617,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         : preflight.code === 'auth_expired' ? 'preflight_auth_expired'
         : preflight.code === 'auth_missing' ? 'preflight_auth_missing'
         : 'dispatch_failed';
+      // Release the lock claimed above -- this return happens before the
+      // interactive/subprocess split's own add+finally cleanup ever runs.
+      inFlightAgents.delete(agent.id);
       return {
         text: `[FAIL] Pre-dispatch check failed for "${agent.friendlyName}": ${preflight.reason}`,
         structuredContent: {
@@ -704,7 +725,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     interactiveSession = undefined;
   }
   if (interactiveSession?.server) {
-    inFlightAgents.add(agent.id);
+    // Lock already claimed above, before the preflight await -- do not
+    // re-add here (Set.add would be a harmless no-op, but keeping a second
+    // add site invites the lock and its release to drift out of sync).
     writeStatusline(new Map([[agent.id, 'busy']]));
     try {
       return await executePromptInteractive(agent, renderedPrompt, input, workspaceId, heuristicWarningSuffix);
@@ -714,7 +737,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   }
 
-  inFlightAgents.add(agent.id);
+  // Lock already claimed above, before the preflight await.
 
   await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();

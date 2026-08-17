@@ -53,9 +53,12 @@ const CACHE_TTL_MS = 60_000; // 1 minute
 const preflightCache = new Map<string, { passedAt: number }>();
 
 /** R2-F8: hard cap on cache size. When exceeded, the oldest entries (by
- *  passedAt) are evicted down to 80% of the cap. A fleet with 500 members
- *  running back-to-back dispatches would otherwise grow the Map unboundedly
- *  (entries only expire passively on lookup, never proactively). */
+ *  passedAt) are evicted down to 80% of the cap. Caps ENTRIES, not members --
+ *  each member can occupy up to 2 keys (":conn" from execute-command's
+ *  skipAuth calls, ":full" from execute-prompt's default calls), so a fleet
+ *  with mixed execute_command/execute_prompt usage hits this cap around
+ *  ~250 active members, not 500. Entries only expire passively on lookup,
+ *  never proactively, so this bound is still needed regardless. */
 const CACHE_MAX_SIZE = 500;
 
 function evictOldestEntries(): void {
@@ -90,6 +93,12 @@ export async function preflightCheck(
   agent: Agent,
   options?: { skipCache?: boolean; skipAuth?: boolean },
 ): Promise<PreflightResult> {
+  // Kill-switch: unconditionally pass without probing. Lets the gate be
+  // disabled fleet-wide without a code revert if it misbehaves in production.
+  if (process.env.APRA_FLEET_PREFLIGHT === '0') {
+    return { ok: true, connectivity: true, authValid: true };
+  }
+
   // Local members share this machine's credentials -- no remote check needed
   if (agent.agentType === 'local') {
     return { ok: true, connectivity: true, authValid: true };
@@ -123,7 +132,7 @@ export async function preflightCheck(
     const conn = await Promise.race([
       connPromise,
       new Promise<never>((_, reject) => {
-        connectivityTimer = setTimeout(() => reject(new Error('preflight connectivity timeout (10s)')), 10_000);
+        connectivityTimer = setTimeout(() => reject(new Error('preflight connectivity timeout (30s)')), 30_000);
       }),
     ]);
     clearTimeout(connectivityTimer);
@@ -253,13 +262,49 @@ export async function preflightCheck(
         }
         // expired-refreshable is OK -- the CLI will auto-refresh
         // near-expiry is OK -- still valid
-      } else if (provider.name !== 'claude') {
-        logLine('preflight', `OAuth freshness check not implemented for provider ${provider.name}, skipping`, agent);
+      } else {
+        // cs === null means either a non-Claude provider (freshness check not
+        // implemented for it) OR a malformed/unparseable Claude credential file
+        // (JSON parse failure, missing claudeAiOauth.expiresAt). Both cases
+        // must log and skip explicitly rather than silently falling through to
+        // "all checks passed" -- a corrupted Claude credential file would
+        // otherwise report ok:true and only fail on the real dispatch.
+        logLine('preflight', `OAuth file present but unparseable for provider ${provider.name}, skipping freshness check`, agent);
       }
     }
   }
 
   if (!oauthFilePresent && !apiKeyPresent) {
+    // Distinguish "we asked and confirmed no credentials exist" from "every
+    // probe we attempted errored out (SSH hiccup, transient exec failure) and
+    // we genuinely don't know." Only count probes that were actually
+    // attempted (a provider with no oauthCredentialFiles/authEnvVars never
+    // issues that probe at all -- that's not a failure, there's nothing to
+    // check). If every attempted probe errored, reporting auth_missing would
+    // be a false positive that (a) gets classified non-retryable and (b)
+    // triggers auth self-heal on a member whose credentials may be fine --
+    // the exact failure mode this feature exists to prevent, inverted.
+    const oauthAttempted = !!(oauthFiles && oauthFiles.length > 0);
+    const oauthProbeErrored = oauthAttempted && oauthResult === null;
+    const apiKeyAttempted = authEnvVars.length > 0;
+    const apiKeyProbesErrored = apiKeyAttempted && apiKeyResults.every(r => r === null);
+    const anyProbeAttempted = oauthAttempted || apiKeyAttempted;
+    const allAttemptedProbesErrored =
+      (!oauthAttempted || oauthProbeErrored) && (!apiKeyAttempted || apiKeyProbesErrored);
+
+    if (anyProbeAttempted && allAttemptedProbesErrored) {
+      logLine('preflight', `INDETERMINATE auth: all attempted probes errored (oauth attempted=${oauthAttempted}, apikey attempted=${apiKeyAttempted}) -- failing open`, agent);
+      // Fail open rather than cache: we have no positive evidence either way,
+      // so force a recheck on the next dispatch instead of caching a guess.
+      return {
+        ok: true,
+        connectivity: true,
+        authValid: true,
+        reason: `Preflight auth probes failed to execute on "${agent.friendlyName}" (transient?) -- proceeding without a definitive verdict.`,
+        latencyMs,
+      };
+    }
+
     logLine('preflight', `FAIL auth: no credentials found (oauth=${oauthFilePresent}, apikey=${apiKeyPresent})`, agent);
     return {
       ok: false,

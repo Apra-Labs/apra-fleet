@@ -2464,5 +2464,45 @@ describe('executePrompt -- preflight reason code mapping', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('claims the busy lock before the preflight await, so a second near-simultaneous dispatch to the same member is rejected as busy instead of racing past the busy check', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-race-member' });
+    addAgent(member);
+
+    let resolvePreflight: (value: unknown) => void = () => {};
+    const pendingPreflight = new Promise((resolve) => { resolvePreflight = resolve; });
+    mockPreflightCheck.mockReturnValueOnce(pendingPreflight as any);
+    mockExecCommand.mockResolvedValue({ stdout: '{"is_error": false, "result": "done"}', stderr: '', code: 0 });
+
+    // Fire the first dispatch but do not await it yet.
+    const firstDispatch = executePrompt({ member_id: member.id, prompt: 'task-1', resume: false, timeout_s: 5 });
+
+    // Drain microtasks until the first call has actually reached (and is
+    // blocked inside) the preflight await -- this is the exact window the
+    // fix closes: inFlightAgents.add() must have already run by this point.
+    for (let i = 0; i < 20 && mockPreflightCheck.mock.calls.length < 1; i++) {
+      await Promise.resolve();
+    }
+    expect(mockPreflightCheck).toHaveBeenCalledTimes(1);
+    expect(inFlightAgents.has(member.id)).toBe(true);
+
+    // Second near-simultaneous dispatch to the SAME member while the first
+    // is still awaiting preflight. Before the fix, both calls would pass the
+    // busy check (neither had claimed the lock yet) and double-dispatch.
+    const secondDispatch = executePrompt({ member_id: member.id, prompt: 'task-2', resume: false, timeout_s: 5 });
+
+    resolvePreflight({ ok: true, connectivity: true, authValid: true, latencyMs: 1 });
+
+    const [firstResult, secondResult] = await Promise.all([firstDispatch, secondDispatch]);
+
+    expect(secondResult.structuredContent?.reason).toBe('busy');
+    expect(resultText(secondResult)).toContain('already running');
+    expect(firstResult.structuredContent?.reason ?? '').not.toBe('busy');
+    expect(firstResult.structuredContent?.reason ?? '').not.toMatch(/^preflight_/);
+    // preflightCheck itself was only ever invoked once -- the second dispatch
+    // never got far enough to call it at all, confirming no double-dispatch.
+    expect(mockPreflightCheck).toHaveBeenCalledTimes(1);
+    expect(inFlightAgents.has(member.id)).toBe(false);
+  });
 });
 

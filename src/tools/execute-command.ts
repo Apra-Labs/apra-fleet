@@ -154,11 +154,20 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   if (agent.agentType !== 'local') {
     const preflight = await preflightCheck(agent, { skipAuth: true });
     if (!preflight.ok) {
+      // Reuse the same preflight.code-to-reason mapping execute-prompt.ts uses,
+      // so errors.mjs's classifiers (isNonRetryableDispatchError,
+      // isAuthDispatchError, INFRA_DISPATCH_REASONS) recognize execute_command
+      // preflight failures the same way they recognize execute_prompt ones,
+      // instead of falling through unclassified as the generic 'preflight_failed'.
+      const preflightReason = preflight.code === 'offline' ? 'preflight_offline'
+        : preflight.code === 'auth_expired' ? 'preflight_auth_expired'
+        : preflight.code === 'auth_missing' ? 'preflight_auth_missing'
+        : 'preflight_offline';
       return {
         text: `[FAIL] Pre-dispatch check failed for "${agent.friendlyName}": ${preflight.reason}`,
         structuredContent: {
           isError: true,
-          reason: 'preflight_failed',
+          reason: preflightReason,
           exitCode: -1,
           stdout: '',
           stderr: preflight.reason ?? 'preflight check failed',

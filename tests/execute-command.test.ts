@@ -148,7 +148,7 @@ describe('executeCommand', () => {
     expect(text).toContain('offline-member');
     expect(structuredContent).toBeDefined();
     expect(structuredContent!.isError).toBe(true);
-    expect(structuredContent!.reason).toBe('preflight_failed');
+    expect(structuredContent!.reason).toBe('preflight_offline');
     expect(structuredContent!.exitCode).toBe(-1);
   });
 });
