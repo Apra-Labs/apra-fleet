@@ -35,13 +35,21 @@ function appendTextBlock(result: unknown, text: string): unknown {
 // result is returned unchanged (no block at all). Any KB read error is
 // swallowed -- this never fails the call, and error results from the
 // provider are passed through untouched (do not enrich error results).
-export async function enrichContextWithKb(name: string, result: unknown, repoPath?: string): Promise<unknown> {
+export async function enrichContextWithKb(
+  name: string,
+  result: unknown,
+  repoPath?: string,
+  remoteUrl?: string,
+): Promise<unknown> {
   if (isErrorResult(result)) return result;
 
   try {
     // Enrich from the KB of the repo the code_context call is about; without
-    // this the server's cwd decides, and one repo's knowledge annotates another's symbols.
-    const providers = await getKbProviders(repoPath);
+    // this the server's cwd decides, and one repo's knowledge annotates
+    // another's symbols. remoteUrl (repo_remote_url on the code_context
+    // input) lets a remote member's call resolve the correct project KB even
+    // when repoPath is a path on another host that this process cannot stat.
+    const providers = await getKbProviders(repoPath, remoteUrl);
     const kbResult = await providers.project.query({
       query: name,
       l1_only: true,

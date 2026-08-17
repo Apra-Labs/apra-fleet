@@ -316,6 +316,16 @@ function maybeAutoCommitBible(
 }
 
 export async function kbExport(input: KbExportInput): Promise<string> {
+  // apra-fleet-b4g.7: this is the third resolveRepoPath site, and it stays a
+  // hard failure rather than adopting kb_session_prime/kb_stats' pass-verbatim
+  // rule. Those two only READ through the anchor, so an unreachable remote path
+  // can be carried honestly and suppressed by SqliteProvider.anchorIsMissing().
+  // kb_export WRITES <repo_path>/.fleet/kb-canonical.json and git-commits it, so
+  // an unreachable path has no meaningful behaviour left -- it must not proceed.
+  // What matters for the shared anchor policy is that it never degrades to the
+  // fleet server's process.cwd(): a supplied-but-invalid repo_path throws here,
+  // before getKbProviders is reached, so no provider is ever anchored at the
+  // server's own working directory (pinned in kb-anchor-never-cwd.test.ts).
   const repoPath = resolveRepoPath(input.repo_path);
   const scope = input.scope ?? 'project';
 

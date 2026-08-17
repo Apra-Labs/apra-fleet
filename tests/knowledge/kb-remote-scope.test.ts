@@ -59,6 +59,42 @@ describe('resolveProjectSlug: nonexistent path + remote URL', () => {
     const httpsSlug = resolveProjectSlug(fakePath, `https://github.com/Apra-Labs/apra-fleet-${tok}.git`);
     expect(httpsSlug).toBe(sshSlug);
   });
+
+  // apra-fleet-b4g.9: project-slug.ts:5-8 guards the remote-URL short-circuit
+  // with `if (remoteUrl && remoteUrl.trim()) { const slug = slugify(remoteUrl);
+  // if (slug) return slug; }` so a malformed remote_url degrades to local-path
+  // derivation instead of ever producing an empty slug (which would name a
+  // directory under FLEET_DIR/knowledge/). Pin both fallthrough paths against
+  // a real clone.
+  // NOTE on mutation coverage: this case is an input-level behaviour pin, not
+  // a mutation pin. The `.trim()` sub-check in
+  // `if (remoteUrl && remoteUrl.trim())` is behaviorally redundant given the
+  // inner `if (slug) return slug` guard below it -- any whitespace-only
+  // string survives `remoteUrl &&` (it is truthy) but slugify() reduces it to
+  // '' regardless, so the inner guard alone already catches it. Relaxing the
+  // outer check to `if (remoteUrl)` leaves this whole file green; only the
+  // inner guard (pinned by the empty-slug case right below) is actually
+  // mutation-detectable. Do not re-file this as an untested branch.
+  it('a whitespace-only remote_url (caught by the .trim() guard) falls through to local-path derivation, never yielding an empty slug', () => {
+    const remoteUrl = `git@github.com:acme/whitespace-fallthrough-${tok}.git`;
+    const localClone = makeRepo(tmp, 'whitespace-fallthrough', remoteUrl);
+
+    const slug = resolveProjectSlug(localClone, '   ');
+    expect(slug).toBe(`githubcom-acme-whitespace-fallthrough-${tok}`);
+    expect(slug).not.toBe('');
+  });
+
+  it('a remote_url that slugify reduces to an empty string (caught by the `if (slug) return slug` guard) falls through to local-path derivation, never yielding an empty slug', () => {
+    const remoteUrl = `git@github.com:acme/empty-slug-fallthrough-${tok}.git`;
+    const localClone = makeRepo(tmp, 'empty-slug-fallthrough', remoteUrl);
+
+    // '!!!' has no alphanumeric/dash characters at all, so slugify() strips
+    // it down to '' -- distinct from the .trim() guard above, this is caught
+    // by the inner `if (slug) return slug` check.
+    const slug = resolveProjectSlug(localClone, '!!!');
+    expect(slug).toBe(`githubcom-acme-empty-slug-fallthrough-${tok}`);
+    expect(slug).not.toBe('');
+  });
 });
 
 describe('getKbProviders: nonexistent remote path matches the real local clone', () => {

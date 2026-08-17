@@ -158,4 +158,29 @@ describe('enrichContextWithKb()', () => {
     expect(enriched).toBe(errorResult);
     expect(mockGetKbProviders).not.toHaveBeenCalled();
   });
+
+  // apra-fleet-b4g.8: getKbProviders must be called with the remote URL as
+  // its second argument so a remote member's call resolves the correct
+  // project KB instead of the fleet server's own cwd-derived one.
+  it('forwards repoPath and remoteUrl to getKbProviders as the first and second arguments', async () => {
+    mockQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    const { enrichContextWithKb } = await import('../src/tools/code-intelligence-kb-enrich.js');
+    const providerResult = { content: [{ type: 'text', text: 'context result' }] };
+
+    await enrichContextWithKb('targetSymbol', providerResult, '/some/repo', 'https://example.com/acme/repo.git');
+
+    expect(mockGetKbProviders).toHaveBeenCalledWith('/some/repo', 'https://example.com/acme/repo.git');
+  });
+
+  it('omitting remoteUrl preserves the one-argument behaviour (no default injected)', async () => {
+    mockQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    const { enrichContextWithKb } = await import('../src/tools/code-intelligence-kb-enrich.js');
+    const providerResult = { content: [{ type: 'text', text: 'context result' }] };
+
+    await enrichContextWithKb('targetSymbol', providerResult, '/some/repo');
+
+    expect(mockGetKbProviders).toHaveBeenCalledWith('/some/repo', undefined);
+  });
 });

@@ -299,6 +299,34 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   /**
+   * apra-fleet-b4g.4: TRUE when this provider carries a repo anchor that does
+   * not exist on this host -- the remote-member case, where repo_remote_url
+   * routes the call to the REAL shared project KB while repo_path names a
+   * Windows/remote work folder the fleet server cannot see.
+   *
+   * Such an anchor can verify NOTHING about this host's tree, so the freshness
+   * verdicts that depend on it (checkFreshness, freshnessSweep) are suppressed
+   * entirely rather than re-hashed against a tree that does not exist: every
+   * relative basis path would fail to resolve, basisFullyMatches would return
+   * false, and up to 10 healthy entries per prime call would be UPDATEd to
+   * stale=1 in the shared DB.
+   *
+   * Suppression is deliberately all-or-nothing rather than per-file (entries
+   * whose basis happens to be fully absolute are skipped too): a missing anchor
+   * means this host cannot speak to the tree the entry describes at all, and a
+   * half-rule that stales some entries and not others is harder to reason about
+   * than "no anchor, no verdict". The anchor is NOT replaced by process.cwd() --
+   * that is the apra-fleet-b4g.2 corruption mode.
+   *
+   * Note the write side needs no equivalent guard: capture() already fails
+   * closed here, because assertCheckableBasis rejects any cited source file
+   * that cannot be resolved under repoPath.
+   */
+  private anchorIsMissing(anchor: string | undefined = this.repoPath): boolean {
+    return anchor !== undefined && !fs.existsSync(anchor);
+  }
+
+  /**
    * The Phase 1 fail-closed gate. See the call site in capture() for rationale.
    * Throws KbCaptureRejected so batch writers can isolate and count a rejected
    * entry while unexpected failures still propagate.
@@ -450,6 +478,12 @@ export class SqliteProvider implements MemoryProvider {
   // read-only (D2). The un-stale branch is implemented here for consistency and
   // to share the exact predicate, but the real revival surface is the sweep.
   private async checkFreshness(db: DatabaseSync, entries: KBEntry[]): Promise<KBEntry[]> {
+    // apra-fleet-b4g.4: an anchor that does not exist on this host yields no
+    // freshness verdict at all -- see anchorIsMissing(). Returning the entries
+    // untouched keeps prime read-only for remote members instead of staling
+    // healthy entries in the shared project KB.
+    if (this.anchorIsMissing()) return entries;
+
     const candidates = entries.filter(e => e.source_files.length > 0);
     if (candidates.length === 0) return entries;
 
@@ -537,7 +571,21 @@ export class SqliteProvider implements MemoryProvider {
   // (relative basis paths still resolve against the intended repo root,
   // absolute basis paths are unaffected either way). Omitting root preserves
   // exact prior behavior (implicit process.cwd() resolution).
+  //
+  // apra-fleet-b4g.4 (acceptance criterion 5): when `root` is omitted the sweep
+  // now falls back to THIS PROVIDER'S anchor, not process.cwd(). kb_freshness_sweep
+  // (src/tools/kb-freshness-sweep.ts) called this with no root, so it re-hashed
+  // relative basis paths against the fleet server's own working directory while
+  // checkFreshness re-hashed the very same basis against repoPath -- two actors
+  // writing opposite stale verdicts for one entry. The provider anchor is the
+  // root the basis was stored against (computeSourceFileHashes), so it is the
+  // only correct default; an explicit root (kb_import's --repo) still wins, and
+  // a provider with no anchor at all (the shared global KB) keeps the previous
+  // implicit-cwd behaviour. A resolved anchor that does not exist on this host
+  // yields no verdict at all -- see anchorIsMissing().
   async freshnessSweep(root?: string): Promise<{ checked: number; staled: number; unstaled: number }> {
+    const anchor = root ?? this.repoPath;
+    if (this.anchorIsMissing(anchor)) return { checked: 0, staled: 0, unstaled: 0 };
     const db = this.getDb();
     const rows = db.prepare(
       `SELECT id, stale, superseded_at, flagged_for_review, content_hash, content, source_file_hashes
@@ -567,7 +615,7 @@ export class SqliteProvider implements MemoryProvider {
     for (const basis of basisById.values()) {
       for (const file of Object.keys(basis)) fileSet.add(file);
     }
-    const currentHashes = await computeFileHashBatch([...fileSet], root ? { cwd: root } : undefined);
+    const currentHashes = await computeFileHashBatch([...fileSet], anchor ? { cwd: anchor } : undefined);
 
     const staleIds: string[] = [];
     const unstaleIds: string[] = [];

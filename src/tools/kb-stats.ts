@@ -49,7 +49,23 @@ export async function kbStats(input: KbStatsInput): Promise<string> {
   // `repo` wins over the `repo_path` alias so existing callers are unaffected.
   const requestedRepo = input.repo ?? input.repo_path;
   // Stats must describe the repo asked about, not the server's cwd.
-  const providers = await getKbProviders(resolveRepoPath(requestedRepo) ?? undefined, input.repo_remote_url);
+  //
+  // apra-fleet-b4g.7: an explicitly supplied repo path is passed through
+  // VERBATIM, exactly as kb_session_prime does (see the note at
+  // kb-session-prime.ts:186). Routing it through resolveRepoPath() here turned
+  // a remote member's unreachable work folder into null and then, via
+  // `?? undefined`, into getKbProviders' `cwd ?? process.cwd()` -- so the slug
+  // came from repo_remote_url (the REAL shared project KB) while the anchor
+  // became the fleet server's own working directory, and every basis hash was
+  // computed against a tree that does not describe those entries. Keeping the
+  // caller's path means the anchor is honestly "a path this host cannot see",
+  // which SqliteProvider.anchorIsMissing() handles by declining to produce a
+  // freshness verdict at all. resolveRepoPath still guards the omitted-path
+  // fallback and the bible-drift read below, which does need a readable dir.
+  const providers = await getKbProviders(
+    requestedRepo ?? resolveRepoPath() ?? undefined,
+    input.repo_remote_url,
+  );
   const providerStats = await providers.project.stats({ symbols: input.symbols });
 
   // D5: bible.drift = count of live CONFIRMED entries whose updated_at
