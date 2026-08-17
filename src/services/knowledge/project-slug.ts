@@ -1,7 +1,11 @@
 import { execFileSync } from 'child_process';
 import path from 'path';
 
-export function resolveProjectSlug(cwd?: string): string {
+export function resolveProjectSlug(cwd?: string, remoteUrl?: string): string {
+  if (remoteUrl && remoteUrl.trim()) {
+    const slug = slugify(remoteUrl);
+    if (slug) return slug;
+  }
   const dir = cwd ?? process.cwd();
   const env = { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(dir) };
   // 1. git remote URL
