@@ -140,21 +140,24 @@ replaced by `process.cwd()`.** `getKbProviders(cwd, remoteUrl)` sets
 not exist on this host (the normal case for a remote member's work folder),
 is passed through verbatim and used as the anchor as-is; the
 `process.cwd()` fallback fires only when `cwd` is *omitted* entirely. Every
-`kb_*` tool call site therefore forwards its `repo_path` input straight
-through rather than pre-resolving it. Three sites used to call a local
-`resolveRepoPath()` helper first, get `null` back for a non-existent path,
-and pass that through `?? undefined` -- which then hit the `process.cwd()`
-fallback inside `getKbProviders`. `kb-session-prime.ts` and `kb-stats.ts` now
-pass the caller's explicit `repo_path` straight to `getKbProviders`
-unchanged, only consulting `resolveRepoPath()` as a fallback when
-`repo_path` was omitted entirely. `kb-export.ts` stays a deliberate third
-shape: it needs a writable directory to write the bible file into, so its
-own `resolveRepoPath()` still validates any explicit `repo_path` and throws
-before `getKbProviders` is ever reached if it does not exist -- an
-intentional hard fail, not a silent `process.cwd()` degrade. The result: the
-*slug* (and
-therefore which project's database is opened) comes from `repo_remote_url`
-and points at the real, shared project KB, and the `repoPath` *anchor* stays
+`kb_*` READ/PRIME tool call site therefore forwards its `repo_path` input
+straight through rather than pre-resolving it; the two writer tools that need
+a real local directory (`kb_export`, `kb_import`) are the exception -- see
+below. Two sites used to call a local `resolveRepoPath()` helper first, get
+`null` back for a non-existent path, and pass that through `?? undefined` --
+which then hit the `process.cwd()` fallback inside `getKbProviders`.
+`kb-session-prime.ts` and `kb-stats.ts` now pass the caller's explicit
+`repo_path` straight to `getKbProviders` unchanged, only consulting
+`resolveRepoPath()` as a fallback when `repo_path` was omitted entirely.
+`kb-export.ts` and `kb-import.ts` (four `resolveRepoPath()` helpers total in
+`src/tools`, not three) stay a deliberate different shape: both need a real
+local directory -- to write the bible file into (export) or to locate it by
+default (import) -- so their own `resolveRepoPath()` still validates any
+explicit `repo_path` and throws before `getKbProviders` is ever reached if it
+does not exist -- an intentional hard fail, not a silent `process.cwd()`
+degrade. The result: the *slug* (and therefore which project's database is
+opened) comes from `repo_remote_url` and points at the real, shared project
+KB, and the `repoPath` *anchor* stays
 the caller's own path -- never the fleet server's own working directory, a
 valid but unrelated tree that would otherwise get hashed as if it were the
 member's repo.
