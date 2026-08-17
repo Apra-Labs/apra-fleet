@@ -6424,16 +6424,13 @@ async function runSprintCycle(context) {
         const reviewerKnowledge = reviewerQueried.length > 0
             ? reviewerQueried
             : kbPriming.knowledgeOf(reviewerPool[0]);
-        // Stabilization log Issue 9: a full-cycle review is big -- run 6's
-        // reviewer genuinely ran out of the fleet's default turn budget
-        // (num_turns=51 after ~12 minutes of legitimate review work), and a
-        // fresh retry deterministically hits the same wall. Make the budget
-        // explicit and, on max_turns exhaustion, RESUME the same session with
-        // a doubled budget (mirrors the doer's resume-and-continue rationale
-        // at dispatchDoerResume: the session already holds the full review
-        // context, so a short continue-nudge finishes the job instead of
-        // restarting it).
-        const BASE_REVIEWER_MAX_TURNS = 60;
+        // A full-cycle review can genuinely exhaust the fleet's default turn
+        // budget, and a fresh retry deterministically hits the same wall. Make
+        // the budget explicit and, on max_turns exhaustion, RESUME the same
+        // session at a doubled budget: the session already holds the full
+        // review context, so a continue-nudge finishes the job instead of
+        // restarting it.
+        const BASE_REVIEWER_MAX_TURNS = 500;
         const reviewerDispatchOpts = {
             member_name: reviewerPool[0],
             agentType: 'reviewer',
@@ -7292,7 +7289,7 @@ async function runSprintCycle(context) {
             // meaningful gap. Like every dispatch site, max_turns exhaustion is
             // answered with a same-session resume at doubled turns; the planner
             // gets a doer-sized base because it builds the whole epic DAG.
-            const PLANNER_MAX_TURNS = 100;
+            const PLANNER_MAX_TURNS = 500;
             const plannerDispatchOpts = {
                 member_name: getMemberForRole('planner'),
                 agentType: 'planner',
@@ -7466,7 +7463,7 @@ async function runSprintCycle(context) {
             let verdict;
             // Reviewer-sized turn base, with the same same-session
             // turn-exhaustion resume every dispatch site uses.
-            const PLAN_REVIEWER_MAX_TURNS = 60;
+            const PLAN_REVIEWER_MAX_TURNS = 500;
             const planReviewerDispatchOpts = {
                 member_name: getMemberForRole('plan-reviewer'),
                 agentType: 'plan-reviewer',
@@ -7813,7 +7810,7 @@ async function runSprintCycle(context) {
                 for (const id of replanScopeIds) replannedThisCycle.add(id);
 
                 // --- Scoped planner pass ---
-                const SCOPED_REPLAN_PLANNER_MAX_TURNS = 100;
+                const SCOPED_REPLAN_PLANNER_MAX_TURNS = 500;
                 let scopedPlannerOk = true;
                 try {
                     const scopedPlannerRes = await withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
@@ -7859,7 +7856,7 @@ async function runSprintCycle(context) {
                 // --- Scoped plan-review pass ---
                 let scopedReplanApproved = false;
                 if (scopedPlannerOk) {
-                    const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 60;
+                    const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 500;
                     try {
                         const scopedVerdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
                             buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle }),
@@ -8139,7 +8136,7 @@ async function runSprintCycle(context) {
                 // default) so the max-turns-exhaustion resume path below has a
                 // known baseline to escalate from. Sized so a typical streak
                 // finishes in one dispatch and resume stays the exception.
-                const BASE_DOER_MAX_TURNS = 100;
+                const BASE_DOER_MAX_TURNS = 500;
                 // Bounded resume-and-continue attempts after a max_turns
                 // exhaustion, each doubling the turn budget. An identical retry
                 // is pointless (the doer would deterministically run out of
@@ -8904,7 +8901,7 @@ async function runSprintCycle(context) {
             // Turn budget for the deployer, with the same-session
             // turn-exhaustion resume below: a source-build fallback deploy runs
             // npm ci plus two builds, comfortably beyond a small default budget.
-            const DEPLOYER_MAX_TURNS = 60;
+            const DEPLOYER_MAX_TURNS = 500;
             const deployerDispatchOpts = {
                 member_name: getMemberForRole('deployer'),
                 agentType: 'deployer',
@@ -9095,7 +9092,7 @@ async function runSprintCycle(context) {
                 // re-runs, respect the poll cadence) a normal cycle needs far
                 // fewer than 300 turns. The resume ladder below still doubles from
                 // here (to 600) when a run legitimately needs more.
-                const INTEG_TEST_MAX_TURNS = 300;
+                const INTEG_TEST_MAX_TURNS = 500;
                 const integDispatchOpts = {
                     member_name: getMemberForRole('integ-test-runner'),
                     agentType: 'integ-test-runner',
@@ -9611,7 +9608,7 @@ async function runSprintCycle(context) {
     // reviewer. Without it a large sprint's final review dies at the default
     // turn limit and flips the whole sprint to a FAIL whose notes carry no
     // findings at all.
-    const FINAL_REVIEW_MAX_TURNS = 60;
+    const FINAL_REVIEW_MAX_TURNS = 500;
     // Final Review is the same 'reviewer' role as dispatchReview above
     // (read-side, pushCode: false) -- G-pull before, no-op G-push after every
     // attempt (including the retry below).
@@ -9932,7 +9929,7 @@ async function runSprintCycle(context) {
         // poll for the better part of an hour, and this single dispatch carries
         // both it and the sandbox smoke sprint -- hence the large turn budget
         // and the wider hard ceiling.
-        const REGRESSION_TEST_MAX_TURNS = 200;
+        const REGRESSION_TEST_MAX_TURNS = 500;
         const REGRESSION_TEST_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 3;
         const regressionPrompt =
             `Run the full regression pass using regression-test-playbook.md at the repo root: part 1 ` +
@@ -10101,7 +10098,7 @@ async function runSprintCycle(context) {
     let harvesterResult = null;
     // Turn budget for the harvester, with the same-session turn-exhaustion
     // resume below: it writes docs/changelog across the whole epic.
-    const HARVESTER_MAX_TURNS = 60;
+    const HARVESTER_MAX_TURNS = 500;
     const harvesterDispatchOpts = {
         member_name: getMemberForRole('harvester'),
         agentType: 'harvester',

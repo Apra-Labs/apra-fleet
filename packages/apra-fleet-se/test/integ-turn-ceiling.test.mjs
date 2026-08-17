@@ -5,9 +5,9 @@ import { runCmd, runDevelopLoopScenario, withScenarioMarkers } from './helpers/m
 // =============================================================================
 // apra-fleet-63x.4 (verification for apra-fleet-63x.3): pins the
 // integ-test-runner dispatch's max_turns to the documented, defensible value
-// runner.js's INTEG_TEST_MAX_TURNS was raised to (300, from a pre-fix 200) --
-// see the apra-fleet-63x.3 commit's rationale comment just above that
-// constant in runSprintCycle(). Across 4 historical runs, max_turns
+// runner.js's INTEG_TEST_MAX_TURNS was raised to (500, from a pre-fix 200,
+// via an intermediate 300) -- see the apra-fleet-63x.3 commit's rationale
+// comment just above that constant in runSprintCycle(). Across 4 historical runs, max_turns
 // exhaustion during Integ Test was the norm rather than the exception
 // (apra-fleet-63x), burning 15-85 minutes per occurrence in resume/repair; a
 // ceiling that silently regresses back toward the pre-fix value would
@@ -32,7 +32,7 @@ const approveReviewer = async () => ({
     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
 });
 
-test('mock sprint: the integ-test-runner dispatch pins max_turns to the documented ceiling (300), not the pre-fix 200', async () => {
+test('mock sprint: the integ-test-runner dispatch pins max_turns to the documented ceiling (500), not the pre-fix 200', async () => {
     await withScenarioMarkers('integturns', async () => {
         let capturedMaxTurns = null;
         let capturedLabel = null;
@@ -62,13 +62,13 @@ test('mock sprint: the integ-test-runner dispatch pins max_turns to the document
 
         assert.ok(!result.error, `Scenario should not throw: ${result.error ? result.error.message : ''}`);
         assert.ok(capturedMaxTurns !== null, `Expected the integ-test-runner dispatch to actually run, captured label: ${capturedLabel}`);
-        // Pins the exact documented value from apra-fleet-63x.3 (INTEG_TEST_MAX_TURNS
-        // = 300). This assertion fails against the pre-fix value of 200, which is
-        // exactly the regression this test guards.
+        // Pins the exact documented value (INTEG_TEST_MAX_TURNS = 500). This
+        // assertion fails against the pre-fix value of 200, which is exactly
+        // the regression this test guards.
         assert.strictEqual(
             capturedMaxTurns,
-            300,
-            `Expected the integ-test-runner dispatch max_turns to be pinned to 300 (apra-fleet-63x.3's documented ceiling), got ${capturedMaxTurns}. ` +
+            500,
+            `Expected the integ-test-runner dispatch max_turns to be pinned to 500 (the documented ceiling), got ${capturedMaxTurns}. ` +
             `A lower ceiling (e.g. the pre-fix 200) reintroduces the routine max_turns exhaustion apra-fleet-63x tracked.`
         );
     });
@@ -112,7 +112,7 @@ test('mock sprint: a resumed integ-test-runner dispatch (after max_turns exhaust
 
         assert.ok(!result.error, `Scenario should not throw on a max_turns-exhausted integ dispatch: ${result.error ? result.error.message : ''}`);
         assert.ok(integCalls >= 2, `Expected the integ dispatch to be resumed after max_turns exhaustion (>=2 calls), got ${integCalls}`);
-        assert.strictEqual(capturedMaxTurnsByCall[0], 300, `First integ dispatch should use the documented base ceiling of 300, got ${capturedMaxTurnsByCall[0]}`);
-        assert.strictEqual(capturedMaxTurnsByCall[1], 600, `Resumed integ dispatch should double the documented base ceiling (300 * 2 = 600), got ${capturedMaxTurnsByCall[1]}`);
+        assert.strictEqual(capturedMaxTurnsByCall[0], 500, `First integ dispatch should use the documented base ceiling of 500, got ${capturedMaxTurnsByCall[0]}`);
+        assert.strictEqual(capturedMaxTurnsByCall[1], 1000, `Resumed integ dispatch should double the documented base ceiling (500 * 2 = 1000), got ${capturedMaxTurnsByCall[1]}`);
     });
 });
