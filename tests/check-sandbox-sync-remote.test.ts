@@ -323,6 +323,14 @@ describe('parseDoltRemoteList', () => {
   it('throws when the parsed JSON is not an array', () => {
     expect(() => parseDoltRemoteList('{"name":"origin"}')).toThrow();
   });
+
+  // apra-fleet-b4g.3: `bd dolt remote list --json` prints the literal `null`
+  // (not `[]`) when no Dolt remotes are configured -- this must be treated
+  // as "no remotes" rather than an "not an array" parse error.
+  it('treats a literal null (including whitespace-padded) as an empty list', () => {
+    expect(parseDoltRemoteList('null')).toEqual([]);
+    expect(parseDoltRemoteList('null\n')).toEqual([]);
+  });
 });
 
 describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra-fleet-eft.18.6 retarget of apra-fleet-eft.30)', () => {
@@ -428,10 +436,23 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
       // embeddeddolt. Instead, it should report either an actual Dolt remote status
       // or an error from trying to run bd.
       expect(result.message).not.toMatch(/no Dolt database initialized/);
-      // Since we created an empty embeddeddolt with no actual Dolt config,
-      // the message should indicate that bd ran and found no remotes (or found
-      // whatever remotes are configured in this minimal setup).
-      expect(result.message).toMatch(/Dolt-level remotes|unavailable/);
+      // apra-fleet-b4g.3: the loose `/Dolt-level remotes|unavailable/` assertion
+      // this used to have let the test pass vacuously on a machine without `bd`
+      // on PATH (the "unavailable" fallback message satisfies it without ever
+      // reaching parseDoltRemoteList). Detect whether `bd` is actually reachable
+      // and assert the specific outcome for that environment, so a real `bd`
+      // installation always exercises the parser this test is meant to cover.
+      let bdAvailable = true;
+      try {
+        execFileSync('bd', ['--version'], { stdio: 'ignore' });
+      } catch {
+        bdAvailable = false;
+      }
+      if (bdAvailable) {
+        expect(result.message).toMatch(/Dolt-level remotes/);
+      } else {
+        expect(result.message).toMatch(/unavailable/);
+      }
 
     } finally {
       // Clean up: on Windows, file locks may persist briefly after the function call,
