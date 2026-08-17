@@ -141,10 +141,13 @@ vi.mock('node:tls', () => ({
   default: { connect: (...args: unknown[]) => mockTlsConnect(...args) },
 }));
 
-function setupStartTls(afterTlsScript: string[]): { plain: FakeSocket; secure: FakeSocket } {
+function setupStartTls(
+  afterTlsScript: string[],
+  startTlsReply = '220 Ready to start TLS\r\n',
+): { plain: FakeSocket; secure: FakeSocket } {
   const plain = new FakeSocket([
     '250-smtp.example.com\r\n250-STARTTLS\r\n250 AUTH LOGIN\r\n',
-    '220 Ready to start TLS\r\n',
+    startTlsReply,
   ]);
   const secure = new FakeSocket(afterTlsScript);
   mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
@@ -223,6 +226,57 @@ describe('SmtpProvider', () => {
       /did not advertise STARTTLS/,
     );
     expect(socket.written.some(w => w.startsWith('AUTH LOGIN'))).toBe(false);
+  });
+
+  it('discards a forged SMTP reply injected on the plaintext socket during STARTTLS', async () => {
+    const { secure } = setupStartTls(
+      [
+        '250-smtp.example.com\r\n250 AUTH LOGIN\r\n',
+        '334 VXNlcm5hbWU6\r\n',
+        '334 UGFzc3dvcmQ6\r\n',
+        '235 Authentication successful\r\n',
+        '250 OK\r\n',
+        '250 OK\r\n',
+        '354 Start mail input\r\n',
+        '250 OK queued as ABC123\r\n',
+        '221 Bye\r\n',
+      ],
+      '220 Ready to start TLS\r\n550 FORGED\r\n',
+    );
+
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      auth: { user: 'user@example.com', pass: 'secret' },
+      from: 'from@example.com',
+    });
+
+    const result = await provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' });
+    expect(result.messageId).toBe('ABC123');
+    expect(secure.written.some(w => w.startsWith('EHLO'))).toBe(true);
+    expect(secure.written.some(w => w.startsWith('AUTH LOGIN'))).toBe(true);
+  });
+
+  it('rejects an attachment filename containing a double quote before any network I/O', async () => {
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
+      host: 'smtp.example.com',
+      port: 587,
+      auth: { user: 'user@example.com', pass: 'secret' },
+      from: 'from@example.com',
+    });
+
+    await expect(
+      provider.send({
+        to: 'to@example.com',
+        subject: 'Hi',
+        body: 'Hello',
+        attachments: [{ filename: 'report".txt', content: 'YWJj' }],
+      }),
+    ).rejects.toThrow(/quotes or backslashes/);
+    expect(mockNetConnect).not.toHaveBeenCalled();
   });
 
   it('clears the plaintext password from the provider after construction and send', async () => {

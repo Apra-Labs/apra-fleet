@@ -169,7 +169,7 @@
  *   Secrets are resolved server-side from the credential store ("sendgrid_api_key" / "smtp_password").
  * @property {string} from - Sender email address (required)
  * @property {string} [host] - SMTP server hostname (required for smtp provider)
- * @property {number} [port] - SMTP server port (default 587)
+ * @property {number} [port] - SMTP server port (default 587, or 465 when secure is true)
  * @property {string} [user] - SMTP username (required for smtp provider)
  * @property {boolean} [secure] - Use implicit TLS, e.g. port 465 (default false).
  *   When false, STARTTLS is required; plaintext AUTH is refused.

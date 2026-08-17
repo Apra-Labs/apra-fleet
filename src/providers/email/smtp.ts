@@ -2,6 +2,9 @@ import net from 'node:net';
 import tls from 'node:tls';
 import crypto from 'node:crypto';
 import type { EmailMessage, EmailSendResult, EmailProvider, SmtpConfig } from './provider.js';
+import { assertHeaderSafe, assertQuotedParamSafe, assertPayloadSize } from './headers.js';
+
+export { assertHeaderSafe, assertQuotedParamSafe } from './headers.js';
 
 interface SmtpResponse {
   code: number;
@@ -15,17 +18,6 @@ interface Waiter {
   resolve: (res: SmtpResponse) => void;
   reject: (err: Error) => void;
   timer: NodeJS.Timeout;
-}
-
-/**
- * Header/command injection guard: any value spliced into an SMTP command or
- * MIME header line must not contain CR/LF, or a crafted "from"/"subject" can
- * inject extra recipients or headers into the protocol stream.
- */
-function assertHeaderSafe(field: string, value: string): void {
-  if (/[\r\n]/.test(value)) {
-    throw new Error(`Invalid ${field}: must not contain CR/LF characters.`);
-  }
 }
 
 /**
@@ -133,7 +125,26 @@ export class SmtpConnection {
     return pending;
   }
 
+  /**
+   * Detach plaintext listeners and drop any buffered/pending responses
+   * BEFORE wrapping the socket in TLS. Leaving onData attached during
+   * tls.connect({socket}) lets a MITM inject a forged SMTP reply that
+   * would otherwise be consumed as the first post-STARTTLS response.
+   */
+  prepareTlsUpgrade(): net.Socket {
+    this.detachPlaintext();
+    this.buffer = '';
+    this.pending = [];
+    return this.socket as net.Socket;
+  }
+
   swapSocket(socket: tls.TLSSocket): void {
+    this.buffer = '';
+    this.pending = [];
+    this.attach(socket);
+  }
+
+  private detachPlaintext(): void {
     const old = this.socket;
     old.removeAllListeners('data');
     old.removeAllListeners('error');
@@ -141,7 +152,6 @@ export class SmtpConnection {
     // Keep a no-op error listener on the wrapped socket so a raw error on it
     // can never become an unhandled 'error' event.
     old.on('error', () => undefined);
-    this.attach(socket);
   }
 
   write(data: string): void {
@@ -157,41 +167,43 @@ export class SmtpConnection {
   }
 }
 
-function connectSocket(host: string, port: number, secure: boolean, timeoutMs: number): Promise<net.Socket | tls.TLSSocket> {
+function connectWithTimeout<T extends net.Socket>(
+  connectFn: (onConnect: () => void) => T,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<T> {
   return new Promise((resolve, reject) => {
+    let socket: T;
     const timer = setTimeout(() => {
       socket.destroy();
-      reject(new Error(`SMTP connect timeout to ${host}:${port} after ${timeoutMs}ms.`));
+      reject(new Error(timeoutMessage));
     }, timeoutMs);
     const onConnect = () => {
       clearTimeout(timer);
       resolve(socket);
     };
-    const socket = secure
-      ? tls.connect({ host, port }, onConnect)
-      : net.connect({ host, port }, onConnect);
-    socket.once('error', (err) => {
+    socket = connectFn(onConnect);
+    socket.once('error', (err: Error) => {
       clearTimeout(timer);
       reject(err);
     });
   });
 }
 
+function connectSocket(host: string, port: number, secure: boolean, timeoutMs: number): Promise<net.Socket | tls.TLSSocket> {
+  return connectWithTimeout(
+    (onConnect) => (secure ? tls.connect({ host, port }, onConnect) : net.connect({ host, port }, onConnect)),
+    timeoutMs,
+    `SMTP connect timeout to ${host}:${port} after ${timeoutMs}ms.`,
+  );
+}
+
 function starttls(socket: net.Socket, host: string, timeoutMs: number): Promise<tls.TLSSocket> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      secureSocket.destroy();
-      reject(new Error(`STARTTLS handshake timeout after ${timeoutMs}ms.`));
-    }, timeoutMs);
-    const secureSocket = tls.connect({ socket, host }, () => {
-      clearTimeout(timer);
-      resolve(secureSocket);
-    });
-    secureSocket.once('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
+  return connectWithTimeout(
+    (onConnect) => tls.connect({ socket, host }, onConnect),
+    timeoutMs,
+    `STARTTLS handshake timeout after ${timeoutMs}ms.`,
+  );
 }
 
 /**
@@ -268,8 +280,8 @@ function buildMimeMessage(msg: EmailMessage, from: string): string {
   }
 
   for (const att of msg.attachments ?? []) {
-    assertHeaderSafe('attachment filename', att.filename);
-    if (att.contentType) assertHeaderSafe('attachment contentType', att.contentType);
+    assertQuotedParamSafe('attachment filename', att.filename);
+    if (att.contentType) assertQuotedParamSafe('attachment contentType', att.contentType);
     parts.push(
       `--${boundary}\r\nContent-Type: ${att.contentType ?? 'application/octet-stream'}; name="${att.filename}"\r\n` +
       `Content-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename="${att.filename}"\r\n\r\n${wrapBase64(att.content)}`
@@ -335,6 +347,11 @@ export class SmtpProvider implements EmailProvider {
     ];
     for (const rcpt of recipients) assertHeaderSafe('recipient', rcpt);
     assertHeaderSafe('subject', msg.subject);
+    for (const att of msg.attachments ?? []) {
+      assertQuotedParamSafe('attachment filename', att.filename);
+      if (att.contentType) assertQuotedParamSafe('attachment contentType', att.contentType);
+    }
+    assertPayloadSize(msg);
 
     const socket = await connectSocket(host, port, !!secure, timeoutMs);
     const conn = new SmtpConnection(socket, timeoutMs);
@@ -357,7 +374,10 @@ export class SmtpProvider implements EmailProvider {
         }
         const startTlsResp = await conn.command('STARTTLS');
         if (startTlsResp.code !== 220) throw new Error(`STARTTLS failed: ${startTlsResp.lines.join(' ')}`);
-        const tlsSocket = await starttls(socket as net.Socket, host, timeoutMs);
+        // Detach plaintext listeners and drop pending data BEFORE wrapping
+        // the socket, so a MITM cannot inject a forged post-STARTTLS reply.
+        const plain = conn.prepareTlsUpgrade();
+        const tlsSocket = await starttls(plain, host, timeoutMs);
         conn.swapSocket(tlsSocket);
         ehlo = await conn.command(`EHLO localhost`);
         if (ehlo.code !== 250) throw new Error(`SMTP EHLO (after STARTTLS) failed: ${ehlo.lines.join(' ')}`);

@@ -184,7 +184,7 @@ apra-fleet workflow email-notify
 | `provider` | `"sendgrid"` or `"smtp"` | no (default: `"sendgrid"`) | Email provider |
 | `from` | string | yes | Sender email address |
 | `host` | string | SMTP only | SMTP server hostname |
-| `port` | number | no (default: 587) | SMTP server port |
+| `port` | number | no (default: 587, or 465 when `secure` is true) | SMTP server port |
 | `user` | string | SMTP only | SMTP username |
 | `secure` | boolean | no (default: false) | Implicit TLS (port 465). When false, STARTTLS is required. |
 | `to` | string or string[] | yes | Recipient address(es) |
@@ -198,5 +198,7 @@ apra-fleet workflow email-notify
 Secrets resolved from the credential store:
 - **SendGrid:** `sendgrid_api_key`
 - **SMTP:** `smtp_password`
+
+Unattended sends require `network_policy=allow` on those credentials. `deny` is blocked; `confirm` prompts for out-of-band confirmation (same gate as `execute_command`).
 
 Returns: `{ ok: true, messageId }` on success, `{ ok: false, error }` on failure.

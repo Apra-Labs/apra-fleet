@@ -355,4 +355,77 @@ describe('sendEmail address validation', () => {
     expect(result.error).toMatch(/subject.*CR\/LF/);
     expect(mockCredentialResolve).not.toHaveBeenCalled();
   });
+
+  it('rejects an attachment filename containing a double quote', async () => {
+    const result = JSON.parse(await sendEmail({
+      provider: 'sendgrid',
+      from: 'noreply@example.com',
+      to: 'valid@example.com',
+      subject: 'Hi',
+      body: 'Hello',
+      attachments: [{ filename: 'report".txt; name="evil', content: 'YWJj' }],
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/filename|quotes/i);
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+  });
+
+  it('rejects a payload larger than the in-memory cap', async () => {
+    const result = JSON.parse(await sendEmail({
+      provider: 'sendgrid',
+      from: 'noreply@example.com',
+      to: 'valid@example.com',
+      subject: 'Hi',
+      body: 'Hello',
+      attachments: [{ filename: 'big.bin', content: 'A'.repeat(10 * 1024 * 1024 + 1) }],
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/payload.*maximum/i);
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+  });
+});
+
+describe('sendEmail SMTP port default', () => {
+  it('defaults port to 465 when secure is true and port is omitted', async () => {
+    mockCredentialResolve.mockImplementation((name: string) => {
+      if (name === 'smtp_password') return { plaintext: 'secret-pass', meta: {} };
+      return null;
+    });
+    const mockSend = vi.fn().mockResolvedValue({ messageId: 'smtp-465' });
+    MockSmtpProvider.mockImplementation(function (this: any) { this.name = 'smtp'; this.send = mockSend; });
+
+    const result = JSON.parse(await sendEmail({
+      provider: 'smtp',
+      from: 'noreply@example.com',
+      host: 'smtp.example.com',
+      user: 'me@example.com',
+      secure: true,
+      to: 'user@example.com',
+      subject: 'Test',
+      body: 'Hello',
+    }));
+
+    expect(result.ok).toBe(true);
+    expect(MockSmtpProvider).toHaveBeenCalledWith(expect.objectContaining({ port: 465, secure: true }));
+  });
+});
+
+describe('sendEmail network_policy', () => {
+  it('blocks send when the credential has network_policy=deny', async () => {
+    mockCredentialResolve.mockReturnValue({ plaintext: 'sg-key', meta: { network_policy: 'deny' } });
+
+    const result = JSON.parse(await sendEmail({
+      provider: 'sendgrid',
+      from: 'noreply@example.com',
+      to: 'user@example.com',
+      subject: 'Test',
+      body: 'Hello',
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/network_policy=deny/);
+    expect(MockSendGridProvider).not.toHaveBeenCalled();
+  });
 });

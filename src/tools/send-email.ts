@@ -1,17 +1,23 @@
 import { z } from 'zod';
 import { createEmailProvider, resolveSecret } from '../providers/email/index.js';
 import type { EmailConfig, EmailMessage, EmailProvider, EmailProviderName } from '../providers/email/provider.js';
+import { emailPayloadBytes, MAX_EMAIL_PAYLOAD_BYTES } from '../providers/email/headers.js';
+import { assertQuotedParamSafe, headerError } from '../providers/email/headers.js';
 import { resolveSessionCaller } from '../utils/session-caller.js';
 import { logLine } from '../utils/log-helpers.js';
 
 // Same validator zod already uses elsewhere -- one definition of "valid email"
-// for both the MCP schema and the pre-credential runtime checks below.
+// for both the MCP schema and direct sendEmail() callers.
 const emailAddress = z.string().email();
 
+const quotedParam = z.string().min(1).refine((v) => !/[\r\n"\\]/.test(v), {
+  message: 'must not contain CR/LF, quotes, or backslashes',
+});
+
 const attachmentSchema = z.object({
-  filename: z.string().min(1),
+  filename: quotedParam.describe('Attachment filename'),
   content: z.string().min(1).describe('Base64-encoded attachment content'),
-  contentType: z.string().optional(),
+  contentType: quotedParam.optional().describe('MIME content type'),
 });
 
 export const sendEmailSchema = z.object({
@@ -19,7 +25,7 @@ export const sendEmailSchema = z.object({
   from: emailAddress.describe('Sender email address'),
 
   host: z.string().optional().describe('SMTP server hostname (required for smtp provider)'),
-  port: z.number().optional().default(587).describe('SMTP server port'),
+  port: z.number().optional().describe('SMTP server port (default 587, or 465 when secure is true)'),
   user: z.string().optional().describe('SMTP username (required for smtp provider)'),
   secure: z.boolean().optional().default(false).describe('Use implicit TLS (port 465). When false, STARTTLS is required; plaintext AUTH is refused.'),
 
@@ -29,42 +35,70 @@ export const sendEmailSchema = z.object({
   html: z.string().optional().describe('Optional HTML email body'),
   cc: z.array(emailAddress).optional().describe('CC recipient addresses'),
   bcc: z.array(emailAddress).optional().describe('BCC recipient addresses'),
-  attachments: z.array(attachmentSchema).optional().describe('Optional file attachments (base64-encoded content)'),
+  attachments: z.array(attachmentSchema).optional().describe('Optional file attachments (base64-encoded content, 10MB total payload cap)'),
 });
 
 export type SendEmailInput = z.infer<typeof sendEmailSchema>;
 
+function formatSchemaError(err: z.ZodError): string {
+  return err.issues.map((issue) => {
+    const key = String(issue.path[0] ?? 'input');
+    if (key === 'to' || key === 'cc' || key === 'bcc' || key === 'from') {
+      return `Invalid '${key}' address`;
+    }
+    if (key === 'attachments') {
+      return `Invalid attachment: ${issue.message}`;
+    }
+    return issue.message;
+  }).join('; ');
+}
+
 /**
- * All cheap input validation, in one place, run BEFORE any credential-store
- * round trip: address formats, header-injection rejection (CR/LF in from/
- * subject), and the smtp host/user requirement. This is the single runtime
- * source of truth for the "smtp requires host+user" rule -- the MCP SDK's
- * tool registration only accepts a flat ZodRawShape (sendEmailSchema.shape),
- * so the rule cannot live in the schema as a discriminated union.
+ * Cross-field and injection checks that the flat MCP ZodRawShape cannot
+ * express: empty `to` list, CR/LF in header fields, SMTP host/user, port
+ * pairing, and payload size. Address format is handled by sendEmailSchema
+ * (including for direct sendEmail() callers via safeParse below).
  */
 function validateInput(input: SendEmailInput): string[] {
   const errors: string[] = [];
   const toList = Array.isArray(input.to) ? input.to : [input.to];
 
   if (toList.length === 0) errors.push(`'to' must include at least one recipient`);
+
+  const fromErr = headerError('from', input.from);
+  if (fromErr) errors.push(fromErr);
   for (const addr of toList) {
-    if (!emailAddress.safeParse(addr).success) errors.push(`Invalid 'to' address: ${addr}`);
+    const err = headerError('to', addr);
+    if (err) errors.push(err);
   }
   for (const addr of input.cc ?? []) {
-    if (!emailAddress.safeParse(addr).success) errors.push(`Invalid 'cc' address: ${addr}`);
+    const err = headerError('cc', addr);
+    if (err) errors.push(err);
   }
   for (const addr of input.bcc ?? []) {
-    if (!emailAddress.safeParse(addr).success) errors.push(`Invalid 'bcc' address: ${addr}`);
+    const err = headerError('bcc', addr);
+    if (err) errors.push(err);
   }
-  if (!emailAddress.safeParse(input.from).success) {
-    errors.push(`Invalid 'from' address: ${input.from}`);
-  }
-  if (/[\r\n]/.test(input.subject)) {
-    errors.push(`'subject' must not contain CR/LF characters`);
-  }
+  const subjectErr = headerError('subject', input.subject);
+  if (subjectErr) errors.push(subjectErr);
+
   if (input.provider === 'smtp') {
     if (!input.host) errors.push('SMTP requires "host" field.');
     if (!input.user) errors.push('SMTP requires "user" field.');
+  }
+
+  const bytes = emailPayloadBytes(input);
+  if (bytes > MAX_EMAIL_PAYLOAD_BYTES) {
+    errors.push(`Email payload is ${bytes} bytes; maximum is ${MAX_EMAIL_PAYLOAD_BYTES} bytes.`);
+  }
+
+  for (const att of input.attachments ?? []) {
+    try {
+      assertQuotedParamSafe('attachment filename', att.filename);
+      if (att.contentType) assertQuotedParamSafe('attachment contentType', att.contentType);
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
   }
 
   return errors;
@@ -77,6 +111,11 @@ interface ProviderSpec {
   toConfig: (input: SendEmailInput, secret: string) => EmailConfig;
 }
 
+function smtpPort(input: SendEmailInput): number {
+  if (input.port !== undefined) return input.port;
+  return input.secure ? 465 : 587;
+}
+
 const PROVIDER_SPECS: Record<EmailProviderName, ProviderSpec> = {
   smtp: {
     credentialName: 'smtp_password',
@@ -87,7 +126,7 @@ const PROVIDER_SPECS: Record<EmailProviderName, ProviderSpec> = {
       from: input.from,
       smtp: {
         host: input.host!,
-        port: input.port ?? 587,
+        port: smtpPort(input),
         secure: input.secure ?? false,
         auth: { user: input.user!, pass: secret },
         from: input.from,
@@ -106,9 +145,9 @@ const PROVIDER_SPECS: Record<EmailProviderName, ProviderSpec> = {
   },
 };
 
-function buildProvider(input: SendEmailInput, callingMember: string): EmailProvider {
+async function buildProvider(input: SendEmailInput, callingMember: string): Promise<EmailProvider> {
   const spec = PROVIDER_SPECS[input.provider];
-  const secret = resolveSecret(spec.credentialName, callingMember);
+  const secret = await resolveSecret(spec.credentialName, callingMember);
   if (secret === undefined) {
     throw new Error(spec.missingMessage);
   }
@@ -119,24 +158,32 @@ function buildProvider(input: SendEmailInput, callingMember: string): EmailProvi
 }
 
 export async function sendEmail(input: SendEmailInput, extra?: { sessionId?: string }): Promise<string> {
-  const validationErrors = validateInput(input);
+  const parsed = sendEmailSchema.safeParse(input);
+  if (!parsed.success) {
+    const error = formatSchemaError(parsed.error);
+    logLine('send_email', `validation failed: ${error}`);
+    return JSON.stringify({ ok: false, error });
+  }
+  const validInput = parsed.data;
+
+  const validationErrors = validateInput(validInput);
   if (validationErrors.length > 0) {
     logLine('send_email', `validation failed: ${validationErrors.join('; ')}`);
     return JSON.stringify({ ok: false, error: validationErrors.join('; ') });
   }
 
   const message: EmailMessage = {
-    to: input.to,
-    subject: input.subject,
-    body: input.body,
-    html: input.html,
-    cc: input.cc,
-    bcc: input.bcc,
-    attachments: input.attachments,
+    to: validInput.to,
+    subject: validInput.subject,
+    body: validInput.body,
+    html: validInput.html,
+    cc: validInput.cc,
+    bcc: validInput.bcc,
+    attachments: validInput.attachments,
   };
 
   try {
-    const provider = buildProvider(input, resolveSessionCaller(extra?.sessionId).identity);
+    const provider = await buildProvider(validInput, resolveSessionCaller(extra?.sessionId).identity);
     const result = await provider.send(message);
     logLine('send_email', `sent via ${provider.name} messageId=${result.messageId}`);
     return JSON.stringify({ ok: true, messageId: result.messageId });
