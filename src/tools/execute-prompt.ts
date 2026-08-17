@@ -304,11 +304,13 @@ async function ensureAgentFilesProvisioned(agent: Agent): Promise<void> {
 // (f) server overload retry -> retried after delay; finally clears on success or failure
 // (g) early returns before inFlightAgents.add (busy-rejection, reservation
 //     conflict, no-LLM member): busy state never entered
-// (h) preflight-check failure: the lock IS entered (claimed just before the
-//     preflight await, to close the busy-check-to-lock-claim race window) but
-//     this return happens before the interactive/subprocess split's own
-//     add+finally cleanup, so it releases the lock explicitly inline instead
-//     of relying on a finally block
+// (h) preflight: the lock is claimed just before the preflight await (moved
+//     here from the interactive/subprocess split further below, to close the
+//     busy-check-to-lock-claim race window -- that split no longer calls
+//     .add() itself, it relies on the claim made here). Both the {ok: false}
+//     result path and preflightCheck() itself throwing release the lock
+//     explicitly inline, since both return/rethrow before reaching any
+//     finally block below
 
 /**
  * apra-fleet-idb: liveness probe for a busy-locked member's backing process.
@@ -606,7 +608,20 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // their own liveness probes). The check is cached for 60s so
   // back-to-back dispatches do not add latency.
   if (agent.agentType !== 'local' && !isChannelCapable) {
-    const preflight = await preflightCheck(agent);
+    let preflight: Awaited<ReturnType<typeof preflightCheck>>;
+    try {
+      preflight = await preflightCheck(agent);
+    } catch (err) {
+      // preflightCheck's own synchronous prologue (getStrategy/getProvider)
+      // and its internal exec calls are not fully guarded -- if it throws
+      // instead of resolving {ok: false}, the lock claimed above would
+      // otherwise leak forever (no pid captured yet for findDeadLockPid's
+      // stale-lock self-heal to recognize). Release and propagate unchanged
+      // -- this preserves the exact same exception the caller would have
+      // seen before the lock was claimed this early.
+      inFlightAgents.delete(agent.id);
+      throw err;
+    }
     if (!preflight.ok) {
       // R2-F5: use preflight-specific reason codes so fleet-sprint can
       // distinguish pre-dispatch failures from in-dispatch ones and avoid

@@ -2504,5 +2504,19 @@ describe('executePrompt -- preflight reason code mapping', () => {
     expect(mockPreflightCheck).toHaveBeenCalledTimes(1);
     expect(inFlightAgents.has(member.id)).toBe(false);
   });
+
+  it('releases the busy lock even when preflightCheck itself throws instead of resolving {ok: false}', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-throws-member' });
+    addAgent(member);
+    mockPreflightCheck.mockRejectedValueOnce(new Error('preflight blew up unexpectedly'));
+
+    await expect(
+      executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 }),
+    ).rejects.toThrow('preflight blew up unexpectedly');
+
+    // The lock claimed just before the preflight await must not leak just
+    // because preflightCheck rejected instead of resolving a failure result.
+    expect(inFlightAgents.has(member.id)).toBe(false);
+  });
 });
 
