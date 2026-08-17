@@ -9249,7 +9249,7 @@ async function runSprintCycle(context) {
                         if (gapCount > VERIFY_GAP_LIMIT) {
                             log(`Verify-route bounce cap: ${parentId} has failed verification ${gapCount} time(s) this sprint (limit ${VERIFY_GAP_LIMIT}) -- deferring rather than bouncing again.`);
                             await command(
-                                `bd update ${parentId} --status=deferred --append-notes "Deferred by apra-fleet-jfo's verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
+                                `bd update ${parentId} --status=deferred --append-notes "Deferred by the verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
                                 { member_name: orchestratorMember, silent: true }
                             );
                         } else {

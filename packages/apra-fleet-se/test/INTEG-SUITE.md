@@ -34,8 +34,8 @@ Procedure (all commands from the repo root):
    commit 72a929e). Run `node scripts/check-integ-suite-budget.mjs` after
    step 4 to check this automatically instead of eyeballing durationMs by
    hand -- it reads `integ-suite-status.json` and reports/exits non-zero
-   with the offending file(s) named (apra-fleet-eft.17.2). Exit 2 means no
-   completed run was found yet (finish steps 1-4 first).
+   with the offending file(s) named. Exit 2 means no completed run was
+   found yet (finish steps 1-4 first).
 
 Exit codes for `--status`: 0 complete+pass, 1 complete+failures, 3 still
 running, 2 fail-loud (corrupt/stale state, or crashed with pending files).
