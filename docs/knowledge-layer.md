@@ -134,30 +134,63 @@ through to the directory-basename fallback instead of the intended host-based
 one. Plain-HTTPS and SSH remotes for the same repository must slugify to the
 same value.
 
-**Live gap: a `repo_path` that does not validate on this host can still
-anchor the wrong tree.** Slug resolution and provider caching are now
-URL-aware and repo-path-aware, but validating whether `repo_path` actually
-exists on the fleet server's filesystem is a separate, tool-specific step
-some callers still get wrong. At least one hot-path tool resolves a
-non-existent `repo_path` to `null` and then passes that through as
-`cwd ?? undefined` to `getKbProviders`, which in turn falls back to
-`process.cwd()` when no path is supplied. The result: the *slug* (and
-therefore which project's database is opened) can correctly come from
-`repo_remote_url` and point at the real, shared project KB, while the
-`repoPath` *anchor* used for the capture basis check and the freshness
-re-hash silently becomes the fleet server's own working directory -- a valid
-but unrelated tree. Because that anchor is load-bearing, this can stale
-healthy entries in the real shared KB (a freshness re-hash against the wrong
-tree fails to match and marks the entry stale) rather than merely failing to
-read the intended one. The safe pattern for any tool that resolves
-`repo_path` before calling `getKbProviders` is: if the path does not
-validate, pass **no anchor at all** (`repoPath: undefined`, which the basis
-check already treats as "not checkable" rather than as a match against
-whatever `process.cwd()` happens to be) -- never let a validation failure on
-`repo_path` silently degrade into a `process.cwd()` fallback within
-server-handled code. Treat any new or existing call site that resolves
-`repo_path` locally before forwarding it as a candidate for this hazard until
-it has been audited.
+**The anchor rule: a `repo_path` that does not exist on this host is never
+replaced by `process.cwd()`.** `getKbProviders(cwd, remoteUrl)` sets
+`repoPath = cwd ?? process.cwd()` -- an *explicit* `cwd`, even one that does
+not exist on this host (the normal case for a remote member's work folder),
+is passed through verbatim and used as the anchor as-is; the
+`process.cwd()` fallback fires only when `cwd` is *omitted* entirely. Every
+`kb_*` tool call site therefore forwards its `repo_path` input straight
+through rather than pre-resolving it. Three sites used to call a local
+`resolveRepoPath()` helper first, get `null` back for a non-existent path,
+and pass that through `?? undefined` -- which then hit the `process.cwd()`
+fallback inside `getKbProviders`. `kb-session-prime.ts` and `kb-stats.ts` now
+pass the caller's explicit `repo_path` straight to `getKbProviders`
+unchanged, only consulting `resolveRepoPath()` as a fallback when
+`repo_path` was omitted entirely. `kb-export.ts` stays a deliberate third
+shape: it needs a writable directory to write the bible file into, so its
+own `resolveRepoPath()` still validates any explicit `repo_path` and throws
+before `getKbProviders` is ever reached if it does not exist -- an
+intentional hard fail, not a silent `process.cwd()` degrade. The result: the
+*slug* (and
+therefore which project's database is opened) comes from `repo_remote_url`
+and points at the real, shared project KB, and the `repoPath` *anchor* stays
+the caller's own path -- never the fleet server's own working directory, a
+valid but unrelated tree that would otherwise get hashed as if it were the
+member's repo.
+
+Because a non-existent anchor still cannot verify anything about this host's
+tree, `SqliteProvider` suppresses freshness verdicts entirely whenever its
+anchor does not exist (`anchorIsMissing()`, checked by both `checkFreshness`
+at prime and `freshnessSweep`): every relative basis path would otherwise
+fail to resolve, every match would fail, and up to the whole prime batch (or,
+for a full sweep, every entry) would be marked stale against a tree that was
+never actually checked. Suppression is all-or-nothing per call, not
+per-file -- a missing anchor means "no verdict", not "read what you can and
+guess the rest". Capture needs no equivalent guard: `assertCheckableBasis`
+already fails closed there, rejecting any entry that cites a source file it
+cannot resolve under `repoPath`. Treat any new or existing call site that
+resolves `repo_path` locally before forwarding it as a candidate for this
+hazard unless it has been audited against this rule.
+
+**Which call sites forward `repo_remote_url`.** Every `kb_*` MCP tool
+handler that reads or writes an entry (`kb_list`, `kb_query`, `kb_context`,
+`kb_capture`, `kb_invalidate`, `kb_promote`, `kb_harvest`, `kb_feedback`,
+`kb_resolve_contradiction`, `kb_reconcile_prefilter`, `kb_freshness_sweep`,
+`kb_import`, `kb_export`, `kb_session_prime`) forwards its `repo_remote_url`
+input to `getKbProviders` via the shared `kbScopeFields` zod fragment. Two
+non-tool call sites forward it too: the fleet auto-harvest dispatch path
+(`src/tools/execute-prompt.ts`, via a `knownRepoRemoteUrl(agent)` helper that
+forwards the member's own registration-record URL only when one is already
+known -- never derived from `gitRepos`' bare `owner/repo` entries or
+discovered by shelling out to the member host) and the `code_context` KB
+enrichment path (`src/tools/code-intelligence-kb-enrich.ts`, threaded from
+that tool's own `repo_remote_url` input through to its `getKbProviders`
+call). The only two remaining `getKbProviders(...)` call sites in `src/` that
+do not forward a URL are `src/index.ts:140` and `src/cli/kb-directives.ts:147`
+-- both local, single-repo CLI paths with no remote-scope input to forward
+and where the `process.cwd()` default is already correct, so this is
+deliberate, not an oversight.
 
 **The single-accessor invariant is enforced textually, not structurally.** A
 source-level guard checks that no code path calls the deleted service-style
@@ -294,6 +327,13 @@ branch switches and rebases.
   prime alone can never revive a staled entry. The sweep is invoked by
   `kb_import` and `/pm kb-reconcile` (and standalone as `kb_freshness_sweep`),
   never wired into per-prime. It returns `{checked, staled, unstaled}`.
+  `freshnessSweep(root?)` defaults an omitted `root` to the provider's own
+  `repoPath` anchor -- the same root `checkFreshness` always re-hashes
+  against -- so a bare `kb_freshness_sweep` call (which passes no root) can no
+  longer contradict what prime just decided for the same entry. `kb_import`
+  still passes an explicit `root` (its own `--repo`) when sweeping a specific
+  repo. A `root`/anchor that does not exist on this host yields no verdict at
+  all, per the anchor rule above.
 
 **The revival predicate (`freshnessRevivable`).** `stale=1` is set by four
 distinct actors, and only ONE population may be revived -- freshness mismatch.
