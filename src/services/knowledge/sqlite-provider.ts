@@ -1,4 +1,13 @@
-import Database from 'better-sqlite3';
+// node:sqlite, not better-sqlite3: the fleet server ships as a Node SEA, whose
+// require() resolves builtins only. better-sqlite3 reaches its native addon via
+// require('bindings')('better_sqlite3.node') -- a RUNTIME path require the SEA
+// routes to the builtin loader, producing "No such built-in module: <build-host
+// path>/dist/build/better_sqlite3.node". build-sea.mjs's loader {'.node':
+// 'empty'} hides this at build time, so the failure only ever surfaced at
+// runtime, on every kb_* call, non-fatally (every call site catches), which is
+// how a total KB outage stayed invisible. node:sqlite is a builtin, so it is
+// SEA-safe by construction. FTS5 is compiled in (kb_query depends on it).
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -59,7 +68,7 @@ class NotImplementedError extends Error {
 }
 
 export class SqliteProvider implements MemoryProvider {
-  private db: Database.Database | null = null;
+  private db: DatabaseSync | null = null;
   readonly dbPath: string;
   readonly projectSlug: string;
   /**
@@ -93,12 +102,13 @@ export class SqliteProvider implements MemoryProvider {
       fs.mkdirSync(dir, { recursive: true });
     }
 
-    this.db = new Database(this.dbPath);
+    this.db = new DatabaseSync(this.dbPath);
 
-    this.db.pragma('journal_mode=WAL');
-    this.db.pragma('busy_timeout=5000');
-    this.db.pragma('synchronous=NORMAL');
-    this.db.pragma('cache_size=-20000');
+    // node:sqlite has no pragma() helper -- same statements, issued via exec().
+    this.db.exec('PRAGMA journal_mode=WAL');
+    this.db.exec('PRAGMA busy_timeout=5000');
+    this.db.exec('PRAGMA synchronous=NORMAL');
+    this.db.exec('PRAGMA cache_size=-20000');
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS entries (
@@ -183,7 +193,7 @@ export class SqliteProvider implements MemoryProvider {
     } catch {}
   }
 
-  private getDb(): Database.Database {
+  private getDb(): DatabaseSync {
     if (!this.db) throw new Error('SqliteProvider not initialized. Call init() first.');
     return this.db;
   }
@@ -217,7 +227,7 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   private insertEntry(
-    db: Database.Database,
+    db: DatabaseSync,
     id: string,
     input: KBEntryInput,
     content: string,
@@ -439,7 +449,7 @@ export class SqliteProvider implements MemoryProvider {
   // T2.1 and /pm kb-reconcile in T3.2), NOT just a prime. kb_stats stays
   // read-only (D2). The un-stale branch is implemented here for consistency and
   // to share the exact predicate, but the real revival surface is the sweep.
-  private async checkFreshness(db: Database.Database, entries: KBEntry[]): Promise<KBEntry[]> {
+  private async checkFreshness(db: DatabaseSync, entries: KBEntry[]): Promise<KBEntry[]> {
     const candidates = entries.filter(e => e.source_files.length > 0);
     if (candidates.length === 0) return entries;
 
@@ -593,7 +603,7 @@ export class SqliteProvider implements MemoryProvider {
     return { checked, staled: staleIds.length, unstaled: unstaleIds.length };
   }
 
-  private findAudnCandidates(db: Database.Database, input: KBEntryInput): KBEntry[] {
+  private findAudnCandidates(db: DatabaseSync, input: KBEntryInput): KBEntry[] {
     const ftsQuery = makeFtsQuery(input.title);
     if (!ftsQuery) return [];
     try {
@@ -618,7 +628,7 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   private evaluateAudn(
-    db: Database.Database,
+    db: DatabaseSync,
     input: KBEntryInput,
     candidates: KBEntry[],
     newContent: string,
@@ -685,7 +695,7 @@ export class SqliteProvider implements MemoryProvider {
    * knowledge. Tracked as apra-fleet-4wz.7. Kept as-is deliberately: legacy rows
    * still exist in live KBs and must still decay.
    */
-  private decayConceptEntries(db: Database.Database, days: number): void {
+  private decayConceptEntries(db: DatabaseSync, days: number): void {
     const cutoff = new Date(Date.now() - days * 86400 * 1000).toISOString();
     // F1 (D1): only an ACTIVE directive (type='user-directive' AND
     // confidence='CONFIRMED') is exempt from decay. A pending/rejected directive
@@ -706,7 +716,7 @@ export class SqliteProvider implements MemoryProvider {
     `).run(cutoff, cutoff);
   }
 
-  private wireLinks(db: Database.Database, newId: string, input: KBEntryInput): void {
+  private wireLinks(db: DatabaseSync, newId: string, input: KBEntryInput): void {
     const symbols = input.symbols ?? [];
     const files = input.source_files ?? [];
     if (symbols.length === 0 && files.length === 0) return;
@@ -894,13 +904,14 @@ export class SqliteProvider implements MemoryProvider {
       UPDATE entries SET use_count = use_count + 1, last_accessed = ?
       WHERE id IN (${placeholders})
     `).run(new Date().toISOString(), ...ids);
-    return res.changes;
+    // node:sqlite types changes as number|bigint (bigint only past 2^53 rows).
+    return Number(res.changes);
   }
 
   async query(opts: QueryOptions): Promise<KBResult> {
     const db = this.getDb();
     const conditions: string[] = [];
-    const params: unknown[] = [];
+    const params: SQLInputValue[] = [];
 
     // Direct ID lookup bypasses FTS and filters
     if (opts.ids?.length) {
@@ -1238,7 +1249,7 @@ export class SqliteProvider implements MemoryProvider {
   }): Promise<KBEntry[]> {
     const db = this.getDb();
     const conditions: string[] = ['e.superseded_at IS NULL', 'e.stale = 0'];
-    const params: unknown[] = [];
+    const params: SQLInputValue[] = [];
 
     if (opts.confidence) {
       conditions.push('e.confidence = ?');
