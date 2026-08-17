@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { GitNexusProvider } from './code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
 import { getAgent } from '../services/registry.js';
+import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -60,6 +61,7 @@ export const codeQuerySchema = z.object({
 export const codeContextSchema = z.object({
   name: z.string().describe('Symbol name to retrieve callers, callees, and execution flows for, e.g. "validateUser"'),
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
+  ...kbScopeFields,
 });
 
 export const codeMapSchema = z.object({

@@ -63,7 +63,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, NullProvider, handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, NullProvider, handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeMapSchema, codeFlowSchema, codeTestsSchema, codeContextSchema } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
@@ -843,6 +843,25 @@ describe('codeMapSchema validation', () => {
   it('rejects a non-integer top', () => {
     const result = codeMapSchema.safeParse({ top: 1.5 });
     expect(result.success).toBe(false);
+  });
+});
+
+// apra-fleet-b4g.8: codeContextSchema must accept and preserve
+// repo_remote_url so the code_context handler can forward it to the KB
+// enrichment helper. Guards the zod silent-strip mode if kbScopeFields is
+// ever dropped from this schema's spread.
+describe('codeContextSchema validation', () => {
+  it('accepts and preserves repo_remote_url through .parse()', () => {
+    const parsed = codeContextSchema.parse({
+      name: 'someSymbol',
+      repo_remote_url: 'https://example.com/acme/repo.git',
+    });
+    expect(parsed.repo_remote_url).toBe('https://example.com/acme/repo.git');
+  });
+
+  it('omitting repo_remote_url keeps it undefined (no default injected)', () => {
+    const parsed = codeContextSchema.parse({ name: 'someSymbol' });
+    expect(parsed.repo_remote_url).toBeUndefined();
   });
 });
 
