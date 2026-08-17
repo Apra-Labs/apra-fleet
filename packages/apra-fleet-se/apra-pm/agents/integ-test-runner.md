@@ -107,7 +107,7 @@ a time.
 ### Scope discipline and turn economy (stay within budget)
 
 Your dispatch has a bounded turn budget, and historically this phase routinely
-exhausted it and burned 15-85 min in resume/repair (apra-fleet-63x). The budget is
+exhausted it and burned 15-85 min in resume/repair. The budget is
 sized so a run that is making progress is bounded by wall-clock time, not by turn
 count -- exhausting the turn count means the run did too much work per feature or
 polled too fast. Keep the run within budget by holding scope tight:
