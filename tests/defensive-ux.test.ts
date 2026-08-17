@@ -44,9 +44,10 @@ describe('execute-command: long_running OS warning', () => {
     restoreRegistry();
   });
 
-  it('includes OS warning when long_running on Windows member', async () => {
+  it('launches (no OS warning, no hard-fail) when long_running on a Windows member', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
 
     const result = await executeCommand({
       member_id: member.id,
@@ -55,9 +56,8 @@ describe('execute-command: long_running OS warning', () => {
       timeout_s: 5,
     });
 
-    expect(result).toContain('Note:');
-    expect(result).toContain('windows');
-    expect(result).toContain('bash wrapper');
+    expect(result).toContain('Task launched');
+    expect(mockExecCommand).toHaveBeenCalledTimes(1);
   });
 
   it('includes OS warning when long_running on macOS member', async () => {
@@ -74,9 +74,10 @@ describe('execute-command: long_running OS warning', () => {
     expect(result).toContain('macos');
   });
 
-  it('still launches task despite OS warning (does not block)', async () => {
+  it('registers a task id when long_running on a Windows member', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
 
     const result = await executeCommand({
       member_id: member.id,
@@ -85,7 +86,6 @@ describe('execute-command: long_running OS warning', () => {
       timeout_s: 5,
     });
 
-    // Both warning and successful launch
     expect(result).toContain('Task launched');
     expect(result).toContain('task_id=');
   });

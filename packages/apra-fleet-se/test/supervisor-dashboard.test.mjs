@@ -12,6 +12,11 @@ import {
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
+// apra-fleet-x8r.7: every `createDashboard({ listAllBeads })` fixture below is
+// built via this helper (raw rows routed through the real normalizeBead()),
+// so a fixture can never assert on a field the production listAllBeads path
+// (bdListAllBeads() -> normalizeBead()) actually strips.
+import { normalizedBeadFixtures } from './helpers/normalized-bead-fixture.mjs';
 
 // apra-fleet-eft.6.1 -- sprint-stack index dashboard. GET / renders one
 // section per RUNNING sprint (branch, goal, status badge, claimed bead
@@ -109,6 +114,36 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         assert.ok(!html.includes('<role>'));
     });
 
+    test('apra-fleet-x8r.2: renders a progress bar plus M/N text when progress is available', () => {
+        const html = renderSprintSection({
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [],
+            beadCount: 3,
+            progress: { closed: 2, required: 3, fraction: 2 / 3 },
+            members: [],
+        });
+        assert.ok(html.includes('sprint-progress'));
+        assert.ok(html.includes('2/3'));
+    });
+
+    test('apra-fleet-x8r.2: missing/unknown progress renders a neutral placeholder, never NaN or a throw', () => {
+        const html = renderSprintSection({
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [],
+            beadCount: null,
+            progress: null,
+            members: [],
+        });
+        assert.ok(!html.includes('NaN'));
+        assert.ok(html.toLowerCase().includes('progress unavailable'));
+    });
+
     test('apra-fleet-3i3.1: renders a Stop button and a per-row inline result element, both keyed by sprintId', () => {
         const html = renderSprintSection({
             sprintId: 'sprint-1',
@@ -195,6 +230,56 @@ describe('dashboard -- createDashboard', () => {
         });
         const [view] = await dashboard.buildSprintViews();
         assert.equal(view.beadCount, 3);
+    });
+
+    test('apra-fleet-x8r.2: progress reuses computeSprintProgress over the sprint scope, sourced from listAllBeads', async () => {
+        const dashboard = createDashboard({
+            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            expandScope: async () => new Set(['root', 'child1', 'child2']),
+            listAllBeads: async () => normalizedBeadFixtures([
+                { id: 'root', status: 'closed' },
+                { id: 'child1', status: 'closed' },
+                { id: 'child2', status: 'open' },
+                { id: 'out-of-scope', status: 'open' },
+            ]),
+        });
+        const [view] = await dashboard.buildSprintViews();
+        assert.deepEqual(view.progress, { closed: 2, required: 3, fraction: 2 / 3 });
+    });
+
+    test('apra-fleet-x8r.4: below-goal beads and decomposed parents are excluded from progress required/closed, matching the completion gate', async () => {
+        const dashboard = createDashboard({
+            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            expandScope: async () => new Set(['root', 'below-goal', 'decomposed-parent', 'decomposed-child']),
+            getSprintMeta: async () => ({ goal: 'P1' }),
+            listAllBeads: async () => normalizedBeadFixtures([
+                { id: 'root', status: 'closed', priority: 1, parentId: null },
+                // Below goal (P1 -> goalMax 1): excluded even though open.
+                { id: 'below-goal', status: 'open', priority: 3, parentId: null },
+                // Decomposed parent: excluded structurally, even though open.
+                { id: 'decomposed-parent', status: 'open', priority: 1, parentId: null },
+                { id: 'decomposed-child', status: 'closed', priority: 1, parentId: 'decomposed-parent' },
+            ]),
+        });
+        const [view] = await dashboard.buildSprintViews();
+        // Eligible set: root, decomposed-child -- both closed -> N/N, even
+        // though the raw scope contains two other, still-open beads.
+        assert.deepEqual(view.progress, { closed: 2, required: 2, fraction: 1 });
+    });
+
+    test('apra-fleet-x8r.2: a failed bulk beads fetch leaves progress null (placeholder) for every sprint, without throwing', async () => {
+        const dashboard = createDashboard({
+            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            expandScope: async () => new Set(['root']),
+            listAllBeads: async () => { throw new Error('bd unavailable'); },
+            logger: { log() {}, error() {} },
+        });
+        const views = await dashboard.buildSprintViews();
+        assert.equal(views[0].progress, null);
+        assert.equal(views[0].beadCount, 1);
     });
 
     test('getSprintMeta supplies branch/goal/roles when injected; defaults to null/unknown otherwise', async () => {

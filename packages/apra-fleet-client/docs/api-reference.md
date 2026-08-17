@@ -212,7 +212,7 @@ Calls `execute_command` -- runs a shell command on a member. Same
 | Field | Type | Notes |
 |---|---|---|
 | `command` | `string` | The shell command to execute. |
-| `long_running` | `boolean?` | Run as a background task. |
+| `long_running` | `boolean?` | Run as a background task. Supported on linux and windows (windows launches detached via `Invoke-CimMethod Win32_Process.Create`, session 0); darwin gets an advisory warning only. |
 | `max_retries` | `number?` | Max crash retries (long-running only). |
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |

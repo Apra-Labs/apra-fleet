@@ -46,6 +46,41 @@ describe('VCSModule.buildCreatePrCommand', () => {
         });
     });
 
+    test('doubles embedded single quotes (PowerShell-safe) when os is windows', () => {
+        const result = buildCreatePrCommand({
+            provider: 'github',
+            repo: 'Apra-Labs/apra-fleet',
+            base: 'main',
+            head: 'auto-sprint/feature-x',
+            title: "Fix doer's crash",
+            token: 'ghs_abcdef123456',
+            os: 'windows',
+        });
+
+        // PowerShell single-quoted strings escape an embedded ' by doubling
+        // it (''), never via the POSIX '\'' close-reopen trick -- so the
+        // JSON payload's apostrophe surfaces as "doer''s crash" and there is
+        // no backslash-quote sequence anywhere in the built command.
+        assert.ok(result.command.includes(`"Fix doer''s crash"`));
+        assert.ok(!result.command.includes(`\\'`));
+    });
+
+    test('keeps POSIX close-reopen escaping when os is omitted or non-windows', () => {
+        const posixParams = {
+            provider: 'github',
+            repo: 'Apra-Labs/apra-fleet',
+            base: 'main',
+            head: 'auto-sprint/feature-x',
+            title: "Fix doer's crash",
+            token: 'ghs_abcdef123456',
+        };
+        const withoutOs = buildCreatePrCommand(posixParams);
+        const withLinux = buildCreatePrCommand({ ...posixParams, os: 'linux' });
+
+        assert.strictEqual(withoutOs.command, withLinux.command);
+        assert.ok(withoutOs.command.includes(`"Fix doer'\\''s crash"`));
+    });
+
     test('omits body from the JSON payload when not supplied', () => {
         const result = buildCreatePrCommand({
             provider: 'github',
@@ -171,6 +206,19 @@ describe('VCSModule.buildCommentCommand', () => {
             () => buildCommentCommand({ provider: 'azure-devops', repo: 'a/b', issue_number: 1, body: 'x', token: 'tok' }),
             (err) => err.message.startsWith('ERROR: VCSModule: '),
         );
+    });
+
+    test('doubles embedded single quotes (PowerShell-safe) when os is windows', () => {
+        const result = buildCommentCommand({
+            provider: 'github',
+            repo: 'Apra-Labs/apra-fleet',
+            issue_number: 42,
+            body: "doer's step failed -- see run log.",
+            token: 'ghs_tok',
+            os: 'windows',
+        });
+        assert.ok(result.command.includes(`"doer''s step failed`));
+        assert.ok(!result.command.includes(`\\'`));
     });
 });
 

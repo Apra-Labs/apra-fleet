@@ -187,7 +187,7 @@ async function assertMembersOnline(fleetApi, names) {
 // as-is), so a windows member needs its own PowerShell version -- bash's
 // `||`/`$(...)` command substitution do not parse under Windows PowerShell
 // 5.1 (`The token '||' is not a valid statement separator`).
-const BD_CHECK_BASH = 'which bd || npm install -g @beads/bd@1.0.4';
+const BD_CHECK_BASH = 'which bd || npm install -g @beads/bd@1.1.2';
 const DOLT_CHECK_BASH = [
   'which dolt || ~/bin/dolt version || (',
   'OS=$(uname -s | tr \'[:upper:]\' \'[:lower:]\');',
@@ -200,7 +200,7 @@ const DOLT_CHECK_BASH = [
   ')',
 ].join(' ');
 
-const BD_CHECK_WINDOWS = 'if (Get-Command bd -ErrorAction SilentlyContinue) { bd version } else { npm install -g @beads/bd@1.0.4 }';
+const BD_CHECK_WINDOWS = 'if (Get-Command bd -ErrorAction SilentlyContinue) { bd version } else { npm install -g @beads/bd@1.1.2 }';
 const DOLT_CHECK_WINDOWS = [
   'if (Get-Command dolt -ErrorAction SilentlyContinue) { dolt version }',
   'elseif (Test-Path "$HOME\\bin\\dolt.exe") { & "$HOME\\bin\\dolt.exe" version }',

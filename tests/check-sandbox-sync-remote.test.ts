@@ -455,10 +455,17 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
       }
 
     } finally {
-      // Clean up: on Windows, file locks may persist briefly after the function call,
-      // so retry cleanup with delays to allow locks to be released.
+      // Clean up: on Windows, file locks may persist after the function call --
+      // this test spawns a REAL `bd` (no execFileSync injected), and bd's own
+      // dolt process can take longer than a few hundred ms to release its
+      // handle on tmpDir under CI load (observed live: a loaded windows-latest
+      // runner still held the lock past a 10x50ms=500ms budget -- see
+      // EBUSY_RETRY_DELAY_MS=200 in src/cli/workflow-assets.ts for the same
+      // class of Windows EBUSY retry elsewhere in this codebase). 30x200ms=6s
+      // gives real headroom without slowing the common (already-released) case,
+      // since the loop exits on the first successful attempt.
       if (tmpDir) {
-        const cleanupAttempts = 10;
+        const cleanupAttempts = 30;
         for (let i = 0; i < cleanupAttempts; i++) {
           try {
             fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -466,7 +473,7 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
           } catch (err) {
             if (i === cleanupAttempts - 1) throw err;
             // Small delay before retry to allow file handles to be released
-            await new Promise((resolve) => setTimeout(resolve, 50));
+            await new Promise((resolve) => setTimeout(resolve, 200));
           }
         }
       }

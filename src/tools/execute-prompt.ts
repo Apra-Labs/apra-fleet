@@ -347,7 +347,7 @@ async function findDeadLockPid(agent: Agent, workspaceId: string): Promise<numbe
   if (subprocessPid !== undefined) {
     const alive = agent.agentType === 'local'
       ? isPidAlive(subprocessPid)
-      : await isRemoteProcessAlive(getStrategy(agent), subprocessPid);
+      : await isRemoteProcessAlive(getStrategy(agent), subprocessPid, getAgentOS(agent));
     if (!alive) return subprocessPid;
   }
 
@@ -1201,6 +1201,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         pid: capturedPid,
         durablePath,
         unsupported: getAgentOS(agent) === 'windows',
+        os: getAgentOS(agent),
         maxWaitMs: maxTotalMs !== undefined ? Math.max(maxTotalMs - (Date.now() - dispatchStartedAt), 0) : undefined,
         scope,
       });

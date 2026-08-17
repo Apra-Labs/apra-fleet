@@ -7,8 +7,9 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
-import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
-import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
+import { generateTaskWrapper, generateTaskWrapperWindows } from '../services/cloud/task-wrapper.js';
+import { escapeShellArg, escapePowerShellArg, escapeWindowsArg } from '../utils/shell-escape.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
 import { LogScope, maskSecrets, truncateForLog, logLine } from '../utils/log-helpers.js';
@@ -211,29 +212,71 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   // -- Long-running background task path --
   if (input.long_running) {
     const agentOsVal = getAgentOS(agent);
-    const longRunningOsWarning = agentOsVal !== 'linux'
+
+    const longRunningOsWarning = (agentOsVal !== 'linux' && agentOsVal !== 'windows')
       ? `Note: Long-running tasks use a bash wrapper script designed for Linux. The member's OS is ${agentOsVal}, which may not support this feature.\n`
       : '';
 
     const taskId = 'task-' + Date.now().toString(36);
     registerTaskCredentials(taskId, credentials);
-    const wrapperScript = generateTaskWrapper({
-      taskId,
-      command: resolvedCommand,
-      restartCommand: resolvedRestartCommand,
-      maxRetries: input.max_retries ?? 3,
-      activityIntervalSec: 300,
-    });
-    const scriptB64 = Buffer.from(wrapperScript).toString('base64');
 
-    // Create task dir, decode + write wrapper script, chmod, launch with nohup
-    const launchCmd = cmds.wrapInWorkFolder(
-      folder,
-      `mkdir -p ~/.fleet-tasks/${taskId} && ` +
-      `printf '%s' '${scriptB64}' | base64 -d > ~/.fleet-tasks/${taskId}/run.sh && ` +
-      `chmod +x ~/.fleet-tasks/${taskId}/run.sh && ` +
-      `nohup bash ~/.fleet-tasks/${taskId}/run.sh > /dev/null 2>&1 & echo $!`,
-    );
+    let launchCmd: string;
+    if (agentOsVal === 'windows') {
+      // Detached spawn via WMI (Invoke-CimMethod Win32_Process.Create): the
+      // process is created under the WMI provider host's own session
+      // (session 0), independent of the SSH session's job object -- a plain
+      // background launch dies with the SSH channel on Windows (verified
+      // live), so `nohup ... &`'s POSIX equivalent does not exist here.
+      const wrapperScript = generateTaskWrapperWindows({
+        taskId,
+        command: resolvedCommand,
+        restartCommand: resolvedRestartCommand,
+        maxRetries: input.max_retries ?? 3,
+        activityIntervalSec: 300,
+      });
+      const scriptB64 = Buffer.from(wrapperScript, 'utf-8').toString('base64');
+      const taskDir = `$env:USERPROFILE\\.fleet-tasks\\${taskId}`;
+      const runPs1 = `${taskDir}\\run.ps1`;
+      const psCommandLine = `powershell -NoProfile -ExecutionPolicy Bypass -File "${runPs1}"`;
+      launchCmd = wrapPowerShellEncoded([
+        `New-Item -Path "${taskDir}" -ItemType Directory -Force | Out-Null`,
+        `[IO.File]::WriteAllBytes("${runPs1}", [Convert]::FromBase64String('${scriptB64}'))`,
+        `$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "${escapeWindowsArg(psCommandLine)}"; CurrentDirectory = "${escapeWindowsArg(folder)}" }`,
+        `if ($result.ReturnValue -ne 0) { Write-Error "Win32_Process.Create failed with code $($result.ReturnValue)"; exit 1 }`,
+        // Deliberately NOT the FLEET_PID: marker -- that label is matched by
+        // ssh.ts's onPidCaptured regex, which arms killRemoteTree() to
+        // taskkill this PID on inactivity/max-total/abort. $result.ProcessId
+        // here is the detached run.ps1 task process itself (WMI-spawned to
+        // survive SSH channel teardown), NOT the short-lived launcher/SSH
+        // command process -- the process killRemoteTree exists to reap. If
+        // this launch channel stalls after this line but before it closes,
+        // matching FLEET_PID would kill the very task detachment protects.
+        // The task's real PID is durably recorded in task.pid inside its own
+        // task dir (written by the wrapper script itself; see
+        // generateTaskWrapperWindows in task-wrapper.ts) and read from there
+        // by monitor_task -- nothing reads this value off this channel, so
+        // it exists solely as human-readable launch confirmation.
+        `Write-Output "TASK_PID:$($result.ProcessId)"`,
+      ].join('; '));
+    } else {
+      const wrapperScript = generateTaskWrapper({
+        taskId,
+        command: resolvedCommand,
+        restartCommand: resolvedRestartCommand,
+        maxRetries: input.max_retries ?? 3,
+        activityIntervalSec: 300,
+      });
+      const scriptB64 = Buffer.from(wrapperScript).toString('base64');
+
+      // Create task dir, decode + write wrapper script, chmod, launch with nohup
+      launchCmd = cmds.wrapInWorkFolder(
+        folder,
+        `mkdir -p ~/.fleet-tasks/${taskId} && ` +
+        `printf '%s' '${scriptB64}' | base64 -d > ~/.fleet-tasks/${taskId}/run.sh && ` +
+        `chmod +x ~/.fleet-tasks/${taskId}/run.sh && ` +
+        `nohup bash ~/.fleet-tasks/${taskId}/run.sh > /dev/null 2>&1 & echo $!`,
+      );
+    }
 
     writeStatusline(new Map([[agent.id, 'busy']]));
     try {

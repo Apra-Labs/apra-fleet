@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { decodePowerShellEncodedCommand } from './test-helpers.js';
 
 const execAsync = promisify(exec);
 
@@ -455,7 +456,10 @@ describe('pollLogFile', () => {
           // your home"; here that answer is the fixture root). Every other
           // command -- i.e. the directory scan under test -- is executed for
           // real by the host shell.
-          if (cmd.includes('$HOME') || cmd.includes('USERPROFILE')) {
+          // Windows probe is delivered via wrapPowerShellEncoded (base64
+          // -EncodedCommand), not a raw inline string -- decode to inspect it.
+          const decodedCmd = decodePowerShellEncodedCommand(cmd);
+          if (decodedCmd.includes('$HOME') || decodedCmd.includes('USERPROFILE')) {
             return { stdout: fixtureHome, stderr: '', code: 0 };
           }
           const { stdout, stderr } = await execAsync(cmd, { timeout: 30_000, maxBuffer: 1024 * 1024 });

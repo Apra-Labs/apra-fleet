@@ -22,6 +22,54 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'success' });
     });
 
+    // apra-fleet-eft.81.3: the server's execute_prompt schema (src/tools/
+    // execute-prompt.ts) carries expected_context_tokens (number) and
+    // context_size ('S'|'M'|'L') for the context-headroom admission check
+    // (apra-fleet-eft.81.1) -- this client's wrapper is a generic passthrough
+    // (options minus timeoutMs/signal), so both forward automatically when
+    // supplied, and neither key is added when the caller omits them.
+    test('executePrompt forwards expected_context_tokens and context_size when supplied', async () => {
+        let calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledArgs = args;
+                return { status: 'success' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = {
+            prompt: 'Hello world',
+            model: 'premium',
+            expected_context_tokens: 12000,
+            context_size: 'L'
+        };
+        await fleet.executePrompt(options);
+
+        assert.strictEqual(calledArgs.expected_context_tokens, 12000);
+        assert.strictEqual(calledArgs.context_size, 'L');
+        assert.deepStrictEqual(calledArgs, options);
+    });
+
+    test('executePrompt omits expected_context_tokens/context_size entirely when not supplied', async () => {
+        let calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledArgs = args;
+                return { status: 'success' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { prompt: 'Hello world', model: 'premium', timeout_s: 60 };
+        await fleet.executePrompt(options);
+
+        assert.ok(!('expected_context_tokens' in calledArgs), 'expected_context_tokens must not be present when omitted');
+        assert.ok(!('context_size' in calledArgs), 'context_size must not be present when omitted');
+        // Byte-identical to today: no new keys sent when unset.
+        assert.deepStrictEqual(calledArgs, options);
+    });
+
     test('executeCommand', async () => {
         let calledName, calledArgs;
         const mockClient = {

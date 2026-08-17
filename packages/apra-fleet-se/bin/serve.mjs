@@ -46,7 +46,8 @@ import { createBacklog, registerBacklogRoutes } from '../src/supervisor/backlog.
 import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
 import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
 import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-overlap.mjs';
-import { listFleetMembers } from '../src/supervisor/fleet-members.mjs';
+import { listFleetMembers, executeFleetCommand } from '../src/supervisor/fleet-members.mjs';
+import { createDoltOrphanSweep } from '../src/supervisor/dolt-orphan-sweep.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
 
 const SERVE_USAGE = `
@@ -252,7 +253,18 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // above for why no separate launch-form seam is constructed here).
     const dashboard = createDashboard({ ledger, watchdog, backlog });
 
-    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex });
+    // docs/dolt-sync-redesign.md Part 3.3: kill any orphaned ephemeral
+    // `dolt sql-server` a mid-settle orchestrator death left behind on a
+    // member (settle's own finally covers every other path). Both
+    // collaborators use the same short-lived-MCP-connection pattern as
+    // listFleetMembers -- the supervisor never holds a standing fleet
+    // transport.
+    const doltOrphanSweep = createDoltOrphanSweep({
+        listMembers: () => listFleetMembers({ resolveConnection: resolveFleetServerConnection }),
+        execCommand: ({ member, command }) => executeFleetCommand({ member, command, resolveConnection: resolveFleetServerConnection }),
+    });
+
+    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
 

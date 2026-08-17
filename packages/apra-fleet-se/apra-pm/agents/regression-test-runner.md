@@ -153,6 +153,9 @@ bd search "[carry-over]"
 If an existing bug covers the same failure, update its description rather
 than creating a new one.
 
+`--title` is plain text only -- letters, digits, space, and `. , : ; ! ? ( ) ' _ / [ ] -`.
+No backticks, double quotes, `$`, or backslash; put formatted detail in `--description`.
+
 ```bash
 bd create \
   --title="[regression][carry-over] <short description of failure>" \

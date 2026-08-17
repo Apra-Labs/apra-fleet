@@ -96,9 +96,33 @@ describe('launch-form -- buildLaunchRequestBody', () => {
         assert.ok(result.error.includes('P1, P1/P2, P1/P2/P3'));
     });
 
-    test('missing branch/base -> client-side error', () => {
-        assert.equal(buildLaunchRequestBody({ ...base, branch: '' }).ok, false);
+    test('missing base -> client-side error', () => {
         assert.equal(buildLaunchRequestBody({ ...base, base: '  ' }).ok, false);
+    });
+
+    test('blank branch with >=1 member auto-generates a fleet-sprint/<member>-<xxx> branch name', () => {
+        const result = buildLaunchRequestBody({ ...base, branch: '' });
+        assert.equal(result.ok, true);
+        assert.ok(/^fleet-sprint\/[a-z0-9-]+-[a-z0-9]{3}$/.test(result.body.branch), result.body.branch);
+        assert.ok(result.body.branch.startsWith('fleet-sprint/alice-'), result.body.branch);
+    });
+
+    test('blank/whitespace-only branch also auto-generates', () => {
+        const result = buildLaunchRequestBody({ ...base, branch: '   ' });
+        assert.equal(result.ok, true);
+        assert.ok(/^fleet-sprint\/[a-z0-9-]+-[a-z0-9]{3}$/.test(result.body.branch), result.body.branch);
+    });
+
+    test('an explicitly typed branch name is honored verbatim, byte-identical', () => {
+        const result = buildLaunchRequestBody({ ...base, branch: 'feat/my-topic' });
+        assert.equal(result.ok, true);
+        assert.equal(result.body.branch, 'feat/my-topic');
+    });
+
+    test('blank branch with zero members still errors', () => {
+        const result = buildLaunchRequestBody({ ...base, branch: '', members: [] });
+        assert.equal(result.ok, false);
+        assert.ok(/member/i.test(result.error));
     });
 });
 

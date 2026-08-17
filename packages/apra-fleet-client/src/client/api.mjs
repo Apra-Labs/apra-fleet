@@ -16,6 +16,20 @@
  * @property {string} [session_id] - Optional explicit session ID to resume (shorthand alias for resume: "<sessionId>")
  * @property {Record<string, string>} [substitutions] - Optional map of token name to replacement value
  * @property {number} [timeout_s] - Inactivity timeout in seconds (default: 300)
+ * @property {number} [expected_context_tokens] - Optional estimate (apra-fleet-eft.81.1) of how many
+ *   tokens this dispatch will add to the target session's context. When set (or context_size is
+ *   set), the server compares it against the session's remaining context-window headroom BEFORE
+ *   invoking the LLM: too little headroom rejects the call with {reason:
+ *   "insufficient_context_headroom", detail: {demand, headroom, window}} and no spawn; a fit that
+ *   lands inside the safety margin still proceeds but attaches a structured contextWarning. Wins
+ *   over context_size when both are set. Omitting both fields disables the check entirely --
+ *   pre-existing behavior is unchanged. Matches src/tools/execute-prompt.ts's
+ *   expected_context_tokens field exactly (number, optional).
+ * @property {'S'|'M'|'L'} [context_size] - Optional size-bucket shorthand for
+ *   expected_context_tokens (apra-fleet-eft.81.1): S/M/L map to configured token estimates (fleet
+ *   defaults, overridable via config.json's contextAdmission.sizeBucketTokens). Ignored when
+ *   expected_context_tokens is also set. Matches src/tools/execute-prompt.ts's context_size field
+ *   exactly (enum 'S'|'M'|'L', optional).
  * @property {number} [timeoutMs] - Client-side request timeout override (ms). Not sent to
  *   the server; consumed locally by McpClient.request(). When omitted, a default is derived
  *   from max_total_s/timeout_s (see deriveTimeoutMs in this file).
@@ -27,7 +41,12 @@
 /**
  * @typedef {Object} ExecuteCommandOptions
  * @property {string} command - The shell command to execute
- * @property {boolean} [long_running] - Run as background task
+ * @property {boolean} [long_running] - Run as background task. Supported on linux and windows
+ *   members. Windows launches the task detached via `Invoke-CimMethod Win32_Process.Create`
+ *   (WMI provider host / session 0), independent of the SSH session's job object, since a plain
+ *   background launch dies with the SSH channel there. darwin gets an advisory warning (the
+ *   wrapper script is designed for Linux) but is not blocked. Matches
+ *   src/tools/execute-command.ts's long_running branch exactly.
  * @property {number} [max_retries] - Max crash retries (long_running only)
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -164,6 +183,25 @@
  * @property {string} [member_name] - Friendly name of the member
  */
 
+/**
+ * @typedef {Object} SendEmailOptions
+ * @property {"sendgrid" | "smtp"} [provider] - Email provider to use (default "sendgrid").
+ *   Secrets are resolved server-side from the credential store ("sendgrid_api_key" / "smtp_password").
+ * @property {string} from - Sender email address (required)
+ * @property {string} [host] - SMTP server hostname (required for smtp provider)
+ * @property {number} [port] - SMTP server port (default 587, or 465 when secure is true)
+ * @property {string} [user] - SMTP username (required for smtp provider)
+ * @property {boolean} [secure] - Use implicit TLS, e.g. port 465 (default false).
+ *   When false, STARTTLS is required; plaintext AUTH is refused.
+ * @property {string | string[]} to - Recipient email address, or list of addresses
+ * @property {string} subject - Email subject line
+ * @property {string} body - Plain-text email body
+ * @property {string} [html] - Optional HTML email body
+ * @property {string[]} [cc] - CC recipient addresses
+ * @property {string[]} [bcc] - BCC recipient addresses
+ * @property {{ filename: string, content: string, contentType?: string }[]} [attachments] - Optional file attachments (base64-encoded content)
+ */
+
 
 // Grace margin added on top of the payload's own timeout hint (timeout_s /
 // max_total_s) so the client doesn't race the server's own deadline -- the
@@ -203,6 +241,27 @@ export function deriveTimeoutMs(payload = {}) {
         return undefined;
     }
     return hintSeconds * 1000 + TIMEOUT_GRACE_MS;
+}
+
+/**
+ * Extract the JSON payload from a raw MCP tool-call result.
+ *
+ * Every ApraFleet wrapper returns the raw callTool() result --
+ * `{ content: [{ type: 'text', text }, ...] }` -- NOT a JSON string, so
+ * `JSON.parse(result)` on it throws. Tool results can also carry
+ * display-only items (e.g. an `<apra-fleet-display>` onboarding block)
+ * AHEAD of the payload, so content[0] is not reliable either. This helper
+ * returns the first content item that parses as JSON.
+ *
+ * @param {{ content?: { text?: string }[] }} result - raw callTool() result
+ * @returns {any} the parsed JSON payload
+ * @throws {Error} when no content item contains valid JSON
+ */
+export function parseToolJson(result) {
+    for (const item of result?.content ?? []) {
+        try { return JSON.parse(item.text); } catch { /* not the payload */ }
+    }
+    throw new Error('No JSON payload in tool result');
 }
 
 export class ApraFleet {
@@ -341,6 +400,54 @@ export class ApraFleet {
      */
     async setupSshKey(options) {
         return this.mcpClient.callTool('setup_ssh_key', options);
+    }
+
+    /**
+     * Send an email. Pass provider config inline (provider, from, and for
+     * SMTP: host, port, user, secure). Secrets resolve from the credential
+     * store (sendgrid_api_key / smtp_password).
+     * @param {SendEmailOptions} options
+     */
+    async sendEmail(options) {
+        return this.mcpClient.callTool('send_email', options);
+    }
+
+    /**
+     * Collect a secret from the user out-of-band and store it in the fleet
+     * credential store. The secret value never passes through the caller.
+     * @param {{ name: string, prompt: string, persist?: boolean,
+     *           network_policy?: 'allow'|'confirm'|'deny', members?: string,
+     *           ttl_seconds?: number }} options
+     */
+    async credentialStoreSet(options) {
+        return this.mcpClient.callTool('credential_store_set', options);
+    }
+
+    /**
+     * List stored credentials (names and metadata only -- no values).
+     * The result payload is a JSON array of { name, scope, ... } entries;
+     * extract it with parseToolJson().
+     */
+    async credentialStoreList() {
+        return this.mcpClient.callTool('credential_store_list', {});
+    }
+
+    /**
+     * Delete a named credential from the store.
+     * @param {{ name: string }} options
+     */
+    async credentialStoreDelete(options) {
+        return this.mcpClient.callTool('credential_store_delete', options);
+    }
+
+    /**
+     * Update metadata (members, TTL, network policy) on an existing
+     * credential without re-entering the secret.
+     * @param {{ name: string, members?: string, ttl_seconds?: number,
+     *           network_policy?: 'allow'|'confirm'|'deny' }} options
+     */
+    async credentialStoreUpdate(options) {
+        return this.mcpClient.callTool('credential_store_update', options);
     }
 
     /**

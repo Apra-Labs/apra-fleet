@@ -89,21 +89,26 @@ describe('validateNewTask', () => {
             'Break out" here',        // closes the quote
             'Trailing backslash \\',  // escapes the closing quote
             'Expand $HOME now',       // parameter expansion
-            'Run `whoami` please',    // command substitution
         ]) {
             const result = validateNewTask({ title, description: 'Safe description.', priority: 'P2' });
             assert.strictEqual(result.ok, false, `expected ${JSON.stringify(title)} to stay rejected`);
         }
     });
 
-    test('rejects backticks in title', () => {
+    // apra-fleet-vk0a: a backtick in TITLE is no longer a hard rejection --
+    // sanitizeNewTaskTitle() rewrites it to a single quote (Markdown
+    // inline-code style, no special meaning in a bd title) before the
+    // SAFE_TEXT_RE check runs, so a genuinely useful finding is not silently
+    // demoted to a freetext note just for referencing a CLI command in
+    // backticks. See sanitizeNewTaskTitle()'s doc comment in runner.js.
+    test('sanitizes backticks in title to single quotes rather than rejecting (apra-fleet-vk0a)', () => {
         const result = validateNewTask({
             title: 'Run `whoami` and report',
             description: 'Safe description.',
             priority: 'P1',
         });
-        assert.strictEqual(result.ok, false);
-        assert.match(result.reason, /title/);
+        assert.strictEqual(result.ok, true);
+        assert.strictEqual(result.title, "Run 'whoami' and report");
     });
 
     test('accepts backticks-as-text in description (no longer shell-interpolated -- see eft.56.1)', () => {
@@ -240,10 +245,12 @@ describe('validateNewTask', () => {
         assert.strictEqual(result.title, '[test] [blocker] Validate auth flow (v2)');
     });
 
-    test('still rejects genuinely unsafe characters ($ and backtick) in title', () => {
+    test('still rejects genuinely unsafe characters ($, quote, backslash) in title', () => {
+        // Backtick is deliberately excluded from this list: it is sanitized
+        // (rewritten to a single quote), not rejected -- see the dedicated
+        // 'sanitizes backticks in title' test above.
         const unsafeChars = [
             'Title with $(injection)',
-            'Title with `backtick`',
             'Title with "quote',
             'Title with backslash\\',
         ];

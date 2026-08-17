@@ -690,6 +690,13 @@ async function main() {
         // explicitly rather than picking up the new core defaults.
         stateSnapshotDir: 'sprint-logs',
         stateSnapshotPrefix: 'sprint_',
+        // apra-fleet-dm5.2: publish the fields buildRunTitle() (apra-fleet-
+        // dm5.1) reads off state.args so the viewer header shows
+        // "<members> working <targetIssues> (<goal>)" instead of just the
+        // workflow name for a fleet-sprint run. Purely additive -- the core
+        // viewer's state.args stays optional/null for any other workflow
+        // that doesn't pass launchArgs, and no existing state key changes.
+        launchArgs: { members: validMembers, targetIssues, goal },
     });
 
     // apra-fleet-unw2.16, N14 (e): the viewer port was hardcoded with no

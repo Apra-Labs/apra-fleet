@@ -346,6 +346,44 @@ export class DoltSyncError extends WorkflowError {
     }
 }
 
+/**
+ * apra-fleet dolt-settle redesign (see fleet-sprint/docs/dolt-sync-redesign.md
+ * Part 5) -- thrown by settleDoltConflicts() when a member has no usable,
+ * correctly-pinned `dolt` binary and settle's own install/repair ladder
+ * (probe -> install -> kill-blocking-process-and-retry -> warn-and-fall-back-
+ * to-a-functionally-probed-alternative) could not produce one. This is an
+ * ordinary operational/infra failure under the existing degraded/fatal
+ * taxonomy -- NOT an escalation tier, exactly the same posture as
+ * DoltSyncError for "server wouldn't start". It is deliberately NOT thrown
+ * for the "wrong version but a functional fallback was found and passed its
+ * preflight" case (Part 5.6) -- that path proceeds with a warning instead;
+ * this error is reserved for "no runnable dolt at all" or "unsupported
+ * platform/arch with nothing usable already present".
+ *
+ * @property {string|null} member - the member with no usable dolt binary
+ * @property {string|null} probedPath - the path settle probed/attempted to install to
+ * @property {string|null} probeOutput - the raw probe/install failure output
+ * @property {string|null} repairCommand - the exact manual command an operator can run to fix this
+ */
+export class DoltBinaryUnavailableError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, probedPath?: string|null, probeOutput?: string|null, repairCommand?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { member = null, probedPath = null, probeOutput = null, repairCommand = null, details, cause } = opts;
+        super(message, {
+            code: 'DOLT_BINARY_UNAVAILABLE',
+            details: { member, probedPath, probeOutput, repairCommand, ...details },
+            cause,
+        });
+        this.member = member;
+        this.probedPath = probedPath;
+        this.probeOutput = probeOutput;
+        this.repairCommand = repairCommand;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Non-retryable dispatch failures (stabilization Issue 43 / smoke rehearsal)
 // ---------------------------------------------------------------------------

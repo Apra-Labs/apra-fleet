@@ -124,11 +124,13 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
     });
 
     test('a residual validation failure is appended verbatim to the parent bead notes and logged', async () => {
-        // A title that fails SAFE_TEXT_RE (backticks) -- validateNewTask()
-        // rejects it, so this newTask must never reach createChildBeadWithAllocatedId
-        // at all; instead it is appended verbatim to the parent's notes.
+        // A title that fails SAFE_TEXT_RE ($(...) command substitution --
+        // unlike a backtick, this is NOT sanitized, see apra-fleet-vk0a) --
+        // validateNewTask() rejects it, so this newTask must never reach
+        // createChildBeadWithAllocatedId at all; instead it is appended
+        // verbatim to the parent's notes.
         const newTask = {
-            title: 'Run `whoami` and report',
+            title: 'Run $(whoami) and report',
             description: 'Safe-looking description with = and & chars intact.',
             priority: 'P1',
         };

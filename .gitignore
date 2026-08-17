@@ -10,6 +10,8 @@ packages/apra-fleet-se/vendor/schemas/
 *.js.map
 *.tsbuildinfo
 .env
+tests/integration/email-test-config.json
+examples/workflows/email-notify/config.json
 *.pem
 fleet.config.json
 ~/.claude-fleet/
@@ -25,7 +27,6 @@ CLAUDE.md
 *.db
 .beads-credential-key
 .beads/
-.claude/settings.json
 
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/

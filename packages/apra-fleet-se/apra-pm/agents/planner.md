@@ -79,6 +79,11 @@ Two things about that search, both verified against the real `bd` CLI:
 
 ## Step 2 -- Decompose sprint goals into features
 
+Every title you write below (Steps 2 and 3) is plain text only -- letters,
+digits, space, and `. , : ; ! ? ( ) ' _ / [ ] -`. No backticks, double
+quotes, `$`, or backslash (shell-interpolated by `bd create`); put any
+command/flag/filename formatting in the description instead.
+
 For each sprint goal create type=feature issues as direct children:
 - Title: a concrete deliverable ("User can reset password via email")
 - Description: what done looks like, who uses it, acceptance criteria

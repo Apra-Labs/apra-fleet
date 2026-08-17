@@ -127,6 +127,13 @@ const FLEET_SPRINT_CLI_SKILL_NAME = 'fleet-sprint-cli';
 const FLEET_SPRINT_CLI_SKILL_VENDOR_BASE =
   'packages/apra-fleet-se/fleet-sprint/skills/fleet-sprint-cli';
 
+// Helper skill for driving fleet-sprints via the supervisor HTTP API
+// (start/check/kill), as opposed to FLEET_SPRINT_CLI_SKILL_NAME above (direct
+// CLI invocation). Ships alongside it, same provider-agnostic rationale.
+const FLEET_SUPERVISOR_SKILL_NAME = 'fleet-supervisor';
+const FLEET_SUPERVISOR_SKILL_VENDOR_BASE =
+  'packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor';
+
 interface AssetManifest {
   version: string;
   hooks: Record<string, string>;
@@ -147,6 +154,9 @@ interface AssetManifest {
   // Optional for the same additive-only reason: older manifests (built before
   // the fleet-sprint rename) simply omit it and the install step skips.
   fleetSprintCliSkill?: Record<string, string>;
+  // Optional for the same additive-only reason: older manifests (built before
+  // this skill existed) simply omit it and the install step skips.
+  fleetSupervisorSkill?: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';
@@ -324,6 +334,17 @@ export function buildDevManifest(root: string): AssetManifest {
     : `dist/skills/${FLEET_SPRINT_CLI_SKILL_NAME}`;
   const fleetSprintCliSkill = collectFilesRec(cliSkillDir, cliSkillBase, cliSkillBase);
 
+  // fleet-supervisor helper skill (ships inside the fleet-sprint package;
+  // documents the supervisor HTTP API contract for starting/checking/killing
+  // sprints). Provider-agnostic -- installed for every LLM provider.
+  const vendorSupervisorSkill = path.join(root, ...FLEET_SUPERVISOR_SKILL_VENDOR_BASE.split('/'));
+  const distSupervisorSkill = path.join(root, 'dist', 'skills', FLEET_SUPERVISOR_SKILL_NAME);
+  const supervisorSkillDir = fs.existsSync(vendorSupervisorSkill) ? vendorSupervisorSkill : distSupervisorSkill;
+  const supervisorSkillBase = fs.existsSync(vendorSupervisorSkill)
+    ? FLEET_SUPERVISOR_SKILL_VENDOR_BASE
+    : `dist/skills/${FLEET_SUPERVISOR_SKILL_NAME}`;
+  const fleetSupervisorSkill = collectFilesRec(supervisorSkillDir, supervisorSkillBase, supervisorSkillBase);
+
   // Collect auto-sprint.js from apra-pm/.claude/workflows (or dist/workflows fallback)
   const vendorWorkflows = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', '.claude', 'workflows');
   const workflowsSrc = fs.existsSync(vendorWorkflows)
@@ -383,7 +404,7 @@ export function buildDevManifest(root: string): AssetManifest {
   return {
     version: vf.version, hooks, scripts, skills, fleetSkills, agents, workflows,
     workflowRuntime, agentSchemas, builtinWorkflows, autoSprintArgsSkill,
-    fleetSprintCliSkill,
+    fleetSprintCliSkill, fleetSupervisorSkill,
   };
 }
 
@@ -1395,6 +1416,41 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     }
   }
 
+  // --- fleet-supervisor helper skill (all providers) ---
+  // Documents the supervisor HTTP API contract for starting/checking/killing
+  // sprints. Same gating as fleet-sprint-cli above.
+  if (installFleet || installPm) {
+    const supervisorSkillDest = path.join(paths.configDir, 'skills', FLEET_SUPERVISOR_SKILL_NAME);
+    const supervisorSkillEntries = isSea()
+      ? Object.entries(manifest.fleetSupervisorSkill ?? {}).map(([relPath, assetKey]) => ({
+          relPath,
+          content: extractAsset(assetKey),
+        }))
+      : (() => {
+          const root = findProjectRoot();
+          const vendorSupervisorSkill = path.join(root, ...FLEET_SUPERVISOR_SKILL_VENDOR_BASE.split('/'));
+          const distSupervisorSkill = path.join(root, 'dist', 'skills', FLEET_SUPERVISOR_SKILL_NAME);
+          const supervisorSkillSrc = fs.existsSync(vendorSupervisorSkill) ? vendorSupervisorSkill : distSupervisorSkill;
+          const supervisorSkillBase = fs.existsSync(vendorSupervisorSkill)
+            ? FLEET_SUPERVISOR_SKILL_VENDOR_BASE
+            : `dist/skills/${FLEET_SUPERVISOR_SKILL_NAME}`;
+          const collected = collectFilesRec(supervisorSkillSrc, supervisorSkillBase, supervisorSkillBase);
+          return Object.entries(collected).map(([relPath, rootRelativeLabel]) => ({
+            relPath,
+            content: fs.readFileSync(path.join(root, rootRelativeLabel), 'utf-8'),
+          }));
+        })();
+
+    if (supervisorSkillEntries.length > 0) {
+      clearDirSync(supervisorSkillDest);
+      for (const { relPath, content } of supervisorSkillEntries) {
+        writeAssetFile(path.join(supervisorSkillDest, relPath), content);
+      }
+    } else {
+      console.warn(`  [!] ${FLEET_SUPERVISOR_SKILL_NAME} skill source not found -- skill not installed`);
+    }
+  }
+
   if (!installFleet && !installPm) {
     console.log(`  Skipping skills (use --skill all to install, or omit --skill for default)`);
   }
@@ -1485,7 +1541,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       // already installed - skip
     } catch {
       // not installed - install it
-      execFileSync('npm', ['install', '-g', '@beads/bd@1.0.4'], { stdio: 'inherit', shell: true });
+      execFileSync('npm', ['install', '-g', '@beads/bd@1.1.2'], { stdio: 'inherit', shell: true });
     }
   } catch (err) {
     // non-fatal: warn but don't fail the install

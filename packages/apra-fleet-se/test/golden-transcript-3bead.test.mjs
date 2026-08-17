@@ -64,6 +64,19 @@ const GOLDEN_DIR = path.join(__dirname, 'fixtures', 'golden-transcript');
 const GOLDEN_PATH = path.join(GOLDEN_DIR, 'mock-sprint-3bead.jsonl');
 const UPDATE_GOLDEN = process.env.UPDATE_GOLDEN === '1';
 
+// apra-fleet-ot2z.14: runner.js's main() acquires the machine-local sprint
+// pidfile mutex (fleet-sprint/sprint-lock.mjs) keyed on (branch, members)
+// against the OS-tmpdir-wide default lock directory unless
+// APRA_FLEET_SPRINT_LOCK_DIR is set. This file's `branch: 'auto-sprint/
+// mock-sprint-3bead'` is a fixed literal shared by every test below, so
+// without isolation it could spuriously collide with an unrelated REAL
+// fleet-sprint concurrently running on the same host under
+// `--test-concurrency=8`. Node's test runner spawns one process per test
+// file, so setting this once at module scope (a fresh throwaway dir for
+// this file's whole process lifetime) safely isolates every test here
+// without affecting other files.
+process.env.APRA_FLEET_SPRINT_LOCK_DIR = fsSync.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sprint-lock-golden-3bead-'));
+
 // apra-fleet-7ll: replicate the real execute_command MCP tool's response
 // shape (src/tools/execute-command.ts) -- "Exit code: N\n<output>" display
 // text PLUS a structuredContent.stdout/stderr/exitCode machine-readable

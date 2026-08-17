@@ -1,6 +1,144 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml } from '../fleet-sprint/viewer-extensions.mjs';
+import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml, renderProgressBarHtml } from '../fleet-sprint/viewer-extensions.mjs';
+import { computeSprintProgress } from '../fleet-sprint/sprint-progress.mjs';
+
+// apra-fleet-x8r.1: closed/required progress-bar widget. computeSprintProgress
+// is a pure function over the ALREADY-SCOPED bead list (the same list
+// bdListScoped('') / runner.js's scope-walk already produces, threaded
+// through as sprintTasks) -- it does no I/O and never re-derives scope.
+describe('computeSprintProgress', () => {
+    test('counts closed vs total across a mixed-status scoped bead list', () => {
+        const beads = [
+            { id: 1, status: 'closed' },
+            { id: 2, status: 'open' },
+            { id: 3, status: 'closed' },
+            { id: 4, status: 'in_progress' },
+        ];
+        assert.deepStrictEqual(computeSprintProgress(beads), { closed: 2, required: 4, fraction: 0.5 });
+    });
+
+    test('required=0 (empty scope) renders without dividing by zero -- fraction is 0, not NaN', () => {
+        const result = computeSprintProgress([]);
+        assert.deepStrictEqual(result, { closed: 0, required: 0, fraction: 0 });
+        assert.ok(Number.isFinite(result.fraction));
+    });
+
+    test('non-array input never throws -- treated as empty', () => {
+        assert.deepStrictEqual(computeSprintProgress(null), { closed: 0, required: 0, fraction: 0 });
+        assert.deepStrictEqual(computeSprintProgress(undefined), { closed: 0, required: 0, fraction: 0 });
+    });
+
+    test('all closed -> fraction 1', () => {
+        const beads = [{ status: 'closed' }, { status: 'closed' }];
+        assert.deepStrictEqual(computeSprintProgress(beads), { closed: 2, required: 2, fraction: 1 });
+    });
+
+    // apra-fleet-x8r.4: `required` must match runner.js's real completion
+    // gate -- below-goal-priority beads and decomposed parent (grouping)
+    // nodes are excluded from the required-to-close set, so a sprint scope
+    // containing either can still reach N/N once every ELIGIBLE bead closes,
+    // even though the raw scope list itself never all-closes.
+    test('a below-goal bead and a decomposed parent are excluded from required -- scope reaches N/N once eligible beads close', () => {
+        const beads = [
+            // In-goal leaf, closed.
+            { id: 'a', status: 'closed', priority: 1 },
+            // In-goal leaf, closed.
+            { id: 'b', status: 'closed', priority: 2, parent: 'a' },
+            // Below-goal bead (priority 3 > goalMax 2) -- still OPEN, but must
+            // not block N/N since it is outside the required set.
+            { id: 'c', status: 'open', priority: 3 },
+            // Decomposed parent (someone else's `.parent`) -- structurally
+            // excluded regardless of priority/status; its own status here is
+            // deliberately 'open' to prove exclusion isn't just "closed
+            // parents don't matter".
+            { id: 'd', status: 'open', priority: 1 },
+            { id: 'e', status: 'closed', priority: 1, parent: 'd' },
+        ];
+        const result = computeSprintProgress(beads, { goalMax: 2, decomposedParentIds: ['d'] });
+        // Eligible set: a, b, e (c is below-goal; d is a decomposed parent).
+        // All three are closed -> N/N.
+        assert.deepStrictEqual(result, { closed: 3, required: 3, fraction: 1 });
+    });
+
+    test('opts is additive-optional -- a bare call keeps the pre-x8r.4 "every bead in scope" behavior', () => {
+        const beads = [
+            { id: 'a', status: 'closed', priority: 1 },
+            { id: 'b', status: 'open', priority: 5 },
+        ];
+        assert.deepStrictEqual(computeSprintProgress(beads), { closed: 1, required: 2, fraction: 0.5 });
+        assert.deepStrictEqual(computeSprintProgress(beads, {}), { closed: 1, required: 2, fraction: 0.5 });
+    });
+
+    // apra-fleet-x8r.8: runner.js's partitionByGoalMembership() (eft.52.1.3)
+    // can admit a below-goal-priority bead into the Sprint section via a
+    // documented blocks-edge exception, tagging it `placement: 'sprint'`.
+    // The beads TREE (renderBeadsHtml) honors that flag when present. Before
+    // this fix, computeSprintProgress() ignored `placement` and re-derived
+    // membership from raw priority alone -- so a blocks-exception bead could
+    // render as an open Sprint row in the tree while the bar above it read
+    // N/N, excluding that same row from the count. This pins the two
+    // surfaces agreeing: a below-goal bead tagged `placement: 'sprint'` is
+    // counted (and, while open, blocks N/N), matching the tree that renders
+    // it as a Sprint row; a below-goal bead tagged `placement: 'backlog'` is
+    // excluded, matching the tree that renders it in the Backlog instead.
+    test('a below-goal bead admitted into the Sprint section via the blocks-edge exception is counted, matching the tree (apra-fleet-x8r.8)', () => {
+        const beads = [
+            // In-goal leaf, closed.
+            { id: 'a', status: 'closed', priority: 1, placement: 'sprint' },
+            // Below-goal by priority (3 > goalMax 1), but admitted into the
+            // Sprint section by the blocks-edge exception -- still OPEN.
+            { id: 'blocks-exception', status: 'open', priority: 3, placement: 'sprint' },
+        ];
+        const result = computeSprintProgress(beads, { goalMax: 1 });
+        // Without placement-awareness this would read closed:1, required:1,
+        // fraction:1 (N/N) despite 'blocks-exception' rendering as an open
+        // Sprint row in the tree. With placement honored, it stays 1/2.
+        assert.deepStrictEqual(result, { closed: 1, required: 2, fraction: 0.5 });
+    });
+
+    test('a below-goal bead NOT admitted into the Sprint section (placement: backlog) is excluded, matching the tree', () => {
+        const beads = [
+            { id: 'a', status: 'closed', priority: 1, placement: 'sprint' },
+            { id: 'below-goal', status: 'open', priority: 3, placement: 'backlog' },
+        ];
+        const result = computeSprintProgress(beads, { goalMax: 1 });
+        assert.deepStrictEqual(result, { closed: 1, required: 1, fraction: 1 });
+    });
+
+    test('rows with no `placement` field fall back to the plain numeric priority filter unchanged (e.g. dashboard.mjs callers)', () => {
+        const beads = [
+            { id: 'a', status: 'closed', priority: 1 },
+            { id: 'below-goal', status: 'open', priority: 3 },
+        ];
+        assert.deepStrictEqual(computeSprintProgress(beads, { goalMax: 1 }), { closed: 1, required: 1, fraction: 1 });
+    });
+});
+
+describe('renderProgressBarHtml', () => {
+    test('renders the M/N text and a bar fill proportional to fraction', () => {
+        const html = renderProgressBarHtml({ closed: 3, required: 10, fraction: 0.3 });
+        assert.ok(html.includes('3/10'));
+        assert.ok(html.includes('width: 30%'));
+    });
+
+    test('required=0 renders a flat empty bar and 0/0 text, never throws', () => {
+        assert.doesNotThrow(() => renderProgressBarHtml({ closed: 0, required: 0, fraction: 0 }));
+        const html = renderProgressBarHtml({ closed: 0, required: 0, fraction: 0 });
+        assert.ok(html.includes('0/0'));
+        assert.ok(html.includes('width: 0%'));
+    });
+
+    test('never throws on null/undefined input', () => {
+        assert.doesNotThrow(() => renderProgressBarHtml(null));
+        assert.doesNotThrow(() => renderProgressBarHtml(undefined));
+    });
+
+    test('is embedded into the browser-side beadsExtension.js script', () => {
+        assert.ok(beadsExtension.js.includes('computeSprintProgress'));
+        assert.ok(beadsExtension.js.includes('renderProgressBarHtml'));
+    });
+});
 
 // apra-fleet-eft.37.4 (M3): beadsExtension.detailLookup is the relocated
 // (verbatim) former core findBeadById() -- core now only knows the generic

@@ -1339,7 +1339,8 @@ const REVIEW_SCHEMA = {
         ],
         "properties": {
           "title": {
-            "type": "string"
+            "type": "string",
+            "description": "Plain text only: letters, digits, space, and . , : ; ! ? ( ) ' _ / [ ] - -- nothing else. No backticks, double quotes, $, or backslash (the title is interpolated into a shell command downstream). Do NOT wrap a command/flag/filename in backticks here -- write it plain (e.g. \"Surface the Windows service registration mode in apra-fleet status\") or move the formatted detail into description instead, which has no such restriction. NOT enforced as a hard schema constraint here (deliberately no \"pattern\"): a single out-of-allowlist newTask title must never make ajv reject/retry the WHOLE structured verdict (verdict, notes, reopenIds, and the other newTasks) -- see validateNewTask() in fleet-sprint/runner.js, the actual (per-item, non-fatal) enforcement point, applied after parsing."
           },
           "description": {
             "type": "string"

@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import os from 'os';
 import { FleetWorkflow, BudgetExceededError } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
@@ -15,6 +16,18 @@ import { runCmd } from './helpers/bd-replay.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
+
+// apra-fleet-ot2z.14: runner.js's main() acquires the machine-local sprint
+// pidfile mutex (fleet-sprint/sprint-lock.mjs) keyed on (branch, members)
+// against the OS-tmpdir-wide default lock directory unless
+// APRA_FLEET_SPRINT_LOCK_DIR is set. This file's `branch: 'auto-sprint/
+// budget-live'` is a fixed literal shared by every test below, so without
+// isolation it could spuriously collide with an unrelated REAL fleet-sprint
+// concurrently running on the same host under `--test-concurrency=8`. Node's
+// test runner spawns one process per test file, so setting this once at
+// module scope (a fresh throwaway dir for this file's whole process
+// lifetime) safely isolates every test here without affecting other files.
+process.env.APRA_FLEET_SPRINT_LOCK_DIR = fsSync.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sprint-lock-budget-live-'));
 
 // N10 (apra-fleet-unw2.8): regression coverage for "cost/budget is live",
 // i.e. that a real auto-sprint run (a) actually debits budget._spent

@@ -95,19 +95,42 @@ export async function pollDirectoryActivity(memberId: string): Promise<Directory
   const escapedWinDir = logDir.replace(/'/g, "''");
   const escapedPosixDir = escapeDoubleQuoted(logDir);
 
+  // apra-fleet: avoid any intermediate `$variable` in this one-liner -- on at
+  // least one Windows member (fleet-win-dev1), the SSH exec path silently
+  // strips bare `$name` tokens (e.g. `$i`) out of the command string before
+  // the nested `powershell -c` ever parses it, turning this into a parse
+  // error on every poll and killing the mtime-based stall signal.
+  //
+  // Two prior attempts at a $-free one-liner both hung (and leaked an
+  // unkillable remote powershell.exe -- `ssh.ts`'s killRemoteTree() is a
+  // no-op here, no FLEET_PID marker is ever emitted by this command):
+  // feeding a possibly-empty `Get-ChildItem -Depth ...` pipeline result
+  // straight into `[DateTimeOffset]::new(...)` or `Get-Date -Format o`.
+  // Live reproduction (Start-Job + Wait-Job -Timeout, isolating each
+  // pipeline stage) traced the hang specifically to `Get-ChildItem -Depth`
+  // against a NONEXISTENT path with errors suppressed -- not to anything
+  // downstream, and not to an existing-but-empty directory (`-Depth`
+  // against a real, empty dir returns instantly). A `Test-Path` guard
+  // (itself instant either way, verified live) skips `Get-ChildItem`
+  // entirely when the directory does not exist -- the common case here,
+  // since this polls the log dir before a session's first turn creates it.
+  // `Get-Date -Format o` as the terminal stage (rather than a constructor
+  // call) means a zero-object pipeline just produces no output, no error.
   const cmd = isWindows
-    ? `powershell -c "$i = Get-ChildItem -Path '${escapedWinDir}' -Depth 5 -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1; if ($i) { [DateTimeOffset]::new($i.LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds() }"`
+    ? `powershell -c "if (Test-Path -Path '${escapedWinDir}') { Get-ChildItem -Path '${escapedWinDir}' -Depth 5 -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1 -ExpandProperty LastWriteTimeUtc | Get-Date -Format o }"`
     : `find "${escapedPosixDir}" -maxdepth 5 -type f -exec stat -c %Y {} + 2>/dev/null | sort -nr | head -n1`;
 
   try {
     const result = await strategy.execCommand(cmd, 5000);
     const trimmed = result.stdout.trim();
     if (!trimmed) return { mtimeMs: null, signalAvailable: authoritative };
-    const n = Number(trimmed);
-    if (!Number.isFinite(n) || n <= 0) return { mtimeMs: null, signalAvailable: authoritative };
+    // Windows emits an ISO-8601 timestamp (`Get-Date -Format o`); POSIX
+    // emits whole seconds since epoch.
+    const ms = isWindows ? Date.parse(trimmed) : Number(trimmed) * 1000;
+    if (!Number.isFinite(ms) || ms <= 0) return { mtimeMs: null, signalAvailable: authoritative };
     // A guessed directory that actually produced an mtime IS verified: real
     // files were found there, so from here on it is a genuine signal source.
-    return { mtimeMs: isWindows ? n : n * 1000, signalAvailable: true };
+    return { mtimeMs: ms, signalAvailable: true };
   } catch {
     return { mtimeMs: null, signalAvailable: authoritative };
   }
@@ -125,8 +148,10 @@ async function fetchMtimeMs(
   logFilePath: string,
   isWindows: boolean
 ): Promise<number | null> {
+  // See the matching note in pollDirectoryActivity above: no intermediate
+  // `$variable` here either, for the same reason.
   const cmd = isWindows
-    ? `powershell -c "$i = Get-Item -LiteralPath '${logFilePath}' -ErrorAction SilentlyContinue; if ($i) { [DateTimeOffset]::new($i.LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds() }"`
+    ? `powershell -c "[DateTimeOffset]::new((Get-Item -LiteralPath '${logFilePath}' -ErrorAction SilentlyContinue).LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds()"`
     // GNU stat (`-c %Y`) first; BSD/macOS stat (`-f %m`) as a fallback -- both report whole seconds.
     : `stat -c %Y "${logFilePath}" 2>/dev/null || stat -f %m "${logFilePath}" 2>/dev/null`;
 

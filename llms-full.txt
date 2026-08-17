@@ -61,7 +61,7 @@ One control plane. Any device. Any model. Any workflow. Any domain.
 
 | Pillar | Concretely |
 |---|---|
-| **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. |
+| **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. Windows members are fully supported for dispatch, command execution, and background long-running tasks (launched detached via WMI). |
 | **Any model** | Claude, Codex, Gemini, Copilot, Antigravity, local models (any OpenAI-compatible endpoint via OpenCode) -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. Cross-provider review is a quality mechanism: a different model, with different blind spots, checks every change. |
 | **Any workflow** | Workflows are durable programs, not prompt chains: multi-hour, resumable, observable, with member reservations and atomic state. Write your own; ship it to the fleet. |
 | **Any domain** | Not just software development. The pattern fits wherever work decomposes into agent-sized pieces that need orchestration and an audit trail: nightly retail replenishment (reconcile inventory deltas, draft purchase orders for sign-off), logistics exception handling (triage a delayed shipment, re-book, notify), healthcare intake (summarize referrals, check completeness, route), back-office runs (invoice matching, compliance evidence collection). Software engineering is the vertical running today -- your domain is a workflow away. |
@@ -291,7 +291,95 @@ Secrets are entered out-of-band into a credential store and referenced as
 any LLM or log. Credentials scope to members, expire on TTL, and can carry
 a network egress policy (allow / deny / confirm). Every member runs with
 composed, provider-native permission files -- allow-listed tools, not
-god-mode. VCS access is provisioned and revocable per member.
+god-mode. VCS access is provisioned and revocable per member. Permission
+composition verifies its own delivery: a grant is read back off the target
+member and structurally compared against what was intended before it is
+reported as applied, so a failed or partial write is surfaced as an
+explicit failure rather than a false success.
+
+## Email Configuration
+
+The fleet `send_email` tool sends email via **SendGrid** or **SMTP**. Secrets
+are stored in the fleet credential store. Non-secret config (provider, host,
+port, from address) is passed by the workflow in each call.
+
+### Storing secrets (one-time setup)
+
+Store email secrets via the CLI:
+
+```bash
+# SendGrid API key
+apra-fleet secret --set sendgrid_api_key --persist
+
+# SMTP password
+apra-fleet secret --set smtp_password --persist
+```
+
+Or via the MCP tool (the path an LLM agent uses):
+
+```json
+{ "name": "sendgrid_api_key", "prompt": "Enter your SendGrid API key", "persist": true }
+```
+
+Secrets are encrypted in the fleet credential store. They never appear in
+workflow code, config files, or environment variables.
+
+### Sending email from a workflow
+
+The workflow passes non-secret config inline and calls `send_email`. Load
+your config however you prefer (JSON file, hardcoded, etc.):
+
+```javascript
+import { parseToolJson } from '@apralabs/apra-fleet-client';
+import { connectFleet } from '@apralabs/apra-fleet-client/server-resolution';
+
+const { fleetApi } = await connectFleet({ env: process.env });
+
+// fleetApi wrappers return the raw MCP tool result ({ content: [...] });
+// parseToolJson extracts the JSON payload.
+const result = parseToolJson(await fleetApi.sendEmail({
+  provider: 'smtp',
+  host: 'smtp.example.com',
+  port: 587,
+  user: 'notifications@example.com',
+  from: 'noreply@example.com',
+  to: 'team@example.com',
+  subject: 'Sprint Report',
+  body: 'All tasks completed.'
+}));
+console.log(`Sent: ${result.messageId}`);
+```
+
+The SMTP password resolves from the credential store automatically. It never
+appears in the workflow. See `examples/workflows/email-notify/` for a
+complete runnable example and `docs/email-workflow-guide.md` for the full
+walkthrough.
+
+### send_email Tool Reference
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `provider` | `"sendgrid"` or `"smtp"` | no (default: `"sendgrid"`) | Email provider |
+| `from` | string | yes | Sender email address |
+| `host` | string | SMTP only | SMTP server hostname |
+| `port` | number | no (default: 587, or 465 when `secure` is true) | SMTP server port |
+| `user` | string | SMTP only | SMTP username |
+| `secure` | boolean | no (default: false) | Implicit TLS (port 465). When false, STARTTLS is required. |
+| `to` | string or string[] | yes | Recipient email address(es) |
+| `subject` | string | yes | Email subject line |
+| `body` | string | yes | Plain-text email body |
+| `html` | string | no | HTML email body |
+| `cc` | string[] | no | CC recipient addresses |
+| `bcc` | string[] | no | BCC recipient addresses |
+| `attachments` | attachment[] | no | File attachments (base64-encoded) |
+
+Each attachment: `filename` (string), `content` (string, base64), `contentType` (string, optional).
+
+Secrets are resolved from the credential store by name:
+- **SendGrid:** `sendgrid_api_key`
+- **SMTP:** `smtp_password`
+
+Returns: `{ ok: true, messageId }` on success, `{ ok: false, error }` on failure.
 
 ## The packages
 
@@ -2393,6 +2481,15 @@ For VCS tokens specifically, re-run `provision_vcs_auth`.
 
 Check what actually happened on the member:
 ask Fleet to run `cat progress.json` on it.
+
+**Long-running background task fails to launch on a Windows member**
+
+`execute_command`'s `long_running` mode on Windows launches the task
+detached via `Invoke-CimMethod Win32_Process.Create` (WMI). If this fails,
+check that the WMI service (`Winmgmt`) is running on the member and that the
+fleet SSH user has permission to create processes via WMI -- `monitor_task`
+will otherwise report the task as immediately failed/missing rather than
+running.
 
 ## Permissions
 
