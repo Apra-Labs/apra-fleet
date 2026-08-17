@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { computeFileHash } from '../services/knowledge/kb-service.js';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
+import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 import type { Author, CaptureSource } from '../services/knowledge/types.js';
 
 // D5 (T2.3): the full Author enum. Kept as a plain array (not a zod enum on
@@ -20,6 +21,7 @@ function validateAuthor(role: string | undefined): Author | 'unknown' {
 }
 
 export const kbCaptureSchema = z.object({
+  ...kbScopeFields,
   repo_path: z.string().optional()
     .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive'])
@@ -48,7 +50,7 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
   if (input.source_files?.length) validateFilePaths(input.source_files);
   if (input.source_file) validateFilePaths([input.source_file]);
 
-  const providers = await getKbProviders(input.repo_path);
+  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
 
   let content_hash = '';
   let content_hash_type: 'git' | 'sha256' = 'sha256';
