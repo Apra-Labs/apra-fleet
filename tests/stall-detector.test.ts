@@ -198,6 +198,86 @@ describe('StallDetector', () => {
     });
   });
 
+  describe('_poll — pending tool_use timeout overrides the idle threshold', () => {
+    // apra-fleet: reproduces confirmed stall site d2e30668 (fleet-win-dev1,
+    // sprint apra-fleet-ivxi/u1qw/69pp) -- the pending Bash tool_use had
+    // declared an explicit 900000ms budget. Idle past the generic
+    // STALL_THRESHOLD_MS (5s here) must NOT fire a stall while still inside
+    // that declared budget + grace.
+    it('does not stall while idle time is within the pending tool_use timeout + grace', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const pastTime = Date.now() - 10_000; // 10s idle -- past the 5s generic threshold
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime }));
+      mockPollLogFile.mockResolvedValue({
+        lastTimestamp: new Date(pastTime - 1000).toISOString(),
+        pendingToolTimeoutMs: 900_000,
+      });
+
+      await detector._poll();
+
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(0);
+    });
+
+    it('stalls once idle time exceeds the pending tool_use timeout + grace', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      // 900_000ms declared timeout + 60_000ms grace = 960_000ms effective threshold.
+      const pastTime = Date.now() - 961_000;
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime }));
+      mockPollLogFile.mockResolvedValue({
+        lastTimestamp: new Date(pastTime - 1000).toISOString(),
+        pendingToolTimeoutMs: 900_000,
+      });
+
+      await detector._poll();
+
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(1);
+      const logged = JSON.parse(stallCalls[0][0] as string);
+      expect(logged.pendingToolTimeoutMs).toBe(900_000);
+      expect(logged.effectiveThresholdMs).toBe(960_000);
+    });
+
+    // apra-fleet: confirmed stall site 963a1740 -- 600000ms declared budget.
+    it('honors a different declared timeout (600000ms) from another real stall site', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const pastTime = Date.now() - 600_000; // well past the generic threshold, still inside 600s+grace
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime }));
+      mockPollLogFile.mockResolvedValue({
+        lastTimestamp: new Date(pastTime - 1000).toISOString(),
+        pendingToolTimeoutMs: 600_000,
+      });
+
+      await detector._poll();
+
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(0);
+    });
+
+    it('falls back to the generic STALL_THRESHOLD_MS when no tool_use is pending', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const pastTime = Date.now() - 10_000;
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime }));
+      mockPollLogFile.mockResolvedValue({
+        lastTimestamp: new Date(pastTime - 1000).toISOString(),
+        pendingToolTimeoutMs: null,
+      });
+
+      await detector._poll();
+
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(1);
+    });
+  });
+
   describe('_poll — missing log file (no false stall)', () => {
     it('does not count as stall cycle when file not yet created', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';

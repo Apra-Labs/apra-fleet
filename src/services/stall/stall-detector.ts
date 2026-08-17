@@ -5,7 +5,21 @@ import { toLocalISOString, fmtElapsed } from './time-utils.js';
 import { writeStatusline } from '../statusline.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
-const DEFAULT_STALL_THRESHOLD_MS = 120_000;
+// apra-fleet: was 120_000. Raised to 150_000 -- Claude Code's own default
+// Bash-tool timeout is also 120_000ms, so the old value collided with (and
+// often lost to) that clock on any turn whose last tool_use declared no
+// explicit timeout of its own. This is the "no declared timeout" fallback
+// only; see TOOL_TIMEOUT_GRACE_MS below for the (usually much larger)
+// effective threshold used when the pending tool_use DOES declare one.
+const DEFAULT_STALL_THRESHOLD_MS = 150_000;
+// apra-fleet: grace added on top of a pending tool_use's own declared
+// `input.timeout` before treating it as stalled. Two real fleet-win-dev1
+// stalls (apra-fleet-ivxi/u1qw/69pp) were killed while their last tool_use
+// carried an explicit 600000ms/900000ms budget -- the fleet's watchdog must
+// never fire before the tool's own timeout would have. The margin covers
+// polling cadence (DEFAULT_POLL_INTERVAL_MS) plus time for Claude Code to
+// write the resulting tool_result/error after its own timeout fires.
+const TOOL_TIMEOUT_GRACE_MS = 60_000;
 
 export interface StallEntry {
   sessionId: string | null;
@@ -178,7 +192,16 @@ export class StallDetector {
         lastActivityAt: entry.lastActivityAt,
       }));
 
-      const { lastTimestamp, mtimeMs, error } = await pollLogFile(memberId, entry.logFilePath);
+      const { lastTimestamp, mtimeMs, error, pendingToolTimeoutMs } = await pollLogFile(memberId, entry.logFilePath);
+
+      // apra-fleet: a pending tool_use's own declared timeout, when present,
+      // overrides the generic idle threshold for THIS tick's stall check --
+      // it is a hard, model-declared budget for a call already known to be
+      // long-running (900000ms in one confirmed stall, 600000ms in another),
+      // and the fleet watchdog must not fire before that budget elapses.
+      const effectiveThresholdMs = pendingToolTimeoutMs
+        ? pendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS
+        : stallThresholdMs;
 
       if (error) {
         const newFailures = entry.consecutiveReadFailures + 1;
@@ -249,7 +272,7 @@ export class StallDetector {
         consecutiveReadFailures: 0,
       });
 
-      if (now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
+      if (now - entry.lastActivityAt > effectiveThresholdMs && !entry.stallReported) {
         const idleSecs = Math.floor((now - entry.lastActivityAt) / 1000);
         scope.warn(JSON.stringify({
           event: 'stall_detected',
@@ -257,6 +280,8 @@ export class StallDetector {
           memberName: entry.memberName,
           idleSecs,
           provisional: false,
+          pendingToolTimeoutMs: pendingToolTimeoutMs ?? null,
+          effectiveThresholdMs,
           lastActivityAt: toLocalISOString(entry.lastActivityAt),
         }));
         writeStatusline(new Map([[memberId, 'unknown']]));
