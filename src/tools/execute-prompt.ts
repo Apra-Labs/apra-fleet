@@ -242,6 +242,26 @@ export function resolveModelForTier(agent: Agent, tier: string, provider: Provid
   return provider.modelForTier(tier as 'cheap' | 'standard' | 'premium');
 }
 
+/**
+ * apra-fleet-b4g.6: the auto-harvest dispatch (below) is a server-internal
+ * kb_harvest call, not an LLM-supplied repo_remote_url like the other kb_*
+ * tools' hot paths (apra-fleet-b4g.1). The only place a genuine origin URL
+ * could already be known here is the member's own registration record
+ * (gitRepos) -- and only when it already IS a URL. In practice gitRepos
+ * entries are almost always a bare "owner/repo" access identifier (see
+ * src/services/vcs/github.ts's own https://github.com/${repo}.git
+ * construction, used for a narrower purpose -- connectivity testing), so this
+ * intentionally does not build a URL out of one: an incorrect derived URL
+ * would route the harvest into a KB slug that does not match the repo's real
+ * local-clone slug, worse than today's honest fallback. Returns undefined
+ * (kept-as-is behaviour) when nothing already known qualifies.
+ */
+export function knownRepoRemoteUrl(agent: Agent): string | undefined {
+  const first = agent.gitRepos?.[0];
+  if (!first) return undefined;
+  return first.includes('://') || first.startsWith('git@') ? first : undefined;
+}
+
 const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
 
 /**
@@ -1371,12 +1391,25 @@ session: ${parsed.sessionId}`;
       // the FLEET SERVER's own cwd, not any generic 'default' -- so omitting
       // repo_path for remote members would silently route their harvested
       // learnings into the server's own repo KB (the exact defect apra-fleet-tm7
-      // describes). For a REMOTE member, resolvedWorkFolder is a path on the
-      // remote host that will almost never exist on this (fleet server)
-      // machine, so resolveProjectSlug's git calls on it fail with ENOENT and
-      // it falls through to the literal 'default' slug -- not the server's
-      // own repo, so no cross-repo contamination happens. That is a deliberate,
-      // acceptable outcome for remote members until they get their own routing.
+      // describes).
+      //
+      // apra-fleet-b4g.6: repo_remote_url (apra-fleet-b4g.1) is how a REMOTE
+      // member's call reaches the SAME shared project KB a local clone would --
+      // without it, resolvedWorkFolder is a path on the remote host that will
+      // almost never exist on this (fleet server) machine, resolveProjectSlug's
+      // git calls on it fail with ENOENT, and it falls through to the literal
+      // 'default' slug, pooling every such member's harvest into one shared,
+      // useless bucket (no cross-repo contamination, but no real routing
+      // either). knownRepoRemoteUrl() forwards it whenever the member's own
+      // registration record already carries a genuine URL. It deliberately does
+      // NOT construct one from agent.gitRepos' bare "owner/repo" access-list
+      // entries (see src/services/vcs/github.ts's own
+      // https://github.com/${repo}.git construction for a DIFFERENT, narrower
+      // purpose -- connectivity testing) or shell out to the member host to
+      // discover it: guessing a URL that turns out wrong would route the
+      // harvest into a KB slug that does not match the repo's real local-clone
+      // slug, which is worse than today's honest 'default' degradation. When no
+      // genuine URL is known, behaviour is unchanged from before this fix.
       // KB-TRUST PHASE 1 (apra-fleet-4wz.8): report the harvest counters. This is
       // the highest-volume KB writer and its result was previously discarded
       // entirely, so entries_rejected -- the fail-closed signal -- was invisible
@@ -1386,7 +1419,12 @@ session: ${parsed.sessionId}`;
       // rejected count is the invariant working, not a regression to tune away.
       void import('./kb-harvest.js')
         .then(({ kbHarvest }) =>
-          kbHarvest({ repo_path: resolvedWorkFolder, session_transcript: parsed.result, session_id: parsed.sessionId })
+          kbHarvest({
+            repo_path: resolvedWorkFolder,
+            repo_remote_url: knownRepoRemoteUrl(agent),
+            session_transcript: parsed.result,
+            session_id: parsed.sessionId,
+          })
         )
         .then((raw: string) => {
           try {
