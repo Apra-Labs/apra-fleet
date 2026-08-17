@@ -125,6 +125,39 @@ describe('executeCommand', () => {
     // parseBdJson() should read instead of the display text.
     expect(structuredContent).toEqual({ exitCode: 0, stdout: 'output', stderr: 'warning' });
   });
+
+  it('does not kill remote process on MCP client disconnect (abort signal)', async () => {
+    // apra-fleet-d64.1: MCP transport drops must NOT kill the remote process.
+    // Verify that firing the abort signal does not trigger additional
+    // execCommand calls (which tryKillPid would do).
+    const member = makeTestAgent({ friendlyName: 'abort-member' });
+    addAgent(member);
+
+    let resolveExec!: (v: SSHExecResult) => void;
+    const execPromise = new Promise<SSHExecResult>((resolve) => { resolveExec = resolve; });
+    mockExecCommand.mockReturnValueOnce(execPromise);
+
+    const abortController = new AbortController();
+    const resultPromise = executeCommand(
+      { member_id: member.id, command: 'long-running-cmd', timeout_s: 60 },
+      { signal: abortController.signal },
+    );
+
+    // Fire the abort signal mid-flight (simulates MCP transport drop)
+    abortController.abort();
+
+    // Resolve the command normally -- the abort should NOT have killed it
+    resolveExec({ stdout: 'done', stderr: '', code: 0 });
+
+    const result = await resultPromise;
+    const { text } = result as Exclude<typeof result, string>;
+    expect(text).toContain('Exit code: 0');
+    expect(text).toContain('done');
+
+    // execCommand should have been called exactly once (the command itself),
+    // NOT a second time for a kill command
+    expect(mockExecCommand).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('resolveTilde', () => {
