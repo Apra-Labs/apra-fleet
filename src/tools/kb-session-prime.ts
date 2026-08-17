@@ -182,7 +182,24 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
   if (input.session_files?.length) validateFilePaths(input.session_files);
 
   // Prime the KB belonging to the repo being primed, not the server's cwd.
-  const providers = await getKbProviders(resolveRepoPath(input.repo_path) ?? undefined, input.repo_remote_url);
+  //
+  // apra-fleet-b4g.4: an explicitly supplied repo_path is passed through
+  // VERBATIM, even when it does not exist on this host (a remote member's
+  // Windows work folder). Routing it through resolveRepoPath() here turned
+  // such a path into null and then, via `?? undefined`, into getKbProviders'
+  // `cwd ?? process.cwd()` -- so the provider serving that member ended up
+  // anchored at the FLEET SERVER'S OWN working directory while repo_remote_url
+  // pointed it at the real shared project KB, and prime re-hashed every
+  // candidate entry's basis against a tree that does not describe it. Keeping
+  // the caller's path means the anchor is honestly "a path this host cannot
+  // see", which SqliteProvider.anchorIsMissing() handles by declining to
+  // produce a freshness verdict at all. resolveRepoPath still guards the
+  // omitted-repo_path fallback (never a bare process.cwd()) and the cold-seed
+  // block below, which does need a readable directory.
+  const providers = await getKbProviders(
+    input.repo_path ?? resolveRepoPath() ?? undefined,
+    input.repo_remote_url,
+  );
 
   const result = await providers.project.prime({
     session_files: input.session_files,
