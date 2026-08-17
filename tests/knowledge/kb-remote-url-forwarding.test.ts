@@ -1,5 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { z } from 'zod';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { resolveProjectSlug } from '../../src/services/knowledge/project-slug.js';
 import type { KbProviders } from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntry } from '../../src/services/knowledge/types.js';
@@ -17,6 +20,12 @@ import type { KBEntry } from '../../src/services/knowledge/types.js';
 // copy-pasted describe blocks: apra-fleet-b4g.1.4 extends this same table to
 // the remaining kb tools once it wires them, and depends on this shape --
 // adding a tool requires no new assertion code, only a new TOOLS entry.
+//
+// apra-fleet-b4g.1.4: extends the table with the 12 remaining wired tools
+// (kb-setup is excluded -- it never calls getKbProviders, see kb-setup.ts).
+// kb_export and kb_import validate repo_path against the real filesystem
+// (resolveRepoPath) before ever reaching the mocked getKbProviders, so those
+// two entries anchor on real tmpdir fixtures instead of an arbitrary string.
 
 const mockGetKbProviders = vi.hoisted(() => vi.fn());
 
@@ -27,6 +36,31 @@ vi.mock('../../src/services/knowledge/kb-providers.js', () => ({
 import { kbCaptureSchema, kbCapture } from '../../src/tools/kb-capture.js';
 import { kbHarvestSchema, kbHarvest } from '../../src/tools/kb-harvest.js';
 import { kbSessionPrimeSchema, kbSessionPrime } from '../../src/tools/kb-session-prime.js';
+import { kbListSchema, kbList } from '../../src/tools/kb-list.js';
+import { kbInvalidateSchema, kbInvalidate } from '../../src/tools/kb-invalidate.js';
+import { kbResolveContradictionSchema, kbResolveContradiction } from '../../src/tools/kb-resolve-contradiction.js';
+import { kbReconcilePrefilterSchema, kbReconcilePrefilter } from '../../src/tools/kb-reconcile-prefilter.js';
+import { kbContextSchema, kbContext } from '../../src/tools/kb-context.js';
+import { kbFreshnessSweepSchema, kbFreshnessSweep } from '../../src/tools/kb-freshness-sweep.js';
+import { kbFeedbackSchema, kbFeedback } from '../../src/tools/kb-feedback.js';
+import { kbPromoteSchema, kbPromote } from '../../src/tools/kb-promote.js';
+import { kbQuerySchema, kbQuery } from '../../src/tools/kb-query.js';
+import { kbImportSchema, kbImport } from '../../src/tools/kb-import.js';
+import { kbStatsSchema, kbStats } from '../../src/tools/kb-stats.js';
+import { kbExportSchema, kbExport } from '../../src/tools/kb-export.js';
+
+// kb_export writes <repo_path>/.fleet/kb-canonical.json; kb_import reads it.
+// Both validate repo_path against the real filesystem before the mocked
+// getKbProviders is ever reached, so each needs its own real tmpdir.
+const exportTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-export-fwd-'));
+const importTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-import-fwd-'));
+fs.mkdirSync(path.join(importTmpDir, '.fleet'), { recursive: true });
+fs.writeFileSync(path.join(importTmpDir, '.fleet', 'kb-canonical.json'), '[]');
+
+afterAll(() => {
+  fs.rmSync(exportTmpDir, { recursive: true, force: true });
+  fs.rmSync(importTmpDir, { recursive: true, force: true });
+});
 
 function entry(id: string): KBEntry {
   return {
@@ -109,6 +143,148 @@ const TOOLS: ToolCase[] = [
     providersStub: () => ({
       project: { prime: vi.fn().mockResolvedValue(primedContext()) } as any,
       global: { query: vi.fn() } as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_list',
+    schema: kbListSchema,
+    call: input => kbList(input as Parameters<typeof kbList>[0]),
+    minimalInput: {},
+    providersStub: () => ({
+      project: { list: vi.fn().mockResolvedValue([]) } as any,
+      global: {} as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_invalidate',
+    schema: kbInvalidateSchema,
+    call: input => kbInvalidate(input as Parameters<typeof kbInvalidate>[0]),
+    minimalInput: { files: ['src/fixture.ts'] },
+    providersStub: () => ({
+      project: { invalidate: vi.fn().mockResolvedValue({ invalidated: 0 }) } as any,
+      global: {} as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_resolve_contradiction',
+    schema: kbResolveContradictionSchema,
+    call: input => kbResolveContradiction(input as Parameters<typeof kbResolveContradiction>[0]),
+    minimalInput: { winnerId: 'w1', loserId: 'l1', evidence: 'e' },
+    providersStub: () => ({
+      project: { resolveContradiction: vi.fn().mockResolvedValue({}) } as any,
+      global: {} as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_reconcile_prefilter',
+    schema: kbReconcilePrefilterSchema,
+    call: input => kbReconcilePrefilter(input as Parameters<typeof kbReconcilePrefilter>[0]),
+    minimalInput: {},
+    providersStub: () => ({
+      project: { reconcilePrefilter: vi.fn().mockResolvedValue({}) } as any,
+      global: {} as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_context',
+    schema: kbContextSchema,
+    call: input => kbContext(input as Parameters<typeof kbContext>[0]),
+    minimalInput: { files: ['src/fixture.ts'] },
+    providersStub: () => ({
+      // status 'fresh' short-circuits before the global fallback is reached.
+      project: { context: vi.fn().mockResolvedValue([{ file: 'src/fixture.ts', status: 'fresh' }]) } as any,
+      global: { context: vi.fn() } as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_freshness_sweep',
+    schema: kbFreshnessSweepSchema,
+    call: input => kbFreshnessSweep(input as Parameters<typeof kbFreshnessSweep>[0]),
+    minimalInput: {},
+    providersStub: () => ({
+      project: { freshnessSweep: vi.fn().mockResolvedValue({ checked: 0, staled: 0, unstaled: 0 }) } as any,
+      global: {} as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_feedback',
+    schema: kbFeedbackSchema,
+    call: input => kbFeedback(input as Parameters<typeof kbFeedback>[0]),
+    minimalInput: { id: 'id1', reason: 'wrong in practice' },
+    providersStub: () => ({
+      project: { feedback: vi.fn().mockResolvedValue({ id: 'id1', stale: 0, flagged_for_review: 0, confidence: 'INFERRED' }) } as any,
+      global: {} as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_promote',
+    schema: kbPromoteSchema,
+    call: input => kbPromote(input as Parameters<typeof kbPromote>[0]),
+    minimalInput: { id: 'id1' },
+    providersStub: () => ({
+      project: { promote: vi.fn().mockResolvedValue({ id: 'id1', confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' }) } as any,
+      global: {} as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_query',
+    schema: kbQuerySchema,
+    call: input => kbQuery(input as Parameters<typeof kbQuery>[0]),
+    // Empty results keep top5Ids empty, so the L2 fetch branch is never reached.
+    minimalInput: { query: 'test' },
+    providersStub: () => ({
+      project: { query: vi.fn().mockResolvedValue({ results: [] }) } as any,
+      global: { query: vi.fn().mockResolvedValue({ results: [] }) } as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_stats',
+    schema: kbStatsSchema,
+    call: input => kbStats(input as Parameters<typeof kbStats>[0]),
+    minimalInput: {},
+    providersStub: () => ({
+      project: {
+        stats: vi.fn().mockResolvedValue({ total: 0 }),
+        list: vi.fn().mockResolvedValue([]),
+      } as any,
+      global: {} as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_export',
+    schema: kbExportSchema,
+    call: input => kbExport(input as Parameters<typeof kbExport>[0]),
+    // repo_path must resolve on the real filesystem (resolveRepoPath), and is
+    // not a git repo so the auto-commit path never shells out to git.
+    minimalInput: { repo_path: exportTmpDir },
+    providersStub: () => ({
+      project: { list: vi.fn().mockResolvedValue([]) } as any,
+      global: { list: vi.fn().mockResolvedValue([]) } as any,
+      projectSlug: 'slug',
+    }),
+  },
+  {
+    name: 'kb_import',
+    schema: kbImportSchema,
+    call: input => kbImport(input as Parameters<typeof kbImport>[0]),
+    // repo_path resolves to a real tmpdir seeded with an empty bible array so
+    // the entry loop is a no-op and only the getKbProviders forwarding, plus
+    // the trailing freshnessSweep() call, are exercised.
+    minimalInput: { repo_path: importTmpDir },
+    providersStub: () => ({
+      project: { freshnessSweep: vi.fn().mockResolvedValue({ checked: 0, staled: 0, unstaled: 0 }) } as any,
+      global: {} as any,
       projectSlug: 'slug',
     }),
   },

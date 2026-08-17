@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 
 // T3.3 (F8a, D8): kb_list -- a read-only audit view over the CONFIRMED (or any
 // filtered) set. Distinct from kb_query: no FTS, no L2 expansion, and
@@ -7,6 +8,7 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 // since inspecting the KB's trust tiers is not "retrieval" for the purposes
 // of that telemetry.
 export const kbListSchema = z.object({
+  ...kbScopeFields,
   repo_path: z.string().optional()
     .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   confidence: z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED']).optional()
@@ -22,7 +24,7 @@ export const kbListSchema = z.object({
 export type KbListInput = z.infer<typeof kbListSchema>;
 
 export async function kbList(input: KbListInput): Promise<string> {
-  const providers = await getKbProviders(input.repo_path);
+  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
 
   const entries = await providers.project.list({
     confidence: input.confidence,
