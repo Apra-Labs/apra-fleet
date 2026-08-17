@@ -1,103 +1,93 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "629ea1b2d532995d71ff3d5826a0749c40e84d84",
-    "branch": "chore/merge-main-into-code-intel",
-    "entry_count": 17
+    "commit": "8ac89a454b063a8c4d4e4efca350a87d001fd2ff",
+    "branch": "fix/kb-remote-member-scoping",
+    "entry_count": 19
   },
   "entries": [
     {
-      "id": "0b2b63b1-ce5f-482a-88d2-4e0d43aec0cf",
-      "type": "learning",
-      "title": "kb_export auto-commit is opt-in and defaults to off",
-      "summary": "bible.autoCommit in FLEET_DIR/knowledge/config.json defaults to FALSE. kb_import preserves a bible entry CONFIRMED confidence as its sole exemption from the confidence clamp, justified by the bible being a git-reviewed, human-merged artifact -- which auto-committing as pm-kb, mid-sprint, on a feature branch did not make true.",
-      "symbols": [
-        "autoCommitEnabled"
-      ],
-      "source_files": [
-        "src/tools/kb-export.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.823Z"
-    },
-    {
-      "id": "102a0e23-b583-4742-8e7a-72bbebc144c7",
-      "type": "learning",
-      "title": "Confidence decay only ever touched empty-basis entries, so it is now legacy-only",
-      "summary": "decayConceptEntries() matches only rows whose source_files is empty. Since capture refuses to create such a row, the INFERRED -> UNVERIFIED ladder can fire only on rows predating that gate. Staleness for basis-carrying entries is freshnessSweep's job, which flags stale rather than downgrading confidence -- the two are not substitutes.",
-      "symbols": [
-        "decayConceptEntries"
-      ],
-      "source_files": [
-        "src/services/knowledge/sqlite-provider.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.849Z"
-    },
-    {
-      "id": "1224b0be-dd5b-437f-b7c6-b462888ff09b",
+      "id": "0633ac36-3d13-49cc-a268-46425bbf8bf9",
       "type": "knowledge",
-      "title": "Role agents decide KB work; the engine executes it",
-      "summary": "doer, reviewer, planner and harvester return kb_captures in their structured output, and the reviewer alone returns kb_promotions -- widening capture does not widen promotion. The engine validates the payload and drops anything a downstream tool would refuse, so a bad payload never becomes a call. fleet-sprint makes the calls directly through its injected callTool; apra-pm auto-sprint cannot, because Claude workflow scripts have no tool access, so it dispatches one cheap executor agent instead.",
-      "symbols": [
-        "vetKbWork",
-        "createKbWorkClient"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/apra-pm/lib/vet-kb-work.mjs",
-        "packages/apra-fleet-se/fleet-sprint/runner.js"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.831Z"
-    },
-    {
-      "id": "2e37baa5-2b4f-4220-b154-43056a170391",
-      "type": "knowledge",
-      "title": "The provider carries the repo its KB is about",
-      "summary": "SqliteProvider takes a repoPath, threaded from createKbProvidersForSlug, and resolves relative source_files against it at capture, at promote and at prime-time freshness. Without it those paths resolve against the fleet server process cwd, which is the apra-fleet-tm7 repo-blindness defect. The shared global KB deliberately has no repoPath: it spans every repo, so it enforces the empty-basis rule only.",
-      "symbols": [
-        "SqliteProvider",
-        "createKbProviders",
-        "getKbProviders"
-      ],
-      "source_files": [
-        "src/services/knowledge/sqlite-provider.ts",
-        "src/services/knowledge/kb-providers.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.806Z"
-    },
-    {
-      "id": "2f9aa45e-ddb0-4780-9131-9212188526ef",
-      "type": "knowledge",
-      "title": "kb_list reads through SqliteProvider.list(), which bumps no telemetry",
-      "summary": "kb_list is a read-only audit path using a dedicated list() method rather than query(), so it issues a pure SELECT without incrementing use_count or last_accessed. Its projection deliberately omits tags -- use kb_query to inspect them.",
-      "symbols": [
-        "kbList",
-        "list"
-      ],
-      "source_files": [
-        "src/tools/kb-list.ts",
-        "src/services/knowledge/sqlite-provider.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.771Z"
-    },
-    {
-      "id": "375a0c0e-00d4-4c62-9d11-0679bb46c08c",
-      "type": "knowledge",
-      "title": "The bible is a v2 envelope recording its export commit",
-      "summary": "kb_export writes {version:2, provenance:{commit, branch, entry_count}, entries}. A commit is recorded rather than a timestamp because entries are id-sorted so re-exports produce meaningful diffs, and a timestamp would produce a diff on every export. kb_import accepts BOTH the v2 object and a legacy bare array, selecting on Array.isArray, so the reader must never lag the writer.",
+      "title": "kb_export and kb_import validate repo_path on the real filesystem before getKbProviders",
+      "summary": "In the table-driven forwarding test, kb_export and kb_import cannot use an arbitrary fake repo_path string like the other kb tools -- both resolve and validate the path against the real filesystem before the mocked getKbProviders is reached, so their table entries must anchor on real tmpdir fixtures.",
       "symbols": [
         "kbExport",
-        "kbImport"
+        "kbImport",
+        "resolveRepoPath"
       ],
       "source_files": [
+        "tests/knowledge/kb-remote-url-forwarding.test.ts",
         "src/tools/kb-export.ts",
         "src/tools/kb-import.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.812Z"
+      "updated_at": "2026-08-17T16:18:03.897Z"
+    },
+    {
+      "id": "1ae4ce00-ce11-4bc4-becb-7e6355809f6b",
+      "type": "knowledge",
+      "title": "A directory-level gitignore rule shadows everything inside it, un-ignore patterns included",
+      "summary": "The blanket '/sprint-logs/' rule made every file under sprint-logs unstageable regardless of narrower rules elsewhere; only removing the directory rule and keeping the scoped '**/sprint-logs/sprint_*.json' rule restored the durable-vs-scratch split the sprint workflow documents.",
+      "symbols": [],
+      "source_files": [
+        ".gitignore",
+        "packages/apra-fleet-se/bin/cli.mjs",
+        "packages/apra-fleet-se/apra-pm/skills/pm/cost.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-12T05:18:16.610Z"
+    },
+    {
+      "id": "254b18e2-8f53-4a3b-bebd-3ab08609aec7",
+      "type": "knowledge",
+      "title": "The nonexistent-path + NO-url slug assertion passes on both pre-fix and post-fix trees",
+      "summary": "resolveProjectSlug(<nonexistent windows path>) returning 'default' is NOT a pre-fix failure and cannot be used as a regression pin for the remote-URL work; the assertions that actually go red on the pre-fix tree are the URL-bearing ones.",
+      "symbols": [
+        "resolveProjectSlug"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-remote-scope.test.ts",
+        "src/services/knowledge/project-slug.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-17T16:29:49.112Z"
+    },
+    {
+      "id": "2ff14a5c-f502-4212-bc1d-89c5955cd364",
+      "type": "knowledge",
+      "title": "kb-remote-scope.test.ts pins handler forwarding, not the zod schema spread",
+      "summary": "The b4g.1.5 end-to-end test calls kbCapture/kbList with raw objects cast 'as any', so it bypasses zod parse entirely and cannot detect a dropped ...kbScopeFields spread; that layer is pinned only by kb-remote-url-forwarding.test.ts.",
+      "symbols": [
+        "kbList",
+        "kbListSchema",
+        "kbScopeFields"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-remote-scope.test.ts",
+        "tests/knowledge/kb-remote-url-forwarding.test.ts",
+        "src/tools/kb-list.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-17T16:29:49.115Z"
+    },
+    {
+      "id": "40b95472-f615-4235-9fa7-3010a65a603a",
+      "type": "knowledge",
+      "title": "KB slug cache is keyed by (cwd, remoteUrl) but the provider cache is still keyed by slug alone",
+      "summary": "_slugCache uses a NUL-joined (cwd, remoteUrl) key so a later URL-bearing call is not pinned to an earlier path-only slug; _providers is still keyed by slug only, so the cached provider keeps the FIRST caller's repoPath.",
+      "symbols": [
+        "slugFor",
+        "getKbProviders",
+        "createKbProviders",
+        "resetKbProviders"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-providers.ts",
+        "src/services/knowledge/project-slug.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-17T15:01:39.752Z"
     },
     {
       "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
@@ -114,157 +104,209 @@
       "updated_at": "2026-08-04T04:04:51.757Z"
     },
     {
-      "id": "53f2c925-85a4-4462-882b-2a7dc91c0039",
-      "type": "knowledge",
-      "title": "fleet-sprint primes the KB per member, never against the server cwd",
-      "summary": "The fleet-sprint engine has no repo path of its own -- it coordinates members by name and branch, and the repo lives on each member side. So each member work folder is resolved via member_detail and primed individually, and a member whose folder cannot be resolved is SKIPPED rather than primed blind, because kb_session_prime without repo_path reads whichever repo the fleet server sits in.",
-      "symbols": [
-        "createKbPrimingClient"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/runner.js"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.839Z"
-    },
-    {
-      "id": "70678eba-f749-48e4-8d5d-47f3538c11a9",
-      "type": "knowledge",
-      "title": "resolveRepoPath shares one precedence rule across the KB tools",
-      "summary": "kb_export, kb_import and kb_session_prime each resolve a repo path as: explicit input, else the validated process working directory, else refuse. Every tier is validated with existsSync + isDirectory before use; there is no bare cwd fallback.",
-      "symbols": [
-        "resolveRepoPath"
-      ],
-      "source_files": [
-        "src/tools/kb-export.ts",
-        "src/tools/kb-import.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.778Z"
-    },
-    {
-      "id": "7ea084a3-8223-4673-9151-24e552b76f0f",
+      "id": "494a1ec0-6245-460e-908a-b6ad41e0a199",
       "type": "learning",
-      "title": "Agent contracts need ToolSearch in frontmatter or their KB step is dead prose",
-      "summary": "Every role Step 0 Knowledge Bank block opens by loading the MCP KB tools through ToolSearch. A role whose frontmatter tools list omits ToolSearch cannot run that block, so the contract satisfies a grep for kb_ while priming nothing. The four roles that lacked a Step 0 were exactly the four without ToolSearch.",
+      "title": "Provider cache key mutation test confirms b4g.2.2 pins the b4g.2.1 fix, not a vacuous test",
+      "summary": "Reverting getKbProviders' cache key from providerKey(slug, repoPath) to slug-only makes tests/knowledge/kb-provider-cache-key.test.ts fail on cases 1 and 3 (2 of 4), confirming the new regression test in apra-fleet-b4g.2.2 actually detects the bug apra-fleet-b4g.2.1 fixed rather than passing regardless.",
       "symbols": [
-        "ToolSearch"
+        "getKbProviders",
+        "providerKey",
+        "resetKbProviders"
       ],
       "source_files": [
-        "packages/apra-fleet-se/apra-pm/agents/reviewer.md",
-        "packages/apra-fleet-se/apra-pm/agents/ci-watcher.md"
+        "tests/knowledge/kb-provider-cache-key.test.ts",
+        "src/services/knowledge/kb-providers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.844Z"
+      "updated_at": "2026-08-17T16:04:51.480Z"
     },
     {
-      "id": "a6c54173-e3a3-4b68-9f0a-f3bcd7108d86",
+      "id": "62a26c94-e079-4158-b83b-5702e317b54c",
       "type": "knowledge",
-      "title": "An entry with no source_files can never be staled by the freshness sweep",
-      "summary": "freshnessSweep() builds its work set only from entries with a parsed source_file_hashes basis, so an entry citing no files is never checked and never staled -- permanently CONFIRMED-able and structurally unfalsifiable. This is the reason capture now refuses such entries.",
+      "title": "auto-sprint workflow VM has no fs/os/process.env, so path redaction must be pure string work",
+      "summary": "redactHomeFromTranscriptDir anchors on the literal '/.claude/projects/' substring instead of comparing against $HOME because the auto-sprint workflow VM cannot read env or fs; the anchor is safe only because Setup Step 7 constructs transcriptDir as $HOME/.claude/projects/<slug>.",
       "symbols": [
-        "freshnessSweep"
+        "redactHomeFromTranscriptDir"
       ],
       "source_files": [
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
+        "packages/apra-fleet-se/apra-pm/test/sprint-meta.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-12T05:53:12.692Z"
+    },
+    {
+      "id": "66075242-ab8e-40f1-a1b4-c2ecb01a007c",
+      "type": "knowledge",
+      "title": "git add <dir>/ errors on a directory-level ignore but silently no-ops on an inner file glob",
+      "summary": "The failure mode of an ignored sprint-logs/ is not uniform: a directory rule like '/sprint-logs/' makes `git add sprint-logs/` exit 1 with an explicit advice message, while a file-glob rule like '**/sprint-logs/*.jsonl' makes the same command exit 0 and stage nothing.",
+      "symbols": [],
+      "source_files": [
+        ".gitignore",
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
+        "packages/apra-fleet-se/apra-pm/test/sprint-log-flush.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-12T05:53:12.698Z"
+    },
+    {
+      "id": "b368ad28-9c4a-47fd-9acf-5f25a8a29bca",
+      "type": "knowledge",
+      "title": "git check-ignore silently skips tracked paths unless --no-index",
+      "summary": "An acceptance criterion of the form 'git check-ignore -v <path> returns no match' does not prove the path is unignored -- check-ignore ignores index entries by default, so any tracked path reports no match even when a .gitignore rule matches it.",
+      "symbols": [],
+      "source_files": [
+        ".gitignore",
+        ".claude/settings.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-12T05:07:17.774Z"
+    },
+    {
+      "id": "c596e547-f4bc-44e9-8399-73a04cb845c1",
+      "type": "knowledge",
+      "title": "Same-slug callers now open two SqliteProvider handles on one kb.sqlite",
+      "summary": "Keying the KB provider cache by (slug, repoPath) means two local clones of the same remote get two separate SqliteProvider instances pointed at the same kb.sqlite file; this is safe by design because init sets WAL plus busy_timeout=5000.",
+      "symbols": [
+        "getKbProviders",
+        "createKbProvidersForSlug",
+        "SqliteProvider.init"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-providers.ts",
         "src/services/knowledge/sqlite-provider.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.792Z"
+      "updated_at": "2026-08-17T16:04:51.485Z"
     },
     {
-      "id": "adb6d95a-23a2-4fa8-9130-7ecfd5de7a36",
+      "id": "c9047868-445d-41a8-b951-ccb2f195d21b",
       "type": "knowledge",
-      "title": "kb_export emits only live CONFIRMED entries",
-      "summary": "kbExport calls provider.list({confidence:\"CONFIRMED\"}) and list() hard-filters superseded_at IS NULL AND stale=0, so any entry that ends UNVERIFIED/INFERRED or stale=1 is silently absent from the bible.",
+      "title": "bd dolt remote list --json prints null, not [], when no remotes are configured",
+      "summary": "parseDoltRemoteList must map the JSON literal null to an empty array; treating null as an unexpected shape makes checkDoltRemoteAbsent return ok:false ('could not parse') for a repo that is simply not wired to any Dolt remote.",
       "symbols": [
-        "kbExport",
-        "list"
+        "parseDoltRemoteList",
+        "checkDoltRemoteAbsent"
       ],
       "source_files": [
-        "src/tools/kb-export.ts",
-        "src/services/knowledge/sqlite-provider.ts"
+        "scripts/check-sandbox-sync-remote.mjs",
+        "tests/check-sandbox-sync-remote.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.742Z"
+      "updated_at": "2026-08-12T05:18:16.605Z"
     },
     {
-      "id": "b4578561-c412-4e21-862c-71980b2c1008",
+      "id": "c996a17a-24af-4009-8472-0f1c5b868ca7",
       "type": "knowledge",
-      "title": "The HTTP capture route can reach only one capture() argument",
-      "summary": "The /api/kb/capture route calls provider.capture(JSON.parse(body)) with exactly one argument, so capture()'s second opts parameter -- importMode, preferredId -- is structurally unreachable from any deserialized route body.",
-      "symbols": [
-        "capture",
-        "startKbServer"
-      ],
+      "title": "deploy.md's Permissions section is the source of truth for .claude/settings.json allow-list",
+      "summary": "The deploy phase's runnable command set is defined by deploy.md lines 6-18, and .claude/settings.json permissions.allow must mirror exactly that list -- bead descriptions quoting an older list are stale and must not be followed.",
+      "symbols": [],
       "source_files": [
-        "src/commands/kb-server.ts",
-        "src/services/knowledge/sqlite-provider.ts"
+        "deploy.md",
+        ".claude/settings.json"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.763Z"
+      "updated_at": "2026-08-12T05:07:17.779Z"
     },
     {
-      "id": "c0650867-90da-4fc8-b6b4-100581702af5",
+      "id": "c9ec410a-37d6-4434-b1af-f87e45f90eef",
       "type": "knowledge",
-      "title": "Capture fails closed on an uncheckable basis, at the provider choke point",
-      "summary": "SqliteProvider.capture() rejects an entry with zero source_files, and one citing files absent from the repo, throwing KbCaptureRejected. There is no exemption for source=harvest or for importMode; only user-directive is exempt from the empty-basis half, because a standing instruction is not a claim about code. Enforcement is in the provider because three of the four capture call sites -- kb_harvest, kb_import and the HTTP route -- never touch the kb_capture handler.",
+      "title": "The embeddeddolt test now branches on bd availability instead of a loose regex",
+      "summary": "tests/check-sandbox-sync-remote.test.ts probes `bd --version` and asserts /Dolt-level remotes/ when bd is reachable, /unavailable/ when it is not, closing the vacuous-pass hole the old combined regex left open.",
       "symbols": [
-        "capture",
-        "KbCaptureRejected",
-        "assertCheckableBasis"
+        "checkDoltRemoteAbsent"
       ],
       "source_files": [
-        "src/services/knowledge/sqlite-provider.ts",
-        "src/services/knowledge/types.ts"
+        "tests/check-sandbox-sync-remote.test.ts",
+        "scripts/check-sandbox-sync-remote.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.785Z"
+      "updated_at": "2026-08-17T15:01:39.756Z"
     },
     {
-      "id": "c4faba23-9f94-4d40-9a78-80bad641e18b",
+      "id": "d1d891d8-ac6a-4114-8dea-3e669c2712a7",
       "type": "knowledge",
-      "title": "kb_promote requires recorded evidence and a basis that still resolves",
-      "summary": "promote() is the only path that mints CONFIRMED, so it refuses a reason shorter than 20 characters and refuses an entry whose source_files no longer resolve (zero source_files included, since rows predating the capture gate still exist). capture() and promote() share one unresolvableBasisFiles() helper so an entry that was legitimately capturable can never be un-promotable.",
+      "title": "The embeddeddolt sandbox test can pass vacuously when bd is unavailable",
+      "summary": "checkDoltRemoteAbsent's bd-unavailable fallback message contains the word 'unavailable', which the embeddeddolt test's own /Dolt-level remotes|unavailable/ assertion accepts -- so on a machine without bd the test is green without ever reaching the parser it is meant to exercise.",
       "symbols": [
-        "promote",
-        "unresolvableBasisFiles"
+        "checkDoltRemoteAbsent",
+        "parseDoltRemoteList"
       ],
       "source_files": [
-        "src/services/knowledge/sqlite-provider.ts"
+        "tests/check-sandbox-sync-remote.test.ts",
+        "scripts/check-sandbox-sync-remote.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.800Z"
+      "updated_at": "2026-08-12T05:37:52.943Z"
     },
     {
-      "id": "df5aa26b-ed5b-4ff1-bdd6-32ffd8442fb0",
-      "type": "learning",
-      "title": "An export whose entry set is unchanged must rewrite nothing",
-      "summary": "Auto-committing the bible moves HEAD, so re-reading HEAD on the next export recorded a different provenance.commit, rewrote the file and committed again -- an export that never converges. entriesUnchanged() compares the entries only, never the provenance envelope, which also keeps the recorded commit honest: it names the tree the entries were verified against, not the commit that stored them.",
-      "symbols": [
-        "entriesUnchanged",
-        "kbExport"
-      ],
-      "source_files": [
-        "src/tools/kb-export.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.818Z"
-    },
-    {
-      "id": "f100e93f-8049-4627-aade-2d635551b954",
+      "id": "daf6fb22-307e-45b4-87ce-0dbcedca9064",
       "type": "knowledge",
-      "title": "The confidence clamp is enforced in SqliteProvider.capture, not the tool handler",
-      "summary": "A non-directive CONFIRMED capture is downgraded to INFERRED with a bracketed note inside SqliteProvider.capture(), so the HTTP /api/kb/capture route cannot mint CONFIRMED by bypassing the kb_capture handler. kb_promote is the only path that mints CONFIRMED.",
-      "symbols": [
-        "capture",
-        "kbCapture"
-      ],
+      "title": "The auto-sprint cost ledger is staged by an unconditional plain git add sprint-logs/",
+      "summary": "beads-export-cleanup stages sprint logs with a plain, unguarded `git add sprint-logs/` before `bd export` and the export commit, pinned by sprint-log-flush.test.mjs -- so any gitignore rule covering that directory silently drops the ledger rather than erroring.",
+      "symbols": [],
       "source_files": [
-        "src/services/knowledge/sqlite-provider.ts",
-        "src/tools/kb-capture.ts"
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
+        "packages/apra-fleet-se/apra-pm/test/sprint-log-flush.test.mjs",
+        ".gitignore"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.750Z"
+      "updated_at": "2026-08-12T05:53:12.703Z"
+    },
+    {
+      "id": "e257834c-77e0-4bc9-a80d-bb1dae9b5f00",
+      "type": "knowledge",
+      "title": "kb-setup is the one kb tool that takes repo_path but resolves no KB",
+      "summary": "Fifteen of the sixteen src/tools/kb-*.ts tools spread kbScopeFields and forward repo_remote_url to getKbProviders; kb-setup is excluded by design because its repo_path only locates a .git dir for hook installation and it writes a single global config, never selecting a project KB.",
+      "symbols": [
+        "kbSetup",
+        "kbSetupSchema",
+        "kbScopeFields",
+        "getKbProviders"
+      ],
+      "source_files": [
+        "src/tools/kb-setup.ts",
+        "src/services/knowledge/kb-scope-input.ts",
+        "src/tools/kb-list.ts",
+        "src/tools/kb-stats.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-17T16:18:03.899Z"
+    },
+    {
+      "id": "eb1611af-81c9-4331-b9f4-65d6427ae818",
+      "type": "knowledge",
+      "title": "bd prints literal 'null' for an empty dolt remote list, not an empty array",
+      "summary": "Code parsing bd's dolt-remote-list output must treat a parsed result of null (or whitespace-padded 'null\\n') as 'no remotes configured' rather than a parse error; any other non-array non-null shape is still a genuine error.",
+      "symbols": [],
+      "source_files": [
+        "scripts/check-sandbox-sync-remote.mjs",
+        "tests/check-sandbox-sync-remote.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-17T14:35:21.893Z"
+    },
+    {
+      "id": "feb51d86-a540-489a-b41a-52986f2e3d3f",
+      "type": "knowledge",
+      "title": "repo_remote_url is defined once in kbScopeFields but only 3 of ~16 kb_* tools spread it",
+      "summary": "src/services/knowledge/kb-scope-input.ts holds the single zod definition; only kb_session_prime, kb_capture and kb_harvest spread it, so kb_list and the other read tools silently drop the field and resolve to the path-derived KB.",
+      "symbols": [
+        "kbScopeFields",
+        "kbListSchema",
+        "kbCaptureSchema",
+        "kbHarvestSchema",
+        "kbSessionPrimeSchema"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-scope-input.ts",
+        "src/tools/kb-list.ts",
+        "src/tools/kb-capture.ts",
+        "src/tools/kb-harvest.ts",
+        "src/tools/kb-session-prime.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-17T15:44:31.079Z"
     }
   ]
 }
