@@ -183,6 +183,25 @@
  * @property {string} [member_name] - Friendly name of the member
  */
 
+/**
+ * @typedef {Object} SendEmailOptions
+ * @property {"sendgrid" | "smtp"} [provider] - Email provider to use (default "sendgrid").
+ *   Secrets are resolved server-side from the credential store ("sendgrid_api_key" / "smtp_password").
+ * @property {string} from - Sender email address (required)
+ * @property {string} [host] - SMTP server hostname (required for smtp provider)
+ * @property {number} [port] - SMTP server port (default 587, or 465 when secure is true)
+ * @property {string} [user] - SMTP username (required for smtp provider)
+ * @property {boolean} [secure] - Use implicit TLS, e.g. port 465 (default false).
+ *   When false, STARTTLS is required; plaintext AUTH is refused.
+ * @property {string | string[]} to - Recipient email address, or list of addresses
+ * @property {string} subject - Email subject line
+ * @property {string} body - Plain-text email body
+ * @property {string} [html] - Optional HTML email body
+ * @property {string[]} [cc] - CC recipient addresses
+ * @property {string[]} [bcc] - BCC recipient addresses
+ * @property {{ filename: string, content: string, contentType?: string }[]} [attachments] - Optional file attachments (base64-encoded content)
+ */
+
 
 // Grace margin added on top of the payload's own timeout hint (timeout_s /
 // max_total_s) so the client doesn't race the server's own deadline -- the
@@ -222,6 +241,27 @@ export function deriveTimeoutMs(payload = {}) {
         return undefined;
     }
     return hintSeconds * 1000 + TIMEOUT_GRACE_MS;
+}
+
+/**
+ * Extract the JSON payload from a raw MCP tool-call result.
+ *
+ * Every ApraFleet wrapper returns the raw callTool() result --
+ * `{ content: [{ type: 'text', text }, ...] }` -- NOT a JSON string, so
+ * `JSON.parse(result)` on it throws. Tool results can also carry
+ * display-only items (e.g. an `<apra-fleet-display>` onboarding block)
+ * AHEAD of the payload, so content[0] is not reliable either. This helper
+ * returns the first content item that parses as JSON.
+ *
+ * @param {{ content?: { text?: string }[] }} result - raw callTool() result
+ * @returns {any} the parsed JSON payload
+ * @throws {Error} when no content item contains valid JSON
+ */
+export function parseToolJson(result) {
+    for (const item of result?.content ?? []) {
+        try { return JSON.parse(item.text); } catch { /* not the payload */ }
+    }
+    throw new Error('No JSON payload in tool result');
 }
 
 export class ApraFleet {
@@ -360,6 +400,54 @@ export class ApraFleet {
      */
     async setupSshKey(options) {
         return this.mcpClient.callTool('setup_ssh_key', options);
+    }
+
+    /**
+     * Send an email. Pass provider config inline (provider, from, and for
+     * SMTP: host, port, user, secure). Secrets resolve from the credential
+     * store (sendgrid_api_key / smtp_password).
+     * @param {SendEmailOptions} options
+     */
+    async sendEmail(options) {
+        return this.mcpClient.callTool('send_email', options);
+    }
+
+    /**
+     * Collect a secret from the user out-of-band and store it in the fleet
+     * credential store. The secret value never passes through the caller.
+     * @param {{ name: string, prompt: string, persist?: boolean,
+     *           network_policy?: 'allow'|'confirm'|'deny', members?: string,
+     *           ttl_seconds?: number }} options
+     */
+    async credentialStoreSet(options) {
+        return this.mcpClient.callTool('credential_store_set', options);
+    }
+
+    /**
+     * List stored credentials (names and metadata only -- no values).
+     * The result payload is a JSON array of { name, scope, ... } entries;
+     * extract it with parseToolJson().
+     */
+    async credentialStoreList() {
+        return this.mcpClient.callTool('credential_store_list', {});
+    }
+
+    /**
+     * Delete a named credential from the store.
+     * @param {{ name: string }} options
+     */
+    async credentialStoreDelete(options) {
+        return this.mcpClient.callTool('credential_store_delete', options);
+    }
+
+    /**
+     * Update metadata (members, TTL, network policy) on an existing
+     * credential without re-entering the secret.
+     * @param {{ name: string, members?: string, ttl_seconds?: number,
+     *           network_policy?: 'allow'|'confirm'|'deny' }} options
+     */
+    async credentialStoreUpdate(options) {
+        return this.mcpClient.callTool('credential_store_update', options);
     }
 
     /**
