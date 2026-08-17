@@ -71,6 +71,18 @@ describe('knownRepoRemoteUrl()', () => {
     expect(knownRepoRemoteUrl(agent)).toBeUndefined();
   });
 
+  // apra-fleet-b4g.14: gitRepos is an access list, not an origin field -- a
+  // multi-entry list whose first element happens to look like a URL is
+  // ambiguous (it could be an access grant to an unrelated repo), so it must
+  // NOT be forwarded even though the plain "first entry looks like a URL"
+  // check alone would accept it.
+  it('does not forward a URL when gitRepos has MULTIPLE entries, even if the first looks like a URL for an unrelated repo', () => {
+    const agent = makeTestAgent({
+      gitRepos: ['https://github.com/acme/unrelated-repo.git', 'Apra-Labs/apra-fleet'],
+    });
+    expect(knownRepoRemoteUrl(agent)).toBeUndefined();
+  });
+
   it('returns undefined when gitRepos is absent', () => {
     const agent = makeTestAgent({ gitRepos: undefined });
     expect(knownRepoRemoteUrl(agent)).toBeUndefined();

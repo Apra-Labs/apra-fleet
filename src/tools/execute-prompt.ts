@@ -255,10 +255,26 @@ export function resolveModelForTier(agent: Agent, tier: string, provider: Provid
  * would route the harvest into a KB slug that does not match the repo's real
  * local-clone slug, worse than today's honest fallback. Returns undefined
  * (kept-as-is behaviour) when nothing already known qualifies.
+ *
+ * apra-fleet-b4g.14: gitRepos is an ACCESS LIST (src/tools/register-member.ts
+ * documents git_repos as "Git repositories this member can access"), not an
+ * origin field -- so index 0 is not guaranteed to be the repo the member's
+ * work_folder is actually a clone of. Only forward the URL when gitRepos has
+ * EXACTLY one entry: that is the one case where "index 0" and "the member's
+ * own repo" are provably the same thing, since there is nothing else the
+ * single entry could mean. A multi-entry gitRepos whose first element happens
+ * to look like a URL is ambiguous -- it could equally be an access grant to a
+ * DIFFERENT repo than the one being harvested -- so it is deliberately left
+ * unforwarded rather than guessed, matching the no-guessing rule this
+ * function already applies to bare "owner/repo" entries above.
+ * src/services/watch/project-resolver.ts's own gitRepos[0] use is
+ * display-only grouping, is unaffected by this narrowing, and is
+ * deliberately left unchanged (out of scope here).
  */
 export function knownRepoRemoteUrl(agent: Agent): string | undefined {
-  const first = agent.gitRepos?.[0];
-  if (!first) return undefined;
+  const repos = agent.gitRepos;
+  if (!repos || repos.length !== 1) return undefined;
+  const first = repos[0];
   return first.includes('://') || first.startsWith('git@') ? first : undefined;
 }
 
