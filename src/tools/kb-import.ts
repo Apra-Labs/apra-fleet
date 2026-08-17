@@ -2,6 +2,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
 import type { KBEntryInput, ContentType, Confidence, AudnDecision } from '../services/knowledge/types.js';
 
@@ -32,6 +33,7 @@ import type { KBEntryInput, ContentType, Confidence, AudnDecision } from '../ser
 // directive gate quarantines them either way.
 
 export const kbImportSchema = z.object({
+  ...kbScopeFields,
   path: z.string().optional()
     .describe('Explicit path to a bible JSON file. When omitted, resolves to <repo>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). Directives are quarantined to pending proposals either way.'),
   repo: z.string().optional()
@@ -168,7 +170,7 @@ export async function kbImport(input: KbImportInput): Promise<string> {
 
   // repoAnchor (resolved above) selects the KB, so an import 'for' repo B can
   // never land in whichever repo the server process happens to sit in.
-  const providers = await getKbProviders(repoAnchor);
+  const providers = await getKbProviders(repoAnchor, input.repo_remote_url);
   const provider = providers.project;
 
   let imported = 0;

@@ -10,8 +10,8 @@ export interface KbProviders {
   projectSlug: string;
 }
 
-export async function createKbProviders(cwd?: string): Promise<KbProviders> {
-  return createKbProvidersForSlug(slugFor(cwd), cwd ?? process.cwd());
+export async function createKbProviders(cwd?: string, remoteUrl?: string): Promise<KbProviders> {
+  return createKbProvidersForSlug(slugFor(cwd, remoteUrl), cwd ?? process.cwd());
 }
 
 // There is exactly ONE global KB, shared by every project. Now that providers
@@ -46,20 +46,32 @@ async function createKbProvidersForSlug(slug: string, repoPath: string): Promise
   return { project: projectProvider, global: globalProvider, projectSlug: slug };
 }
 
-// Keyed by resolved project slug, NOT a single slot. The fleet server is a
-// long-lived process serving many members across many repos; a single memoised
-// provider meant the first kb_* call bound every later call -- from every repo
-// -- to one database. Callers must pass the repo the call is about.
+// Keyed by (slug, repoPath), NOT slug alone and NOT a single slot. The fleet
+// server is a long-lived process serving many members across many repos; a
+// single memoised provider meant the first kb_* call bound every later call
+// -- from every repo -- to one database. Keying by slug alone still let the
+// first caller to resolve a given slug fix repoPath (load-bearing for the
+// capture basis check and freshness sweep) for every later caller resolving
+// to that same slug. Joined with NUL, which cannot appear in either
+// component, so distinct pairs cannot collide into one key.
 const _providers = new Map<string, Promise<KbProviders>>();
-// resolveProjectSlug shells out to git, so cache per directory. Keyed by the
-// literal cwd argument, since two paths can legitimately share a slug.
+
+function providerKey(slug: string, repoPath: string): string {
+  return `${slug}\0${repoPath}`;
+}
+// resolveProjectSlug shells out to git, so cache per (cwd, remoteUrl) pair --
+// keying by cwd alone would let the first call for a directory pin its slug,
+// leaving a later call that does supply a remote URL stuck with the stale
+// value. Joined with NUL, which cannot appear in a path or URL, so distinct
+// pairs cannot collide into one key.
 const _slugCache = new Map<string, string>();
 
-function slugFor(cwd?: string): string {
-  const key = cwd ?? process.cwd();
+function slugFor(cwd?: string, remoteUrl?: string): string {
+  const dir = cwd ?? process.cwd();
+  const key = `${dir}\0${remoteUrl ?? ''}`;
   let slug = _slugCache.get(key);
   if (slug === undefined) {
-    slug = resolveProjectSlug(key);
+    slug = resolveProjectSlug(dir, remoteUrl);
     _slugCache.set(key, slug);
   }
   return slug;
@@ -70,14 +82,19 @@ function slugFor(cwd?: string): string {
  * about -- omitting it falls back to the calling process's cwd, which is only
  * correct for single-repo CLI invocations, never for server-handled tool calls.
  */
-export async function getKbProviders(cwd?: string): Promise<KbProviders> {
-  const slug = slugFor(cwd);
-  let pending = _providers.get(slug);
+export async function getKbProviders(cwd?: string, remoteUrl?: string): Promise<KbProviders> {
+  const slug = slugFor(cwd, remoteUrl);
+  const repoPath = cwd ?? process.cwd();
+  const key = providerKey(slug, repoPath);
+  let pending = _providers.get(key);
   if (!pending) {
     // Store the promise, not the resolved value, so concurrent callers for the
-    // same slug share one provider instead of racing to build two.
-    pending = createKbProvidersForSlug(slug, cwd ?? process.cwd());
-    _providers.set(slug, pending);
+    // same (slug, repoPath) pair share one provider instead of racing to build
+    // two. Two different repoPaths sharing a slug get two SqliteProvider
+    // handles on the same kb.sqlite file -- safe, since SqliteProvider.init
+    // sets WAL + busy_timeout=5000.
+    pending = createKbProvidersForSlug(slug, repoPath);
+    _providers.set(key, pending);
   }
   return pending;
 }

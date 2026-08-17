@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 
 // T3.1 (F5 step 3, D4 HARDENED, resolution R7): kb_resolve_contradiction --
 // thin wrapper over SqliteProvider.resolveContradiction(), the SINGLE write
@@ -22,6 +23,7 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 // refusal-on-invalid-state methods (kb_promote's directive refusal, kb_feedback's
 // missing-entry error).
 export const kbResolveContradictionSchema = z.object({
+  ...kbScopeFields,
   repo_path: z.string().optional()
     .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   winnerId: z.string().min(1).describe('ID of the KB entry the merged code (or trust tier) supports. Ends confidence=CONFIRMED with flags cleared; stale is cleared only if the D2 un-stale predicate holds post-flag-clear.'),
@@ -32,7 +34,7 @@ export const kbResolveContradictionSchema = z.object({
 export type KbResolveContradictionInput = z.infer<typeof kbResolveContradictionSchema>;
 
 export async function kbResolveContradiction(input: KbResolveContradictionInput): Promise<string> {
-  const providers = await getKbProviders(input.repo_path);
+  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
   const result = await providers.project.resolveContradiction(input.winnerId, input.loserId, input.evidence);
   return JSON.stringify(result);
 }

@@ -2,6 +2,55 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Remote members can scope KB calls by git remote URL
+
+Sprint goal: make the Knowledge Layer correct for remote members, whose work
+folder is a path on another host and therefore unreachable from the fleet
+server's own filesystem. Every `kb_*` tool now accepts an optional
+`repo_remote_url` input (one shared schema fragment, spread into all sixteen
+tool schemas, so the field cannot drift or be redeclared inconsistently).
+`resolveProjectSlug` prefers an explicit remote URL over shelling out to git
+against `repo_path`, so a remote member supplying its repo's origin URL
+resolves to the *same* project KB and slug its local counterpart would --
+instead of every remote member, across every repo, pooling into one shared
+`default` database. Independently, the KB provider cache is now keyed by
+`(slug, repoPath)` rather than slug alone: previously the *first* caller to
+resolve a given slug fixed the anchor directory used for the capture basis
+check and the freshness re-hash for every later caller resolving to that same
+slug, which could silently basis-check one repo's capture against an
+unrelated tree. A pre-existing, unrelated test failure (the sandbox-sync
+remote-list parser throwing on `bd`'s literal `null` output for a repo with
+no configured remotes) was also fixed.
+
+This does not close the epic. Two live-verified, more severe variants of the
+same class of defect remain open as follow-on work: (1) a `repo_path` that
+does not exist on the fleet server host is not always translated into "no
+anchor at all" -- at least one hot-path tool resolves the failure to `null`
+and then lets it fall through to a `process.cwd()` fallback inside
+`getKbProviders`, so the freshness anchor silently becomes the fleet server's
+own working directory instead of either the real repo or no anchor; because
+the slug (which database) can now correctly reach the *real* shared project
+KB via the remote URL while the anchor is wrong, this can silently stale
+healthy entries in that shared KB rather than merely misreading it, which is
+a regression in severity from the pre-sprint behavior of colliding only with
+an isolated `default` database; (2) the fleet's own automatic post-prompt
+harvest dispatch path still forwards only `repo_path`, not `repo_remote_url`,
+so it does not yet benefit from the new URL-based routing. Deploying and
+smoke-testing this change against a real build was also blocked for the
+entire sprint by missing CLI permission grants for the installer/binary
+invocations the deploy runbook requires, so the shipped pieces are verified
+by their test suites but have not been confirmed against a deployed build or
+re-tested against the live remote-member repro that originally proved the
+bug. Both gaps, and the deploy-permission blocker, are carried forward as
+open, prioritized follow-on work.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $11.9020.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 19 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- kb_harvest auto-harvest is now repo-scoped, not server-cwd-scoped
 
 `kb_harvest` -- the only fully automatic KB writer, fired after every

@@ -3,11 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
+import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 import { getProvider } from './code-intelligence.js';
 import type { KBEntry } from '../services/knowledge/types.js';
 import { FLEET_DIR } from '../paths.js';
 
 export const kbSessionPrimeSchema = z.object({
+  ...kbScopeFields,
   session_files: z.array(z.string()).optional().describe('Files the agent expects to touch this session'),
   hint_symbols: z.array(z.string()).optional().describe('Symbols likely to be relevant'),
   hint_modules: z.array(z.string()).optional().describe('Module names likely to be relevant'),
@@ -180,7 +182,7 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
   if (input.session_files?.length) validateFilePaths(input.session_files);
 
   // Prime the KB belonging to the repo being primed, not the server's cwd.
-  const providers = await getKbProviders(resolveRepoPath(input.repo_path) ?? undefined);
+  const providers = await getKbProviders(resolveRepoPath(input.repo_path) ?? undefined, input.repo_remote_url);
 
   const result = await providers.project.prime({
     session_files: input.session_files,

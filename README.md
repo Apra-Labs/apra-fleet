@@ -209,9 +209,13 @@ MCP tools that ship with the KB:
 | `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
 
-Every KB tool call, including the automatic post-prompt `kb_harvest`, is
-scoped to the repo it is about -- a fleet server handling many members across
-many repos never lets one repo's learnings land in another repo's KB.
+Every KB tool call is scoped to the repo it is about -- a fleet server
+handling many members across many repos never lets one repo's learnings land
+in another repo's KB. Scope is normally derived from the caller's repo path;
+tools also accept an explicit `repo_remote_url` so a remote member (whose
+work folder is a path on another host, unreachable from the fleet server's
+filesystem) resolves to the same project KB as a local clone of that repo
+instead of a shared fallback database.
 
 The backend is swappable: start with local SQLite, add a central HTTP server for
 a team, or plug in Postgres later -- all via a one-line config change.

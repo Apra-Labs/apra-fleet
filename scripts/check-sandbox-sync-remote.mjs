@@ -370,6 +370,11 @@ export function parseDoltRemoteList(output) {
   } catch (err) {
     throw new Error(`Unexpected 'bd dolt remote list --json' output: '${output}'`);
   }
+  // bd prints the literal JSON `null` (not `[]`) when no Dolt remotes are
+  // configured -- treat that as "no remotes" rather than a parse error.
+  if (list === null) {
+    return [];
+  }
   if (!Array.isArray(list)) {
     throw new Error(`Unexpected 'bd dolt remote list --json' output (not an array): '${output}'`);
   }

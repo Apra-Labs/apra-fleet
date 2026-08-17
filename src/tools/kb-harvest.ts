@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
 import type { KBEntryInput, CaptureSource, AudnDecision } from '../services/knowledge/types.js';
 
 export const kbHarvestSchema = z.object({
+  ...kbScopeFields,
   repo_path: z.string().optional()
     .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   session_transcript: z.string().optional()
@@ -102,7 +104,7 @@ export async function kbHarvest(input: KbHarvestInput): Promise<string> {
     return JSON.stringify({ entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0 });
   }
 
-  const providers = await getKbProviders(input.repo_path);
+  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
   const provider = providers.project;
 
   const learnings = extractLearnings(input.session_transcript);

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 
 // T3.1 (F5 step 3, D4 HARDENED, resolution R1): kb_reconcile_prefilter --
 // mechanical resolution rung of the /pm kb-reconcile flow, run AFTER
@@ -14,6 +15,7 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 // an ACTIVE user-directive are never touched (no resolve, no supersede, no
 // flag-clear) -- directives outrank mechanics.
 export const kbReconcilePrefilterSchema = z.object({
+  ...kbScopeFields,
   repo_path: z.string().optional()
     .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
 });
@@ -21,7 +23,7 @@ export const kbReconcilePrefilterSchema = z.object({
 export type KbReconcilePrefilterInput = z.infer<typeof kbReconcilePrefilterSchema>;
 
 export async function kbReconcilePrefilter(input: KbReconcilePrefilterInput): Promise<string> {
-  const providers = await getKbProviders(input.repo_path);
+  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
   const result = await providers.project.reconcilePrefilter();
   return JSON.stringify(result);
 }

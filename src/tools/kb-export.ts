@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 import { FLEET_DIR } from '../paths.js';
 import { logWarn } from '../utils/log-helpers.js';
 
@@ -35,6 +36,7 @@ import { logWarn } from '../utils/log-helpers.js';
 // same asciiSafeStringify + deterministic id-sorted output, and the same
 // auto-commit behavior (T2.3) applies to the global file too.
 export const kbExportSchema = z.object({
+  ...kbScopeFields,
   repo_path: z.string().optional()
     .describe('Path to the repo root to write the canonical bible into. Precedence: this explicit input, when given, is validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated session working directory (same validation, not a blind default); if neither validates, kb_export refuses with a clear error.'),
   scope: z.enum(['project', 'global']).optional()
@@ -320,7 +322,7 @@ export async function kbExport(input: KbExportInput): Promise<string> {
   // Read from the SAME repo we are about to write the bible into. Resolving the
   // source from process cwd while writing to repoPath is how repo A's entries
   // used to end up serialised into repo B's committed bible.
-  const providers = await getKbProviders(repoPath);
+  const providers = await getKbProviders(repoPath, input.repo_remote_url);
   const source = scope === 'global' ? providers.global : providers.project;
   const entries = await source.list({ confidence: 'CONFIRMED' });
 

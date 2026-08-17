@@ -2,6 +2,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 
 // T2.1 (F5, D4): kb_stats -- a read-only aggregation tool, following the
 // kb_list no-bump pattern (SqliteProvider.stats() never touches use_count/
@@ -13,6 +14,7 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 // bible drift is VISIBILITY for the machine that owns the KB -- CI cannot see
 // the local kb.sqlite, so no CI gate reads this tool or its drift number.
 export const kbStatsSchema = z.object({
+  ...kbScopeFields,
   repo: z.string().optional()
     .describe('Path to the repo root for the canonical-bible drift check (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to repo_path, then to the validated session working directory (same validation as kb_export/kb_session_prime); if none validates, bible.present is reported false and drift equals the full live-CONFIRMED count -- kb_stats never fails because of this.'),
   // apra-fleet-src: every other kb_* tool (kb_list, kb_capture, kb_promote,
@@ -47,7 +49,7 @@ export async function kbStats(input: KbStatsInput): Promise<string> {
   // `repo` wins over the `repo_path` alias so existing callers are unaffected.
   const requestedRepo = input.repo ?? input.repo_path;
   // Stats must describe the repo asked about, not the server's cwd.
-  const providers = await getKbProviders(resolveRepoPath(requestedRepo) ?? undefined);
+  const providers = await getKbProviders(resolveRepoPath(requestedRepo) ?? undefined, input.repo_remote_url);
   const providerStats = await providers.project.stats({ symbols: input.symbols });
 
   // D5: bible.drift = count of live CONFIRMED entries whose updated_at
