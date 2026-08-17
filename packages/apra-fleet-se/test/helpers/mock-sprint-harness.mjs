@@ -403,6 +403,17 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // real runner.js phase probes for that file and skips the dispatch
         // entirely otherwise, same as deploy.md/integ-test-playbook.md.
         regressionHandler = null,
+        // apra-fleet-u1qw.2.3: optional (opts, tempDir, runCmd, epicBead) =>
+        // result override for the 'permissions-composer' dispatch -- the
+        // orchestrator-side heal dispatch runner.js's
+        // healMissingPermissionsOnce() makes when a Deploy/Integ Test/
+        // Regression Test result carries blockedReason='missing_permissions'.
+        // Deliberately has NO default stub (unlike deployer/integ/regression
+        // above): there is no sensible "default" composer verdict, and a
+        // scenario that does NOT expect a heal wants a stray composer dispatch
+        // to fail loudly rather than be silently absorbed. See the throw in the
+        // dispatch switch below.
+        permissionsComposerHandler = null,
         // Optional (cmd: string) => boolean predicate: when it returns
         // true for a given executeCommand() invocation, the mock returns a
         // nonzero-exit result (apra-fleet-1cb.1: normal data, no isError --
@@ -1084,6 +1095,20 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 };
             }
 
+            // --- permissions heal (apra-fleet-u1qw.2.3: schema-validated
+            //     against runner.js's permissionsComposerReport) ---
+            //
+            // Only reachable when a Deploy/Integ Test/Regression Test result
+            // reported blockedReason='missing_permissions'. No default stub on
+            // purpose: a scenario that supplies no handler is asserting that
+            // NO heal dispatch happens, so make that fail by construction.
+            if (opts.agent === 'permissions-composer') {
+                if (permissionsComposerHandler) return permissionsComposerHandler({ opts, tempDir, runCmd, epicBead });
+                throw new Error(
+                    `advanced-mock-runner-test: permissions-composer dispatched but this scenario supplied no permissionsComposerHandler (label=${opts.label})`
+                );
+            }
+
             // Any agentType reaching here means runner.js dispatched something
             // this mock doesn't know about -- fail loudly instead of silently
             // falling through to a generic stub (that's exactly the bug this
@@ -1264,6 +1289,11 @@ export async function runDevelopLoopScenario(tag, {
     // `withRegressionPlaybook` below (writes regression-test-playbook.md so
     // the real probe finds it and the phase actually dispatches).
     regressionHandler,
+    // apra-fleet-u1qw.2.3: optional (opts, tempDir, runCmd, epicBead) =>
+    // result override for the orchestrator-side 'permissions-composer' heal
+    // dispatch -- see buildMockFleetApi's option comment above. Omit it to
+    // assert that a scenario triggers no heal at all.
+    permissionsComposerHandler,
     goal = 'P1/P2', maxCycles = 1,
     // Optional hook invoked with {tempDir, runCmd, epicBead, tasks} AFTER
     // setupMinimal() creates the epic/tasks but BEFORE the sprint runs --
@@ -1382,6 +1412,7 @@ export async function runDevelopLoopScenario(tag, {
             integHandler,
             finalReviewHandler,
             regressionHandler,
+            permissionsComposerHandler,
             commandFailurePattern,
             commandLogDetailed,
             memberGitState,
