@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { execSync } from 'node:child_process';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -216,6 +216,31 @@ const hasPowerShell = process.platform === 'win32' && (() => {
 
 describe.runIf(hasPowerShell)('generateTaskWrapperWindows - live PowerShell exit-code/status semantics', () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'task-wrapper-win-'));
+
+  // Root cause of an observed CI flake: the wrapper script spawns a
+  // Start-Job (a second, separate PowerShell runspace process) on top of
+  // execSync's own `powershell -File ...` spawn, and a *first* Start-Job
+  // in a fresh PowerShell session pays a one-time module-load/runspace-init
+  // cost (worse under CI disk/CPU contention or AV-scanning a freshly
+  // spawned powershell.exe). Only the FIRST scenario below ever timed out
+  // in CI (20000ms), while every later scenario in this same describe block
+  // -- using the identical execSync+Start-Job mechanism -- passed within
+  // budget: the signature of a one-time cold-start tax landing inside a
+  // single test's timer instead of an evenly-distributed slow environment.
+  // Pay that cold-start cost here, in beforeAll (not itself budget-limited
+  // by any single scenario's 20000ms), so no scenario's timer has to absorb
+  // it.
+  beforeAll(() => {
+    try {
+      execSync(
+        'powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Job -ScriptBlock { 1 } | Wait-Job | Receive-Job | Out-Null"',
+        { stdio: 'ignore' },
+      );
+    } catch {
+      // Best-effort warm-up only -- if it fails, scenarios below still run
+      // (and pay the cold-start cost themselves, same as before this fix).
+    }
+  }, 30000);
 
   afterAll(() => {
     rmSync(tmpDir, { recursive: true, force: true });
