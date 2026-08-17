@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- KB anchor and cache-key fixes close out remote-member correctness
+
+Sprint goal: finish making the Knowledge Layer correct for remote members,
+closing the two more severe gaps an earlier sprint on this same epic had
+carried forward as open follow-on work.
+
+A `repo_path` that does not exist on the fleet server host is now always
+treated as "no anchor" rather than silently substituted with the fleet
+server's own working directory. Previously, two hot-path tools resolved a
+non-existent path to `null` and let it fall through to a `process.cwd()`
+fallback inside the shared provider accessor -- so while the *slug* (which
+database) could already reach the correct shared project KB via the remote
+URL, the *anchor* (the directory the capture basis check and freshness
+re-hash resolve relative source files against) silently became an unrelated
+tree. Because freshness re-hashing against the wrong tree fails every basis
+check, this could retire healthy entries in the real shared KB -- a
+regression in severity from merely colliding with an isolated fallback
+database. The fix: a provider whose anchor does not exist on this host now
+suppresses freshness verdicts entirely (all-or-nothing per call) instead of
+producing false staleness, while capture stays protected by its existing
+fail-closed basis check. The same one-anchor-policy rule was also applied to
+the two remaining call sites that still built a provider from a locally
+pre-resolved path.
+
+The fleet's own automatic post-prompt harvest dispatch, and the `code_context`
+KB enrichment call site, now forward the caller's `repo_remote_url` too, so
+both benefit from URL-based routing instead of only the tools a caller invokes
+directly. Forwarding a member's registration-record URL from an access list
+that may contain multiple, unrelated repos is deliberately conservative: a URL
+is only forwarded when it unambiguously names the member's own repo, never
+guessed or derived from a bare `owner/repo` entry or discovered by shelling
+out to the member host.
+
+Several missing CLI permission prefixes the `deploy` runbook requires
+(installer/binary invocations) were granted to the merged effective
+allowlist for this repository. The deploy phase still did not complete this
+sprint, however: it failed again in both cycles on a separate, still-missing
+grant for launching the built binary via its `run` subcommand, so the
+shipped KB fixes above are verified by their test suites only and have not
+yet been confirmed against a deployed build. The regression-test pass was
+separately blocked for the same reason (a missing `bd` command grant) and
+also did not complete. Both permission gaps are carried forward as open
+follow-on work.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $21.4535.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 28 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Remote members can scope KB calls by git remote URL
 
 Sprint goal: make the Knowledge Layer correct for remote members, whose work
