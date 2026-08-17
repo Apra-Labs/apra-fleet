@@ -113,9 +113,16 @@ export class StallDetector {
       if (entry.provisional) {
         // Provisional: if logFilePath is available, check mtime; if logFilePath is null, poll directory activity
         let signalAvailable = true;
+        // apra-fleet-ivxi.8: mirrors the non-provisional path's
+        // effectiveThresholdMs computation (below, line ~202) -- a
+        // provisional entry can carry a pending tool_use whose own declared
+        // timeout must override the generic baseline threshold too, or it
+        // can be killed mid-budget before ever leaving the provisional state.
+        let provisionalPendingToolTimeoutMs: number | null | undefined;
         if (entry.logFilePath) {
           try {
             const pollResult = await pollLogFile(memberId, entry.logFilePath);
+            provisionalPendingToolTimeoutMs = pollResult.pendingToolTimeoutMs;
             if (pollResult.mtimeMs && pollResult.mtimeMs > entry.lastActivityAt) {
               entry.lastActivityAt = pollResult.mtimeMs;
               entry.provisional = false;
@@ -163,8 +170,14 @@ export class StallDetector {
           continue;
         }
 
-        // Baseline timeout check for provisional entries
-        if (now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
+        // Baseline timeout check for provisional entries. Same override as
+        // the non-provisional path: a pending tool_use's own declared
+        // timeout, when present, replaces the generic baseline threshold for
+        // this tick's stall check.
+        const provisionalEffectiveThresholdMs = provisionalPendingToolTimeoutMs
+          ? provisionalPendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS
+          : stallThresholdMs;
+        if (now - entry.lastActivityAt > provisionalEffectiveThresholdMs && !entry.stallReported) {
           const idleSecs = Math.floor((now - entry.lastActivityAt) / 1000);
           scope.warn(JSON.stringify({
             event: 'stall_detected',
@@ -172,6 +185,8 @@ export class StallDetector {
             memberName: entry.memberName,
             idleSecs,
             provisional: true,
+            pendingToolTimeoutMs: provisionalPendingToolTimeoutMs ?? null,
+            effectiveThresholdMs: provisionalEffectiveThresholdMs,
             lastActivityAt: toLocalISOString(entry.lastActivityAt),
           }));
           writeStatusline(new Map([[memberId, 'unknown']]));

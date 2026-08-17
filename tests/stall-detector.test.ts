@@ -343,6 +343,56 @@ describe('StallDetector', () => {
       });
       expect(stallCalls).toHaveLength(1);
     });
+
+    // apra-fleet-ivxi.8: the provisional branch (a member that hasn't yet
+    // produced any real log activity) must honor a pending tool_use's
+    // declared timeout exactly like the non-provisional path does -- a
+    // provisional entry stuck behind a genuinely long-running tool call
+    // should not be killed mid-budget just because it never left the
+    // provisional state.
+    it('does not stall a provisional entry at the generic 150s threshold while inside its pending tool_use budget', async () => {
+      delete process.env['STALL_THRESHOLD_MS']; // exercise the real 150s default
+      const pastTime = Date.now() - 160_000; // idle 160s -- past the 150s default, well inside 600s+grace
+      const onStall = vi.fn();
+      mockPollLogFile.mockResolvedValue({
+        lastTimestamp: null,
+        mtimeMs: null,
+        pendingToolTimeoutMs: 600_000,
+      });
+      detector.add('member-1', makeEntry({ provisional: true, lastActivityAt: pastTime, onStall }));
+
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalled();
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(0);
+    });
+
+    it('stalls a provisional entry once idle time exceeds its own pending tool_use timeout + grace', async () => {
+      delete process.env['STALL_THRESHOLD_MS'];
+      // 600_000ms declared timeout + 60_000ms grace = 660_000ms effective threshold.
+      const pastTime = Date.now() - 661_000;
+      const onStall = vi.fn();
+      mockPollLogFile.mockResolvedValue({
+        lastTimestamp: null,
+        mtimeMs: null,
+        pendingToolTimeoutMs: 600_000,
+      });
+      detector.add('member-1', makeEntry({ provisional: true, lastActivityAt: pastTime, onStall }));
+
+      await detector._poll();
+
+      expect(onStall).toHaveBeenCalledTimes(1);
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(1);
+      const logged = JSON.parse(stallCalls[0][0] as string);
+      expect(logged.pendingToolTimeoutMs).toBe(600_000);
+      expect(logged.effectiveThresholdMs).toBe(660_000);
+    });
   });
 
   /**
