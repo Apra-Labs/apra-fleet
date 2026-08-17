@@ -5,6 +5,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
+import { invalidatePreflightCache } from '../src/services/preflight-check.js';
+
+// tests/setup.ts globally mocks preflight-check.js with vi.fn() implementations
+const mockInvalidatePreflightCache = vi.mocked(invalidatePreflightCache);
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -185,5 +189,42 @@ describe('ensureCloudReady - F5 re-provisioning after start', () => {
     // No re-provisioning for already-running instances
     expect(mockProvisionAuth).not.toHaveBeenCalled();
     expect(mockProvisionVcsAuth).not.toHaveBeenCalled();
+  });
+
+  // ---- invalidatePreflightCache on host/IP identity changes ----
+  it('invalidates the preflight cache after starting a stopped instance (new IP)', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    mockGetPublicIp.mockResolvedValue('1.2.3.4');
+    const member = makeStoppedCloudAgent({ host: '10.0.0.1' });
+    addAgent(member);
+
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    await ensureCloudReady(member);
+
+    expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(member.id);
+  });
+
+  it('invalidates the preflight cache when a running instance IP changes', async () => {
+    mockGetInstanceState.mockResolvedValue('running');
+    mockGetPublicIp.mockResolvedValue('5.6.7.8'); // different from member.host
+    const member = makeStoppedCloudAgent({ host: '1.2.3.4' });
+    addAgent(member);
+
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    await ensureCloudReady(member);
+
+    expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(member.id);
+  });
+
+  it('does not invalidate the preflight cache when a running instance IP is unchanged', async () => {
+    mockGetInstanceState.mockResolvedValue('running');
+    mockGetPublicIp.mockResolvedValue('1.2.3.4'); // same as member.host
+    const member = makeStoppedCloudAgent({ host: '1.2.3.4' });
+    addAgent(member);
+
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    await ensureCloudReady(member);
+
+    expect(mockInvalidatePreflightCache).not.toHaveBeenCalled();
   });
 });

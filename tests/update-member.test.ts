@@ -4,7 +4,11 @@ import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { updateMember } from '../src/tools/update-member.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
+import { invalidatePreflightCache } from '../src/services/preflight-check.js';
 import type { SSHExecResult } from '../src/types.js';
+
+// tests/setup.ts globally mocks preflight-check.js with vi.fn() implementations
+const mockInvalidatePreflightCache = vi.mocked(invalidatePreflightCache);
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn();
@@ -33,6 +37,7 @@ describe('updateMember', () => {
     mockUploadContentToHome.mockReset();
     mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
     mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
+    mockInvalidatePreflightCache.mockClear();
   });
 
   afterEach(() => {
@@ -95,6 +100,39 @@ describe('updateMember', () => {
     // Changing agent2's host to 10.0.0.1 is fine — different folder
     const result = await updateMember({ member_id: agent2.id, host: '10.0.0.1' });
     expect(result).toContain('Member "test-agent" updated.');
+  });
+
+  // ---- invalidatePreflightCache on identity-changing fields ----
+  it('invalidates the preflight cache when host changes', async () => {
+    const agent = makeTestAgent({ id: 'member-cache-1', host: '10.0.0.1', port: 22, workFolder: '/srv/app' });
+    addAgent(agent);
+
+    await updateMember({ member_id: agent.id, host: '10.0.0.9' });
+    expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(agent.id);
+  });
+
+  it('invalidates the preflight cache when auth_type changes', async () => {
+    const agent = makeTestAgent({ id: 'member-cache-2', authType: 'password' });
+    addAgent(agent);
+
+    await updateMember({ member_id: agent.id, auth_type: 'key', key_path: '/tmp/does-not-matter' });
+    expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(agent.id);
+  });
+
+  it('invalidates the preflight cache when llm_provider changes', async () => {
+    const agent = makeTestAgent({ id: 'member-cache-3' });
+    addAgent(agent);
+
+    await updateMember({ member_id: agent.id, llm_provider: 'gemini' });
+    expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(agent.id);
+  });
+
+  it('does not invalidate the preflight cache for a non-identity field change', async () => {
+    const agent = makeTestAgent({ id: 'member-cache-4' });
+    addAgent(agent);
+
+    await updateMember({ member_id: agent.id, friendly_name: 'renamed-agent' });
+    expect(mockInvalidatePreflightCache).not.toHaveBeenCalled();
   });
 
   it('does not trigger uniqueness check on local member when only host-like fields change', async () => {
@@ -218,6 +256,7 @@ describe('updateMember -- agent re-provisioning (remote members)', () => {
     mockUploadContentToHome.mockReset();
     mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
     mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
+    mockInvalidatePreflightCache.mockClear();
   });
 
   afterEach(() => {

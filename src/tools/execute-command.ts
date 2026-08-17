@@ -15,6 +15,7 @@ import { collectOobConfirm } from '../services/auth-socket.js';
 import { LogScope, maskSecrets, truncateForLog, logLine } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
+import { preflightCheck } from '../services/preflight-check.js';
 import type { Agent } from '../types.js';
 
 export function resolveTilde(p: string): string {
@@ -127,6 +128,8 @@ export interface ExecuteCommandStructured {
   exitCode: number;
   stdout: string;
   stderr: string;
+  isError?: boolean;
+  reason?: string;
   [key: string]: unknown;
 }
 
@@ -143,6 +146,34 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
   } catch (err: any) {
     return `Failed to execute command on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
+  }
+
+  // Pre-dispatch connectivity check (apra-fleet preflight-check): verify the
+  // member is reachable before attempting the command. Skips LLM auth check
+  // since execute_command runs shell commands, not LLM prompts.
+  if (agent.agentType !== 'local') {
+    const preflight = await preflightCheck(agent, { skipAuth: true });
+    if (!preflight.ok) {
+      // Reuse the same preflight.code-to-reason mapping execute-prompt.ts uses,
+      // so errors.mjs's classifiers (isNonRetryableDispatchError,
+      // isAuthDispatchError, INFRA_DISPATCH_REASONS) recognize execute_command
+      // preflight failures the same way they recognize execute_prompt ones,
+      // instead of falling through unclassified as the generic 'preflight_failed'.
+      const preflightReason = preflight.code === 'offline' ? 'preflight_offline'
+        : preflight.code === 'auth_expired' ? 'preflight_auth_expired'
+        : preflight.code === 'auth_missing' ? 'preflight_auth_missing'
+        : 'preflight_offline';
+      return {
+        text: `[FAIL] Pre-dispatch check failed for "${agent.friendlyName}": ${preflight.reason}`,
+        structuredContent: {
+          isError: true,
+          reason: preflightReason,
+          exitCode: -1,
+          stdout: '',
+          stderr: preflight.reason ?? 'preflight check failed',
+        },
+      };
+    }
   }
 
   const strategy = getStrategy(agent);

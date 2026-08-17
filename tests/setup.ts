@@ -1,6 +1,16 @@
 import path from 'node:path';
 import os from 'node:os';
-import { inject } from 'vitest';
+import { inject, vi } from 'vitest';
+
+// Global mock: preflightCheck always passes in tests.
+// The real preflightCheck hits strategy.testConnection + execCommand on every
+// non-local dispatch, which breaks existing mocks' call-count expectations.
+// preflight-check.test.ts uses vi.unmock to test the real implementation.
+vi.mock('../src/services/preflight-check.js', () => ({
+  preflightCheck: vi.fn().mockResolvedValue({ ok: true, connectivity: true, authValid: true, latencyMs: 1 }),
+  invalidatePreflightCache: vi.fn(),
+  clearPreflightCache: vi.fn(),
+}));
 
 process.env.NODE_ENV = 'test';
 // apra-fleet-2xs.9: unique-per-run directory computed once in tests/global-setup.ts

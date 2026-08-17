@@ -409,7 +409,8 @@ const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace
  */
 export function isNonRetryableDispatchError(err) {
     const reason = err?.details?.reason;
-    if (reason === 'auth' || reason === 'workspace_not_trusted') return true;
+    if (reason === 'auth' || reason === 'workspace_not_trusted'
+        || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired') return true;
     return NON_RETRYABLE_DISPATCH_RE.test(String(err?.message ?? ''));
 }
 
@@ -427,7 +428,8 @@ const AUTH_DISPATCH_RE = /authentication failed|not logged in/i;
  * @returns {boolean}
  */
 export function isAuthDispatchError(err) {
-    if (err?.details?.reason === 'auth') return true;
+    const reason = err?.details?.reason;
+    if (reason === 'auth' || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired') return true;
     return AUTH_DISPATCH_RE.test(String(err?.message ?? ''));
 }
 
@@ -462,7 +464,7 @@ export function isAuthDispatchError(err) {
 // check on an infra fault. Callers use this classifier to (a) retry once via a
 // session resume and (b) failing that, record the cycle as INCONCLUSIVE rather
 // than a test FAIL -- exactly as the part-2 stale-evidence path already does.
-const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled']);
+const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'preflight_offline']);
 
 /**
  * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never
