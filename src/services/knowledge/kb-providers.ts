@@ -10,8 +10,8 @@ export interface KbProviders {
   projectSlug: string;
 }
 
-export async function createKbProviders(cwd?: string): Promise<KbProviders> {
-  return createKbProvidersForSlug(slugFor(cwd), cwd ?? process.cwd());
+export async function createKbProviders(cwd?: string, remoteUrl?: string): Promise<KbProviders> {
+  return createKbProvidersForSlug(slugFor(cwd, remoteUrl), cwd ?? process.cwd());
 }
 
 // There is exactly ONE global KB, shared by every project. Now that providers
@@ -51,15 +51,19 @@ async function createKbProvidersForSlug(slug: string, repoPath: string): Promise
 // provider meant the first kb_* call bound every later call -- from every repo
 // -- to one database. Callers must pass the repo the call is about.
 const _providers = new Map<string, Promise<KbProviders>>();
-// resolveProjectSlug shells out to git, so cache per directory. Keyed by the
-// literal cwd argument, since two paths can legitimately share a slug.
+// resolveProjectSlug shells out to git, so cache per (cwd, remoteUrl) pair --
+// keying by cwd alone would let the first call for a directory pin its slug,
+// leaving a later call that does supply a remote URL stuck with the stale
+// value. Joined with NUL, which cannot appear in a path or URL, so distinct
+// pairs cannot collide into one key.
 const _slugCache = new Map<string, string>();
 
-function slugFor(cwd?: string): string {
-  const key = cwd ?? process.cwd();
+function slugFor(cwd?: string, remoteUrl?: string): string {
+  const dir = cwd ?? process.cwd();
+  const key = `${dir}\0${remoteUrl ?? ''}`;
   let slug = _slugCache.get(key);
   if (slug === undefined) {
-    slug = resolveProjectSlug(key);
+    slug = resolveProjectSlug(dir, remoteUrl);
     _slugCache.set(key, slug);
   }
   return slug;
@@ -70,8 +74,8 @@ function slugFor(cwd?: string): string {
  * about -- omitting it falls back to the calling process's cwd, which is only
  * correct for single-repo CLI invocations, never for server-handled tool calls.
  */
-export async function getKbProviders(cwd?: string): Promise<KbProviders> {
-  const slug = slugFor(cwd);
+export async function getKbProviders(cwd?: string, remoteUrl?: string): Promise<KbProviders> {
+  const slug = slugFor(cwd, remoteUrl);
   let pending = _providers.get(slug);
   if (!pending) {
     // Store the promise, not the resolved value, so concurrent callers for the
