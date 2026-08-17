@@ -10,6 +10,8 @@ packages/apra-fleet-se/vendor/schemas/
 *.js.map
 *.tsbuildinfo
 .env
+tests/integration/email-test-config.json
+examples/workflows/email-notify/config.json
 *.pem
 fleet.config.json
 ~/.claude-fleet/

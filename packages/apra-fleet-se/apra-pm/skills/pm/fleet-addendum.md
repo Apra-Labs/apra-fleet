@@ -113,6 +113,12 @@ uses {{secure.github_pat}} in its own execute_command calls. The
 execute_command, not inside your own quotes (it is already single-quote-escaped
 by the fleet).
 
+Email provider secrets follow the same credential-store pattern: store with
+credential_store_set (names: "sendgrid_api_key" or "smtp_password"). The
+send_email tool takes non-secret config inline (provider, host, port, user,
+from) -- the workflow owns that config, not the server environment. Never pass
+email secrets in workflow prompts, config files, or environment variables.
+
 ## Fleet call batching (R8)
 
 When executing a sequence of fleet calls -- any combination of send_files,
