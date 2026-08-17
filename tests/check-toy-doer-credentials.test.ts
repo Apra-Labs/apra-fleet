@@ -355,11 +355,11 @@ describe('checkEnvVarNotJsonBlob (apra-fleet-vak.2, regression for apra-fleet-va
     return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
   }
 
-  it('plaintext-available + JSON-shaped value -> hard-fails, message mentions apra-fleet-vak', () => {
+  it('plaintext-available + JSON-shaped value -> hard-fails, message explains the JSON-blob shape', () => {
     const ciphertext = encryptForFixture(JSON.stringify({ accessToken: 'sk-leaked', expiresAt: 123 }));
     const result = checkEnvVarNotJsonBlob(ciphertext, { saltPath });
     expect(result.status).toBe('hard-fail');
-    expect(result.message).toMatch(/apra-fleet-vak/);
+    expect(result.message).toMatch(/JSON-shaped blob/);
   });
 
   it('plaintext-available + bare token -> ok', () => {

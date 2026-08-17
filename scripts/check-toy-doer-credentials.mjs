@@ -266,7 +266,7 @@ export function checkEnvVarNotJsonBlob(ciphertext, opts = {}) {
   if (isJsonShapedToken(plaintext)) {
     return {
       status: 'hard-fail',
-      message: `FAIL (apra-fleet-vak): encryptedEnvVars.${CREDENTIAL_ENV_VAR} decrypts to a JSON-shaped blob, not a bare OAuth access token -- this is the apra-fleet-vak regression (a full claudeAiOauth object stored verbatim). Check provisionEnvVarForMember (src/cli/auth.ts, apra-fleet-vak.1) actually extracted accessToken before writing encryptedEnvVars.`,
+      message: `FAIL: encryptedEnvVars.${CREDENTIAL_ENV_VAR} decrypts to a JSON-shaped blob, not a bare OAuth access token (a full claudeAiOauth object stored verbatim). Check provisionEnvVarForMember (src/cli/auth.ts) actually extracted accessToken before writing encryptedEnvVars.`,
     };
   }
   return {
