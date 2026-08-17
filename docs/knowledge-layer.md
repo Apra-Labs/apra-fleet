@@ -91,14 +91,39 @@ providers keyed by that path -- never by `process.cwd()` inside server-handled
 code. A caller that omits `repo_path` gets whatever repo the calling process
 happens to be in, which is only correct for a single-repo CLI invocation.
 
-**Provider caching is per resolved slug, not global.** `getKbProviders` maps
-a repo path to a project slug (via `resolveProjectSlug`, which reads the git
-remote URL, falls back to the repo directory name, and falls back again to a
-literal `default` for non-git directories) and caches one provider instance
-per slug. Concurrent calls for the same slug share one provider instead of
-racing to open two connections to the same SQLite file. The one exception is
-the global KB: there is exactly one of it, shared across every project, so it
-gets its own single-slot cache rather than living in the per-slug map.
+**Scope can be supplied as a git remote URL, not just a local path.** Every
+`kb_*` tool schema also accepts an optional `repo_remote_url` (a single shared
+zod fragment, `kbScopeFields`, spread into each tool's schema so the field
+cannot drift or be redeclared inconsistently). `resolveProjectSlug` prefers an
+explicit remote URL when one is supplied -- slugifying it directly, with no
+shell-out -- and only falls back to shelling `git remote get-url origin`
+against `repo_path`, then the repo directory's basename, then the literal
+`default`, when no usable URL was given. This matters because a remote
+member's `repo_path` is a path on the *far side* of a connection (e.g. an SSH
+member's Windows work folder): it does not exist on the fleet server's
+filesystem, so the git-based fallback always fails for it. Supplying the
+repo's remote URL lets a remote member's KB calls resolve to the *same*
+project KB and slug that member's local counterpart would resolve to, instead
+of collapsing into one shared `default` database (or, before that, silently
+colliding with whichever repo the server process happened to start in).
+Passing an explicit URL is opt-in per call; a caller that omits it keeps the
+exact pre-existing path-only resolution.
+
+**Provider caching is keyed by (slug, repoPath), not slug alone.** Two
+callers that resolve to the same project slug but supply different
+`repo_path` values (e.g. a remote member's unreachable path and that same
+member's local counterpart's real path) now get two distinct provider
+instances, each anchored at the `repoPath` its own caller supplied. This
+matters because `repoPath` is load-bearing: it is the root the capture basis
+check and the freshness re-hash resolve relative `source_files` against.
+Before this, the cache keyed on slug alone, so the *first* caller to resolve
+a given slug fixed `repoPath` for every later caller resolving to that same
+slug -- in practice, the anchor silently became whichever directory the fleet
+server process happened to be running in. Concurrent calls for the identical
+`(slug, repoPath)` pair still share one provider instead of racing to open
+two connections to the same SQLite file. The one exception is the global KB:
+there is exactly one of it, shared across every project, so it gets its own
+single-slot cache rather than living in the per-`(slug, repoPath)` map.
 
 **Slug resolution must not confuse "no auth" with "no host".** The slugifier
 strips a userinfo prefix from HTTPS remotes (`user@` in `https://user@host/...`)
@@ -109,17 +134,30 @@ through to the directory-basename fallback instead of the intended host-based
 one. Plain-HTTPS and SSH remotes for the same repository must slugify to the
 same value.
 
-**Known gap: remote members are not yet repo-routed.** A local member's
-`workFolder` is a real path on the machine running the fleet server, so
-passing it as `repo_path` resolves to that member's actual repo. A remote
-member's `workFolder` is a path on the *remote* host -- it does not exist on
-the fleet server's filesystem, so the git-based slug resolution fails and
-falls through to the literal `default` slug. Every remote member, across
-every repo it works in, currently harvests into that one shared `default` KB.
-This is strictly better than the pre-fix behavior (silently colliding with
-whichever repo the server process happened to be started in), and is
-considered acceptable until remote members get their own per-repo routing,
-but it means per-repo isolation is proven only for local members today.
+**Live gap: a `repo_path` that does not validate on this host can still
+anchor the wrong tree.** Slug resolution and provider caching are now
+URL-aware and repo-path-aware, but validating whether `repo_path` actually
+exists on the fleet server's filesystem is a separate, tool-specific step
+some callers still get wrong. At least one hot-path tool resolves a
+non-existent `repo_path` to `null` and then passes that through as
+`cwd ?? undefined` to `getKbProviders`, which in turn falls back to
+`process.cwd()` when no path is supplied. The result: the *slug* (and
+therefore which project's database is opened) can correctly come from
+`repo_remote_url` and point at the real, shared project KB, while the
+`repoPath` *anchor* used for the capture basis check and the freshness
+re-hash silently becomes the fleet server's own working directory -- a valid
+but unrelated tree. Because that anchor is load-bearing, this can stale
+healthy entries in the real shared KB (a freshness re-hash against the wrong
+tree fails to match and marks the entry stale) rather than merely failing to
+read the intended one. The safe pattern for any tool that resolves
+`repo_path` before calling `getKbProviders` is: if the path does not
+validate, pass **no anchor at all** (`repoPath: undefined`, which the basis
+check already treats as "not checkable" rather than as a match against
+whatever `process.cwd()` happens to be) -- never let a validation failure on
+`repo_path` silently degrade into a `process.cwd()` fallback within
+server-handled code. Treat any new or existing call site that resolves
+`repo_path` locally before forwarding it as a candidate for this hazard until
+it has been audited.
 
 **The single-accessor invariant is enforced textually, not structurally.** A
 source-level guard checks that no code path calls the deleted service-style
