@@ -14,6 +14,7 @@ import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
+import { findDatedModelPins, datedModelPinWarning } from '../services/model-tier-validation.js';
 
 export const updateMemberSchema = z.object({
   ...memberIdentifier,
@@ -167,6 +168,16 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       if (!normalizedModelTiers.premium) normalizedModelTiers.premium = normalizedModelTiers.standard;
     }
     updates.modelTiers = normalizedModelTiers;
+
+    // apra-fleet-rmkb-dz1.1: warn (do not reject) when an operator pins a
+    // dated model ID -- it is accepted (an explicit override is still an
+    // operator's prerogative, see model-tier-validation.ts), but the warning
+    // surfaces the risk at set-time rather than only as a 404 at dispatch
+    // time. A bare family alias stays silent.
+    const datedPins = findDatedModelPins(normalizedModelTiers);
+    if (datedPins.length > 0) {
+      warnings.push(datedModelPinWarning(datedPins));
+    }
 
     // --- Validate opencode model_tiers against available models ---
     if (updates.modelTiers) {

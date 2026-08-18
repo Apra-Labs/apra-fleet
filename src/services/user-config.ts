@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FLEET_DIR } from '../paths.js';
 import type { LlmProvider } from '../types.js';
+import { isDatedModelPin, datedModelPinWarning } from './model-tier-validation.js';
 
 export type ModelTier = 'cheap' | 'standard' | 'premium';
 
@@ -177,7 +178,16 @@ export function loadUserConfig(): UserConfig {
 
 export function getModelOverride(provider: LlmProvider, tier: ModelTier): string | undefined {
   const config = loadUserConfig();
-  return config.providers?.[provider]?.modelMapping?.[tier];
+  const override = config.providers?.[provider]?.modelMapping?.[tier];
+  // apra-fleet-rmkb-dz1.1: a dated pin sitting in user config (config.json)
+  // otherwise wins silently over the provider's bare-alias default (rung 3
+  // beats rung 4 in resolveModelForTier's ladder) and only surfaces later as
+  // a 404 at dispatch time. Surface it here instead; still return it --an
+  // operator's explicit override is honored either way.
+  if (override && isDatedModelPin(override)) {
+    console.error(`[fleet] user config: providers.${provider}.modelMapping has a ${datedModelPinWarning([`${tier}=${override}`])}`);
+  }
+  return override;
 }
 
 /** Characters of command/prompt text to keep on a fleet-log line (config-driven). */
