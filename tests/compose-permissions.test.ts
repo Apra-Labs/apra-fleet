@@ -11,9 +11,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { composePermissions } from '../src/tools/compose-permissions.js';
-import { ClaudeProvider } from '../src/providers/claude.js';
+import { composePermissions, deepMerge } from '../src/tools/compose-permissions.js';
+import { ClaudeProvider, MEMBER_MCP_ALLOW_PREFIX, MEMBER_MCP_DENY_RULES } from '../src/providers/claude.js';
 import { GeminiProvider } from '../src/providers/gemini.js';
+import { NoneProvider } from '../src/providers/none.js';
+import { MEMBER_TOOL_ALLOWLIST } from '../src/services/tool-registry.js';
 import type { SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1172,5 +1174,168 @@ describe('composePermissions -- remote-member config delivery path (rmkb-3n5.2 r
     // permissions.deny), so the member entry is the ONLY one and must be intact.
     expect(written.mcpServers['apra-fleet']).toBeUndefined();
     expect(written.permissions.deny).toContain('mcp__apra-fleet__*');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rmkb-3n5.6.2 -- the emitted client-side allow/deny profile shape
+//
+// Pure shape assertions on ClaudeProvider.composePermissionConfig(): no member,
+// no MCP server, no strategy. This is the CLIENT half of the member boundary and
+// is defense in depth only -- the enforcing half is server-side deny-by-omission
+// in registerAllTools (tests/tool-scope.test.ts). What can silently break here
+// is subtle rather than loud, hence a universal property instead of spot checks:
+//   * a re-added `disabled: true` sits UPSTREAM of the permission matcher and
+//     switches the whole member surface off no matter what allow says;
+//   * an UNANCHORED allow glob (`mcp__*`) is SKIPPED WITH A WARNING by Claude
+//     Code, i.e. it grants nothing while looking generous;
+//   * a dropped deny (compose_permissions above all) is a self-escalation hole:
+//     an agent that can call it rewrites its own allow list.
+// ---------------------------------------------------------------------------
+
+describe('ClaudeProvider.composePermissionConfig -- member MCP allow/deny profile (rmkb-3n5.6.2)', () => {
+  const claude = new ClaudeProvider();
+
+  /** The single settings.local.json fragment Claude emits. */
+  function fragment(role: 'doer' | 'reviewer' = 'doer', allow: string[] = ['Read', 'Write', 'Bash(git:*)']) {
+    const configs = claude.composePermissionConfig(role, allow);
+    expect(configs).toHaveLength(1);
+    return configs[0] as {
+      permissions: { allow: string[]; deny: string[] };
+      mcpServers?: Record<string, unknown>;
+      skillOverrides?: Record<string, unknown>;
+    };
+  }
+
+  it('emits NO mcpServers["apra-fleet"].disabled key at all (absence, not a false value)', () => {
+    for (const role of ['doer', 'reviewer'] as const) {
+      const cfg = fragment(role);
+      // Assert the KEY is absent rather than falsy: `disabled: false` would be a
+      // regression waiting to happen, and a truthy re-add would silently kill the
+      // member surface upstream of every allow rule below.
+      const fleetEntry = (cfg.mcpServers ?? {})['apra-fleet'] as Record<string, unknown> | undefined;
+      expect(fleetEntry === undefined || !('disabled' in fleetEntry)).toBe(true);
+      expect(JSON.stringify(cfg)).not.toContain('"disabled"');
+    }
+  });
+
+  it('anchors EVERY MCP allow entry after the literal mcp__apra-fleet-member__ prefix (no unanchored glob possible)', () => {
+    // Universal property over the whole allow array, including hostile input:
+    // callers (the reactive grant path re-reads the member's own file) may hand
+    // in unanchored or orchestrator-scoped MCP rules, and none of them may
+    // survive into the emitted allow list.
+    const cfg = fragment('doer', [
+      'Read',
+      'mcp__*',
+      'mcp__apra-fleet__*',
+      'mcp__apra-fleet__execute_prompt',
+      'mcp__apra-fleet-member__kb_query',
+    ]);
+    const mcpAllow = cfg.permissions.allow.filter(rule => rule.startsWith('mcp__'));
+    expect(mcpAllow.length).toBeGreaterThan(0);
+    for (const rule of mcpAllow) {
+      expect(rule.startsWith(MEMBER_MCP_ALLOW_PREFIX)).toBe(true);
+    }
+    expect(MEMBER_MCP_ALLOW_PREFIX).toBe('mcp__apra-fleet-member__');
+    // Non-MCP permissions the caller asked for are untouched.
+    expect(cfg.permissions.allow).toContain('Read');
+    // ...and the unanchored / orchestrator-scoped ones are gone.
+    expect(cfg.permissions.allow).not.toContain('mcp__*');
+    expect(cfg.permissions.allow).not.toContain('mcp__apra-fleet__*');
+    expect(cfg.permissions.allow).not.toContain('mcp__apra-fleet__execute_prompt');
+  });
+
+  it('denies compose_permissions -- the self-escalation hole -- plus mcp__apra-fleet__* and the rest of the deny set', () => {
+    const deny = fragment().permissions.deny;
+    // compose_permissions first and by name: an agent that can call it rewrites
+    // its own allow list, which makes every other rule here advisory.
+    expect(deny.some(rule => rule.includes('compose_permissions'))).toBe(true);
+    // The orchestrator's OWN server key stays wholly denied.
+    expect(deny).toContain('mcp__apra-fleet__*');
+    for (const tool of [
+      'execute_prompt',
+      'execute_command',
+      'stop_prompt',
+      'compose_permissions',
+      'credential_store_',
+      'send_files',
+      'receive_files',
+      'send_email',
+      'kb_promote',
+      'kb_import',
+      'kb_export',
+      'kb_setup',
+    ]) {
+      expect(deny.some(rule => rule.includes(tool))).toBe(true);
+    }
+    expect(deny).toEqual([...MEMBER_MCP_DENY_RULES]);
+  });
+
+  it('derives the allowed tool-name set from MEMBER_TOOL_ALLOWLIST so client and server boundaries cannot drift', () => {
+    const cfg = fragment();
+    const allowedToolNames = cfg.permissions.allow
+      .filter(rule => rule.startsWith(MEMBER_MCP_ALLOW_PREFIX))
+      .map(rule => rule.slice(MEMBER_MCP_ALLOW_PREFIX.length))
+      .sort();
+    // Set equality, not containment: an extra client-side allow would grant a
+    // tool the server never registers (dead rule), and a missing one would make
+    // a genuinely in-scope tool unusable on the member.
+    expect(allowedToolNames).toEqual([...MEMBER_TOOL_ALLOWLIST].sort());
+    // The KB and code-intelligence surface plus the two housekeeping tools are
+    // what the member is actually there to use -- spot-check the ends.
+    expect(allowedToolNames).toContain('kb_session_prime');
+    expect(allowedToolNames).toContain('code_graph');
+    expect(allowedToolNames).toContain('version');
+    expect(allowedToolNames).toContain('report_status');
+    // Nothing denied may also be allowed (deny wins on first match, but a rule
+    // that needs deny to save it is a bug in the allow list).
+    expect(allowedToolNames).not.toContain('compose_permissions');
+    expect(allowedToolNames).not.toContain('execute_prompt');
+  });
+
+  it('leaves providers with no MCP endpoint unaffected (gemini, none)', () => {
+    // Only the Claude fragment carries the member-scoped rules; a provider that
+    // has no registerMcpEndpoint() has no apra-fleet-member entry to point at,
+    // so its config must not grow mcp__ rules of any kind.
+    const gemini = new GeminiProvider();
+    expect(gemini.registerMcpEndpoint).toBeUndefined();
+    const geminiConfigs = gemini.composePermissionConfig('doer', ['Read', 'Write']);
+    expect(geminiConfigs).toHaveLength(2);
+    expect(geminiConfigs[0]).toEqual({ mode: 'auto_edit', mcpServers: {} });
+    expect(JSON.stringify(geminiConfigs)).not.toContain('mcp__');
+
+    const none = new NoneProvider();
+    expect(none.composePermissionConfig('doer', ['Read'])).toEqual([]);
+  });
+
+  it('survives the deliverConfigFile deep merge with a pre-existing apra-fleet-member entry (neither side clobbered)', () => {
+    // The tunnel/register_member entry (which carries the live JWT) and this
+    // fragment are written to the SAME settings.local.json by different code
+    // paths, and deliverConfigFile merges them with deepMerge.
+    const onMember = {
+      mcpServers: {
+        'apra-fleet-member': {
+          type: 'http',
+          url: 'http://127.0.0.1:41234/mcp',
+          headers: { Authorization: 'Bearer minted-member-jwt' },
+        },
+      },
+      permissions: { allow: ['Read'] },
+    };
+    const merged = deepMerge(onMember, fragment() as unknown as Record<string, unknown>);
+    const mcpServers = merged.mcpServers as Record<string, unknown>;
+
+    // The JWT-bearing endpoint entry survives untouched...
+    expect(mcpServers['apra-fleet-member']).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:41234/mcp',
+      headers: { Authorization: 'Bearer minted-member-jwt' },
+    });
+    // ...no disabled flag is introduced for the orchestrator key by the merge...
+    expect(mcpServers['apra-fleet']).toBeUndefined();
+    // ...and the composed rules land intact (arrays replace, per deepMerge).
+    const permissions = merged.permissions as { allow: string[]; deny: string[] };
+    expect(permissions.allow).toContain(`${MEMBER_MCP_ALLOW_PREFIX}kb_query`);
+    expect(permissions.deny).toContain('mcp__apra-fleet__*');
   });
 });
