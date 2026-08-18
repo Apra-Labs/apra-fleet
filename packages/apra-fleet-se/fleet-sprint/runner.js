@@ -1854,7 +1854,7 @@ export function createKbWorkClient(opts = {}) {
          * Best-effort by design -- a cold or unreachable KB must degrade to
          * "nothing to promote", never fail the review dispatch.
          */
-        async promotionCandidates(repoPath) {
+        async promotionCandidates(repoPath, repoRemoteUrl) {
             // Without a repo path kb_list would resolve against the fleet
             // server's cwd and offer entries from an unrelated project's KB
             // (the apra-fleet-tm7 repo-blindness class). Refuse rather than guess.
@@ -1862,6 +1862,13 @@ export function createKbWorkClient(opts = {}) {
             try {
                 const parsed = parseResult(await callTool('kb_list', {
                     repo_path: repoPath,
+                    // rmkb-xlx: forward the same cached, never-guessed origin URL
+                    // as every other KB call site here (relevantKnowledge, apply),
+                    // so promotion candidates come from the same URL-keyed project
+                    // KB a remote member's captures/promotes resolve to, rather
+                    // than a basename-keyed one the resulting kb_promote id can
+                    // never be found in.
+                    ...(typeof repoRemoteUrl === 'string' && repoRemoteUrl.length > 0 ? { repo_remote_url: repoRemoteUrl } : {}),
                     confidence: 'INFERRED',
                     limit: KB_MAX_PROMOTION_CANDIDATES,
                 }));
@@ -2031,13 +2038,20 @@ export function createKbWorkClient(opts = {}) {
          * decision (kb_export's own autoCommit config) -- this does not widen
          * the engine's git authority.
          */
-        async exportBible(repoPath) {
+        async exportBible(repoPath, repoRemoteUrl) {
             // Same repo-blindness guard as every other call here: without a
             // path kb_export would resolve against the fleet server's cwd and
             // write an unrelated project's bible.
             if (!active || !repoPath) return false;
             try {
-                const res = await callTool('kb_export', { repo_path: repoPath });
+                // rmkb-xlx: forward the same cached origin URL as every other
+                // call site, so the exported bible reflects the URL-keyed
+                // project KB a remote member's promotions actually landed in,
+                // not the basename-keyed one that never saw them.
+                const remoteUrlArg = (typeof repoRemoteUrl === 'string' && repoRemoteUrl.length > 0)
+                    ? { repo_remote_url: repoRemoteUrl }
+                    : {};
+                const res = await callTool('kb_export', { repo_path: repoPath, ...remoteUrlArg });
                 if (isToolError(res)) {
                     log(`[kb-work] kb_export rejected for ${repoPath} (non-fatal): ${toolErrorText(res)}`);
                     return false;
@@ -6357,7 +6371,7 @@ async function runSprintCycle(context) {
         // best-effort: a cold KB must not fail the review.
         const reviewerRepoPath = kbPriming.folderOf(reviewerPool[0]);
         const reviewerRemoteUrl = kbPriming.remoteUrlOf(reviewerPool[0]);
-        const kbCandidates = await kbWork.promotionCandidates(reviewerRepoPath);
+        const kbCandidates = await kbWork.promotionCandidates(reviewerRepoPath, reviewerRemoteUrl);
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
         }
@@ -9551,7 +9565,7 @@ async function runSprintCycle(context) {
     // KB that its own earlier promotions may have already changed.
     const finalReviewRepoPath = kbPriming.folderOf(getMemberForRole('reviewer'));
     const finalReviewRemoteUrl = kbPriming.remoteUrlOf(getMemberForRole('reviewer'));
-    const finalKbCandidates = await kbWork.promotionCandidates(finalReviewRepoPath);
+    const finalKbCandidates = await kbWork.promotionCandidates(finalReviewRepoPath, finalReviewRemoteUrl);
     if (finalKbCandidates.length > 0) {
         log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
     }
@@ -9687,7 +9701,7 @@ async function runSprintCycle(context) {
     // of the run, so the bible carries every CONFIRMED entry including the ones
     // minted a line above. Without this the sprint's knowledge never left the
     // member's local sqlite store -- see createKbWorkClient.exportBible.
-    await kbWork.exportBible(finalReviewRepoPath);
+    await kbWork.exportBible(finalReviewRepoPath, finalReviewRemoteUrl);
 
     // Persist the Final Review's actionable findings to BEADS -- the only
     // artifact the next sprint's planner reads (notes reach only the PR body
