@@ -1486,6 +1486,554 @@ export function createMcpChildIdAllocatorClient(opts = {}) {
  * @param {{ callTool: (name: string, args: object) => Promise<any>, members?: string[], sprintId?: string, log?: Function }} opts
  * @returns {{ reserveAll: () => Promise<void>, releaseAll: () => Promise<void> }}
  */
+/**
+ * apra-fleet-e28 / KB trust pipeline Phase 2: KB priming for the fleet-sprint
+ * engine, which had none -- it lived only in the Claude workflow copy.
+ *
+ * `callTool` is injected exactly like `createMemberReservationClient`'s, so this
+ * stays transport-agnostic and unit-testable without a live fleet server.
+ *
+ * WHY PER MEMBER, NOT PER SPRINT: this engine has no repo path of its own. It
+ * coordinates members by name and branch; the repo lives on each member's side,
+ * possibly on a different host at a different path. `kb_session_prime` selects
+ * WHICH project KB is read from its `repo_path`, and omitting that argument
+ * falls back to the fleet server's own cwd -- collapsing every member's
+ * knowledge into whichever repo the server happens to sit in, which is exactly
+ * the apra-fleet-tm7 / apra-fleet-3zl repo-blindness defect. So the work folder
+ * is resolved per member via `member_detail` (which reports it as `folder`) and
+ * each member is primed against its own repo.
+ *
+ * Best-effort throughout, matching the reservation client's precedent: a member
+ * whose folder cannot be resolved, or whose prime call fails, is logged and
+ * skipped. A sprint must not fail because the KB is cold -- priming is an
+ * optimisation, and every role contract's Step 0 already degrades gracefully
+ * when the KB tools are unavailable.
+ *
+ * @param {{ callTool?: (name: string, args: object) => Promise<any>, members?: string[], log?: Function }} opts
+ * @returns {{ primeAll: () => Promise<{primed: number, skipped: number}> }}
+ */
+/**
+ * Cap on primed entries carried into a dispatch prompt. kb_session_prime can
+ * return up to ~28 (10 direct FTS hits + 3 global + 5 graph-neighbour + 5
+ * project-bible + 5 global-bible); a dispatch prompt is not a place to spend
+ * that much budget on context the role may not need, and the entries are
+ * already returned in relevance order.
+ */
+export const KB_MAX_KNOWLEDGE_ENTRIES = 12;
+
+/**
+ * The URL-based KB scope selector, spread into a kb_* call's arguments.
+ *
+ * repo_path alone is only sufficient for a LOCAL member: resolveProjectSlug
+ * (src/services/knowledge/project-slug.ts) runs git in that directory to derive
+ * the project slug. A remote member's work folder is a path on another host, so
+ * both git probes fail and the slug degrades to 'default' -- collapsing every
+ * remote member's knowledge into one shared KB. repo_remote_url selects the DB
+ * directly (apra-fleet-b4g.1) and is what makes a sprint's kb_* calls land in
+ * the member's own project KB.
+ *
+ * Absent when no URL is known: an omitted scope is the honest pre-existing
+ * degradation, while a fabricated one routes writes into a slug that does not
+ * match the repo's real local-clone slug. The engine never derives a URL -- it
+ * forwards only what member_detail reports (knownRepoRemoteUrl's rule).
+ */
+function kbScope(remoteUrl) {
+    return (typeof remoteUrl === 'string' && remoteUrl.length > 0) ? { repo_remote_url: remoteUrl } : {};
+}
+
+export function createKbPrimingClient(opts = {}) {
+    const { callTool, members = [], log = () => {} } = opts;
+    const active = typeof callTool === 'function' && members.length > 0;
+
+    function parseResult(result) {
+        if (result && typeof result === 'string') { try { return JSON.parse(result); } catch { return null; } }
+        if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
+            try { return JSON.parse(result.content[0].text); } catch { return null; }
+        }
+        return (result && typeof result === 'object') ? result : null;
+    }
+
+    async function scopeFor(member) {
+        // apra-fleet-n78: format:'json' is REQUIRED. member_detail defaults to
+        // 'compact', whose renderer emits no folder at all -- `folder` is set only
+        // on the json path (src/tools/member-detail.ts). Omitting it made this
+        // return null for every member, so the KB was never primed for anyone.
+        const detail = parseResult(await callTool('member_detail', { member_name: member, format: 'json' }));
+        // member_detail reports the work folder as `folder` and the repo origin
+        // URL as `repo_remote_url` (src/tools/member-detail.ts). The URL is
+        // reported only when the member's registration record proves it, so an
+        // absent one is normal and must stay absent rather than be derived here.
+        const folder = detail && (detail.folder || (detail.member && detail.member.folder));
+        const url = detail && (detail.repo_remote_url || (detail.member && detail.member.repo_remote_url));
+        return {
+            folder: (typeof folder === 'string' && folder.length > 0) ? folder : null,
+            remoteUrl: (typeof url === 'string' && url.length > 0) ? url : null,
+        };
+    }
+
+    // member -> work folder, populated by primeAll(). createKbWorkClient reads
+    // it so a capture lands in the repo the member actually worked in, rather
+    // than being resolved against the fleet server's cwd.
+    const folders = new Map();
+
+    // member -> the repo origin URL member_detail reported for it, when it
+    // reported one. This is what scopes a REMOTE member's kb_* calls to its own
+    // project KB instead of the shared 'default' one (see kbScope).
+    const remoteUrls = new Map();
+
+    // work folder -> that folder's origin URL, or CONFLICTING_URL when two
+    // members claim the same path string for DIFFERENT repos. The work client
+    // resolves its scope through this map rather than taking the URL as an
+    // extra argument at each of its nine call sites: threading the repo path is
+    // then the same act as threading the scope, so a site cannot forget one
+    // while remembering the other.
+    const urlByFolder = new Map();
+    const CONFLICTING_URL = Symbol('conflicting-remote-url');
+
+    // member -> the entries kb_session_prime returned for that member.
+    //
+    // KB audit 2026-08-11: primeAll() used to `await callTool(...)` and throw
+    // the result away, on the assumption that priming "warms" something the
+    // role's own Step 0 would later read. It does not: prime is a pure read,
+    // and the role CANNOT repeat it -- a member-dispatched subagent has the
+    // fleet MCP server disabled (src/providers/claude.ts
+    // composePermissionConfig), so every contract's Step 0 kb_session_prime is
+    // unreachable there. Nothing consumed the knowledge and nothing could, which
+    // is why six sprints retrieved zero entries. Retaining the result is what
+    // lets kbKnowledgeBlock() hand it to the role in its dispatch prompt --
+    // the same shape of fix that made kb_promotions reachable.
+    const knowledge = new Map();
+
+    return {
+        folderOf(member) {
+            return folders.get(member) || null;
+        },
+        remoteUrlOf(member) {
+            return remoteUrls.get(member) || null;
+        },
+        /**
+         * The URL scoping kb_* calls made against `repoPath`, or null.
+         *
+         * Null for an unknown path, for a local member (no URL was reported),
+         * and for a path two members claim with different URLs. Members on
+         * different hosts can share a work-folder path string while being
+         * clones of different repos; picking either URL there would route one
+         * member's captures into the other's KB, which is strictly worse than
+         * the 'default' degradation this scoping exists to remove. Refusing
+         * leaves that case exactly as it was before.
+         */
+        remoteUrlForPath(repoPath) {
+            if (typeof repoPath !== 'string' || repoPath.length === 0) return null;
+            const url = urlByFolder.get(repoPath);
+            return (typeof url === 'string') ? url : null;
+        },
+        knowledgeOf(member) {
+            return knowledge.get(member) || [];
+        },
+        async primeAll() {
+            if (!active) return { primed: 0, skipped: members.length };
+            let primed = 0;
+            let skipped = 0;
+            for (const member of members) {
+                try {
+                    const { folder: repoPath, remoteUrl } = await scopeFor(member);
+                    if (repoPath) folders.set(member, repoPath);
+                    if (remoteUrl) remoteUrls.set(member, remoteUrl);
+                    if (repoPath && remoteUrl) {
+                        const known = urlByFolder.get(repoPath);
+                        if (known !== undefined && known !== remoteUrl) {
+                            urlByFolder.set(repoPath, CONFLICTING_URL);
+                            log(`[kb-prime] work folder ${repoPath} is claimed by two different repos -- KB calls for it stay unscoped`);
+                        } else {
+                            urlByFolder.set(repoPath, remoteUrl);
+                        }
+                    }
+                    if (!repoPath) {
+                        // No folder means no repo to scope the KB to. Priming without
+                        // one would read the fleet server's own KB, so skip instead.
+                        log(`[kb-prime] no work folder for member '${member}' -- skipping (KB stays cold)`);
+                        skipped++;
+                        continue;
+                    }
+                    // Land the committed bible in the WARM KB before priming.
+                    //
+                    // Without this the bible is reachable only through
+                    // kb_session_prime's cold-seed, which reads it as a FILE
+                    // and caps at 5 entries -- apra-fleet's own bible holds 17,
+                    // so a sprint could see at most 5 arbitrary ones and FTS
+                    // could rank none of them, because they were never rows.
+                    // Importing first is what gives the per-dispatch kb_query
+                    // (see relevantKnowledge) anything to match against.
+                    // Idempotent by id, and best-effort: a repo with no bible,
+                    // or an import that rejects every entry, must not stop the
+                    // prime it was meant to feed.
+                    //
+                    // skip_sweep IS LOAD-BEARING (audit 2026-08-12, caught by a
+                    // live sprint). kb_import's post-import freshnessSweep
+                    // re-judges the ENTIRE KB against this member's worktree. At
+                    // sprint start that staled 16 of 17 CONFIRMED entries purely
+                    // because the repo had moved on since capture, and the
+                    // damage cascaded: retrieval fell to one matchable entry,
+                    // kb_export attempted a 17 -> 9 bible truncation, and
+                    // kb_list (stale=0) returned an EMPTY promotion candidate
+                    // list -- reinstating apra-fleet-0ef, "kb_promote can never
+                    // fire". This import exists to WARM the KB, never to audit
+                    // it; prime()'s own bounded checkFreshness still guards each
+                    // entry it actually returns.
+                    try {
+                        const imported = parseResult(await callTool('kb_import', { repo_path: repoPath, ...kbScope(remoteUrl), skip_sweep: true }));
+                        if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
+                            log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for ${repoPath}`);
+                        }
+                    } catch (err) {
+                        log(`[kb-prime] kb_import skipped for ${repoPath} (non-fatal): ${err.message}`);
+                    }
+
+                    const primeResult = parseResult(await callTool('kb_session_prime', { repo_path: repoPath, ...kbScope(remoteUrl) }));
+                    const entries = (primeResult && Array.isArray(primeResult.top_entries))
+                        ? primeResult.top_entries.filter((e) => e && typeof e.id === 'string')
+                        : [];
+                    if (entries.length > 0) knowledge.set(member, entries.slice(0, KB_MAX_KNOWLEDGE_ENTRIES));
+                    primed++;
+                } catch (err) {
+                    log(`[kb-prime] failed for member '${member}' (non-fatal): ${err.message}`);
+                    skipped++;
+                }
+            }
+            if (primed > 0) log(`[kb-prime] primed ${primed} member repo(s)`);
+            return { primed, skipped };
+        },
+    };
+}
+
+/**
+ * KB trust pipeline Phase 2, execution half for this engine.
+ *
+ * The role output schemas are SHARED with apra-pm (contracts.mjs loads them from
+ * apra-pm/agents/schemas), so every role dispatched here is now asked for
+ * kb_captures, and the reviewer for kb_promotions. Without a consumer those
+ * fields would be silently dropped -- the knowledge would be gathered and
+ * thrown away. This is that consumer.
+ *
+ * Unlike apra-pm's auto-sprint.js -- a Claude Workflow script with no tool
+ * access, which must hand its vetted payload to an executor subagent -- this
+ * engine runs in-process with an injected callTool, so it makes the kb_capture
+ * and kb_promote calls DIRECTLY. Judgment still belongs to the role; execution
+ * belongs here.
+ *
+ * Validation mirrors lib/vet-kb-work.mjs in apra-pm and the provider invariants
+ * it reflects: a capture must cite at least one source file (SqliteProvider
+ * rejects an entry the freshness sweep can never stale), a promotion needs a
+ * recorded evidence string, and kb_promotions is refused from any role other
+ * than reviewer -- widening capture to four roles must not widen promotion.
+ *
+ * @param {{ callTool?: (name: string, args: object) => Promise<any>, log?: Function }} opts
+ * @returns {{ apply: (role: string, repoPath: string, result: any) => Promise<{captured: number, promoted: number, refused: number}> }}
+ */
+export const KB_PROMOTER_ROLES = Object.freeze(new Set([ROLE_REVIEWER]));
+export const KB_MIN_PROMOTE_REASON = 20;
+export const KB_CAPTURE_TYPES = Object.freeze(['knowledge', 'learning', 'runbook']);
+
+/**
+ * True when an MCP tool result represents a tool-level failure. The MCP client
+ * resolves such results instead of throwing (apra-fleet-23c), so callers that
+ * only catch exceptions silently treat failures as successes.
+ */
+function isToolError(res) {
+    return !!(res && typeof res === 'object' && res.isError === true);
+}
+
+/** Best-effort human-readable text out of an MCP error result, for logging. */
+function toolErrorText(res) {
+    const first = res && Array.isArray(res.content) ? res.content[0] : null;
+    return (first && typeof first.text === 'string' && first.text) || 'no error text returned';
+}
+
+export function vetKbWork(role, result) {
+    const captures = [];
+    const promotions = [];
+    const refused = [];
+
+    const rawCaptures = (result && Array.isArray(result.kb_captures)) ? result.kb_captures : [];
+    for (const c of rawCaptures) {
+        if (!c || typeof c.title !== 'string' || typeof c.summary !== 'string') {
+            refused.push(`${role}: capture missing title/summary`);
+            continue;
+        }
+        if (!Array.isArray(c.source_files) || c.source_files.length === 0) {
+            refused.push(`${role}: capture "${c.title}" cites no source files`);
+            continue;
+        }
+        if (!KB_CAPTURE_TYPES.includes(c.type)) {
+            refused.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
+            continue;
+        }
+        // apra-fleet-23c: kbCaptureSchema requires content (z.string().min(1)).
+        // Omitting it here meant every kb_capture the engine sent failed zod
+        // validation at the MCP boundary and persisted nothing.
+        if (typeof c.content !== 'string' || c.content.trim().length === 0) {
+            refused.push(`${role}: capture "${c.title}" has no content`);
+            continue;
+        }
+        captures.push({
+            type: c.type,
+            title: c.title,
+            summary: c.summary,
+            content: c.content,
+            source_files: c.source_files,
+            symbols: Array.isArray(c.symbols) ? c.symbols : [],
+        });
+    }
+
+    const rawPromotions = (result && Array.isArray(result.kb_promotions)) ? result.kb_promotions : [];
+    if (rawPromotions.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+        refused.push(`${role}: kb_promotions refused -- promotion is reviewer-only`);
+    } else {
+        for (const p of rawPromotions) {
+            if (!p || typeof p.id !== 'string' || p.id.length === 0) {
+                refused.push(`${role}: promotion missing id`);
+                continue;
+            }
+            if (typeof p.reason !== 'string' || p.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+                refused.push(`${role}: promotion ${p.id} has no recorded evidence`);
+                continue;
+            }
+            promotions.push({ id: p.id, reason: p.reason.trim() });
+        }
+    }
+
+    return { captures, promotions, refused };
+}
+
+/** Max promotion candidates offered to one reviewer, so the prompt stays bounded. */
+export const KB_MAX_PROMOTION_CANDIDATES = 40;
+
+export function createKbWorkClient(opts = {}) {
+    const { callTool, log = () => {}, remoteUrlFor } = opts;
+    const active = typeof callTool === 'function';
+
+    /**
+     * The URL-based KB scope for a repo path, resolved through the injected
+     * lookup (createKbPrimingClient's remoteUrlForPath). Deliberately NOT an
+     * extra parameter on the methods below: they are called from nine places
+     * across runSprintCycle/finalReview/harvest, and an omitted argument is
+     * indistinguishable from "no URL known" -- it would silently reinstate the
+     * repo-blindness this exists to fix. With no lookup injected (every
+     * construction site predating this, and direct unit calls) the scope is
+     * absent and behaviour is exactly as before.
+     */
+    function scopeOf(repoPath) {
+        return kbScope(typeof remoteUrlFor === 'function' ? remoteUrlFor(repoPath) : null);
+    }
+
+    /** Best-effort JSON out of an MCP result (string, content-block, or plain object). */
+    function parseResult(result) {
+        if (typeof result === 'string') { try { return JSON.parse(result); } catch { return null; } }
+        if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
+            try { return JSON.parse(result.content[0].text); } catch { return null; }
+        }
+        return (result && typeof result === 'object') ? result : null;
+    }
+
+    return {
+        /**
+         * apra-fleet-0ef: the INFERRED entries this reviewer may promote.
+         *
+         * The engine's contract is "judgment belongs to the role, execution
+         * belongs here" -- the reviewer returns `kb_promotions:[{id, reason}]`
+         * and `apply()` calls kb_promote. But an entry id exists only inside
+         * the KB, and the reviewer subagent has no apra-fleet MCP tools to
+         * look one up, so it could never name an id: `kb_promotions` was
+         * structurally always empty and nothing was ever promoted. (kb_captures
+         * worked only because a capture needs no pre-existing id.) This is the
+         * missing input: the engine reads the candidates and hands them to the
+         * reviewer in its prompt.
+         *
+         * Best-effort by design -- a cold or unreachable KB must degrade to
+         * "nothing to promote", never fail the review dispatch.
+         */
+        async promotionCandidates(repoPath) {
+            // Without a repo path kb_list would resolve against the fleet
+            // server's cwd and offer entries from an unrelated project's KB
+            // (the apra-fleet-tm7 repo-blindness class). Refuse rather than guess.
+            if (!active || !repoPath) return [];
+            try {
+                const parsed = parseResult(await callTool('kb_list', {
+                    repo_path: repoPath,
+                    ...scopeOf(repoPath),
+                    confidence: 'INFERRED',
+                    limit: KB_MAX_PROMOTION_CANDIDATES,
+                }));
+                const results = parsed && Array.isArray(parsed.results) ? parsed.results : [];
+                return results
+                    // promote() refuses type='user-directive' outright (activation
+                    // is human-terminal, CLI-only), so offering one as a candidate
+                    // can only produce a guaranteed refusal.
+                    .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive')
+                    .slice(0, KB_MAX_PROMOTION_CANDIDATES);
+            } catch (err) {
+                log(`[kb-work] could not list promotion candidates for ${repoPath} (non-fatal): ${err.message}`);
+                return [];
+            }
+        },
+        /**
+         * KB audit follow-up: the per-dispatch, relevance-ranked read.
+         *
+         * primeAll() runs ONCE per member at sprint start with no hints, so
+         * every role received the same handful of entries no matter what it was
+         * about to work on -- and kb_query went unused by this engine entirely.
+         * This asks the KB what it knows about THIS dispatch, using the terms
+         * the engine already holds (bead ids and their titles).
+         *
+         * `expand_related` is what finally reads the KB's own graph. The KB has
+         * been writing `refines` and `contradiction_of` edges since AUDN
+         * shipped and traversing none of them: 554 edges, 0 reads. A role about
+         * to act on an entry is precisely who needs to know that entry has a
+         * newer framing or a standing dispute -- especially since confidence
+         * tier does NOT track correctness across a contradiction chain (the
+         * warehouse chain-A shape, where the incorrect entry outranks both of
+         * its corrections).
+         *
+         * Best-effort, like every other KB read here: no repo path, no terms, a
+         * cold KB or an unreachable one all degrade to "no knowledge", never to
+         * a failed dispatch.
+         */
+        async relevantKnowledge(repoPath, terms) {
+            if (!active || !repoPath || !Array.isArray(terms) || terms.length === 0) return [];
+            const query = terms.filter((t) => typeof t === 'string' && t.trim()).join(' ');
+            if (!query) return [];
+            try {
+                const parsed = parseResult(await callTool('kb_query', {
+                    repo_path: repoPath,
+                    ...scopeOf(repoPath),
+                    query,
+                    limit: KB_MAX_KNOWLEDGE_ENTRIES,
+                    expand_related: true,
+                }));
+                if (!parsed) return [];
+                const hits = Array.isArray(parsed.l1_results) ? parsed.l1_results : [];
+                const related = Array.isArray(parsed.related_claims) ? parsed.related_claims : [];
+                const seen = new Set();
+                const out = [];
+                for (const e of hits) {
+                    if (!e || typeof e.id !== 'string' || seen.has(e.id)) continue;
+                    seen.add(e.id);
+                    out.push(e);
+                }
+                // Related claims sit BELOW every direct hit and carry a marker,
+                // so a role can tell "the KB matched this" from "the KB says
+                // something about what it matched".
+                for (const e of related) {
+                    if (!e || typeof e.id !== 'string' || seen.has(e.id)) continue;
+                    seen.add(e.id);
+                    out.push({ ...e, via: 'kb-graph' });
+                }
+                return out.slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
+            } catch (err) {
+                log(`[kb-work] kb_query failed for ${repoPath} (non-fatal): ${err.message}`);
+                return [];
+            }
+        },
+        async apply(role, repoPath, result) {
+            const { captures, promotions, refused } = vetKbWork(role, result);
+
+            for (const r of refused) log(`[kb-work] refused -- ${r}`);
+            // Log every promotion with its stated evidence BEFORE attempting it.
+            // This log is the audit trail the bible never had.
+            for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
+
+            // Without a repo path a capture would land in whichever KB the fleet
+            // server's cwd resolves to -- the tm7 defect. Refuse rather than guess.
+            if (!active || !repoPath) {
+                if ((captures.length || promotions.length) && !repoPath) {
+                    log(`[kb-work] no repo path for ${role} -- ${captures.length} capture(s) and ${promotions.length} promotion(s) dropped`);
+                }
+                return { captured: 0, promoted: 0, refused: refused.length };
+            }
+
+            let captured = 0;
+            let promoted = 0;
+            for (const c of captures) {
+                try {
+                    const res = await callTool('kb_capture', { ...c, repo_path: repoPath, ...scopeOf(repoPath) });
+                    // apra-fleet-23c: an MCP client RESOLVES with {isError:true} on a
+                    // tool-level failure rather than throwing, so counting every
+                    // non-throwing call as a success reported captures that never
+                    // persisted ("captured 3" against a KB that stayed empty).
+                    if (isToolError(res)) {
+                        log(`[kb-work] kb_capture rejected for "${c.title}" (non-fatal): ${toolErrorText(res)}`);
+                        continue;
+                    }
+                    captured++;
+                } catch (err) {
+                    log(`[kb-work] kb_capture failed for "${c.title}" (non-fatal): ${err.message}`);
+                }
+            }
+            for (const p of promotions) {
+                try {
+                    // apra-fleet-0ef: repo_path is REQUIRED here, exactly as on
+                    // the kb_capture call above. Omitting it resolved the
+                    // promotion against the fleet server's cwd -- a different
+                    // project's KB, where the id does not exist -- so every
+                    // promotion would have failed "Entry not found" (the
+                    // apra-fleet-tm7 repo-blindness class, fixed for capture
+                    // but missed here).
+                    const res = await callTool('kb_promote', { id: p.id, reason: p.reason, repo_path: repoPath, ...scopeOf(repoPath) });
+                    if (isToolError(res)) {
+                        log(`[kb-work] kb_promote rejected for ${p.id} (non-fatal): ${toolErrorText(res)}`);
+                        continue;
+                    }
+                    promoted++;
+                } catch (err) {
+                    log(`[kb-work] kb_promote failed for ${p.id} (non-fatal): ${err.message}`);
+                }
+            }
+            if (captured || promoted) log(`[kb-work] ${role}: captured ${captured}, promoted ${promoted}`);
+            return { captured, promoted, refused: refused.length };
+        },
+
+        /**
+         * KB audit 2026-08-11: publish this repo's CONFIRMED set to its
+         * canonical bible (<repo>/.fleet/kb-canonical.json).
+         *
+         * Nothing in the pipeline had ever called kb_export, so a bible existed
+         * only where an operator had run the tool by hand -- 1 of 17 repos on
+         * the audited machine. Promotion therefore ended at the local sqlite
+         * store: a teammate, a fresh clone, or a member on another host saw
+         * none of it, and kb_session_prime's cold-seed (which reads exactly
+         * this file) had nothing to fall back on. Promotion is the sprint's
+         * work; publishing it is the step that makes the work leave the
+         * machine.
+         *
+         * Called once, AFTER the final review's promotions have been applied,
+         * so the bible reflects everything this sprint confirmed. Best-effort
+         * like every other KB call here: a sprint must never fail over an
+         * export, and the tool itself is a no-op when the entry set is
+         * unchanged. Committing/pushing the file stays a separate, opt-in
+         * decision (kb_export's own autoCommit config) -- this does not widen
+         * the engine's git authority.
+         */
+        async exportBible(repoPath) {
+            // Same repo-blindness guard as every other call here: without a
+            // path kb_export would resolve against the fleet server's cwd and
+            // write an unrelated project's bible.
+            if (!active || !repoPath) return false;
+            try {
+                const res = await callTool('kb_export', { repo_path: repoPath, ...scopeOf(repoPath) });
+                if (isToolError(res)) {
+                    log(`[kb-work] kb_export rejected for ${repoPath} (non-fatal): ${toolErrorText(res)}`);
+                    return false;
+                }
+                log(`[kb-work] exported the canonical bible for ${repoPath}`);
+                return true;
+            } catch (err) {
+                log(`[kb-work] kb_export failed for ${repoPath} (non-fatal): ${err.message}`);
+                return false;
+            }
+        },
+    };
+}
+
 export function createMemberReservationClient(opts = {}) {
     const { callTool, members = [], sprintId, log = () => {} } = opts;
     const active = typeof callTool === 'function' && typeof sprintId === 'string' && sprintId.length > 0 && members.length > 0;
@@ -3642,10 +4190,13 @@ export function assignDoerWorklists(streaks, doerCount, opts = {}) {
  * sprint track branch and is always spelled out: doer.md requires it, and a
  * doer dispatched without one must return "BLOCKED" rather than guess whatever
  * branch happens to be checked out.
- * @param {{ beadIds: string[], branch: string, feedback: string|null }} opts
+ * `kbKnowledge` carries the entries kb_session_prime returned for this member
+ * (see kbKnowledgeBlock): the doer cannot read the KB itself on a member
+ * dispatch, so this prompt is its only route to prior knowledge.
+ * @param {{ beadIds: string[], branch: string, feedback: string|null, kbKnowledge?: object[] }} opts
  * @returns {string}
  */
-export function buildDoerPrompt({ beadIds, branch, feedback }) {
+export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge }) {
     const lines = [
         `Sprint track branch to work on: ${branch}. Work on this branch only; do not push to the base branch.`,
         `Assigned bead ids (comma-separated): ${beadIds.join(', ')}`,
@@ -3662,6 +4213,7 @@ export function buildDoerPrompt({ beadIds, branch, feedback }) {
         'workaround whose purpose is to bypass the block, even for a brand-new file and ' +
         'even if you judge the underlying operation safe. This matches this repo\'s ' +
         'CLAUDE.md permission-block policy.',
+        ...kbKnowledgeBlock(kbKnowledge),
     ];
     if (feedback) {
         lines.push(
@@ -3679,29 +4231,204 @@ export function buildDoerPrompt({ beadIds, branch, feedback }) {
  * ids just worked, their full `bd show` detail (acceptance criteria), the diff
  * range, and the sprint goal priority are all spelled out rather than assumed.
  *
- * The prohibition on the reviewer mutating beads itself is stated here as well
- * as in reviewer.md: nothing but the prompt stops the reviewer from shelling
- * out `bd` commands on the member side, so it is repeated as defense in depth.
- * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string, goal?: string }} opts
+ * CRITICAL: explicitly, redundantly forbids the reviewer from mutating
+ * beads itself. agents/reviewer.md's own prose (Step 5, Rules) already
+ * states this same prohibition -- prose and dispatch prompt agree today --
+ * but the schema alone doesn't stop the reviewer from shelling out `bd`
+ * commands on the member side regardless of what either document says, so
+ * the prohibition is stated here too as defense in depth, not because of
+ * any known prose/code divergence.
+ * apra-fleet-s6d: `beadIds` may legitimately be EMPTY. The Cycle Evaluation
+ * re-review asks a scope-wide question ("no goal-priority beads are open --
+ * is the sprint actually done?"), so it has no bead ids to name. Rendering
+ * the per-bead framing anyway produced the literal dangling sentence
+ * "...for the following bead id(s): ." plus a SPRINT SCOPE block ordering the
+ * reviewer to judge "ONLY against the named bead id(s) above" -- against an
+ * empty set. The reviewer answered honestly (CHANGES_NEEDED with nothing to
+ * reopen and nothing to create), which is exactly what
+ * isReviewerContractViolation flags; the retry re-sent the identical
+ * incoherent prompt, so the sprint aborted on ReviewerContractViolationError.
+ * The empty case therefore gets its own coherent scope-wide framing.
+ *
+ * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string, goal?: string, kbCandidates?: object[] }} opts
  * @returns {string}
  */
-export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal }) {
+/**
+ * apra-fleet-0ef / apra-fleet-nx7: the "KNOWLEDGE BANK -- promotion candidates"
+ * block, shared verbatim by the per-round reviewer prompt and the Final Review
+ * prompt.
+ *
+ * It lives in one function because the two prompts must state the SAME evidence
+ * bar. Duplicating the text invites them to drift, and a drifted bar is
+ * invisible: both sides would still "work", just to different standards, and the
+ * only symptom would be inconsistent CONFIRMED quality months later.
+ *
+ * Returns a single-element array (or an empty one) so callers can spread it into
+ * their prompt-section list.
+ *
+ * @param {object[]|undefined} kbCandidates
+ * @returns {string[]}
+ */
+/**
+ * KB audit 2026-08-11: the "KNOWLEDGE BANK -- what this repo already knows"
+ * block, shared by the doer and reviewer dispatch prompts.
+ *
+ * WHY THIS EXISTS AT ALL. Every role contract's Step 0 tells the role to call
+ * kb_session_prime itself. On a fleet-member dispatch it cannot: the member's
+ * composed permission config disables the apra-fleet MCP server outright
+ * (src/providers/claude.ts composePermissionConfig), so the tool is not merely
+ * unlisted, it is unreachable. That is the same wall kb_promotions hit, and
+ * this is the same fix -- the engine performs the read and hands the result
+ * over as prompt content. Step 0 stays correct for the OTHER execution path
+ * (an apra-pm orchestrator session running these contracts as local subagents,
+ * where the MCP server is present), so both paths now get knowledge.
+ *
+ * The trust ladder is restated here rather than assumed: these entries are
+ * agent-authored claims from earlier sprints, and CONFIRMED means a reviewer
+ * verified the claim, not that it is currently true of this branch's tree.
+ *
+ * Returns a single-element array (or an empty one) so callers can spread it
+ * into their prompt-section list, matching kbPromotionBlock.
+ *
+ * @param {object[]|undefined} entries
+ * @returns {string[]}
+ */
+/**
+ * Roles whose prompt BUILDER places the knowledge block itself, at a position
+ * that carries meaning. Everything else receives it from the agent() wrapper.
+ * Listing them here (rather than inside the wrapper) keeps the two halves of
+ * that split visible from the block's own definition -- a role added to one
+ * side and forgotten on the other either gets the block twice or never.
+ */
+export const KB_SELF_INJECTING_ROLES = Object.freeze(new Set([ROLE_DOER, ROLE_REVIEWER]));
+
+/**
+ * FTS terms for a dispatch's kb_query, drawn from what the engine already
+ * holds: the beads being worked and their ids.
+ *
+ * Bead TITLES are the useful half -- they are prose about the change ("stop
+ * collapsing unknown_zone into unbound_roi"), which is what matches an entry's
+ * title/summary/content. Ids are included because a bead id occasionally
+ * appears verbatim in a captured entry, and query() OR-joins its terms, so a
+ * term that matches nothing costs a little ranking noise rather than filtering
+ * the result to empty. Non-string and blank values are dropped so a partially
+ * populated bead cannot produce a malformed query.
+ *
+ * @param {Array<{id?: string, title?: string}>} beads
+ * @param {string[]} beadIds
+ * @returns {string[]}
+ */
+export function kbQueryTerms(beads, beadIds) {
+    const terms = [];
+    for (const b of Array.isArray(beads) ? beads : []) {
+        if (b && typeof b.title === 'string' && b.title.trim()) terms.push(b.title.trim());
+    }
+    for (const id of Array.isArray(beadIds) ? beadIds : []) {
+        if (typeof id === 'string' && id.trim()) terms.push(id.trim());
+    }
+    return terms;
+}
+
+export function kbKnowledgeBlock(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) return [];
     return [
-        `Review the work just done for the following bead id(s): ${beadIds.join(', ')}.`,
-        'Full task detail (including acceptance criteria), from `bd show --json`:',
-        wrapUntrustedBlock('bd show --json', acceptanceCriteriaJson),
+        'KNOWLEDGE BANK -- what this repo already knows. These entries were captured and '
+        + 'verified during earlier work on this repository, and are provided so you do not '
+        + 'rediscover them the hard way. Read them BEFORE you start.\n'
+        + 'CONFIRMED entries were independently verified by a reviewer: trust them. INFERRED '
+        + 'entries are unverified hints: treat them as leads to check, not as facts. An entry '
+        + 'describes the tree it was captured against, so if one contradicts what you actually '
+        + 'observe in the code right now, the code wins -- say so in your notes rather than '
+        + 'bending your work to fit the entry.\n'
+        + 'You do not need to call any kb_* tool to read these. If you discover something '
+        + 'non-obvious and durable while working, report it in the `kb_captures` field of your '
+        + 'structured output and the orchestrator will record it.\n'
+        + wrapUntrustedBlock('kb_session_prime --top_entries', JSON.stringify(
+            entries.map((e) => ({
+                confidence: e.confidence,
+                title: e.title,
+                summary: e.summary,
+                source_files: e.source_files,
+            })),
+            null,
+            2
+        )),
+    ];
+}
+
+export function kbPromotionBlock(kbCandidates) {
+    if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
+    return [
+        'KNOWLEDGE BANK -- promotion candidates. These entries were captured during this '
+        + 'sprint and sit at INFERRED. You are the only role that can promote them to '
+        + 'CONFIRMED. Do NOT call any kb_* tool yourself: return your decisions in the '
+        + '`kb_promotions` field of your structured output as [{id, reason}] and the '
+        + 'orchestrator executes them.\n'
+        + 'Promote ONLY entries whose claim you independently verified during THIS review '
+        + '-- by reading the diff, running the tests, or checking the cited files yourself. '
+        + 'The `reason` must state that evidence (at least 20 characters, e.g. "verified '
+        + 'against server/transit.js:88 and the reopen test"). Evidence, not plausibility: '
+        + 'if an entry merely looks correct, leave it INFERRED -- that is a perfectly good '
+        + 'resting state, and a wrong CONFIRMED entry is worse than no entry. Never '
+        + 'blanket-promote, and never promote by module, tag or timestamp. Promoting '
+        + 'nothing is a valid outcome; return [] in that case.\n'
+        + wrapUntrustedBlock('kb_list --confidence INFERRED', JSON.stringify(
+            kbCandidates.map((e) => ({
+                id: e.id,
+                title: e.title,
+                summary: e.summary,
+                source_files: e.source_files,
+            })),
+            null,
+            2
+        )),
+    ];
+}
+
+export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal, kbCandidates, kbKnowledge }) {
+    const ids = Array.isArray(beadIds) ? beadIds : [];
+    const scopeWide = ids.length === 0;
+    // Scope-wide re-reviews are fed `bd list --json` (the whole remaining
+    // scope); per-bead reviews are fed `bd show --json`. Label the untrusted
+    // block with the command that actually produced it.
+    const scopeCommand = scopeWide ? 'bd list --json' : 'bd show --json';
+    return [
+        scopeWide
+            ? 'Re-review the CURRENT state of the entire sprint scope. No bead ids are named '
+              + 'because no goal-priority beads remain open -- that is precisely the question you '
+              + 'are being asked to settle: judge the delivered work as a whole and decide whether '
+              + 'this sprint is genuinely complete.'
+            : `Review the work just done for the following bead id(s): ${ids.join(', ')}.`,
+        scopeWide
+            ? 'The full sprint scope, from `bd list --json`:'
+            : 'Full task detail (including acceptance criteria), from `bd show --json`:',
+        wrapUntrustedBlock(scopeCommand, acceptanceCriteriaJson),
         `Diff range to review: ${baseBranch}..${branch} (base_branch..branch).`,
         // Without an explicit scope clause a reviewer can withhold APPROVED
         // over below-goal work the sprint deliberately defers, which starves
         // the completion gate (zero open goal beads AND an APPROVED verdict).
         ...(goal ? [
             `SPRINT SCOPE: this sprint's goal priority is ${goal}. Judge your verdict ` +
-            `ONLY against the named bead id(s) above and other work at or above that ` +
-            `goal priority. Features/beads BELOW the goal priority (e.g. P3 when the ` +
+            (scopeWide
+                ? `ONLY against work at or above that goal priority. `
+                : `ONLY against the named bead id(s) above and other work at or above that `
+                  + `goal priority. `) +
+            `Features/beads BELOW the goal priority (e.g. P3 when the ` +
             `goal is P1/P2) are DEFERRED BY DESIGN to a later sprint: their absence ` +
             `from the diff is correct, must not block APPROVED, must not appear in ` +
             `reopenIds, and may be mentioned in notes only.`,
         ] : []),
+        // apra-fleet-0ef: the reviewer is the ONLY role permitted to mint
+        // CONFIRMED, but a KB entry id can only come from the KB, and the
+        // reviewer subagent has no apra-fleet MCP tools to look one up. Without
+        // this block it could never name an id, so `kb_promotions` came back
+        // empty on every round and nothing was ever promoted. The engine reads
+        // the candidates and executes; the judgment stays with the reviewer.
+        // Prior knowledge FIRST, then the promotion candidates: the reviewer
+        // judges the work against what the repo already knows before it decides
+        // which of this sprint's captures earned CONFIRMED.
+        ...kbKnowledgeBlock(kbKnowledge),
+        ...kbPromotionBlock(kbCandidates),
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
         '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +
@@ -3776,29 +4503,34 @@ export function extractContestedBeadIds(verdict) {
 // diff/commit could try to steer it into emitting text crafted to break out of
 // a shell command.
 //
-// SAFE_TEXT_RE is the shell-safety boundary for `title`, which
-// createChildBeadWithAllocatedId() interpolates inline into a double-quoted
-// `bd create "..."` command. Sprint members run mixed POSIX and Windows
-// shells, and no single escaping scheme is reliably safe across all of them,
-// so title is validated against an allowlist instead of escaped: anything
-// outside it is rejected before reaching `command()`.
+// SAFE_TEXT_RE (title only) deliberately excludes: backtick, `$`,
+// double-quote (the command's own quoting delimiter -- allowing it back in
+// would let a title close the quote early regardless of any other
+// restriction), and backslash (blocks a trailing-backslash "escape the
+// closing quote" trick as well as any other backslash-based escape
+// sequence). The allowed punctuation (`.,:;!?()'-_/+[]` plus space) covers
+// realistic task titles while remaining inert as shell syntax in both POSIX
+// and Windows member shells.
 //
-// SAFE_TEXT_RE admits letters, digits, space, and the punctuation
-// `. , : ; ! ? ( ) ' _ / [ ] -` and nothing else. In particular it excludes
-// backtick and `$` (command substitution survives inside POSIX double
-// quotes), the double-quote itself (a title could otherwise close the
-// command's quoting early), and backslash (which could escape the closing
-// quote or start any other escape sequence). What remains covers realistic
-// task titles while staying inert as shell syntax in both shell families.
+// apra-fleet-v75: `[`, `]` and `+` are allowed. The title is interpolated as
+// `bd create "${title}"` -- inside double quotes, brackets never glob and `+`
+// has no meaning, in POSIX shells or PowerShell. Excluding them rejected this
+// project's own bead-title convention ([bug]/[epic]/[test] prefixes), which
+// `bd create` itself accepts; a real reviewer follow-up was dropped mid-sprint
+// on exactly that. The characters that ARE live inside double quotes --
+// `"`, `\`, backtick, `$` -- remain excluded, which is what this guard is for.
 //
-// `description` carries no such risk: createChildBeadWithAllocatedId() stages
-// it to a member-local temp file and passes that path to `bd create
-// --body-file`, never interpolating it into a command string. So
-// SAFE_DESCRIPTION_RE enforces only non-emptiness and the repo's ASCII
-// convention -- tab, newline, carriage return, and printable ASCII -- which
-// admits technical characters that SAFE_TEXT_RE rejects ('=', '&', '+', '"',
-// '%', '#', '$', backtick and backslash as text).
-const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/\[\]-]+$/;
+// `description` no longer reaches this shell-interpolation risk at all
+// (apra-fleet-eft.56.1, transport hardened in eft.73.1):
+// createChildBeadWithAllocatedId() stages it to a member-local temp file
+// (base64-carried, member-side) and hands that path to `bd create
+// --body-file`, never interpolating it into a command string. That removed
+// the injection
+// surface SAFE_TEXT_RE existed to close for descriptions, so
+// SAFE_DESCRIPTION_RE only enforces the repo's own ASCII-only convention
+// (plus non-empty) -- legitimate technical characters ('=', '&', '+', '"',
+// backticks-as-text, '%', '#', '[', ']', etc.) are allowed again.
+const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/+[\]-]+$/;
 const SAFE_DESCRIPTION_RE = /^[\t\n\r\x20-\x7E]+$/;
 const SAFE_PRIORITY_RE = /^P[0-4]$/;
 
@@ -4102,7 +4834,7 @@ export function sanitizePrText(text) {
  * }} opts
  * @returns {string}
  */
-export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [] }) {
+export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], kbCandidates, kbKnowledge }) {
     const lines = [
         `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}). Goal priority: ${goal}. The sprint ran ${cyclesRun} cycle(s).`,
@@ -4169,6 +4901,15 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
         'NEVER touch beads yourself (no bd create/update/reopen) -- the orchestrator applies your ' +
         'newTasks and reopenIds.'
     );
+    // apra-fleet-nx7: the Final Review is the best-positioned promoter in the
+    // whole run -- it has read the entire diff, run the full suite and judged the
+    // sprint as a whole, which is exactly the evidence standard reviewer.md
+    // demands before minting CONFIRMED. It used to receive no candidate block at
+    // all (0ef wired kbCandidates through buildReviewerPrompt only), so anything
+    // captured in a sprint's LAST round reached this reviewer and nobody else,
+    // and was stranded at INFERRED forever.
+    lines.push(...kbKnowledgeBlock(kbKnowledge));
+    lines.push(...kbPromotionBlock(kbCandidates));
     return lines.join('\n\n');
 }
 
@@ -4896,7 +5637,27 @@ async function runSprintCycle(context) {
     // shared fleet HTTP singleton with no per-sprint identity of its own. One
     // wrapper covers every call site in this file; an explicit `sprint_id` in an
     // individual call's opts wins via the spread order.
-    const agent = (prompt, opts = {}) => agentRaw(prompt, { sprint_id: sprintMutexId, ...opts });
+    //
+    // KB audit follow-up: this wrapper is also where the KNOWLEDGE BANK block
+    // reaches the roles whose prompt builders do not place it themselves.
+    //
+    // Every one of the ten role contracts carries a Step 0 telling it to call
+    // kb_session_prime, and on a member dispatch NONE of them can (the fleet MCP
+    // server is disabled there) -- so the engine has to hand the knowledge over
+    // as prompt text. buildDoerPrompt / buildReviewerPrompt / buildFinalVerdict-
+    // Prompt already do that at a position that matters (the reviewer's block
+    // must precede its promotion candidates), so those roles are excluded here
+    // and handled there. Everyone else -- planner, plan-reviewer, deployer, the
+    // two test runners, harvester -- got nothing at all until now, which is
+    // exactly the population most likely to benefit from a `runbook` entry.
+    const agent = (prompt, opts = {}) => {
+        let finalPrompt = prompt;
+        if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
+            const [block] = kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name));
+            if (block) finalPrompt = prompt + '\n\n' + block;
+        }
+        return agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts });
+    };
 
     // The global dolt push mutex client. Every D-push below serializes through
     // it so two sprints never push at the same time. Four sources, in
@@ -5101,6 +5862,35 @@ async function runSprintCycle(context) {
     // Member mapping resolution
     const physicalMembers = validated.members;
 
+    // apra-fleet-e28: prime each member's own project KB before any dispatch, so
+    // the Step 0 Knowledge Bank block in every role contract has something warm
+    // to read. This engine had no KB priming at all -- it lived only in the
+    // Claude workflow copy. Best-effort: a cold KB never fails a sprint.
+    const kbPriming = context.kbPriming ?? createKbPrimingClient({
+        callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+        members: physicalMembers,
+        log,
+    });
+    await kbPriming.primeAll();
+
+    // The role output schemas are shared with apra-pm, so every role dispatched
+    // below is now asked for kb_captures (and the reviewer for kb_promotions).
+    // This is the consumer: without it those fields would be gathered and
+    // silently dropped. Unlike apra-pm's workflow script, this engine has a real
+    // callTool, so the kb_capture/kb_promote calls are made directly.
+    const kbWork = context.kbWork ?? createKbWorkClient({
+        callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+        log,
+        // Scope every kb_* call below to the member's OWN project KB. The repo
+        // path each call site already threads is a path on the MEMBER's host,
+        // so the server cannot derive a slug from it -- without this lookup a
+        // remote member's reads and writes all land in the shared 'default' KB
+        // (apra-fleet-b4g.15). Resolved through the path rather than passed
+        // per call site so no site can thread the path and forget the scope.
+        // context.kbPriming above is an injection seam; a stub that predates
+        // remoteUrlForPath degrades to no scope rather than crashing a sprint.
+        remoteUrlFor: (repoPath) => (typeof kbPriming.remoteUrlForPath === 'function' ? kbPriming.remoteUrlForPath(repoPath) : null),
+    });
     // A member named in ANY roleMap value is a "specialist" for whatever
     // role(s) named it -- e.g. a member pinned to roleMap.reviewer has been
     // deliberately reserved for review. Without this, a role the caller left
@@ -5549,12 +6339,34 @@ async function runSprintCycle(context) {
      */
     async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
-        // A full-cycle review can genuinely exhaust the fleet's default turn
-        // budget, and a fresh retry deterministically hits the same wall. Make
-        // the budget explicit and, on max_turns exhaustion, RESUME the same
-        // session at a doubled budget: the session already holds the full
-        // review context, so a continue-nudge finishes the job instead of
-        // restarting it.
+        // apra-fleet-0ef: fetch the INFERRED entries this reviewer may promote
+        // and hand them to it in the prompt. The reviewer has no MCP kb_* tools
+        // of its own, so without this it can never name an entry id and
+        // `kb_promotions` comes back empty every round -- which is exactly why
+        // kb_promote had never once fired. Scoped to the reviewer's OWN work
+        // folder (same source kbWork.apply uses to route the writes), and
+        // best-effort: a cold KB must not fail the review.
+        const reviewerRepoPath = kbPriming.folderOf(reviewerPool[0]);
+        const kbCandidates = await kbWork.promotionCandidates(reviewerRepoPath);
+        if (kbCandidates.length > 0) {
+            log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
+        }
+        // What the KB knows about the beads UNDER REVIEW, not just whatever the
+        // sprint-start prime happened to surface. Falls back to the primed set
+        // when the query returns nothing (a KB with no matching rows yet).
+        const reviewerQueried = await kbWork.relevantKnowledge(reviewerRepoPath, kbQueryTerms([], beadIds));
+        const reviewerKnowledge = reviewerQueried.length > 0
+            ? reviewerQueried
+            : kbPriming.knowledgeOf(reviewerPool[0]);
+        // Stabilization log Issue 9: a full-cycle review is big -- run 6's
+        // reviewer genuinely ran out of the fleet's default turn budget
+        // (num_turns=51 after ~12 minutes of legitimate review work), and a
+        // fresh retry deterministically hits the same wall. Make the budget
+        // explicit and, on max_turns exhaustion, RESUME the same session with
+        // a doubled budget (mirrors the doer's resume-and-continue rationale
+        // at dispatchDoerResume: the session already holds the full review
+        // context, so a short continue-nudge finishes the job instead of
+        // restarting it).
         const BASE_REVIEWER_MAX_TURNS = 60;
         const reviewerDispatchOpts = {
             member_name: reviewerPool[0],
@@ -5583,6 +6395,8 @@ async function runSprintCycle(context) {
                 baseBranch: validated.baseBranch,
                 branch: validated.branch,
                 goal: validated.goal,
+                kbCandidates,
+                kbKnowledge: reviewerKnowledge,
             }),
             // member_name is repeated literally here -- not only via the
             // shared opts object -- so the source-level call-site parse in
@@ -5593,7 +6407,14 @@ async function runSprintCycle(context) {
             // Restate the review scope: a resumed dispatch replaces the
             // delivered prompt artifact, so the scope must be repeated inline.
             'Continue your review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. ' +
-            `Your scope, restated so a resumed dispatch never loses it: bead id(s) under review ${beadIds.join(', ')} on branch ${validated.branch} against base ${validated.baseBranch}. ` +
+            // apra-fleet-s6d: same empty-beadIds case as buildReviewerPrompt --
+            // a scope-wide re-review has no ids to restate, and "bead id(s)
+            // under review  on branch..." reads as a dropped value.
+            `Your scope, restated so a resumed dispatch never loses it: `
+            + (Array.isArray(beadIds) && beadIds.length > 0
+                ? `bead id(s) under review ${beadIds.join(', ')} `
+                : `the entire sprint scope (no individual bead ids -- you are judging whether the sprint as a whole is complete) `)
+            + `on branch ${validated.branch} against base ${validated.baseBranch}. ` +
             'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
             {
                 ...reviewerDispatchOpts,
@@ -7354,7 +8175,22 @@ async function runSprintCycle(context) {
                         );
                     }
 
-                    const basePrompt = buildDoerPrompt({ beadIds: actualBeadIds, branch: validated.branch, feedback: feedbackForStreak || null });
+                    // The doer cannot read the KB itself (the member's composed
+                    // permission config disables the fleet MCP server), so the
+                    // entries primed for THIS member travel in its prompt.
+                    // Relevance-ranked read for THESE beads, falling back to the
+                    // sprint-start primed set when the query returns nothing.
+                    // The query terms are the bead ids and titles the engine
+                    // already holds; expand_related on that call is what
+                    // traverses the refines/contradiction_of edges.
+                    const doerRepoPath = kbPriming.folderOf(doerMember);
+                    const doerKnowledge = await kbWork.relevantKnowledge(doerRepoPath, kbQueryTerms(streak, actualBeadIds));
+                    const basePrompt = buildDoerPrompt({
+                        beadIds: actualBeadIds,
+                        branch: validated.branch,
+                        feedback: feedbackForStreak || null,
+                        kbKnowledge: doerKnowledge.length > 0 ? doerKnowledge : kbPriming.knowledgeOf(doerMember),
+                    });
                     let doerPrompt = basePrompt;
                     if (batchStreaks) {
                         // Mode (i) BATCH: one dispatch carries the whole ordered
@@ -7628,11 +8464,18 @@ async function runSprintCycle(context) {
                 });
                 const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
 
-                // Per-bead attribution is emitted always (not only when something
-                // failed) so every streak leaves an audit trail of exactly which
-                // beads closed vs which stayed open. Closed beads stay closed
-                // regardless of a sibling bead in the same streak being refused;
-                // only the still-open ones are eligible for re-laning next round
+                // KB trust pipeline Phase 2: the doer decides what to capture,
+                // the engine executes it against the repo THAT doer worked in.
+                // Captures are honoured regardless of the streak outcome -- a
+                // gotcha found on the way to a failed streak is still true.
+                await kbWork.apply(ROLE_DOER, kbPriming.folderOf(doerMember), report);
+
+                // apra-fleet-eft.76.4: per-bead failure attribution -- always
+                // emitted (not only when something failed) so every streak's
+                // report leaves an audit trail of exactly which beads closed
+                // vs which stayed open. Closed beads stay closed regardless
+                // of a sibling bead in the same streak being refused; only
+                // the still-open ones are eligible for re-laning next round
                 // (the next dev round's `currentReady` query naturally omits
                 // whatever already closed here).
                 log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}].`);
@@ -7761,7 +8604,10 @@ async function runSprintCycle(context) {
             // both reopenIds and newTasks empty is self-contradictory and must
             // never be treated as an ordinary "more work needed" round.
             const verdict = await dispatchReview({ beadIds: assignedBeadIds, acceptanceCriteriaJson });
-            // The last reviewer verdict seen THIS cycle feeds the Cycle
+            // KB trust pipeline Phase 2: the reviewer decides, the engine executes.
+            // Reviewer is the ONLY role whose kb_promotions are honoured.
+            await kbWork.apply(ROLE_REVIEWER, kbPriming.folderOf(getMembersForRole(ROLE_REVIEWER)[0]), verdict);
+            // A5: the last reviewer verdict seen THIS cycle feeds the Cycle
             // Evaluation section's completion check below -- goal-priority
             // completion requires this to be exactly 'APPROVED', not just
             // an empty ready-bead list.
@@ -8422,6 +9268,13 @@ async function runSprintCycle(context) {
 
         if (staleCycles >= STALL_CYCLE_LIMIT) {
             const thrashIds = thrashingBeadIds();
+            // apra-fleet-mjo: counts alone ("history: [9, 14, 14, 14]") do not
+            // tell an operator WHAT is holding the sprint open, which is
+            // precisely what they need to intervene. Name the blocking beads.
+            const blockerIds = openAtGoal.map((b) => b.id);
+            const blockerSuffix = blockerIds.length > 0
+                ? ` Still open at/above goal priority ${goalMax}: [${blockerIds.join(', ')}].`
+                : ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.';
             const thrashSuffix = thrashIds.length > 0
                 ? ` Reopen-thrash detected on bead(s) [${thrashIds.join(', ')}] (reopened more than ${REOPEN_THRASH_LIMIT} times) -- ` +
                   `likely cause of the oscillation.`
@@ -8451,9 +9304,9 @@ async function runSprintCycle(context) {
                 `Sprint stalled: ${staleCycles} consecutive cycle(s) made no new high-water-mark progress ` +
                 `(closed beads + verify-routed beads) in scope '${sprintFilter}'. Closed-count history: ` +
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
-                thrashSuffix + verifySuffix +
+                blockerSuffix + thrashSuffix + verifySuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle }
+                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle }
             );
         }
 
@@ -8501,6 +9354,7 @@ async function runSprintCycle(context) {
             // verdict in; acceptanceCriteriaJson still carries the full scope
             // for context.
             const reReviewVerdict = await dispatchReview({ beadIds: targetIssues, acceptanceCriteriaJson: JSON.stringify(reReviewScope) });
+            await kbWork.apply(ROLE_REVIEWER, kbPriming.folderOf(getMembersForRole(ROLE_REVIEWER)[0]), reReviewVerdict);
             lastReviewVerdict = reReviewVerdict.verdict;
             reviewedThisCycle = true;
 
@@ -8681,6 +9535,15 @@ async function runSprintCycle(context) {
         max_total_s: DISPATCH_TIMEOUT_S,
         max_turns: FINAL_REVIEW_MAX_TURNS,
     };
+    // apra-fleet-nx7: offer the final reviewer the same INFERRED candidates a
+    // per-round reviewer gets. Fetched once, before the dispatch, so the retry
+    // and resume paths below reuse the identical block rather than re-querying a
+    // KB that its own earlier promotions may have already changed.
+    const finalReviewRepoPath = kbPriming.folderOf(getMemberForRole('reviewer'));
+    const finalKbCandidates = await kbWork.promotionCandidates(finalReviewRepoPath);
+    if (finalKbCandidates.length > 0) {
+        log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
+    }
     const dispatchFinalReview = () => withGitSync(getMemberForRole('reviewer'), false, () => agent(
         buildFinalVerdictPrompt({
             targetIssues,
@@ -8694,6 +9557,8 @@ async function runSprintCycle(context) {
             integFailures,
             rejectedNewTasks,
             unclosedVerifyIds: finalUnclosedVerifyIds,
+            kbCandidates: finalKbCandidates,
+            kbKnowledge: kbPriming.knowledgeOf(getMemberForRole('reviewer')),
         }),
         // member_name is repeated literally here -- not only via the
         // shared opts object -- so the source-level call-site parse in
@@ -8798,6 +9663,20 @@ async function runSprintCycle(context) {
     // workflow-agnostic Result strip in the dashboard header (state.result --
     // see src/viewer/index.mjs), a second independent reason a raw JSON
     // re-print here would be redundant.
+
+    // apra-fleet-nx7: execute the final reviewer's KB decisions through the same
+    // path every per-round review uses. Deliberately NOT gated on the verdict --
+    // a fact can be verified even when the sprint as a whole fails, and reviewer
+    // contract already says as much ("Not tied to the verdict"). Placed before
+    // the beads/PR work below and kept non-fatal by kbWork.apply itself, so a KB
+    // problem can never change a sprint's outcome.
+    await kbWork.apply(ROLE_REVIEWER, finalReviewRepoPath, finalVerdictResult);
+
+    // Publish what this sprint confirmed. Immediately after the LAST promotion
+    // of the run, so the bible carries every CONFIRMED entry including the ones
+    // minted a line above. Without this the sprint's knowledge never left the
+    // member's local sqlite store -- see createKbWorkClient.exportBible.
+    await kbWork.exportBible(finalReviewRepoPath);
 
     // Persist the Final Review's actionable findings to BEADS -- the only
     // artifact the next sprint's planner reads (notes reach only the PR body
@@ -9174,6 +10053,13 @@ async function runSprintCycle(context) {
         // path itself IS worth a line: it is the durable, committed record of
         // the Final Review verdict (and everything else in analysisText) --
         // unlike the verdict object, it survives after this process exits.
+        // harvester-output.json declares kb_captures, and until now nothing
+        // consumed it: the harvester filled the field and the engine dropped it
+        // -- the same "gathered and thrown away" shape kbWork was built to fix
+        // for the doer and reviewer. The harvester is a good capturer precisely
+        // because it has just read the whole sprint's evidence. Capture only:
+        // vetKbWork refuses kb_promotions from any role but the reviewer.
+        await kbWork.apply('harvester', kbPriming.folderOf(getMemberForRole('harvester')), harvesterResult);
         if (harvesterResult.status !== 'OK') {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);
         } else {

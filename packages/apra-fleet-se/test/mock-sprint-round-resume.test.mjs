@@ -25,7 +25,14 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // =============================================================================
 
 const REVIEWER_CONTINUATION_TEXT = 'Continue your review exactly where you left off';
-const FULL_REVIEWER_PROMPT_MARKER = 'Full task detail (including acceptance criteria), from `bd show --json`:';
+// apra-fleet-s6d: buildReviewerPrompt has TWO full-prompt framings -- the
+// per-bead one, and the scope-wide one used by the Cycle Evaluation re-review
+// (which legitimately has no bead ids to name). Either satisfies this test's
+// actual invariant: "self-contained prompt, not the continuation delta".
+const FULL_REVIEWER_PROMPT_MARKERS = [
+    'Full task detail (including acceptance criteria), from `bd show --json`:',
+    'The full sprint scope, from `bd list --json`:',
+];
 
 test('mock sprint: round-resume -- reviewer/planner warm within-cycle resume, reset fresh across cycles', async () => {
     await withScenarioMarkers('round-resume (warm within-cycle, fresh across cycles)', async () => {
@@ -268,7 +275,7 @@ test('mock sprint: round-resume -- on session_not_found the engine never re-send
                 `Reviewer dispatch (resume=${JSON.stringify(d.resume)}) must never be the delta/continuation prompt: ${d.prompt.slice(0, 120)}`
             );
             check(
-                d.prompt.includes(FULL_REVIEWER_PROMPT_MARKER),
+                FULL_REVIEWER_PROMPT_MARKERS.some((m) => d.prompt.includes(m)),
                 `Reviewer dispatch (resume=${JSON.stringify(d.resume)}) must be the full self-contained prompt: ${d.prompt.slice(0, 120)}`
             );
         }

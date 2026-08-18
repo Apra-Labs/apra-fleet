@@ -279,8 +279,15 @@ export class LinuxCommands implements OsCommands {
 
   // --- Local exec ---
 
+  // apra-fleet-byp: name bash explicitly. Without a shell here, LocalStrategy
+  // falls back to Node's `shell: true`, which is /bin/sh -- dash on Debian and
+  // Ubuntu. buildAgentPromptCommand emits `set -o pipefail` (see the comment at
+  // its `opts.inv` branch), which dash rejects outright:
+  //   /bin/sh: 1: set: Illegal option -o pipefail
+  // That aborts the command before the CLI ever runs, so every local dispatch
+  // on those distros failed with reason='nonzero_exit'.
   cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string } {
-    return { command, env: this.getCleanEnv() };
+    return { command, env: this.getCleanEnv(), shell: '/bin/bash' };
   }
 
   // --- Shell ---

@@ -184,6 +184,52 @@ flowchart LR
 - **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, and per-activity persistent state.
 - **Supervisor**: always-on layer -- launch & stop sprints over HTTP, member reservation ledger, crash watchdog, run history.
 
+## Knowledge Layer
+
+Every agent session starts by calling `kb_session_prime`. The KB checks which
+files have changed since last read and returns exactly those. Unchanged files
+are served from cached summaries -- no re-read, no wasted tokens.
+
+```
+Cold session:  kb_session_prime returns stale_files=[a.ts, b.ts, c.ts]
+               Agent reads all three, calls kb_capture for each.
+Warm session:  kb_session_prime returns stale_files=[], session_warm=true
+               Agent works from KB summaries. Zero file reads.
+```
+
+MCP tools that ship with the KB:
+
+| Tool | What it does |
+|------|--------------|
+| `kb_session_prime` | Prime a session: stale files, fresh summaries, GitNexus call list |
+| `kb_capture` | Store a learning, context-cache, runbook, or knowledge entry |
+| `kb_query` | Two-level FTS retrieval (L1: title+summary, L2: full content) |
+| `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
+| `kb_context` | Batch file freshness check (single git call for N files) |
+| `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
+| `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
+| `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
+| `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
+| `kb_setup` | Install git hook, write provider config, store remote token encrypted |
+
+Every KB tool call is scoped to the repo it is about -- a fleet server
+handling many members across many repos never lets one repo's learnings land
+in another repo's KB. Scope is normally derived from the caller's repo path;
+tools also accept an explicit `repo_remote_url` so a remote member (whose
+work folder is a path on another host, unreachable from the fleet server's
+filesystem) resolves to the same project KB as a local clone of that repo
+instead of a shared fallback database. The automatic post-prompt harvest and
+the `code_context` KB enrichment path both forward this URL too, and an
+unreachable work-folder path is never silently swapped for the fleet
+server's own working directory -- see
+[Per-repo KB isolation](docs/knowledge-layer.md#per-repo-kb-isolation) for
+the full anchor and cache-keying rules.
+
+The backend is swappable: start with local SQLite, add a central HTTP server for
+a team, or plug in Postgres later -- all via a one-line config change.
+
+See [docs/knowledge-layer.md](docs/knowledge-layer.md) for the full guide.
+
 ## Explore with agents. Operate with programs.
 
 There are two ways to orchestrate agents, and apra-fleet is built on the
@@ -381,6 +427,8 @@ third-party verticals.
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
+| Knowledge Layer (setup, usage, provider swap) | [docs/knowledge-layer.md](docs/knowledge-layer.md) |
+| Code intelligence provider abstraction | [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md) |
 | Hub-spoke cloud migration plan (historical; see tier-3 ownership ADR) | [docs/hub-spoke-master-plan.md](docs/hub-spoke-master-plan.md) |
 | Tier-3 ownership decision (fleet-dashboard vs `src/hub-service/`) | [docs/adr-tier3-ownership.md](docs/adr-tier3-ownership.md) |
 | Shared hub/dashboard API contract package | [packages/fleet-api-contract/README.md](packages/fleet-api-contract/README.md) |

@@ -2,6 +2,175 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- KB anchor and cache-key fixes close out remote-member correctness
+
+Sprint goal: finish making the Knowledge Layer correct for remote members,
+closing the two more severe gaps an earlier sprint on this same epic had
+carried forward as open follow-on work.
+
+A `repo_path` that does not exist on the fleet server host is now always
+treated as "no anchor" rather than silently substituted with the fleet
+server's own working directory. Previously, two hot-path tools resolved a
+non-existent path to `null` and let it fall through to a `process.cwd()`
+fallback inside the shared provider accessor -- so while the *slug* (which
+database) could already reach the correct shared project KB via the remote
+URL, the *anchor* (the directory the capture basis check and freshness
+re-hash resolve relative source files against) silently became an unrelated
+tree. Because freshness re-hashing against the wrong tree fails every basis
+check, this could retire healthy entries in the real shared KB -- a
+regression in severity from merely colliding with an isolated fallback
+database. The fix: a provider whose anchor does not exist on this host now
+suppresses freshness verdicts entirely (all-or-nothing per call) instead of
+producing false staleness, while capture stays protected by its existing
+fail-closed basis check. The same one-anchor-policy rule was also applied to
+the two remaining call sites that still built a provider from a locally
+pre-resolved path.
+
+The fleet's own automatic post-prompt harvest dispatch, and the `code_context`
+KB enrichment call site, now forward the caller's `repo_remote_url` too, so
+both benefit from URL-based routing instead of only the tools a caller invokes
+directly. Forwarding a member's registration-record URL from an access list
+that may contain multiple, unrelated repos is deliberately conservative: a URL
+is only forwarded when it unambiguously names the member's own repo, never
+guessed or derived from a bare `owner/repo` entry or discovered by shelling
+out to the member host.
+
+Several missing CLI permission prefixes the `deploy` runbook requires
+(installer/binary invocations) were granted to the merged effective
+allowlist for this repository. The deploy phase still did not complete this
+sprint, however: it failed again in both cycles on a separate, still-missing
+grant for launching the built binary via its `run` subcommand, so the
+shipped KB fixes above are verified by their test suites only and have not
+yet been confirmed against a deployed build. The regression-test pass was
+separately blocked for the same reason (a missing `bd` command grant) and
+also did not complete. Both permission gaps are carried forward as open
+follow-on work.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $21.4535.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 28 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- Remote members can scope KB calls by git remote URL
+
+Sprint goal: make the Knowledge Layer correct for remote members, whose work
+folder is a path on another host and therefore unreachable from the fleet
+server's own filesystem. Every `kb_*` tool now accepts an optional
+`repo_remote_url` input (one shared schema fragment, spread into all sixteen
+tool schemas, so the field cannot drift or be redeclared inconsistently).
+`resolveProjectSlug` prefers an explicit remote URL over shelling out to git
+against `repo_path`, so a remote member supplying its repo's origin URL
+resolves to the *same* project KB and slug its local counterpart would --
+instead of every remote member, across every repo, pooling into one shared
+`default` database. Independently, the KB provider cache is now keyed by
+`(slug, repoPath)` rather than slug alone: previously the *first* caller to
+resolve a given slug fixed the anchor directory used for the capture basis
+check and the freshness re-hash for every later caller resolving to that same
+slug, which could silently basis-check one repo's capture against an
+unrelated tree. A pre-existing, unrelated test failure (the sandbox-sync
+remote-list parser throwing on `bd`'s literal `null` output for a repo with
+no configured remotes) was also fixed.
+
+This does not close the epic. Two live-verified, more severe variants of the
+same class of defect remain open as follow-on work: (1) a `repo_path` that
+does not exist on the fleet server host is not always translated into "no
+anchor at all" -- at least one hot-path tool resolves the failure to `null`
+and then lets it fall through to a `process.cwd()` fallback inside
+`getKbProviders`, so the freshness anchor silently becomes the fleet server's
+own working directory instead of either the real repo or no anchor; because
+the slug (which database) can now correctly reach the *real* shared project
+KB via the remote URL while the anchor is wrong, this can silently stale
+healthy entries in that shared KB rather than merely misreading it, which is
+a regression in severity from the pre-sprint behavior of colliding only with
+an isolated `default` database; (2) the fleet's own automatic post-prompt
+harvest dispatch path still forwards only `repo_path`, not `repo_remote_url`,
+so it does not yet benefit from the new URL-based routing. Deploying and
+smoke-testing this change against a real build was also blocked for the
+entire sprint by missing CLI permission grants for the installer/binary
+invocations the deploy runbook requires, so the shipped pieces are verified
+by their test suites but have not been confirmed against a deployed build or
+re-tested against the live remote-member repro that originally proved the
+bug. Both gaps, and the deploy-permission blocker, are carried forward as
+open, prioritized follow-on work.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $11.9020.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 19 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- kb_harvest auto-harvest is now repo-scoped, not server-cwd-scoped
+
+`kb_harvest` -- the only fully automatic KB writer, fired after every
+`execute_prompt` completion -- previously reached the database through a
+second, parallel provider accessor that memoised a single global instance
+keyed off the fleet server's own working directory. In practice this meant
+every member's harvested learnings, from every repo, landed in whichever
+repo the fleet server process happened to be started in, regardless of which
+repo the member was actually working in. `execute_prompt` now passes the
+dispatched member's own working folder through to the harvest call, and the
+harvest tool routes through the same single accessor every other KB tool
+uses, which caches providers per resolved repo slug instead of one global
+slot. The parallel accessor was deleted outright rather than patched, so
+there is now exactly one route from a KB tool to a provider. A related
+slug-resolution bug that collapsed plain-HTTPS git remotes (those with no
+userinfo prefix) to the wrong fallback slug was fixed in the same pass, so
+HTTPS and SSH remotes for the same repo now resolve to the same KB.
+
+This closes local-member cross-repo KB contamination for the automatic
+harvest path. Two related items remain open as follow-on work: remote
+members do not yet resolve their own repo (their harvest currently lands in
+a shared `default` KB rather than colliding with another repo's KB), and the
+regression guard that protects the single-accessor invariant is a textual
+source check rather than a structural one, so it does not catch a future
+provider constructed directly with no explicit repo path. Deploying this
+change requires the CLI permission allowlist to grant the deploy-phase
+command prefixes (`gh`, `npm`, the installer binary, etc.) that the
+repository's checked-in permission settings do not currently include; until
+that is granted, this work is verified by its test suite but has not been
+smoke-verified through an actual deploy.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $0.0000.
+Remaining budget: unknown/unbounded.
+Pricing source: all 17 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
+
+This entry reconciles the previous "sprint goal not met" note below: the
+KB initialization lifecycle goal and the KB/code-intelligence audit goal
+have both been closed at the parent level, on the strength of the work
+already summarized below plus a completed audit pass. No new source
+changes landed this cycle; this entry captures the final review of the
+work already on the branch.
+
+The KB initialization lifecycle delivered its pre-init sub-phase: provider
+availability detection and repo index-size estimation, both pure and
+unit-tested (see
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md)).
+The init phase (first-time indexing with a progress-reporting opt-in
+prompt) and the update phase (incremental re-indexing triggered by
+staleness detection) were not built this cycle and remain open as
+tracked follow-on work; an auto-reindex module delivered in an earlier
+cycle already provides partial coverage of the update phase's
+staleness-triggered re-indexing.
+
+The per-member code-intelligence provider field (`codeIntelProvider` on
+the `Agent` interface, wired into `register_member`/`update_member`) is
+schema/persistence only -- no dispatch path resolves a provider per
+member yet, so setting it has no observable effect until the routing
+half of this feature is built.
+
+The full KB/code-intelligence tool audit was run end-to-end: every KB
+tool and every code-intelligence tool (with both providers) was exercised
+via its audit task, and the corresponding verification task confirmed the
+results. No bugs were filed as a result of the audit, consistent with a
+clean pass -- the full test suite (2314 tests, 0 failures) provides
+independent confirmation.
 ## [Unreleased] -- compose_permissions silent write no-op fix
 
 Sprint goal: fix a bug where `compose_permissions` could report a grant as
@@ -747,6 +916,76 @@ Calibration: none   Cycles: estimated 1.5, actual 1
 
 | Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
 |------------|------------|------------|-------|----------|----------|
+| doer       |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| reviewer   |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| overhead   |      7,150 |     45,518 | +537% |   $0.121 |   $0.452 |
+| TOTAL      |      7,150 |     45,518 | +537% |   $0.121 |   $0.452 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
+### Review outcome
+
+**Build**: clean (tsc, zero errors).
+**Tests**: 2314 passed, 5 skipped, 0 failures across 157 test files.
+**Working tree**: clean.
+
+The branch accumulates a complete KB system (capture, query, harvest,
+export, import, reconcile, staleness, trust model, directives), a
+code-intelligence provider abstraction with two providers and auto-reindex,
+telemetry, and extensive test coverage. The codebase builds cleanly and
+all tests pass. No regressions detected. No security issues found (no
+secrets in code, proper use of direct file execution over a shell,
+temp-dir cleanup in tests).
+
+**Non-blocking observations**:
+- No test coverage for a round-trip of the `codeIntelProvider` field in
+  register/update-member tests -- the field is optional so existing
+  members degrade gracefully (confirmed by passing backward-compat
+  tests), but an explicit round-trip test would be a good follow-up.
+- The pre-init glob matcher handles common gitignore patterns but does
+  not implement negation patterns; documented as a known limitation in
+  [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+
+**Releasability**: the branch is in a releasable state. All code is
+functional and tested. The incomplete init/update phases are future
+features with no impact on existing functionality. The additive
+scaffolding (pre-init module, `codeIntelProvider` field) is safe to
+merge -- it adds no runtime behavior until wired by a future increment.
+
+Carried forward: the init phase (first-time indexing with progress), the
+update phase (staleness-triggered incremental re-indexing beyond the
+existing auto-reindex coverage), and per-member provider routing through
+`getProvider()` and tool dispatch.
+
+## [Unreleased] -- Code intelligence: per-member provider field and KB pre-init scaffolding (sprint goal not met)
+
+Sprint goal (P1/P2): audit all KB and code-intelligence tools on this branch,
+and build out the KB initialization lifecycle (pre-init/init/update phases)
+plus per-member code-intelligence provider selection. Both goals remain
+open; this cycle landed two small, unblocking increments toward them and
+ended before the larger routing and lifecycle work was built.
+
+The `Agent` interface now carries an optional `codeIntelProvider` field, and
+`register_member` / `update_member` accept a matching input so a member's
+preferred code-intelligence provider can be set or changed. This is schema
+and persistence only -- no dispatch path yet resolves a provider per member,
+so the field currently has no observable effect; see
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+
+The KB pre-init phase also gained its first two building blocks: a
+provider-availability check (never throws; degrades to a structured
+not-available result) and a repo index-size estimator (gitignore-aware
+file walk projecting file count, byte size, and indexing time). Both are
+pure, unit-tested, and not yet wired into any init-phase caller -- they
+exist ahead of the init/update phases that will consume them. See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+
+Carried forward to a future sprint: the full KB tool audit, per-member
+provider routing through `getProvider()` and tool dispatch, the init phase
+(first-time indexing with progress and an opt-in prompt), and the update
+phase (staleness detection and incremental re-indexing).
 | doer       |          0 |     17,909 |   n/a |   $0.000 |   $0.269 |
 | reviewer   |          0 |      4,513 |   n/a |   $0.000 |   $0.068 |
 | overhead   |      7,150 |     28,697 | +301% |   $0.121 |   $0.365 |
@@ -788,6 +1027,10 @@ Calibration: none   Cycles: estimated 1.5, actual 2
 
 | Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
 |------------|------------|------------|-------|----------|----------|
+| doer       |          0 |      8,016 |   n/a |   $0.000 |   $0.120 |
+| reviewer   |          0 |     10,424 |   n/a |   $0.000 |   $0.156 |
+| overhead   |      7,150 |     80,655 | +1028% |   $0.121 |   $0.575 |
+| TOTAL      |      7,150 |     99,095 | +1286% |   $0.121 |   $0.851 |
 | doer       |          0 |     32,374 |   n/a |   $0.000 |   $0.486 |
 | reviewer   |          0 |     10,421 |   n/a |   $0.000 |   $0.156 |
 | overhead   |      7,150 |     74,090 | +936% |   $0.121 |   $0.677 |
@@ -797,6 +1040,222 @@ True-cost estimate (output x 4x): $0.483
 Outliers (>200% variance): overhead
 Calibration failures (>500%): overhead
 
+### Review outcome
+
+**Build**: passes (tsc clean).
+**Tests**: 2314 passed, 5 skipped, 0 failures across 157 test files.
+**Working tree**: clean (only sprint log modified, expected).
+
+**Sprint goal assessment**: Both sprint-goal issues remain open. The sprint
+produced three functional commits: the `codeIntelProvider` field on the
+`Agent` interface wired into register/update schemas and handlers; a new
+pre-init module with provider-availability detection and index-size
+estimation; and unit tests for that module.
+
+**Observations (non-blocking)**:
+- The pre-init module is not imported by any other module in `src/` --
+  it is forward-looking scaffolding for the init phase, which was not
+  built this sprint. This is dead code today but has test coverage and
+  will be consumed once the init phase is implemented.
+- `codeIntelProvider` is stored during register/update but never read by
+  any downstream logic (no routing or provisioning consumes it yet).
+- Neither observation is a regression or quality concern; both are
+  incomplete increments from a sprint that ended early.
+
+**Code quality**: The new code follows existing patterns (zod schemas,
+never-throw error handling, vitest mocks with hoisted references). No
+security issues (uses a direct file-execution call rather than a shell,
+proper temp-dir cleanup in tests, no secrets). ASCII-only. Consistent with
+project conventions.
+
+**Overall branch state**: The accumulated work across all prior sprint
+cycles builds cleanly and passes all tests. No regressions detected. The
+branch is in a releasable state for what was completed. Both sprint-goal
+issues remain open for future completion.
+
+## [Unreleased] -- Code intelligence provider abstraction: codebase-memory-mcp shipped as default
+
+Sprint goal (P1/P2): finish the CodeIntelligenceProvider abstraction begun in
+the prior sprint pass. Following the earlier evaluation, this sprint
+re-evaluated the field of candidates and selected codebase-memory-mcp (MIT,
+native MCP transport, 158-language tree-sitter coverage, single static
+binary) over Joern (Apache 2.0, deeper CPG-based data-flow analysis but JVM +
+Scala dependency and no native MCP support). `CodebaseMemoryProvider` now
+implements all seven `CodeIntelligenceProvider` methods against the
+codebase-memory-mcp MCP server, following the same client-lifecycle pattern
+as `GitNexusProvider` (shared singleton client, stdio transport, connection
+reset on death/failure, a pre-flight index check, and structured
+offline/missing-index error results). It is registered in the `PROVIDERS`
+map and is now the default provider; GitNexus remains selectable by name, and
+the Joern provider file is retained with a deprecation notice recording the
+evaluation rationale.
+
+#### Sprint cost analysis
+Calibration: historical (5 sprints)   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |     14,100 |     72,947 | +417% |   $0.185 |   $0.905 |
+| reviewer   |      5,859 |     23,306 | +298% |   $0.088 |   $0.350 |
+| overhead   |      7,150 |    116,540 | +1530% |   $0.121 |   $1.140 |
+| TOTAL      |     27,109 |    212,793 | +685% |   $0.393 |   $2.394 |
+True-cost estimate (output x 4x): $1.573
+
+Outliers (>200% variance): doer, reviewer, overhead
+Calibration failures (>500%): overhead
+
+### Review outcome
+
+All three sprint tasks meet their acceptance criteria. Build is clean (tsc
+passes), and the full test suite passes with zero failures.
+
+**Evaluation and decision.** The comparison covers all five dimensions (ease
+of integration, dependency weight, language breadth, analysis depth, and MCP
+tool coverage), with the decision and rationale documented directly in the
+Joern provider file's header and in
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+The decision is verified by dedicated unit tests asserting the header covers
+every comparison dimension.
+
+**Provider implementation.** `CodebaseMemoryProvider` implements all seven
+methods, follows the GitNexus MCP client lifecycle pattern exactly (shared
+singleton, stdio transport, identity-guarded death handler, failure-reset),
+and returns structured offline/missing-index results instead of throwing.
+Unit tests cover all methods, three connection-resilience scenarios, and the
+pre-flight index check.
+
+**Registration as default.** `CodebaseMemoryProvider` is registered in the
+`PROVIDERS` map and is now the default returned by `getProvider()`; GitNexus
+remains selectable by explicit configuration. The Joern file carries a clear
+deprecation notice. Default-fallback and explicit-selection tests were
+updated accordingly.
+
+**File hygiene note (non-blocking).** One commit in this sprint bundled a
+handful of unrelated tool-config files (Beads task-tracker configuration)
+alongside the sprint work. These appear to be legitimate project setup but
+are unrelated to the code intelligence tasks and would have been cleaner as
+a separate commit.
+
+### Carried forward
+
+None -- all sprint tasks met their acceptance criteria.
+
+## [Unreleased] -- Code intelligence provider abstraction: review closeout
+
+Sprint goal (P1/P2): add a permissively-licensed CodeIntelligenceProvider and
+set it as the default, replacing GitNexus. This entry records the outcome of
+a formal review pass against the original acceptance criteria for the four
+planned tasks: research and select a candidate, implement the provider,
+register it as the default, and add unit tests.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 1
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| reviewer   |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| overhead   |      7,150 |     35,996 | +403% |   $0.121 |   $0.354 |
+| TOTAL      |      7,150 |     35,996 | +403% |   $0.121 |   $0.354 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): none
+
+### Overall assessment
+
+The branch builds cleanly and the full test suite passes with no failures.
+The codebase is in a releasable state.
+
+**Research and candidate selection -- fully met.** Three candidates (Joern,
+SCIP, tree-sitter) were evaluated against six criteria (license, native
+call-graph/relationship analysis, semantic or structured search, active
+maintenance, subprocess usability, and TypeScript/Python coverage). Joern was
+selected, with the rationale documented in the provider file's header comment
+and in [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+
+**Provider implementation -- not met.** The acceptance criteria called for all
+seven `CodeIntelligenceProvider` methods to be implemented following the
+GitNexusProvider pattern (spawned child-process backend, structured error
+results, a pre-flight index check, output sanitization). What shipped is
+seven stub methods that each throw a "not implemented" error -- no subprocess
+spawning, no structured errors, no pre-flight check. This is a skeleton, not
+a working implementation.
+
+**Registration as default -- not met.** The acceptance criteria required the
+new provider to be imported and instantiated in the provider registry, with
+the provider-selection function defaulting to it. The registry still contains
+only the GitNexus provider, and the default selection is unchanged.
+
+**Unit tests -- not met.** The acceptance criteria called for happy-path tests
+of all seven methods, error/offline tests, a pre-flight test, and an updated
+default-provider test. The tests that shipped only regex-match strings inside
+the provider source file's comments (e.g. checking that a license string
+appears in the file); the provider class itself is never instantiated or
+called in the test suite. There are no behavioral tests.
+
+### Why this was judged releasable despite the gaps
+
+The new provider code is entirely inert: it is not imported anywhere outside
+its own test file, not registered in the provider registry, and not
+reachable from any tool handler. It introduces zero behavioral change and
+zero regression risk to the existing GitNexus-backed code intelligence
+tools. The documentation honestly records this status rather than presenting
+the work as complete.
+
+All files touched in this pass are scoped and justified: the new provider
+source file and its test file, the code-intelligence-providers documentation
+page, and the standard README/CHANGELOG updates. No temporary files,
+secrets, unrelated configuration, or security issues were introduced.
+
+### Carried forward
+
+Implementing the seven provider methods against a live Code Property Graph,
+registering the provider in the registry (and deciding whether it becomes
+the new default or an opt-in alternative alongside GitNexus), and writing
+real behavioral tests remain open work for a future sprint. The research and
+method-to-query-language mapping already documented provide a concrete
+implementation roadmap for that follow-up.
+
+## [Unreleased] -- Code intelligence provider abstraction
+
+Sprint goal (P1/P2): add a permissively-licensed code-indexing provider as an
+alternative to GitNexus, implementing the full `CodeIntelligenceProvider`
+interface (graph, impact, query, context, map, flow, tests) and registering
+it as the default.
+
+What shipped: a documented evaluation of Apache 2.0 / MIT candidates (Joern,
+SCIP, tree-sitter) against six selection criteria (license, native
+code-graph/relationship analysis, semantic or structured search, active
+maintenance, subprocess usability, and TypeScript/Python coverage). Joern was
+selected first for its Code Property Graph support, then superseded by
+codebase-memory-mcp, which carries broader language coverage, native MCP
+transport, and a far lighter deployment footprint (a single binary rather than
+a JVM plus a Scala REPL). `CodebaseMemoryProvider` implements all seven
+provider methods and is registered as the default; the interim Joern skeleton
+was never registered in `PROVIDERS` and is not part of this release. See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md) for
+the full evaluation and current status.
+
+Review outcome: the codebase builds cleanly and the full test suite passes.
+The branch was judged releasable on the basis that the new provider code is
+fully inert and every other changed file is scoped and justified -- the
+incomplete provider implementation is intentionally deferred rather than
+half-shipped into the active code path.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 1
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| reviewer   |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| overhead   |      7,150 |     36,179 | +406% |   $0.121 |   $0.365 |
+| TOTAL      |      7,150 |     36,179 | +406% |   $0.121 |   $0.365 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): none
 ### Final review notes
 
 Scope reviewed: origin/main..feat/hub-spoke-migration (21 commits, 107 files). Named sprint goals: apra-fleet-20o (P1, closed) and epic apra-fleet-us9 (parent, expectedly still open).

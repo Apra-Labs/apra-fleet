@@ -56,7 +56,13 @@ test('per-cycle checkpoint uses type "cycle-start" (not "meta")', () => {
 
 test('cycle-checkpoint JSON includes "cycle" field (per-cycle counter)', () => {
   const loopIdx = src.indexOf('while (cycleCount < maxCycles)');
-  const afterLoop = src.slice(loopIdx, loopIdx + 600);
+  // 1000 chars, matching the sibling parallel-grouping test below. The
+  // original 600 stopped short once the per-cycle KB refresh block was added
+  // at the top of the loop: the checkpoint now sits ~880 chars in, so the
+  // window expired before reaching a field that was still there. Widened
+  // rather than anchored on the KB block, which would just move the problem
+  // to the next thing inserted above the checkpoint.
+  const afterLoop = src.slice(loopIdx, loopIdx + 1000);
   assert.match(afterLoop, /cycle:\s*cycleCount/,
     'per-cycle checkpoint JSON must include cycle: cycleCount field');
 });

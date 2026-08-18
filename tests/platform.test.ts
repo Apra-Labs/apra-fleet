@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'child_process';
 import { detectOS, isContainedInWorkFolder } from '../src/utils/platform.js';
 import { getSSHConfig } from '../src/services/ssh.js';
 import { getOsCommands } from '../src/os/index.js';
@@ -400,10 +401,23 @@ describe('OsCommands via getOsCommands', () => {
     it.skipIf(process.platform !== 'linux')('linux: returns pristine env from login shell', () => {
       const { command, env, shell } = linux.cleanExec('echo hello');
       expect(command).toBe('echo hello');
-      expect(shell).toBeUndefined();
+      expect(shell).toBe('/bin/bash');
       expect(env).toBeDefined();
       expect(env!['HOME']).toBeTruthy();
       expect(env!['PATH']).toBeTruthy();
+    });
+
+    // apra-fleet-byp: buildAgentPromptCommand emits `set -o pipefail` to keep the
+    // CLI's exit code authoritative through the `| tee` durable mirror. Node's
+    // `shell: true` fallback is /bin/sh, which on Debian/Ubuntu is dash and has
+    // no pipefail -- every local dispatch died with "Illegal option -o pipefail".
+    // cleanExec must therefore name a shell that actually supports it.
+    it.skipIf(process.platform !== 'linux')('linux: the chosen shell supports `set -o pipefail`', () => {
+      const { shell } = linux.cleanExec('echo hello');
+      expect(shell).toBeTruthy();
+      const probe = spawnSync(shell!, ['-c', 'set -o pipefail; false | true'], { encoding: 'utf-8' });
+      expect(probe.stderr).not.toMatch(/pipefail/i);
+      expect(probe.status).toBe(1); // pipefail honoured: `false`'s code wins over `true`'s
     });
 
     it.skipIf(process.platform !== 'linux')('linux: env excludes process-only vars', () => {
@@ -419,7 +433,7 @@ describe('OsCommands via getOsCommands', () => {
     it.skipIf(process.platform !== 'darwin')('macos: inherits linux cleanExec', () => {
       const { command, env, shell } = macos.cleanExec('echo hello');
       expect(command).toBe('echo hello');
-      expect(shell).toBeUndefined();
+      expect(shell).toBe('/bin/bash');
       expect(env).toBeDefined();
       expect(env!['HOME']).toBeTruthy();
     });

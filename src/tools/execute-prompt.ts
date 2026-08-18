@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import { z } from 'zod';
+import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
@@ -24,7 +25,7 @@ import { tryKillPid, isPidAlive } from '../utils/pid-helpers.js';
 import { recoverOrphanedDispatch, isRemoteProcessAlive } from '../services/orphan-recovery.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { durableOutputPath } from '../os/linux.js';
-import { LogScope, maskSecrets, truncateForLog, logWarn } from '../utils/log-helpers.js';
+import { LogScope, logLine, logWarn, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
 import { sessionRegistry } from '../services/session-registry.js';
@@ -243,6 +244,15 @@ export function resolveModelForTier(agent: Agent, tier: string, provider: Provid
   }
   return provider.modelForTier(tier as 'cheap' | 'standard' | 'premium');
 }
+
+/**
+ * apra-fleet-b4g.6: the auto-harvest dispatch (below) is a server-internal
+ * kb_harvest call, not an LLM-supplied repo_remote_url like the other kb_*
+ * tools' hot paths (apra-fleet-b4g.1). Re-exported from
+ * services/member-remote-url.ts, which documents the no-guessing rule and is
+ * shared with member_detail (the fleet-sprint engine's only source for it).
+ */
+export { knownRepoRemoteUrl };
 
 const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
 
@@ -1441,6 +1451,61 @@ ${parsed.result}`;
 
 ---
 session: ${parsed.sessionId}`;
+    // Auto-harvest learnings from session output (fire-and-forget)
+    if (parsed.result) {
+      // apra-fleet-tm7.2: always pass resolvedWorkFolder, local or remote.
+      // getKbProviders(undefined) falls back to slugFor(process.cwd()) --
+      // the FLEET SERVER's own cwd, not any generic 'default' -- so omitting
+      // repo_path for remote members would silently route their harvested
+      // learnings into the server's own repo KB (the exact defect apra-fleet-tm7
+      // describes).
+      //
+      // apra-fleet-b4g.6: repo_remote_url (apra-fleet-b4g.1) is how a REMOTE
+      // member's call reaches the SAME shared project KB a local clone would --
+      // without it, resolvedWorkFolder is a path on the remote host that will
+      // almost never exist on this (fleet server) machine, resolveProjectSlug's
+      // git calls on it fail with ENOENT, and it falls through to the literal
+      // 'default' slug, pooling every such member's harvest into one shared,
+      // useless bucket (no cross-repo contamination, but no real routing
+      // either). knownRepoRemoteUrl() forwards it whenever the member's own
+      // registration record already carries a genuine URL. It deliberately does
+      // NOT construct one from agent.gitRepos' bare "owner/repo" access-list
+      // entries (see src/services/vcs/github.ts's own
+      // https://github.com/${repo}.git construction for a DIFFERENT, narrower
+      // purpose -- connectivity testing) or shell out to the member host to
+      // discover it: guessing a URL that turns out wrong would route the
+      // harvest into a KB slug that does not match the repo's real local-clone
+      // slug, which is worse than today's honest 'default' degradation. When no
+      // genuine URL is known, behaviour is unchanged from before this fix.
+      // KB-TRUST PHASE 1 (apra-fleet-4wz.8): report the harvest counters. This is
+      // the highest-volume KB writer and its result was previously discarded
+      // entirely, so entries_rejected -- the fail-closed signal -- was invisible
+      // on the one path that produces most of it. Rejections are EXPECTED to
+      // dominate here: harvest's regex extraction frequently yields no file
+      // paths at all, and an entry with no basis is refused by design. A high
+      // rejected count is the invariant working, not a regression to tune away.
+      void import('./kb-harvest.js')
+        .then(({ kbHarvest }) =>
+          kbHarvest({
+            repo_path: resolvedWorkFolder,
+            repo_remote_url: knownRepoRemoteUrl(agent),
+            session_transcript: parsed.result,
+            session_id: parsed.sessionId,
+          })
+        )
+        .then((raw: string) => {
+          try {
+            const r = JSON.parse(raw) as { entries_captured: number; entries_updated: number; entries_skipped: number; entries_rejected: number };
+            if (r.entries_captured || r.entries_updated || r.entries_skipped || r.entries_rejected) {
+              logLine('kb_harvest', `auto-harvest: captured=${r.entries_captured} updated=${r.entries_updated} skipped=${r.entries_skipped} rejected=${r.entries_rejected}`);
+            }
+          } catch {
+            // A non-JSON payload is not worth failing a fire-and-forget harvest over.
+          }
+        })
+        .catch((err: Error) => logWarn('kb_harvest', `auto-harvest failed: ${err.message}`));
+    }
+
     if (heuristicWarningSuffix) output += heuristicWarningSuffix;
     return {
       text: output,

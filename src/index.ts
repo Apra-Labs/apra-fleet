@@ -50,6 +50,11 @@ Usage:
   apra-fleet auth --oauth --member <name> secure.<name>       Provision a member's encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN directly (no credential file)
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
   apra-fleet auth --api-key [--llm <provider>] secure.<name>  Resolve API key from persistent credential store
+  apra-fleet kb directives                             List pending + active user-directives
+  apra-fleet kb approve-directive <id>                 Activate a pending directive proposal (human-only)
+  apra-fleet kb reject-directive <id>                  Reject a proposal or retire an active directive
+  apra-fleet kb add-directive "<text>" [--symbols a,b] Create an already-active directive (human-only)
+  apra-fleet kb commit [--repo <path>] [--global]      Re-export + auto-commit the canonical bible (manual/recovery)
   apra-fleet join <member-jwt> [--hub-url <url>]  Activate a device using a member JWT obtained out-of-band from fleet-dashboard (apra-fleet-6bf)
   apra-fleet spoke <origin-member-id>        Run as an outbound hub-connected spoke (apra-fleet-jfn); requires apra-fleet join first
   apra-fleet --version        Print version
@@ -114,6 +119,56 @@ Usage:
     import('./cli/update.js')
       .then(m => m.runUpdate())
       .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
+  }
+} else if (arg === 'kb-server') {
+  import('./commands/kb-server.js')
+    .then(async m => {
+      const opts = m.parseKbServerArgs(process.argv.slice(3));
+      await m.startKbServer(opts.port, opts.generateToken, opts.dbPath);
+    })
+    .catch(err => { logError('cli', `kb-server failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'kb') {
+  const subCmd = process.argv[3];
+  if (subCmd === 'invalidate') {
+    const files = process.argv.slice(4);
+    if (files.length === 0) {
+      console.error('Usage: apra-fleet kb invalidate <file1> [file2 ...]');
+      process.exit(1);
+    }
+    import('./services/knowledge/kb-providers.js')
+      .then(async m => {
+        const providers = await m.getKbProviders();
+        const result = await providers.project.invalidate(files);
+        console.log(`Invalidated ${result.invalidated} entries.`);
+        process.exit(0);
+      })
+      .catch(err => { logError('cli', `kb invalidate failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'directives' || subCmd === 'approve-directive' || subCmd === 'reject-directive' || subCmd === 'add-directive') {
+    // F1 (D1): human-terminal directive activation surface -- the only
+    // unforgeable channel for turning a pending proposal into an active
+    // directive. Never exposed over MCP.
+    import('./cli/kb-directives.js')
+      .then(m => m.runKbDirectives(subCmd, process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb ${subCmd} failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'commit') {
+    // T3.7b: manual/recovery re-export + commit -- the command the amended-D5
+    // fleet_status bible-drift anomaly message tells operators to run.
+    // kb_export owns all commit/no-commit decisions; this is a thin wrapper.
+    import('./cli/kb-commit.js')
+      .then(m => m.runKbCommit(process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb commit failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'import') {
+    // T2.2 (F4, D3): post-merge entry point for absorbing a merged bible into
+    // the local KB. Thin wrapper over the same kbImport the MCP tool uses.
+    import('./cli/kb-import.js')
+      .then(m => m.runKbImport(process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb import failed: ${err.message}`); process.exit(1); });
+  } else {
+    console.error(`Error: unknown kb subcommand '${subCmd}'`);
+    process.exit(1);
   }
 } else if (arg === 'watch') {
   import('./cli/watch.js')

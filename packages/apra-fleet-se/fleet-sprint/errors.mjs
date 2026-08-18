@@ -135,23 +135,27 @@ export class SprintPlanRejectedError extends WorkflowError {
  * @property {string[]} [thrashIds] - N9: bead ids reopened more than the
  *   reopen-thrash threshold this sprint, i.e. the beads most likely
  *   responsible for a close/reopen oscillation stall
+ * @property {string[]} [blockerIds] - apra-fleet-mjo: the bead ids still open
+ *   at/above goal priority when the stall was declared, i.e. exactly what an
+ *   operator must clear. Counts alone cannot answer "blocked on what?".
  */
 export class StalledSprintError extends WorkflowError {
     /**
      * @param {string} message
-     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], cycle?: number, details?: object, cause?: unknown }} [opts]
+     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], cycle?: number, details?: object, cause?: unknown }} [opts]
      */
     constructor(message, opts = {}) {
-        const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], cycle, details, cause } = opts;
+        const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], blockerIds = [], cycle, details, cause } = opts;
         super(message, {
             code: 'SPRINT_STALLED',
-            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, cycle, ...details },
+            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, blockerIds, cycle, ...details },
             cause,
         });
         this.staleCycles = staleCycles;
         this.closedCountHistory = closedCountHistory;
         this.highWaterClosedCount = highWaterClosedCount;
         this.thrashIds = thrashIds;
+        this.blockerIds = blockerIds;
     }
 }
 

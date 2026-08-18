@@ -18,6 +18,7 @@ import {
   ProviderInstallConfig
 } from './config.js';
 import { transformAgentForOpenCode, transformAgentForAgy } from './agent-transform.js';
+import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
@@ -492,6 +493,36 @@ function copyDirSync(src: string, dest: string): void {
   }
 }
 
+/**
+ * Additive overlay copy: copies `src` into `dest` WITHOUT replacing any file the
+ * destination already owns. Returns the dest-relative paths that were left alone.
+ *
+ * Root `skills/pm/` used to carry its own `SKILL.md`, `doer-reviewer-loop.md`
+ * and `simple-sprint.md` alongside the vendored apra-fleet-se PM skill's copies.
+ * A clobbering copy let the retired 4-role root `SKILL.md` silently replace the
+ * vendored 8-role one and still report install success. Those three root copies
+ * have since been deleted, so the overlay is purely additive today -- but it
+ * stays non-overwriting so re-adding a colliding filename cannot quietly
+ * reintroduce that failure.
+ */
+export function overlayDirSync(src: string, dest: string, relBase = ''): string[] {
+  const skipped: string[] = [];
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, entry.name);
+    const d = path.join(dest, entry.name);
+    const rel = relBase ? path.join(relBase, entry.name) : entry.name;
+    if (entry.isDirectory()) {
+      skipped.push(...overlayDirSync(s, d, rel));
+    } else if (fs.existsSync(d)) {
+      skipped.push(rel);
+    } else {
+      fs.copyFileSync(s, d);
+    }
+  }
+  return skipped;
+}
+
 function writeAssetFile(destPath: string, content: string): void {
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
   fs.writeFileSync(destPath, content);
@@ -830,6 +861,29 @@ export function writeAgyWorkspaceOverlays(workFolder: string): void {
   }
 }
 
+// T3.4 (F9b, D8): copy the repo's committed .fleet/kb-canonical-global.json
+// (when present) into the shared global KB data dir
+// (~/.apra-fleet/data/knowledge/global/kb-canonical-global.json) so EVERY
+// project on this machine can see the platform-level global bible without
+// carrying it in its own repo. NON-FATAL on every path: absent source file ->
+// skip silently (not an error -- most repos never carry this file); any
+// read/copy failure (permissions, disk full, malformed path) -> warn and
+// continue. The installer must never fail because of the bible.
+function copyGlobalBible(repoCwd: string): void {
+  try {
+    const srcPath = path.join(repoCwd, '.fleet', 'kb-canonical-global.json');
+    if (!fs.existsSync(srcPath)) return;
+
+    const destDir = path.join(FLEET_DIR, 'knowledge', 'global');
+    fs.mkdirSync(destDir, { recursive: true });
+    const destPath = path.join(destDir, 'kb-canonical-global.json');
+    fs.copyFileSync(srcPath, destPath);
+    console.log('    [OK] Global knowledge bible copied to ' + destDir);
+  } catch (err) {
+    console.warn('    [WARN] Global knowledge bible copy skipped:', err instanceof Error ? err.message : String(err));
+  }
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard - must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -992,6 +1046,7 @@ Options:
   if (installPm) totalSteps++; // cost.js extraction + workflow copy step
   if (installWorkflows) totalSteps++; // workflow-subsystem runtime/schemas/built-ins step
   totalSteps++; // dolt CLI install step (apra-fleet-ire.3) -- unconditional, mirrors Beads step
+  totalSteps++; // KB + code intelligence setup -- unconditional, runs after Beads
   if (serviceStep) totalSteps++;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
@@ -1206,12 +1261,31 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
         const content = extractAsset(assetKey);
         writeAssetFile(path.join(paths.skillsDir, name), content);
       }
+      // Overlay apra-fleet-owned PM skill additions/overrides from skills/pm/ in repo root
+      const root = findProjectRoot();
+      const repoSkillsPm = path.join(root, 'skills', 'pm');
+      if (fs.existsSync(repoSkillsPm) && fs.readdirSync(repoSkillsPm).length > 0) {
+        const skipped = overlayDirSync(repoSkillsPm, paths.skillsDir);
+        console.log('    [OK] Overlaid apra-fleet PM skill additions from skills/pm/');
+        if (skipped.length > 0) {
+          console.log(`    [--] Kept ${skipped.length} vendored PM skill file(s): ${skipped.join(', ')}`);
+        }
+      }
     } else {
       // Dev/npm mode: prefer apra-pm local copy, fall back to dist/
       const root = findProjectRoot();
       const vendorPm = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'skills', 'pm');
       const pmSrc = fs.existsSync(vendorPm) ? vendorPm : path.join(root, 'dist', 'skills', 'pm');
       copyDirSync(pmSrc, paths.skillsDir);
+      // Overlay apra-fleet-owned PM skill additions/overrides from skills/pm/ in repo root
+      const repoSkillsPm = path.join(root, 'skills', 'pm');
+      if (fs.existsSync(repoSkillsPm) && fs.readdirSync(repoSkillsPm).length > 0) {
+        const skipped = overlayDirSync(repoSkillsPm, paths.skillsDir);
+        console.log('    [OK] Overlaid apra-fleet PM skill additions from skills/pm/');
+        if (skipped.length > 0) {
+          console.log(`    [--] Kept ${skipped.length} vendored PM skill file(s): ${skipped.join(', ')}`);
+        }
+      }
     }
   }
 
@@ -1409,7 +1483,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // See docs/workflow-subsystem-plan.md Section 6 / Section 2.1 for the layout.
   if (installWorkflows) {
     // Two steps follow workflows (dolt, then Beads) before the optional service step.
-    const workflowsStepNum = serviceStep ? totalSteps - 3 : totalSteps - 2;
+    const workflowsStepNum = serviceStep ? totalSteps - 4 : totalSteps - 3;
     console.log(`  [${workflowsStepNum}/${totalSteps}] Installing workflow runtime...`);
     // Extraction itself (node_modules / schemas / built-in workflows / .installed.json)
     // lives in workflow-assets.ts -- the SAME code path workflow.ts's self-heal
@@ -1426,7 +1500,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // Mirrors the Beads install step immediately below: already-installed check
   // first, download+extract+verify otherwise. NON-FATAL, same as Beads -- a
   // missing/broken dolt must never fail "apra-fleet install".
-  const doltStep = serviceStep ? totalSteps - 2 : totalSteps - 1;
+  const doltStep = serviceStep ? totalSteps - 3 : totalSteps - 2;
   console.log(`  [${doltStep}/${totalSteps}] Installing Dolt CLI...`);
   let doltVersion = 'not available';
   if (doltStepEnabled()) {
@@ -1459,7 +1533,9 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // --- Beads install step ---
   // shell:true required on Windows - npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
-  const beadsStep = serviceStep ? totalSteps - 1 : totalSteps;
+  // KB + code intelligence is the final step (before the optional service step),
+  // so Beads sits one slot earlier than it does on main.
+  const beadsStep = serviceStep ? totalSteps - 2 : totalSteps - 1;
   console.log(`  [${beadsStep}/${totalSteps}] Installing Beads task tracker...`);
   try {
     // Check if already installed
@@ -1473,6 +1549,61 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   } catch (err) {
     // non-fatal: warn but don't fail the install
     console.warn('  - Beads install skipped - npm not available or install failed');
+  }
+
+  // --- KB + code intelligence setup step ---
+  // Only runs when the installer is invoked from inside a git repository.
+  const kbStep = serviceStep ? totalSteps - 1 : totalSteps;
+  console.log(`  [${kbStep}/${totalSteps}] Setting up Knowledge Bank and code intelligence...`);
+  const repoCwd = process.cwd();
+  if (fs.existsSync(path.join(repoCwd, '.git'))) {
+    // Clean up prior installs: remove legacy gitnexus entry from .mcp.json if present
+    try {
+      const mcpJsonPath = path.join(repoCwd, '.mcp.json');
+      if (fs.existsSync(mcpJsonPath)) {
+        const existing = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
+        if (existing.mcpServers?.gitnexus) {
+          delete existing.mcpServers.gitnexus;
+          fs.writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2));
+          console.log('    [OK] Removed legacy gitnexus entry from .mcp.json');
+        }
+      }
+    } catch (err) {
+      console.warn('    ⚠ .mcp.json cleanup skipped:', err instanceof Error ? err.message : String(err));
+    }
+  } else {
+    console.log('    Skipped: not in a git repository. Run apra-fleet install from your project root to set up KB.');
+  }
+
+  // T3.4 (F9b, D8): distribute the committed global bible (if this repo
+  // carries one) to every project on the machine via the shared global KB
+  // data dir. Independent of the .git check above -- the source file's own
+  // presence is the only gate, and the step is fully non-fatal.
+  copyGlobalBible(repoCwd);
+
+  // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
+  try {
+    const ciConfigDir = path.join(os.homedir(), '.apra-fleet', 'data', 'code-intelligence');
+    fs.mkdirSync(ciConfigDir, { recursive: true });
+    fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
+    console.log('    [OK] Code intelligence provider config written');
+  } catch (err) {
+    console.warn('    ⚠ Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
+  }
+
+  // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
+  try {
+    const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+    const sentinel = '<!-- apra-fleet:code-intelligence -->';
+    const block = `\n${sentinel}\nWhen code_graph, code_impact, code_query, or code_context tools are available,\nuse them for symbol lookups, call chain tracing, and impact analysis.\nNever use grep or file reads for structural questions when these tools are present.\n<!-- /apra-fleet:code-intelligence -->\n`;
+    const existing = fs.existsSync(claudeMdPath) ? fs.readFileSync(claudeMdPath, 'utf-8') : '';
+    if (!existing.includes(sentinel)) {
+      fs.mkdirSync(path.dirname(claudeMdPath), { recursive: true });
+      fs.appendFileSync(claudeMdPath, block);
+      console.log('    [OK] Code intelligence routing instruction written to ~/.claude/CLAUDE.md');
+    }
+  } catch (err) {
+    console.warn('    ⚠ ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
   }
 
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;

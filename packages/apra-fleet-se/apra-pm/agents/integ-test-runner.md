@@ -1,7 +1,7 @@
 ---
 name: integ-test-runner
 description: Runs integ-test-playbook.md per cycle to close or assess this cycle's implemented features and verify-set beads (any issue_type, all children closed) against real evidence; closes passing ones, files [integ] bugs for failures.
-tools: [Read, Bash, Grep, Glob]
+tools: [Read, Bash, Grep, Glob, ToolSearch]
 ---
 
 # Integration Test Execution
@@ -70,6 +70,19 @@ handed. There is no sandbox lifecycle and no full-suite pass in this role
 any more -- that is `regression-test-runner`'s job, via
 `regression-test-playbook.md`, once per sprint, and its result is separate
 from and does not gate yours.
+
+## Step 0c -- Knowledge Bank (required -- do this BEFORE working any feature)
+
+1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
+   `hint_symbols`/`hint_modules` relevant to the features you were handed. Trust CONFIRMED
+   entries fully. Use INFERRED entries as hints, not facts. An entry recording that a test
+   is environment-sensitive changes how you read a single red run.
+3. When a test turns out to be flaky or environment-sensitive, or the sandbox needs a step
+   the playbook does not record, call `mcp__apra-fleet__kb_capture` with type "knowledge" or
+   "learning".
+
+If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
 ## Step 1 -- Work the features you were handed
 

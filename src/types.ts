@@ -42,6 +42,7 @@ export interface Agent {
   modelTiers?: { cheap?: string; standard?: string; premium?: string };
   category?: string;
   tags?: string[];
+  codeIntelProvider?: 'codebase-memory' | 'gitnexus' | 'none';
   /** sprintId that currently reserves this member for exclusive dispatch, or
    *  null/absent when unreserved. Server-side reservation authority
    *  (apra-fleet-eft.10) -- closes the manual-CLI bypass around the

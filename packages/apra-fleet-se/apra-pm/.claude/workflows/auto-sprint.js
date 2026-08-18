@@ -1350,6 +1350,80 @@ const REVIEW_SCHEMA = {
           }
         }
       }
+    },
+    "kb_promotions": {
+      "type": "array",
+      "description": "Entries this reviewer VERIFIED against the tree and is promoting to CONFIRMED. Reviewer-only: promotion is the sole path that mints CONFIRMED, and widening capture does not widen promotion. The engine makes the kb_promote calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. That block is the ONLY source of promotable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "The evidence for this promotion -- what you actually checked. kb_promote refuses a trivial reason.",
+            "minLength": 20
+          }
+        }
+      }
+    },
+    "kb_captures": {
+      "type": "array",
+      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "summary",
+          "content",
+          "source_files"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "knowledge",
+              "learning",
+              "runbook"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 8
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "minLength": 40
+          },
+          "source_files": {
+            "type": "array",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- SqliteProvider.capture() rejects an entry with no basis, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
     }
   }
 };
@@ -1431,6 +1505,57 @@ const DOER_STATUS_SCHEMA = {
     },
     "notes": {
       "type": "string"
+    },
+    "kb_captures": {
+      "type": "array",
+      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "summary",
+          "content",
+          "source_files"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "knowledge",
+              "learning",
+              "runbook"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 8
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "minLength": 40
+          },
+          "source_files": {
+            "type": "array",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- SqliteProvider.capture() rejects an entry with no basis, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
     }
   }
 };
@@ -1642,6 +1767,145 @@ const HARVEST_SCHEMA = {
     },
     "notes": {
       "type": "string"
+    },
+    "kb_captures": {
+      "type": "array",
+      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "summary",
+          "content",
+          "source_files"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "knowledge",
+              "learning",
+              "runbook"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 8
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "minLength": 40
+          },
+          "source_files": {
+            "type": "array",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- SqliteProvider.capture() rejects an entry with no basis, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+};
+const PLANNER_SCHEMA = {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/planner-output@1",
+  "title": "planner output",
+  "description": "Canonical machine-readable output contract for the planner role. See agents/planner.md Step 4 (Validate your own DAG) and Step 0 (Knowledge Bank) for the prose contract this mirrors. The planner previously had no schema at all -- its dispatch ended 'Confirm with any text when done' -- so this is the contract that makes its output routable rather than free prose.",
+  "type": "object",
+  "required": [
+    "status",
+    "notes"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "OK",
+        "BLOCKED"
+      ]
+    },
+    "notes": {
+      "type": "string"
+    },
+    "featureIds": {
+      "type": "array",
+      "description": "Feature-level bead ids created or updated this round.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "taskIds": {
+      "type": "array",
+      "description": "Task-level bead ids created or updated this round.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "kb_captures": {
+      "type": "array",
+      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "summary",
+          "content",
+          "source_files"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "knowledge",
+              "learning",
+              "runbook"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 8
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "minLength": 40
+          },
+          "source_files": {
+            "type": "array",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- SqliteProvider.capture() rejects an entry with no basis, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
     }
   }
 };
@@ -1738,6 +2002,235 @@ async function dispatchShell(cmds, opts) {
 // This is a convenience wrapper around Promise.all() for readability.
 async function parallel(tasks) {
   return Promise.all(tasks);
+}
+
+// -------------------------------------------------------- KB priming
+//
+// Dispatches a cheap agent to call kb_session_prime (and kb_import on first
+// call) and returns the top entries.  The workflow injects these entries
+// directly into agent prompts -- agents never need to call KB tools themselves.
+
+const KB_PRIMER_SCHEMA = {
+  type: 'object',
+  required: ['entries', 'sessionWarm', 'imported'],
+  properties: {
+    sessionWarm: { type: 'boolean' },
+    imported:    { type: 'boolean' },
+    entries: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['title', 'summary'],
+        properties: {
+          title:        { type: 'string' },
+          summary:      { type: 'string' },
+          confidence:   { type: 'string' },
+          symbols:      { type: 'array', items: { type: 'string' } },
+          source_files: { type: 'array', items: { type: 'string' } },
+          type:         { type: 'string' },
+        },
+      },
+    },
+  },
+};
+
+let _kbImported = false;
+
+async function primeKB(repoPath) {
+  const importStep = _kbImported ? '' :
+    `Step 2: Import the bible into the KB database.\n` +
+    `  a. First check if "${repoPath}/.fleet/kb-canonical.json" exists (use Bash: test -f).\n` +
+    `  b. If it does NOT exist, run: echo $APRA_FLEET_DATA_DIR (using Bash) to get the data dir.\n` +
+    `     Then check if "$APRA_FLEET_DATA_DIR/kb-canonical.json" exists.\n` +
+    `  c. Call mcp__apra-fleet__kb_import with repo set to "${repoPath}".\n` +
+    `     If the bible was found at the data dir path (step b), also pass\n` +
+    `     path set to that full path (e.g. "/tmp/sprint-test/data-b/kb-canonical.json").\n` +
+    `  d. If neither path has the bible, or the tool is unavailable, set imported=false and continue.\n`;
+  const stepNum = _kbImported ? 2 : 3;
+  try {
+    const result = await dispatch(
+      `You are a knowledge-base primer. Your ONLY job is to load KB tools, ` +
+      `optionally import the bible, call kb_session_prime, and return the results.\n\n` +
+      `Step 1: Call ToolSearch with query "select:mcp__apra-fleet__kb_session_prime` +
+      (_kbImported ? `"` : `,mcp__apra-fleet__kb_import"`) +
+      ` to load the tool schema(s).\n` +
+      importStep +
+      `Step ${stepNum}: Call mcp__apra-fleet__kb_session_prime with:\n` +
+      `  repo_path: "${repoPath}"\n` +
+      `Step ${stepNum + 1}: Parse the JSON string result. Extract the top_entries array.\n` +
+      `  For each entry return: title, summary, confidence, symbols, source_files, type.\n` +
+      `  Do NOT return the content field.\n` +
+      `  Set sessionWarm from the result. Set imported to true if you ran kb_import successfully.\n\n` +
+      `If ToolSearch returns no KB tools, return {entries:[], sessionWarm:false, imported:false}.\n` +
+      `Return the structured result. Do not summarize or interpret.`,
+      {
+        model: MODEL_HAIKU,
+        label: 'kb-primer',
+        phase: 'Plan',
+        schema: KB_PRIMER_SCHEMA,
+        maxTurns: 10,
+      }
+    );
+    if (result && result.imported) _kbImported = true;
+    return result;
+  } catch (e) {
+    log(`KB primer failed: ${String(e).slice(0, 120)} -- proceeding without KB`);
+    return null;
+  }
+}
+
+// --- Engine-executed KB capture and promote (KB trust pipeline, Phase 2) ---
+//
+// Judgment stays with the role agent; EXECUTION moves to the engine. A role
+// returns kb_captures / kb_promotions in its structured output and never calls
+// a KB tool itself. Three consequences the old prose-only contract could not
+// give: promotion no longer depends on an agent remembering Step 5, every
+// promotion is logged with its stated evidence, and the engine can refuse a
+// promotion BEFORE it is attempted.
+//
+// RUNTIME CONSTRAINT: this workflow is executed by Claude's Workflow tool in a
+// VM with no filesystem, no require(), and no MCP tool access -- only dispatched
+// subagents can call tools (see scripts/gen-auto-sprint-schemas.mjs's header for
+// the same constraint biting a previous revision). fleet-sprint/runner.js runs
+// under a different engine and DOES get an injected callTool, so it calls the KB
+// tools directly. Here the engine validates and logs, then hands the vetted
+// payload to one cheap executor agent whose only job is to make the calls.
+
+// Promotion is the only path that mints CONFIRMED. Widening capture to four
+// roles deliberately does NOT widen promotion.
+const KB_PROMOTER_ROLES = new Set(['reviewer']);
+
+const KB_MIN_PROMOTE_REASON = 20;
+
+const KB_EXEC_SCHEMA = {
+  type: 'object',
+  required: ['captured', 'promoted'],
+  properties: {
+    captured: { type: 'number' },
+    promoted: { type: 'number' },
+    failed:   { type: 'number' },
+    notes:    { type: 'string' },
+  },
+};
+
+/**
+ * Validate what a role returned. Anything that would be refused downstream is
+ * dropped HERE, with a reason logged, so a bad payload never becomes a tool call.
+ * Returns { captures, promotions, rejected } -- all plain data.
+ */
+function vetKbWork(role, result) {
+  const captures = [];
+  const promotions = [];
+  const rejected = [];
+
+  const rawCaptures = (result && Array.isArray(result.kb_captures)) ? result.kb_captures : [];
+  for (const c of rawCaptures) {
+    if (!c || typeof c.title !== 'string' || typeof c.summary !== 'string') {
+      rejected.push(`${role}: capture missing title/summary`);
+      continue;
+    }
+    // Mirrors the Phase 1 provider invariant: an entry with no basis can never
+    // be staled by the freshness sweep, so nothing could ever falsify it.
+    if (!Array.isArray(c.source_files) || c.source_files.length === 0) {
+      rejected.push(`${role}: capture "${c.title}" cites no source files`);
+      continue;
+    }
+    if (!['knowledge', 'learning', 'runbook'].includes(c.type)) {
+      rejected.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
+      continue;
+    }
+    captures.push({
+      type: c.type,
+      title: c.title,
+      summary: c.summary,
+      source_files: c.source_files,
+      symbols: Array.isArray(c.symbols) ? c.symbols : [],
+    });
+  }
+
+  const rawPromotions = (result && Array.isArray(result.kb_promotions)) ? result.kb_promotions : [];
+  if (rawPromotions.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+    rejected.push(`${role}: kb_promotions refused -- promotion is reviewer-only`);
+  } else {
+    for (const p of rawPromotions) {
+      if (!p || typeof p.id !== 'string' || p.id.length === 0) {
+        rejected.push(`${role}: promotion missing id`);
+        continue;
+      }
+      if (typeof p.reason !== 'string' || p.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+        rejected.push(`${role}: promotion ${p.id} has no recorded evidence`);
+        continue;
+      }
+      promotions.push({ id: p.id, reason: p.reason.trim() });
+    }
+  }
+
+  return { captures, promotions, rejected };
+}
+
+/**
+ * Execute vetted KB work. Returns null when there is nothing to do, so the
+ * common case costs no dispatch at all.
+ */
+async function runKbWork(repoPath, role, result) {
+  const { captures, promotions, rejected } = vetKbWork(role, result);
+
+  for (const r of rejected) log(`KB refused -- ${r}`);
+  // Every promotion is logged with its stated evidence, whether or not the call
+  // later succeeds. This log IS the audit trail the bible never had.
+  for (const p of promotions) log(`KB promote ${p.id} (${role}): ${p.reason}`);
+
+  if (captures.length === 0 && promotions.length === 0) return null;
+
+  try {
+    return await dispatch(
+      `You are a knowledge-base executor. Your ONLY job is to make the KB tool ` +
+      `calls listed below and report counts. Make NO judgment about whether an ` +
+      `entry is correct -- that decision has already been made and validated.\n\n` +
+      `Step 1: Call ToolSearch with query ` +
+      `"select:mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_promote".\n` +
+      `Step 2: For EACH object in captures below, call mcp__apra-fleet__kb_capture ` +
+      `with repo_path "${repoPath}" and that object's fields verbatim. Do not ` +
+      `reword, merge, split or invent entries.\n` +
+      `Step 3: For EACH object in promotions below, call mcp__apra-fleet__kb_promote ` +
+      `with its id and reason verbatim.\n` +
+      `Step 4: Return the counts. A call refused by the tool counts in failed, ` +
+      `not captured/promoted -- report it, do not retry it with altered fields.\n\n` +
+      `captures: ${JSON.stringify(captures)}\n` +
+      `promotions: ${JSON.stringify(promotions)}\n\n` +
+      `If ToolSearch returns no KB tools, return {captured:0, promoted:0, failed:0}.`,
+      {
+        model: MODEL_HAIKU,
+        label: `kb-exec-${role}`,
+        phase: 'Develop',
+        schema: KB_EXEC_SCHEMA,
+        maxTurns: 20,
+      }
+    );
+  } catch (e) {
+    log(`KB executor failed for ${role}: ${String(e).slice(0, 120)} -- continuing`);
+    return null;
+  }
+}
+
+const KB_CHAR_BUDGET = 4000;
+
+function buildKBContext(kbResult) {
+  if (!kbResult || !Array.isArray(kbResult.entries) || kbResult.entries.length === 0) {
+    return '';
+  }
+  let block = `\n--- Project Knowledge Bank (${kbResult.entries.length} entries) ---\n` +
+    `Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.\n\n`;
+  let len = block.length;
+  for (const e of kbResult.entries) {
+    const line = `- [${(e.confidence || 'CONFIRMED').toUpperCase()}] ${e.title}: ${e.summary}` +
+      (e.symbols && e.symbols.length ? ` (symbols: ${e.symbols.join(', ')})` : '') + '\n';
+    if (len + line.length > KB_CHAR_BUDGET) break;
+    block += line;
+    len += line.length;
+  }
+  block += `--- End Project Knowledge ---\n\n`;
+  return block;
 }
 
 // bd may prepend a `warning: ...` line to its --json stdout (notably bd 1.1.0's
@@ -2261,10 +2754,31 @@ const stamp = async (name) => {
 };
 await stamp('setup');
 
+// ---- KB PRIMING (once at sprint start; refreshed per cycle) ----
+let kbContext = '';
+{
+  const kbResult = await primeKB(repo);
+  if (kbResult) {
+    kbContext = buildKBContext(kbResult);
+    log(`KB primed: ${(kbResult.entries || []).length} entries, imported=${kbResult.imported}`);
+  } else {
+    log('KB priming unavailable -- proceeding without KB context');
+  }
+}
+
 while (cycleCount < maxCycles) {
   cycleCount++;
   cycleCostUsd = 0;
   log(`\n=== Cycle ${cycleCount}/${maxCycles} | goal: ${goal} ===`);
+
+  // ---- KB REFRESH (per cycle -- picks up entries captured in previous cycles) ----
+  if (cycleCount > 1) {
+    const kbRefresh = await primeKB(repo);
+    if (kbRefresh) {
+      kbContext = buildKBContext(kbRefresh);
+      log(`KB refreshed: ${(kbRefresh.entries || []).length} entries`);
+    }
+  }
 
   // ---------------------------------------------------------------- RESUME CHECK + CYCLE CHECKPOINT
 
@@ -2328,6 +2842,7 @@ while (cycleCount < maxCycles) {
     let plannerResult = null;
     if (!skipPlanner) {
       plannerResult = await dispatch(
+      kbContext +
       `Repo: ${repo}\nBranch: ${branch}\nBase branch: ${base_branch}\n` +
       `Sprint goals: ${rootSummary}\n` +
       (requirementsFile ? `Additional context: ${requirementsFile}\n` : '') +
@@ -2390,8 +2905,10 @@ while (cycleCount < maxCycles) {
           `Do NOT add new scope beyond the original sprint goals and open bugs/enhancements.\n` +
           `Do NOT re-create tasks that are already closed.\n`
         : '') +
-      `Confirm with any text when done.`,
-      { model: MODEL_OPUS, label: plannerLabel, phase: 'Plan', agentType: 'planner',
+      `Return status "OK" when the DAG is in place, or "BLOCKED" with notes if you\n` +
+      `could not create it. List the feature and task ids you created in featureIds\n` +
+      `and taskIds.`,
+      { model: MODEL_OPUS, label: plannerLabel, phase: 'Plan', schema: PLANNER_SCHEMA, agentType: 'planner',
         context: `planning sprint goals ${rootSummary}` }
     );
 
@@ -2399,6 +2916,7 @@ while (cycleCount < maxCycles) {
         log(`Planner returned null on cycle ${cycleCount} round ${pi} -- retrying`);
         continue;
       }
+      await runKbWork(repo, 'planner', plannerResult);
     }
 
     const planReviewerLabel = `plan-reviewer-c${cycleCount}-r${pi}`;
@@ -2638,6 +3156,7 @@ while (cycleCount < maxCycles) {
 
         const doerOutcomes = await parallel(okWt.map(w =>
           dispatch(
+            kbContext +
             `You are working in an ISOLATED git worktree -- other doers run concurrently in their own worktrees.\n` +
             `Worktree path: ${repo}/${w.path}  (cd into it first; you are on temp branch ${w.branch})\n` +
             `Work ONLY task ${w.id}. Do NOT work any other task.\n\n` +
@@ -2652,7 +3171,10 @@ while (cycleCount < maxCycles) {
             `Return status "VERIFY" when done. Return status "BLOCKED" only for your runbook's blocked cases (missing secret) -- never any other status.`,
             { model: w.model, label: `doer-c${cycleCount}-i${devIter}-${w.id}`, phase: 'Develop', schema: DOER_STATUS_SCHEMA,
               agentType: 'doer', context: `task ${w.id} (worktree)` }
-          ).then(r => ({ w, ok: !!r && r.status === 'VERIFY' })).catch(() => ({ w, ok: false }))
+          ).then(async r => {
+            await runKbWork(repo, 'doer', r);
+            return { w, ok: !!r && r.status === 'VERIFY' };
+          }).catch(() => ({ w, ok: false }))
         ));
 
         // Merge sequentially into the sprint branch (deterministic id order from computeDoerBatch).
@@ -2727,6 +3249,7 @@ while (cycleCount < maxCycles) {
       log(`Doer c${cycleCount}-i${devIter}: ${labelTaskIds(fittedIds)} [model=${streak.model}${streakEstUsd != null ? ` est=$${streakEstUsd.toFixed(4)}` : ''}]`);
 
       const doerResult = await dispatch(
+        kbContext +
         `Repo: ${repo}\nBranch: ${branch}\n\n` +
         (devFeedback
           ? `Reviewer feedback from the previous iteration (read feedback.md in ${repo} for full details):\n${devFeedback}\nAddress every finding before closing tasks.\n\n`
@@ -2745,6 +3268,7 @@ while (cycleCount < maxCycles) {
         { model: streak.model, label: doerLabel, phase: 'Develop', schema: DOER_STATUS_SCHEMA, agentType: 'doer',
           context: `tasks ${fittedIds.join(', ')}` }
       );
+      await runKbWork(repo, 'doer', doerResult);
 
       if (!doerResult) {
         log(`Doer returned null (streak ${streak.model}) -- resetting orphaned in_progress tasks and retrying`);
@@ -2800,6 +3324,7 @@ while (cycleCount < maxCycles) {
     // One reviewer pass covering all streaks worked this iteration.
     const reviewerLabel = `reviewer-c${cycleCount}-i${devIter}: ${labelTaskIds(workedIds)}`;
     const review = await dispatch(
+      kbContext +
       `Repo: ${repo}\nBranch: ${branch}\nBase branch: ${base_branch}\n` +
       `Sprint goals: ${rootSummary}\nTasks worked this iteration: ${workedIds.join(', ')}\n\n` +
       `Review ONLY the work done for the tasks listed above.\n` +
@@ -2816,6 +3341,7 @@ while (cycleCount < maxCycles) {
         context: `reviewing tasks ${workedIds.join(', ')}` }
     );
     log(`Reviewer c${cycleCount}-i${devIter}: ${(review && review.verdict) || 'null'} -- ${labelTaskIds(workedIds)}`);
+    await runKbWork(repo, 'reviewer', review);
 
     if (!approved(review)) {
       devFeedback = (review && review.notes) || '';
@@ -3050,6 +3576,7 @@ await dispatchShell(
 
 const finalReviewLabel = 'final-reviewer';
 const finalReview = await dispatch(
+  kbContext +
   `Repo: ${repo}\nBranch: ${branch}\nBase branch: ${base_branch}\n` +
   `Sprint goals: ${rootSummary}\nGoal: ${goal}\n` +
   (abortReason ? `Sprint ended early: ${abortReason}. Review what was completed.\n` : '') +
@@ -3063,6 +3590,7 @@ const finalReview = await dispatch(
   { model: MODEL_OPUS, label: finalReviewLabel, phase: 'Harvest', schema: REVIEW_SCHEMA, agentType: 'reviewer' }
 );
 log(`Final review: ${finalReview && finalReview.verdict || 'null'}`);
+await runKbWork(repo, 'reviewer', finalReview);
 
 if (!approved(finalReview)) {
   const notes = (finalReview && finalReview.notes) || '';
@@ -3160,6 +3688,7 @@ const analysisArtifactFile = `sprint-logs/${sprintLogBranch}-${effectiveStartedA
 
 const harvestLabel = 'harvester';
 const harvestResult = await dispatch(
+  kbContext +
   `Repo: ${repo}\nBranch: ${branch}\nBase branch: ${base_branch}\n` +
   `Sprint goals: ${rootSummary}\nCycles completed: ${cycleCount}\nGoal met: ${goalMet}\n` +
   `sprintLogFile: ${sprintLogFile}\n` +
@@ -3179,6 +3708,7 @@ const harvestResult = await dispatch(
   `Return status "OK" if successful, "FAILED" with notes otherwise.`,
   { model: MODEL_SONNET, label: harvestLabel, phase: 'Harvest', schema: HARVEST_SCHEMA, agentType: 'harvester' }
 );
+await runKbWork(repo, 'harvester', harvestResult);
 
 if (!harvestResult || harvestResult.status !== 'OK') {
   log(`Harvest failed: ${(harvestResult && harvestResult.notes) || 'null'} -- writing analysis fallback`);

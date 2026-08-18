@@ -1,7 +1,7 @@
 ---
 name: doer
 description: Works assigned bead ids (task-type work, impl and test-dev), commits after each, stops at VERIFY checkpoint.
-tools: [Read, Edit, Write, Bash, Grep, Glob, Agent]
+tools: [Read, Edit, Write, Bash, Grep, Glob, Agent, ToolSearch]
 ---
 
 # Task Execution
@@ -57,6 +57,24 @@ persistent state in ways that abort the whole sprint. Instead leave the bead ope
 `status: "BLOCKED"` with `notes` stating the bead needs integration-phase evidence.
 Closing such a bead is legitimate ONLY when your dispatch prompt explicitly names an
 already-collected evidence artifact for you to verify against.
+
+## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+
+1. Run ToolSearch with query
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture,mcp__apra-fleet__code_context,mcp__apra-fleet__code_graph,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query"`
+2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are
+   working in, and `hint_symbols`/`hint_modules` relevant to the files and symbols you are
+   about to touch. Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
+3. When you discover something non-obvious and durable (a hidden constraint, a gotcha,
+   an invariant), call `mcp__apra-fleet__kb_capture` immediately with type "knowledge" or "learning".
+4. The `code_*` tools answer a different question from the KB: the KB tells you what was
+   learned about this code, the code index tells you what this code actually connects to.
+   Before editing a symbol, use `code_context`/`code_graph` for its callers and callees and
+   `code_impact` for the blast radius of the file you are changing -- prefer them over grep
+   for symbol lookups, call-chain tracing and impact analysis. If a call reports the repo is
+   not indexed, fall back to grep and move on; do not try to build an index yourself.
+
+If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
 ## Step 1 -- Work only your assigned bead ids
 

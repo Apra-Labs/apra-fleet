@@ -1,7 +1,7 @@
 ---
 name: plan-reviewer
 description: Reviews beads DAG structure for coverage, task size, and acceptance criteria; classifies each task complexity bucket and reads its assigned model; returns APPROVED or CHANGES NEEDED.
-tools: [Read, Grep, Glob, Bash, Write]
+tools: [Read, Grep, Glob, Bash, Write, ToolSearch]
 ---
 
 # Plan Review
@@ -51,6 +51,19 @@ to satisfy a criterion as SETTLED for the rest of the cycle:
 This rule exists because each review round otherwise runs blind to earlier rounds' own
 rulings, letting the goalposts move round to round on the same criterion even though the
 plan correctly implemented what a prior round said was acceptable.
+
+## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+
+1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being planned
+   for, and `hint_symbols`/`hint_modules` relevant to the features in the DAG under review.
+   Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts. An entry
+   recording that a module is harder than it looks is a task-sizing input.
+3. When you discover something non-obvious and durable (a hidden constraint, a gotcha,
+   an invariant), call `mcp__apra-fleet__kb_capture` immediately with type "knowledge" or
+   "learning".
+
+If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
 ## Step 1 -- Inspect the DAG
 

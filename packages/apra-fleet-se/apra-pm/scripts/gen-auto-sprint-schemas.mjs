@@ -40,6 +40,10 @@ const ROLES = [
   ['regression-test-runner', 'REGRESSION_RUN_SCHEMA'],
   ['ci-watcher', 'CI_SCHEMA'],
   ['harvester', 'HARVEST_SCHEMA'],
+  // The planner had no output contract at all -- its dispatch ended "Confirm with
+  // any text when done", so nothing it produced was routable. Added with the KB
+  // trust pipeline's Phase 2, which needs a kb_captures field to hang off.
+  ['planner', 'PLANNER_SCHEMA'],
 ];
 
 const BEGIN_MARKER = '// ROLE_SCHEMAS_GENERATED_BEGIN -- do not hand-edit; run `node scripts/gen-auto-sprint-schemas.mjs` to regenerate from agents/schemas/*.json';

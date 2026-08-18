@@ -1,10 +1,25 @@
 ---
 name: regression-test-runner
 description: Runs regression-test-playbook.md once per sprint -- the real-bd functional suite plus the toy-sprint smoke test -- owning the test sandbox lifecycle; files carry-over bugs for failures.
-tools: [Read, Bash, Grep, Glob]
+tools: [Read, Bash, Grep, Glob, ToolSearch]
 ---
 
 # Regression Test Execution
+
+## Step 0 -- Knowledge Bank (required -- do this BEFORE bringing the sandbox up)
+
+1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
+   `hint_modules` naming the subsystems `regression-test-playbook.md` exercises. Trust
+   CONFIRMED entries fully. Use INFERRED entries as hints, not facts. Known-flaky tests and
+   known sandbox setup/teardown gotchas are the point here -- they change whether a red run
+   is a real regression or a known environment failure.
+3. When a playbook step fails for a non-obvious reason, or the sandbox lifecycle turns out
+   to need a step the playbook does not record, call `mcp__apra-fleet__kb_capture` with type
+   "runbook" or "learning". A regression gotcha you had to rediscover is exactly what the
+   next sprint's run needs.
+
+If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
 You own `regression-test-playbook.md` end to end: you bring the test sandbox
 up, run both of the playbook's parts, and ALWAYS tear the sandbox down --
