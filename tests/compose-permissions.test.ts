@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { composePermissions, deepMerge } from '../src/tools/compose-permissions.js';
+import { composePermissions, deepMerge, resolveConfigDeliveryPath, ConfigDeliveryError } from '../src/tools/compose-permissions.js';
 import { ClaudeProvider, MEMBER_MCP_ALLOW_PREFIX, MEMBER_MCP_DENY_RULES } from '../src/providers/claude.js';
 import { GeminiProvider } from '../src/providers/gemini.js';
 import { NoneProvider } from '../src/providers/none.js';
@@ -47,14 +47,16 @@ const OK: SSHExecResult = { stdout: '', stderr: '', code: 0 };
 function makeFsHandler(seed: Record<string, string> = {}): (cmd: string, timeout?: number) => Promise<SSHExecResult> {
   const files = new Map<string, string>(Object.entries(seed));
   return async (cmd: string): Promise<SSHExecResult> => {
-    // POSIX write (heredoc)
-    let m = cmd.match(/^cat > (.+?) << 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/);
+    // POSIX write (heredoc). The interpolated path is double-quoted (rmkb-bbe.1 D2),
+    // so the captured group excludes the surrounding quotes -- keys stay unquoted,
+    // matching the seed map and the POSIX read patterns below.
+    let m = cmd.match(/^cat > "(.+?)" << 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/);
     if (m) { files.set(m[1], m[2]); return { stdout: '', stderr: '', code: 0 }; }
     // Windows write (WriteAllText); PowerShell single-quote escaping doubles quotes
     m = cmd.match(/\[System\.IO\.File\]::WriteAllText\("(.+?)", '([\s\S]*)', \(New-Object System\.Text\.UTF8Encoding\(\$false\)\)\)/);
     if (m) { files.set(m[1], m[2].replace(/''/g, "'")); return { stdout: '', stderr: '', code: 0 }; }
-    // POSIX read (cat <path> 2>/dev/null ...) -- both merge-read and read-back
-    m = cmd.match(/^cat (.+?) 2>\/dev\/null/);
+    // POSIX read (cat "<path>" 2>/dev/null ...) -- both merge-read and read-back
+    m = cmd.match(/^cat "(.+?)" 2>\/dev\/null/);
     if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
     // Windows read (Get-Content -Raw "<path>" ...)
     m = cmd.match(/Get-Content -Raw "(.+?)"/);
@@ -331,14 +333,61 @@ describe('composePermissions -- Claude reactive grant', () => {
     expect(result).toContain('Bash(docker-compose:*)');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    // Should have read the existing file
-    expect(allCmds.some(cmd => cmd.includes('cat .claude/settings.local.json'))).toBe(true);
+    // Should have read the existing file at the work-folder-absolute, quoted
+    // path (rmkb-bbe.1 D1) -- not a bare relative path resolved against
+    // whatever cwd the member's shell happens to be in.
+    expect(allCmds.some(cmd => cmd.includes(`cat "${member.workFolder}/.claude/settings.local.json"`))).toBe(true);
+    expect(allCmds.some(cmd => cmd.includes('cat .claude/settings.local.json'))).toBe(false);
 
     // Write command should include both old and new permissions
     const writes = allCmds.filter(cmd => cmd.includes('cat >'));
     const writeCmd = writes.find(cmd => cmd.includes('.claude/settings.local.json'))!;
     expect(writeCmd).toContain('Read');
     expect(writeCmd).toContain('Bash(docker:*)');
+  });
+
+  it('reactive grant on a remote member preserves the previously composed allow list (round-trip, rmkb-bbe.1 D1)', async () => {
+    // Regression pin for the read/write asymmetry: the read command MUST target
+    // the same work-folder-absolute path deliverConfigFile writes to. Seeding
+    // the stateful fs mock keyed by that resolved path means the read only
+    // succeeds if compose-permissions.ts resolves it the same way -- against
+    // pre-fix code (a bare relative `cat .claude/settings.local.json` read),
+    // this mock has no entry at the SSH login cwd, so the read returns "" and
+    // the previously composed allow list would be silently clobbered.
+    const member = makeTestAgent({
+      friendlyName: 'remote-grant-roundtrip',
+      llmProvider: 'claude',
+      os: 'linux',
+      agentType: 'remote',
+      workFolder: '/home/remoteuser/proj3',
+    });
+    addAgent(member);
+
+    const previouslyComposed = JSON.stringify({
+      permissions: { allow: ['Read', 'Write', 'Bash(git:*)'] },
+    });
+    installFsMock({ [`${member.workFolder}/.claude/settings.local.json`]: previouslyComposed });
+
+    const result = await composePermissions({
+      member_id: member.id,
+      role: 'doer',
+      grant: ['Bash(docker:*)'],
+    });
+
+    expect(result).toContain('Granted');
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writeCmd = allCmds.find(cmd => cmd.includes('cat >') && cmd.includes('.claude/settings.local.json'))!;
+    expect(writeCmd).toBeDefined();
+    const heredocBody = writeCmd.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0];
+    const written = JSON.parse(heredocBody);
+
+    // The pre-existing allow entries must survive alongside the new grant --
+    // pre-fix, the mismatched read path would return {} here and this array
+    // would contain ONLY the new grant.
+    expect(written.permissions.allow).toEqual(
+      expect.arrayContaining(['Read', 'Write', 'Bash(git:*)', 'Bash(docker:*)']),
+    );
   });
 
   it('blocks dangerous permissions', async () => {
@@ -1337,5 +1386,68 @@ describe('ClaudeProvider.composePermissionConfig -- member MCP allow/deny profil
     const permissions = merged.permissions as { allow: string[]; deny: string[] };
     expect(permissions.allow).toContain(`${MEMBER_MCP_ALLOW_PREFIX}kb_query`);
     expect(permissions.deny).toContain('mcp__apra-fleet__*');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rmkb-bbe.1 D2 -- quoted POSIX interpolation of a work folder containing a space
+// rmkb-bbe.1 D3 -- empty/undefined workFolder is rejected, not resolved to "/"
+// ---------------------------------------------------------------------------
+
+describe('composePermissions -- quoted POSIX paths and empty-workFolder guard (rmkb-bbe.1)', () => {
+  it('quotes mkdir, read and write commands when workFolder contains a space', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'spaced-workfolder',
+      llmProvider: 'claude',
+      os: 'linux',
+      agentType: 'remote',
+      workFolder: '/home/dev/My Repos/proj',
+    });
+    addAgent(member);
+    installFsMock();
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const mkdirCmd = allCmds.find(cmd => cmd.includes('mkdir') && cmd.includes('My Repos'))!;
+    const writeCmd = allCmds.find(cmd => cmd.includes('cat >') && cmd.includes('My Repos'))!;
+    expect(mkdirCmd).toBeDefined();
+    expect(writeCmd).toBeDefined();
+
+    // Unquoted interpolation would split the path on the space (word-split into
+    // "mkdir -p /home/dev/My" "Repos/proj/.claude", an "ambiguous redirect"-class
+    // failure for cat/write). Quoting keeps the whole path as one argument.
+    expect(mkdirCmd).toBe('mkdir -p "/home/dev/My Repos/proj/.claude"');
+    expect(writeCmd.startsWith('cat > "/home/dev/My Repos/proj/.claude/settings.local.json"')).toBe(true);
+  });
+
+  it('quotes the reactive-grant read command when workFolder contains a space', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'spaced-workfolder-grant',
+      llmProvider: 'claude',
+      os: 'linux',
+      agentType: 'remote',
+      workFolder: '/home/dev/My Repos/proj2',
+    });
+    addAgent(member);
+    installFsMock();
+
+    await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(docker:*)'] });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const readCmd = allCmds.find(cmd => cmd.startsWith('cat "') && cmd.includes('My Repos'))!;
+    expect(readCmd).toBeDefined();
+    expect(readCmd).toBe('cat "/home/dev/My Repos/proj2/.claude/settings.local.json" 2>/dev/null || echo "{}"');
+  });
+
+  it('rejects an empty workFolder with a ConfigDeliveryError instead of resolving to a filesystem-root path', () => {
+    const agent = makeTestAgent({ friendlyName: 'empty-workfolder', llmProvider: 'claude', os: 'linux', workFolder: '' });
+    expect(() => resolveConfigDeliveryPath(agent, '.claude/settings.local.json')).toThrow(ConfigDeliveryError);
+  });
+
+  it('rejects an undefined workFolder with a ConfigDeliveryError instead of resolving to a filesystem-root path', () => {
+    const agent = makeTestAgent({ friendlyName: 'undefined-workfolder', llmProvider: 'claude', os: 'linux' });
+    (agent as { workFolder?: string }).workFolder = undefined;
+    expect(() => resolveConfigDeliveryPath(agent, '.claude/settings.local.json')).toThrow(ConfigDeliveryError);
   });
 });
