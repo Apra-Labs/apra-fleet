@@ -360,7 +360,13 @@ async function startHttpServer() {
     process.exit(0);
   }
 
-  const handle = await createHttpTransport({ registerTools: registerAllTools });
+  // rmkb-3n5.4.2: the transport derives each session's tool scope from that
+  // session's identity and hands it to us here. The default stays full-scope:
+  // a caller that supplies no scope (or the stdio path below/above) registers
+  // everything, exactly as before.
+  const handle = await createHttpTransport({
+    registerTools: (sessionServer, scope) => registerAllTools(sessionServer, scope ?? 'full'),
+  });
 
   // Write server.json so other processes can detect this instance
   fs.mkdirSync(FLEET_DIR, { recursive: true });

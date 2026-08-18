@@ -6,6 +6,7 @@ import { fleetEvents, FleetEventMap } from './event-bus.js';
 import { getOrCreateKey, type JwtClaims } from './jwt.js';
 import { getTokenIssuer, localWorkspaceId } from './token-issuer.js';
 import { sessionRegistry } from './session-registry.js';
+import type { ToolScope } from './tool-registry.js';
 import { getAgent, findAgentByName } from './registry.js';
 import { DEFAULT_PORT, DEFAULT_HOST } from '../paths.js';
 import { serverVersion } from '../version.js';
@@ -21,7 +22,11 @@ interface Session {
 }
 
 export interface HttpTransportOptions {
-  registerTools: (server: McpServer) => void | Promise<void>;
+  /** Registers the tool surface for ONE session. `scope` is derived from the
+   *  session's identity (see the initialize branch below); an implementation
+   *  that ignores it registers the full set, which is the pre-scope
+   *  behaviour. */
+  registerTools: (server: McpServer, scope: ToolScope) => void | Promise<void>;
   preferredPort?: number;
 }
 
@@ -211,6 +216,22 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         // local workspace. Authenticated sessions use the JWT's workspace_id.
         const sessionWorkspaceId = postClaims?.workspace_id ?? localWorkspaceId();
 
+        // rmkb-3n5.4.2: derive this session's TOOL SCOPE from the identity
+        // already resolved above, and register only that subset below.
+        //
+        // A session is a MEMBER session when it presents a verified member JWT
+        // (every token this fleet mints carries a member role -- see
+        // src/tools/register-member.ts, role: 'doer'), OR when it used the
+        // unauthenticated ?member= URL-param fallback. Both are agent sessions
+        // running on a member and must not reach the dangerous tools.
+        //
+        // Everything else -- no token AND no member param -- is the local
+        // orchestrator/PM/tool session on the loopback trust boundary, and
+        // keeps the FULL set: it drives the whole fleet through this same
+        // transport, so scoping it would break dispatch entirely.
+        const isMemberSession = postClaims !== null || fallbackMemberId !== null;
+        const toolScope: ToolScope = isMemberSession ? 'member' : 'full';
+
         const sessionServer = new McpServer(
           { name: `apra fleet server ${serverVersion}`, version: serverVersion },
           { capabilities: { logging: {}, experimental: { 'claude/channel': {} } } }
@@ -220,7 +241,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
           onsessioninitialized: (sid) => {
             sessions.set(sid, { server: sessionServer, transport: sessionTransport, workspaceId: sessionWorkspaceId });
             const hasMember = !!(postClaims || fallbackMemberId);
-            logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember}`);
+            logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember} scope=${toolScope}`);
             // Register interactive member session when JWT claims are present.
             //
             // apra-fleet-eft.28.5: carry forward the launch-time pid captured
@@ -302,7 +323,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
             }
           },
         });
-        await registerTools(sessionServer);
+        await registerTools(sessionServer, toolScope);
         await sessionServer.connect(sessionTransport);
         await sessionTransport.handleRequest(req, res, parsedBody);
         return;
