@@ -100,6 +100,70 @@ describe('the code index is reachable from the roles that read code', () => {
   });
 });
 
+/**
+ * On a member dispatch the fleet MCP server is disabled/absent, so the Step 0
+ * kb_session_prime call is unreachable dead text. rmkb-3n5.1.1 added a
+ * byte-identical fallback paragraph, right after the "If ToolSearch returns no
+ * KB tools" line, to every contract that calls kb_session_prime: fall back to
+ * reading the committed <repo>/.fleet/kb-canonical.json and use its entries[].
+ *
+ * The role list here is NOT hardcoded: it is derived from whichever contracts
+ * loadAgentAssets() finds on disk under agents/ and mention kb_session_prime,
+ * so a new contract added later is covered automatically.
+ */
+const CANONICAL_BIBLE_FALLBACK_RE =
+  /If `mcp__apra-fleet__kb_session_prime` itself is unavailable[\s\S]*?absence is not an error; proceed without it\./;
+
+describe('every contract that primes the KB also has the canonical-bible fallback', () => {
+  const byRole = assetsByRole();
+  const rolesWithSessionPrime = [...byRole.entries()]
+    .filter(([, content]) => content.includes('kb_session_prime'))
+    .map(([role]) => role)
+    .sort();
+
+  it('discovers at least one role from disk that calls kb_session_prime', () => {
+    expect(rolesWithSessionPrime.length).toBeGreaterThan(0);
+  });
+
+  it.each(rolesWithSessionPrime)(
+    '%s documents the .fleet/kb-canonical.json fallback with entries[] and the absence clause',
+    (role) => {
+      const content = byRole.get(role)!;
+      expect(content).toContain('.fleet/kb-canonical.json');
+      expect(content).toContain('entries[]');
+      expect(content).toMatch(/may be ABSENT|absence is not an error/);
+      expect(content).toMatch(CANONICAL_BIBLE_FALLBACK_RE);
+    },
+  );
+
+  it('the fallback wording is byte-identical across every contract that carries it', () => {
+    const paragraphs = rolesWithSessionPrime.map((role) => {
+      const content = byRole.get(role)!;
+      const m = CANONICAL_BIBLE_FALLBACK_RE.exec(content);
+      expect(m, `${role} is missing the canonical-bible fallback paragraph`).not.toBeNull();
+      return m![0];
+    });
+    const distinct = new Set(paragraphs);
+    expect([...distinct]).toHaveLength(1);
+  });
+
+  it('states the fallback limits: read-only, CONFIRMED-only, summary not content, freshness', () => {
+    for (const role of rolesWithSessionPrime) {
+      const content = byRole.get(role)!;
+      expect(content).toContain('read-only');
+      expect(content).toContain('CONFIRMED-only');
+      expect(content).toMatch(/summary rather than the content|summary not content/);
+      expect(content).toMatch(/as fresh as the last commit/);
+    }
+  });
+
+  it('the kb_session_prime Step 0 instruction is not removed by the fallback addition', () => {
+    for (const role of rolesWithSessionPrime) {
+      expect(byRole.get(role)!).toMatch(/^## Step 0[a-z]? -- Knowledge Bank/m);
+    }
+  });
+});
+
 describe('promotion stays reviewer-only', () => {
   const byRole = assetsByRole();
 
