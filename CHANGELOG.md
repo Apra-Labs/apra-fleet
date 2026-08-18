@@ -1224,24 +1224,18 @@ alternative to GitNexus, implementing the full `CodeIntelligenceProvider`
 interface (graph, impact, query, context, map, flow, tests) and registering
 it as the default.
 
-What shipped: a documented evaluation of three Apache 2.0 / MIT candidates
-(Joern, SCIP, tree-sitter) against six selection criteria (license, native
+What shipped: a documented evaluation of Apache 2.0 / MIT candidates (Joern,
+SCIP, tree-sitter) against six selection criteria (license, native
 code-graph/relationship analysis, semantic or structured search, active
-maintenance, subprocess usability, and TypeScript/Python coverage), which
-selected Joern for its Code Property Graph support across all seven provider
-methods. A `JoernProvider` class implements the `CodeIntelligenceProvider`
-interface as a skeleton (all seven methods present, each currently a stub),
-backed by a test suite verifying the research meets all six selection
-criteria. See [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md)
-for the full evaluation and current status.
-
-Outstanding / carried forward: the provider is not yet registered in the
-provider registry and is not selected as the default. Real method bodies
-against a live Code Property Graph, registry registration, the default-vs-
-opt-in decision, and end-to-end behavioral tests remain open work. Because
-the provider is not imported or reachable from any tool handler outside its
-own module, it introduces no behavioral change and carries no regression
-risk to the existing GitNexus-backed code intelligence tools.
+maintenance, subprocess usability, and TypeScript/Python coverage). Joern was
+selected first for its Code Property Graph support, then superseded by
+codebase-memory-mcp, which carries broader language coverage, native MCP
+transport, and a far lighter deployment footprint (a single binary rather than
+a JVM plus a Scala REPL). `CodebaseMemoryProvider` implements all seven
+provider methods and is registered as the default; the interim Joern skeleton
+was never registered in `PROVIDERS` and is not part of this release. See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md) for
+the full evaluation and current status.
 
 Review outcome: the codebase builds cleanly and the full test suite passes.
 The branch was judged releasable on the basis that the new provider code is

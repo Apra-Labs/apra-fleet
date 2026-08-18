@@ -11,7 +11,7 @@ Test: tests/knowledge/kb-claims-proof.test.ts
 Mechanism: kb_session_prime returns warm cache. After capture, second prime call
 returns stale_files=[] -- no file reads needed.
 
-Measurement (eval/kb-eval-project, 5 source files):
+Measurement (tests/fixtures/kb-eval-project, 5 source files):
 - Cold session: 5 files read, 5375 tokens (raw file content)
 - Warm session: 0 files read, 598 tokens (session_prime L1 response)
 - Token savings per warm session: 4777 tokens (89%)
@@ -31,7 +31,7 @@ Session A (no KB, no source reads):
   - Agent implements Validator extending Evaluator (wrong)
   - Evaluator is the last class in the chain so agent guesses it is the base
   - validate() calls evaluate() -- mixes syntax and runtime errors
-  - See: eval/kb-eval-project/src/validator-no-kb.ts
+  - See: tests/fixtures/kb-eval-project/src/validator-no-kb.ts
 
 Session B (KB warm, learning stored):
   - kb_session_prime returns learning: "Validator should extend Parser (not Evaluator)
@@ -39,7 +39,7 @@ Session B (KB warm, learning stored):
   - Agent implements Validator extending Parser (correct)
   - validate() calls parse(), catches LexError and ParseError with line/column
   - Zero source file reads needed
-  - See: eval/kb-eval-project/src/validator.ts
+  - See: tests/fixtures/kb-eval-project/src/validator.ts
 
 Key diff: without stored learning, agent guesses the wrong base class.
 With stored learning, correct pattern applied immediately.

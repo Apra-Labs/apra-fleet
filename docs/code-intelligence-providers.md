@@ -64,9 +64,9 @@ against the seven provider methods.
   operational simplicity, and native MCP alignment were prioritized over
   maximum semantic depth.
 
-The comparison is recorded in the source alongside the deprecated Joern
-provider file, so the rationale stays discoverable at the point future
-contributors would otherwise wonder why a second, unused provider exists.
+The comparison is recorded here rather than in source: the rejected Joern
+provider was never registered in `PROVIDERS`, so keeping a second, unused
+implementation in the tree only invited the question of why it was there.
 
 ## Current status
 
@@ -89,10 +89,8 @@ Two guards run before the child process is ever touched:
   next call attempts a fresh connect.
 
 `GitNexusProvider` remains registered and selectable via the `gitnexus` key
-in the provider config, but is no longer the default. The `JoernProvider`
-file remains in source with a deprecation notice and the evaluation summary
-above; it was never registered in `PROVIDERS` and carries no runtime
-behavior.
+in the provider config, but is no longer the default. Joern was evaluated and
+rejected (see above); no `JoernProvider` ships.
 
 ## Per-member provider selection (schema only; routing not yet wired)
 

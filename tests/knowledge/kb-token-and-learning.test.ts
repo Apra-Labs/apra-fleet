@@ -40,7 +40,7 @@ function setupGitSuccess(): void {
   });
 }
 
-const EVAL_DIR = path.join(process.cwd(), 'eval', 'kb-eval-project', 'src');
+const EVAL_DIR = path.join(process.cwd(), 'tests', 'fixtures', 'kb-eval-project', 'src');
 const EVAL_FILE_NAMES = ['index.ts', 'errors.ts', 'tokens.ts', 'parser.ts', 'evaluator.ts'];
 const EVAL_FILES = EVAL_FILE_NAMES.map(n => path.join(EVAL_DIR, n));
 

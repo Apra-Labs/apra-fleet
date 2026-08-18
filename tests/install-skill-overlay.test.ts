@@ -6,10 +6,13 @@ import { overlayDirSync } from '../src/cli/install.js';
 
 /**
  * The root `skills/pm/` overlay is copied over the apra-fleet-se PM skill during
- * install (install.ts, PM skill step). Both directories carry `SKILL.md`,
- * `doer-reviewer-loop.md` and `simple-sprint.md`. With a plain recursive copy the
- * retired 4-role root `SKILL.md` silently replaces the vendored 8-role one, and
- * the install reports success. The overlay must be additive only.
+ * install (install.ts, PM skill step). Both directories used to carry `SKILL.md`,
+ * `doer-reviewer-loop.md` and `simple-sprint.md`: with a plain recursive copy the
+ * retired 4-role root `SKILL.md` silently replaced the vendored 8-role one, and
+ * the install reported success. Those three root copies are gone, so no real
+ * collision remains -- this pins the additive-only contract so re-adding one
+ * cannot quietly reintroduce the clobber. The fixtures below are synthetic
+ * (built in a tmpdir) and do not read the repo's own skill directories.
  */
 describe('PM skill overlay is additive and never clobbers vendored files', () => {
   let tmp: string;

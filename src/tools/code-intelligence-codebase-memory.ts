@@ -5,8 +5,8 @@
 // Tool:    codebase-memory-mcp (https://github.com/DeusData/codebase-memory-mcp)
 // License: MIT
 //
-// Selected over Joern (see code-intelligence-joern.ts, superseded) per the
-// evaluation documented there. This file follows the exact same MCP client
+// Selected over Joern per the evaluation in
+// docs/code-intelligence-providers.md. This file follows the exact same MCP client
 // lifecycle pattern as GitNexusProvider (code-intelligence-gitnexus.ts):
 // shared singleton client, StdioClientTransport over stdio, onclose/onerror
 // resilience that resets state so the next call reconnects, and a pre-flight

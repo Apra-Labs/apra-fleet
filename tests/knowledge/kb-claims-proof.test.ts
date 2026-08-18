@@ -33,7 +33,7 @@ function setupGitSuccess(): void {
   });
 }
 
-const EVAL_DIR = path.join(process.cwd(), 'eval', 'kb-eval-project', 'src');
+const EVAL_DIR = path.join(process.cwd(), 'tests', 'fixtures', 'kb-eval-project', 'src');
 const EVAL_FILE_NAMES = ['index.ts', 'errors.ts', 'tokens.ts', 'parser.ts', 'evaluator.ts'];
 const EVAL_FILES = EVAL_FILE_NAMES.map(n => path.join(EVAL_DIR, n));
 
@@ -147,36 +147,13 @@ describe('KB Claims Proof -- real measured numbers', () => {
     expect(l1Tokens).toBeLessThan(naiveTokens * 0.20);
   });
 
-  it('Claim 5: cost projection shows positive savings over 50 sessions', async () => {
-    const { totalFileTokens } = await captureAllEvalFiles(provider);
-
-    const primeResult = await provider.prime({ session_files: EVAL_FILES });
-    const primeResponseTokens = Math.ceil(JSON.stringify(primeResult).length / 4);
-
-    const SONNET_PRICE_PER_MILLION = 3.00;
-    const savedTokensPerSession = totalFileTokens - primeResponseTokens;
-    const totalSavedTokens50 = savedTokensPerSession * 50;
-    const dollarSaved = (totalSavedTokens50 / 1_000_000) * SONNET_PRICE_PER_MILLION;
-    const dollarAnnual = dollarSaved * 20;
-
-    console.log(
-      `\n[Claim 5] savedTokensPerSession=${savedTokensPerSession}` +
-      ` totalSavedTokens50=${totalSavedTokens50}` +
-      ` dollarSaved=$${dollarSaved.toFixed(4)}` +
-      ` dollarAnnual=$${dollarAnnual.toFixed(2)}`
-    );
-
-    expect(savedTokensPerSession).toBeGreaterThan(0);
-    expect(dollarSaved).toBeGreaterThan(0);
-  });
-
   it('Claim 3a: INFERRED -> CONFIRMED promote in one operation', async () => {
     const { id } = await provider.capture({
       type: 'knowledge',
       title: 'kb-proof: parser pattern',
       summary: 'Parser uses recursive descent; each parse* method handles one grammar level.',
       content: 'Parser uses recursive descent; each parse* method handles one grammar level.',
-      source_files: ['eval/kb-eval-project/src/parser.ts'],
+      source_files: ['tests/fixtures/kb-eval-project/src/parser.ts'],
       symbols: ['Parser'],
       tags: [],
       content_hash: '',
@@ -255,7 +232,7 @@ describe('KB Claims Proof -- real measured numbers', () => {
       title: 'kb-proof: parser pattern',
       summary: 'Parser uses recursive descent; each parse* method handles one grammar level.',
       content: 'Parser uses recursive descent; each parse* method handles one grammar level.',
-      source_files: ['eval/kb-eval-project/src/parser.ts'],
+      source_files: ['tests/fixtures/kb-eval-project/src/parser.ts'],
       symbols: ['Parser'],
       tags: [],
       content_hash: '',

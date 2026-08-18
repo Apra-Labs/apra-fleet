@@ -497,10 +497,13 @@ function copyDirSync(src: string, dest: string): void {
  * Additive overlay copy: copies `src` into `dest` WITHOUT replacing any file the
  * destination already owns. Returns the dest-relative paths that were left alone.
  *
- * Root `skills/pm/` and the vendored apra-fleet-se PM skill both carry `SKILL.md`,
- * `doer-reviewer-loop.md` and `simple-sprint.md`. A clobbering copy lets the retired
- * 4-role root `SKILL.md` silently replace the vendored 8-role one and still report
- * install success, which is why the overlay must never overwrite.
+ * Root `skills/pm/` used to carry its own `SKILL.md`, `doer-reviewer-loop.md`
+ * and `simple-sprint.md` alongside the vendored apra-fleet-se PM skill's copies.
+ * A clobbering copy let the retired 4-role root `SKILL.md` silently replace the
+ * vendored 8-role one and still report install success. Those three root copies
+ * have since been deleted, so the overlay is purely additive today -- but it
+ * stays non-overwriting so re-adding a colliding filename cannot quietly
+ * reintroduce that failure.
  */
 export function overlayDirSync(src: string, dest: string, relBase = ''): string[] {
   const skipped: string[] = [];

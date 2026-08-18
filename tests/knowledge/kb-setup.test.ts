@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { kbSetup } from '../../src/tools/kb-setup.js';
+import { FLEET_DIR } from '../../src/paths.js';
 
 let tmpDir: string;
 
@@ -41,8 +42,14 @@ describe('kb_setup', () => {
     expect(result.success).toBe(true);
     expect(result.steps.some((s: string) => s.includes('encrypted'))).toBe(true);
 
-    // Verify token is NOT stored in plaintext
-    const resultStr = JSON.stringify(result);
-    expect(resultStr).not.toContain('secret-token-123');
+    // Assert on the file kb_setup actually WROTE, not on its return value. The
+    // returned steps array never carries the token under any implementation, so
+    // asserting against it cannot fail -- it would stay green if kbSetup wrote
+    // config.token = input.token verbatim. The stored config is where the
+    // plaintext-leak risk lives, so that is what has to be read back.
+    const configPath = path.join(FLEET_DIR, 'knowledge', 'config.json');
+    const stored = fs.readFileSync(configPath, 'utf-8');
+    expect(stored).not.toContain('secret-token-123');
+    expect(JSON.parse(stored).token_encrypted).toBeTruthy();
   });
 });
