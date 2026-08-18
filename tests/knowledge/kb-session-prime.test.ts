@@ -258,6 +258,17 @@ describe('kb_session_prime graph-neighbor expansion', () => {
     expect(parsed.top_entries[2].via).toBe('graph-neighbor');
   });
 
+  it('apra-fleet-tm7.20: forwards repo_path to getProvider so the repo-level opt-out check can run', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    mockContext.mockResolvedValue(contextResult([]));
+    mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({ hint_symbols: ['a'], repo_path: '/some/repo' });
+
+    expect(mockGetProvider).toHaveBeenCalledWith(undefined, '/some/repo');
+  });
+
   it('caps neighbors queried at NEIGHBOR_CAP (11 -> 10)', async () => {
     const eleven = Array.from({ length: 11 }, (_, i) => 'nbr' + i);
     mockPrime.mockResolvedValue(primedContext([]));
