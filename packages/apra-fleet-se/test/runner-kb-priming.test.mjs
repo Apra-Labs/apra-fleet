@@ -1,5 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
     createKbPrimingClient,
     createKbWorkClient,
@@ -603,7 +606,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     });
 });
 
-// --- rmkb-3n5.3: thread repo_remote_url through the KB call sites ---
+// --- rmkb-3n5.3 / rmkb-xlx: thread repo_remote_url through the KB call sites ---
 //
 // repo_path at every KB call site is the MEMBER's own work folder (resolved
 // via member_detail), which does not exist on the fleet server for a remote
@@ -612,10 +615,17 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
 // two KB databases (apra-fleet-3n5.3's own audit: 118 basename-keyed entries
 // vs 23 remote-URL-keyed entries for the SAME repo). rmkb-3n5.3.1 taught
 // createKbPrimingClient to resolve and cache each member's real git origin
-// via execute_command; rmkb-3n5.3.2 forwards it at the five KB call sites
-// (kb_import, kb_session_prime, kb_query, kb_capture, kb_promote) whenever a
-// genuine URL is known, and sends nothing extra when it is not.
-describe('repo_remote_url forwarding across the priming + work clients (rmkb-3n5.3)', () => {
+// via execute_command; rmkb-3n5.3.2 forwarded it at five of the seven KB call
+// sites (kb_import, kb_session_prime, kb_query, kb_capture, kb_promote)
+// whenever a genuine URL is known, and sent nothing extra when it is not.
+//
+// rmkb-xlx: kb_list (promotionCandidates) and kb_export (exportBible) were
+// left behind by that pass -- repo_path only, so a promotion candidate could
+// be listed out of the basename-keyed DB while the kb_promote that follows
+// resolves into the URL-keyed one and fails "Entry not found", and the
+// exported bible could omit entries CONFIRMED into the URL-keyed DB. Both
+// now forward the exact same cached, never-guessed URL as the other five.
+describe('repo_remote_url forwarding across the priming + work clients (rmkb-3n5.3, rmkb-xlx)', () => {
     /**
      * A callTool double that also answers execute_command's
      * `git remote get-url origin` probe, mirroring the real tool's own
@@ -651,19 +661,22 @@ describe('repo_remote_url forwarding across the priming + work clients (rmkb-3n5
         };
     }
 
-    const KB_SITES = ['kb_import', 'kb_session_prime', 'kb_query', 'kb_capture', 'kb_promote'];
+    const KB_SITES = ['kb_import', 'kb_session_prime', 'kb_query', 'kb_capture', 'kb_promote', 'kb_list', 'kb_export'];
     const MOCK_URL = 'https://github.com/mock-org/mock-repo.git';
 
-    /** Drives all five KB call sites for one member, the same way runner.js's own call sites do: read the URL from priming's cached accessor, never re-probe. */
-    async function driveAllFiveSites(priming, work, member) {
+    /** Drives all seven KB call sites for one member, the same way runner.js's own call sites do: read the URL from priming's cached accessor, never re-probe. */
+    async function driveAllSites(priming, work, member) {
         const repoPath = priming.folderOf(member);
         const repoRemoteUrl = priming.remoteUrlOf(member);
         await work.relevantKnowledge(repoPath, ['a query term'], repoRemoteUrl);
         await work.apply('doer', repoPath, { kb_captures: [GOOD_CAPTURE] }, repoRemoteUrl);
         await work.apply('reviewer', repoPath, { kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }] }, repoRemoteUrl);
+        // rmkb-xlx: the two sites left behind by rmkb-3n5.3.2.
+        await work.promotionCandidates(repoPath, repoRemoteUrl);
+        await work.exportBible(repoPath, repoRemoteUrl);
     }
 
-    test('a member whose origin URL was reported: all five KB call sites carry repo_remote_url', async () => {
+    test('a member whose origin URL was reported: all seven KB call sites carry repo_remote_url', async () => {
         const { calls, callTool } = makeGitAwareCallTool({
             folders: { alpha: '/srv/alpha/repo' },
             origins: { alpha: MOCK_URL },
@@ -673,7 +686,7 @@ describe('repo_remote_url forwarding across the priming + work clients (rmkb-3n5
         assert.equal(priming.remoteUrlOf('alpha'), MOCK_URL);
 
         const work = createKbWorkClient({ callTool, log: () => {} });
-        await driveAllFiveSites(priming, work, 'alpha');
+        await driveAllSites(priming, work, 'alpha');
 
         for (const name of KB_SITES) {
             const call = calls.find((c) => c.name === name);
@@ -693,7 +706,7 @@ describe('repo_remote_url forwarding across the priming + work clients (rmkb-3n5
         assert.equal(priming.remoteUrlOf('beta'), null);
 
         const work = createKbWorkClient({ callTool, log: () => {} });
-        await driveAllFiveSites(priming, work, 'beta');
+        await driveAllSites(priming, work, 'beta');
 
         for (const name of KB_SITES) {
             const call = calls.find((c) => c.name === name);
@@ -705,7 +718,7 @@ describe('repo_remote_url forwarding across the priming + work clients (rmkb-3n5
         }
     });
 
-    test('the origin probe runs at most once per member even though five KB calls follow', async () => {
+    test('the origin probe runs at most once per member even though seven KB calls follow', async () => {
         const { calls, callTool } = makeGitAwareCallTool({
             folders: { alpha: '/srv/alpha/repo' },
             origins: { alpha: MOCK_URL },
@@ -714,10 +727,41 @@ describe('repo_remote_url forwarding across the priming + work clients (rmkb-3n5
         await priming.primeAll();
 
         const work = createKbWorkClient({ callTool, log: () => {} });
-        await driveAllFiveSites(priming, work, 'alpha');
+        await driveAllSites(priming, work, 'alpha');
 
         const originProbes = calls.filter((c) => c.name === 'execute_command' && /remote get-url origin/.test(c.args.command));
         assert.equal(originProbes.length, 1, 'the origin probe must be cached, not re-issued for every KB call site');
+    });
+
+    // rmkb-xlx acceptance criterion 3: a promote-after-list round trip must
+    // resolve to ONE database for a remote member. This fake-callTool harness
+    // does not exercise the real resolveProjectSlug/getKbProviders machinery
+    // (that is kb-provider-cache-key.test.ts's job), so the observable proxy
+    // for "same database" here is that kb_list and the kb_promote that follows
+    // it carry the IDENTICAL repo_path/repo_remote_url pair -- that pair is
+    // the only input getKbProviders uses to pick a provider, so identical
+    // args guarantee the identical provider/database.
+    test('promote-after-list round trip: kb_list and the following kb_promote carry the same repo_path/repo_remote_url pair', async () => {
+        const { calls, callTool } = makeGitAwareCallTool({
+            folders: { alpha: '/srv/alpha/repo' },
+            origins: { alpha: MOCK_URL },
+        });
+        const priming = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+        await priming.primeAll();
+
+        const work = createKbWorkClient({ callTool, log: () => {} });
+        const repoPath = priming.folderOf('alpha');
+        const repoRemoteUrl = priming.remoteUrlOf('alpha');
+
+        await work.promotionCandidates(repoPath, repoRemoteUrl);
+        await work.apply('reviewer', repoPath, { kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }] }, repoRemoteUrl);
+
+        const listCall = calls.find((c) => c.name === 'kb_list');
+        const promoteCall = calls.find((c) => c.name === 'kb_promote');
+        assert.ok(listCall && promoteCall);
+        assert.equal(listCall.args.repo_path, promoteCall.args.repo_path);
+        assert.equal(listCall.args.repo_remote_url, promoteCall.args.repo_remote_url);
+        assert.equal(listCall.args.repo_remote_url, MOCK_URL, 'the round trip must resolve to the URL-keyed DB, not the basename one');
     });
 
     test('a failing origin probe is non-fatal -- primeAll still returns and the member is still primed', async () => {
@@ -733,5 +777,93 @@ describe('repo_remote_url forwarding across the priming + work clients (rmkb-3n5
         assert.equal(result.skipped, 0);
         assert.equal(priming.remoteUrlOf('alpha'), null);
         assert.ok(calls.some((c) => c.name === 'kb_session_prime'), 'a failed origin probe must not prevent the member from being primed');
+    });
+});
+
+// rmkb-xlx acceptance criterion 2: a future kb_* call site added to runner.js
+// that omits repo_remote_url must turn THIS suite red without anyone having
+// to remember to add it to KB_SITES above by hand. Static source scan rather
+// than a behavioral test, because the omission this bug fixed (kb_list,
+// kb_export) was invisible to the runtime tests until someone thought to
+// extend KB_SITES -- exactly the silent-regression failure mode this guard
+// closes.
+describe('exhaustive enumeration: every kb_* call site in runner.js forwards repo_remote_url (rmkb-xlx)', () => {
+    const runnerSource = fs.readFileSync(
+        path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fleet-sprint', 'runner.js'),
+        'utf8',
+    );
+
+    /**
+     * Finds every `callTool('kb_...', ` call site in the given source text and
+     * returns the balanced-brace argument-object substring for each, so a
+     * regex-only scan cannot be fooled by string content elsewhere in the
+     * file. Returns { toolName, argsSource, index } per site.
+     */
+    function findKbCallToolSites(source) {
+        const sites = [];
+        const callRe = /callTool\(\s*['"](kb_[a-z_]+)['"]\s*,/g;
+        let m;
+        while ((m = callRe.exec(source)) !== null) {
+            const toolName = m[1];
+            // Scan forward from the match to find the matching close-paren of
+            // this callTool(...) invocation, tracking nesting depth so a
+            // brace/paren inside the args object (e.g. a nested object or the
+            // repo_remote_url conditional spread) doesn't end the scan early.
+            let depth = 0;
+            let start = -1;
+            for (let i = m.index; i < source.length; i++) {
+                const ch = source[i];
+                if (ch === '(') {
+                    if (depth === 0) start = i;
+                    depth++;
+                } else if (ch === ')') {
+                    depth--;
+                    if (depth === 0) {
+                        sites.push({ toolName, argsSource: source.slice(start, i + 1), index: m.index });
+                        break;
+                    }
+                }
+            }
+        }
+        return sites;
+    }
+
+    // kb_setup is deliberately excluded per the KB entry captured for this
+    // sprint: its repo_path only locates a .git dir for hook installation and
+    // it writes a single global config, never selecting a project KB, so
+    // there is no project-scoping bug for repo_remote_url to fix there. It is
+    // also not called from runner.js today, but the exclusion is named here
+    // so a future caller of it does not have to satisfy this assertion.
+    const EXEMPT_TOOLS = new Set(['kb_setup']);
+
+    test('runner.js calls at least the seven known kb_* tools (this test itself is not vacuous)', () => {
+        const sites = findKbCallToolSites(runnerSource);
+        const names = new Set(sites.map((s) => s.toolName));
+        for (const name of ['kb_import', 'kb_session_prime', 'kb_query', 'kb_capture', 'kb_promote', 'kb_list', 'kb_export']) {
+            assert.ok(names.has(name), `expected runner.js to still call ${name} -- did a call site get removed or renamed?`);
+        }
+    });
+
+    // A call site forwards the URL either with the literal key inline (kb_list,
+    // kb_query -- `...(typeof repoRemoteUrl === 'string' ... ? { repo_remote_url: ... } : {})`)
+    // or by spreading a locally-scoped `remoteUrlArg`/`...RemoteUrlArg` object
+    // built the same way a few lines above the call (kb_import,
+    // kb_session_prime, kb_capture, kb_promote, kb_export). Either token in
+    // the call's own argument-object text is accepted; a call site with
+    // NEITHER -- e.g. a bare `{ repo_path: repoPath }` copied from an older
+    // pre-rmkb-3n5.3 call site -- is what this guard exists to catch.
+    const FORWARDS_URL = /repo_remote_url|remoteUrlArg/;
+
+    test('every non-exempt kb_* call site in runner.js forwards repo_remote_url', () => {
+        const sites = findKbCallToolSites(runnerSource).filter((s) => !EXEMPT_TOOLS.has(s.toolName));
+        assert.ok(sites.length > 0, 'the scan found no kb_* call sites at all -- the regex likely broke, not that the sites vanished');
+
+        const offenders = sites.filter((s) => !FORWARDS_URL.test(s.argsSource));
+        assert.deepEqual(
+            offenders.map((s) => s.toolName),
+            [],
+            `these kb_* call site(s) in runner.js do not forward repo_remote_url: ${offenders.map((s) => s.toolName).join(', ')}. ` +
+            'A future call site copied from an older one without the field would silently reintroduce the basename/URL KB split this bug fixed.',
+        );
     });
 });
