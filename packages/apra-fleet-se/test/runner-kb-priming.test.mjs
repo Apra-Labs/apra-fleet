@@ -602,3 +602,213 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
         assert.equal(vetKbWork('reviewer', { kb_promotions: [{ id: 'x', reason: GOOD_REASON }] }).promotions.length, 1);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Remote-member KB scoping inside a sprint.
+//
+// Every kb_* call this engine makes carried repo_path ALONE. For a local member
+// that is enough -- the fleet server can run git in that directory and derive
+// the project slug from origin. For a REMOTE member it is not: the work folder
+// is a path on another host, both of resolveProjectSlug's git probes fail
+// against it, and the slug degrades to 'default'
+// (src/services/knowledge/project-slug.ts). So every remote member in every
+// sprint read and wrote one shared 'default' KB instead of its own project KB.
+//
+// apra-fleet-b4g.1 added repo_remote_url as the URL-based scope selector and
+// apra-fleet-b4g.6 wired it into the execute_prompt auto-harvest path, but this
+// engine's own prime/capture path was never in scope. apra-fleet-b4g.4 made the
+// unreachable anchor degrade safely rather than corrupt freshness -- it does not
+// route the call to the right KB.
+//
+// The URL is resolved from the repo path the caller already threads, NOT passed
+// as a second argument at each call site. There are nine such sites across
+// runSprintCycle/finalReview/harvest, and an extra positional argument at each
+// is an invitation to omit one -- a forgotten argument reads as "no URL known",
+// which is silently indistinguishable from a local member. Keying off repoPath
+// makes the scope unforgettable: threading the path IS threading the scope.
+// ---------------------------------------------------------------------------
+
+const REMOTE_URL = 'https://github.com/acme/widget.git';
+const REMOTE_FOLDER = 'C:\\work\\widget';
+
+function scopedCallTool(detail, opts = {}) {
+    const calls = [];
+    return {
+        calls,
+        callTool: async (name, args) => {
+            calls.push({ name, args });
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify(detail[args.member_name] ?? {}) }] };
+            if (name === 'kb_session_prime') return { top_entries: [] };
+            if (name === 'kb_list') return { results: opts.candidates ?? [] };
+            if (name === 'kb_query') return { content: [{ text: JSON.stringify({ l1_results: [], related_claims: [] }) }] };
+            return {};
+        },
+    };
+}
+
+function argsFor(calls, name) {
+    const call = calls.find((c) => c.name === name);
+    assert.ok(call, `expected a ${name} call`);
+    return call.args;
+}
+
+describe('KB calls are scoped to the member repo by URL, not just by path', () => {
+    test('member_detail supplies the origin URL and primeAll retains it per member', async () => {
+        const { callTool } = scopedCallTool({
+            alpha: { folder: REMOTE_FOLDER, repo_remote_url: REMOTE_URL },
+            beta: { folder: '/srv/beta/repo' },
+        });
+        const client = createKbPrimingClient({ callTool, members: ['alpha', 'beta'], log: () => {} });
+
+        await client.primeAll();
+
+        assert.equal(client.remoteUrlOf('alpha'), REMOTE_URL);
+        assert.equal(client.remoteUrlOf('beta'), null, 'a member with no reported URL must not borrow another one');
+        assert.equal(client.remoteUrlOf('never-primed'), null);
+    });
+
+    test('kb_import and kb_session_prime carry the member repo URL', async () => {
+        const { calls, callTool } = scopedCallTool({ alpha: { folder: REMOTE_FOLDER, repo_remote_url: REMOTE_URL } });
+        const client = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+
+        await client.primeAll();
+
+        assert.equal(argsFor(calls, 'kb_import').repo_remote_url, REMOTE_URL);
+        assert.equal(argsFor(calls, 'kb_session_prime').repo_remote_url, REMOTE_URL);
+        assert.equal(argsFor(calls, 'kb_session_prime').repo_path, REMOTE_FOLDER,
+            'the path stays the freshness anchor -- the URL selects the DB, it does not replace the anchor');
+    });
+
+    test('a member with no reported URL is primed exactly as before -- no fabricated scope', async () => {
+        const { calls, callTool } = scopedCallTool({ alpha: { folder: '/srv/alpha/repo' } });
+        const client = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+
+        await client.primeAll();
+
+        assert.ok(!('repo_remote_url' in argsFor(calls, 'kb_import')));
+        assert.ok(!('repo_remote_url' in argsFor(calls, 'kb_session_prime')));
+    });
+
+    test('remoteUrlForPath maps a work folder back to its URL, which is how the work client resolves scope', async () => {
+        const { callTool } = scopedCallTool({
+            alpha: { folder: REMOTE_FOLDER, repo_remote_url: REMOTE_URL },
+            beta: { folder: '/srv/beta/repo' },
+        });
+        const client = createKbPrimingClient({ callTool, members: ['alpha', 'beta'], log: () => {} });
+
+        await client.primeAll();
+
+        assert.equal(client.remoteUrlForPath(REMOTE_FOLDER), REMOTE_URL);
+        assert.equal(client.remoteUrlForPath('/srv/beta/repo'), null);
+        assert.equal(client.remoteUrlForPath('/some/other/path'), null);
+        assert.equal(client.remoteUrlForPath(null), null);
+    });
+
+    // Two members on DIFFERENT hosts can share a work-folder path string while
+    // being clones of different repos. Resolving that path to either URL would
+    // route one member's captures into the other's KB -- strictly worse than the
+    // 'default' degradation this fix exists to remove. Refuse instead.
+    test('a work-folder path claimed by two different URLs resolves to neither', async () => {
+        const { callTool } = scopedCallTool({
+            alpha: { folder: '/home/dev/repo', repo_remote_url: REMOTE_URL },
+            beta: { folder: '/home/dev/repo', repo_remote_url: 'https://github.com/acme/other.git' },
+        });
+        const client = createKbPrimingClient({ callTool, members: ['alpha', 'beta'], log: () => {} });
+
+        await client.primeAll();
+
+        assert.equal(client.remoteUrlForPath('/home/dev/repo'), null);
+        assert.equal(client.remoteUrlOf('alpha'), REMOTE_URL, 'the per-member record stays exact');
+        assert.equal(client.remoteUrlOf('beta'), 'https://github.com/acme/other.git');
+    });
+
+    test('two members sharing a folder AND a URL still resolve -- that is not a conflict', async () => {
+        const { callTool } = scopedCallTool({
+            alpha: { folder: '/home/dev/repo', repo_remote_url: REMOTE_URL },
+            beta: { folder: '/home/dev/repo', repo_remote_url: REMOTE_URL },
+        });
+        const client = createKbPrimingClient({ callTool, members: ['alpha', 'beta'], log: () => {} });
+
+        await client.primeAll();
+
+        assert.equal(client.remoteUrlForPath('/home/dev/repo'), REMOTE_URL);
+    });
+});
+
+describe('the work client resolves its own scope from the repo path it is given', () => {
+    function workClient(opts = {}) {
+        const { calls, callTool } = scopedCallTool({}, opts);
+        const client = createKbWorkClient({
+            callTool,
+            log: () => {},
+            remoteUrlFor: (repoPath) => (repoPath === REMOTE_FOLDER ? REMOTE_URL : null),
+        });
+        return { calls, client };
+    }
+
+    test('kb_list for promotion candidates carries the URL', async () => {
+        const { calls, client } = workClient({ candidates: [] });
+
+        await client.promotionCandidates(REMOTE_FOLDER);
+
+        assert.equal(argsFor(calls, 'kb_list').repo_remote_url, REMOTE_URL);
+    });
+
+    test('kb_query for per-dispatch knowledge carries the URL', async () => {
+        const { calls, client } = workClient();
+
+        await client.relevantKnowledge(REMOTE_FOLDER, ['resolveZoneBinding']);
+
+        assert.equal(argsFor(calls, 'kb_query').repo_remote_url, REMOTE_URL);
+    });
+
+    test('kb_capture and kb_promote carry the URL -- a capture must land in the repo that learned it', async () => {
+        const { calls, client } = workClient();
+
+        const out = await client.apply('reviewer', REMOTE_FOLDER, {
+            kb_captures: [GOOD_CAPTURE],
+            kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }],
+        });
+
+        assert.equal(out.captured, 1);
+        assert.equal(out.promoted, 1);
+        assert.equal(argsFor(calls, 'kb_capture').repo_remote_url, REMOTE_URL);
+        assert.equal(argsFor(calls, 'kb_promote').repo_remote_url, REMOTE_URL);
+    });
+
+    test('kb_export writes the bible for the member repo, selected by URL', async () => {
+        const { calls, client } = workClient();
+
+        await client.exportBible(REMOTE_FOLDER);
+
+        assert.equal(argsFor(calls, 'kb_export').repo_remote_url, REMOTE_URL);
+    });
+
+    test('a repo path with no known URL omits the field entirely -- never a fabricated scope', async () => {
+        const { calls, client } = workClient({ candidates: [] });
+
+        await client.promotionCandidates('/srv/local/repo');
+        await client.relevantKnowledge('/srv/local/repo', ['x']);
+        await client.apply('reviewer', '/srv/local/repo', {
+            kb_captures: [GOOD_CAPTURE],
+            kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }],
+        });
+        await client.exportBible('/srv/local/repo');
+
+        for (const call of calls) {
+            assert.ok(!('repo_remote_url' in call.args),
+                `${call.name} must not carry a fabricated repo_remote_url`);
+        }
+    });
+
+    // A work client built without the resolver (every pre-existing construction
+    // site, and the direct-call tests above) must behave exactly as before.
+    test('no resolver injected means no scope -- the pre-existing behaviour is untouched', async () => {
+        const { calls, callTool } = scopedCallTool({}, { candidates: [] });
+        const client = createKbWorkClient({ callTool, log: () => {} });
+
+        await client.exportBible(REMOTE_FOLDER);
+
+        assert.ok(!('repo_remote_url' in argsFor(calls, 'kb_export')));
+    });
+});

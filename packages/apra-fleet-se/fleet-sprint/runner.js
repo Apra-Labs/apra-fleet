@@ -1521,6 +1521,26 @@ export function createMcpChildIdAllocatorClient(opts = {}) {
  */
 export const KB_MAX_KNOWLEDGE_ENTRIES = 12;
 
+/**
+ * The URL-based KB scope selector, spread into a kb_* call's arguments.
+ *
+ * repo_path alone is only sufficient for a LOCAL member: resolveProjectSlug
+ * (src/services/knowledge/project-slug.ts) runs git in that directory to derive
+ * the project slug. A remote member's work folder is a path on another host, so
+ * both git probes fail and the slug degrades to 'default' -- collapsing every
+ * remote member's knowledge into one shared KB. repo_remote_url selects the DB
+ * directly (apra-fleet-b4g.1) and is what makes a sprint's kb_* calls land in
+ * the member's own project KB.
+ *
+ * Absent when no URL is known: an omitted scope is the honest pre-existing
+ * degradation, while a fabricated one routes writes into a slug that does not
+ * match the repo's real local-clone slug. The engine never derives a URL -- it
+ * forwards only what member_detail reports (knownRepoRemoteUrl's rule).
+ */
+function kbScope(remoteUrl) {
+    return (typeof remoteUrl === 'string' && remoteUrl.length > 0) ? { repo_remote_url: remoteUrl } : {};
+}
+
 export function createKbPrimingClient(opts = {}) {
     const { callTool, members = [], log = () => {} } = opts;
     const active = typeof callTool === 'function' && members.length > 0;
@@ -1533,21 +1553,42 @@ export function createKbPrimingClient(opts = {}) {
         return (result && typeof result === 'object') ? result : null;
     }
 
-    async function folderFor(member) {
+    async function scopeFor(member) {
         // apra-fleet-n78: format:'json' is REQUIRED. member_detail defaults to
         // 'compact', whose renderer emits no folder at all -- `folder` is set only
         // on the json path (src/tools/member-detail.ts). Omitting it made this
         // return null for every member, so the KB was never primed for anyone.
         const detail = parseResult(await callTool('member_detail', { member_name: member, format: 'json' }));
-        // member_detail reports the work folder as `folder` (src/tools/member-detail.ts).
+        // member_detail reports the work folder as `folder` and the repo origin
+        // URL as `repo_remote_url` (src/tools/member-detail.ts). The URL is
+        // reported only when the member's registration record proves it, so an
+        // absent one is normal and must stay absent rather than be derived here.
         const folder = detail && (detail.folder || (detail.member && detail.member.folder));
-        return (typeof folder === 'string' && folder.length > 0) ? folder : null;
+        const url = detail && (detail.repo_remote_url || (detail.member && detail.member.repo_remote_url));
+        return {
+            folder: (typeof folder === 'string' && folder.length > 0) ? folder : null,
+            remoteUrl: (typeof url === 'string' && url.length > 0) ? url : null,
+        };
     }
 
     // member -> work folder, populated by primeAll(). createKbWorkClient reads
     // it so a capture lands in the repo the member actually worked in, rather
     // than being resolved against the fleet server's cwd.
     const folders = new Map();
+
+    // member -> the repo origin URL member_detail reported for it, when it
+    // reported one. This is what scopes a REMOTE member's kb_* calls to its own
+    // project KB instead of the shared 'default' one (see kbScope).
+    const remoteUrls = new Map();
+
+    // work folder -> that folder's origin URL, or CONFLICTING_URL when two
+    // members claim the same path string for DIFFERENT repos. The work client
+    // resolves its scope through this map rather than taking the URL as an
+    // extra argument at each of its nine call sites: threading the repo path is
+    // then the same act as threading the scope, so a site cannot forget one
+    // while remembering the other.
+    const urlByFolder = new Map();
+    const CONFLICTING_URL = Symbol('conflicting-remote-url');
 
     // member -> the entries kb_session_prime returned for that member.
     //
@@ -1567,6 +1608,25 @@ export function createKbPrimingClient(opts = {}) {
         folderOf(member) {
             return folders.get(member) || null;
         },
+        remoteUrlOf(member) {
+            return remoteUrls.get(member) || null;
+        },
+        /**
+         * The URL scoping kb_* calls made against `repoPath`, or null.
+         *
+         * Null for an unknown path, for a local member (no URL was reported),
+         * and for a path two members claim with different URLs. Members on
+         * different hosts can share a work-folder path string while being
+         * clones of different repos; picking either URL there would route one
+         * member's captures into the other's KB, which is strictly worse than
+         * the 'default' degradation this scoping exists to remove. Refusing
+         * leaves that case exactly as it was before.
+         */
+        remoteUrlForPath(repoPath) {
+            if (typeof repoPath !== 'string' || repoPath.length === 0) return null;
+            const url = urlByFolder.get(repoPath);
+            return (typeof url === 'string') ? url : null;
+        },
         knowledgeOf(member) {
             return knowledge.get(member) || [];
         },
@@ -1576,8 +1636,18 @@ export function createKbPrimingClient(opts = {}) {
             let skipped = 0;
             for (const member of members) {
                 try {
-                    const repoPath = await folderFor(member);
+                    const { folder: repoPath, remoteUrl } = await scopeFor(member);
                     if (repoPath) folders.set(member, repoPath);
+                    if (remoteUrl) remoteUrls.set(member, remoteUrl);
+                    if (repoPath && remoteUrl) {
+                        const known = urlByFolder.get(repoPath);
+                        if (known !== undefined && known !== remoteUrl) {
+                            urlByFolder.set(repoPath, CONFLICTING_URL);
+                            log(`[kb-prime] work folder ${repoPath} is claimed by two different repos -- KB calls for it stay unscoped`);
+                        } else {
+                            urlByFolder.set(repoPath, remoteUrl);
+                        }
+                    }
                     if (!repoPath) {
                         // No folder means no repo to scope the KB to. Priming without
                         // one would read the fleet server's own KB, so skip instead.
@@ -1611,7 +1681,7 @@ export function createKbPrimingClient(opts = {}) {
                     // it; prime()'s own bounded checkFreshness still guards each
                     // entry it actually returns.
                     try {
-                        const imported = parseResult(await callTool('kb_import', { repo_path: repoPath, skip_sweep: true }));
+                        const imported = parseResult(await callTool('kb_import', { repo_path: repoPath, ...kbScope(remoteUrl), skip_sweep: true }));
                         if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
                             log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for ${repoPath}`);
                         }
@@ -1619,7 +1689,7 @@ export function createKbPrimingClient(opts = {}) {
                         log(`[kb-prime] kb_import skipped for ${repoPath} (non-fatal): ${err.message}`);
                     }
 
-                    const primeResult = parseResult(await callTool('kb_session_prime', { repo_path: repoPath }));
+                    const primeResult = parseResult(await callTool('kb_session_prime', { repo_path: repoPath, ...kbScope(remoteUrl) }));
                     const entries = (primeResult && Array.isArray(primeResult.top_entries))
                         ? primeResult.top_entries.filter((e) => e && typeof e.id === 'string')
                         : [];
@@ -1739,8 +1809,22 @@ export function vetKbWork(role, result) {
 export const KB_MAX_PROMOTION_CANDIDATES = 40;
 
 export function createKbWorkClient(opts = {}) {
-    const { callTool, log = () => {} } = opts;
+    const { callTool, log = () => {}, remoteUrlFor } = opts;
     const active = typeof callTool === 'function';
+
+    /**
+     * The URL-based KB scope for a repo path, resolved through the injected
+     * lookup (createKbPrimingClient's remoteUrlForPath). Deliberately NOT an
+     * extra parameter on the methods below: they are called from nine places
+     * across runSprintCycle/finalReview/harvest, and an omitted argument is
+     * indistinguishable from "no URL known" -- it would silently reinstate the
+     * repo-blindness this exists to fix. With no lookup injected (every
+     * construction site predating this, and direct unit calls) the scope is
+     * absent and behaviour is exactly as before.
+     */
+    function scopeOf(repoPath) {
+        return kbScope(typeof remoteUrlFor === 'function' ? remoteUrlFor(repoPath) : null);
+    }
 
     /** Best-effort JSON out of an MCP result (string, content-block, or plain object). */
     function parseResult(result) {
@@ -1776,6 +1860,7 @@ export function createKbWorkClient(opts = {}) {
             try {
                 const parsed = parseResult(await callTool('kb_list', {
                     repo_path: repoPath,
+                    ...scopeOf(repoPath),
                     confidence: 'INFERRED',
                     limit: KB_MAX_PROMOTION_CANDIDATES,
                 }));
@@ -1820,6 +1905,7 @@ export function createKbWorkClient(opts = {}) {
             try {
                 const parsed = parseResult(await callTool('kb_query', {
                     repo_path: repoPath,
+                    ...scopeOf(repoPath),
                     query,
                     limit: KB_MAX_KNOWLEDGE_ENTRIES,
                     expand_related: true,
@@ -1869,7 +1955,7 @@ export function createKbWorkClient(opts = {}) {
             let promoted = 0;
             for (const c of captures) {
                 try {
-                    const res = await callTool('kb_capture', { ...c, repo_path: repoPath });
+                    const res = await callTool('kb_capture', { ...c, repo_path: repoPath, ...scopeOf(repoPath) });
                     // apra-fleet-23c: an MCP client RESOLVES with {isError:true} on a
                     // tool-level failure rather than throwing, so counting every
                     // non-throwing call as a success reported captures that never
@@ -1892,7 +1978,7 @@ export function createKbWorkClient(opts = {}) {
                     // promotion would have failed "Entry not found" (the
                     // apra-fleet-tm7 repo-blindness class, fixed for capture
                     // but missed here).
-                    const res = await callTool('kb_promote', { id: p.id, reason: p.reason, repo_path: repoPath });
+                    const res = await callTool('kb_promote', { id: p.id, reason: p.reason, repo_path: repoPath, ...scopeOf(repoPath) });
                     if (isToolError(res)) {
                         log(`[kb-work] kb_promote rejected for ${p.id} (non-fatal): ${toolErrorText(res)}`);
                         continue;
@@ -1933,7 +2019,7 @@ export function createKbWorkClient(opts = {}) {
             // write an unrelated project's bible.
             if (!active || !repoPath) return false;
             try {
-                const res = await callTool('kb_export', { repo_path: repoPath });
+                const res = await callTool('kb_export', { repo_path: repoPath, ...scopeOf(repoPath) });
                 if (isToolError(res)) {
                     log(`[kb-work] kb_export rejected for ${repoPath} (non-fatal): ${toolErrorText(res)}`);
                     return false;
@@ -5795,6 +5881,15 @@ async function runSprintCycle(context) {
     const kbWork = context.kbWork ?? createKbWorkClient({
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
         log,
+        // Scope every kb_* call below to the member's OWN project KB. The repo
+        // path each call site already threads is a path on the MEMBER's host,
+        // so the server cannot derive a slug from it -- without this lookup a
+        // remote member's reads and writes all land in the shared 'default' KB
+        // (apra-fleet-b4g.15). Resolved through the path rather than passed
+        // per call site so no site can thread the path and forget the scope.
+        // context.kbPriming above is an injection seam; a stub that predates
+        // remoteUrlForPath degrades to no scope rather than crashing a sprint.
+        remoteUrlFor: (repoPath) => (typeof kbPriming.remoteUrlForPath === 'function' ? kbPriming.remoteUrlForPath(repoPath) : null),
     });
     // A member named in ANY roleMap value is a "specialist" for whatever
     // role(s) named it -- e.g. a member pinned to roleMap.reviewer has been

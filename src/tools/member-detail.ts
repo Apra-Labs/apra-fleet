@@ -11,6 +11,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
 import { serverVersion } from '../version.js';
+import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 
 export const memberDetailSchema = z.object({
   ...memberIdentifier,
@@ -39,6 +40,13 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     username: agent.username ?? undefined,
     os,
     folder: agent.workFolder,
+    // The origin URL of the repo `folder` is a clone of, when the registration
+    // record proves it (knownRepoRemoteUrl's single-genuine-URL rule). This is
+    // the fleet-sprint engine's ONLY source for it: runner.js has no registry
+    // and reads member facts exclusively through this tool, so without this
+    // field its kb_* calls carry repo_path alone and every remote member's
+    // knowledge collapses into the shared 'default' KB.
+    repo_remote_url: knownRepoRemoteUrl(agent),
     vcsProvider: agent.vcsProvider ?? undefined,
   };
 
