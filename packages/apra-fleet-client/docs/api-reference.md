@@ -138,6 +138,13 @@ sibling package (`apra-fleet-workflow`) intentionally recognizes these
 codes to re-wrap them into its own error taxonomy (see "Known issues"
 below).
 
+There is deliberately **no** typed error for "this tool is not in my
+session's scope": an out-of-scope tool is never registered on the session,
+so the server answers with its ordinary unknown-tool JSON-RPC error and
+`McpClient` rejects with a plain `Error` carrying that message -- the same
+rejection a misspelled tool name produces. See "Tool availability is per
+session scope" under `ApraFleet` below.
+
 ## `src/client/api.mjs`
 
 ### `export function deriveTimeoutMs(payload = {})`
@@ -178,6 +185,50 @@ rejects with (a `TimeoutError`/`AbortError` from `McpClient`, or a plain
 validate their arguments locally; validation is the server's job, and an
 invalid call surfaces as a rejected promise carrying the server's error
 message.
+
+### Tool availability is per session scope
+
+Since the per-session tool-scope change (`src/services/http-transport.ts` +
+`registerAllTools(server, scope)` in `src/services/tool-registry.ts`), the
+fleet server does not register the same tool surface on every MCP session.
+It derives the scope from the connecting session's identity:
+
+- **`full` scope** -- no bearer token and no `?member=` URL param. This is
+  the local orchestrator/PM/tool connection, i.e. what this client normally
+  is: **every wrapper below works exactly as documented, unchanged.**
+- **`member` scope** -- a verified member JWT, or the unauthenticated
+  `?member=<id>` URL param (an agent session running on a fleet member).
+  Only the tools named in the server's exported `MEMBER_TOOL_ALLOWLIST`
+  constant are registered on that session.
+
+`MEMBER_TOOL_ALLOWLIST` (the server-side source of truth; this list is a
+copy of it, name for name) is exactly:
+
+`kb_query`, `kb_session_prime`, `kb_context`, `kb_list`, `kb_stats`,
+`kb_capture`, `code_graph`, `code_impact`, `code_query`, `code_context`,
+`code_map`, `code_flow`, `code_tests`, `version`, `report_status`.
+
+Marking the wrappers: **no `ApraFleet` wrapper below is in the member
+scope.** Every wrapper this class exposes (`executePrompt`,
+`executeCommand`, `listMembers`, `fleetStatus`, `memberDetail`,
+`getMemberModelPricing`, `sendFiles`, `receiveFiles`, `registerMember`,
+`updateMember`, `removeMember`, `provisionLlmAuth`, `provisionVcsAuth`,
+`composePermissions`, `setupSshKey`, `sendEmail`, `credentialStoreSet`,
+`credentialStoreList`, `credentialStoreDelete`, `credentialStoreUpdate`,
+`doltPushMutex`, `childIdAllocator`, `shutdownServer`) wraps a tool that is
+deliberately excluded from the member scope, so on a member-scoped session
+all of them are unavailable. The 15 member-scope tools have no wrappers in
+this package; reach them with `mcpClient.callTool(name, args)` directly.
+
+**How unavailability surfaces.** Enforcement is deny-by-omission: an
+out-of-scope tool is never registered on that session, so it is absent from
+`tools/list` and the call fails as an **unknown tool** (a JSON-RPC error
+from the server, surfaced by `McpClient.handleMessage()` as a rejected
+promise with a plain `Error` carrying the server's message). It is **not** a
+permission error, and there is no permission/`403`-style code to branch on --
+a scope mismatch and a genuine typo in a tool name look the same on the
+wire. Nothing about the wrappers themselves changed: none was added or
+removed, and no argument shape changed.
 
 #### `executePrompt(options: ExecutePromptOptions)`
 

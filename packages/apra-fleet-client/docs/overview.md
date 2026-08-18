@@ -17,6 +17,10 @@ knows how to:
    `compose_permissions`, `setup_ssh_key`, `shutdown_server`) as a typed,
    promise-based JavaScript API instead of raw `tools/call` payloads.
 
+Which of those tools a given connection can actually reach now depends on
+that connection's **session scope** -- see "Tool availability is per session
+scope" below, and the same section in `api-reference.md`.
+
 It is a **transport and protocol** layer. It does not implement any
 scheduling, retry, workflow, or orchestration logic of its own -- it hands
 callers a clean way to issue one MCP request and get one MCP response (or a
@@ -81,6 +85,32 @@ lists `@apralabs/apra-fleet-client` as a direct dependency.
   users go through an LLM CLI (Claude Code, Antigravity, Gemini, Codex,
   ...) that talks MCP natively. This package is for programmatic,
   code-level fleet automation.
+
+## Tool availability is per session scope
+
+The fleet server no longer registers the same tool surface on every MCP
+session. At `initialize` it derives a **tool scope** from the connecting
+session's identity (`src/services/http-transport.ts`) and registers only
+that subset (`registerAllTools(server, scope)` in
+`src/services/tool-registry.ts`):
+
+| Session | Scope | Surface |
+|---|---|---|
+| No bearer token and no `?member=` URL param (the local orchestrator/PM/tool connection -- what this client normally is) | `full` | **Unchanged.** Every tool, so every `ApraFleet` wrapper works exactly as documented. |
+| A verified member JWT, or the unauthenticated `?member=<id>` URL param (an agent session running on a fleet member) | `member` | Only the tools named in the server's exported `MEMBER_TOOL_ALLOWLIST` constant. |
+
+The member scope is exactly these 15 tools (server-side source of truth:
+`MEMBER_TOOL_ALLOWLIST` in `src/services/tool-registry.ts`):
+
+`kb_query`, `kb_session_prime`, `kb_context`, `kb_list`, `kb_stats`,
+`kb_capture`, `code_graph`, `code_impact`, `code_query`, `code_context`,
+`code_map`, `code_flow`, `code_tests`, `version`, `report_status`.
+
+Enforcement is **deny-by-omission**: an out-of-scope tool is never registered
+on that session, so it does not appear in `tools/list` and a call to it fails
+as an **unknown tool**, not as a permission refusal. Nothing in this package
+changed to make that happen -- no wrapper was added, removed, or reshaped --
+but a caller connecting as a member must expect the smaller surface.
 
 ## Public entry points
 
