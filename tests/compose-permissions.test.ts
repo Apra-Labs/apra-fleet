@@ -479,7 +479,11 @@ describe('composePermissions -- preserves register_member mcpServers entry (apra
     });
     // Seed the file exactly as register_member left it; the merge-read returns
     // it, the merged write persists it, and the read-back verifies it landed.
-    installFsMock({ '.claude/settings.local.json': registeredByMember });
+    // Keyed by the work-folder-absolute path: deliverConfigFile resolves its
+    // target against agent.workFolder in JS now (rmkb-3n5.2.1), since
+    // RemoteStrategy.execCommand passes no cwd -- a bare relative key here
+    // would silently miss every read/write command and mask this test.
+    installFsMock({ [`${member.workFolder}/.claude/settings.local.json`]: registeredByMember });
 
     await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -1046,5 +1050,115 @@ describe('composePermissions -- fresh/empty permissions.json', () => {
 
     existsSpy.mockRestore();
     readSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rmkb-3n5.2 -- deliverConfigFile must resolve the delivery path against the
+// member's work folder for remote members, not rely on shell cwd.
+//
+// RemoteStrategy.execCommand passes NO cwd (src/services/strategy.ts), unlike
+// LocalStrategy which passes cwd: agent.workFolder -- so before rmkb-3n5.2.1,
+// a bare relative path like ".claude/settings.local.json" landed in the SSH
+// login cwd ($HOME) on a remote member instead of the work folder the
+// dispatch path `cd`s into before running the provider CLI. The assertions
+// below pin the work-folder-absolute path and fail on that pre-fix shape:
+// reverting resolveConfigDeliveryPath's join in src/tools/compose-permissions.ts
+// (or deleting the call sites so paths[i] is passed to deliverConfigFile
+// verbatim) makes the "work-folder-absolute" expectations below fail because
+// the captured commands would only contain the bare relative
+// ".claude/settings.local.json"/".claude" strings.
+// ---------------------------------------------------------------------------
+describe('composePermissions -- remote-member config delivery path (rmkb-3n5.2 regression)', () => {
+  it('resolves the delivery path to <workFolder>/.claude/settings.local.json for a remote member', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'remote-cfg-path',
+      llmProvider: 'claude',
+      os: 'linux',
+      agentType: 'remote',
+      workFolder: '/home/remoteuser/proj',
+    });
+    addAgent(member);
+    installFsMock();
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const mkdirCmd = allCmds.find(cmd => cmd.includes('mkdir') && cmd.includes('.claude'))!;
+    const writeCmd = allCmds.find(cmd => cmd.includes('cat >') && cmd.includes('.claude/settings.local.json'))!;
+    expect(mkdirCmd).toBeDefined();
+    expect(writeCmd).toBeDefined();
+
+    // Work-folder-absolute: this is what MUST land now.
+    expect(mkdirCmd).toContain('/home/remoteuser/proj/.claude');
+    expect(writeCmd).toContain('/home/remoteuser/proj/.claude/settings.local.json');
+
+    // Pre-fix shape (bare relative path, resolved only by a shell cwd that
+    // RemoteStrategy never sets) must NOT be what is delivered.
+    expect(mkdirCmd).not.toBe('mkdir -p .claude');
+    expect(writeCmd.startsWith("cat > .claude/settings.local.json")).toBe(false);
+  });
+
+  it('keeps local-member delivery landing under the local work folder (unchanged)', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'local-cfg-path',
+      llmProvider: 'claude',
+      os: 'linux',
+      agentType: 'local',
+      workFolder: '/home/localuser/proj',
+    });
+    addAgent(member);
+    installFsMock();
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writeCmd = allCmds.find(cmd => cmd.includes('cat >') && cmd.includes('.claude/settings.local.json'))!;
+    expect(writeCmd).toBeDefined();
+    // Still lands under the member's own local work folder.
+    expect(writeCmd).toContain('/home/localuser/proj/.claude/settings.local.json');
+  });
+
+  it('still deep-merges a pre-existing mcpServers entry for a remote member instead of overwriting it', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'remote-merge',
+      llmProvider: 'claude',
+      os: 'linux',
+      agentType: 'remote',
+      workFolder: '/home/remoteuser/proj2',
+    });
+    addAgent(member);
+
+    // Simulate the file exactly as register_member leaves it, seeded at the
+    // work-folder-absolute path deliverConfigFile now actually reads/writes.
+    const registeredByMember = JSON.stringify({
+      mcpServers: {
+        'apra-fleet-member': {
+          type: 'http',
+          url: 'http://localhost:1234/mcp?member=xyz-789',
+          headers: { Authorization: 'Bearer remote-super-secret-jwt' },
+        },
+      },
+    });
+    installFsMock({ [`${member.workFolder}/.claude/settings.local.json`]: registeredByMember });
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writeCmd = allCmds.find(cmd => cmd.includes('cat >') && cmd.includes('.claude/settings.local.json'))!;
+    expect(writeCmd).toBeDefined();
+
+    const heredocBody = writeCmd.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0];
+    const written = JSON.parse(heredocBody);
+
+    // The register_member entry -- including its live JWT -- must survive the
+    // merge on a remote member, exactly as it already does for local members.
+    expect(written.mcpServers['apra-fleet-member']).toEqual({
+      type: 'http',
+      url: 'http://localhost:1234/mcp?member=xyz-789',
+      headers: { Authorization: 'Bearer remote-super-secret-jwt' },
+    });
+    // compose_permissions' own mcpServers.apra-fleet.disabled must also be present.
+    expect(written.mcpServers['apra-fleet']).toEqual({ disabled: true });
   });
 });
