@@ -1277,6 +1277,21 @@ function worktreeNamesFor(sprintBranch, taskId, worktreeRoot) {
   };
 }
 
+// Rewrites a transcriptDir before it is committed to a sprint-log ledger, dropping the
+// runner's home directory (and thus username) while keeping the path useful. transcriptDir
+// is always constructed as $HOME/.claude/projects/<slug> (see the Setup Step 7 prompt), so
+// anchoring on that fixed substring lets us go $HOME-relative without needing OS/env access
+// here (this code runs in the workflow VM, which has no fs/os/process.env access -- see the
+// "RUNTIME CONSTRAINT" note above runKbWork). Falls back to the input unchanged if the
+// anchor is absent (covers '' and any unexpected shape) -- policy (b) from apra-fleet-tm7.15.
+function redactHomeFromTranscriptDir(transcriptDir) {
+  if (!transcriptDir) return '';
+  const anchor = '/.claude/projects/';
+  const idx = transcriptDir.indexOf(anchor);
+  if (idx < 0) return transcriptDir;
+  return '~' + transcriptDir.slice(idx);
+}
+
 // PURE_FUNCTIONS_END
 
 // ROLE_SCHEMAS_GENERATED_BEGIN -- do not hand-edit; run `node scripts/gen-auto-sprint-schemas.mjs` to regenerate from agents/schemas/*.json
@@ -2713,7 +2728,8 @@ log(`Sprint goals: ${rootSummary} | Goal: ${goal} (P<=${threshold}) | Max cycles
     ts: sprintTs, type: 'meta',
     branch, startedAt: effectiveStartedAt,
     roots: rootIds, goal,
-    transcriptDir: setup.transcriptDir || '',
+    // $HOME-relative: avoids committing the runner's username (apra-fleet-tm7.15).
+    transcriptDir: redactHomeFromTranscriptDir(setup.transcriptDir || ''),
   });
   await dispatch(
     `Write sprint meta record and commit.\n\n` +

@@ -393,6 +393,25 @@ Costs reflect output tokens only -- input tokens are not exposed by the workflow
 harness. The true cost will be higher, typically 2-4x depending on model and
 context size.
 
+**`sprint-logs/` holds two different kinds of file, and only one kind is
+durable.** The per-dispatch ledger (`<branch>-<timestamp>.jsonl`), the
+analysis artifact (`<branch>-<timestamp>.analysis.md`), and `calibration.json`
+are the durable, git-tracked cost history described above -- the repo's
+`.gitignore` deliberately does not ignore them, including in nested package
+directories. `sprint_*.json` (written by the CLI's exit path) is a separate,
+per-run scratch snapshot and stays ignored; the two must not be conflated
+when editing `.gitignore` for this directory, or newly-written durable
+ledgers become silently unstageable.
+
+The workflow's first meta line for a sprint (`"type":"meta"`, written before
+the sprint loop starts) records a `transcriptDir` field pointing at the
+runner's transcript directory. Because this ledger is committed to the
+branch, that field is written **`$HOME`-relative** (e.g.
+`~/.claude/projects/...`) whenever the path is actually under the runner's
+home directory, rather than as an absolute path -- an absolute path would
+bake the operator's OS username into a file that ships with the repo. An
+empty `transcriptDir` is left as `''`, not rewritten to `~`.
+
 ---
 
 ## What you get at the end

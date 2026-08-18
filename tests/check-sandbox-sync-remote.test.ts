@@ -332,6 +332,13 @@ describe('parseDoltRemoteList', () => {
   it('treats a literal null (including whitespace-padded) as an empty list', () => {
     expect(parseDoltRemoteList('null')).toEqual([]);
     expect(parseDoltRemoteList('null\n')).toEqual([]);
+    expect(parseDoltRemoteList(' null\n')).toEqual([]);
+  });
+
+  // apra-fleet-tm7.11: only `null` is special-cased -- any other non-array
+  // JSON value is still a shape bd is not known to produce, and must throw.
+  it('still throws on a non-array, non-null JSON value (e.g. a bare number)', () => {
+    expect(() => parseDoltRemoteList('42')).toThrow();
   });
 });
 
