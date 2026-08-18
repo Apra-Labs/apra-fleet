@@ -59,6 +59,18 @@ bd close <id>         # Complete work
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 
+### Persistent Memory - Which System
+
+Three memory systems exist; when asked to "remember" something, route by content:
+
+- **User/assistant preferences** (user's role, standing feedback on how the assistant collaborates, anything not about this repo's code) -> Claude's own auto-memory (`~/.claude/projects/.../memory/`). Not managed by this repo; named here only so it is not confused with the two below.
+- **Operational rules** (short, actionable directives for any dispatched agent during this project's beads-tracked work - test-harness gotchas, required flags, launch conventions) -> `bd remember`. Keep entries terse: the actionable rule only, no PR/bead/commit-ref padding.
+- **Technical facts about the codebase** (architecture decisions, gotchas, "why is it built this way" - tied to specific files/symbols, worth confidence-grading and contradiction-checking, shareable via `kb_export` to `.fleet/kb-canonical.json`) -> KB (`kb_capture`).
+
+When a rule is both operational and technical: prefer KB if it anchors to specific files/symbols and benefits from confidence-grading over time; prefer `bd remember` if it is a procedural directive with no file/symbol anchor.
+
+KB is opt-in per repo. If `kb_capture`/`kb_query` errors because `kb_setup` has not run here, do not treat it as a hard failure or drop the memory - fall back to `bd remember` (or tell the user) so the request still lands.
+
 ## Agent Context Profiles
 
 The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
