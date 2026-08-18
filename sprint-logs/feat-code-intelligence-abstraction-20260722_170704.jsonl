@@ -1,4 +1,4 @@
-{"ts":"2026-07-22T17:07:04Z","type":"meta","branch":"feat/code-intelligence-abstraction","startedAt":"20260722_170704","roots":["apra-fleet-t0d","apra-fleet-151"],"goal":"P1/P2","transcriptDir":"/home/kashyap/.claude/projects/-home-kashyap-repos-apra-apra-fleet"}
+{"ts":"2026-07-22T17:07:04Z","type":"meta","branch":"feat/code-intelligence-abstraction","startedAt":"20260722_170704","roots":["apra-fleet-t0d","apra-fleet-151"],"goal":"P1/P2","transcriptDir":"~/.claude/projects/-home-kashyap-repos-apra-apra-fleet"}
 {"ts":"2026-07-22T17:07:04Z","type":"cycle-start","cycle":1,"branch":"feat/code-intelligence-abstraction"}
 {"ts":"2026-07-22T17:13:09+0400","cycle":"setup","phase":"Plan","label":"setup-shell","model":"cheap","context":"","outTokens":1946,"costUsd":0.0097}
 {"ts":"2026-07-22T17:13:09+0400","cycle":"setup","phase":"Plan","label":"setup","model":"cheap","context":"","outTokens":4750,"costUsd":0.0238}
