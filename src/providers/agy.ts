@@ -7,6 +7,7 @@ import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { stripAnsi } from '../utils/ansi.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
+import { transformAgentForAgy } from '../cli/agent-transform.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -278,6 +279,19 @@ export class AgyProvider implements ProviderAdapter {
 
   modelFlag(model: string): string {
     return '';
+  }
+
+  agentDirectories(agentName: string): { project: string; home: string } {
+    const rel = `.gemini/antigravity-cli/agents/${agentName}.md`;
+    return { project: rel, home: rel };
+  }
+
+  transformAgent(content: string, relPath: string): string {
+    return transformAgentForAgy(content, relPath);
+  }
+
+  agentNameFlag(agentName: string): string {
+    return `--agent "${escapeDoubleQuoted(agentName)}"`;
   }
 
   classifyError(output: string): PromptErrorCategory {
