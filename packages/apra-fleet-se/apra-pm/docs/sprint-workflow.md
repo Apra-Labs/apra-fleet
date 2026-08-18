@@ -355,7 +355,12 @@ $0.0145 reviewer-c1-i1 -- reviewing tasks BD-5, BD-6
 ```
 
 At the end of each cycle, the full dispatch ledger is written as JSONL to
-`sprint-logs/<branch>-<timestamp>.jsonl` and committed to the branch. The branch name is
+`sprint-logs/<branch>-<timestamp>.jsonl`. It stays local and is NOT committed:
+the ledgers accumulate per run with no bound, and they embed the operator's
+home path (redaction still leaves the username inside the dash-encoded Claude
+project slug), so they are not safe to publish from a public repo. What is
+committed is the distilled output -- `calibration.json` and the
+`<timestamp>.analysis.md` summary, both described below. The branch name is
 sanitized (path separators and special characters replaced with dashes) and a
 `yyyymmdd_hhmmss` timestamp is appended, so that parallel sprints on the same or different
 branches never write to the same file. Each line records:
@@ -389,6 +394,11 @@ jq -r '"$\(.costUsd)  \(.label)  \(.context)"' sprint-logs/<branch>-<timestamp>.
 cat sprint-logs/*.jsonl | jq -r '"$\(.costUsd)  \(.label)  \(.context)"'
 ```
 
+These read the ledgers in your own checkout only -- `*.jsonl` is gitignored, so
+"all sprints in the repo" means every run on THIS machine, not every run the
+team has done. The cross-machine view is `calibration.json`, which is committed
+and blends each run's actuals into the historical averages.
+
 Costs reflect output tokens only -- input tokens are not exposed by the workflow
 harness. The true cost will be higher, typically 2-4x depending on model and
 context size.
@@ -405,8 +415,10 @@ When the sprint goal is met:
 - A reviewed pull request is open against `base_branch`
 - `docs/` is updated with architecture decisions and feature documentation
 - `CHANGELOG.md` has a new entry summarising the sprint
-- `sprint-logs/<branch>.jsonl` is committed to the branch with per-dispatch cost data
-- `sprint-logs/<branch>-<timestamp>.analysis.md` is written with a Sprint Execution
+- `sprint-logs/<branch>.jsonl` is written locally with per-dispatch cost data
+  (gitignored -- see the sprint-log note above)
+- `sprint-logs/calibration.json` is committed with the updated historical averages
+- `sprint-logs/<branch>-<timestamp>.analysis.md` is committed with a Sprint Execution
   Summary: cycles, per-phase token/cost/dispatch table, failures/retries, and
   remaining risks at close
 - A cost summary table is printed in the workflow output

@@ -31,11 +31,29 @@ CLAUDE.md
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/
 
-# Sprint-log transcripts and analyses are per-run artifacts, not deliverables.
-# Files already tracked before this rule stay tracked (gitignore does not
-# untrack existing files) -- this only stops new ones from being committed.
+# sprint-logs/ holds three kinds of file and only two are deliverables. Keep
+# this split in sync with apra-pm/skills/pm/cost.md and
+# apra-pm/docs/sprint-workflow.md, which tell the harvester what to commit --
+# a rule here that contradicts those docs is silently unstageable output, and
+# a sprint has already burned a cycle rediscovering that (apra-fleet-tm7.13).
+#
+#   calibration.json          TRACKED. The blended historical averages future
+#                             cost quotes read; one bounded file per package.
+#   <branch>-<ts>.analysis.md TRACKED. The human-readable Sprint Execution
+#                             Summary, same class as docs/sprint-analysis-*.md.
+#   <branch>-<ts>.jsonl       IGNORED (below). Raw per-dispatch ledgers: they
+#                             accumulate per run with no bound, and they embed
+#                             the operator's home path -- redaction still
+#                             leaves the username inside the dash-encoded
+#                             Claude project slug, so they are not safe to
+#                             publish from a public repo.
+#   sprint_*.json             IGNORED (below). Per-run state snapshot written
+#                             by bin/cli.mjs on every sprint exit; pure scratch.
+#
+# Do NOT reintroduce a blanket '/sprint-logs/' directory rule: a directory-level
+# ignore shadows everything inside it, so the two tracked kinds above become
+# unstageable without 'git add -f' no matter what a narrower pattern says.
 **/sprint-logs/*.jsonl
-**/sprint-logs/*.analysis.md
 **/sprint-logs/sprint_*.json
 
 # Provider agent context files are tracked project deliverables (git add -f was used).
@@ -75,9 +93,11 @@ COPILOT-INSTRUCTIONS.md
 /integ-suite-heartbeat.json
 /integ-suite-run.log
 
-# Per-run sprint state dumps (bin/cli.mjs writes one automatically on every
-# sprint exit) -- local scratch, not a project deliverable.
-/sprint-logs/
+# (The per-run sprint state dumps bin/cli.mjs writes on every sprint exit are
+# covered by the scoped '**/sprint-logs/sprint_*.json' rule above. The blanket
+# '/sprint-logs/' rule that used to sit here shadowed the whole directory,
+# making calibration.json and the analysis summaries unstageable -- see the
+# note at the top of this file.)
 
 # Per-member installed agent role files -- must stay on disk, never committed
 .claude/agents/
