@@ -7,8 +7,67 @@ import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import { MEMBER_TOOL_ALLOWLIST } from '../services/tool-registry.js';
 
 const execFileAsync = promisify(execFile);
+
+// ---------------------------------------------------------------------------
+// rmkb-3n5.6.1 -- client-side allow/deny profile for the member MCP surface
+// ---------------------------------------------------------------------------
+
+/** The MCP server key the fleet writes on a MEMBER host (registerMcpEndpoint
+ *  below writes it, and the dispatch-time reverse tunnel re-points it at the
+ *  member-side tunnel port). Deliberately NOT 'apra-fleet': that key is the
+ *  ORCHESTRATOR's own server and stays denied, so the allow rules and the deny
+ *  rules never collide on one name. */
+export const MEMBER_MCP_SERVER_KEY = 'apra-fleet-member';
+
+/** Literal prefix every member-scoped MCP allow rule must start with.
+ *  Claude Code SKIPS an unanchored allow glob (e.g. `mcp__*`) WITH A WARNING,
+ *  i.e. silently grants nothing, so allow rules must always carry this literal
+ *  prefix. Deny/ask rules do accept bare globs. */
+export const MEMBER_MCP_ALLOW_PREFIX = `mcp__${MEMBER_MCP_SERVER_KEY}__`;
+
+/** Anchored allow rules for the member-scoped tool surface.
+ *
+ *  Derived from MEMBER_TOOL_ALLOWLIST -- the SERVER-side boundary in
+ *  src/services/tool-registry.ts -- rather than a duplicated literal list, so
+ *  the client profile and the server's deny-by-omission registration gate can
+ *  never drift apart. */
+export function memberMcpAllowRules(): string[] {
+  return MEMBER_TOOL_ALLOWLIST.map(name => `${MEMBER_MCP_ALLOW_PREFIX}${name}`);
+}
+
+/** Fleet tools that must never be reachable from a dispatched member agent, on
+ *  ANY server key (hence the `mcp__*__` bare glob, which deny rules accept).
+ *  compose_permissions is the critical one: an agent that can call it rewrites
+ *  its own allow list. The rest are arbitrary execution on other members,
+ *  secrets, exfiltration, and the KB trust-minting/export surface. */
+const MEMBER_MCP_DENIED_TOOLS: readonly string[] = [
+  'execute_prompt',
+  'execute_command',
+  'stop_prompt',
+  'compose_permissions',
+  'credential_store_*',
+  'send_files',
+  'receive_files',
+  'send_email',
+  'kb_promote',
+  'kb_import',
+  'kb_export',
+  'kb_setup',
+];
+
+/** permissions.deny for a dispatched member agent. `mcp__apra-fleet__*` keeps
+ *  the ORCHESTRATOR's own server key fully denied (syntax precedent:
+ *  buildRequiredPerms in src/cli/install.ts), so the inert `apra-fleet` entry
+ *  the repo's committed .mcp.json declares stays unreachable even if something
+ *  else makes it connectable. Precedence is deny -> ask -> allow, FIRST MATCH
+ *  WINS (not specificity-based), so these denies beat the broad allow globs. */
+export const MEMBER_MCP_DENY_RULES: readonly string[] = [
+  'mcp__apra-fleet__*',
+  ...MEMBER_MCP_DENIED_TOOLS.map(tool => `mcp__*__${tool}`),
+];
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: reliable max_turns detection in the CLI
 // transcript. A max_turns-terminated session must ALWAYS classify as max_turns,
@@ -287,8 +346,40 @@ export class ClaudeProvider implements ProviderAdapter {
     return ['.claude/settings.local.json'];
   }
 
+  /** rmkb-3n5.6.1: emit an ANCHORED allow list for the member-scoped MCP surface
+   *  plus targeted denies, instead of the old blanket
+   *  `mcpServers['apra-fleet'].disabled = true`.
+   *
+   *  Why the flag had to GO rather than be layered on top: `disabled` sits
+   *  UPSTREAM of the permission matcher -- a disabled server's tool list is never
+   *  populated, so no allow rule can revive it. Keeping it would make the whole
+   *  member surface unreachable no matter what this list says.
+   *
+   *  DEFENSE IN DEPTH ONLY -- this is NOT the boundary. The real boundary is
+   *  server-side: registerAllTools never registers an out-of-scope tool on a
+   *  member session (deny-by-omission, src/services/tool-registry.ts). A
+   *  client-only scheme FAILS OPEN for two independent reasons:
+   *    1. base-dev.json grants Read/Write/Edit and Bash(bash:*)/Bash(sh:*)/
+   *       Bash(chmod:*), so a dispatched agent can simply rewrite the very
+   *       settings.local.json these rules live in.
+   *    2. Claude silently DROPS project-scoped allow entries unless the
+   *       workspace is trusted (see ensureWorkspaceTrusted below), so a member
+   *       whose trust flag was never seeded gets no rules at all.
+   *  Treat this as a second line of defense, never as the enforcement point. */
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    return [{ permissions: { allow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
+    // Drop any incoming MCP rule that is not anchored on the member server key:
+    // it is either the denied orchestrator surface (`mcp__apra-fleet__*`) or an
+    // unanchored glob Claude Code would skip with a warning anyway. Keeping the
+    // allow array free of them makes "every MCP allow entry is anchored after
+    // mcp__apra-fleet-member__" a universal property of this output.
+    const rules = new Set<string>(
+      allow.filter(rule => !rule.startsWith('mcp__') || rule.startsWith(MEMBER_MCP_ALLOW_PREFIX)),
+    );
+    for (const rule of memberMcpAllowRules()) rules.add(rule);
+    return [{
+      permissions: { allow: [...rules], deny: [...MEMBER_MCP_DENY_RULES] },
+      skillOverrides: { pm: 'off', fleet: 'off' },
+    }];
   }
 
   supportsOAuthCopy(): boolean {
@@ -344,14 +435,14 @@ export class ClaudeProvider implements ProviderAdapter {
       'mcp', 'add',
       '--transport', 'http',
       '--scope', opts.scope,
-      'apra-fleet-member',
+      MEMBER_MCP_SERVER_KEY,
       opts.url,
       '--header', `Authorization: Bearer ${opts.token}`,
     ];
     await execFileAsync('claude', args, { cwd: opts.workFolder });
     return {
       mechanism: 'cli-verb',
-      detail: `claude mcp add --transport http --scope ${opts.scope} apra-fleet-member <url> (cwd=${opts.workFolder})`,
+      detail: `claude mcp add --transport http --scope ${opts.scope} ${MEMBER_MCP_SERVER_KEY} <url> (cwd=${opts.workFolder})`,
     };
   }
 

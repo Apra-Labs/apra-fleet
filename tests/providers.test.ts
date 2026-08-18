@@ -354,16 +354,22 @@ describe('ClaudeProvider', () => {
     expect(p.supportsApiKey()).toBe(true);
   });
 
-  it('composePermissionConfig disables fleet-mcp for doer (#151)', () => {
+  // rmkb-3n5.6.1 superseded #151's blanket disable: the fleet-control surface is
+  // kept away from the dispatched agent by permissions.deny instead, so the
+  // member-scoped apra-fleet-member surface stays reachable.
+  it('composePermissionConfig denies fleet-control MCP for doer, no disabled flag (#151, rmkb-3n5.6.1)', () => {
     const [settings] = p.composePermissionConfig('doer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+    expect(settings.mcpServers).toBeUndefined();
+    const permissions = settings.permissions as { allow: string[]; deny: string[] };
+    expect(permissions.deny).toContain('mcp__apra-fleet__*');
+    expect(permissions.allow).toContain('mcp__apra-fleet-member__kb_query');
   });
 
-  it('composePermissionConfig disables fleet-mcp for reviewer (#151)', () => {
+  it('composePermissionConfig denies fleet-control MCP for reviewer, no disabled flag (#151, rmkb-3n5.6.1)', () => {
     const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+    expect(settings.mcpServers).toBeUndefined();
+    const permissions = settings.permissions as { allow: string[]; deny: string[] };
+    expect(permissions.deny).toContain('mcp__apra-fleet__*');
   });
 });
 

@@ -115,10 +115,14 @@ describe('Claude Integration Suite (claude-integration-tests)', () => {
       // Claude consumes its own allow-list syntax verbatim -- no translation layer
       // (unlike AGY's convertClaudeAllowToAgyPermissions), so the composed config
       // must carry the exact same entries the caller passed in.
-      expect(cfg.permissions.allow).toEqual(allow);
-      // The dispatched agent must never call back into its own fleet MCP server
-      // mid-task, and the pm/fleet skills must stay off during a headless dispatch.
-      expect(cfg.mcpServers).toEqual({ 'apra-fleet': { disabled: true } });
+      expect(cfg.permissions.allow.slice(0, allow.length)).toEqual(allow);
+      // rmkb-3n5.6.1: the dispatched agent must never reach the ORCHESTRATOR's own
+      // fleet-control surface (denied by rule now, not by a disabled flag), while the
+      // member-scoped apra-fleet-member tools are allow-listed with an anchored prefix.
+      // The pm/fleet skills must still stay off during a headless dispatch.
+      expect(cfg.mcpServers).toBeUndefined();
+      expect(cfg.permissions.deny).toContain('mcp__apra-fleet__*');
+      expect(cfg.permissions.allow).toContain('mcp__apra-fleet-member__kb_query');
       expect(cfg.skillOverrides).toEqual({ pm: 'off', fleet: 'off' });
     });
   });

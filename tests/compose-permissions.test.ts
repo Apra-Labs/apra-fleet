@@ -122,9 +122,10 @@ describe('composePermissions -- Claude proactive', () => {
     const writeCmd = writes.find(cmd => cmd.includes('.claude/settings.local.json'))!;
     expect(writeCmd).toContain('"permissions"');
     expect(writeCmd).toContain('"allow"');
-    // settings.local.json must suppress fleet-mcp (#151)
+    // settings.local.json must keep the fleet-control surface away from the
+    // dispatched agent -- by deny rule since rmkb-3n5.6.1, not by a disabled flag.
     expect(writeCmd).toContain('apra-fleet');
-    expect(writeCmd).toContain('disabled');
+    expect(writeCmd).toContain('mcp__apra-fleet__*');
   });
 
   it('delivers reviewer config with restricted allow list', async () => {
@@ -424,11 +425,14 @@ describe('composePermissions -- no llmProvider defaults to Claude', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Issue #151 -- fleet-mcp disabled in member config
+// Issue #151, superseded by rmkb-3n5.6.1 -- the fleet-control surface is kept
+// away from a dispatched member by permissions.deny, NOT by the old blanket
+// mcpServers['apra-fleet'].disabled flag (which sat upstream of the permission
+// matcher and made the member-scoped surface unreachable too).
 // ---------------------------------------------------------------------------
 
-describe('composePermissions -- fleet-mcp disabled in member config (#151)', () => {
-  it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (proactive)', async () => {
+describe('composePermissions -- fleet-control MCP surface denied in member config (#151, rmkb-3n5.6.1)', () => {
+  it('denies mcp__apra-fleet__* (and sets no disabled flag) in Claude settings.local.json (proactive)', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
     installFsMock();
@@ -438,12 +442,14 @@ describe('composePermissions -- fleet-mcp disabled in member config (#151)', () 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
     expect(writeCmd).toBeDefined();
-    expect(writeCmd).toContain('mcpServers');
-    expect(writeCmd).toContain('apra-fleet');
-    expect(writeCmd).toContain('"disabled":');
+    expect(writeCmd).not.toContain('"disabled":');
+
+    const written = JSON.parse(writeCmd.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0]);
+    expect(written.permissions.deny).toContain('mcp__apra-fleet__*');
+    expect(written.permissions.allow).toContain('mcp__apra-fleet-member__kb_query');
   });
 
-  it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (reactive grant)', async () => {
+  it('denies mcp__apra-fleet__* in Claude settings.local.json (reactive grant)', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
 
@@ -456,8 +462,8 @@ describe('composePermissions -- fleet-mcp disabled in member config (#151)', () 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
     expect(writeCmd).toBeDefined();
-    expect(writeCmd).toContain('mcpServers');
     expect(writeCmd).toContain('apra-fleet');
+    expect(writeCmd).not.toContain('"disabled":');
   });
 });
 
@@ -500,8 +506,11 @@ describe('composePermissions -- preserves register_member mcpServers entry (apra
       url: 'http://localhost:1234/mcp?member=abc-123',
       headers: { Authorization: 'Bearer super-secret-jwt' },
     });
-    // compose_permissions' own mcpServers.apra-fleet.disabled must also be present.
-    expect(written.mcpServers['apra-fleet']).toEqual({ disabled: true });
+    // rmkb-3n5.6.1: compose_permissions no longer writes an mcpServers block of
+    // its own (the blanket apra-fleet disable is gone, replaced by
+    // permissions.deny), so the member entry is the ONLY one and must be intact.
+    expect(written.mcpServers['apra-fleet']).toBeUndefined();
+    expect(written.permissions.deny).toContain('mcp__apra-fleet__*');
   });
 });
 
@@ -1158,7 +1167,10 @@ describe('composePermissions -- remote-member config delivery path (rmkb-3n5.2 r
       url: 'http://localhost:1234/mcp?member=xyz-789',
       headers: { Authorization: 'Bearer remote-super-secret-jwt' },
     });
-    // compose_permissions' own mcpServers.apra-fleet.disabled must also be present.
-    expect(written.mcpServers['apra-fleet']).toEqual({ disabled: true });
+    // rmkb-3n5.6.1: compose_permissions no longer writes an mcpServers block of
+    // its own (the blanket apra-fleet disable is gone, replaced by
+    // permissions.deny), so the member entry is the ONLY one and must be intact.
+    expect(written.mcpServers['apra-fleet']).toBeUndefined();
+    expect(written.permissions.deny).toContain('mcp__apra-fleet__*');
   });
 });
