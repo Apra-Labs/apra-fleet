@@ -148,9 +148,23 @@ export async function handleCodeTests(input: Record<string, unknown>, memberId?:
 }
 
 export async function getProvider(memberId?: string, repoPath?: string): Promise<CodeIntelligenceProvider> {
-  // Repo-level opt-out takes priority over member/global provider resolution.
-  // No repoPath means the caller didn't supply one (single-repo case) --
-  // nothing to check, so fall through to existing resolution unchanged.
+  // Repo-level opt-out takes priority over member/global provider resolution,
+  // but it is enforced ONLY for repo-qualified calls (repoPath present).
+  //
+  // apra-fleet-tm7.21 decision: when repoPath is omitted, this check is
+  // skipped -- it does NOT fall back to process.cwd() or to "the" indexed
+  // repo. There is no single well-defined "current repo" at this layer: the
+  // MCP server process is shared across members/repos, and process.cwd() is
+  // exactly the kind of server-process-bound assumption that made kb_harvest
+  // repo-blind elsewhere in this epic (apra-fleet-tm7, apra-fleet-3zl) --
+  // reintroducing it here for the opt-out check would silently enforce (or
+  // fail to enforce) the wrong repo's config whenever the server's cwd
+  // differs from the repo a caller means. Concretely: a caller that omits
+  // `repo` on a single-repo-style call gets a live provider even if that
+  // repo has code-intel.json enabled:false; only repo-qualified calls are
+  // covered by the opt-out. Callers that need the opt-out enforced MUST pass
+  // `repo`. See tests/code-intelligence.test.ts 'getProvider() repo-level
+  // opt-out' for the pinned behavior.
   if (repoPath && !(await isCodeIntelEnabled(repoPath))) {
     return new RepoDisabledProvider();
   }
