@@ -60,6 +60,13 @@ export class OpenCodeProvider implements ProviderAdapter {
     return `-m "${escapeDoubleQuoted(model)}"`;
   }
 
+  agentDirectories(agentName: string): { project: string; home: string } {
+    return {
+      project: `.opencode/agents/${agentName}.md`,
+      home: `.config/opencode/agents/${agentName}.md`,
+    };
+  }
+
   classifyError(output: string): PromptErrorCategory {
     if (/command not found|is not recognized as an internal or external command/i.test(output)) return 'unknown';
     if (/connection refused|ECONNREFUSED/i.test(output)) return 'server';

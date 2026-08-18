@@ -132,6 +132,11 @@ export class CopilotProvider implements ProviderAdapter {
     return `--model "${escapeDoubleQuoted(model)}"`;
   }
 
+  agentDirectories(agentName: string): { project: string; home: string } {
+    const rel = `.copilot/agents/${agentName}.md`;
+    return { project: rel, home: rel };
+  }
+
   classifyError(output: string): PromptErrorCategory {
     if (/not logged in|unauthorized|\b401\b|authentication_error|expired.*token|permission_error|invalid.*token/i.test(output)) {
       return 'auth';

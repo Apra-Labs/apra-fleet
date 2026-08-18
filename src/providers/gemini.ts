@@ -162,6 +162,11 @@ export class GeminiProvider implements ProviderAdapter {
     return `--model "${escapeDoubleQuoted(model)}"`;
   }
 
+  agentDirectories(agentName: string): { project: string; home: string } {
+    const rel = `.gemini/agents/${agentName}.md`;
+    return { project: rel, home: rel };
+  }
+
   classifyError(output: string): PromptErrorCategory {
     const lower = output.toLowerCase();
     if (/not logged in|unauthorized|\b401\b|authentication_error|expired.*token|permission_error|invalid.*api.*key/i.test(lower)) {

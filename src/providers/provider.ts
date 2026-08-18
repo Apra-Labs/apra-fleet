@@ -207,6 +207,12 @@ export interface ProviderAdapter {
   modelForTier(tier: 'cheap' | 'standard' | 'premium'): string;
   modelFlag(model: string): string;
 
+  // Agent directory resolution
+  /** Returns the project-relative and home-relative paths for an agent file.
+   *  project: relative to workFolder (e.g. '.claude/agents/doer.md')
+   *  home: relative to ~ (e.g. '.claude/agents/doer.md' or '.config/opencode/agents/doer.md') */
+  agentDirectories(agentName: string): { project: string; home: string };
+
   // Error classification
   classifyError(output: string): PromptErrorCategory;
 

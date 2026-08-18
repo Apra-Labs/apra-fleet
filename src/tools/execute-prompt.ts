@@ -101,7 +101,8 @@ export const executePromptSchema = z.object({
     'Agent file must exist at the provider-specific path on the member: ' +
     'Claude: <workFolder>/.claude/agents/<name>.md or ~/.claude/agents/<name>.md; ' +
     'Gemini: <workFolder>/.gemini/agents/<name>.md or ~/.gemini/agents/<name>.md; ' +
-    'AGY: <workFolder>/.gemini/antigravity-cli/agents/<name>.md or ~/.gemini/antigravity-cli/agents/<name>.md -- ' +
+    'AGY: <workFolder>/.gemini/antigravity-cli/agents/<name>.md or ~/.gemini/antigravity-cli/agents/<name>.md; ' +
+    'OpenCode: <workFolder>/.opencode/agents/<name>.md or ~/.config/opencode/agents/<name>.md -- ' +
     'the call is rejected with a clear error if neither is present.'
   ),
   sprint_id: z.string().optional().describe(
@@ -959,13 +960,11 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   // Agent file validation -- verify named agent exists before any CLI invocation
   if (input.agent) {
-    const provName = provider.name;
-    // AGY uses ~/.gemini/antigravity-cli/ as its config root, not ~/.agy/
-    const agentRelDir = provName === 'agy' ? '.gemini/antigravity-cli/agents' : `.${provName}/agents`;
+    const dirs = provider.agentDirectories(input.agent);
     let agentFound = false;
     if (agent.agentType === 'local') {
-      const projPath = path.join(resolvedWorkFolder, agentRelDir, `${input.agent}.md`);
-      const userPath = path.join(os.homedir(), agentRelDir, `${input.agent}.md`);
+      const projPath = path.join(resolvedWorkFolder, dirs.project);
+      const userPath = path.join(os.homedir(), dirs.home);
       agentFound = fs.existsSync(projPath) || fs.existsSync(userPath);
       if (!agentFound) {
         inFlightAgents.delete(agent.id);
@@ -975,7 +974,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       }
     } else {
       // Canonical PM role agents (planner/doer/reviewer/plan-reviewer/...) are
-      // already guaranteed present in ~/${agentRelDir} by
+      // already guaranteed present in ~/dirs.home by
       // ensureAgentFilesProvisioned() above (ln ~576, which ran provisionAgents()
       // for this exact member earlier in this same call) -- trust that instead
       // of re-probing the remote here. This also SIDESTEPS the bug this check
@@ -987,8 +986,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // sprint via a Windows remote member always failed plan-review with
       // "agent 'plan-reviewer' not found").
       const canonicalRelPath = `${input.agent}.md`;
-      agentFound = remoteAgentsDir(provName) !== null
-        && loadCanonicalAgentSet(provName).some((f) => f.relPath === canonicalRelPath);
+      agentFound = remoteAgentsDir(provider.name) !== null
+        && loadCanonicalAgentSet(provider.name).some((f) => f.relPath === canonicalRelPath);
 
       if (!agentFound) {
         // Not part of the canonical PM set (e.g. a project-local custom
@@ -997,8 +996,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         // already used the same way by list-members.ts/member-detail.ts for
         // credential-file checks) instead of a single hardcoded shell dialect.
         const cmds = getOsCommands(getAgentOS(agent));
-        const projPath = `${resolvedWorkFolder}/${agentRelDir}/${input.agent}.md`;
-        const userPath = `~/${agentRelDir}/${input.agent}.md`;
+        const projPath = `${resolvedWorkFolder}/${dirs.project}`;
+        const userPath = `~/${dirs.home}`;
         const [projResult, userResult] = await Promise.all([
           strategy.execCommand(cmds.credentialFileCheck(projPath), 10000),
           strategy.execCommand(cmds.credentialFileCheck(userPath), 10000),
@@ -1010,7 +1009,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         inFlightAgents.delete(agent.id);
         stallDetector.remove(agent.id);
         writeStatusline(new Map([[agent.id, 'idle']]));
-        return `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/${agentRelDir}/${input.agent}.md\n  ~/${agentRelDir}/${input.agent}.md`;
+        return `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/${dirs.project}\n  ~/${dirs.home}`;
       }
     }
   }

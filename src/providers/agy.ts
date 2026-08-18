@@ -280,6 +280,11 @@ export class AgyProvider implements ProviderAdapter {
     return '';
   }
 
+  agentDirectories(agentName: string): { project: string; home: string } {
+    const rel = `.gemini/antigravity-cli/agents/${agentName}.md`;
+    return { project: rel, home: rel };
+  }
+
   classifyError(output: string): PromptErrorCategory {
     return classifyPromptError(output);
   }

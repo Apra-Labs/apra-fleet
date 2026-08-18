@@ -309,4 +309,76 @@ describe('execute_prompt -- agent parameter', () => {
       }
     }
   });
+
+  // --- OpenCode: agent resolution uses .opencode/ for project, .config/opencode/ for home ---
+
+  it('OpenCode: agent found at project .opencode/agents/ is accepted', async () => {
+    const agentDir = path.join(tmpDir, '.opencode', 'agents');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'planner.md'), '# planner agent');
+
+    const member = makeTestLocalAgent({
+      friendlyName: 'opencode-proj-agent',
+      workFolder: tmpDir,
+      llmProvider: 'opencode',
+      os: 'linux',
+    });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'plan the work', resume: false, timeout_s: 5, agent: 'planner' });
+
+    expect(result).not.toContain('not found');
+  });
+
+  it('OpenCode: agent found at ~/.config/opencode/agents/ is accepted', async () => {
+    const homeAgentDir = path.join(os.homedir(), '.config', 'opencode', 'agents');
+    const homeAgentFile = path.join(homeAgentDir, 'planner.md');
+    const hadFile = fs.existsSync(homeAgentFile);
+
+    if (!hadFile) {
+      fs.mkdirSync(homeAgentDir, { recursive: true });
+      fs.writeFileSync(homeAgentFile, '# planner agent');
+    }
+
+    try {
+      const member = makeTestLocalAgent({
+        friendlyName: 'opencode-home-agent',
+        workFolder: tmpDir,  // No agent file in project dir
+        llmProvider: 'opencode',
+        os: 'linux',
+      });
+      addAgent(member);
+      mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
+
+      const result = await executePrompt({ member_id: member.id, prompt: 'plan the work', resume: false, timeout_s: 5, agent: 'planner' });
+
+      expect(result).not.toContain('not found');
+    } finally {
+      if (!hadFile) {
+        fs.rmSync(homeAgentFile, { force: true });
+      }
+    }
+  });
+
+  it('OpenCode: unknown agent shows .opencode/ and ~/.config/opencode/ paths in error', async () => {
+    const member = makeTestLocalAgent({
+      friendlyName: 'opencode-unknown-agent',
+      workFolder: tmpDir,
+      llmProvider: 'opencode',
+      os: 'linux',
+    });
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'nonexistent' });
+
+    expect(result).toContain('not found');
+    expect(result).toContain('nonexistent');
+    // Project path should be .opencode/agents/, home path should be ~/.config/opencode/agents/
+    expect(result).toContain('.opencode/agents/nonexistent.md');
+    expect(result).toContain('.config/opencode/agents/nonexistent.md');
+    // Must NOT show the old wrong path
+    expect(result).not.toMatch(/~\/\.opencode\/agents\//);
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
 });
