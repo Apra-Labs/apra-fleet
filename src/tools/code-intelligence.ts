@@ -6,6 +6,7 @@ import { GitNexusProvider } from './code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
 import { getAgent } from '../services/registry.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { isCodeIntelEnabled } from '../services/knowledge/repo-config.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -33,6 +34,25 @@ export class NullProvider implements CodeIntelligenceProvider {
   async map(_params: Record<string, unknown>): Promise<unknown> { return nullResult('map'); }
   async flow(_params: Record<string, unknown>): Promise<unknown> { return nullResult('flow'); }
   async tests(_params: Record<string, unknown>): Promise<unknown> { return nullResult('tests'); }
+}
+
+function repoDisabledResult(method: string): { content: { type: string; text: string }[] } {
+  return {
+    content: [{ type: 'text', text: `Code intelligence is disabled for this repo (method: ${method}). Set enabled: true in .apra-fleet/code-intel.json to turn it on.` }],
+  };
+}
+
+// Returned by getProvider() when the target repo has explicitly opted out
+// via .apra-fleet/code-intel.json (enabled: false). Distinct from NullProvider
+// so the message reflects a repo-level, not member-level, opt-out.
+export class RepoDisabledProvider implements CodeIntelligenceProvider {
+  async graph(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('graph'); }
+  async impact(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('impact'); }
+  async query(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('query'); }
+  async context(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('context'); }
+  async map(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('map'); }
+  async flow(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('flow'); }
+  async tests(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('tests'); }
 }
 
 export const PROVIDERS: Record<string, CodeIntelligenceProvider> = {
@@ -84,45 +104,57 @@ export const codeTestsSchema = z.object({
 // ---------------------------------------------------------------------------
 // Handler functions -- thin wrappers that resolve the per-member provider and
 // delegate to the appropriate method. memberId is optional: when omitted,
-// getProvider() falls back to the global config.
+// getProvider() falls back to the global config. `repo`, when present on the
+// input, is the repo path getProvider() uses for the repo-level opt-out check.
 // ---------------------------------------------------------------------------
 
+function repoPathOf(input: Record<string, unknown>): string | undefined {
+  return typeof input.repo === 'string' ? input.repo : undefined;
+}
+
 export async function handleCodeGraph(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.graph(input);
 }
 
 export async function handleCodeImpact(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.impact(input);
 }
 
 export async function handleCodeQuery(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.query(input);
 }
 
 export async function handleCodeContext(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.context(input);
 }
 
 export async function handleCodeMap(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.map(input);
 }
 
 export async function handleCodeFlow(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.flow(input);
 }
 
 export async function handleCodeTests(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.tests(input);
 }
 
-export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
+export async function getProvider(memberId?: string, repoPath?: string): Promise<CodeIntelligenceProvider> {
+  // Repo-level opt-out takes priority over member/global provider resolution.
+  // No repoPath means the caller didn't supply one (single-repo case) --
+  // nothing to check, so fall through to existing resolution unchanged.
+  if (repoPath && !(await isCodeIntelEnabled(repoPath))) {
+    return new RepoDisabledProvider();
+  }
+
   // When a memberId is supplied, check the agent's per-member override first.
   if (memberId) {
     const agent = getAgent(memberId);
