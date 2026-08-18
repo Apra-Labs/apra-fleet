@@ -174,6 +174,12 @@
  * @property {string} [project_folder] - Local project folder containing the
  *   permissions.json ledger. Omit to skip ledger merge.
  * @property {string[]} [grant] - Reactive mode: additional permissions to grant.
+ *   Each entry is checked against the NEVER_AUTO_GRANT denylist, which is
+ *   wildcard-matched (not exact-matched) against a normalized form of the
+ *   request: sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap,
+ *   `chmod 777`, any catch-all such as `Bash(*)`, and any payload containing a
+ *   shell-chaining metacharacter (| ; && backtick $() are rejected outright,
+ *   for every caller.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
  */
 

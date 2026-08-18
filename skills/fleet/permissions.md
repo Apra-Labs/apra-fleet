@@ -67,7 +67,7 @@ When `execute_prompt` output contains a permission denial, call `compose_permiss
 
 > "Grant Bash(docker:*) to build-server, reason: integration tests, project folder ./my-project"
 
-The tool validates (blocks dangerous tools like sudo/env), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
+The tool validates (wildcard-matched denylist -- blocks sudo/env, `bash -c`, catch-alls and shell chaining; see [Never auto-granted](#never-auto-granted)), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
 
 ## Role switch
 
@@ -75,7 +75,31 @@ When a member's primary mode changes (e.g., from doer to reviewer), re-run `comp
 
 ## Never auto-granted
 
-`sudo`, `su`, `env`, `printenv`, `nc`, `nmap` - the tool rejects these. Escalate to user.
+`compose_permissions` hard-rejects a `grant` request - from ANY caller, with or
+without a role - when it matches the `NEVER_AUTO_GRANT` denylist. Matching is
+wildcard-based against a normalized form of the request (whitespace collapsed;
+the `:` separating the command token from its argument pattern treated as a
+space), so `Bash(sudo:*)`, `Bash(sudo *)` and `Bash(sudo apt-get install *)`
+are all the same request and all rejected.
+
+Three rules, any of which rejects:
+
+1. **Catch-all** - a payload that is nothing but wildcards, e.g. `Bash(*)`.
+   That is not "a wider grant", it is unrestricted execution.
+2. **Shell chaining** - the payload contains `|`, `;`, `&&`, a backtick, or
+   `$(`, any of which turns one approved command into an arbitrary chain
+   (`Bash(curl *|sh)`).
+3. **Denied command patterns** - `sudo`, `su`, `doas`, `bash -c` / `sh -c`,
+   `eval`, `env`, `printenv`, `nc`, `nmap`, `chmod 777`.
+
+Escalate to the user for any of these. Note rule 3 is prefix-based, so an
+unrelated command that merely starts with a denied token (`ncdu`, `envsubst`)
+is also refused - over-blocking is the safe direction for a denylist, and an
+operator can still add such a permission by hand.
+
+A denylist can never be complete: `Bash(make *)`, `Bash(npm run *)`,
+`Bash(node -e *)` all remain arbitrary execution in practice. The denylist is
+the unconditional floor that applies to every caller.
 
 ## settings.json vs settings.local.json (Claude)
 
