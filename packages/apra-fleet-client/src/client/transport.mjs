@@ -1,6 +1,9 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fetch as undiciFetch, Agent as UndiciAgent } from 'undici';
 
 // Node's built-in fetch enforces a default ~300s idle bodyTimeout on
@@ -103,13 +106,50 @@ export class StdioTransport extends EventEmitter {
     }
 }
 
+// rmkb-lky.1: the fleet server's local signing key, ~/.apra-fleet/fleet.key at
+// mode 0o600 (minted by src/services/jwt.ts getOrCreateKey). Presenting it as a
+// bearer is the ONE positive signal that grants an MCP session the FULL tool
+// surface, because only the same OS user on the server's own host can read the
+// file. Read-only on purpose: a client must never CREATE this file (that would
+// mint a key the server does not have and produce a 401 instead of an honest
+// "no admin signal, restricted scope").
+function readLocalAdminKey() {
+    try {
+        const key = fs.readFileSync(path.join(os.homedir(), '.apra-fleet', 'fleet.key'), 'utf8').trim();
+        return key.length === 64 ? key : null;
+    } catch {
+        return null;
+    }
+}
+
 export class StreamableHttpTransport extends EventEmitter {
+    /**
+     * @param {string} url
+     * @param {{headers?: Record<string,string>, adminBearer?: boolean}} [options]
+     *   `headers` wins over the auto-attached admin bearer (a member JWT session
+     *   must stay on the member scope). Pass `adminBearer: false` to opt out of
+     *   the auto-attach entirely.
+     */
     constructor(url, options = {}) {
         super();
         this.url = url;
         this.options = options;
         this.controller = null;
         this.sessionId = null;
+        // Local fleet clients (the CLI, auto-sprint, workflow runners, the
+        // supervisor) drive the whole fleet and genuinely need the full tool
+        // set. Since rmkb-lky.1 the server grants that ONLY against the local
+        // admin key, so attach it here -- once, for every HTTP client in the
+        // repo -- rather than making each call site remember. Never overrides a
+        // caller-supplied Authorization header.
+        const callerHeaders = options.headers || {};
+        const hasAuth = Object.keys(callerHeaders).some((h) => h.toLowerCase() === 'authorization');
+        if (!hasAuth && options.adminBearer !== false) {
+            const adminKey = readLocalAdminKey();
+            if (adminKey) {
+                this.options = { ...options, headers: { ...callerHeaders, Authorization: `Bearer ${adminKey}` } };
+            }
+        }
     }
 
     async start() {

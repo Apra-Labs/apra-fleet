@@ -78,6 +78,36 @@ function extractBearer(req: http.IncomingMessage): string | null {
   return auth.slice(7);
 }
 
+/**
+ * rmkb-lky.1: the ONE positive, unforgeable signal that grants a session the
+ * FULL tool surface.
+ *
+ * Same proof the /shutdown handler already requires (see above): the local
+ * signing key lives in ~/.apra-fleet/fleet.key at mode 0o600, so a caller that
+ * can present its contents is provably the same OS user on THIS host. A remote
+ * caller tunnelled onto loopback -- which is indistinguishable from a local
+ * caller by address alone, and is exactly how the 57-tool leak was measured
+ * from the Jetson -- cannot read that file, so it can never produce this
+ * bearer.
+ *
+ * Absence of identity therefore no longer grants privilege: everything that
+ * fails this check is treated as a member session (restricted scope) or is
+ * refused outright.
+ */
+function isAdminKeyBearer(rawToken: string | null): boolean {
+  if (rawToken === null) return false;
+  let key: string;
+  try {
+    key = getOrCreateKey();
+  } catch {
+    return false;
+  }
+  const presented = Buffer.from(rawToken, 'utf8');
+  const expected = Buffer.from(key, 'utf8');
+  if (presented.length !== expected.length) return false;
+  return crypto.timingSafeEqual(presented, expected);
+}
+
 export async function createHttpTransport(options: HttpTransportOptions): Promise<HttpTransportHandle> {
   const { registerTools, preferredPort } = options;
   const sessions = new Map<string, Session>();
@@ -146,12 +176,17 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     }
 
     if (req.method === 'POST') {
-      // JWT auth: verify Bearer token if present; unauthenticated (PM/tool) connections pass through
+      // Identity resolution, in strict precedence order (rmkb-lky.1):
+      //   1. the local admin key   -> FULL scope   (unforgeable, same-OS-user proof)
+      //   2. a verified member JWT -> member scope
+      //   3. a RESOLVABLE ?member= -> member scope (unauthenticated local fallback)
+      //   4. anything else         -> member scope (never full), or refused
       const rawToken = extractBearer(req);
       const parsedUrl = new URL(req.url ?? '/', 'http://localhost');
       const memberParam = parsedUrl.searchParams.get('member');
+      const adminSession = isAdminKeyBearer(rawToken);
       let postClaims: JwtClaims | null = null;
-      if (rawToken !== null) {
+      if (!adminSession && rawToken !== null) {
         postClaims = getTokenIssuer().verify(rawToken);
         if (!postClaims) {
           logLine('session', `jwt verify failed for member_param=${memberParam ?? 'none'} url=${req.url}`);
@@ -160,8 +195,34 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
           return;
         }
       }
-      if (rawToken === null && memberParam !== null) {
+      if (adminSession && memberParam !== null) {
+        // The admin key is not a member identity: it never adopts one.
+        logLine('session', `admin-key session ignoring member param '${memberParam}' (full scope, no member identity)`);
+      }
+
+      // Identity keying is unified on the member UUID. The URL ?member= param
+      // (unauthenticated local fallback) historically carried the friendly
+      // name; new URLs carry the UUID, and legacy friendly names are resolved
+      // to the UUID via the agent registry here.
+      //
+      // rmkb-lky.1: an id that resolves through NEITHER getAgent NOR
+      // findAgentByName is REFUSED. It used to fall back to the raw param
+      // string, which meant a caller could conjure a member identity out of an
+      // arbitrary uuid and have the server register it.
+      let resolvedMember: { id: string; workFolder: string } | null = null;
+      if (!adminSession && postClaims === null && memberParam !== null) {
+        const agent = getAgent(memberParam) ?? findAgentByName(memberParam);
+        if (!agent) {
+          logLine('session', `REFUSED session: member param '${memberParam}' resolves through neither getAgent nor findAgentByName url=${req.url}`);
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'unknown member' }));
+          return;
+        }
+        resolvedMember = { id: agent.id, workFolder: agent.workFolder ?? '' };
         logLine('session', 'member identity from URL param: ' + memberParam);
+        if (agent.id !== memberParam) {
+          logLine('session', `resolved URL member param '${memberParam}' to member_id=${agent.id}`);
+        }
       }
 
       let parsedBody: unknown;
@@ -174,7 +235,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       }
 
       if (isInitializeRequest(parsedBody)) {
-        logLine('session', `initialize jwt=${rawToken !== null} jwt_valid=${postClaims !== null} member_param=${memberParam ?? 'none'}`);
+        logLine('session', `initialize jwt=${rawToken !== null} jwt_valid=${postClaims !== null} admin_key=${adminSession} member_param=${memberParam ?? 'none'}`);
         const body = parsedBody as {
           params?: {
             clientInfo?: { name?: string; version?: string };
@@ -197,40 +258,33 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         const channelCapable = !!(clientCaps as { experimental?: Record<string, unknown> })
           ?.experimental?.['claude/channel'];
 
-        // Identity keying is unified on the member UUID. The URL ?member= param
-        // (unauthenticated local fallback) historically carried the friendly
-        // name; new URLs carry the UUID, and legacy friendly names are resolved
-        // to the UUID via the agent registry here.
-        let fallbackMemberId: string | null = null;
-        let fallbackWorkFolder = '';
-        if (postClaims === null && memberParam !== null) {
-          const agent = getAgent(memberParam) ?? findAgentByName(memberParam);
-          fallbackMemberId = agent?.id ?? memberParam;
-          fallbackWorkFolder = agent?.workFolder ?? '';
-          if (agent && agent.id !== memberParam) {
-            logLine('session', `resolved URL member param '${memberParam}' to member_id=${agent.id}`);
-          }
-        }
+        // The ?member= identity resolved (and validated) above, for the
+        // unauthenticated local fallback.
+        const fallbackMemberId: string | null = resolvedMember?.id ?? null;
+        const fallbackWorkFolder = resolvedMember?.workFolder ?? '';
         // Unauthenticated sessions (PM/tools, URL-param fallback) can only come
         // from this machine (server binds 127.0.0.1), so they belong to the
         // local workspace. Authenticated sessions use the JWT's workspace_id.
         const sessionWorkspaceId = postClaims?.workspace_id ?? localWorkspaceId();
 
-        // rmkb-3n5.4.2: derive this session's TOOL SCOPE from the identity
-        // already resolved above, and register only that subset below.
+        // rmkb-3n5.4.2 / rmkb-lky.1: this session's TOOL SCOPE is a property of
+        // the CONNECTION, never a caller-supplied hint.
         //
-        // A session is a MEMBER session when it presents a verified member JWT
-        // (every token this fleet mints carries a member role -- see
-        // src/tools/register-member.ts, role: 'doer'), OR when it used the
-        // unauthenticated ?member= URL-param fallback. Both are agent sessions
-        // running on a member and must not reach the dangerous tools.
+        // FULL is granted ONLY against the positive, unforgeable signal checked
+        // by isAdminKeyBearer() above -- the local orchestrator, the PM skill
+        // and the CLI/workflow clients all present it (see
+        // packages/apra-fleet-client/src/client/transport.mjs, which attaches it
+        // automatically, and src/cli/install.ts, which registers the header with
+        // the LLM host).
         //
-        // Everything else -- no token AND no member param -- is the local
-        // orchestrator/PM/tool session on the loopback trust boundary, and
-        // keeps the FULL set: it drives the whole fleet through this same
-        // transport, so scoping it would break dispatch entirely.
-        const isMemberSession = postClaims !== null || fallbackMemberId !== null;
-        const toolScope: ToolScope = isMemberSession ? 'member' : 'full';
+        // EVERYTHING else gets the restricted member scope: a verified member
+        // JWT, the unauthenticated ?member= fallback, AND -- the rmkb-lky
+        // defect -- a session presenting no identity at all. Omitting ?member=
+        // used to yield the full 57-tool surface (execute_prompt,
+        // execute_command, compose_permissions, register_member,
+        // shutdown_server, credential_store_set, send_files ...) to any caller
+        // that could reach the port, including through a reverse tunnel.
+        const toolScope: ToolScope = adminSession ? 'full' : 'member';
 
         const sessionServer = new McpServer(
           { name: `apra fleet server ${serverVersion}`, version: serverVersion },

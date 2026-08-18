@@ -50,6 +50,17 @@ send client-to-server messages.
   - `url: string` -- the MCP endpoint URL.
   - `options.headers: object` -- extra HTTP headers merged into every
     request (e.g. for auth).
+  - `options.adminBearer: boolean` -- defaults to on. Unless the caller
+    supplied its own `Authorization` header, the constructor reads the local
+    fleet signing key (`~/.apra-fleet/fleet.key`, mode `0o600`) and attaches
+    it as `Authorization: Bearer <key>`. Since apra-fleet `rmkb-lky.1` the
+    server grants a session the FULL tool surface ONLY against that key --
+    a session with no identity gets the restricted member tool set, so a
+    local client (CLI, auto-sprint, workflow runner, supervisor) would
+    otherwise no longer see `execute_prompt`/`compose_permissions`. Pass
+    `adminBearer: false` to opt out; the file is never created, only read,
+    so a host without the key simply gets the restricted scope instead of
+    presenting a bearer the server cannot verify.
 - **`async start()`**
   1. POSTs a JSON-RPC `initialize` request to `url`.
   2. Reads the `mcp-session-id` response header; throws if it's missing.

@@ -480,7 +480,14 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
     restoreRegistry();
   });
 
+  // rmkb-lky.1: the ?member= param must resolve to a REGISTERED agent -- an
+  // unresolvable id is refused (see the forged-identity cases in (n)), so this
+  // test registers the agent it then connects as.
   it('registers a member via the URL param with role "doer" under the local workspace when no JWT is present', async () => {
+    backupAndResetRegistry();
+    const agent = makeTestAgent({ friendlyName: 'url-param-member', workFolder: '/tmp/url-param-work' });
+    addAgent(agent);
+
     const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
     handles.push(handle);
     const issuer = getTokenIssuer();
@@ -488,17 +495,17 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
     const client = new Client({ name: 'param-client', version: '1.0.0' }, { capabilities: {} });
     clients.push(client);
     const transport = new StreamableHTTPClientTransport(
-      new URL(`http://127.0.0.1:${handle.port}/mcp?member=url-param-member-id`),
+      new URL(`http://127.0.0.1:${handle.port}/mcp?member=${agent.id}`),
       { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 } },
     );
     await client.connect(transport);
 
-    const registered = sessionRegistry.get(issuer.workspaceId(), 'url-param-member-id');
+    const registered = sessionRegistry.get(issuer.workspaceId(), agent.id);
     expect(registered).toBeDefined();
     expect(registered?.role).toBe('doer');
     expect(registered?.status).toBe('online');
 
-    sessionRegistry.unregister(issuer.workspaceId(), 'url-param-member-id');
+    sessionRegistry.unregister(issuer.workspaceId(), agent.id);
   });
 
   it('resolves a legacy friendly-name ?member= param to the registered agent\'s UUID', async () => {
@@ -659,13 +666,17 @@ describe('(m) per-session tool scope (rmkb-3n5.4.3)', () => {
   });
 
   it('an unauthenticated ?member= URL-param session ALSO gets the member scope, not the full set', async () => {
+    backupAndResetRegistry();
+    const agent = makeTestAgent({ friendlyName: 'scope-param-member' });
+    addAgent(agent);
+
     const handle = await createHttpTransport({ registerTools: registerScopedTools, preferredPort: 0 });
     handles.push(handle);
 
     const client = new Client({ name: 'scope-param-client', version: '1.0.0' }, { capabilities: {} });
     clients.push(client);
     await client.connect(new StreamableHTTPClientTransport(
-      new URL(`http://127.0.0.1:${handle.port}/mcp?member=${memberId}`),
+      new URL(`http://127.0.0.1:${handle.port}/mcp?member=${agent.id}`),
       { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 } },
     ));
 
@@ -674,16 +685,41 @@ describe('(m) per-session tool scope (rmkb-3n5.4.3)', () => {
     expect(names).not.toContain('execute_prompt');
     expect(names).not.toContain('compose_permissions');
 
-    sessionRegistry.unregister(getTokenIssuer().workspaceId(), memberId);
+    sessionRegistry.unregister(getTokenIssuer().workspaceId(), agent.id);
   });
 
-  it('an unauthenticated local orchestrator/PM session (no token, no member param) keeps the FULL tool set', async () => {
+  // rmkb-lky.1 INVERTED THIS: an unidentified session used to keep the FULL set
+  // ("it must be the local orchestrator"), which handed 57 tools to any caller
+  // that could reach the port -- measured live through a reverse tunnel from a
+  // Jetson with a bare `POST /mcp`. Full scope is now granted ONLY against the
+  // local signing key (see the test below).
+  it('an unidentified session (no token, no member param) gets the RESTRICTED set, never the full one', async () => {
     const handle = await createHttpTransport({ registerTools: registerScopedTools, preferredPort: 0 });
     handles.push(handle);
 
     const client = makeClient(handle.port);
     clients.push(client);
     await client.connect(makeTransport(handle.port));
+
+    const names = await listToolNames(client);
+    expect([...names].sort()).toEqual([...MEMBER_TOOL_ALLOWLIST].sort());
+    expect(names).not.toContain('execute_prompt');
+    expect(names).not.toContain('compose_permissions');
+  });
+
+  it('a session presenting the local signing key as a bearer keeps the FULL tool set', async () => {
+    const handle = await createHttpTransport({ registerTools: registerScopedTools, preferredPort: 0 });
+    handles.push(handle);
+
+    const client = new Client({ name: 'admin-key-client', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp`),
+      {
+        reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
+        requestInit: { headers: { Authorization: `Bearer ${getOrCreateKey()}` } },
+      },
+    ));
 
     const names = await listToolNames(client);
     // The two tools the whole boundary exists to keep away from members must

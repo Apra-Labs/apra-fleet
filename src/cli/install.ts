@@ -22,6 +22,7 @@ import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
+import { getOrCreateKey } from '../services/jwt.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -703,7 +704,14 @@ function mergeOpenCodeConfig(paths: ProviderInstallConfig, mcpConfig: any): void
   const settings = readConfig(paths);
   settings.mcp = settings.mcp || {};
   settings.mcp['apra-fleet'] = mcpConfig.url
-    ? { type: 'remote', url: mcpConfig.url, enabled: true }
+    ? {
+        type: 'remote',
+        url: mcpConfig.url,
+        enabled: true,
+        // headers carries the rmkb-lky.1 admin bearer (same shape OpenCodeProvider
+        // uses for a member's JWT in src/providers/opencode.ts).
+        ...(mcpConfig.headers ? { headers: mcpConfig.headers } : {}),
+      }
     : {
         type: 'local',
         command: [mcpConfig.command, ...(mcpConfig.args || [])],
@@ -716,7 +724,12 @@ function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
   settings.mcp_servers = settings.mcp_servers || {};
   if (mcpConfig.url) {
-    settings.mcp_servers['apra-fleet'] = { url: mcpConfig.url };
+    // headers carries the rmkb-lky.1 admin bearer for the HTTP transport; the
+    // session sees only the restricted member tool set without it.
+    settings.mcp_servers['apra-fleet'] = {
+      url: mcpConfig.url,
+      ...(mcpConfig.headers ? { headers: mcpConfig.headers } : {}),
+    };
   } else {
     settings.mcp_servers['apra-fleet'] = {
       command: mcpConfig.command.replace(/\\/g, '/'),
@@ -1161,31 +1174,55 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   const fleetPort = DEFAULT_PORT;
   const fleetUrl = `http://localhost:${fleetPort}/mcp`;
 
+  // rmkb-lky.1: an HTTP MCP session gets the FULL tool surface only when it
+  // presents the local signing key (~/.apra-fleet/fleet.key, mode 0o600) as a
+  // bearer -- absence of identity now yields the RESTRICTED member scope, never
+  // full. This host IS the orchestrator/PM session, so its registration must
+  // carry that header or dispatch tools (execute_prompt, compose_permissions,
+  // register_member ...) will not be visible to it at all.
+  //
+  // Failure to read/mint the key is non-fatal: register without the header and
+  // say so, rather than aborting the whole install.
+  let adminKey: string | null = null;
+  if (transport === 'http') {
+    try {
+      adminKey = getOrCreateKey();
+    } catch (err) {
+      console.warn(
+        `  Warning: could not read or create the fleet signing key (${(err as Error).message}).\n` +
+        `  Registering apra-fleet WITHOUT the admin bearer -- this session will see only the\n` +
+        `  restricted member tool set. Re-run 'apra-fleet install' once the key is writable.`
+      );
+    }
+  }
+  const adminHeaderObject = adminKey ? { headers: { Authorization: `Bearer ${adminKey}` } } : {};
+
   if (transport === 'http') {
     if (llm === 'claude') {
+      const headerArg = adminKey ? ` --header "Authorization: Bearer ${adminKey}"` : '';
       if (!isCommandAvailable('claude')) {
         console.warn(
           `  Warning: the 'claude' CLI was not found on PATH -- skipping MCP server registration.\n` +
           `  Install Claude Code (https://claude.com/claude-code), then re-run 'apra-fleet install'\n` +
           `  to register apra-fleet with it, or register manually with:\n` +
-          `    claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`
+          `    claude mcp add --scope user --transport http apra-fleet ${fleetUrl}${headerArg}`
         );
       } else {
         try {
           run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
         } catch { /* not registered */ }
-        run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`);
+        run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}${headerArg}`);
       }
     } else if (llm === 'gemini') {
-      mergeGeminiConfig(paths, { httpUrl: fleetUrl });
+      mergeGeminiConfig(paths, { httpUrl: fleetUrl, ...adminHeaderObject });
     } else if (llm === 'codex') {
-      mergeCodexConfig(paths, { url: fleetUrl });
+      mergeCodexConfig(paths, { url: fleetUrl, ...adminHeaderObject });
     } else if (llm === 'copilot') {
-      mergeCopilotConfig(paths, { url: fleetUrl, type: 'http' });
+      mergeCopilotConfig(paths, { url: fleetUrl, type: 'http', ...adminHeaderObject });
     } else if (llm === 'agy') {
-      mergeAgyConfig(paths, { url: fleetUrl });
+      mergeAgyConfig(paths, { url: fleetUrl, ...adminHeaderObject });
     } else if (llm === 'opencode') {
-      mergeOpenCodeConfig(paths, { url: fleetUrl });
+      mergeOpenCodeConfig(paths, { url: fleetUrl, ...adminHeaderObject });
     }
   } else {
     // 'run --transport stdio' starts the stdio MCP server; passed as trailing args so
