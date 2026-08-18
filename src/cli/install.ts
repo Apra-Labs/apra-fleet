@@ -1261,15 +1261,25 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
         const content = extractAsset(assetKey);
         writeAssetFile(path.join(paths.skillsDir, name), content);
       }
-      // Overlay apra-fleet-owned PM skill additions/overrides from skills/pm/ in repo root
-      const root = findProjectRoot();
-      const repoSkillsPm = path.join(root, 'skills', 'pm');
-      if (fs.existsSync(repoSkillsPm) && fs.readdirSync(repoSkillsPm).length > 0) {
-        const skipped = overlayDirSync(repoSkillsPm, paths.skillsDir);
-        console.log('    [OK] Overlaid apra-fleet PM skill additions from skills/pm/');
-        if (skipped.length > 0) {
-          console.log(`    [--] Kept ${skipped.length} vendored PM skill file(s): ${skipped.join(', ')}`);
+      // Overlay apra-fleet-owned PM skill additions/overrides from skills/pm/ in
+      // repo root -- only possible when a repo checkout happens to sit on disk
+      // alongside the SEA binary (e.g. running the freshly built binary from a
+      // dev checkout). A standalone downloaded SEA binary has no repo root at
+      // all, so findProjectRoot() throwing here must not fail the whole
+      // install -- this overlay is opportunistic, not required (the manifest
+      // assets extracted above already contain the shipped PM skill content).
+      try {
+        const root = findProjectRoot();
+        const repoSkillsPm = path.join(root, 'skills', 'pm');
+        if (fs.existsSync(repoSkillsPm) && fs.readdirSync(repoSkillsPm).length > 0) {
+          const skipped = overlayDirSync(repoSkillsPm, paths.skillsDir);
+          console.log('    [OK] Overlaid apra-fleet PM skill additions from skills/pm/');
+          if (skipped.length > 0) {
+            console.log(`    [--] Kept ${skipped.length} vendored PM skill file(s): ${skipped.join(', ')}`);
+          }
         }
+      } catch {
+        // No project root on disk (standalone SEA binary) -- nothing to overlay.
       }
     } else {
       // Dev/npm mode: prefer apra-pm local copy, fall back to dist/
