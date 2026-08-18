@@ -84,6 +84,15 @@ from and does not gate yours.
 
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
+If `mcp__apra-fleet__kb_session_prime` itself is unavailable (no MCP tools reachable at
+all, e.g. a member dispatch where the fleet MCP server is disabled), fall back to reading
+`<repo>/.fleet/kb-canonical.json` directly (Read or Grep -- no MCP, no network) and use its
+`entries[]` array. Each entry carries `id`, `type`, `title`, `summary`, `symbols`,
+`source_files`, `confidence`, `updated_at` -- there is no `content` field, export drops it.
+This fallback is read-only, CONFIRMED-only, gives you the summary rather than the content,
+and is only as fresh as the last commit that touched the file. The file may be ABSENT (it
+is not guaranteed to exist on every branch) -- absence is not an error; proceed without it.
+
 ## Step 1 -- Work the features you were handed
 
 Your dispatch prompt hands you an **explicit list of feature ids** -- the open features in

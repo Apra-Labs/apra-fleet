@@ -21,6 +21,15 @@ tools: [Read, Bash, Grep, Glob, ToolSearch]
 
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
+If `mcp__apra-fleet__kb_session_prime` itself is unavailable (no MCP tools reachable at
+all, e.g. a member dispatch where the fleet MCP server is disabled), fall back to reading
+`<repo>/.fleet/kb-canonical.json` directly (Read or Grep -- no MCP, no network) and use its
+`entries[]` array. Each entry carries `id`, `type`, `title`, `summary`, `symbols`,
+`source_files`, `confidence`, `updated_at` -- there is no `content` field, export drops it.
+This fallback is read-only, CONFIRMED-only, gives you the summary rather than the content,
+and is only as fresh as the last commit that touched the file. The file may be ABSENT (it
+is not guaranteed to exist on every branch) -- absence is not an error; proceed without it.
+
 You own `regression-test-playbook.md` end to end: you bring the test sandbox
 up, run both of the playbook's parts, and ALWAYS tear the sandbox down --
 pass or fail. You never write or modify test code, never fix application
