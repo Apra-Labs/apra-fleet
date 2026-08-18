@@ -602,3 +602,136 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
         assert.equal(vetKbWork('reviewer', { kb_promotions: [{ id: 'x', reason: GOOD_REASON }] }).promotions.length, 1);
     });
 });
+
+// --- rmkb-3n5.3: thread repo_remote_url through the KB call sites ---
+//
+// repo_path at every KB call site is the MEMBER's own work folder (resolved
+// via member_detail), which does not exist on the fleet server for a remote
+// member -- resolveProjectSlug then fails to shell out to git against it and
+// degrades to a basename slug, splitting this repo's own knowledge across
+// two KB databases (apra-fleet-3n5.3's own audit: 118 basename-keyed entries
+// vs 23 remote-URL-keyed entries for the SAME repo). rmkb-3n5.3.1 taught
+// createKbPrimingClient to resolve and cache each member's real git origin
+// via execute_command; rmkb-3n5.3.2 forwards it at the five KB call sites
+// (kb_import, kb_session_prime, kb_query, kb_capture, kb_promote) whenever a
+// genuine URL is known, and sends nothing extra when it is not.
+describe('repo_remote_url forwarding across the priming + work clients (rmkb-3n5.3)', () => {
+    /**
+     * A callTool double that also answers execute_command's
+     * `git remote get-url origin` probe, mirroring the real tool's own
+     * structuredContent shape (src/tools/execute-command.ts): {exitCode,
+     * stdout, stderr}. `origins[member]` undefined means "no origin
+     * resolvable" (mirrors e.g. a bare repo/detached remote: git exits
+     * non-zero). `throwOnOrigin` mirrors a transport failure (e.g. the member
+     * is offline) -- the probe must degrade to null, never throw out of
+     * primeAll().
+     */
+    function makeGitAwareCallTool({ folders, origins = {}, throwOnOrigin = false } = {}) {
+        const calls = [];
+        return {
+            calls,
+            callTool: async (name, args) => {
+                calls.push({ name, args });
+                if (name === 'member_detail') {
+                    const folder = folders[args.member_name];
+                    return folder === undefined ? {} : { folder };
+                }
+                if (name === 'execute_command') {
+                    if (throwOnOrigin) throw new Error('member unreachable');
+                    const url = origins[args.member_name];
+                    if (url === undefined) {
+                        return { structuredContent: { exitCode: 128, stdout: '', stderr: 'fatal: No such remote \'origin\'' } };
+                    }
+                    return { structuredContent: { exitCode: 0, stdout: `${url}\n`, stderr: '' } };
+                }
+                if (name === 'kb_session_prime') return { top_entries: [] };
+                if (name === 'kb_import') return { imported: 0 };
+                return {};
+            },
+        };
+    }
+
+    const KB_SITES = ['kb_import', 'kb_session_prime', 'kb_query', 'kb_capture', 'kb_promote'];
+    const MOCK_URL = 'https://github.com/mock-org/mock-repo.git';
+
+    /** Drives all five KB call sites for one member, the same way runner.js's own call sites do: read the URL from priming's cached accessor, never re-probe. */
+    async function driveAllFiveSites(priming, work, member) {
+        const repoPath = priming.folderOf(member);
+        const repoRemoteUrl = priming.remoteUrlOf(member);
+        await work.relevantKnowledge(repoPath, ['a query term'], repoRemoteUrl);
+        await work.apply('doer', repoPath, { kb_captures: [GOOD_CAPTURE] }, repoRemoteUrl);
+        await work.apply('reviewer', repoPath, { kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }] }, repoRemoteUrl);
+    }
+
+    test('a member whose origin URL was reported: all five KB call sites carry repo_remote_url', async () => {
+        const { calls, callTool } = makeGitAwareCallTool({
+            folders: { alpha: '/srv/alpha/repo' },
+            origins: { alpha: MOCK_URL },
+        });
+        const priming = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+        await priming.primeAll();
+        assert.equal(priming.remoteUrlOf('alpha'), MOCK_URL);
+
+        const work = createKbWorkClient({ callTool, log: () => {} });
+        await driveAllFiveSites(priming, work, 'alpha');
+
+        for (const name of KB_SITES) {
+            const call = calls.find((c) => c.name === name);
+            assert.ok(call, `${name} was never called`);
+            assert.equal(call.args.repo_remote_url, MOCK_URL, `${name} did not carry repo_remote_url`);
+            assert.equal(call.args.repo_path, '/srv/alpha/repo', `${name} lost its repo_path alongside the new field`);
+        }
+    });
+
+    test('a member whose origin cannot be resolved: repo_remote_url is ABSENT (not undefined) from every KB call', async () => {
+        const { calls, callTool } = makeGitAwareCallTool({
+            folders: { beta: '/srv/beta/repo' },
+            origins: {}, // beta's probe resolves with a non-zero exit -- no URL
+        });
+        const priming = createKbPrimingClient({ callTool, members: ['beta'], log: () => {} });
+        await priming.primeAll();
+        assert.equal(priming.remoteUrlOf('beta'), null);
+
+        const work = createKbWorkClient({ callTool, log: () => {} });
+        await driveAllFiveSites(priming, work, 'beta');
+
+        for (const name of KB_SITES) {
+            const call = calls.find((c) => c.name === name);
+            assert.ok(call, `${name} was never called`);
+            // Key-presence check (not a value comparison) so an accidentally
+            // forwarded `repo_remote_url: undefined` is still caught -- a
+            // plain equality against undefined would pass on that bug.
+            assert.ok(!('repo_remote_url' in call.args), `${name} sent a repo_remote_url key when no URL was known: ${JSON.stringify(call.args)}`);
+        }
+    });
+
+    test('the origin probe runs at most once per member even though five KB calls follow', async () => {
+        const { calls, callTool } = makeGitAwareCallTool({
+            folders: { alpha: '/srv/alpha/repo' },
+            origins: { alpha: MOCK_URL },
+        });
+        const priming = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+        await priming.primeAll();
+
+        const work = createKbWorkClient({ callTool, log: () => {} });
+        await driveAllFiveSites(priming, work, 'alpha');
+
+        const originProbes = calls.filter((c) => c.name === 'execute_command' && /remote get-url origin/.test(c.args.command));
+        assert.equal(originProbes.length, 1, 'the origin probe must be cached, not re-issued for every KB call site');
+    });
+
+    test('a failing origin probe is non-fatal -- primeAll still returns and the member is still primed', async () => {
+        const { calls, callTool } = makeGitAwareCallTool({
+            folders: { alpha: '/srv/alpha/repo' },
+            throwOnOrigin: true,
+        });
+        const priming = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+
+        const result = await priming.primeAll();
+
+        assert.equal(result.primed, 1);
+        assert.equal(result.skipped, 0);
+        assert.equal(priming.remoteUrlOf('alpha'), null);
+        assert.ok(calls.some((c) => c.name === 'kb_session_prime'), 'a failed origin probe must not prevent the member from being primed');
+    });
+});
