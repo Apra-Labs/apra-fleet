@@ -279,6 +279,19 @@ export class ClaudeProvider implements ProviderAdapter {
     return `--model "${escapeDoubleQuoted(model)}"`;
   }
 
+  agentDirectories(agentName: string): { project: string; home: string } {
+    const rel = `.claude/agents/${agentName}.md`;
+    return { project: rel, home: rel };
+  }
+
+  transformAgent(content: string, _relPath: string): string {
+    return content;
+  }
+
+  agentNameFlag(agentName: string): string {
+    return `--agent "${escapeDoubleQuoted(agentName)}"`;
+  }
+
   classifyError(output: string): PromptErrorCategory {
     return classifyPromptError(output);
   }

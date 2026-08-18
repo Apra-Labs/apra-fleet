@@ -4,6 +4,7 @@ import { getAgent, updateAgent } from '../registry.js';
 import { awsProvider } from './aws.js';
 import { provisionAuth } from '../../tools/provision-auth.js';
 import { provisionVcsAuth } from '../../tools/provision-vcs-auth.js';
+import { invalidatePreflightCache } from '../preflight-check.js';
 
 const SSH_POLL_ATTEMPTS = 30;
 const SSH_POLL_DELAY_MS = 2000;
@@ -94,6 +95,7 @@ export async function ensureCloudReady(agent: Agent): Promise<Agent> {
       if (currentIp !== agent.host) {
         log('IP updated for ' + agent.friendlyName + ': ' + agent.host + ' -> ' + currentIp);
         updateAgent(agent.id, { host: currentIp });
+        invalidatePreflightCache(agent.id);
       }
     } catch {
       // Cannot get IP — SSH to existing host may still work
@@ -124,6 +126,7 @@ export async function ensureCloudReady(agent: Agent): Promise<Agent> {
 
   // Update registry: new IP + reset idle timer (wiring point for T7)
   updateAgent(agent.id, { host: newIp, lastUsed: new Date().toISOString() });
+  invalidatePreflightCache(agent.id);
 
   // Poll SSH readiness
   const sshPort = agent.port ?? 22;

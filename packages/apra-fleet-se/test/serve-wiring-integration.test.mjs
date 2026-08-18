@@ -147,6 +147,14 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         });
         track(serve.pid);
 
+        // apra-fleet-ryk / apra-fleet-33c.1: same contention-starvation fix
+        // already applied to the GET / wait below -- this boot-wait must also
+        // pass concurrency explicitly, since plain `npm test` (unlike
+        // scripts/run-tests.mjs) invokes `node --test --test-concurrency=8`
+        // without exporting APRA_FLEET_TEST_CONCURRENCY, so scaledTimeout()
+        // silently fell back to its unscaled 15s baseMs while genuinely
+        // running 8-wide, starving the real-subprocess boot under contention
+        // (observed CI failure: timed out at ~15116ms).
         await waitFor(async () => {
             try {
                 const res = await httpGet(port, '/api/health');
@@ -154,7 +162,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
             } catch {
                 return false;
             }
-        }, { label: 'supervisor /api/health to answer' });
+        }, { timeoutMs: scaledTimeout(15000, { concurrency: 8 }), label: 'supervisor /api/health to answer' });
     });
 
     after(async () => {

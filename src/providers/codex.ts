@@ -140,6 +140,19 @@ export class CodexProvider implements ProviderAdapter {
     return `--model "${escapeDoubleQuoted(model)}"`;
   }
 
+  agentDirectories(agentName: string): { project: string; home: string } {
+    const rel = `.codex/agents/${agentName}.md`;
+    return { project: rel, home: rel };
+  }
+
+  transformAgent(content: string, _relPath: string): string {
+    return content;
+  }
+
+  agentNameFlag(_agentName: string): string {
+    return '';
+  }
+
   classifyError(output: string): PromptErrorCategory {
     if (/not logged in|unauthorized|\b401\b|authentication_error|expired.*token|invalid.*api.*key/i.test(output)) {
       return 'auth';

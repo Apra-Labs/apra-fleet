@@ -144,8 +144,10 @@ export class WindowsCommands implements OsCommands {
       instruction = `[${inv}] ${instruction}`;
     }
     // Gemini activates a subagent via @<name> prepended to the prompt on EVERY dispatch.
-    if (agentName && provider.name === 'gemini') {
-      instruction = `@${agentName} ${instruction}`;
+    // Claude and AGY activate a subagent via --agent <name> flag.
+    const nameFlag = agentName ? provider.agentNameFlag(agentName) : '';
+    if (nameFlag.startsWith('@')) {
+      instruction = `${nameFlag}${instruction}`;
     }
 
     // Setup: working directory + PATH so the CLI executable is resolvable
@@ -156,9 +158,8 @@ export class WindowsCommands implements OsCommands {
 
     // Build argument list (everything that follows the executable)
     let argList = `${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`;
-    // Claude and AGY activate a subagent via --agent <name> flag.
-    if (agentName && (provider.name === 'claude' || provider.name === 'agy')) {
-      argList = `--agent "${escapeWindowsArg(agentName)}" ${argList}`;
+    if (nameFlag && !nameFlag.startsWith('@')) {
+      argList = `${nameFlag} ${argList}`;
     }
     if (provider.supportsMaxTurns()) {
       argList += ` --max-turns ${maxTurns ?? 50}`;
