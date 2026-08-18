@@ -167,15 +167,22 @@ describe('buildAgentPromptCommand: env var setup', () => {
 // already applied each provider's fallback via buildPromptCommand(). These
 // tests pin the Windows path to the same provider-owned fallback semantics.
 
-describe('buildAgentPromptCommand: AGY has no true auto -- falls back to --dangerously-skip-permissions', () => {
+describe('buildAgentPromptCommand: AGY auto/default share baseline accept-edits, dangerous is the only bypass', () => {
   const agy = new AgyProvider();
 
-  it('unattended=auto adds --dangerously-skip-permissions, not nothing', () => {
-    const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, unattended: 'auto' });
-    expect(out).toContain('--dangerously-skip-permissions');
+  it('unattended=false adds --mode accept-edits (doers cannot edit/write without it)', () => {
+    const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, unattended: false });
+    expect(out).toContain('--mode accept-edits');
+    expect(out).not.toContain('--dangerously-skip-permissions');
   });
 
-  it('unattended=dangerous also adds --dangerously-skip-permissions', () => {
+  it('unattended=auto adds --mode accept-edits, not a full bypass', () => {
+    const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, unattended: 'auto' });
+    expect(out).toContain('--mode accept-edits');
+    expect(out).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('unattended=dangerous adds --dangerously-skip-permissions (the only real bypass)', () => {
     const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, unattended: 'dangerous' });
     expect(out).toContain('--dangerously-skip-permissions');
   });

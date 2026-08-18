@@ -240,7 +240,7 @@ describe('execute_prompt: dangerously_skip_permissions removed', () => {
     expect(mainCmd).toContain('--dangerously-skip-permissions');
   });
 
-  it('passes --dangerously-skip-permissions for AGY member when unattended="auto" (fallback)', async () => {
+  it('passes --mode accept-edits (not a bypass) for AGY member when unattended="auto"', async () => {
     const member = makeTestAgent({ friendlyName: 'agy-auto', llmProvider: 'agy', unattended: 'auto' });
     addAgent(member);
     mockExecCommand.mockResolvedValue({
@@ -257,7 +257,8 @@ describe('execute_prompt: dangerously_skip_permissions removed', () => {
     });
 
     const mainCmd = mockExecCommand.mock.calls[1][0];
-    expect(mainCmd).toContain('--dangerously-skip-permissions');
+    expect(mainCmd).toContain('--mode accept-edits');
+    expect(mainCmd).not.toContain('--dangerously-skip-permissions');
   });
 
   it('passes --auto for opencode member when unattended="auto"', async () => {
