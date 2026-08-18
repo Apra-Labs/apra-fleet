@@ -93,6 +93,14 @@ export class NoneProvider implements ProviderAdapter {
     throw new Error('none provider has no agent directories');
   }
 
+  transformAgent(content: string, _relPath: string): string {
+    return content;
+  }
+
+  agentNameFlag(_agentName: string): string {
+    return '';
+  }
+
   classifyError(_output: string): PromptErrorCategory {
     return 'unknown';
   }

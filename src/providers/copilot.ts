@@ -137,6 +137,14 @@ export class CopilotProvider implements ProviderAdapter {
     return { project: rel, home: rel };
   }
 
+  transformAgent(content: string, _relPath: string): string {
+    return content;
+  }
+
+  agentNameFlag(_agentName: string): string {
+    return '';
+  }
+
   classifyError(output: string): PromptErrorCategory {
     if (/not logged in|unauthorized|\b401\b|authentication_error|expired.*token|permission_error|invalid.*token/i.test(output)) {
       return 'auth';

@@ -4,6 +4,7 @@ import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
+import { transformAgentForOpenCode } from '../cli/agent-transform.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -65,6 +66,14 @@ export class OpenCodeProvider implements ProviderAdapter {
       project: `.opencode/agents/${agentName}.md`,
       home: `.config/opencode/agents/${agentName}.md`,
     };
+  }
+
+  transformAgent(content: string, relPath: string): string {
+    return transformAgentForOpenCode(content, relPath);
+  }
+
+  agentNameFlag(_agentName: string): string {
+    return '';
   }
 
   classifyError(output: string): PromptErrorCategory {

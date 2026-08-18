@@ -213,6 +213,16 @@ export interface ProviderAdapter {
    *  home: relative to ~ (e.g. '.claude/agents/doer.md' or '.config/opencode/agents/doer.md') */
   agentDirectories(agentName: string): { project: string; home: string };
 
+  // Agent file transformation
+  /** Transforms agent file content for this provider (e.g. frontmatter conversion).
+   *  Default: passthrough (return content unchanged). */
+  transformAgent(content: string, relPath: string): string;
+
+  // Agent name CLI flag
+  /** Returns the CLI flag/prefix for activating a named agent.
+   *  Claude/AGY: '--agent "name"'. Gemini: '@name '. Others: ''. */
+  agentNameFlag(agentName: string): string;
+
   // Error classification
   classifyError(output: string): PromptErrorCategory;
 

@@ -16,7 +16,7 @@ import { getStrategy } from './strategy.js';
 import { uploadContentToHome } from './sftp.js';
 import { loadAgentAssets } from '../cli/install.js';
 import { getAgentsDirRelative } from '../cli/config.js';
-import { transformAgentForOpenCode, transformAgentForAgy } from '../cli/agent-transform.js';
+import { getProvider } from '../providers/index.js';
 
 export interface CanonicalAgentFile {
   relPath: string;
@@ -41,15 +41,12 @@ function sha256Hex(content: string): string {
  */
 export function loadCanonicalAgentSet(provider: LlmProvider): CanonicalAgentFile[] {
   const assets = loadAgentAssets();
+  const adapter = getProvider(provider);
   return assets.map(({ relPath, content }) => {
     // Normalize CRLF -> LF before hashing/uploading so a CRLF checkout (Windows)
     // and an LF binary (SEA asset) produce identical hashes for the same file.
     const normalized = content.replace(/\r\n/g, '\n');
-    const transformed = provider === 'opencode'
-      ? transformAgentForOpenCode(normalized, relPath)
-      : provider === 'agy'
-      ? transformAgentForAgy(normalized, relPath)
-      : normalized;
+    const transformed = adapter.transformAgent(normalized, relPath);
     return { relPath, content: transformed, sha256: sha256Hex(transformed) };
   });
 }
