@@ -14,6 +14,8 @@ Usage:
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
+  apra-fleet install --code-intel      Explicitly opt this repo in to code intelligence
+  apra-fleet install --no-code-intel   Opt this repo out of code intelligence
   apra-fleet install --help            Show this help
 
 Options:
@@ -29,3 +31,5 @@ Options:
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
+  --code-intel            Record this repo as opted in to code intelligence (.apra-fleet/code-intel.json).
+  --no-code-intel         Record this repo as opted out of code intelligence (.apra-fleet/code-intel.json).

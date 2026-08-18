@@ -22,7 +22,7 @@ import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
-import { isCodeIntelEnabled } from '../services/knowledge/repo-config.js';
+import { isCodeIntelEnabled, writeRepoCodeIntelConfig } from '../services/knowledge/repo-config.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -904,6 +904,8 @@ Usage:
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
+  apra-fleet install --code-intel      Explicitly opt this repo in to code intelligence
+  apra-fleet install --no-code-intel   Opt this repo out of code intelligence
   apra-fleet install --help            Show this help
 
 Options:
@@ -918,7 +920,9 @@ Options:
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
-  --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
+  --force                 Stop a running apra-fleet server before installing (SEA mode only).
+  --code-intel            Record this repo as opted in to code intelligence (.apra-fleet/code-intel.json).
+  --no-code-intel         Record this repo as opted out of code intelligence (.apra-fleet/code-intel.json).`);
     process.exit(0);
     return;
   }
@@ -1001,6 +1005,17 @@ Options:
   // Parse --force flag
   const force = args.includes('--force');
 
+  // Parse --code-intel / --no-code-intel (apra-fleet-le1.1.4): records the
+  // opt-in/opt-out choice at install time via writeRepoCodeIntelConfig()
+  // below. undefined (neither flag given) means "write nothing" -- absence
+  // of the config file must keep meaning "enabled" (isCodeIntelEnabled's
+  // backward-compat default).
+  const codeIntelFlag: boolean | undefined = args.includes('--no-code-intel')
+    ? false
+    : args.includes('--code-intel')
+      ? true
+      : undefined;
+
   // Parse --transport flag (default: http)
   type TransportMode = 'http' | 'stdio';
   let transport: TransportMode = 'http';
@@ -1028,7 +1043,7 @@ Options:
 
   // Reject unknown flags to catch typos early
   const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--help', '-h']);
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--code-intel', '--no-code-intel', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1557,7 +1572,8 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   const kbStep = serviceStep ? totalSteps - 1 : totalSteps;
   console.log(`  [${kbStep}/${totalSteps}] Setting up Knowledge Bank and code intelligence...`);
   const repoCwd = process.cwd();
-  if (fs.existsSync(path.join(repoCwd, '.git'))) {
+  const isGitRepo = fs.existsSync(path.join(repoCwd, '.git'));
+  if (isGitRepo) {
     // Clean up prior installs: remove legacy gitnexus entry from .mcp.json if present
     try {
       const mcpJsonPath = path.join(repoCwd, '.mcp.json');
@@ -1581,6 +1597,19 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // data dir. Independent of the .git check above -- the source file's own
   // presence is the only gate, and the step is fully non-fatal.
   copyGlobalBible(repoCwd);
+
+  // Record the --code-intel/--no-code-intel choice (apra-fleet-le1.1.4), so
+  // the gate below honours it in this same run. Skipped for non-git repos
+  // and when neither flag was passed -- "no config" must stay distinguishable
+  // from an explicit choice (see isCodeIntelEnabled's backward-compat default).
+  if (isGitRepo && codeIntelFlag !== undefined) {
+    try {
+      await writeRepoCodeIntelConfig(repoCwd, { enabled: codeIntelFlag });
+      console.log(`    [OK] Code intelligence opt-${codeIntelFlag ? 'in' : 'out'} recorded (.apra-fleet/code-intel.json)`);
+    } catch (err) {
+      console.warn('    ⚠ Code intelligence opt-in/out recording skipped:', err instanceof Error ? err.message : String(err));
+    }
+  }
 
   // Check if code intelligence is enabled for this repo before setting up provider config
   const codeIntelEnabled = await isCodeIntelEnabled(repoCwd);
