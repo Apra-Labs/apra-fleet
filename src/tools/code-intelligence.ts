@@ -6,7 +6,7 @@ import { GitNexusProvider } from './code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
 import { getAgent } from '../services/registry.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
-import { isCodeIntelEnabled } from '../services/knowledge/repo-config.js';
+import { isCodeIntelEnabled, readRepoCodeIntelConfig } from '../services/knowledge/repo-config.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -53,6 +53,36 @@ export class RepoDisabledProvider implements CodeIntelligenceProvider {
   async map(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('map'); }
   async flow(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('flow'); }
   async tests(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('tests'); }
+}
+
+function optInPromptResult(method: string): { content: { type: string; text: string }[] } {
+  return {
+    content: [{
+      type: 'text',
+      text:
+        `Code intelligence has not been set up for this repo yet (method: ${method}). ` +
+        'Indexing builds a local call-graph/symbol database so code_graph, code_impact, code_query, ' +
+        'code_context, code_map, code_flow, and code_tests can answer structural questions without ' +
+        'grepping the tree. Nothing has been indexed automatically. ' +
+        "Run 'apra-fleet install --code-intel' in the repo to opt in and index it, " +
+        "or 'apra-fleet install --no-code-intel' to opt out and stop seeing this prompt.",
+    }],
+  };
+}
+
+// Returned by getProvider() when the target repo has never recorded a
+// code-intel choice (no .apra-fleet/code-intel.json) -- distinct from
+// RepoDisabledProvider (explicit enabled: false) and from a plain
+// "no index" result: this is the first-call opt-in prompt (apra-fleet-le1.2.1),
+// shown instead of silently indexing or silently failing.
+export class OptInPromptProvider implements CodeIntelligenceProvider {
+  async graph(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('graph'); }
+  async impact(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('impact'); }
+  async query(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('query'); }
+  async context(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('context'); }
+  async map(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('map'); }
+  async flow(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('flow'); }
+  async tests(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('tests'); }
 }
 
 export const PROVIDERS: Record<string, CodeIntelligenceProvider> = {
@@ -167,6 +197,18 @@ export async function getProvider(memberId?: string, repoPath?: string): Promise
   // opt-out' for the pinned behavior.
   if (repoPath && !(await isCodeIntelEnabled(repoPath))) {
     return new RepoDisabledProvider();
+  }
+
+  // First-call opt-in prompt (apra-fleet-le1.2.1): a repo with no
+  // .apra-fleet/code-intel.json has never recorded a code-intel choice at
+  // all -- readRepoCodeIntelConfig() returning null is the discriminator
+  // between "never asked" and "explicitly enabled" (isCodeIntelEnabled()
+  // above collapses both to true and cannot tell them apart on its own).
+  // Enforced only for repo-qualified calls, same scoping as the opt-out
+  // check above -- see the comment on this function for why repoPath-less
+  // calls are not covered.
+  if (repoPath && (await readRepoCodeIntelConfig(repoPath)) === null) {
+    return new OptInPromptProvider();
   }
 
   // When a memberId is supplied, check the agent's per-member override first.

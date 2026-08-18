@@ -17,6 +17,7 @@ const mockLogWarn = vi.hoisted(() => vi.fn());
 const mockLogError = vi.hoisted(() => vi.fn());
 const mockGetAgent = vi.hoisted(() => vi.fn());
 const mockIsCodeIntelEnabled = vi.hoisted(() => vi.fn());
+const mockReadRepoCodeIntelConfig = vi.hoisted(() => vi.fn());
 
 vi.mock('fs/promises', () => ({
   readFile: mockReadFile,
@@ -24,6 +25,7 @@ vi.mock('fs/promises', () => ({
 
 vi.mock('../src/services/knowledge/repo-config.js', () => ({
   isCodeIntelEnabled: mockIsCodeIntelEnabled,
+  readRepoCodeIntelConfig: mockReadRepoCodeIntelConfig,
 }));
 
 // Only code-intelligence-gitnexus.ts's freshness-note wiring (F2.2) calls
@@ -68,7 +70,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, NullProvider, RepoDisabledProvider, handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeMapSchema, codeFlowSchema, codeTestsSchema, codeContextSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, NullProvider, RepoDisabledProvider, OptInPromptProvider, handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeMapSchema, codeFlowSchema, codeTestsSchema, codeContextSchema } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
@@ -176,6 +178,11 @@ describe('getProvider() repo-level opt-out', () => {
     vi.clearAllMocks();
     mockGetAgent.mockReturnValue(undefined);
     mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+    // Default: repo has an explicit, recorded config (enabled) so tests in
+    // this block exercise the opt-out check in isolation from the
+    // apra-fleet-le1.2.1 opt-in-prompt check pinned in its own describe block
+    // below.
+    mockReadRepoCodeIntelConfig.mockResolvedValue({ enabled: true });
   });
 
   it('returns RepoDisabledProvider when repoPath is supplied and the repo has opted out', async () => {
@@ -205,7 +212,79 @@ describe('getProvider() repo-level opt-out', () => {
     const provider = await getProvider();
 
     expect(mockIsCodeIntelEnabled).not.toHaveBeenCalled();
+    expect(mockReadRepoCodeIntelConfig).not.toHaveBeenCalled();
     expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getProvider() first-call opt-in prompt (apra-fleet-le1.2.1)
+//
+// A repo with no .apra-fleet/code-intel.json at all (readRepoCodeIntelConfig
+// returns null) has never recorded a code-intel choice -- distinct from an
+// explicit enabled: true/false config. Enforced only for repo-qualified
+// calls, same scoping as the opt-out check above. This check never consults
+// the machine-global codebase-memory-mcp cache directory (hasIndex()): a
+// different repo already being indexed on this machine must NOT suppress the
+// prompt for THIS unconfigured repo (apra-fleet-le1.2 upgrade-path design
+// note) -- see the third test below.
+// ---------------------------------------------------------------------------
+describe('getProvider() first-call opt-in prompt', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetAgent.mockReturnValue(undefined);
+    mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+    mockIsCodeIntelEnabled.mockResolvedValue(true);
+  });
+
+  it('returns OptInPromptProvider when repoPath is supplied and no config file exists', async () => {
+    mockReadRepoCodeIntelConfig.mockResolvedValue(null);
+
+    const provider = await getProvider(undefined, '/some/repo');
+
+    expect(mockReadRepoCodeIntelConfig).toHaveBeenCalledWith('/some/repo');
+    expect(provider).toBeInstanceOf(OptInPromptProvider);
+  });
+
+  it('falls through to normal resolution when a config file exists (enabled: true)', async () => {
+    mockReadRepoCodeIntelConfig.mockResolvedValue({ enabled: true });
+
+    const provider = await getProvider(undefined, '/some/repo');
+
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+
+  it('still returns OptInPromptProvider for an unconfigured repo even when the codebase-memory cache already has a DIFFERENT project indexed', async () => {
+    // No mock of the codebase-memory-mcp cache directory is set up here at
+    // all -- the point of this test is that getProvider() never needs to
+    // consult it (or any machine-global signal) to make this decision; the
+    // per-repo config file is the sole discriminator.
+    mockReadRepoCodeIntelConfig.mockResolvedValue(null);
+
+    const provider = await getProvider(undefined, '/unconfigured/repo');
+
+    expect(provider).toBeInstanceOf(OptInPromptProvider);
+  });
+
+  it('skips the opt-in-prompt check entirely when repoPath is omitted', async () => {
+    mockReadRepoCodeIntelConfig.mockResolvedValue(null);
+
+    const provider = await getProvider();
+
+    expect(mockReadRepoCodeIntelConfig).not.toHaveBeenCalled();
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+
+  it('does not check the opt-in-prompt path for a repo that has explicitly opted out', async () => {
+    mockIsCodeIntelEnabled.mockResolvedValue(false);
+    mockReadRepoCodeIntelConfig.mockResolvedValue({ enabled: false });
+
+    const provider = await getProvider(undefined, '/opted-out/repo');
+
+    // RepoDisabledProvider wins -- the opt-out check runs (and returns)
+    // first, so a repo with enabled: false never sees the opt-in message.
+    expect(provider).toBeInstanceOf(RepoDisabledProvider);
+    expect(provider).not.toBeInstanceOf(OptInPromptProvider);
   });
 });
 
@@ -345,6 +424,32 @@ describe('RepoDisabledProvider', () => {
       expect(result.content[0].text).toContain('disabled for this repo');
       expect(result.content[0].text).toContain(method);
       expect(result.content[0].text).toContain('.apra-fleet/code-intel.json');
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// OptInPromptProvider -- structured messages, never throws (apra-fleet-le1.2.1)
+//
+// Distinct from both NullProvider ("disabled for this member") and
+// RepoDisabledProvider ("disabled for this repo"): this message is shown on
+// the FIRST call for a repo that has never recorded a code-intel choice, and
+// must point at the apra-fleet-le1.1.4 install flags rather than inventing a
+// new command.
+// ---------------------------------------------------------------------------
+describe('OptInPromptProvider', () => {
+  const optInPromptProvider = new OptInPromptProvider();
+
+  const methods = ['graph', 'impact', 'query', 'context', 'map', 'flow', 'tests'] as const;
+
+  for (const method of methods) {
+    it(`${method}() returns a structured opt-in prompt and does not throw`, async () => {
+      const result = (await optInPromptProvider[method]({})) as { content: { type: string; text: string }[] };
+      expect(result.content).toHaveLength(1);
+      expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toContain(method);
+      expect(result.content[0].text).toContain('apra-fleet install --code-intel');
+      expect(result.content[0].text).toContain('apra-fleet install --no-code-intel');
     });
   }
 });

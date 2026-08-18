@@ -53,6 +53,15 @@ const CACHE_DIR = join(homedir(), '.cache', 'codebase-memory-mcp');
 // Pre-flight index check: verify at least one project has been indexed
 // before ever spawning the child process. Never throws -- any error reading
 // the directory degrades to "no index" rather than blocking the call.
+//
+// Machine-global, not per-repo (existsSync(CACHE_DIR) && non-empty): this
+// only tells you SOME project has been indexed on this machine, not that
+// THIS repo has. It stays the gate for "reindex needed" once a repo has a
+// recorded config -- the "opted out" vs "never asked" distinction for a repo
+// with NO config at all is made earlier, at getProvider() in
+// code-intelligence.ts (apra-fleet-le1.2.1), via readRepoCodeIntelConfig(),
+// which is genuinely per-repo (unlike this check). See that function's
+// comment for why the split is there rather than here.
 function hasIndex(): boolean {
   try {
     return existsSync(CACHE_DIR) && readdirSync(CACHE_DIR).length > 0;
