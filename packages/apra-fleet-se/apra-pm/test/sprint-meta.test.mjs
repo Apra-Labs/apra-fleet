@@ -15,8 +15,9 @@ const {
   computeSprintQuote,
   DEFAULT_CALIBRATION,
   MODEL_SONNET,
+  redactHomeFromTranscriptDir,
   // eslint-disable-next-line no-new-func
-} = new Function(`${match[1]}; return { computeSprintAnalysis, computeSprintQuote, DEFAULT_CALIBRATION, MODEL_SONNET };`)();
+} = new Function(`${match[1]}; return { computeSprintAnalysis, computeSprintQuote, DEFAULT_CALIBRATION, MODEL_SONNET, redactHomeFromTranscriptDir };`)();
 
 // ---- meta record shape (source-introspection) --------------------------------
 
@@ -33,6 +34,45 @@ test('meta record source contains required fields: type meta, transcriptDir, bra
   assert.match(region, /roots/, 'meta record must include roots');
   assert.match(region, /goal/, 'meta record must include goal');
   assert.match(region, /startedAt|ts/, 'meta record must include a sprint timestamp field');
+  assert.match(region, /redactHomeFromTranscriptDir/,
+    'meta record must redact transcriptDir before committing it (apra-fleet-tm7.15)');
+});
+
+// ---- redactHomeFromTranscriptDir (apra-fleet-tm7.15) --------------------------
+
+test('redactHomeFromTranscriptDir: rewrites a $HOME-anchored path to ~/.claude/projects/...', () => {
+  const abs = '/home/someuser/.claude/projects/-home-someuser-repos-apra-apra-fleet';
+  const out = redactHomeFromTranscriptDir(abs);
+  assert.equal(out, '~/.claude/projects/-home-someuser-repos-apra-apra-fleet');
+  assert.ok(!out.startsWith('/home/someuser'), 'output must not begin with the runner home path');
+});
+
+test('redactHomeFromTranscriptDir: empty string stays empty (no crash, no ~)', () => {
+  assert.equal(redactHomeFromTranscriptDir(''), '');
+});
+
+test('redactHomeFromTranscriptDir: falsy/undefined input stays empty', () => {
+  assert.equal(redactHomeFromTranscriptDir(undefined), '');
+  assert.equal(redactHomeFromTranscriptDir(null), '');
+});
+
+test('redactHomeFromTranscriptDir: a path without the .claude/projects anchor is returned unchanged', () => {
+  const weird = '/some/other/path';
+  assert.equal(redactHomeFromTranscriptDir(weird), weird);
+});
+
+test('meta record: assembling the JSONL line with a $HOME transcriptDir leaks no absolute home path', () => {
+  const transcriptDir = '/home/someuser/.claude/projects/-home-someuser-repos-apra-apra-fleet';
+  const metaLine = JSON.stringify({
+    ts: '2026-08-12T00:00:00Z', type: 'meta',
+    branch: 'feat/x', startedAt: '20260812_000000',
+    roots: ['BD-1'], goal: 'P1/P2',
+    transcriptDir: redactHomeFromTranscriptDir(transcriptDir),
+  });
+  assert.ok(!metaLine.includes('/home/someuser'),
+    'serialized meta line must not contain the runner home path');
+  assert.ok(metaLine.includes('~/.claude/projects/'),
+    'serialized meta line should keep the $HOME-relative transcriptDir');
 });
 
 test('meta record is written before the sprint loop (genuine first JSONL entry)', () => {

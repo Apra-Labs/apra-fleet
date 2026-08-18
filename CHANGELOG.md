@@ -100,6 +100,64 @@ Tracked spend (priced dispatches only): $11.9020.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
 Pricing source: all 19 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+## [Unreleased] -- Repo hygiene follow-ups from the kb_harvest repo-scoping epic
+
+Sprint goal: continue the `kb_harvest` repo-blindness epic. **The epic's own
+P1 intent (remote-member auto-harvest routing to that member's actual repo
+KB, not a shared `default` KB) did not land this sprint** -- the underlying
+routing fix had already merged in a prior round, and this sprint's landed
+diff is entirely a cluster of repo-hygiene follow-ups the prior round left
+behind. Sprint verdict is FAIL: remote-member routing is still open, an
+in-flight related change left the working tree dirty with four failing
+tests at review time, and integration/regression testing could not run in
+either cycle because the local checkout lacked a permission grant the
+integration and regression playbooks both require for the `bd` command
+family (tracked as its own follow-up rather than added ad hoc, since it is
+out of scope for the deploy-permission file's own source of truth).
+
+What shipped:
+
+- The repository's tracked `.claude/settings.json` now carries the full set
+  of deploy-phase command permissions, unblocking the deploy phase; its
+  status as a deliberately tracked (not machine-local) file is now
+  documented inline.
+- A previously-red pre-existing test covering how the sandbox-sync tooling
+  parses `bd`'s dolt remote-list output was fixed: a literal `null` result
+  (which `bd` prints for "no remotes configured") is now recognized as
+  empty rather than treated as malformed output.
+- `.gitignore` no longer discards the durable per-sprint cost ledgers
+  (`sprint-logs/*.jsonl`, `*.analysis.md`, `calibration.json`, including in
+  nested package directories) -- only the CLI's genuine per-run scratch
+  snapshots (`sprint-logs/sprint_*.json`) remain ignored. A non-ASCII
+  character introduced by an earlier edit to this file was also fixed. The
+  backlog of previously-hidden, already-durable sprint-log files this
+  surfaced was committed.
+- Sprint-log ledgers no longer bake the runner's absolute home directory
+  (and OS username) into the committed `transcriptDir` field of their meta
+  record -- the path is now written `$HOME`-relative when it falls under
+  the runner's home directory.
+
+Carried forward: the epic's own remaining P1 scope (remote-member
+auto-harvest repo routing) is still open, along with an in-flight related
+change (adding remote-identity resolution to the dispatch path) that was
+found, during review, to add an extra round trip on the dispatch hot path
+and break four existing test files -- it was left uncommitted rather than
+landed in this state. Integration and regression testing were both blocked
+in every attempted cycle by a missing local permission grant for the `bd`
+command family; this is filed as its own follow-up rather than folded into
+the deploy-permission file, since that file's scope is deliberately limited
+to what the deploy runbook itself lists. A handful of P2/P3 follow-ups
+(reviewing newly-tracked wildcard permission prefixes, hardening a KB
+provider-construction guard, deciding on already-committed home-path
+leakage in older ledgers, and making one sandbox-sync test hermetic instead
+of shelling out to a real `bd`) remain open as backlog.
+
+#### Sprint cost analysis
+Budget ceiling: $15.0000.
+Tracked spend (priced dispatches only): $11.8950.
+Remaining budget: $3.1050.
+Integ-test-runner spend: $0.1299 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 21 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- kb_harvest auto-harvest is now repo-scoped, not server-cwd-scoped

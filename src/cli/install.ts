@@ -22,6 +22,7 @@ import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
+import { isCodeIntelEnabled } from '../services/knowledge/repo-config.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -1581,29 +1582,36 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // presence is the only gate, and the step is fully non-fatal.
   copyGlobalBible(repoCwd);
 
-  // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
-  try {
-    const ciConfigDir = path.join(os.homedir(), '.apra-fleet', 'data', 'code-intelligence');
-    fs.mkdirSync(ciConfigDir, { recursive: true });
-    fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
-    console.log('    [OK] Code intelligence provider config written');
-  } catch (err) {
-    console.warn('    ⚠ Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
-  }
+  // Check if code intelligence is enabled for this repo before setting up provider config
+  const codeIntelEnabled = await isCodeIntelEnabled(repoCwd);
 
-  // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
-  try {
-    const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-    const sentinel = '<!-- apra-fleet:code-intelligence -->';
-    const block = `\n${sentinel}\nWhen code_graph, code_impact, code_query, or code_context tools are available,\nuse them for symbol lookups, call chain tracing, and impact analysis.\nNever use grep or file reads for structural questions when these tools are present.\n<!-- /apra-fleet:code-intelligence -->\n`;
-    const existing = fs.existsSync(claudeMdPath) ? fs.readFileSync(claudeMdPath, 'utf-8') : '';
-    if (!existing.includes(sentinel)) {
-      fs.mkdirSync(path.dirname(claudeMdPath), { recursive: true });
-      fs.appendFileSync(claudeMdPath, block);
-      console.log('    [OK] Code intelligence routing instruction written to ~/.claude/CLAUDE.md');
+  if (!codeIntelEnabled) {
+    console.log('    Code intelligence setup skipped: repo has opted out (enabled=false in .apra-fleet/code-intel.json)');
+  } else {
+    // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
+    try {
+      const ciConfigDir = path.join(os.homedir(), '.apra-fleet', 'data', 'code-intelligence');
+      fs.mkdirSync(ciConfigDir, { recursive: true });
+      fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
+      console.log('    [OK] Code intelligence provider config written');
+    } catch (err) {
+      console.warn('    ⚠ Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
     }
-  } catch (err) {
-    console.warn('    ⚠ ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
+
+    // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
+    try {
+      const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+      const sentinel = '<!-- apra-fleet:code-intelligence -->';
+      const block = `\n${sentinel}\nWhen code_graph, code_impact, code_query, or code_context tools are available,\nuse them for symbol lookups, call chain tracing, and impact analysis.\nNever use grep or file reads for structural questions when these tools are present.\n<!-- /apra-fleet:code-intelligence -->\n`;
+      const existing = fs.existsSync(claudeMdPath) ? fs.readFileSync(claudeMdPath, 'utf-8') : '';
+      if (!existing.includes(sentinel)) {
+        fs.mkdirSync(path.dirname(claudeMdPath), { recursive: true });
+        fs.appendFileSync(claudeMdPath, block);
+        console.log('    [OK] Code intelligence routing instruction written to ~/.claude/CLAUDE.md');
+      }
+    } catch (err) {
+      console.warn('    ⚠ ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
+    }
   }
 
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;

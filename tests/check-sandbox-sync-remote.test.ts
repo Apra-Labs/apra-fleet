@@ -332,6 +332,13 @@ describe('parseDoltRemoteList', () => {
   it('treats a literal null (including whitespace-padded) as an empty list', () => {
     expect(parseDoltRemoteList('null')).toEqual([]);
     expect(parseDoltRemoteList('null\n')).toEqual([]);
+    expect(parseDoltRemoteList(' null\n')).toEqual([]);
+  });
+
+  // apra-fleet-tm7.11: only `null` is special-cased -- any other non-array
+  // JSON value is still a shape bd is not known to produce, and must throw.
+  it('still throws on a non-array, non-null JSON value (e.g. a bare number)', () => {
+    expect(() => parseDoltRemoteList('42')).toThrow();
   });
 });
 
@@ -412,14 +419,22 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
     expect(result.ok).toBe(true);
   });
 
-  // apra-fleet-xuo.8.1: exercises the no-injection branch (no deps.execFileSync)
-  // against a real .beads/embeddeddolt directory to ensure the predicate recognizes
-  // all known database layouts and does not silent-return "nothing wired yet" for
-  // directories that actually contain a database.
-  it('recognizes .beads/embeddeddolt as a database layout and invokes bd without short-circuiting', async () => {
-    let tmpDir: string | null = null;
+  // apra-fleet-xuo.8.1 / apra-fleet-tm7.18: exercises the filesystem
+  // layout-recognition branch (a real .beads/embeddeddolt directory on disk)
+  // to ensure the predicate recognizes all known database layouts and does
+  // not silent-return "nothing wired yet" for a directory that actually
+  // contains a database. Hermetic: `deps.skipLayoutCheck: false` forces the
+  // real fs-based recognition to run against the real temp directory built
+  // below (same as the old no-injection call), but `deps.execFileSync` is
+  // ALSO supplied, so once recognition falls through, checkDoltRemoteAbsent
+  // never shells out to a real `bd` -- it calls the injected fake instead.
+  // Before apra-fleet-tm7.18, `deps.execFileSync` being present was the ONLY
+  // signal that skipped the fs check, so the two concerns (skip the
+  // optimization / replace the exec) could not be requested independently;
+  // this test is exactly the case that needed them decoupled.
+  it('recognizes .beads/embeddeddolt as a database layout without shelling out to a real bd (hermetic)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-embeddeddolt-check-'));
     try {
-      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-embeddeddolt-check-'));
       const repoPath = path.join(tmpDir, 'toy-repo');
       const beadsDir = path.join(repoPath, '.beads');
       fs.mkdirSync(beadsDir, { recursive: true });
@@ -428,41 +443,58 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
       // Also create a minimal config.yaml so the repo looks initialized.
       fs.writeFileSync(path.join(beadsDir, 'config.yaml'), 'sync:\n  remote: file://sandbox-local\n');
 
-      // NO deps.execFileSync injected -- this exercises the real filesystem check
-      // against the embeddeddolt layout. The function should recognize the database
-      // and attempt to run bd, not short-circuit with "nothing wired yet".
+      let fakeExecCalls = 0;
+      const result = checkDoltRemoteAbsent(repoPath, tmpDir, {
+        skipLayoutCheck: false,
+        execFileSync: () => {
+          fakeExecCalls += 1;
+          return JSON.stringify([{ name: 'origin', url: `file://${tmpDir}/.apra-fleet-toy-dolt-remote` }]);
+        },
+      });
+
+      // The key assertion: the message must NOT be the "no Dolt database
+      // initialized" message the old code returned when it failed to
+      // recognize embeddeddolt -- the real fs check ran and fell through.
+      expect(result.message).not.toMatch(/no Dolt database initialized/);
+      // The fake execFileSync -- not a real `bd` process -- produced the result.
+      expect(fakeExecCalls).toBe(1);
+      expect(result.ok).toBe(true);
+      expect(result.message).toMatch(/Dolt-level remotes/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // [integration] apra-fleet-tm7.18: the ONE remaining test in this suite that
+  // shells out to a real `bd` binary (no execFileSync injected at all, so
+  // BOTH the layout check and the exec call use their real, non-test-double
+  // implementations). Kept to catch a real behavioral drift in `bd`'s own
+  // output shape (see apra-fleet-tm7.11's `null`-vs-`[]` fix, which this test
+  // sat red for until then) that a hermetic fake, by construction, cannot
+  // detect. Skips itself (rather than failing) when `bd` is not reachable.
+  it('[integration] a real bd recognizes .beads/embeddeddolt and returns a live Dolt-remote result', async () => {
+    let bdAvailable = true;
+    try {
+      execBdSync(['--version'], { stdio: 'ignore' });
+    } catch {
+      bdAvailable = false;
+    }
+    if (!bdAvailable) return;
+
+    let tmpDir: string | null = null;
+    try {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-embeddeddolt-check-'));
+      const repoPath = path.join(tmpDir, 'toy-repo');
+      const beadsDir = path.join(repoPath, '.beads');
+      fs.mkdirSync(beadsDir, { recursive: true });
+      fs.mkdirSync(path.join(beadsDir, 'embeddeddolt'));
+      fs.writeFileSync(path.join(beadsDir, 'config.yaml'), 'sync:\n  remote: file://sandbox-local\n');
+
+      // NO deps injected at all -- real fs check, real bd process.
       const result = checkDoltRemoteAbsent(repoPath, tmpDir);
       expect(result.ok).toBe(true);
-      // The key assertion: the message must NOT be the "no Dolt database initialized"
-      // message that the old code would have returned when it failed to recognize
-      // embeddeddolt. Instead, it should report either an actual Dolt remote status
-      // or an error from trying to run bd.
       expect(result.message).not.toMatch(/no Dolt database initialized/);
-      // apra-fleet-b4g.3: the loose `/Dolt-level remotes|unavailable/` assertion
-      // this used to have let the test pass vacuously on a machine without `bd`
-      // on PATH (the "unavailable" fallback message satisfies it without ever
-      // reaching parseDoltRemoteList). Detect whether `bd` is actually reachable
-      // and assert the specific outcome for that environment, so a real `bd`
-      // installation always exercises the parser this test is meant to cover.
-      // The probe MUST use the same execBdSync helper as the code under test.
-      // A bare execFileSync('bd', ...) throws on Windows -- npm installs `bd` as
-      // a .cmd shim, which execFileSync cannot spawn without a shell -- so this
-      // computed bdAvailable=false on windows-latest while checkDoltRemoteAbsent
-      // (which routes through execBdSync's resolved bin/bd.js) DID reach bd,
-      // failing as: expected 'OK: Dolt-level remotes in ...' to match /unavailable/.
-      // execBdSync is also the injection-safe path -- see scripts/lib/exec-bd.mjs.
-      let bdAvailable = true;
-      try {
-        execBdSync(['--version'], { stdio: 'ignore' });
-      } catch {
-        bdAvailable = false;
-      }
-      if (bdAvailable) {
-        expect(result.message).toMatch(/Dolt-level remotes/);
-      } else {
-        expect(result.message).toMatch(/unavailable/);
-      }
-
+      expect(result.message).toMatch(/Dolt-level remotes/);
     } finally {
       // Clean up: on Windows, file locks may persist after the function call --
       // this test spawns a REAL `bd` (no execFileSync injected), and bd's own

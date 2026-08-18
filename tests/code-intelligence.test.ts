@@ -16,9 +16,14 @@ const mockMaybeScheduleReindex = vi.hoisted(() => vi.fn());
 const mockLogWarn = vi.hoisted(() => vi.fn());
 const mockLogError = vi.hoisted(() => vi.fn());
 const mockGetAgent = vi.hoisted(() => vi.fn());
+const mockIsCodeIntelEnabled = vi.hoisted(() => vi.fn());
 
 vi.mock('fs/promises', () => ({
   readFile: mockReadFile,
+}));
+
+vi.mock('../src/services/knowledge/repo-config.js', () => ({
+  isCodeIntelEnabled: mockIsCodeIntelEnabled,
 }));
 
 // Only code-intelligence-gitnexus.ts's freshness-note wiring (F2.2) calls
@@ -63,7 +68,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, NullProvider, handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeMapSchema, codeFlowSchema, codeTestsSchema, codeContextSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, NullProvider, RepoDisabledProvider, handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeMapSchema, codeFlowSchema, codeTestsSchema, codeContextSchema } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
@@ -154,6 +159,53 @@ describe('getProvider(memberId)', () => {
 
     await expect(getProvider('agent-4')).rejects.toThrow('no-such-provider');
     await expect(getProvider('agent-4')).rejects.toThrow('not configured');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getProvider() repo-level opt-out (apra-fleet-tm7.21)
+//
+// Decision pinned here: the repo-level opt-out check (isCodeIntelEnabled) is
+// enforced ONLY when repoPath is supplied. When repoPath is omitted, the
+// check is skipped entirely -- it does NOT fall back to process.cwd() or to
+// any notion of "the" indexed repo, since neither is well-defined at this
+// layer (see the comment on getProvider() in code-intelligence.ts for why).
+// ---------------------------------------------------------------------------
+describe('getProvider() repo-level opt-out', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetAgent.mockReturnValue(undefined);
+    mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+  });
+
+  it('returns RepoDisabledProvider when repoPath is supplied and the repo has opted out', async () => {
+    mockIsCodeIntelEnabled.mockResolvedValue(false);
+
+    const provider = await getProvider(undefined, '/some/repo');
+
+    expect(mockIsCodeIntelEnabled).toHaveBeenCalledWith('/some/repo');
+    expect(provider).toBeInstanceOf(RepoDisabledProvider);
+  });
+
+  it('falls through to normal resolution when repoPath is supplied and the repo has NOT opted out', async () => {
+    mockIsCodeIntelEnabled.mockResolvedValue(true);
+
+    const provider = await getProvider(undefined, '/some/repo');
+
+    expect(mockIsCodeIntelEnabled).toHaveBeenCalledWith('/some/repo');
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+
+  it('skips the opt-out check entirely when repoPath is omitted, even for an opted-out repo', async () => {
+    // isCodeIntelEnabled would say "disabled" if it were ever called with the
+    // caller's intended repo -- but since no repoPath is passed, getProvider()
+    // must never call it at all (documented decision, not a fallback to cwd).
+    mockIsCodeIntelEnabled.mockResolvedValue(false);
+
+    const provider = await getProvider();
+
+    expect(mockIsCodeIntelEnabled).not.toHaveBeenCalled();
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
   });
 });
 
@@ -268,6 +320,31 @@ describe('NullProvider', () => {
       expect(result.content[0].type).toBe('text');
       expect(result.content[0].text).toContain('disabled for this member');
       expect(result.content[0].text).toContain(method);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// RepoDisabledProvider -- structured messages, never throws (apra-fleet-le1.1.1)
+//
+// Distinct from NullProvider: the message must say "disabled for this repo"
+// (not "for this member") and point at the .apra-fleet/code-intel.json knob,
+// since it is returned when a repo has explicitly opted out via that file
+// rather than when a member has no provider configured.
+// ---------------------------------------------------------------------------
+describe('RepoDisabledProvider', () => {
+  const repoDisabledProvider = new RepoDisabledProvider();
+
+  const methods = ['graph', 'impact', 'query', 'context', 'map', 'flow', 'tests'] as const;
+
+  for (const method of methods) {
+    it(`${method}() returns a structured repo-disabled message and does not throw`, async () => {
+      const result = (await repoDisabledProvider[method]({})) as { content: { type: string; text: string }[] };
+      expect(result.content).toHaveLength(1);
+      expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toContain('disabled for this repo');
+      expect(result.content[0].text).toContain(method);
+      expect(result.content[0].text).toContain('.apra-fleet/code-intel.json');
     });
   }
 });
