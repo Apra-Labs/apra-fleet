@@ -14,7 +14,7 @@ import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
-import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
+import { getStallDetector, resolveSessionLogPath, STALL_THRESHOLD_MS_BY_TIER } from '../services/stall/index.js';
 import { getCachedMemberPathContext } from '../services/member-home.js';
 import { provisionAgents, remoteAgentsDir, loadCanonicalAgentSet } from '../services/agent-provisioner.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
@@ -724,6 +724,21 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // confirmed stall settles the pending dispatch immediately and surfaces a
   // typed 'stalled' error instead of hanging.
   const stallAbortController = new AbortController();
+  // apra-fleet-rmkb-ch5.2: resolve the requested tier NAME (not the full
+  // provider model id) up front so the stall watch entry can be registered
+  // with its tier-aware threshold from the start, rather than added at the
+  // global default and patched later. input.model may be a tier name
+  // ('cheap'/'standard'/'premium'), a specific model id, or omitted --
+  // anything other than an exact tier name (including a specific model id or
+  // an omitted value, which defaults to standard per :772 below) falls back
+  // to the standard threshold, never to undefined/NaN. The numbers
+  // themselves live only in STALL_THRESHOLD_MS_BY_TIER (stall-detector.ts) --
+  // not re-declared here.
+  const stallTierName: 'cheap' | 'standard' | 'premium' =
+    input.model === 'cheap' || input.model === 'standard' || input.model === 'premium'
+      ? input.model
+      : 'standard';
+  const stallThresholdMs = STALL_THRESHOLD_MS_BY_TIER[stallTierName];
   stallDetector.add(agent.id, {
     sessionId: null,
     logFilePath: null,
@@ -734,6 +749,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     memberName: agent.friendlyName,
     provisional: true,
     stallReported: false,
+    stallThresholdMs,
     onStall: () => {
       // Stall detector already wrote 'unknown' to the statusline before calling here.
       // Our job: clear in-process state so the member can accept new calls.
