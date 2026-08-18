@@ -49,6 +49,20 @@ export interface Agent {
    *  service-local supervisor ledger. Set/enforced by later eft.10.x tasks;
    *  this field only introduces and persists the value. */
   reservedBy?: string | null;
+  /** Whether this member's sshd permits SSH remote (reverse) port forwarding,
+   *  i.e. whether openReverseTunnel (src/services/ssh.ts) can give it a
+   *  reachable fleet MCP endpoint (rmkb-3n5.5.2). Probed ONCE, on the
+   *  remote-member registration path, and read from here by the dispatch path
+   *  -- dispatch must never re-probe. `false` means the sshd refused the
+   *  forward (AllowTcpForwarding no) or was unreachable when probed, so
+   *  dispatch degrades to the committed knowledge bible instead of failing.
+   *  `undefined` means never probed: local members (never tunnelled), and
+   *  cloud members registered while their instance was stopped. */
+  sshTcpForwarding?: boolean;
+  /** ISO 8601 timestamp of the sshTcpForwarding probe above, so a stale
+   *  `false` can be re-probed deliberately (update_member) rather than
+   *  implicitly per dispatch. */
+  sshTcpForwardingProbedAt?: string;
 }
 
 export interface GitHubAppConfig {

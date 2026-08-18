@@ -25,6 +25,8 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { composePermissions } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { getMemberHomeDir } from '../services/member-home.js';
+import { openReverseTunnel, TcpForwardingRefusedError } from '../services/ssh.js';
+import { DEFAULT_PORT } from '../paths.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -106,6 +108,94 @@ export function __setInteractiveBootstrapDeps(overrides: Partial<InteractiveBoot
 /** Test-only: restore the real (non-mocked) bootstrap dependencies. */
 export function __resetInteractiveBootstrapDeps(): void {
   interactiveBootstrapDeps = realInteractiveBootstrapDeps;
+}
+
+// --- SSH TCP-forwarding capability probe: injectable dep + test gate ---
+//
+// rmkb-3n5.5.2: a remote member only gets a reachable fleet MCP endpoint if
+// its sshd permits remote (reverse) port forwarding. AllowTcpForwarding yes is
+// the sshd default, but a member that refuses must degrade to the committed
+// knowledge bible with a clear warning -- and finding that out by attempting a
+// forward on every dispatch would be slow and noisy. So we probe ONCE here and
+// record the answer on the agent record for the dispatch path to read.
+//
+// The probe is a real ssh2 remote-forward request (open, confirm a port was
+// assigned, close) rather than reading sshd_config, which is often unreadable
+// to the member's own user -- and, per this repo's Windows rule, it issues NO
+// member-bound shell command at all, so there is no shell-level expansion to
+// get wrong on a PowerShell member.
+//
+// Same two safeguards as the interactive bootstrap above: the call is
+// injectable, and in NODE_ENV=test (tests/setup.ts) the probe is skipped
+// unless a test has actually injected a fake -- so no unit test ever opens a
+// real SSH connection to a fixture host, while production always probes.
+export interface TcpForwardingProbeDeps {
+  openReverseTunnel: typeof openReverseTunnel;
+}
+
+const realTcpForwardingProbeDeps: TcpForwardingProbeDeps = { openReverseTunnel };
+let tcpForwardingProbeDeps: TcpForwardingProbeDeps = realTcpForwardingProbeDeps;
+
+/** Test-only: inject a fake openReverseTunnel for the TCP-forwarding probe. */
+export function __setTcpForwardingProbeDeps(overrides: Partial<TcpForwardingProbeDeps>): void {
+  tcpForwardingProbeDeps = { ...realTcpForwardingProbeDeps, ...overrides };
+}
+
+/** Test-only: restore the real (non-mocked) TCP-forwarding probe dependency. */
+export function __resetTcpForwardingProbeDeps(): void {
+  tcpForwardingProbeDeps = realTcpForwardingProbeDeps;
+}
+
+function tcpForwardingProbeEnabled(): boolean {
+  if (process.env.NODE_ENV === 'test' && tcpForwardingProbeDeps === realTcpForwardingProbeDeps) {
+    return false;
+  }
+  return true;
+}
+
+/** Ceiling on the sshd's answer to the probe's forward request. The Jetson
+ *  device notes warn about latency on this path, so this is generous relative
+ *  to a LAN round trip but still well inside registration's own budget. */
+const TCP_FORWARDING_PROBE_TIMEOUT_MS = 10000;
+
+/**
+ * Best-effort, never-throwing probe: does this member's sshd permit a remote
+ * port forward? Returns the capability to persist plus a warning to surface
+ * (never swallow) when it does not.
+ */
+export async function probeTcpForwarding(agent: Agent): Promise<{ supported: boolean; warning?: string }> {
+  let tunnel: Awaited<ReturnType<typeof openReverseTunnel>>;
+  try {
+    tunnel = await tcpForwardingProbeDeps.openReverseTunnel(agent, DEFAULT_PORT, {
+      requestTimeoutMs: TCP_FORWARDING_PROBE_TIMEOUT_MS,
+    });
+  } catch (err: any) {
+    if (err instanceof TcpForwardingRefusedError) {
+      return {
+        supported: false,
+        warning: 'SSH TCP forwarding refused by this member\'s sshd -- tunnelled fleet MCP access is unavailable, '
+          + 'so dispatches fall back to the committed knowledge bible. Set "AllowTcpForwarding yes" in its '
+          + 'sshd_config and restart sshd, then re-run the probe via update_member.',
+      };
+    }
+    return {
+      supported: false,
+      warning: `Could not probe SSH TCP forwarding (${err?.message ?? String(err)}) -- recorded as unavailable; `
+        + 're-run the probe via update_member once the member is reachable.',
+    };
+  }
+
+  // A successful bind that somehow reported no port is not a usable tunnel.
+  const assignedPort = tunnel.remotePort;
+  try { await tunnel.close(); } catch { /* best-effort: probe must never throw */ }
+  if (!assignedPort || assignedPort <= 0) {
+    return {
+      supported: false,
+      warning: 'SSH TCP forwarding probe bound no usable port on this member -- recorded as unavailable; '
+        + 'dispatches fall back to the committed knowledge bible.',
+    };
+  }
+  return { supported: true };
 }
 
 function interactiveBootstrapEnabled(): boolean {
@@ -368,6 +458,20 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       // even if the member was never opened interactively. Best-effort/non-fatal;
       // non-Claude providers no-op.
       await seedWorkspaceTrust(tempAgent, strategy, 'register_member');
+
+      // rmkb-3n5.5.2: record this member's SSH TCP-forwarding capability ONCE,
+      // here, so the dispatch path can decide whether to open a reverse tunnel
+      // by reading agent.sshTcpForwarding instead of re-probing per prompt.
+      // Remote members only -- a local member shares the operator's machine and
+      // is never tunnelled, so its registration path is untouched. Best-effort
+      // and non-fatal by construction (probeTcpForwarding never throws): a
+      // refusal is RECORDED as false and surfaced as a warning, never thrown.
+      if (!isLocal && tcpForwardingProbeEnabled()) {
+        const fwd = await probeTcpForwarding(tempAgent);
+        tempAgent.sshTcpForwarding = fwd.supported;
+        tempAgent.sshTcpForwardingProbedAt = new Date().toISOString();
+        if (fwd.warning) warnings.push(fwd.warning);
+      }
     }
 
     // --- Validate opencode model_tiers against available models ---
@@ -570,6 +674,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     result += `  Auth:    ${tempAgent.authType}\n`;
     if (connResult.latencyMs !== undefined) {
       result += `  Latency: ${connResult.latencyMs}ms\n`;
+    }
+    // rmkb-3n5.5.2: surface the recorded capability, not just the warning, so
+    // the operator can see which members can carry a tunnelled MCP endpoint.
+    if (tempAgent.sshTcpForwarding !== undefined) {
+      result += `  Tunnel:  SSH TCP forwarding ${tempAgent.sshTcpForwarding ? 'available' : 'unavailable'}\n`;
     }
   }
   if (isCloud && cloudConfig) {
