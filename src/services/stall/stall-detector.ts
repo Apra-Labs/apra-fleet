@@ -22,6 +22,21 @@ export const STALL_THRESHOLD_MS_BY_TIER: Readonly<Record<'cheap' | 'standard' | 
   premium: PREMIUM_STALL_THRESHOLD_MS,
 };
 
+/**
+ * apra-fleet-rmkb-ch5.2: resolve the stall threshold for a dispatch's
+ * `execute_prompt` `model` input. `model` may be an exact tier name
+ * ('cheap'/'standard'/'premium'), a specific provider model id, or omitted.
+ * Only an exact tier-name match selects a non-default threshold; a specific
+ * model id, any other unrecognized value, or an omitted model all fall back
+ * to the standard threshold (never undefined/NaN), matching execute_prompt's
+ * own default tier of 'standard' when `model` is omitted.
+ */
+export function resolveStallThresholdForModel(model: string | undefined): number {
+  const tier: 'cheap' | 'standard' | 'premium' =
+    model === 'cheap' || model === 'standard' || model === 'premium' ? model : 'standard';
+  return STALL_THRESHOLD_MS_BY_TIER[tier];
+}
+
 export interface StallEntry {
   sessionId: string | null;
   logFilePath: string | null;

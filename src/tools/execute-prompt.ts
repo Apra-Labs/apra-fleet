@@ -14,7 +14,7 @@ import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
-import { getStallDetector, resolveSessionLogPath, STALL_THRESHOLD_MS_BY_TIER } from '../services/stall/index.js';
+import { getStallDetector, resolveSessionLogPath, resolveStallThresholdForModel } from '../services/stall/index.js';
 import { getCachedMemberPathContext } from '../services/member-home.js';
 import { provisionAgents, remoteAgentsDir, loadCanonicalAgentSet } from '../services/agent-provisioner.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
@@ -728,17 +728,11 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // provider model id) up front so the stall watch entry can be registered
   // with its tier-aware threshold from the start, rather than added at the
   // global default and patched later. input.model may be a tier name
-  // ('cheap'/'standard'/'premium'), a specific model id, or omitted --
-  // anything other than an exact tier name (including a specific model id or
-  // an omitted value, which defaults to standard per :772 below) falls back
-  // to the standard threshold, never to undefined/NaN. The numbers
-  // themselves live only in STALL_THRESHOLD_MS_BY_TIER (stall-detector.ts) --
-  // not re-declared here.
-  const stallTierName: 'cheap' | 'standard' | 'premium' =
-    input.model === 'cheap' || input.model === 'standard' || input.model === 'premium'
-      ? input.model
-      : 'standard';
-  const stallThresholdMs = STALL_THRESHOLD_MS_BY_TIER[stallTierName];
+  // ('cheap'/'standard'/'premium'), a specific model id, or omitted -- all
+  // handled by resolveStallThresholdForModel (stall-detector.ts), the single
+  // exported mapping helper the dispatch path imports rather than
+  // re-declaring the numbers/resolution rules here.
+  const stallThresholdMs = resolveStallThresholdForModel(input.model);
   stallDetector.add(agent.id, {
     sessionId: null,
     logFilePath: null,
