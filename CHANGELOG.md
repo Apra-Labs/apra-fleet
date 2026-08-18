@@ -125,13 +125,15 @@ What shipped:
   parses `bd`'s dolt remote-list output was fixed: a literal `null` result
   (which `bd` prints for "no remotes configured") is now recognized as
   empty rather than treated as malformed output.
-- `.gitignore` no longer discards the durable per-sprint cost ledgers
-  (`sprint-logs/*.jsonl`, `*.analysis.md`, `calibration.json`, including in
-  nested package directories) -- only the CLI's genuine per-run scratch
-  snapshots (`sprint-logs/sprint_*.json`) remain ignored. A non-ASCII
-  character introduced by an earlier edit to this file was also fixed. The
-  backlog of previously-hidden, already-durable sprint-log files this
-  surfaced was committed.
+- A non-ASCII character introduced by an earlier edit to `.gitignore` was
+  fixed. The sprint had also resolved the sprint-logs/ contradiction by
+  un-ignoring the durable per-sprint cost ledgers, but that `.gitignore`
+  change (and the matching doc update) was deliberately not replayed here to
+  avoid fighting PR #421, which is landing its own resolution of the same
+  contradiction on `main`. As of this entry, `.gitignore` still discards
+  `sprint-logs/*.jsonl`, `*.analysis.md`, and the whole `/sprint-logs/`
+  directory, so ledgers `git add sprint-logs/` stages are silently dropped
+  until #421 (or an equivalent fix) lands.
 - Sprint-log ledgers no longer bake the runner's absolute home directory
   (and OS username) into the committed `transcriptDir` field of their meta
   record -- the path is now written `$HOME`-relative when it falls under
