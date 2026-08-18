@@ -20,6 +20,63 @@ const DEFAULT_STALL_THRESHOLD_MS = 150_000;
 // polling cadence (DEFAULT_POLL_INTERVAL_MS) plus time for Claude Code to
 // write the resulting tool_result/error after its own timeout fires.
 const TOOL_TIMEOUT_GRACE_MS = 60_000;
+// apra-fleet PR#416 review (finding 4): hard ceiling on the effective stall
+// threshold. Without it, a single absurd `input.timeout` in a tool_use block
+// (the model writes that value into its own transcript, so it is untrusted
+// input) disables stall detection for that entire duration -- a 86_400_000ms
+// declaration would silence the watchdog for a day. 30 minutes sits
+// comfortably above the largest real case that motivated the feature
+// (900_000ms + grace = 960_000ms). Override with STALL_MAX_THRESHOLD_MS.
+const MAX_STALL_THRESHOLD_MS = 1_800_000;
+
+/**
+ * Clamp the per-tick stall threshold into [baselineMs, MAX_STALL_THRESHOLD_MS].
+ *
+ * A pending tool_use's own declared `input.timeout` is a useful hint that a
+ * long-running call is legitimately in flight, but it is model-authored and
+ * must not be trusted as a raw control parameter:
+ *
+ *  - FLOOR: a small (or seconds-denominated -- `timeout: 30`) value would
+ *    otherwise push the effective threshold BELOW the generic baseline and
+ *    make the watchdog fire earlier than it does with no declaration at all.
+ *    The floor also neutralizes the seconds-vs-milliseconds unit ambiguity in
+ *    `extractPendingToolTimeoutMs`.
+ *  - CEILING: an enormous value would otherwise disable detection entirely.
+ *
+ * Non-finite / NaN / negative / null / undefined inputs all degrade to the
+ * baseline, which is the safe answer for an uninterpretable declaration.
+ */
+export function computeEffectiveThresholdMs(
+  baselineMs: number,
+  pendingToolTimeoutMs: number | null | undefined,
+): number {
+  const maxMs = parseInt(process.env['STALL_MAX_THRESHOLD_MS'] ?? String(MAX_STALL_THRESHOLD_MS));
+  const ceilingMs = Number.isFinite(maxMs) ? maxMs : MAX_STALL_THRESHOLD_MS;
+  const base = Number.isFinite(baselineMs) ? baselineMs : DEFAULT_STALL_THRESHOLD_MS;
+  // No usable declaration -> the generic baseline stands untouched. (Note this
+  // is deliberately NOT `(pendingToolTimeoutMs ?? 0) + GRACE`: that form would
+  // silently raise the threshold to the grace period alone whenever the
+  // baseline is configured below it, changing behavior for the very common
+  // "no declared timeout" case.)
+  if (typeof pendingToolTimeoutMs !== 'number' || !Number.isFinite(pendingToolTimeoutMs)) {
+    return Math.min(base, ceilingMs);
+  }
+  return Math.min(Math.max(base, pendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS), ceilingMs);
+}
+
+/** Which clamp (if any) was applied, for observability in the stall_detected log. */
+export function describeClamp(
+  baselineMs: number,
+  pendingToolTimeoutMs: number | null | undefined,
+  effectiveThresholdMs: number,
+): 'floor' | 'ceiling' | null {
+  // No usable declaration -> the baseline was used as-is; nothing was clamped.
+  if (typeof pendingToolTimeoutMs !== 'number' || !Number.isFinite(pendingToolTimeoutMs)) return null;
+  const raw = pendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS;
+  if (effectiveThresholdMs < raw) return 'ceiling';
+  if (effectiveThresholdMs > raw) return 'floor';
+  return null;
+}
 
 export interface StallEntry {
   sessionId: string | null;
@@ -174,9 +231,11 @@ export class StallDetector {
         // the non-provisional path: a pending tool_use's own declared
         // timeout, when present, replaces the generic baseline threshold for
         // this tick's stall check.
-        const provisionalEffectiveThresholdMs = provisionalPendingToolTimeoutMs
-          ? provisionalPendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS
-          : stallThresholdMs;
+        // Clamped into [baseline, ceiling] -- see computeEffectiveThresholdMs.
+        const provisionalEffectiveThresholdMs = computeEffectiveThresholdMs(
+          stallThresholdMs,
+          provisionalPendingToolTimeoutMs,
+        );
         if (now - entry.lastActivityAt > provisionalEffectiveThresholdMs && !entry.stallReported) {
           const idleSecs = Math.floor((now - entry.lastActivityAt) / 1000);
           scope.warn(JSON.stringify({
@@ -187,6 +246,7 @@ export class StallDetector {
             provisional: true,
             pendingToolTimeoutMs: provisionalPendingToolTimeoutMs ?? null,
             effectiveThresholdMs: provisionalEffectiveThresholdMs,
+            clamped: describeClamp(stallThresholdMs, provisionalPendingToolTimeoutMs, provisionalEffectiveThresholdMs),
             lastActivityAt: toLocalISOString(entry.lastActivityAt),
           }));
           writeStatusline(new Map([[memberId, 'unknown']]));
@@ -214,9 +274,8 @@ export class StallDetector {
       // it is a hard, model-declared budget for a call already known to be
       // long-running (900000ms in one confirmed stall, 600000ms in another),
       // and the fleet watchdog must not fire before that budget elapses.
-      const effectiveThresholdMs = pendingToolTimeoutMs
-        ? pendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS
-        : stallThresholdMs;
+      // Clamped into [baseline, ceiling] -- see computeEffectiveThresholdMs.
+      const effectiveThresholdMs = computeEffectiveThresholdMs(stallThresholdMs, pendingToolTimeoutMs);
 
       if (error) {
         const newFailures = entry.consecutiveReadFailures + 1;
@@ -297,6 +356,7 @@ export class StallDetector {
           provisional: false,
           pendingToolTimeoutMs: pendingToolTimeoutMs ?? null,
           effectiveThresholdMs,
+          clamped: describeClamp(stallThresholdMs, pendingToolTimeoutMs, effectiveThresholdMs),
           lastActivityAt: toLocalISOString(entry.lastActivityAt),
         }));
         writeStatusline(new Map([[memberId, 'unknown']]));

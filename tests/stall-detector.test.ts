@@ -33,7 +33,12 @@ vi.mock('../src/utils/log-helpers.js', () => ({
   },
 }));
 
-import { StallDetector, type StallEntry } from '../src/services/stall/stall-detector.js';
+import {
+  StallDetector,
+  computeEffectiveThresholdMs,
+  describeClamp,
+  type StallEntry,
+} from '../src/services/stall/stall-detector.js';
 
 function makeEntry(overrides: Partial<StallEntry> = {}): StallEntry {
   return {
@@ -632,5 +637,68 @@ describe('StallDetector', () => {
 
       expect(detector.getEntry('member-1')?.lastActivityAt).toBe(mtimeMs);
     });
+  });
+});
+
+describe('computeEffectiveThresholdMs (PR#416 finding 4: clamp)', () => {
+  const BASELINE = 150_000;   // DEFAULT_STALL_THRESHOLD_MS
+  const GRACE = 60_000;       // TOOL_TIMEOUT_GRACE_MS
+  const CEILING = 1_800_000;  // MAX_STALL_THRESHOLD_MS
+
+  beforeEach(() => { delete process.env['STALL_MAX_THRESHOLD_MS']; });
+  afterEach(() => { delete process.env['STALL_MAX_THRESHOLD_MS']; });
+
+  // [label, pendingToolTimeoutMs, expected effective threshold, expected clamp]
+  const cases: Array<[string, number | null | undefined, number, 'floor' | 'ceiling' | null]> = [
+    ['zero',                    0,          BASELINE, 'floor'],
+    ['one ms',                  1,          BASELINE, 'floor'],
+    ['seconds-denominated 30',  30,         BASELINE, 'floor'],
+    ['30s',                     30_000,     BASELINE, 'floor'],
+    ['just under the floor',    89_999,     BASELINE, 'floor'],
+    ['just over the floor',     90_001,     150_001,  null],
+    ['the real 900s case',      900_000,    960_000,  null],
+    ['absurd 24h declaration',  86_400_000, CEILING,  'ceiling'],
+    ['exactly at the ceiling',  CEILING - GRACE, CEILING, null],
+    ['null',                    null,       BASELINE, null],
+    ['undefined',               undefined,  BASELINE, null],
+    ['NaN',                     NaN,        BASELINE, null],
+    ['negative',                -5_000,     BASELINE, 'floor'],
+    ['negative beyond grace',   -1_000_000, BASELINE, 'floor'],
+    ['Infinity',                Infinity,   BASELINE, null],
+  ];
+
+  for (const [label, pending, expected, expectedClamp] of cases) {
+    it(`${label} -> ${expected}ms (clamped: ${String(expectedClamp)})`, () => {
+      const actual = computeEffectiveThresholdMs(BASELINE, pending);
+      expect(actual).toBe(expected);
+      expect(describeClamp(BASELINE, pending, actual)).toBe(expectedClamp);
+    });
+  }
+
+  it('never returns below the supplied baseline, whatever the declaration', () => {
+    for (const pending of [0, 1, 30, 30_000, 89_999, -1, NaN, null, undefined]) {
+      expect(computeEffectiveThresholdMs(BASELINE, pending as number)).toBeGreaterThanOrEqual(BASELINE);
+    }
+  });
+
+  it('never returns above the ceiling, whatever the declaration', () => {
+    for (const pending of [900_000, 1_800_000, 86_400_000, Number.MAX_SAFE_INTEGER]) {
+      expect(computeEffectiveThresholdMs(BASELINE, pending)).toBeLessThanOrEqual(CEILING);
+    }
+  });
+
+  it('honors the STALL_MAX_THRESHOLD_MS env override', () => {
+    process.env['STALL_MAX_THRESHOLD_MS'] = '300000';
+    expect(computeEffectiveThresholdMs(BASELINE, 900_000)).toBe(300_000);
+    expect(describeClamp(BASELINE, 900_000, 300_000)).toBe('ceiling');
+  });
+
+  it('respects a baseline raised above the declared timeout + grace', () => {
+    expect(computeEffectiveThresholdMs(500_000, 100_000)).toBe(500_000);
+  });
+
+  it('falls back to the built-in ceiling when the env override is unparseable', () => {
+    process.env['STALL_MAX_THRESHOLD_MS'] = 'not-a-number';
+    expect(computeEffectiveThresholdMs(BASELINE, 86_400_000)).toBe(CEILING);
   });
 });
