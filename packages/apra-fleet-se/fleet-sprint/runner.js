@@ -171,8 +171,12 @@ export const RUNBOOK_FOR_ROLE = {
  * prefix backticked and written as `Tool(payload)`, optionally followed by
  * prose commentary on the same or a continuation line.
  *
- * Only the FIRST backticked token of a list item is taken, and only list
- * items are considered. That is what keeps the parser from picking up the
+ * Only LIST ITEMS are considered, and within a list item the first backticked
+ * token that is SHAPED like a permission wins -- integ-test-playbook.md writes
+ * its entries as "- `npm run ...` (e.g. `Bash(npm run *)`)", where the prefix
+ * is the second backticked token, so "first backtick" alone would parse that
+ * whole runbook as declaring nothing. Restricting to list items is what keeps
+ * the parser from picking up the
  * explanatory prose these sections also contain -- regression-test-playbook.md's
  * Permissions preamble mentions `Bash(node:*)`, `Bash(git:*)` and `Bash(bd:*)`
  * as examples of "a broader prefix entry counts as coverage", and a naive
@@ -195,12 +199,13 @@ export function parseRunbookPermissions(markdown) {
         // Any subsequent heading of the same or higher level ends the section.
         if (/^#{1,2}\s+\S/.test(line)) break;
         if (!/^\s*[-*+]\s+/.test(line)) continue;
-        const backticked = /`([^`]+)`/.exec(line);
-        if (!backticked) continue;
-        const candidate = backticked[1].trim();
-        // Must be a well-formed `Tool(payload)` permission string.
-        if (!/^[A-Za-z][A-Za-z0-9_-]*\(.*\)$/.test(candidate)) continue;
-        if (!out.includes(candidate)) out.push(candidate);
+        for (const m of line.matchAll(/`([^`]+)`/g)) {
+            const candidate = m[1].trim();
+            // Must be a well-formed `Tool(payload)` permission string.
+            if (!/^[A-Za-z][A-Za-z0-9_-]*\(.*\)$/.test(candidate)) continue;
+            if (!out.includes(candidate)) out.push(candidate);
+            break; // one declaration per list item
+        }
     }
     return out;
 }
