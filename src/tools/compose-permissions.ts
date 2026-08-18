@@ -249,6 +249,26 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+/** Resolve a provider's permission-config path (e.g. ".claude/settings.local.json",
+ *  from ClaudeProvider.permissionConfigPaths()) to an absolute path anchored at
+ *  the member's work folder, computed in JavaScript rather than left for the
+ *  member's shell to resolve.
+ *
+ *  RemoteStrategy.execCommand passes NO cwd (src/services/strategy.ts), unlike
+ *  LocalStrategy which passes cwd: agent.workFolder -- so a bare relative path
+ *  handed to deliverConfigFile lands in the SSH login cwd ($HOME) on a remote
+ *  member instead of the work folder the dispatch path `cd`s into before
+ *  running the provider CLI (src/os/linux.ts). Joining here mirrors the same
+ *  resolution already used for stack detection (see detectStacks above, whose
+ *  comment explains why an absolute path is required for remote/SSH members).
+ *  For local members this just turns the path into its fully-qualified form
+ *  in the same directory LocalStrategy already uses as cwd -- no behavior
+ *  change. Never rely on shell-level $HOME/~ expansion here: the member's
+ *  shell may be PowerShell (see CLAUDE.md and probeCommandFor/agent.os). */
+function resolveConfigDeliveryPath(agent: Agent, relativePath: string): string {
+  return `${agent.workFolder}/${relativePath}`.replace(/\\/g, '/');
+}
+
 /** Deliver a single config file to the member.
  *  Creates parent directory and writes the content (JSON object or TOML string).
  *  JSON object content is deep-merged into whatever the file already
@@ -410,7 +430,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     const paths = provider.permissionConfigPaths();
     try {
       for (let i = 0; i < paths.length; i++) {
-        await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+        await deliverConfigFile(strategy, agent.os ?? 'linux', resolveConfigDeliveryPath(agent, paths[i]), configs[i]);
       }
     } catch (e) {
       if (e instanceof ConfigDeliveryError) {
@@ -453,7 +473,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   try {
     for (let i = 0; i < paths.length; i++) {
-      await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+      await deliverConfigFile(strategy, agent.os ?? 'linux', resolveConfigDeliveryPath(agent, paths[i]), configs[i]);
     }
   } catch (e) {
     if (e instanceof ConfigDeliveryError) {
