@@ -84,7 +84,10 @@ export class AgyProvider implements ProviderAdapter {
       }
     }
 
-    if (unattended === 'dangerous') {
+    if (unattended === 'auto' || unattended === 'dangerous') {
+      if (unattended === 'auto') {
+        logWarn('agy', "WARNING: unattended='auto' is not supported for AGY -- falling back to --dangerously-skip-permissions (no classifier safety). Ensure deny rules are configured.");
+      }
       cmd += ' --dangerously-skip-permissions';
     }
 
