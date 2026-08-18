@@ -44,6 +44,16 @@ export class OpenCodeProvider implements ProviderAdapter {
     return '--auto';
   }
 
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    if (unattended === 'auto' || unattended === 'dangerous') {
+      if (unattended === 'dangerous') {
+        logWarn('opencode', "WARNING: unattended='dangerous' is not supported for opencode -- falling back to --auto (no classifier safety). Ensure deny rules are configured.");
+      }
+      return this.permissionModeAutoFlag() ?? '';
+    }
+    return '';
+  }
+
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
     return {
       cheap: 'opencode/north-mini-code-free',
@@ -104,13 +114,8 @@ export class OpenCodeProvider implements ProviderAdapter {
     if (model) {
       cmd += ` ${this.modelFlag(model)}`;
     }
-    if (unattended === 'auto' || unattended === 'dangerous') {
-      if (unattended === 'dangerous') {
-        logWarn('opencode', "WARNING: unattended='dangerous' is not supported for opencode -- falling back to --auto (no classifier safety). Ensure deny rules are configured.");
-      }
-      const flag = this.permissionModeAutoFlag();
-      if (flag) cmd += ` ${flag}`;
-    }
+    const permFlag = this.resolvePermissionFlag(unattended);
+    if (permFlag) cmd += ` ${permFlag}`;
     cmd += ` ${this.jsonOutputFlag()}`;
     const resume = this.resumeFlag(sessionId, resuming);
     if (resume) {

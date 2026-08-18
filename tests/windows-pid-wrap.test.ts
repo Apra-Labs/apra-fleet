@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { pidWrapWindows } from '../src/os/windows.js';
 import { WindowsCommands } from '../src/os/windows.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
+import { AgyProvider } from '../src/providers/agy.js';
+import { OpenCodeProvider } from '../src/providers/opencode.js';
 import type { PromptOptions } from '../src/providers/provider.js';
 
 const provider = new ClaudeProvider();
@@ -153,5 +155,43 @@ describe('buildAgentPromptCommand: env var setup', () => {
     const out = windows.buildAgentPromptCommand(provider, { ...baseOpts });
     expect(out).toContain('FLEET_PID:$pid');
     expect(out).toContain('claude');
+  });
+});
+
+// ─── 5. Provider-delegated unattended flag resolution (Windows dispatch) ──────
+//
+// apra-fleet#422 P0-2: os/windows.ts previously re-derived the auto/dangerous
+// flag branching itself instead of delegating to the provider, so providers
+// with no true "auto" (AGY) or no true "dangerous" (OpenCode) silently got NO
+// permission flag at all on Windows dispatch -- unlike the POSIX path, which
+// already applied each provider's fallback via buildPromptCommand(). These
+// tests pin the Windows path to the same provider-owned fallback semantics.
+
+describe('buildAgentPromptCommand: AGY has no true auto -- falls back to --dangerously-skip-permissions', () => {
+  const agy = new AgyProvider();
+
+  it('unattended=auto adds --dangerously-skip-permissions, not nothing', () => {
+    const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, unattended: 'auto' });
+    expect(out).toContain('--dangerously-skip-permissions');
+  });
+
+  it('unattended=dangerous also adds --dangerously-skip-permissions', () => {
+    const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, unattended: 'dangerous' });
+    expect(out).toContain('--dangerously-skip-permissions');
+  });
+});
+
+describe('buildAgentPromptCommand: OpenCode has no true dangerous -- falls back to --auto', () => {
+  const opencode = new OpenCodeProvider();
+
+  it('unattended=auto adds --auto', () => {
+    const out = windows.buildAgentPromptCommand(opencode, { ...baseOpts, unattended: 'auto' });
+    expect(out).toContain('--auto');
+  });
+
+  it('unattended=dangerous also adds --auto, not --dangerously-skip-permissions', () => {
+    const out = windows.buildAgentPromptCommand(opencode, { ...baseOpts, unattended: 'dangerous' });
+    expect(out).toContain('--auto');
+    expect(out).not.toContain('--dangerously-skip-permissions');
   });
 });

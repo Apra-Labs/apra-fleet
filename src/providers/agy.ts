@@ -84,12 +84,8 @@ export class AgyProvider implements ProviderAdapter {
       }
     }
 
-    if (unattended === 'auto' || unattended === 'dangerous') {
-      if (unattended === 'auto') {
-        logWarn('agy', "WARNING: unattended='auto' is not supported for AGY -- falling back to --dangerously-skip-permissions (no classifier safety). Ensure deny rules are configured.");
-      }
-      cmd += ' --dangerously-skip-permissions';
-    }
+    const permFlag = this.resolvePermissionFlag(unattended);
+    if (permFlag) cmd += ` ${permFlag}`;
 
     // After agy exits, read its transcript from disk (primary output channel --
     // agy writes its response to CONOUT$, not stdout, so file I/O is required).
@@ -107,6 +103,16 @@ export class AgyProvider implements ProviderAdapter {
 
   permissionModeAutoFlag(): string | null {
     return null;
+  }
+
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    if (unattended === 'auto' || unattended === 'dangerous') {
+      if (unattended === 'auto') {
+        logWarn('agy', "WARNING: unattended='auto' is not supported for AGY -- falling back to --dangerously-skip-permissions (no classifier safety). Ensure deny rules are configured.");
+      }
+      return this.skipPermissionsFlag();
+    }
+    return '';
   }
 
   parseResponse(result: SSHExecResult): ParsedResponse {

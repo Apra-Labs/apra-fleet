@@ -73,9 +73,8 @@ export class GeminiProvider implements ProviderAdapter {
     } else if (sessionId) {
       cmd += ` ${buildSessionIdFlag(sessionId)}`;
     }
-    if (unattended === 'dangerous') {
-      cmd += ` ${this.skipPermissionsFlag()}`;
-    }
+    const permFlag = this.resolvePermissionFlag(unattended);
+    if (permFlag) cmd += ` ${permFlag}`;
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
     }
@@ -88,6 +87,13 @@ export class GeminiProvider implements ProviderAdapter {
 
   permissionModeAutoFlag(): string | null {
     return null;
+  }
+
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    // 'auto' intentionally produces no flag and no warning here (handled by
+    // the member's Gemini settings file, per tests/providers.test.ts).
+    if (unattended === 'dangerous') return this.skipPermissionsFlag();
+    return '';
   }
 
   parseResponse(result: SSHExecResult): ParsedResponse {

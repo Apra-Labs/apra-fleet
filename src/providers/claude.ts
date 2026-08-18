@@ -77,22 +77,8 @@ export class ClaudeProvider implements ProviderAdapter {
     } else if (sessionId) {
       cmd += ` ${buildSessionIdFlag(sessionId)}`;
     }
-    if (unattended === 'auto') {
-      cmd += ' --permission-mode auto';
-    } else if (unattended === 'dangerous') {
-      cmd += ' --dangerously-skip-permissions';
-    } else {
-      // apra-fleet-eft.65.1: interactive-session parity for the work folder.
-      // A headless `-p` dispatch cannot present a permission prompt, so with no
-      // permission-mode flag the CLI HARD-BLOCKS Edit/Write of a brand-new file
-      // in its own work folder -- even though an interactive session in the same
-      // trusted workspace would simply accept it. `acceptEdits` auto-approves
-      // file-edit tools (Edit/Write/MultiEdit/NotebookEdit) for the working
-      // directory only; it does NOT auto-approve Bash, network, or edits outside
-      // the workspace, so this restores work-folder Edit/Write parity without
-      // broadening the permission model (unlike --dangerously-skip-permissions).
-      cmd += ` ${this.workspaceEditPermissionFlag()}`;
-    }
+    const permFlag = this.resolvePermissionFlag(unattended);
+    if (permFlag) cmd += ` ${permFlag}`;
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
     }
@@ -112,6 +98,21 @@ export class ClaudeProvider implements ProviderAdapter {
     // own work folder in a headless dispatch (which cannot show a trust/permission
     // prompt) WITHOUT the broad --dangerously-skip-permissions bypass.
     return '--permission-mode acceptEdits';
+  }
+
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    if (unattended === 'auto') return '--permission-mode auto';
+    if (unattended === 'dangerous') return '--dangerously-skip-permissions';
+    // apra-fleet-eft.65.1: interactive-session parity for the work folder.
+    // A headless `-p` dispatch cannot present a permission prompt, so with no
+    // permission-mode flag the CLI HARD-BLOCKS Edit/Write of a brand-new file
+    // in its own work folder -- even though an interactive session in the same
+    // trusted workspace would simply accept it. `acceptEdits` auto-approves
+    // file-edit tools (Edit/Write/MultiEdit/NotebookEdit) for the working
+    // directory only; it does NOT auto-approve Bash, network, or edits outside
+    // the workspace, so this restores work-folder Edit/Write parity without
+    // broadening the permission model (unlike --dangerously-skip-permissions).
+    return this.workspaceEditPermissionFlag() ?? '';
   }
 
   parseResponse(result: SSHExecResult): ParsedResponse {
