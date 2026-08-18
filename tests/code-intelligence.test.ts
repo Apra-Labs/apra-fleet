@@ -325,6 +325,31 @@ describe('NullProvider', () => {
 });
 
 // ---------------------------------------------------------------------------
+// RepoDisabledProvider -- structured messages, never throws (apra-fleet-le1.1.1)
+//
+// Distinct from NullProvider: the message must say "disabled for this repo"
+// (not "for this member") and point at the .apra-fleet/code-intel.json knob,
+// since it is returned when a repo has explicitly opted out via that file
+// rather than when a member has no provider configured.
+// ---------------------------------------------------------------------------
+describe('RepoDisabledProvider', () => {
+  const repoDisabledProvider = new RepoDisabledProvider();
+
+  const methods = ['graph', 'impact', 'query', 'context', 'map', 'flow', 'tests'] as const;
+
+  for (const method of methods) {
+    it(`${method}() returns a structured repo-disabled message and does not throw`, async () => {
+      const result = (await repoDisabledProvider[method]({})) as { content: { type: string; text: string }[] };
+      expect(result.content).toHaveLength(1);
+      expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toContain('disabled for this repo');
+      expect(result.content[0].text).toContain(method);
+      expect(result.content[0].text).toContain('.apra-fleet/code-intel.json');
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GitNexusProvider tests
 //
 // The provider module holds a module-level sharedClient singleton.  Because
