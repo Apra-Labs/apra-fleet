@@ -6,6 +6,21 @@ import { writeStatusline } from '../statusline.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_STALL_THRESHOLD_MS = 120_000;
+const PREMIUM_STALL_THRESHOLD_MS = 600_000;
+
+/**
+ * apra-fleet-rmkb-ch5: single source of truth for how long each model tier is
+ * allowed to go without an activity signal before the stall detector treats
+ * it as wedged. A premium-tier dispatch legitimately reasons for minutes
+ * between tool calls, so it needs a longer leash than cheap/standard. The
+ * dispatch path (execute_prompt) imports this mapping rather than
+ * re-declaring the numbers.
+ */
+export const STALL_THRESHOLD_MS_BY_TIER: Readonly<Record<'cheap' | 'standard' | 'premium', number>> = {
+  cheap: DEFAULT_STALL_THRESHOLD_MS,
+  standard: DEFAULT_STALL_THRESHOLD_MS,
+  premium: PREMIUM_STALL_THRESHOLD_MS,
+};
 
 export interface StallEntry {
   sessionId: string | null;
@@ -16,6 +31,17 @@ export interface StallEntry {
   memberId: string;
   memberName: string;
   provisional: boolean;
+  /**
+   * apra-fleet-rmkb-ch5.1: optional per-entry override for how long this
+   * specific member may go without an activity signal before being judged
+   * stalled. Resolution order applied in `_poll` (highest first): the
+   * STALL_THRESHOLD_MS env var, then this field, then
+   * DEFAULT_STALL_THRESHOLD_MS. Lets a premium-tier dispatch (which
+   * legitimately reasons for minutes with no stdout/transcript write) get a
+   * longer leash than the global default, without changing behavior for
+   * entries that don't set it.
+   */
+  stallThresholdMs?: number;
   /** A genuine stall has been detected AND reported/killed -- suppresses
    *  re-reporting and re-killing. Reset when activity resumes. */
   stallReported: boolean;
@@ -93,9 +119,18 @@ export class StallDetector {
     }));
 
     const now = Date.now();
-    const stallThresholdMs = parseInt(process.env['STALL_THRESHOLD_MS'] ?? String(DEFAULT_STALL_THRESHOLD_MS));
+    // apra-fleet-rmkb-ch5.1: the operator escape hatch (STALL_THRESHOLD_MS)
+    // must keep winning over every per-entry value, but the per-entry value
+    // (when present) must win over the global default. Resolved PER ENTRY,
+    // not once per tick, so a mixed watch list (e.g. one premium dispatch
+    // alongside standard-tier ones) judges each entry against its own
+    // threshold.
+    const envStallThresholdMs = process.env['STALL_THRESHOLD_MS'] !== undefined
+      ? parseInt(process.env['STALL_THRESHOLD_MS'])
+      : undefined;
 
     for (const [memberId, entry] of this.stallCheckList.entries()) {
+      const stallThresholdMs = envStallThresholdMs ?? entry.stallThresholdMs ?? DEFAULT_STALL_THRESHOLD_MS;
       if (entry.provisional) {
         // Provisional: if logFilePath is available, check mtime; if logFilePath is null, poll directory activity
         let signalAvailable = true;
