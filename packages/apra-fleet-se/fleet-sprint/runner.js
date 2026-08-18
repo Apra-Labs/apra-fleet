@@ -1544,10 +1544,72 @@ export function createKbPrimingClient(opts = {}) {
         return (typeof folder === 'string' && folder.length > 0) ? folder : null;
     }
 
+    /**
+     * Best-effort text out of an execute_command result, whatever shape the
+     * transport hands back: the real tool's own doc comment
+     * (src/tools/execute-command.ts) says a programmatic caller should prefer
+     * `structuredContent.stdout` over scraping the `Exit code: N\n` text
+     * prefix, but a test double or an older transport may only supply the MCP
+     * content-block text, or (on a hard failure) a bare string. Returns null
+     * rather than guessing when nothing usable is found.
+     */
+    function commandOutput(result) {
+        if (result && typeof result === 'object' && result.isError) return null;
+        if (result && result.structuredContent && typeof result.structuredContent.stdout === 'string') {
+            if (typeof result.structuredContent.exitCode === 'number' && result.structuredContent.exitCode !== 0) return null;
+            return result.structuredContent.stdout;
+        }
+        if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
+            return result.content[0].text;
+        }
+        if (typeof result === 'string') return result;
+        return null;
+    }
+
+    /**
+     * rmkb-3n5.3.1: resolve MEMBER's genuine `git remote get-url origin`, run
+     * on the member itself (via execute_command, cwd'd to its own work
+     * folder) -- never derived, guessed, or defaulted, matching the
+     * knownRepoRemoteUrl precedent (src/tools/execute-prompt.ts:274-279):
+     * forward only a value the member actually reported. Returns null on any
+     * failure, empty output, or output that does not look like a real URL --
+     * a probe failure here must never surface as a fake/derived URL.
+     */
+    async function remoteUrlFor(member, repoPath) {
+        try {
+            const res = await callTool('execute_command', {
+                member_name: member,
+                command: 'git remote get-url origin',
+                run_from: repoPath,
+                timeout_s: 15,
+            });
+            const raw = commandOutput(res);
+            if (typeof raw !== 'string') return null;
+            const withoutExitPrefix = raw.trim().replace(/^Exit code:\s*\d+\s*\n?/, '').trim();
+            if (!withoutExitPrefix || /^Failed to execute command/i.test(withoutExitPrefix)) return null;
+            const firstLine = withoutExitPrefix.split('\n')[0].trim();
+            // No-guessing rule: only accept output that already looks like a
+            // genuine remote URL, never construct one from the folder/branch.
+            if (!(firstLine.includes('://') || firstLine.startsWith('git@'))) return null;
+            return firstLine;
+        } catch (err) {
+            log(`[kb-prime] could not resolve git origin for member '${member}' (non-fatal): ${err.message}`);
+            return null;
+        }
+    }
+
     // member -> work folder, populated by primeAll(). createKbWorkClient reads
     // it so a capture lands in the repo the member actually worked in, rather
     // than being resolved against the fleet server's cwd.
     const folders = new Map();
+
+    // member -> the member's own `git remote get-url origin`, or null when
+    // none could be resolved. Populated by primeAll(), at most once per
+    // member per sprint (including the negative result, so a member without
+    // an origin is not re-probed on every dispatch). createKbWorkClient reads
+    // this the same way it already reads folderOf(), so repo_remote_url can
+    // be forwarded at the KB call sites without a second probe.
+    const remoteUrls = new Map();
 
     // member -> the entries kb_session_prime returned for that member.
     //
@@ -1567,6 +1629,9 @@ export function createKbPrimingClient(opts = {}) {
         folderOf(member) {
             return folders.get(member) || null;
         },
+        remoteUrlOf(member) {
+            return remoteUrls.get(member) || null;
+        },
         knowledgeOf(member) {
             return knowledge.get(member) || [];
         },
@@ -1584,6 +1649,15 @@ export function createKbPrimingClient(opts = {}) {
                         log(`[kb-prime] no work folder for member '${member}' -- skipping (KB stays cold)`);
                         skipped++;
                         continue;
+                    }
+
+                    // Resolve (and cache, including the negative result) this
+                    // member's git origin at most once per sprint. Best-effort:
+                    // this whole path is an optimisation -- remoteUrlFor() never
+                    // throws, so a failed probe cannot change priming/dispatch
+                    // outcomes; it only leaves remoteUrlOf(member) at null.
+                    if (!remoteUrls.has(member)) {
+                        remoteUrls.set(member, await remoteUrlFor(member, repoPath));
                     }
                     // Land the committed bible in the WARM KB before priming.
                     //
