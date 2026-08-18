@@ -43,11 +43,8 @@ export class CodexProvider implements ProviderAdapter {
     if (sessionId) {
       cmd += ' resume';
     }
-    if (unattended === 'auto') {
-      cmd += ' --ask-for-approval auto-edit';
-    } else if (unattended === 'dangerous') {
-      cmd += ` ${this.skipPermissionsFlag()}`;
-    }
+    const permFlag = this.resolvePermissionFlag(unattended);
+    if (permFlag) cmd += ` ${permFlag}`;
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
     }
@@ -60,6 +57,12 @@ export class CodexProvider implements ProviderAdapter {
 
   permissionModeAutoFlag(): string | null {
     return '--ask-for-approval auto-edit';
+  }
+
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    if (unattended === 'auto') return this.permissionModeAutoFlag() ?? '';
+    if (unattended === 'dangerous') return this.skipPermissionsFlag();
+    return '';
   }
 
   /**

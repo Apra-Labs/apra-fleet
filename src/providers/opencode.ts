@@ -3,6 +3,7 @@ import { joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import { logWarn } from '../utils/log-helpers.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
 import { transformAgentForOpenCode } from '../cli/agent-transform.js';
 import fs from 'node:fs';
@@ -40,7 +41,17 @@ export class OpenCodeProvider implements ProviderAdapter {
   }
 
   permissionModeAutoFlag(): string | null {
-    return null;
+    return '--auto';
+  }
+
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    if (unattended === 'auto' || unattended === 'dangerous') {
+      if (unattended === 'dangerous') {
+        logWarn('opencode', "WARNING: unattended='dangerous' is not supported for opencode -- falling back to --auto (no classifier safety). Ensure deny rules are configured.");
+      }
+      return this.permissionModeAutoFlag() ?? '';
+    }
+    return '';
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
@@ -103,9 +114,8 @@ export class OpenCodeProvider implements ProviderAdapter {
     if (model) {
       cmd += ` ${this.modelFlag(model)}`;
     }
-    if (unattended === 'dangerous') {
-      cmd += ` ${this.skipPermissionsFlag()}`;
-    }
+    const permFlag = this.resolvePermissionFlag(unattended);
+    if (permFlag) cmd += ` ${permFlag}`;
     cmd += ` ${this.jsonOutputFlag()}`;
     const resume = this.resumeFlag(sessionId, resuming);
     if (resume) {
@@ -134,7 +144,7 @@ export class OpenCodeProvider implements ProviderAdapter {
   resolveSessionLogDir(_workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
     const home = resolveHomeDir(homeDir);
     if (!home) return null;
-    return joinForOS(targetOs, home, '.local', 'share', 'opencode', 'storage', 'chats');
+    return joinForOS(targetOs, home, '.local', 'share', 'opencode', 'log');
   }
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {

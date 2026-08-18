@@ -49,6 +49,10 @@ export class NoneProvider implements ProviderAdapter {
     return null;
   }
 
+  resolvePermissionFlag(_unattended: false | 'auto' | 'dangerous' | undefined): string {
+    throw new Error(NO_LLM_ERROR);
+  }
+
   parseResponse(_result: SSHExecResult): ParsedResponse {
     throw new Error(NO_LLM_ERROR);
   }

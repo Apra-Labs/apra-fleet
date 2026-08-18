@@ -84,9 +84,8 @@ export class AgyProvider implements ProviderAdapter {
       }
     }
 
-    if (unattended === 'dangerous') {
-      cmd += ' --dangerously-skip-permissions';
-    }
+    const permFlag = this.resolvePermissionFlag(unattended);
+    if (permFlag) cmd += ` ${permFlag}`;
 
     // After agy exits, read its transcript from disk (primary output channel --
     // agy writes its response to CONOUT$, not stdout, so file I/O is required).
@@ -103,7 +102,29 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   permissionModeAutoFlag(): string | null {
-    return null;
+    return '--mode accept-edits';
+  }
+
+  workspaceEditPermissionFlag(): string | null {
+    // Mirrors claude.ts's acceptEdits: auto-approves file-edit tools for the
+    // dispatched agent's own work folder only, without the broad
+    // --dangerously-skip-permissions bypass. This is AGY's baseline for any
+    // headless dispatch -- without it, doers cannot edit/write a new file at
+    // all, since a headless `-p` run cannot show a permission prompt.
+    return '--mode accept-edits';
+  }
+
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    if (unattended === 'dangerous') return this.skipPermissionsFlag();
+    if (unattended === 'auto') {
+      // AGY has no broader-but-still-classifier-safe mode beyond baseline
+      // edit parity, so 'auto' does NOT escalate to a permission bypass here
+      // (that would silently grant more than the operator asked for -- see
+      // unattended='dangerous' for an explicit full-bypass opt-in).
+      logWarn('agy', "WARNING: unattended='auto' has no broader-than-baseline mode for AGY -- using --mode accept-edits (same as default). Use unattended='dangerous' for a full permission bypass.");
+    }
+    // default (false/undefined) and 'auto' both resolve to the same baseline.
+    return this.workspaceEditPermissionFlag() ?? '';
   }
 
   parseResponse(result: SSHExecResult): ParsedResponse {

@@ -177,6 +177,16 @@ export interface ProviderAdapter {
    *  permissions the way skipPermissionsFlag() does. Optional: providers that have
    *  no such surgical flag omit it (undefined), leaving current behavior unchanged. */
   workspaceEditPermissionFlag?(): string | null;
+  /** Resolves the full permission-mode flag string to append for a given
+   *  unattended setting, encapsulating this provider's own auto/dangerous
+   *  fallback and warning semantics (e.g. AGY has no true auto mode and
+   *  falls back to its dangerous flag with a warning; OpenCode has no true
+   *  dangerous mode and falls back to --auto). Returns '' when no flag
+   *  applies. This is the single source of truth for unattended-mode flag
+   *  resolution: both buildPromptCommand() (POSIX, via os/linux.ts) and
+   *  os/windows.ts call this instead of re-deriving the branching
+   *  themselves, so the two dispatch paths cannot diverge. */
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string;
 
   // Response parsing
   parseResponse(result: SSHExecResult): ParsedResponse;
