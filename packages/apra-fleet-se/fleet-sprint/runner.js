@@ -1684,8 +1684,20 @@ export function createKbPrimingClient(opts = {}) {
                     // fire". This import exists to WARM the KB, never to audit
                     // it; prime()'s own bounded checkFreshness still guards each
                     // entry it actually returns.
+                    // rmkb-3n5.3.2: forward this member's own git origin URL
+                    // (resolved above, cached, never guessed) so repo_path --
+                    // the MEMBER's work folder, which does not exist on the
+                    // fleet server for a remote member -- is not the only
+                    // signal resolveProjectSlug has to derive which project KB
+                    // to read. Omitted entirely when no URL is known, so the
+                    // args sent are byte-identical to before this field existed.
+                    const remoteUrlArg = (() => {
+                        const url = remoteUrls.get(member);
+                        return (typeof url === 'string' && url.length > 0) ? { repo_remote_url: url } : {};
+                    })();
+
                     try {
-                        const imported = parseResult(await callTool('kb_import', { repo_path: repoPath, skip_sweep: true }));
+                        const imported = parseResult(await callTool('kb_import', { repo_path: repoPath, skip_sweep: true, ...remoteUrlArg }));
                         if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
                             log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for ${repoPath}`);
                         }
@@ -1693,7 +1705,7 @@ export function createKbPrimingClient(opts = {}) {
                         log(`[kb-prime] kb_import skipped for ${repoPath} (non-fatal): ${err.message}`);
                     }
 
-                    const primeResult = parseResult(await callTool('kb_session_prime', { repo_path: repoPath }));
+                    const primeResult = parseResult(await callTool('kb_session_prime', { repo_path: repoPath, ...remoteUrlArg }));
                     const entries = (primeResult && Array.isArray(primeResult.top_entries))
                         ? primeResult.top_entries.filter((e) => e && typeof e.id === 'string')
                         : [];
@@ -1886,14 +1898,21 @@ export function createKbWorkClient(opts = {}) {
          * Best-effort, like every other KB read here: no repo path, no terms, a
          * cold KB or an unreachable one all degrade to "no knowledge", never to
          * a failed dispatch.
+         *
+         * `repoRemoteUrl` (rmkb-3n5.3.2) is optional and, when given, must
+         * already be a genuine URL resolved by createKbPrimingClient's
+         * remoteUrlOf(member) -- this function never probes for one itself.
+         * Omitted entirely (no key at all) when not known, so a caller that
+         * has none sends byte-identical args to before this parameter existed.
          */
-        async relevantKnowledge(repoPath, terms) {
+        async relevantKnowledge(repoPath, terms, repoRemoteUrl) {
             if (!active || !repoPath || !Array.isArray(terms) || terms.length === 0) return [];
             const query = terms.filter((t) => typeof t === 'string' && t.trim()).join(' ');
             if (!query) return [];
             try {
                 const parsed = parseResult(await callTool('kb_query', {
                     repo_path: repoPath,
+                    ...(typeof repoRemoteUrl === 'string' && repoRemoteUrl.length > 0 ? { repo_remote_url: repoRemoteUrl } : {}),
                     query,
                     limit: KB_MAX_KNOWLEDGE_ENTRIES,
                     expand_related: true,
@@ -1922,7 +1941,14 @@ export function createKbWorkClient(opts = {}) {
                 return [];
             }
         },
-        async apply(role, repoPath, result) {
+        /**
+         * `repoRemoteUrl` (rmkb-3n5.3.2) is optional, exactly like
+         * relevantKnowledge's -- when given it must already be a genuine URL
+         * from createKbPrimingClient's remoteUrlOf(member); this function
+         * never probes for one itself. Omitted entirely (no key at all) when
+         * not known.
+         */
+        async apply(role, repoPath, result, repoRemoteUrl) {
             const { captures, promotions, refused } = vetKbWork(role, result);
 
             for (const r of refused) log(`[kb-work] refused -- ${r}`);
@@ -1939,11 +1965,15 @@ export function createKbWorkClient(opts = {}) {
                 return { captured: 0, promoted: 0, refused: refused.length };
             }
 
+            const remoteUrlArg = (typeof repoRemoteUrl === 'string' && repoRemoteUrl.length > 0)
+                ? { repo_remote_url: repoRemoteUrl }
+                : {};
+
             let captured = 0;
             let promoted = 0;
             for (const c of captures) {
                 try {
-                    const res = await callTool('kb_capture', { ...c, repo_path: repoPath });
+                    const res = await callTool('kb_capture', { ...c, repo_path: repoPath, ...remoteUrlArg });
                     // apra-fleet-23c: an MCP client RESOLVES with {isError:true} on a
                     // tool-level failure rather than throwing, so counting every
                     // non-throwing call as a success reported captures that never
@@ -1966,7 +1996,7 @@ export function createKbWorkClient(opts = {}) {
                     // promotion would have failed "Entry not found" (the
                     // apra-fleet-tm7 repo-blindness class, fixed for capture
                     // but missed here).
-                    const res = await callTool('kb_promote', { id: p.id, reason: p.reason, repo_path: repoPath });
+                    const res = await callTool('kb_promote', { id: p.id, reason: p.reason, repo_path: repoPath, ...remoteUrlArg });
                     if (isToolError(res)) {
                         log(`[kb-work] kb_promote rejected for ${p.id} (non-fatal): ${toolErrorText(res)}`);
                         continue;
@@ -6326,6 +6356,7 @@ async function runSprintCycle(context) {
         // folder (same source kbWork.apply uses to route the writes), and
         // best-effort: a cold KB must not fail the review.
         const reviewerRepoPath = kbPriming.folderOf(reviewerPool[0]);
+        const reviewerRemoteUrl = kbPriming.remoteUrlOf(reviewerPool[0]);
         const kbCandidates = await kbWork.promotionCandidates(reviewerRepoPath);
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
@@ -6333,7 +6364,7 @@ async function runSprintCycle(context) {
         // What the KB knows about the beads UNDER REVIEW, not just whatever the
         // sprint-start prime happened to surface. Falls back to the primed set
         // when the query returns nothing (a KB with no matching rows yet).
-        const reviewerQueried = await kbWork.relevantKnowledge(reviewerRepoPath, kbQueryTerms([], beadIds));
+        const reviewerQueried = await kbWork.relevantKnowledge(reviewerRepoPath, kbQueryTerms([], beadIds), reviewerRemoteUrl);
         const reviewerKnowledge = reviewerQueried.length > 0
             ? reviewerQueried
             : kbPriming.knowledgeOf(reviewerPool[0]);
@@ -8163,7 +8194,7 @@ async function runSprintCycle(context) {
                     // already holds; expand_related on that call is what
                     // traverses the refines/contradiction_of edges.
                     const doerRepoPath = kbPriming.folderOf(doerMember);
-                    const doerKnowledge = await kbWork.relevantKnowledge(doerRepoPath, kbQueryTerms(streak, actualBeadIds));
+                    const doerKnowledge = await kbWork.relevantKnowledge(doerRepoPath, kbQueryTerms(streak, actualBeadIds), kbPriming.remoteUrlOf(doerMember));
                     const basePrompt = buildDoerPrompt({
                         beadIds: actualBeadIds,
                         branch: validated.branch,
@@ -8447,7 +8478,7 @@ async function runSprintCycle(context) {
                 // the engine executes it against the repo THAT doer worked in.
                 // Captures are honoured regardless of the streak outcome -- a
                 // gotcha found on the way to a failed streak is still true.
-                await kbWork.apply(ROLE_DOER, kbPriming.folderOf(doerMember), report);
+                await kbWork.apply(ROLE_DOER, kbPriming.folderOf(doerMember), report, kbPriming.remoteUrlOf(doerMember));
 
                 // apra-fleet-eft.76.4: per-bead failure attribution -- always
                 // emitted (not only when something failed) so every streak's
@@ -8585,7 +8616,7 @@ async function runSprintCycle(context) {
             const verdict = await dispatchReview({ beadIds: assignedBeadIds, acceptanceCriteriaJson });
             // KB trust pipeline Phase 2: the reviewer decides, the engine executes.
             // Reviewer is the ONLY role whose kb_promotions are honoured.
-            await kbWork.apply(ROLE_REVIEWER, kbPriming.folderOf(getMembersForRole(ROLE_REVIEWER)[0]), verdict);
+            await kbWork.apply(ROLE_REVIEWER, kbPriming.folderOf(getMembersForRole(ROLE_REVIEWER)[0]), verdict, kbPriming.remoteUrlOf(getMembersForRole(ROLE_REVIEWER)[0]));
             // A5: the last reviewer verdict seen THIS cycle feeds the Cycle
             // Evaluation section's completion check below -- goal-priority
             // completion requires this to be exactly 'APPROVED', not just
@@ -9333,7 +9364,7 @@ async function runSprintCycle(context) {
             // verdict in; acceptanceCriteriaJson still carries the full scope
             // for context.
             const reReviewVerdict = await dispatchReview({ beadIds: targetIssues, acceptanceCriteriaJson: JSON.stringify(reReviewScope) });
-            await kbWork.apply(ROLE_REVIEWER, kbPriming.folderOf(getMembersForRole(ROLE_REVIEWER)[0]), reReviewVerdict);
+            await kbWork.apply(ROLE_REVIEWER, kbPriming.folderOf(getMembersForRole(ROLE_REVIEWER)[0]), reReviewVerdict, kbPriming.remoteUrlOf(getMembersForRole(ROLE_REVIEWER)[0]));
             lastReviewVerdict = reReviewVerdict.verdict;
             reviewedThisCycle = true;
 
@@ -9519,6 +9550,7 @@ async function runSprintCycle(context) {
     // and resume paths below reuse the identical block rather than re-querying a
     // KB that its own earlier promotions may have already changed.
     const finalReviewRepoPath = kbPriming.folderOf(getMemberForRole('reviewer'));
+    const finalReviewRemoteUrl = kbPriming.remoteUrlOf(getMemberForRole('reviewer'));
     const finalKbCandidates = await kbWork.promotionCandidates(finalReviewRepoPath);
     if (finalKbCandidates.length > 0) {
         log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
@@ -9649,7 +9681,7 @@ async function runSprintCycle(context) {
     // contract already says as much ("Not tied to the verdict"). Placed before
     // the beads/PR work below and kept non-fatal by kbWork.apply itself, so a KB
     // problem can never change a sprint's outcome.
-    await kbWork.apply(ROLE_REVIEWER, finalReviewRepoPath, finalVerdictResult);
+    await kbWork.apply(ROLE_REVIEWER, finalReviewRepoPath, finalVerdictResult, finalReviewRemoteUrl);
 
     // Publish what this sprint confirmed. Immediately after the LAST promotion
     // of the run, so the bible carries every CONFIRMED entry including the ones
@@ -10038,7 +10070,7 @@ async function runSprintCycle(context) {
         // for the doer and reviewer. The harvester is a good capturer precisely
         // because it has just read the whole sprint's evidence. Capture only:
         // vetKbWork refuses kb_promotions from any role but the reviewer.
-        await kbWork.apply('harvester', kbPriming.folderOf(getMemberForRole('harvester')), harvesterResult);
+        await kbWork.apply('harvester', kbPriming.folderOf(getMemberForRole('harvester')), harvesterResult, kbPriming.remoteUrlOf(getMemberForRole('harvester')));
         if (harvesterResult.status !== 'OK') {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);
         } else {
