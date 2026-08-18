@@ -13,6 +13,7 @@ import { sessionRegistry } from '../src/services/session-registry.js';
 import { addAgent } from '../src/services/registry.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { reportStatus, reportStatusSchema } from '../src/tools/report-status.js';
+import { registerAllTools, MEMBER_TOOL_ALLOWLIST } from '../src/services/tool-registry.js';
 
 function noop(_server: McpServer): void {
   // no tools registered in these tests
@@ -582,5 +583,114 @@ describe('(k) report_status closes the busy->online/idle loop over the real MCP 
     expect(parsed.ok).toBe(true);
     expect(parsed.member_id).toBe(memberId);
     expect(sessionRegistry.get(issuer.workspaceId(), memberId)?.status).toBe('online');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (m) per-session tool scope over the real MCP wire (rmkb-3n5.4.3)
+// ---------------------------------------------------------------------------
+// These are end-to-end: the real registerAllTools runs per session, the real
+// transport decides the scope from the session's identity, and the assertions
+// read the tool list the CLIENT sees via tools/list. Absence here means the
+// tool was never registered -- there is no call-time refusal path to fall back
+// on, which is exactly the property being pinned.
+
+/** Wires the transport to the real registry, honouring the derived scope. */
+function registerScopedTools(server: McpServer, scope: 'full' | 'member'): Promise<void> {
+  return registerAllTools(server, scope);
+}
+
+async function listToolNames(client: Client): Promise<string[]> {
+  const { tools } = await client.listTools();
+  return tools.map((t) => t.name);
+}
+
+describe('(m) per-session tool scope (rmkb-3n5.4.3)', () => {
+  const memberId = 'tool-scope-test-member';
+
+  afterEach(() => {
+    const issuer = getTokenIssuer();
+    sessionRegistry.unregister(issuer.workspaceId(), memberId);
+    backupAndResetRegistry();
+    restoreRegistry();
+  });
+
+  async function connectMemberByJwt(port: number): Promise<Client> {
+    const issuer = getTokenIssuer();
+    const token = issuer.issue({ member_id: memberId, role: 'doer', work_folder: '/tmp/scope-work' });
+    const client = new Client({ name: 'scope-jwt-client', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${port}/mcp`),
+      {
+        reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      },
+    ));
+    return client;
+  }
+
+  it('a member JWT session cannot even SEE compose_permissions or execute_prompt', async () => {
+    const handle = await createHttpTransport({ registerTools: registerScopedTools, preferredPort: 0 });
+    handles.push(handle);
+
+    const names = await listToolNames(await connectMemberByJwt(handle.port));
+
+    for (const dangerous of [
+      'compose_permissions', 'execute_prompt', 'execute_command', 'stop_prompt',
+      'send_files', 'receive_files', 'send_email',
+      'kb_promote', 'kb_import', 'kb_export', 'kb_setup',
+      'list_members', 'member_detail', 'fleet_status',
+      'dolt_push_mutex', 'child_id_allocator',
+    ]) {
+      expect(names).not.toContain(dangerous);
+    }
+  });
+
+  it('a member JWT session sees EXACTLY the member allow-list (kb_query present, no extras)', async () => {
+    const handle = await createHttpTransport({ registerTools: registerScopedTools, preferredPort: 0 });
+    handles.push(handle);
+
+    const names = await listToolNames(await connectMemberByJwt(handle.port));
+
+    expect(names).toContain('kb_query');
+    // Exact set: a future tool leaking into the member scope turns this red.
+    expect([...names].sort()).toEqual([...MEMBER_TOOL_ALLOWLIST].sort());
+  });
+
+  it('an unauthenticated ?member= URL-param session ALSO gets the member scope, not the full set', async () => {
+    const handle = await createHttpTransport({ registerTools: registerScopedTools, preferredPort: 0 });
+    handles.push(handle);
+
+    const client = new Client({ name: 'scope-param-client', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp?member=${memberId}`),
+      { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 } },
+    ));
+
+    const names = await listToolNames(client);
+    expect([...names].sort()).toEqual([...MEMBER_TOOL_ALLOWLIST].sort());
+    expect(names).not.toContain('execute_prompt');
+    expect(names).not.toContain('compose_permissions');
+
+    sessionRegistry.unregister(getTokenIssuer().workspaceId(), memberId);
+  });
+
+  it('an unauthenticated local orchestrator/PM session (no token, no member param) keeps the FULL tool set', async () => {
+    const handle = await createHttpTransport({ registerTools: registerScopedTools, preferredPort: 0 });
+    handles.push(handle);
+
+    const client = makeClient(handle.port);
+    clients.push(client);
+    await client.connect(makeTransport(handle.port));
+
+    const names = await listToolNames(client);
+    // The two tools the whole boundary exists to keep away from members must
+    // still be there for the orchestrator -- it drives the fleet with them.
+    expect(names).toContain('execute_prompt');
+    expect(names).toContain('compose_permissions');
+    expect(names).toContain('kb_query');
+    expect(names.length).toBeGreaterThan(MEMBER_TOOL_ALLOWLIST.length);
   });
 });
