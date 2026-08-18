@@ -25,7 +25,7 @@ apra-fleet workflow fleet-sprint \
   [--role-map <json|@file>]       # {"doer":["m1","m2"], ...}
   [--viewer-port <port>]          # default 8080
   [--budget <usd>]                # default unlimited
-  [--dispatch-timeout-s <s>]      # default 3600
+  [--dispatch-timeout-s <s>]      # default 9000
   [--sync]                        # synced-topology mode
 ```
 

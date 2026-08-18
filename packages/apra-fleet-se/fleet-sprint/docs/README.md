@@ -90,7 +90,7 @@ Watch progress there rather than tailing raw stdout.
 | `--role-map <json\|@file>` | | no | -- | JSON object mapping role -> member[], e.g. `'{"doer":["m1","m2"]}'`. Inline JSON or `@path/to/file.json`. |
 | `--viewer-port <port>` | | no | `8080` | Port for the local dashboard viewer. |
 | `--budget <usd>` | | no | unlimited | USD ceiling for this run's total estimated spend. |
-| `--dispatch-timeout-s <s>` | | no | `3600` | Per-dispatch time budget in seconds, applied as both the inactivity timeout and the hard ceiling on every agent dispatch (integ-test dispatch ceiling is 2x). Minimum 60. Lower it for small sprints so a hung dispatch costs minutes, not an hour. |
+| `--dispatch-timeout-s <s>` | | no | `9000` | Per-dispatch time budget in seconds, applied as both the inactivity timeout and the hard ceiling on every agent dispatch (integ-test dispatch ceiling is 2x, regression-test ceiling is 3x). Minimum 60. Lower it for small sprints so a hung dispatch costs minutes, not 2.5 hours. |
 | `--sync` | | no | off | Synced topology mode (orchestrator-bracketed git sync): members may sit on differing HEADs but must share the same origin URL and pass a `bd dolt pull` probe. Omitted uses shared-workspace mode (all members on the same HEAD). |
 | `--help` | `-h` | | | Show the engine's help. |
 

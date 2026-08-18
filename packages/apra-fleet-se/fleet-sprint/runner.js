@@ -2639,6 +2639,50 @@ export function createMemberVcsProviderResolver(opts = {}) {
 }
 
 /**
+ * Best-effort provisions a member for unattended execution (`unattended:
+ * 'auto'`) before dispatching it as deployer, integ-test-runner, or
+ * regression-test-runner -- roles that run real deploy commands and test
+ * suites via a runbook and must never stall on an interactive permission
+ * prompt. Provisioning is a one-way member-registration change and is
+ * deliberately NOT reverted after the dispatch: `unattended` lives on the
+ * member (update_member), not on the dispatch, so there is nothing to revert
+ * to without also clobbering whatever the user set intentionally. In a
+ * single-member sprint the same member also plays doer/reviewer/etc, so it
+ * ends up unattended='auto' too -- accepted, not a bug.
+ *
+ * Cached per member for the lifetime of the returned function, so a sprint
+ * with many deploy/integ/regression dispatches across cycles calls
+ * update_member at most once per member. A failure (fleet unreachable,
+ * member not found) is logged and swallowed -- exactly like
+ * createMemberVcsProviderResolver above -- so a provisioning hiccup degrades
+ * to whatever permission mode the member already had, rather than aborting
+ * the phase.
+ *
+ * `callTool` is injected (the caller's MCP client), so this stays
+ * transport-agnostic and unit-testable without a live fleet server.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, log?: Function }} opts
+ * @returns {(member: string) => Promise<void>}
+ */
+export function createUnattendedAutoProvisioner(opts = {}) {
+    const { callTool, log = () => {} } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+    /** @type {Set<string>} members already confirmed unattended='auto' this run. */
+    const provisioned = new Set();
+
+    return async function ensureUnattendedAuto(member) {
+        if (provisioned.has(member)) return;
+        try {
+            await fleetApi.updateMember({ member_name: member, unattended: 'auto' });
+            provisioned.add(member);
+            log(`[unattended] member '${member}' set to unattended='auto' for this dispatch.`);
+        } catch (err) {
+            log(`[unattended] could not set unattended='auto' on member '${member}' (continuing with its existing permission mode): ${err.message}`);
+        }
+    };
+}
+
+/**
  * Builds the REACTIVE `onAuthFailure` self-heal callback runGitStep and
  * runDoltStep invoke on an 'auth' classification: re-provisions the failing
  * member's VCS credentials via provisionVcsAuthForMember (whose owner/repo is
@@ -3124,16 +3168,20 @@ export function validateArgs(args) {
         }
     }
 
-    // --- dispatch_timeout_s (optional, default 3600) -----------------------
+    // --- dispatch_timeout_s (optional, default 9000 = 150min/2.5h) ---------
     // Per-dispatch time budget in seconds, applied as BOTH timeout_s and
     // max_total_s on every agent dispatch: `claude -p` emits nothing until the
     // turn completes, so inactivity equals total runtime and the two timers
     // must be equal for the ceiling to be reachable. The integ-test dispatch
-    // ceiling is 2x this value, since its suites legitimately run past one
-    // budget. Lowering it bounds the cost of a live-but-silent member hang,
-    // which no timer can otherwise distinguish from work. Floor 60: below that
-    // even healthy dispatches cannot complete a single turn.
-    const dispatchTimeoutS = args.dispatch_timeout_s === undefined ? 3600 : args.dispatch_timeout_s;
+    // ceiling is 2x this value and the regression-test ceiling is 3x, since
+    // those suites legitimately run past one budget. Raised from the earlier
+    // 3600s default: an hour was tight enough to misclassify a slow-but-alive
+    // turn (a large diff, a chatty tool loop) as a stall, which is a false
+    // positive, not the genuine-hang protection this timer exists for.
+    // Lowering it still bounds the cost of a live-but-silent member hang,
+    // which no timer can otherwise distinguish from work. Floor 60: below
+    // that even healthy dispatches cannot complete a single turn.
+    const dispatchTimeoutS = args.dispatch_timeout_s === undefined ? 9000 : args.dispatch_timeout_s;
     if (typeof dispatchTimeoutS !== 'number' || !Number.isInteger(dispatchTimeoutS) || dispatchTimeoutS < 60) {
         throw new Error(`[Arg Contract] Invalid dispatch_timeout_s "${dispatchTimeoutS}": must be an integer >= 60 (seconds).`);
     }
@@ -5822,6 +5870,24 @@ async function runSprintCycle(context) {
         (args && typeof args.callTool === 'function')
             ? createLlmAuthSelfHealCallback({ callTool: args.callTool, log })
             : undefined
+    );
+
+    // Provisions a member unattended='auto' right before its deployer /
+    // integ-test-runner / regression-test-runner dispatch, so those
+    // real-command/real-suite roles never stall on an interactive permission
+    // prompt. See createUnattendedAutoProvisioner's doc comment for why this
+    // is one-way (never reverted) and safe in a single-member sprint.
+    //   1. `context.ensureUnattendedAuto` -- an explicitly-injected function
+    //      (tests wire an in-process one to prove the call site fires
+    //      without a live fleet server).
+    //   2. `args.callTool` -- the real update_member call via
+    //      createUnattendedAutoProvisioner (this file).
+    //   3. neither -- a no-op: no provisioning call is made and the member
+    //      dispatches under whatever permission mode it already has.
+    const ensureUnattendedAuto = context.ensureUnattendedAuto ?? (
+        (args && typeof args.callTool === 'function')
+            ? createUnattendedAutoProvisioner({ callTool: args.callTool, log })
+            : async () => {}
     );
 
     // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
@@ -8808,6 +8874,7 @@ async function runSprintCycle(context) {
 
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
+            await ensureUnattendedAuto(getMemberForRole('deployer'));
             let deployResult;
             // Turn budget for the deployer, with the same-session
             // turn-exhaustion resume below: a source-build fallback deploy runs
@@ -8890,6 +8957,7 @@ async function runSprintCycle(context) {
         let verifySetForIntegTest = [];
         if (hasPlaybook && deployedThisCycle) {
             phase(`Integ Test C${cycle}`);
+            await ensureUnattendedAuto(getMemberForRole('integ-test-runner'));
             // apra-fleet-nwh.1: snapshot the running total BEFORE this
             // cycle's Integ Test dispatch(es) so the delta after (below) is
             // this phase's own spend, not the whole run's. budget.spent()
@@ -9834,6 +9902,7 @@ async function runSprintCycle(context) {
     const hasRegressionPlaybook = await probeFileExists('regression-test-playbook.md');
     if (hasRegressionPlaybook) {
         phase(`Regression Test C${finalCycleLabel}`);
+        await ensureUnattendedAuto(getMemberForRole('regression-test-runner'));
         // The real functional suite alone spends roughly one turn per liveness
         // poll for the better part of an hour, and this single dispatch carries
         // both it and the sandbox smoke sprint -- hence the large turn budget
