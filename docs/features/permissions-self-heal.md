@@ -26,35 +26,19 @@ free-text pattern match, the orchestrator's heal-trigger check is exact.
 ## Where the grant comes from: the BASE branch, not the working tree
 
 The governing invariant behind every constraint here is: **a member must never
-be able to escalate its own permissions.**
-
-An earlier version of this mechanism satisfied that only on paper. It
-dispatched a small `permissions-composer` LLM agent that read the failing
-phase's runbook out of the ORCHESTRATOR'S WORKING TREE -- which the sprint's
-own git-sync bracket had just pulled this sprint's doer commits into -- and
-then self-reported which prefixes it had granted. Both halves were holes:
-
-- The grant source was member-writable. A doer could append a
-  `Bash(bash -c *)` line to `deploy.md`'s `## Permissions`, commit it to the
-  sprint branch, and the next `missing_permissions` failure would grant it
-  with no human involved.
-- Nothing verified the self-report. The report is produced AFTER the tool call
-  already landed, so post-hoc checking of it cannot constrain the side effect
-  it describes.
-
-Both are now structurally impossible rather than checked for:
+be able to escalate its own permissions.** Two design choices enforce it
+structurally rather than by checking for violations after the fact:
 
 1. **The runbook is read from `origin/<base_branch>`** -- `git fetch origin
    <base_branch>` followed by `git show origin/<base_branch>:<runbook>` on the
    orchestrator member. The base branch is by definition the human-reviewed,
-   merged line, which is exactly what this document used to *claim* ("a
-   reviewed, committed runbook") without enforcing. The sprint branch's copy is
-   never consulted.
+   merged line; the sprint branch's own copy (which this sprint's doers can
+   commit to) is never consulted. A doer cannot add a permission to a runbook
+   and have that sprint grant it to itself.
 2. **There is no LLM in the grant path.** The runner parses the
    `## Permissions` section and calls `compose_permissions` itself, through the
-   MCP `callTool` connection already wired into the sprint. There is no
-   self-report to verify because there is no agent. The `permissions-composer`
-   persona, its output schema and its model-tier entry have all been deleted.
+   MCP `callTool` connection already wired into the sprint -- a plain,
+   deterministic function with nothing to prompt-inject or hallucinate past.
 
 ### The runbook contract
 

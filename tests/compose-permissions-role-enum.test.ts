@@ -6,11 +6,10 @@
  * role: z.enum(['doer', 'reviewer']), so the MCP tool's public input
  * validation rejected the other three roles outright -- even though
  * bounds-deployer.json, bounds-integ-test-runner.json and
- * bounds-regression-test-runner.json exist (apra-fleet-ivxi.1.1) and
- * permissions-composer.md instructs callers to pass exactly those role
- * values (apra-fleet-u1qw.2.1). That made the three bounds files
- * unreachable dead files and the documented heal path fail at input
- * validation.
+ * bounds-regression-test-runner.json exist (apra-fleet-ivxi.1.1) and the
+ * missing-permissions heal path (runner.js) needs to pass exactly those
+ * role values. That made the three bounds files unreachable dead files
+ * and the heal path fail at input validation.
  */
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';

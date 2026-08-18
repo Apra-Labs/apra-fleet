@@ -115,37 +115,21 @@ const FIXED_ROLE_TIER = {
     // states, so it gets 'cheap' even though it borrows the planner MEMBER for
     // routing convenience.
     streakAssignment: 'cheap',
-    // NOTE: there is deliberately no `permissionsComposer` entry here any
-    // more. The missing-permissions heal used to dispatch a cheap-tier
-    // `permissions-composer` agent; it is now done deterministically in
-    // JavaScript by healMissingPermissionsOnce() below (no LLM in the
-    // permission-grant path at all). See docs/features/permissions-self-heal.md.
 };
 
 export const meta = { name: 'fleet-sprint-runner' };
 
 // ---------------------------------------------------------------------------
-// Missing-permissions self-heal: runbook parsing (PR #416 review, findings 1+2)
+// Missing-permissions self-heal: runbook parsing
 // ---------------------------------------------------------------------------
 //
-// The heal used to dispatch a cheap-tier `permissions-composer` LLM agent that
-// read the failing phase's runbook out of the ORCHESTRATOR'S WORKING TREE --
-// which withGitSync had just pulled this sprint's own doer commits into -- and
-// then self-reported which prefixes it had granted. Two holes in one:
-//
-//   1. The grant source was member-writable. A doer could append
-//      `- ``Bash(bash -c *)``` to deploy.md's `## Permissions`, commit it to
-//      the sprint branch, and the next missing_permissions failure would grant
-//      it. No human in the loop.
-//   2. Nothing verified the agent's self-report against the source. The report
-//      is produced AFTER the tool call already landed, so post-hoc checking of
-//      a self-report cannot constrain a side effect that already happened.
-//
-// Both are now structurally impossible rather than checked for:
-//   - the runbook is read from `origin/<base_branch>` (the human-reviewed,
-//     merged line) via git fetch + git show, never from the working tree, and
-//   - the parse and the compose_permissions call are plain JavaScript, so
-//     there is no self-report to verify because there is no agent.
+// When a deploy/integ-test/regression phase fails on a missing permission,
+// the runner deterministically parses the failing phase's runbook from
+// `origin/<base_branch>` (the human-reviewed, merged line -- never the
+// sprint's own working tree) and grants exactly the prefixes it declares, via
+// a plain JavaScript parse + a direct compose_permissions call. No LLM sits
+// in the permission-grant path, and no member-writable content can influence
+// what gets granted.
 //
 // KNOWN, INTENTIONAL FAILURE MODE: a permission need introduced BY THIS SPRINT
 // and correctly documented in the same PR is not in the base branch, so it does
@@ -154,8 +138,7 @@ export const meta = { name: 'fleet-sprint-runner' };
 // own new permission -- and it is logged distinguishably so operators can tell
 // it apart from a plain missing grant.
 
-/** Role -> the runbook whose `## Permissions` section declares its prefixes.
- *  Mirrors permissions-composer.md Step 1's mapping. */
+/** Role -> the runbook whose `## Permissions` section declares its prefixes. */
 export const RUNBOOK_FOR_ROLE = {
     deployer: 'deploy.md',
     'integ-test-runner': 'integ-test-playbook.md',
@@ -166,10 +149,9 @@ export const RUNBOOK_FOR_ROLE = {
  * Extracts the permission prefixes a runbook's `## Permissions` section
  * DECLARES, deterministically.
  *
- * The contract (already documented in permissions-composer.md Step 1, and the
- * shape every shipped runbook uses) is: one prefix per markdown LIST ITEM, the
- * prefix backticked and written as `Tool(payload)`, optionally followed by
- * prose commentary on the same or a continuation line.
+ * The contract (the shape every shipped runbook uses) is: one prefix per
+ * markdown LIST ITEM, the prefix backticked and written as `Tool(payload)`,
+ * optionally followed by prose commentary on the same or a continuation line.
  *
  * Only LIST ITEMS are considered, and within a list item the first backticked
  * token that is SHAPED like a permission wins -- integ-test-playbook.md writes
@@ -6485,18 +6467,13 @@ async function runSprintCycle(context) {
     // work because a Bash prefix my own runbook declares was not granted to
     // me". That is a mechanically fixable failure, not a real phase verdict.
     //
-    // DETERMINISTIC, NO LLM (PR #416 review, findings 1+2 / options 1A+2B).
-    // The heal used to dispatch a cheap-tier `permissions-composer` agent that
-    // read the runbook out of the ORCHESTRATOR'S WORKING TREE -- which
-    // withGitSync had just pulled this sprint's own doer commits into -- and
-    // then self-reported which prefixes it had granted. Two holes in one: the
-    // grant source was member-writable (a doer could append
-    // `Bash(bash -c *)` to deploy.md's `## Permissions`, commit it, and have
-    // it granted with no human involved), and a self-report produced AFTER the
-    // tool call already landed cannot constrain the side effect it describes.
-    //
-    // Both are now structurally impossible rather than checked for. The heal
-    // is four plain steps, all in JavaScript:
+    // DETERMINISTIC, NO LLM. Reading the runbook from a doer-writable working
+    // tree, or trusting an LLM's self-report of what it granted, would let a
+    // doer append e.g. `Bash(bash -c *)` to deploy.md's `## Permissions`,
+    // commit it, and have it granted with no human involved -- a self-report
+    // produced AFTER the tool call already landed cannot constrain the side
+    // effect it describes either. Both holes are structurally impossible
+    // here: the heal is four plain steps, all in JavaScript:
     //   1. git fetch origin <base_branch> on the orchestrator member, then
     //      `git show origin/<base_branch>:<runbook>` -- the runbook comes from
     //      the human-reviewed, merged line, never from the working tree.
