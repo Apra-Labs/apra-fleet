@@ -157,13 +157,63 @@ supplies the failing phase's role. When a role has a bounds file
 `skills/fleet/permissions.md` for the format), the tool checks each newly
 requested permission against it.
 
-Today this is informational-only: an out-of-bounds permission is still granted
-exactly as requested, but its ledger entry is flagged `outOfBounds: true` /
-`requestedByRole: "<role>"` for later audit.
+On the **autonomous grant path** -- a request that carries a role with a bounds
+file in the INSTALLED, host-side profiles directory, i.e. exactly this
+self-heal -- an out-of-bounds permission is **rejected**, not merely flagged.
+That is a deliberate reversal of this mechanism's original design, which argued
+a hard rejection "would convert an audit signal into a new failure mode for a
+role whose bounds file happens to be slightly stale". The objection is real but
+resolves the same way as the base-branch read above: fail closed and surface
+it, because a stale bounds file is a five-second human fix and an unbounded
+auto-grant is not.
+
+Three carve-outs keep it from breaking legitimate use, and each of the three
+still records the informational `outOfBounds: true` / `requestedByRole:
+"<role>"` ledger flag:
+
+1. No role, or a role with no bounds file -- manual/operator grants keep the
+   denylist as their only gate, which is why the denylist also had to become
+   pattern-based.
+2. `allow_out_of_bounds: true` -- an explicit operator escalation. Autonomous
+   callers never set it.
+3. A repo-relative (dev fallback) profiles directory. `findProfilesDir()`
+   prefers `~/.claude/skills/fleet/profiles`; if no installed skill exists it
+   walks up from `__dirname`, and in a dogfood configuration (apra-fleet
+   building apra-fleet) that resolves INSIDE the checkout a sprint can write
+   to. Blocking on a bounds file the sprint could edit would be security
+   theatre, so the check downgrades to informational and logs a loud warning
+   naming the resolved path. Install the fleet skill to restore enforcement.
+
+A co-occurrence expansion this tool adds itself (e.g. `Bash(docker:*)` pulling
+in `Bash(docker-compose:*)`) is *dropped* when out of bounds rather than
+failing the whole request -- the caller asked for something legitimate and
+should get it.
 
 Bounds can never widen `NEVER_AUTO_GRANT`; that denylist (wildcard-matched, see
 `skills/fleet/permissions.md`) is checked first and unconditionally, for every
-caller, before any bounds lookup.
+caller, before any bounds lookup -- `allow_out_of_bounds` does not loosen it
+either.
+
+Two independent controls covering each other's gaps: the denylist is the
+unconditional floor on every caller, bounds are the bounded ceiling on the
+autonomous path, and the base-branch read decides what may even be asked for.
+
+### Bounds-file audit note
+
+Enforcing bounds only makes the worst case *bounded*, not *safe*: the ceiling
+is whatever a human put in the profile. Two entries are worth naming, because
+enforcement does not make them harmless -- it makes them the reviewed,
+deliberate boundary:
+
+- `bounds-integ-test-runner.json` contains `Bash(npm run *)`, which is
+  arbitrary code execution via `package.json` scripts.
+- `bounds-regression-test-runner.json` contains `Bash(mkdir *)` and
+  `Bash(git clone *)`.
+
+All three are declared verbatim by their own runbook's `## Permissions`
+section, so narrowing the bounds file without narrowing the runbook in the same
+change would simply break the heal. Tightening them is a separate, deliberate
+pass over what those playbooks actually need to run.
 
 ## Non-goals / relationship to the broader missing-grant design
 

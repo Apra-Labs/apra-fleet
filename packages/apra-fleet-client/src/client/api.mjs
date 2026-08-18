@@ -181,8 +181,17 @@
  *   request: sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap,
  *   `chmod 777`, any catch-all such as `Bash(*)`, and any payload containing a
  *   shell-chaining metacharacter (| ; && backtick $() are rejected outright,
- *   for every caller.
+ *   for every caller. When `role` is also supplied AND that role has a
+ *   bounds-<role>.json profile in the INSTALLED (host-side) profiles
+ *   directory, an out-of-bounds permission is additionally REJECTED -- see
+ *   `allow_out_of_bounds`.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
+ * @property {boolean} [allow_out_of_bounds] - OPERATOR ESCALATION ONLY.
+ *   Downgrades the enforcing per-role bounds check back to informational
+ *   (permission granted, ledger entry flagged outOfBounds) for a deliberate
+ *   one-off human grant. Autonomous callers must never set it: a member
+ *   escalating its own permissions is what the bounds check exists to
+ *   prevent. Never loosens the NEVER_AUTO_GRANT denylist.
  */
 
 /**

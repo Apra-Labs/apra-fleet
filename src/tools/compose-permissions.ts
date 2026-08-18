@@ -19,6 +19,7 @@ export const composePermissionsSchema = z.object({
   project_folder: z.string().optional().describe('Local project folder containing permissions.json ledger. Omit to skip ledger merge.'),
   grant: z.array(z.string()).optional().describe('Reactive mode: additional permissions to grant (e.g. ["Bash(docker:*)", "Bash(docker-compose:*)"]). Appended to current permissions and re-delivered.'),
   grant_reason: z.string().optional().describe('Reason for the grant (stored in ledger)'),
+  allow_out_of_bounds: z.boolean().optional().describe('OPERATOR ESCALATION ONLY. When a `grant` request carries a role that has a bounds-<role>.json profile, an out-of-bounds permission is REJECTED by default -- that role-gated allowlist is what bounds the worst case of the autonomous self-heal path. Set true to downgrade the check back to informational (permission granted, ledger entry flagged outOfBounds) for a deliberate one-off human grant. Autonomous callers (fleet-sprint\'s missing-permissions heal) must never set this: a member escalating its own permissions is exactly what the bounds check exists to prevent. Ignored when no role is supplied, when the role has no bounds file, or when the request contains no `grant`.'),
 });
 
 export type ComposePermissionsInput = z.infer<typeof composePermissionsSchema>;
@@ -150,23 +151,52 @@ interface Ledger {
   }>;
 }
 
+/** True when the located profiles dir is the installed, host-side one rather
+ *  than a repo-relative dev fallback. Only the installed path is a genuine
+ *  trust boundary -- see findProfilesDir(). */
+let profilesDirIsInstalled = true;
+
 function findProfilesDir(): string {
   // Installed: ~/.claude/skills/fleet/profiles/ (new location after skill split)
   const installedFleet = path.join(os.homedir(), '.claude', 'skills', 'fleet', 'profiles');
-  if (fs.existsSync(installedFleet)) return installedFleet;
+  if (fs.existsSync(installedFleet)) { profilesDirIsInstalled = true; return installedFleet; }
   // Installed (legacy): ~/.claude/skills/pm/profiles/
   const installedPm = path.join(os.homedir(), '.claude', 'skills', 'pm', 'profiles');
-  if (fs.existsSync(installedPm)) return installedPm;
-  // Dev: walk up from __dirname looking for skills/fleet/profiles/
+  if (fs.existsSync(installedPm)) { profilesDirIsInstalled = true; return installedPm; }
+  // Dev fallback: walk up from __dirname looking for skills/fleet/profiles/.
+  //
+  // apra-fleet PR#416 review: this fallback is NOT a trust boundary. The whole
+  // premise of the enforcing bounds check below is that bounds-<role>.json is
+  // host-side and outside the sprint's write reach -- but in the dogfood
+  // configuration (apra-fleet building apra-fleet from a checkout) this walk
+  // resolves INTO the repo, where a doer can edit the very file that is
+  // supposed to bound it. It is kept because a dev checkout with no installed
+  // skill still needs to compose permissions at all, but every use is flagged
+  // loudly and the bounds check downgrades itself to non-blocking when it
+  // fires, so nobody mistakes an in-repo profiles dir for the boundary it is
+  // not.
   let dir = __dirname;
   for (let i = 0; i < 6; i++) {
     const candidateFleet = path.join(dir, 'skills', 'fleet', 'profiles');
-    if (fs.existsSync(candidateFleet)) return candidateFleet;
+    if (fs.existsSync(candidateFleet)) { warnRepoRelativeProfiles(candidateFleet); return candidateFleet; }
     const candidatePm = path.join(dir, 'skills', 'pm', 'profiles');
-    if (fs.existsSync(candidatePm)) return candidatePm;
+    if (fs.existsSync(candidatePm)) { warnRepoRelativeProfiles(candidatePm); return candidatePm; }
     dir = path.dirname(dir);
   }
   throw new Error('Cannot find profiles directory');
+}
+
+function warnRepoRelativeProfiles(resolved: string): void {
+  profilesDirIsInstalled = false;
+  console.warn(
+    `[fleet] compose_permissions: NO installed profiles directory found ` +
+    `(${path.join(os.homedir(), '.claude', 'skills', 'fleet', 'profiles')}); ` +
+    `falling back to the REPO-RELATIVE dev path "${resolved}". ` +
+    `This is not a trust boundary: in a dogfood configuration that directory is ` +
+    `inside the checkout a sprint can write to, so per-role bounds are treated as ` +
+    `INFORMATIONAL here and cannot block an out-of-bounds auto-grant. ` +
+    `Install the fleet skill to restore the enforcing bounds check.`,
+  );
 }
 
 function loadProfile(profilesDir: string, name: string): any {
@@ -530,10 +560,61 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       return `❌ Cannot auto-grant dangerous permissions: ${blocked.join(', ')}. Escalate to user.`;
     }
 
-    // Expand co-occurrences
+    // apra-fleet PR#416 review, finding 3 (option 3B): the per-role bounds
+    // allowlist is ENFORCING on the autonomous grant path.
+    //
+    // The denylist above is an unconditional floor, but a denylist can never
+    // be complete. Bounds are the ceiling: when a request carries a role that
+    // has a bounds-<role>.json profile, an auto-grant can only ever produce a
+    // prefix a human put in a host-side product profile. That makes the worst
+    // case BOUNDED rather than enumerated.
+    //
+    // PR #416's original design argued against blocking -- it "would convert
+    // an audit signal into a new failure mode for a role whose bounds file
+    // happens to be slightly stale". That is real, and it resolves the same
+    // way the base-branch runbook read does: fail closed and surface it. A
+    // stale bounds file is a five-second human fix; an unbounded auto-grant
+    // is not.
+    //
+    // Three deliberate carve-outs keep this from breaking legitimate use:
+    //   1. No role, or a role with no bounds file -> no check at all (today's
+    //      behavior, unchanged). Manual/operator grants keep the denylist as
+    //      their only gate, which is why finding 3A had to land as well.
+    //   2. `allow_out_of_bounds: true` -> explicit operator escalation,
+    //      downgrades to the informational ledger flag. Autonomous callers
+    //      never set it.
+    //   3. A repo-relative (dev fallback) profiles dir is NOT a trust
+    //      boundary in the dogfood configuration -- a sprint could edit the
+    //      bounds file that is supposed to bound it -- so blocking there
+    //      would be security theatre. Downgrade to informational and say so.
+    const bounds = loadBounds(profilesDir, input.role);
+    const boundsEnforcing = bounds.length > 0 && !input.allow_out_of_bounds && profilesDirIsInstalled;
+    if (boundsEnforcing) {
+      const outOfBounds = input.grant.filter(p => !isWithinBounds(bounds, p));
+      if (outOfBounds.length) {
+        return `❌ Out of bounds for role "${input.role}": ${outOfBounds.join(', ')}. ` +
+          `That role's allowlist (skills/fleet/profiles/bounds-${input.role}.json) does not cover ` +
+          `${outOfBounds.length === 1 ? 'it' : 'them'}, so this grant is refused rather than flagged. ` +
+          `If the permission is genuinely in scope for the role, add it to the bounds profile in a ` +
+          `reviewed repo change; for a deliberate one-off human grant, re-issue with ` +
+          `allow_out_of_bounds: true.`;
+      }
+    }
+
+    // Expand co-occurrences. These are added by this tool, not requested by
+    // the caller, so an out-of-bounds expansion is DROPPED rather than made to
+    // fail the whole request -- the caller asked for something legitimate and
+    // should get it.
     const expanded = new Set(input.grant);
+    const droppedCoOccurrences: string[] = [];
     for (const p of input.grant) {
-      for (const co of CO_OCCURRENCE[p] ?? []) expanded.add(co);
+      for (const co of CO_OCCURRENCE[p] ?? []) {
+        if (boundsEnforcing && !isWithinBounds(bounds, co)) {
+          droppedCoOccurrences.push(co);
+          continue;
+        }
+        expanded.add(co);
+      }
     }
 
     let allow: string[];
@@ -584,13 +665,16 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     if (input.project_folder) {
       const reason = input.grant_reason ?? 'granted mid-sprint';
       const date = new Date().toISOString().slice(0, 10);
-      // apra-fleet-ivxi.1.3: when the request carries a role, check each new
-      // grant against that role's bounds profile. A defined-empty bounds
-      // result (no role supplied, or an unknown/missing role -- see
-      // loadBounds) means "no bounds check", matching today's behavior
-      // exactly. Out-of-bounds permissions are still granted (bounds are
-      // informational, never a filter) but their ledger entry is flagged.
-      const bounds = loadBounds(profilesDir, input.role);
+      // apra-fleet-ivxi.1.3: when the request carries a role, flag any grant
+      // outside that role's bounds profile for later audit. A defined-empty
+      // bounds result (no role supplied, or an unknown/missing role -- see
+      // loadBounds) means "no bounds check".
+      //
+      // Reaching this point with an out-of-bounds permission now means the
+      // check was NON-enforcing for one of the three reasons documented at
+      // the enforcement site above (no bounds file, an explicit
+      // allow_out_of_bounds operator escalation, or a repo-relative dev
+      // profiles dir). The ledger flag is what makes that visible afterwards.
       for (const p of expanded) {
         if (!ledger.granted.some(e => e.permission === p)) {
           const entry: Ledger['granted'][number] = { permission: p, reason, date };
@@ -609,7 +693,10 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     // trust was never seeded, gets fixed the next time permissions are composed).
     await seedWorkspaceTrust(agent, strategy, 'compose_permissions');
 
-    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}`;
+    const droppedLine = droppedCoOccurrences.length
+      ? `\n  (dropped ${droppedCoOccurrences.length} co-occurrence expansion(s) outside role "${input.role}"'s bounds: ${droppedCoOccurrences.join(', ')})`
+      : '';
+    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${droppedLine}`;
   }
 
   // Proactive compose mode

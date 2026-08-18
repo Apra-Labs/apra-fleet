@@ -7,6 +7,15 @@
  * compose-permissions-bounds-grant.test.ts, compose-permissions-ledger-shape.test.ts)
  * -- this file collects all five cases from the acceptance criteria together so
  * each is a single, unambiguous, independently-named assertion.
+ *
+ * NOTE (PR #416 review, finding 3B): per-role bounds are now ENFORCING on the
+ * autonomous grant path, but only when the profiles directory is the
+ * INSTALLED, host-side one. This file points os.homedir() at a nonexistent
+ * path so findProfilesDir() falls through to this repo's own
+ * skills/fleet/profiles -- not a trust boundary in a dogfood configuration --
+ * so case 2's "still granted AND flagged" remains the correct expectation
+ * here. The enforcing path has its own file:
+ * tests/compose-permissions-bounds-enforcing.test.ts.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { vi } from 'vitest';

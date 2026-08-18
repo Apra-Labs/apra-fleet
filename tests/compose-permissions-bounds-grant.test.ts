@@ -4,6 +4,15 @@
  * ledger's outOfBounds/requestedByRole fields (ivxi.1.2) already exist and
  * are tested elsewhere -- this file covers only the grant-path wiring:
  *
+ * NOTE (PR #416 review, finding 3B): per-role bounds are now ENFORCING on the
+ * autonomous grant path -- but only when the profiles directory is the
+ * INSTALLED, host-side one. This file (like -matrix) deliberately points
+ * os.homedir() at a nonexistent path so findProfilesDir() falls through to
+ * this repo's own skills/fleet/profiles, which is NOT a trust boundary in a
+ * dogfood configuration; the check therefore downgrades to informational and
+ * every expectation below still describes correct behavior. The enforcing
+ * path is covered by tests/compose-permissions-bounds-enforcing.test.ts.
+ *
  * - A grant matching the calling role's bounds lands in the ledger exactly
  *   as today (no outOfBounds field).
  * - A grant outside the role's bounds is still granted, but its ledger
