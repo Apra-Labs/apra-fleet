@@ -115,38 +115,114 @@ const FIXED_ROLE_TIER = {
     // states, so it gets 'cheap' even though it borrows the planner MEMBER for
     // routing convenience.
     streakAssignment: 'cheap',
-    // permissions-composer (apra-fleet-u1qw.2.1): orchestrator-side only, never
-    // member-dispatched. Its job is a small, fully-specified extraction (read a
-    // runbook's Permissions section, call compose_permissions with exactly those
-    // prefixes) with no exploration or judgment beyond what the prompt states,
-    // so it gets 'cheap' like streakAssignment.
-    permissionsComposer: 'cheap',
+    // NOTE: there is deliberately no `permissionsComposer` entry here any
+    // more. The missing-permissions heal used to dispatch a cheap-tier
+    // `permissions-composer` agent; it is now done deterministically in
+    // JavaScript by healMissingPermissionsOnce() below (no LLM in the
+    // permission-grant path at all). See docs/features/permissions-self-heal.md.
 };
 
 export const meta = { name: 'fleet-sprint-runner' };
 
 // ---------------------------------------------------------------------------
-// permissions-composer output contract (apra-fleet-u1qw.2.2)
+// Missing-permissions self-heal: runbook parsing (PR #416 review, findings 1+2)
 // ---------------------------------------------------------------------------
 //
-// Declared here rather than in contracts.mjs on purpose: permissions-composer
-// is an ORCHESTRATOR-SIDE role with no vendored apra-pm output schema file, so
-// there is nothing for contracts.mjs's vendored-schema loader to resolve. The
-// three fields mirror agents/permissions-composer.md's own "Output schema"
-// section verbatim -- `composed` (did every extracted prefix actually get
-// granted), `grantedPrefixes` (exactly what was requested), `terminalFailure`
-// (null on success; otherwise the missing input / missing runbook section /
-// NEVER_AUTO_GRANT denylist rejection / underlying tool error). A
-// terminalFailure is NEVER retried by the heal helper below.
-export const permissionsComposerReport = {
-    type: 'object',
-    properties: {
-        composed: { type: 'boolean' },
-        grantedPrefixes: { type: 'array', items: { type: 'string' } },
-        terminalFailure: { type: ['string', 'null'] },
-    },
-    required: ['composed', 'grantedPrefixes', 'terminalFailure'],
+// The heal used to dispatch a cheap-tier `permissions-composer` LLM agent that
+// read the failing phase's runbook out of the ORCHESTRATOR'S WORKING TREE --
+// which withGitSync had just pulled this sprint's own doer commits into -- and
+// then self-reported which prefixes it had granted. Two holes in one:
+//
+//   1. The grant source was member-writable. A doer could append
+//      `- ``Bash(bash -c *)``` to deploy.md's `## Permissions`, commit it to
+//      the sprint branch, and the next missing_permissions failure would grant
+//      it. No human in the loop.
+//   2. Nothing verified the agent's self-report against the source. The report
+//      is produced AFTER the tool call already landed, so post-hoc checking of
+//      a self-report cannot constrain a side effect that already happened.
+//
+// Both are now structurally impossible rather than checked for:
+//   - the runbook is read from `origin/<base_branch>` (the human-reviewed,
+//     merged line) via git fetch + git show, never from the working tree, and
+//   - the parse and the compose_permissions call are plain JavaScript, so
+//     there is no self-report to verify because there is no agent.
+//
+// KNOWN, INTENTIONAL FAILURE MODE: a permission need introduced BY THIS SPRINT
+// and correctly documented in the same PR is not in the base branch, so it does
+// NOT self-heal. The phase fails for real and a human reviews the PR. That is
+// the correct seam for a human -- a sprint must not be able to authorize its
+// own new permission -- and it is logged distinguishably so operators can tell
+// it apart from a plain missing grant.
+
+/** Role -> the runbook whose `## Permissions` section declares its prefixes.
+ *  Mirrors permissions-composer.md Step 1's mapping. */
+export const RUNBOOK_FOR_ROLE = {
+    deployer: 'deploy.md',
+    'integ-test-runner': 'integ-test-playbook.md',
+    'regression-test-runner': 'regression-test-playbook.md',
 };
+
+/**
+ * Extracts the permission prefixes a runbook's `## Permissions` section
+ * DECLARES, deterministically.
+ *
+ * The contract (already documented in permissions-composer.md Step 1, and the
+ * shape every shipped runbook uses) is: one prefix per markdown LIST ITEM, the
+ * prefix backticked and written as `Tool(payload)`, optionally followed by
+ * prose commentary on the same or a continuation line.
+ *
+ * Only the FIRST backticked token of a list item is taken, and only list
+ * items are considered. That is what keeps the parser from picking up the
+ * explanatory prose these sections also contain -- regression-test-playbook.md's
+ * Permissions preamble mentions `Bash(node:*)`, `Bash(git:*)` and `Bash(bd:*)`
+ * as examples of "a broader prefix entry counts as coverage", and a naive
+ * "every backticked Bash(...) in the section" scan would grant all three.
+ *
+ * Fails closed: an unparseable or absent section yields an empty array, which
+ * every caller must treat as "nothing to grant", never as "grant everything".
+ *
+ * @param {string} markdown - full runbook text
+ * @returns {string[]} declared prefixes, in document order, de-duplicated
+ */
+export function parseRunbookPermissions(markdown) {
+    if (typeof markdown !== 'string' || markdown.length === 0) return [];
+    const lines = markdown.split(/\r?\n/);
+    const start = lines.findIndex((l) => /^##\s+Permissions\s*$/i.test(l.trim()));
+    if (start === -1) return [];
+    const out = [];
+    for (let i = start + 1; i < lines.length; i++) {
+        const line = lines[i];
+        // Any subsequent heading of the same or higher level ends the section.
+        if (/^#{1,2}\s+\S/.test(line)) break;
+        if (!/^\s*[-*+]\s+/.test(line)) continue;
+        const backticked = /`([^`]+)`/.exec(line);
+        if (!backticked) continue;
+        const candidate = backticked[1].trim();
+        // Must be a well-formed `Tool(payload)` permission string.
+        if (!/^[A-Za-z][A-Za-z0-9_-]*\(.*\)$/.test(candidate)) continue;
+        if (!out.includes(candidate)) out.push(candidate);
+    }
+    return out;
+}
+
+/**
+ * True only when compose_permissions' return string explicitly confirms the
+ * grant. The tool answers with human-readable text, prefixed U+2705 on success
+ * and U+274C on any rejection (NEVER_AUTO_GRANT denylist, out-of-bounds,
+ * delivery failure, unresolvable member). Fails CLOSED: an empty, truncated or
+ * unrecognized response is treated as "not granted", never as success.
+ * (The escape, rather than the literal glyph, keeps this file ASCII.)
+ * @param {string} toolText
+ * @returns {boolean}
+ */
+export function isComposePermissionsSuccess(toolText) {
+    if (typeof toolText !== 'string') return false;
+    const head = toolText.trim();
+    if (head.length === 0) return false;
+    const first = head.codePointAt(0);
+    if (first === 0x274c) return false;  // U+274C CROSS MARK -- every failure path
+    return first === 0x2705;             // U+2705 WHITE HEAVY CHECK MARK -- success
+}
 
 // ---------------------------------------------------------------------------
 // bd JSON-parse helper
@@ -6402,13 +6478,41 @@ async function runSprintCycle(context) {
     // optional `blockedReason` field (apra-fleet-u1qw.1.1/.1.2); the only
     // value it ever takes is 'missing_permissions', meaning "I could not do my
     // work because a Bash prefix my own runbook declares was not granted to
-    // me". That is a mechanically fixable failure, not a real phase verdict:
-    // permissions-composer (apra-fleet-u1qw.2.1) reads that phase's runbook
-    // Permissions section and grants exactly those prefixes via
-    // compose_permissions, after which the identical dispatch can simply be
-    // re-run.
+    // me". That is a mechanically fixable failure, not a real phase verdict.
     //
-    // Shape deliberately mirrors two existing patterns:
+    // DETERMINISTIC, NO LLM (PR #416 review, findings 1+2 / options 1A+2B).
+    // The heal used to dispatch a cheap-tier `permissions-composer` agent that
+    // read the runbook out of the ORCHESTRATOR'S WORKING TREE -- which
+    // withGitSync had just pulled this sprint's own doer commits into -- and
+    // then self-reported which prefixes it had granted. Two holes in one: the
+    // grant source was member-writable (a doer could append
+    // `Bash(bash -c *)` to deploy.md's `## Permissions`, commit it, and have
+    // it granted with no human involved), and a self-report produced AFTER the
+    // tool call already landed cannot constrain the side effect it describes.
+    //
+    // Both are now structurally impossible rather than checked for. The heal
+    // is four plain steps, all in JavaScript:
+    //   1. git fetch origin <base_branch> on the orchestrator member, then
+    //      `git show origin/<base_branch>:<runbook>` -- the runbook comes from
+    //      the human-reviewed, merged line, never from the working tree.
+    //   2. parseRunbookPermissions() extracts the declared prefixes.
+    //   3. compose_permissions is called DIRECTLY through the injected MCP
+    //      `callTool`, with the failing phase's role (so the tool applies that
+    //      role's bounds) and exactly the parsed prefixes -- no more, no fewer.
+    //   4. the tool's own return string is inspected for the success/rejection
+    //      shape, and the phase is retried once on success.
+    // There is no agent, therefore no self-report to trust and no
+    // AgentOutputError branch.
+    //
+    // KNOWN, INTENTIONAL FAILURE MODE: a permission need introduced BY THIS
+    // SPRINT and correctly documented in the same PR is not in the base
+    // branch, so it does NOT self-heal. The phase fails for real and a human
+    // reviews the PR. That is the correct seam for a human -- a sprint must
+    // not be able to authorize its own new permission -- and it is logged
+    // distinguishably ("requested prefix not present in base-branch runbook")
+    // so operators can tell it apart from a plain missing grant.
+    //
+    // The retry shape deliberately mirrors two existing patterns:
     //   - the max_turns resume block at each phase's dispatch site (dispatch,
     //     inspect the outcome, re-dispatch once with the fault addressed), and
     //   - src/tools/execute-prompt.ts's trustHealAttempted gate: heal once,
@@ -6425,13 +6529,21 @@ async function runSprintCycle(context) {
     // makes that terminal branch reachable (and observable in the log) without
     // any second dispatch.
     //
-    // A terminal permissions-composer outcome -- notably a NEVER_AUTO_GRANT
-    // denylist rejection -- is NEVER retried: the original failure propagates
-    // unchanged (with the terminal reason appended to its notes/summary), so
+    // EVERY terminal outcome -- a NEVER_AUTO_GRANT / out-of-bounds rejection,
+    // an unreadable base-branch runbook, an empty `## Permissions` section, a
+    // missing MCP connection, a thrown tool error -- propagates the ORIGINAL
+    // failure unchanged (with the reason appended to its notes/summary), so
     // the phase fails for real exactly as it would have without this helper.
-    // Ditto a composer dispatch that itself errors: the heal is best-effort
-    // and must never convert a phase failure into a thrown sprint abort.
+    // The heal is best-effort and must never convert a phase failure into a
+    // thrown sprint abort.
     const permissionHealAttempted = new Set();
+
+    /** First text block of an MCP tool result, or ''. */
+    const toolResultText = (res) =>
+        (res && Array.isArray(res.content) && res.content[0] && typeof res.content[0].text === 'string')
+            ? res.content[0].text
+            : '';
+
     /**
      * @param {object} opts
      * @param {string} opts.phaseName - human-readable phase name, e.g. 'Deploy'
@@ -6455,47 +6567,109 @@ async function runSprintCycle(context) {
             const existing = typeof result[noteField] === 'string' ? result[noteField] : '';
             return { ...result, [noteField]: `${existing}${existing ? ' ' : ''}[permissions heal] ${reason}` };
         };
-        log(`${phaseName}: reported blockedReason=missing_permissions -- dispatching permissions-composer once for role ${role} on member ${targetMember}, then retrying this phase exactly once.`);
-        let composed = null;
+        const terminal = (reason) => {
+            log(`${phaseName}: permissions heal did NOT grant -- TERMINAL, propagating the original failure (never retried): ${reason}`);
+            return appendReason(`terminal permissions-heal failure, phase NOT retried: ${reason}`);
+        };
+
+        const runbook = RUNBOOK_FOR_ROLE[role];
+        if (!runbook) {
+            return terminal(`no runbook is mapped to role '${role}' (known roles: ${Object.keys(RUNBOOK_FOR_ROLE).join(', ')})`);
+        }
+
+        log(`${phaseName}: reported blockedReason=missing_permissions -- reading ${runbook} from origin/${validated.baseBranch} (the reviewed base branch, NOT the sprint working tree) to heal role ${role} on member ${targetMember}, then retrying this phase exactly once.`);
+
+        // --- 1. Read the runbook from the BASE branch ------------------------
+        let runbookText;
         try {
-            // Read-side bracket (pushCode:false, no pushBeads): the composer
-            // READS the failing phase's runbook out of the orchestrator's own
-            // clone, so it must not run against a stale checkout -- same
-            // reasoning as the deployer/integ brackets. It writes no code and
-            // mutates no beads, so nothing is pushed after.
-            composed = await withGitSync(orchestratorMember, false, () => agent(
-                `The ${phaseName} phase failed with blockedReason=missing_permissions: the ${role} on member ` +
-                `"${targetMember}" was denied a Bash prefix its own runbook declares it needs. Heal it per your ` +
-                `contract, using these inputs: phase = ${role}; member_name = ${targetMember}; project_folder = ` +
-                `the repository checkout root you are running in. Read only that phase's runbook Permissions ` +
-                `section and grant exactly the prefixes it declares -- no more, no fewer. If any requested prefix ` +
-                `is rejected as NEVER_AUTO_GRANT, that is a terminal failure: report it, do not route around it.`,
-                {
-                    member_name: orchestratorMember,
-                    // Unlike the Streak Assignment dispatch (which deliberately
-                    // omits agentType because it has no vendored persona), this
-                    // call DOES have one -- apra-pm/agents/permissions-composer.md
-                    // -- and needs it: the persona is what restricts the dispatch
-                    // to Read + compose_permissions.
-                    agentType: 'permissions-composer',
-                    label: `Permissions Composer (${phaseName} heal)`,
-                    schema: permissionsComposerReport,
-                    model: FIXED_ROLE_TIER.permissionsComposer,
-                }
-            ));
-        } catch (err) {
-            if (err instanceof AgentOutputError || err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                log(`${phaseName}: permissions-composer dispatch failed (${err.message}) -- leaving the original missing-permissions failure in place, no retry.`);
-                return appendReason(`composer dispatch failed: ${err.message}`);
+            const fetchRes = await command(`git fetch origin ${validated.baseBranch}`, {
+                member_name: orchestratorMember, silent: true, failSoft: true,
+                label: `Fetch base branch '${validated.baseBranch}' for the ${phaseName} permissions heal`,
+            });
+            if (!fetchRes || !fetchRes.ok) {
+                return terminal(`could not fetch origin/${validated.baseBranch} on '${orchestratorMember}': ${(fetchRes && fetchRes.error) || 'unknown git failure'}`);
             }
-            throw err;
+            const showRes = await command(`git show origin/${validated.baseBranch}:${runbook}`, {
+                member_name: orchestratorMember, silent: true, failSoft: true,
+                label: `Read ${runbook} from origin/${validated.baseBranch} for the ${phaseName} permissions heal`,
+            });
+            if (!showRes || !showRes.ok) {
+                return terminal(`${runbook} could not be read from origin/${validated.baseBranch}: ${(showRes && showRes.error) || 'unknown git failure'}`);
+            }
+            runbookText = String(showRes.output === undefined || showRes.output === null ? '' : showRes.output);
+        } catch (err) {
+            return terminal(`reading ${runbook} from origin/${validated.baseBranch} threw: ${err.message}`);
         }
-        if (!composed || composed.composed !== true) {
-            const terminal = (composed && composed.terminalFailure) || 'permissions-composer returned composed:false with no stated reason';
-            log(`${phaseName}: permissions-composer did NOT grant -- TERMINAL, propagating the original failure (a NEVER_AUTO_GRANT rejection is never retried): ${terminal}`);
-            return appendReason(`terminal composer failure, phase NOT retried: ${terminal}`);
+
+        // --- 2. Parse its `## Permissions` section ---------------------------
+        const declared = parseRunbookPermissions(runbookText);
+        if (declared.length === 0) {
+            return terminal(`origin/${validated.baseBranch}:${runbook} has no parseable '## Permissions' list entries -- failing closed rather than improvising a prefix list`);
         }
-        log(`${phaseName}: permissions-composer granted [${(composed.grantedPrefixes || []).join(', ') || 'none reported'}] -- retrying the ${phaseName} dispatch exactly once.`);
+
+        // Advisory only: name any prefix the failing phase mentioned that the
+        // BASE-branch runbook does not declare. This is the distinguishable
+        // operator signal for the intentional failure mode documented above --
+        // a permission need introduced within this sprint and not yet reviewed
+        // into the base branch.
+        const mentioned = new Set();
+        for (const field of ['notes', 'summary']) {
+            const text = typeof result[field] === 'string' ? result[field] : '';
+            for (const m of text.matchAll(/\b([A-Za-z][A-Za-z0-9_-]*\([^)]*\))/g)) mentioned.add(m[1]);
+        }
+        const notInBase = [...mentioned].filter((p) => !declared.includes(p));
+        if (notInBase.length > 0) {
+            log(`${phaseName}: requested prefix not present in base-branch runbook -- not auto-granted: [${notInBase.join(', ')}]. origin/${validated.baseBranch}:${runbook} declares only [${declared.join(', ')}]. A permission need introduced within this sprint must be reviewed into ${validated.baseBranch} by a human before it can self-heal; this is intentional, not a bug.`);
+        }
+
+        // --- 3. Call compose_permissions DIRECTLY ----------------------------
+        if (!args || typeof args.callTool !== 'function') {
+            return terminal('no fleet MCP connection is wired into this run (args.callTool absent), so compose_permissions cannot be called');
+        }
+        // `project_folder` is the ledger location compose_permissions reads and
+        // writes. Resolve it from the orchestrator member's own checkout root
+        // -- exactly what the previous agent-based heal passed ("the repository
+        // checkout root you are running in"). Omitted, never guessed, when the
+        // probe fails: the grant still lands, only the ledger entry is skipped.
+        let projectFolder;
+        try {
+            const rootRes = await command('git rev-parse --show-toplevel', {
+                member_name: orchestratorMember, silent: true, failSoft: true,
+                label: `Resolve checkout root for the ${phaseName} permissions-heal ledger`,
+            });
+            if (rootRes && rootRes.ok) {
+                const root = String(rootRes.output === undefined || rootRes.output === null ? '' : rootRes.output).trim().split(/\r?\n/)[0];
+                if (root) projectFolder = root.trim();
+            }
+        } catch { /* best effort -- see comment above */ }
+        if (!projectFolder) {
+            log(`${phaseName}: could not resolve the orchestrator checkout root -- calling compose_permissions without project_folder (grant still delivered, ledger entry skipped).`);
+        }
+
+        let toolText;
+        try {
+            const grantArgs = {
+                role,
+                member_name: targetMember,
+                grant: declared,
+                grant_reason: `heal: ${role} missing permissions, from origin/${validated.baseBranch}:${runbook}`,
+            };
+            if (projectFolder) grantArgs.project_folder = projectFolder;
+            toolText = toolResultText(await args.callTool('compose_permissions', grantArgs));
+        } catch (err) {
+            return terminal(`compose_permissions threw: ${err.message}`);
+        }
+
+        // --- 4. Inspect the tool's OWN return string -------------------------
+        // compose_permissions returns a human-readable string prefixed with a
+        // success or failure marker. Anything that is not an explicit success
+        // is terminal: failing closed is the only safe default for a string
+        // this runner did not author.
+        if (!isComposePermissionsSuccess(toolText)) {
+            return terminal(`compose_permissions rejected or did not confirm the grant: ${toolText ? toolText.replace(/\s+/g, ' ').slice(0, 400) : '(empty tool response)'}`);
+        }
+
+        log(`${phaseName}: compose_permissions granted [${declared.join(', ')}] from origin/${validated.baseBranch}:${runbook} -- retrying the ${phaseName} dispatch exactly once.`);
         // Feed the retry's result back through this same helper: the guard is
         // already set, so a repeat missing_permissions takes the terminal
         // branch above instead of healing again.

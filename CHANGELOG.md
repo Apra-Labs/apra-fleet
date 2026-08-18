@@ -390,11 +390,17 @@ What shipped:
 - **Automatic missing-permissions self-heal.** The Deploy, Integration Test,
   and Regression Test phases can now report a structured
   `blockedReason: 'missing_permissions'` instead of only failing prose. When
-  that fires, the orchestrator dispatches a new, tightly-scoped
-  `permissions-composer` role (orchestrator-side only, `Read` +
-  `compose_permissions` tools only, never a member-dispatched role) that
-  reads the failing phase's own runbook Permissions section, grants exactly
-  those prefixes, and lets the orchestrator retry the original dispatch once.
+  that fires, the orchestrator heals it deterministically -- no LLM anywhere
+  in the grant path. It reads the failing phase's runbook from
+  `origin/<base_branch>` (the human-reviewed, merged line -- never the sprint
+  working tree, which carries this sprint's own doer commits), parses its
+  `## Permissions` list entries in plain JavaScript, calls
+  `compose_permissions` itself with exactly those prefixes and the failing
+  phase's role, and retries the original dispatch once.
+  A permission need introduced *within* the current sprint is by design not in
+  the base branch and does NOT self-heal: the phase fails for real and is
+  logged distinguishably, because a sprint must not be able to authorize its
+  own new permission.
   A second consecutive block in the same cycle, or a denylist rejection, is
   treated as terminal and surfaces as a real phase failure rather than
   looping. This closes a gap where a checkout with no provisioned

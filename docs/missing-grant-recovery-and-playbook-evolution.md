@@ -8,9 +8,10 @@ Nothing in this document is implemented yet, with one exception noted inline: th
 ## Related Documents
 - `docs/features/permissions-self-heal.md` -- a narrower, already-shipped mechanism: a
   structured `blockedReason: 'missing_permissions'` signal from the Deploy/Integ
-  Test/Regression Test phases triggers an orchestrator-side `permissions-composer` role
-  that grants exactly the prefixes the failing phase's own runbook already declares, then
-  retries once. It does not classify refusals by remediation owner, reverse-extract grants
+  Test/Regression Test phases triggers a deterministic orchestrator-side heal that reads
+  the failing phase's runbook from `origin/<base_branch>` (never the sprint working tree),
+  parses its `## Permissions` list entries and calls `compose_permissions` directly with
+  exactly those prefixes, then retries once. It does not classify refusals by remediation owner, reverse-extract grants
   from raw CLI text, or propose playbook diffs for human review -- the broader design below
   remains unimplemented and the two are not in conflict.
 - `docs/auto-sprint-permission-diff-safety-block.md` (Auto-sprint permission diff safety & non-self-granting workflow rule)
