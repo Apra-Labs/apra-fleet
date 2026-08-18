@@ -265,7 +265,13 @@ function stableStringify(value: unknown): string {
  *  in the same directory LocalStrategy already uses as cwd -- no behavior
  *  change. Never rely on shell-level $HOME/~ expansion here: the member's
  *  shell may be PowerShell (see CLAUDE.md and probeCommandFor/agent.os). */
-function resolveConfigDeliveryPath(agent: Agent, relativePath: string): string {
+export function resolveConfigDeliveryPath(agent: Agent, relativePath: string): string {
+  if (!agent.workFolder || !agent.workFolder.trim()) {
+    throw new ConfigDeliveryError(
+      relativePath,
+      `cannot resolve config delivery path for "${agent.friendlyName ?? agent.workFolder}": workFolder is empty or undefined`,
+    );
+  }
   return `${agent.workFolder}/${relativePath}`.replace(/\\/g, '/');
 }
 
@@ -295,7 +301,7 @@ async function deliverConfigFile(
   const dir = filePath.split('/').slice(0, -1).join('/');
   const mkdirCmd = isWindows
     ? `New-Item -ItemType Directory -Force "${dir.replace(/\//g, '\\')}"`
-    : `mkdir -p ${dir}`;
+    : `mkdir -p "${dir}"`;
   const mkdirResult = await strategy.execCommand(mkdirCmd, 5000);
   if (mkdirResult.code !== 0) {
     throw new ConfigDeliveryError(
@@ -306,7 +312,7 @@ async function deliverConfigFile(
 
   const readCmd = isWindows
     ? `Get-Content -Raw "${winPath}" -ErrorAction SilentlyContinue`
-    : `cat ${filePath} 2>/dev/null || true`;
+    : `cat "${filePath}" 2>/dev/null || true`;
 
   let mergedContent: Record<string, unknown> | string = content;
   if (isPlainObject(content)) {
@@ -327,7 +333,7 @@ async function deliverConfigFile(
 
   const writeCmd = isWindows
     ? `[System.IO.File]::WriteAllText("${winPath}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
-    : `cat > ${filePath} << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`;
+    : `cat > "${filePath}" << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`;
   const writeResult = await strategy.execCommand(writeCmd, 5000);
   if (writeResult.code !== 0) {
     throw new ConfigDeliveryError(
@@ -408,10 +414,16 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     let allow: string[];
 
     if (provider.name === 'claude') {
-      // Claude: read existing allow list and merge
+      // Claude: read existing allow list and merge. Resolve the same absolute,
+      // work-folder-anchored path deliverConfigFile below writes to (D1 fix,
+      // rmkb-bbe.1) -- a bare relative read resolves against the SSH login cwd
+      // ($HOME) on a remote member instead of <workFolder>/.claude, and would
+      // return {} there, clobbering the previously composed allow list on the
+      // write that follows.
+      const readPath = resolveConfigDeliveryPath(agent, provider.permissionConfigPaths()[0]);
       // TODO: unbranched POSIX `2>/dev/null || echo` -- same defect class as
       // orphan-recovery.ts's pid-alive/file-read commands. Not yet OS-branched.
-      const readResult = await strategy.execCommand('cat .claude/settings.local.json 2>/dev/null || echo "{}"', 5000);
+      const readResult = await strategy.execCommand(`cat "${readPath}" 2>/dev/null || echo "{}"`, 5000);
       let current: any;
       try {
         current = JSON.parse(readResult.stdout.trim());
