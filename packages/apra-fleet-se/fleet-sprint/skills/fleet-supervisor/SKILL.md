@@ -32,6 +32,101 @@ curl -s -m 5 http://localhost:8787/api/members   # expect the registered fleet, 
 Both must succeed before treating the supervisor as up -- a bound port with
 a 500 on `/api/members` still means something is broken.
 
+## Stop the supervisor
+
+Two paths: **graceful** (preferred -- lets in-flight requests finish and every
+seam tear down cleanly) and **hard-stop** (only when the API itself is
+unresponsive, e.g. a hung event loop). Resolve commands per the target
+member's own OS (`agent.os`) -- do not assume the orchestrator's shell; some
+members run PowerShell, not POSIX.
+
+### Graceful (preferred)
+
+```bash
+curl -s -X POST http://localhost:8787/api/shutdown
+```
+Returns `{"status":"shutting-down"}` immediately; the process then finishes
+tearing down every seam (ledger, watchdog, dashboard, etc) and exits on its
+own a moment later. Confirm it is actually gone:
+```bash
+curl -s -m 5 http://localhost:8787/api/sprints   # expect connection refused
+```
+If that still connects after a few seconds, fall through to hard-stop below.
+
+### Find the supervisor's PID/port (when the API is unresponsive)
+
+`GET /api/health` normally reports the running `pid` directly (`curl -s -m 5
+http://localhost:8787/api/health`), but if the API itself is unresponsive
+that call will hang or refuse -- fall back to an OS-level lookup by port
+(default **8787**) or process name (`serve.mjs`):
+
+**macOS / Linux:**
+```bash
+lsof -i :8787                 # shows the PID (COMMAND, PID columns) bound to the port
+lsof -ti:8787                 # PID only, convenient for command substitution
+# or, by process name if the port lookup finds nothing (already unbound but
+# the process is still alive/hung):
+pgrep -f 'bin/serve.mjs'
+```
+
+**Windows (PowerShell):**
+```powershell
+Get-NetTCPConnection -LocalPort 8787 | Select-Object OwningProcess
+Get-Process -Id <pid>          # confirm it is the supervisor before killing it
+# or, by process name:
+Get-Process | Where-Object { $_.Path -like '*serve.mjs*' -or $_.CommandLine -like '*serve.mjs*' }
+```
+
+**Windows (cmd.exe, if PowerShell is unavailable):**
+```cmd
+netstat -ano | findstr :8787
+tasklist /FI "PID eq <pid>"
+```
+
+### Hard-stop (PID-based kill)
+
+Only once you have confirmed the PID above is actually the supervisor
+process. Try a graceful signal first, then force:
+
+**macOS / Linux:**
+```bash
+kill <pid>                    # SIGTERM -- gives it a chance to exit cleanly
+sleep 2
+kill -0 <pid> 2>/dev/null && kill -9 <pid>   # still alive? force it
+```
+
+**Windows (PowerShell):**
+```powershell
+Stop-Process -Id <pid>              # graceful-ish first attempt
+Stop-Process -Id <pid> -Force       # still running? force-kill
+```
+
+**Windows (cmd.exe):**
+```cmd
+taskkill /PID <pid>
+taskkill /PID <pid> /F
+```
+
+After either path, verify the port is free before restarting:
+`curl -s -m 5 http://localhost:8787/api/sprints` must refuse the connection
+(macOS/Linux), or the port-lookup command above must return nothing
+(Windows).
+
+## Restart the supervisor
+
+A discrete stop-then-start procedure -- use this instead of assuming a bare
+restart command exists:
+
+1. **Stop** it: graceful shutdown above; if that does not actually stop it
+   (still answering after a few seconds), fall back to the hard-stop path
+   above.
+2. **Confirm it is down**: `curl -s -m 5 http://localhost:8787/api/sprints`
+   must refuse the connection (or the per-OS port lookup above returns
+   nothing).
+3. **Start** it again: see section 0 ("Start the supervisor") above, then
+   run its smoke test (`GET /api/sprints`, `GET /api/members`) to confirm the
+   new process is actually serving before treating the restart as done.
+
 ## 1. Before you launch a sprint
 
 1. If you just created/edited beads locally, push them first:
