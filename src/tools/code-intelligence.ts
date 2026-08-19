@@ -2,7 +2,7 @@ import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
 import { z } from 'zod';
-import { GitNexusProvider } from './code-intelligence-gitnexus.js';
+import { GitNexusProvider, repoHasGitNexusIndex } from './code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
 import { getAgent } from '../services/registry.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
@@ -64,8 +64,9 @@ function optInPromptResult(method: string): { content: { type: string; text: str
         'Indexing builds a local call-graph/symbol database so code_graph, code_impact, code_query, ' +
         'code_context, code_map, code_flow, and code_tests can answer structural questions without ' +
         'grepping the tree. Nothing has been indexed automatically. ' +
-        "Run 'apra-fleet install --code-intel' in the repo to opt in and index it, " +
-        "or 'apra-fleet install --no-code-intel' to opt out and stop seeing this prompt.",
+        "Run 'apra-fleet install --code-intel' in the repo to opt in, then 'npx gitnexus analyze' " +
+        "in the repo (or /pm index) to build the index, " +
+        "or run 'apra-fleet install --no-code-intel' to opt out and stop seeing this prompt.",
     }],
   };
 }
@@ -204,10 +205,22 @@ export async function getProvider(memberId?: string, repoPath?: string): Promise
   // all -- readRepoCodeIntelConfig() returning null is the discriminator
   // between "never asked" and "explicitly enabled" (isCodeIntelEnabled()
   // above collapses both to true and cannot tell them apart on its own).
-  // Enforced only for repo-qualified calls, same scoping as the opt-out
-  // check above -- see the comment on this function for why repoPath-less
-  // calls are not covered.
-  if (repoPath && (await readRepoCodeIntelConfig(repoPath)) === null) {
+  // That config-only signal is not sufficient by itself, though: an
+  // upgraded machine can have a repo that was indexed BEFORE this opt-in
+  // config existed, and such a repo must keep working unchanged rather than
+  // suddenly seeing this prompt. repoHasGitNexusIndex() is a genuinely
+  // per-repo signal (<repo>/.gitnexus/meta.json), unlike
+  // CodebaseMemoryProvider's hasIndex() (machine-global cache directory --
+  // deliberately NOT consulted here, since a different repo being indexed on
+  // this machine must not suppress the prompt for this one). Enforced only
+  // for repo-qualified calls, same scoping as the opt-out check above -- see
+  // the comment on this function for why repoPath-less calls are not
+  // covered.
+  if (
+    repoPath &&
+    (await readRepoCodeIntelConfig(repoPath)) === null &&
+    !repoHasGitNexusIndex(repoPath)
+  ) {
     return new OptInPromptProvider();
   }
 

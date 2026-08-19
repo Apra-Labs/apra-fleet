@@ -151,6 +151,17 @@ function appendFreshnessNote(result: unknown, note: string): unknown {
 // the repo has been indexed (`<repo>/.gitnexus/meta.json` exists) BEFORE ever
 // touching the child process. Calls without a `repo` param are forwarded
 // untouched -- the check only applies when a repo is named.
+// Per-repo index marker check (apra-fleet-le1.2.1): true when THIS specific
+// repo has a gitnexus index (<repo>/.gitnexus/meta.json exists). Unlike
+// codebase-memory-mcp's hasIndex() (machine-global cache directory), this is
+// genuinely per-repo, so it is the right signal for getProvider()'s
+// first-call opt-in-prompt gate in code-intelligence.ts: an already-indexed
+// repo on an upgraded machine must keep working even before a
+// .apra-fleet/code-intel.json choice is recorded for it.
+export function repoHasGitNexusIndex(repoPath: string): boolean {
+  return existsSync(join(repoPath, '.gitnexus', 'meta.json'));
+}
+
 async function callGitNexus(name: string, params: Record<string, unknown>): Promise<unknown> {
   const repo = params.repo;
   const hasRepo = typeof repo === 'string' && repo.length > 0;

@@ -71,7 +71,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
 import { getProvider, PROVIDERS, NullProvider, RepoDisabledProvider, OptInPromptProvider, handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeMapSchema, codeFlowSchema, codeTestsSchema, codeContextSchema } from '../src/tools/code-intelligence.js';
-import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
+import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel, repoHasGitNexusIndex } from '../src/tools/code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
 // ---------------------------------------------------------------------------
@@ -230,11 +230,18 @@ describe('getProvider() repo-level opt-out', () => {
 // note) -- see the third test below.
 // ---------------------------------------------------------------------------
 describe('getProvider() first-call opt-in prompt', () => {
+  let tempRepo: string;
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetAgent.mockReturnValue(undefined);
     mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
     mockIsCodeIntelEnabled.mockResolvedValue(true);
+    tempRepo = mkdtempSync(join(tmpdir(), 'code-intel-optin-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempRepo, { recursive: true, force: true });
   });
 
   it('returns OptInPromptProvider when repoPath is supplied and no config file exists', async () => {
@@ -273,6 +280,30 @@ describe('getProvider() first-call opt-in prompt', () => {
 
     expect(mockReadRepoCodeIntelConfig).not.toHaveBeenCalled();
     expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+
+  // Backward-compat regression guard: a repo indexed BEFORE the opt-in config
+  // existed (upgrade path) has no .apra-fleet/code-intel.json yet, but it DOES
+  // have a real per-repo <repo>/.gitnexus/meta.json index marker. It must keep
+  // working unchanged rather than suddenly seeing the opt-in prompt.
+  it('falls through to normal resolution for an unconfigured repo that already has a .gitnexus index', async () => {
+    mkdirSync(join(tempRepo, '.gitnexus'), { recursive: true });
+    writeFileSync(join(tempRepo, '.gitnexus', 'meta.json'), JSON.stringify({ lastCommit: 'abc123' }));
+    mockReadRepoCodeIntelConfig.mockResolvedValue(null);
+
+    const provider = await getProvider(undefined, tempRepo);
+
+    expect(mockReadRepoCodeIntelConfig).toHaveBeenCalledWith(tempRepo);
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+    expect(provider).not.toBeInstanceOf(OptInPromptProvider);
+  });
+
+  it('still returns OptInPromptProvider for an unconfigured repo with no .gitnexus index at all', async () => {
+    mockReadRepoCodeIntelConfig.mockResolvedValue(null);
+
+    const provider = await getProvider(undefined, tempRepo);
+
+    expect(provider).toBeInstanceOf(OptInPromptProvider);
   });
 
   it('does not check the opt-in-prompt path for a repo that has explicitly opted out', async () => {
@@ -1106,6 +1137,29 @@ describe('asciiSanitizeLabel()', () => {
 
   it('replaces other stray non-ASCII characters with "?"', () => {
     expect(asciiSanitizeLabel('café')).toBe('caf?');
+  });
+});
+
+describe('repoHasGitNexusIndex()', () => {
+  let tempRepo: string;
+
+  beforeEach(() => {
+    tempRepo = mkdtempSync(join(tmpdir(), 'code-intel-repo-index-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempRepo, { recursive: true, force: true });
+  });
+
+  it('returns true when <repo>/.gitnexus/meta.json exists', () => {
+    mkdirSync(join(tempRepo, '.gitnexus'), { recursive: true });
+    writeFileSync(join(tempRepo, '.gitnexus', 'meta.json'), JSON.stringify({ lastCommit: 'abc123' }));
+
+    expect(repoHasGitNexusIndex(tempRepo)).toBe(true);
+  });
+
+  it('returns false when the repo has no .gitnexus directory', () => {
+    expect(repoHasGitNexusIndex(tempRepo)).toBe(false);
   });
 });
 
