@@ -33,3 +33,7 @@ Options:
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
   --code-intel            Record this repo as opted in to code intelligence (.apra-fleet/code-intel.json).
   --no-code-intel         Record this repo as opted out of code intelligence (.apra-fleet/code-intel.json).
+                          The opt-out is per repo and enforced at call time: code_* tools return
+                          "disabled" for this repo. It does NOT suppress machine-global setup
+                          (~/.apra-fleet/data/code-intelligence/config.json, the ~/.claude/CLAUDE.md
+                          routing block), which other repos on this machine share.

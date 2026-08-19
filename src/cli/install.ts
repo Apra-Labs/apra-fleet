@@ -1602,8 +1602,10 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // presence is the only gate, and the step is fully non-fatal.
   copyGlobalBible(repoCwd);
 
-  // Record the --code-intel/--no-code-intel choice (apra-fleet-le1.1.4), so
-  // the gate below honours it in this same run. Skipped for non-git repos
+  // Record the --code-intel/--no-code-intel choice (apra-fleet-le1.1.4). This
+  // write has no effect on the rest of this install run -- nothing below reads
+  // it (see the apra-fleet-tm7.22 decision comment); it is consumed only at
+  // call time by the code_* tools' per-repo check. Skipped for non-git repos
   // and when neither flag was passed -- "no config" must stay distinguishable
   // from an explicit choice (see isCodeIntelEnabled's backward-compat default).
   if (isGitRepo && codeIntelFlag !== undefined) {
