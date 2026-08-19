@@ -78,7 +78,7 @@ lists `@apralabs/apra-fleet-client` as a direct dependency.
   can depend on `apra-fleet-client` alone and use `ApraFleet` +
   `McpClient` + a transport directly.
 - It is not intended for end users interacting through a chat UI; those
-  users go through an LLM CLI (Claude Code, Antigravity, Gemini, Codex,
+  users go through an LLM CLI (Claude Code, Antigravity, Codex,
   ...) that talks MCP natively. This package is for programmatic,
   code-level fleet automation.
 
