@@ -100,7 +100,7 @@ Each provider auto-loads a provider-specific instruction file from the working d
 | Provider | Auto-loaded file |
 |----------|-----------------|
 | Claude | `CLAUDE.md` |
-| Antigravity (agy) | `GEMINI.md` |
+| Antigravity (agy) | `AGY.md` |
 | Codex | `AGENTS.md` |
 | Copilot | `COPILOT.md` |
 

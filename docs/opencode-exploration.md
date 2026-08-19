@@ -2,7 +2,7 @@
 
 Living notes on what works / does not work with **OpenCode** (https://opencode.ai,
 repo sst/opencode), based on REAL observations. Goal: add OpenCode as another
-supported LLM provider in apra-fleet (alongside claude, gemini, codex, copilot, agy).
+supported LLM provider in apra-fleet (alongside claude, codex, copilot, agy).
 
 Status legend:
 - [OK]   = verified by direct observation in this environment

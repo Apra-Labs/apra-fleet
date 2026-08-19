@@ -18,12 +18,18 @@
 
 # Provider Usage/Quota-API Survey (execute_prompt budget awareness)
 
+> **Historical note:** Gemini was a supported provider when this survey was
+> written (2026-07-27); it has since been fully removed from apra-fleet. The
+> Gemini section below is retained as a point-in-time technical record of the
+> `gemini-cli` quota/usage investigation and does not describe a currently
+> supported provider.
+
 Status: research document, 2026-07-27. Answers the first-implementation-step
 requirement of beads item apra-fleet-eft.80.1 (parent: apra-fleet-eft.80,
 "Usage/budget awareness in execute_prompt"). Mirrors
 docs/interactive-injection-provider-survey.md's method and confidence
 legend. Providers surveyed match `src/providers/*.ts`: claude, codex,
-gemini, copilot, agy, opencode (`none` is out of scope -- see section 7).
+gemini (removed, see historical note above), copilot, agy, opencode (`none` is out of scope -- see section 7).
 
 Confidence legend (matches docs/interactive-injection-provider-survey.md):
 - [OK]   = confirmed by reading the provider's own docs/schema/source directly, today.

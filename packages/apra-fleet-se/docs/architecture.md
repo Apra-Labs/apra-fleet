@@ -275,7 +275,7 @@ runner-owned policy table, not a live read of fleet configuration):
 These tier keywords (`cheap`/`standard`/`premium`) are resolved to a concrete
 model **per member, server-side** (`execute-prompt.ts`'s
 `resolveModelForTier()`, via each member's registered `model_tiers`) -- this
-is what makes a mixed-provider fleet (Claude, Gemini, Codex, Copilot,
+is what makes a mixed-provider fleet (Claude, AGY, Codex, Copilot,
 OpenCode, ...) work correctly. Earlier revisions of this runner hardcoded
 Claude-specific literal model names (`opus`/`sonnet`) here instead. That was
 a real bug, not a stylistic choice: a fixed `opus` dispatch to a non-Claude

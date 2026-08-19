@@ -10,7 +10,7 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 
 ### 1. Log File Not Yet Created When First Poll Fires
 
-**Scenario:** A member is added to the stall check list and poll fires before the provider (Claude/Gemini) has written the first JSONL log entry to disk.
+**Scenario:** A member is added to the stall check list and poll fires before the provider (Claude/Antigravity) has written the first JSONL log entry to disk.
 
 **Decision:** Treat as "no activity yet" and do not count as a stall cycle.
 - `readLogTail()` attempts to read the log file, gets "file not found" or similar error from `execute_command`.
@@ -101,7 +101,7 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 
 **Decision:** Baseline `lastActivityAt` is set at add time, not at log-file-creation time, so stale files don't trigger immediate stalls.
 - When a member is added, `lastActivityAt` is set to `Date.now()` (current timestamp).
-- The log file path is derived from the sessionId: `~/.claude/projects/<encoded>/<sessionId>.jsonl` or `~/.gemini/tmp/<project>/<sessionId>.jsonl`.
+- The log file path is derived from the sessionId: `~/.claude/projects/<encoded>/<sessionId>.jsonl` or `~/.gemini/antigravity-cli/brain/<sessionId>/.system_generated/logs/transcript.jsonl` (AGY).
 - If the file pre-exists from a prior session with the same ID, its timestamps are old.
 - Poll loop reads the tail of the file, extracts the last entry's timestamp, and compares it to `entry.lastActivityAt` (set at add time, not read time).
 - Since the log file's timestamp is older than `entry.lastActivityAt`, the comparison detects no new activity -> `lastActivityAt` is not updated.

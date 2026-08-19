@@ -103,8 +103,8 @@ Role-to-member binding is real and specific, not hypothetical:
 
 - `apra-fleet`'s installer (`src/cli/install.ts`, lines ~129-139) copies
   `packages/apra-fleet-se/apra-pm/agents/*.md` to the provider-specific agents directory on
-  the member machine (`~/.claude/agents/` for Claude, `~/.gemini/agents/`
-  for Gemini, etc. -- see `src/cli/config.ts`).
+  the member machine (`~/.claude/agents/` for Claude, `~/.gemini/antigravity-cli/agents/`
+  for AGY, etc. -- see `src/cli/config.ts`).
 - `execute_prompt` (`src/tools/execute-prompt.ts`, lines 47-58) takes an
   optional `agent` string. For Claude it invokes `claude --agent <name>`
   (`src/providers/claude.ts:49`, `src/os/windows.ts:120-122`); the named

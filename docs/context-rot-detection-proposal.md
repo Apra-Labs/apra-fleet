@@ -1,7 +1,7 @@
 # Context Rot Detection: an apra-fleet advanced capability
 
 > A proposed capability that watches a member's live LLM session (across
-> Claude, Gemini, and eventually Codex/Copilot/AGY) for signs that its
+> Claude, and eventually Codex/Copilot/AGY) for signs that its
 > conversation context has degraded -- via digression, staleness, or sheer
 > size -- and surfaces that signal to the human/orchestrator before the
 > member's output quality visibly drops, with concrete next-step suggestions
@@ -16,7 +16,7 @@ Author: apra-fleet (this session), informed by a deep-research pass (see
 ## Motivation
 
 apra-fleet already runs many long-lived LLM-driven sessions in parallel
-across providers (Claude, Gemini, and other members via SSH/local/relay
+across providers (Claude, AGY, and other members via SSH/local/relay
 execution) to drive a project or sprint. A session's context often starts
 sharp and linear -- a clear goal, a focused sequence of edits and checks --
 and degrades over time as digressions, dead ends, stale tool output, and
@@ -100,9 +100,9 @@ runtime and only see that one session. apra-fleet sits one layer up: it
 already orchestrates multiple members, across multiple providers, and
 already resolves each provider's on-disk session transcript
 (`src/services/stall/log-path-resolver.ts` today knows Claude's
-`~/.claude/projects/<encoded-path>/<sessionId>.jsonl` and Gemini's
-`~/.gemini/tmp/<project>/chats/<sessionId>.jsonl`; AGY/Codex/Copilot are
-explicitly unsupported today -- `throw new Error('Unsupported log polling
+`~/.claude/projects/<encoded-path>/<sessionId>.jsonl` and AGY's
+`~/.gemini/antigravity-cli/brain/<sessionId>/.system_generated/logs/transcript.jsonl`;
+Codex/Copilot are explicitly unsupported today -- `throw new Error('Unsupported log polling
 for provider: ...')`). That means apra-fleet can build a **provider-agnostic,
 fleet-wide** rot detector, not a single-vendor feature -- and it already has
 the periodic-polling architecture (`src/services/stall/stall-poller.ts`) and
@@ -195,7 +195,7 @@ links, with an optional `index.md` per directory for progressive disclosure
 and an optional `log.md` for chronological history. It is deliberately
 un-opinionated about tooling -- "if you can `cat` a file, you can read
 OKF" -- which matters here because apra-fleet's members span multiple
-providers (Claude, Gemini, and eventually AGY/Codex/Copilot) that must all
+providers (Claude, and eventually AGY/Codex/Copilot) that must all
 be able to consume the same distilled knowledge without a shared SDK.
 
 Concretely, this proposal's Tier 2 mitigation action ("recommend forking a
@@ -243,7 +243,7 @@ format itself requires.
 - **Extend `log-path-resolver.ts`** to support AGY/Codex/Copilot transcript
   locations (today explicitly throws "Unsupported log polling for
   provider") -- required before Tier 0 can be fleet-wide rather than
-  Claude/Gemini-only.
+  Claude/AGY-only.
 - **Reuse `stall-poller.ts`'s polling architecture** for Tier 0/1 checks
   instead of building a second poller -- rot checks and stall checks are
   the same shape of periodic, per-member, transcript-driven work.
@@ -294,7 +294,7 @@ format itself requires.
 
 ## Suggested rollout
 
-1. Tier 0 heuristics (size/turn-ratio/repetition), Claude + Gemini only
+1. Tier 0 heuristics (size/turn-ratio/repetition), Claude + AGY only
    (existing log-path support), surfaced read-only via a new MCP tool.
 2. Extend log-path-resolver for AGY/Codex/Copilot so Tier 0 is fleet-wide.
 3. Wire Tier 0 into `stall-poller.ts`'s cadence and add proactive

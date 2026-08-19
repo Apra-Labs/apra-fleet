@@ -2,9 +2,14 @@
 
 _Researched: 2026-04-04_
 
+> **Historical note:** Gemini was a supported provider at the time of this
+> research; it has since been fully removed from apra-fleet. The Gemini
+> sections below are retained as a point-in-time technical record and do not
+> describe a currently supported provider.
+
 ---
 
-## Issue #55 — Auto Thinking / Model Mode
+## Issue #55 -- Auto Thinking / Model Mode
 
 ### How each provider exposes "auto" thinking
 
@@ -12,8 +17,8 @@ _Researched: 2026-04-04_
 
 **API-level**: Claude has moved from fixed `budget_tokens` to **adaptive thinking**:
 
-- **Deprecated**: `thinking: { type: 'enabled', budget_tokens: <number> }` — fixed token budget
-- **Current**: `thinking: { type: 'adaptive' }` — model decides when/how much to think
+- **Deprecated**: `thinking: { type: 'enabled', budget_tokens: <number> }` -- fixed token budget
+- **Current**: `thinking: { type: 'adaptive' }` -- model decides when/how much to think
 - The `effort` parameter guides depth: `low`, `medium`, `high`, `max`
 
 Key characteristics:
@@ -33,8 +38,8 @@ This maps directly to the API's adaptive thinking effort parameter.
 
 **API-level**: Gemini 2.5 series uses `thinkingBudget`:
 
-- `thinkingBudget: <128-32768>` — fixed token budget
-- `thinkingBudget: -1` — **dynamic thinking** (auto mode), caps at 8,192 tokens
+- `thinkingBudget: <128-32768>` -- fixed token budget
+- `thinkingBudget: -1` -- **dynamic thinking** (auto mode), caps at 8,192 tokens
 - Gemini 2.5 Pro cannot disable thinking; minimum budget is 128 tokens
 
 Note: Gemini 3 uses `thinkingLevel` instead of `thinkingBudget`.
@@ -47,9 +52,9 @@ Note: Gemini 3 uses `thinkingLevel` instead of `thinkingBudget`.
 #### Codex (OpenAI)
 
 **API/CLI-level**: Codex supports reasoning effort levels:
-- `medium` — recommended daily driver, balances intelligence and speed
-- `high` — for harder tasks
-- `xhigh` (Extra High) — maximum thinking for the hardest tasks
+- `medium` -- recommended daily driver, balances intelligence and speed
+- `high` -- for harder tasks
+- `xhigh` (Extra High) -- maximum thinking for the hardest tasks
 
 The CLI exposes this via configuration, though not as a direct flag in `codex --help`. Reasoning effort can be set per-thread or via `/personality` commands.
 
@@ -154,8 +159,8 @@ This would require tier names like `premium-think` or `think-premium`, leading t
 1. **Gemini CLI gap**: Should we contribute a `--thinking-budget` flag upstream to Gemini CLI, or accept that Gemini thinking is API-only for now?
 
 2. **Default effort**: What should the fleet default be?
-   - `auto` (let model decide) — most flexible, but unpredictable costs
-   - `medium` — safe default for production workloads
+   - `auto` (let model decide) -- most flexible, but unpredictable costs
+   - `medium` -- safe default for production workloads
 
 3. **Effort per role**: Should doers default to higher effort than reviewers? Or should effort be task-specific?
 
@@ -165,7 +170,7 @@ This would require tier names like `premium-think` or `think-premium`, leading t
 
 ---
 
-## Issue #56 — CLI Agent Personas
+## Issue #56 -- CLI Agent Personas
 
 ### Claude Code: non-interactive persona support
 
@@ -237,8 +242,8 @@ Subagents run in isolated conversation contexts:
 #### Gemini CLI
 
 **No equivalent agent/persona flag.** The Gemini CLI supports:
-- Skills (`gemini skills list/enable/disable`) — but these are tool capabilities, not personas
-- `--approval-mode` (`default`, `auto_edit`, `yolo`, `plan`) — operational mode, not persona
+- Skills (`gemini skills list/enable/disable`) -- but these are tool capabilities, not personas
+- `--approval-mode` (`default`, `auto_edit`, `yolo`, `plan`) -- operational mode, not persona
 
 Gemini has "agent mode" at the API level, but the CLI doesn't expose persona selection. Plan mode (`--approval-mode plan`) is the closest equivalent, providing read-only exploration.
 
@@ -257,10 +262,10 @@ copilot --agent <agent-name> -p "prompt"
 ```
 
 Built-in specialized agents (from changelog):
-- **Explore** — fast codebase analysis
-- **Task** — running builds and tests
-- **Code Review** — change review
-- **Plan** — implementation planning
+- **Explore** -- fast codebase analysis
+- **Task** -- running builds and tests
+- **Code Review** -- change review
+- **Plan** -- implementation planning
 
 Copilot auto-delegates to these agents when appropriate. Custom agents can be defined with personas, tool selections, and MCP servers.
 

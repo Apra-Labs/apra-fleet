@@ -68,7 +68,7 @@ Stack profiles (keyed by `dev`/`reviewer`):
 - Model tier: doer uses `nextTask.tier`, reviewer always `premium`
 
 **`skills/pm/context-file.md`**
-- Maps provider -> filename (CLAUDE.md, GEMINI.md, etc.)
+- Maps provider -> filename (CLAUDE.md, AGY.md, etc.)
 - Role-specific templates: `tpl-doer.md`, `tpl-reviewer.md`
 
 #### 7. Agent Data Model
