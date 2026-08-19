@@ -4,7 +4,7 @@
 // and grants the minimal permissions the orchestrator needs.
 //
 // Usage:
-//   node install.mjs [--llm claude|gemini|agy] [--force] [--help]
+//   node install.mjs [--llm claude|agy|opencode] [--force] [--help]
 //
 // Inspired by the apra-fleet installer, trimmed to skill + agents only.
 
@@ -25,14 +25,12 @@ function providerConfig(llm) {
   switch (llm) {
     case 'claude':
       return { name: 'Claude', configDir: path.join(HOME, '.claude'), settingsFile: 'settings.json' };
-    case 'gemini':
-      return { name: 'Gemini', configDir: path.join(HOME, '.gemini'), settingsFile: 'settings.json' };
     case 'agy':
       return { name: 'Antigravity', configDir: path.join(HOME, '.gemini', 'antigravity-cli'), settingsFile: 'settings.json' };
     case 'opencode':
       return { name: 'OpenCode', configDir: path.join(HOME, '.config', 'opencode'), settingsFile: 'opencode.json' };
     default:
-      throw new Error(`unknown provider "${llm}" (expected: claude | gemini | agy | opencode)`);
+      throw new Error(`unknown provider "${llm}" (expected: claude | agy | opencode)`);
   }
 }
 
@@ -273,7 +271,7 @@ Usage:
   node install.mjs [options]
 
 Options:
-  --llm <provider>   claude (default) | gemini | agy | opencode
+  --llm <provider>   claude (default) | agy | opencode
   --force            reinstall even if already present
   --uninstall        remove everything a prior install added (skill, agents,
                      auto-sprint workflow, and the permissions it merged in)
