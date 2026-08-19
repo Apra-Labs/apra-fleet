@@ -1,14 +1,18 @@
 /**
- * Regression test: standalone SEA binary install must not crash while
- * overlaying the repo-root skills/pm/ additions during the PM skill step.
+ * Regression test: standalone SEA binary install must not crash during the
+ * PM skill step (step 7/14) when there is no repo checkout anywhere on disk.
  *
- * That overlay is only possible when a git checkout happens to sit on disk
- * next to the SEA binary; a third-party user who just downloaded
- * apra-fleet-installer-*.exe from CI has no such checkout anywhere on their
- * machine, so version.json (and everything else findProjectRoot() looks for)
- * genuinely does not exist. Before the fix, this threw
- * "Cannot find project root (version.json not found)" partway through
- * install (step 7/14, "Installing PM skill...") and aborted the whole run.
+ * PR #305 added a repo-root skills/pm/ directory and had install.ts overlay
+ * it onto the installed PM skill in SEA mode by calling findProjectRoot() --
+ * unaware that the actual PM skill source of truth had already moved to
+ * packages/apra-fleet-se/apra-pm/skills/pm/ in an earlier restructure. A
+ * third-party user who just downloaded apra-fleet-installer-*.exe from CI has
+ * no repo checkout anywhere on their machine, so version.json (and everything
+ * else findProjectRoot() looks for) genuinely does not exist -- this threw
+ * "Cannot find project root (version.json not found)" and aborted the whole
+ * install. Fixed by deleting the repo-root skills/pm/ directory (its content
+ * now lives at the correct package path) and removing the now-dead overlay
+ * call entirely.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
