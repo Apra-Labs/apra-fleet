@@ -139,7 +139,7 @@ never returned).
 ### 4. The reconciler agent
 
 For pairs the hashes cannot settle, a reconciler agent
-(`skills/pm/tpl-kb-reconciler.md`, standard model tier) reads the MERGED code
+(`packages/apra-fleet-se/apra-pm/agents/kb-reconciler.md`, cheap/standard model tier) reads the MERGED code
 via the code-intelligence tools (`code_context` / `code_impact` / `code_query`,
 never Glob/Grep for structural questions) and decides which claim the code
 supports. Every decision is written through the SAME single write path the

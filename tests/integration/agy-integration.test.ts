@@ -88,6 +88,26 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       ]);
     });
 
+    it('refuses to auto-collapse mcp__<server>__<tool> entries into a broad server-level mcp rule', () => {
+      // AGY's permission model is server-granular, and 'apra-fleet' colocates safe
+      // KB tools with destructive fleet-admin tools (remove_member, shutdown_server,
+      // credential_store_*) on the same server -- collapsing a narrow per-tool grant
+      // like kb_query into { action: 'mcp', target: 'apra-fleet' } would silently
+      // hand out access to all of them. This must fall through to an explicit
+      // 'custom' rule (surfaced for manual escalation) instead of a 'mcp' rule.
+      const claudeAllow = [
+        'mcp__apra-fleet__kb_session_prime',
+        'mcp__apra-fleet__kb_query',
+        'mcp__apra-fleet__kb_capture',
+      ];
+      const rules = convertClaudeAllowToAgyPermissions(claudeAllow);
+
+      expect(rules.some((r) => r.action === 'mcp')).toBe(false);
+      expect(rules).toEqual(
+        claudeAllow.map((item) => ({ action: 'custom', target: item })),
+      );
+    });
+
     it('delivers native AGY permissions to .gemini/antigravity-cli/settings.json', () => {
       const provider = new AgyProvider();
       expect(provider.permissionConfigPaths()).toEqual(['.gemini/antigravity-cli/settings.json']);

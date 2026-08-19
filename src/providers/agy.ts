@@ -465,6 +465,26 @@ export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissi
       addRule('mcp', match ? match[1] : '*');
     } else if (item === 'Mcp') {
       addRule('mcp', '*');
+    } else if (item.startsWith('mcp__')) {
+      // Claude's real MCP permission-string format is `mcp__<server>__<tool>` (e.g.
+      // "mcp__apra-fleet__kb_capture") -- NOT the fictional `Mcp(name)` shape above.
+      // AGY's own permission model is server-granular, not per-tool (see the 'mcp'
+      // action's target). The 'apra-fleet' server deliberately colocates safe
+      // read-only KB tools (kb_query, kb_capture, ...) alongside destructive
+      // fleet-admin tools (remove_member, shutdown_server, credential_store_*) --
+      // see src/services/tool-registry.ts's registerAllTools. Auto-collapsing a
+      // narrow per-tool Claude grant like "mcp__apra-fleet__kb_query" into a
+      // server-level AGY rule would silently hand that member blanket access to
+      // every tool on the server, not just the one requested -- a real privilege
+      // escalation, not a convenience gap. Until the MCP surface is split by trust
+      // tier (or AGY gains per-tool granularity), do NOT auto-grant here; surface it
+      // so a human can escalate deliberately, same as the NEVER_AUTO_GRANT pattern
+      // in compose-permissions.ts.
+      const rest = item.slice('mcp__'.length);
+      const sep = rest.indexOf('__');
+      const server = sep >= 0 ? rest.slice(0, sep) : rest;
+      console.warn(`[agy] refusing to auto-grant mcp permission "${item}": AGY has no per-tool MCP granularity, only server-level ("${server}"), and that server also exposes destructive tools. Escalate manually if this member genuinely needs it.`);
+      addRule('custom', item);
     } else if (item === 'Web' || item === 'Fetch' || item === 'WebSearch') {
       addRule('read_url', '*');
     } else {

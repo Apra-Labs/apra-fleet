@@ -30,12 +30,45 @@ orchestrator that planning has no input to work from -- do not create speculativ
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+1. Run ToolSearch with query
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_stats,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_feedback"`
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are
-   planning for, and `hint_symbols`/`hint_modules` relevant to the sprint goals you are
-   about to decompose. Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
-3. When you discover something non-obvious and durable (a hidden constraint, a gotcha,
-   an invariant), call `mcp__apra-fleet__kb_capture` immediately with type "knowledge" or "learning".
+   planning for, and `hint_symbols`/`hint_modules` derived from the sprint goals /
+   requirements you are about to decompose (skim them first to extract key symbol
+   names and module areas). Read every entry in `top_entries`. Trust CONFIRMED entries
+   fully; treat INFERRED as a strong hint but verify against source before baking it
+   into a task description (an INFERRED entry may be an unvalidated in-flight capture).
+   Let prior sprint knowledge inform your planning:
+   - **CONFIRMED coverage** on a symbol -> well-understood code, may lean toward a
+     lighter model tier. Note it in the task description so the doer knows to
+     retrieve from the KB first instead of re-deriving it from source.
+   - **No KB entries** for a symbol -> unexplored territory, front-load as Task 1 and
+     lean toward a stronger model tier.
+   - **Non-obvious constraints** in KB entries (e.g. "init() must be called before
+     query", "jitter applied after maxDelayMs cap") -> copy them verbatim into the
+     relevant task description so the doer does not rediscover them.
+3. Quantify the assignment: call `mcp__apra-fleet__kb_stats` with the key symbols the
+   sprint's tasks will actually touch and use the returned `coverage.fraction` to
+   sharpen the qualitative judgment above into a number (see "Model assignment rules"
+   in Step 3 for the thresholds and how to record it). If `kb_stats` is unavailable
+   (tool error, not yet built in this environment, or the KB has no symbols yet), skip
+   the quantitative step and rely on the qualitative KB signals above instead.
+4. Capture at discovery time: planning involves exploring the codebase and requirements
+   before a single task exists to attribute a discovery to -- do not let that
+   exploration evaporate. When you discover something non-obvious and durable (a hidden
+   constraint, a gotcha, an architectural invariant) while exploring, decide whether it
+   is capture-worthy: run `mcp__apra-fleet__kb_query` first to check for a near-duplicate
+   entry, and skip it if one already exists. If it is new, add it to your structured
+   output's `kb_captures` array (see `agents/schemas/planner-output.json` for the exact
+   shape -- `type`, `title`, `summary`, `content`, `source_files`, optional `symbols`);
+   the engine makes the actual `kb_capture` call and logs it with your evidence. Do not
+   wait until you finish planning -- a discovery not captured in-flight is lost. Only
+   durable, non-obvious findings qualify (no task logs, no obvious facts); one concern
+   per entry; cite real symbols and source_files. Do not call `mcp__apra-fleet__kb_capture`
+   yourself unless your dispatch context has no `kb_captures` output field to write to,
+   in which case calling it directly is the fallback.
+5. If a KB entry you retrieved proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
+   with the entry id and what was wrong.
 
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
@@ -136,6 +169,23 @@ Pick the tier using these criteria:
 - **premium** -- hard work: architecture, multi-file design, high-ambiguity or
   cross-cutting reasoning.
 
+Symbols with CONFIRMED KB coverage -> lean toward standard or cheap (well-understood).
+Symbols with no KB entries -> lean toward premium (unknown territory).
+
+**Quantify with `kb_stats`** (see Step 0.3): if you called `kb_stats` for the task's
+symbols, use `coverage.fraction` to sharpen the tier choice:
+
+- coverage >= 0.8 -> lean cheap/standard for tasks on those symbols.
+- coverage < 0.3 -> lean premium and front-load the risk (Task 1) -- unexplored territory.
+- between 0.3 and 0.8 -> judgment call; weigh the qualitative KB signals above
+  (non-obvious constraints, CONFIRMED vs. no entries) alongside the number.
+
+When `kb_stats` backed a tier choice, cite the coverage number in the task's
+`description` (e.g. "coverage 0.85 across {symbols} -> standard"), not just a
+qualitative impression -- the description field already carries KB-derived facts and
+acceptance criteria per Step 3 above, this is not a separate field. If `kb_stats` was
+unavailable, the qualitative reasoning above is sufficient and no citation is required.
+
 Pick from the models actually available in the current environment. A user override
 always wins.
 
@@ -224,6 +274,9 @@ Also check each open feature:
 - Every task has a model tier set via `--metadata '{"model": "..."}'` (see Step 3)?
 - Every task carries `streak` and `streakOrder` lane metadata (see Step 3)? Impl/test
   pairs and mutex-resource members co-laned, and no lane's effort exceeds the threshold?
+- Where `kb_stats` backed a model tier choice, does the task description cite the
+  coverage number (see Step 3)? Not required for tiers set on qualitative KB signals
+  alone or when `kb_stats` was unavailable.
 
 Fix any gaps, then confirm you are done.
 
@@ -237,10 +290,24 @@ If features and tasks already exist in beads from a prior planning pass:
 
 ## Output schema
 
-`planner` has no structured output contract -- its output IS the beads DAG (issues,
-acceptance criteria, model-tier metadata, dependency edges), which `plan-reviewer`
-evaluates against its own Output schema (see `plan-reviewer.md` and its sibling
-`agents/schemas/plan-reviewer-output.json`).
+Your PRIMARY output is the beads DAG (issues, acceptance criteria, model-tier metadata,
+dependency edges), which `plan-reviewer` evaluates against its own Output schema (see
+`plan-reviewer.md` and its sibling `agents/schemas/plan-reviewer-output.json`).
+
+In addition, return a structured result matching the sibling file
+`agents/schemas/planner-output.json`: `status` (`OK` or `BLOCKED`), `notes`, the
+`featureIds`/`taskIds` you created or updated this round, and an optional `kb_captures`
+array (see Step 0.4 -- omit or send `[]` to capture nothing). Example instance:
+
+```json
+{
+  "status": "OK",
+  "notes": "Created 2 features, 6 tasks across 3 streak lanes.",
+  "featureIds": ["BD-20", "BD-21"],
+  "taskIds": ["BD-22", "BD-23", "BD-24", "BD-25", "BD-26", "BD-27"],
+  "kb_captures": []
+}
+```
 
 ## Rules
 

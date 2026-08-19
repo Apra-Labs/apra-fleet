@@ -17,6 +17,7 @@ const ROLES = [
   'doer',
   'harvester',
   'integ-test-runner',
+  'kb-reconciler',
   'planner',
   'plan-reviewer',
   'regression-test-runner',
@@ -37,14 +38,21 @@ function toolsLine(content: string): string {
   return m ? m[1] : '';
 }
 
+// kb-reconciler is dispatched with specific contradiction pairs to resolve, not a fresh
+// codebase context to explore -- it has no use for kb_session_prime and, unlike the other
+// ten roles, cannot degrade to file-based work if the MCP server is down (its only job IS
+// the KB tool calls), so it reports and stops instead of skipping Step 0 and proceeding.
+// Scoped out of the priming-specific assertion below; still covered by the other three.
+const KB_PRIMING_ROLES = ROLES.filter((r) => r !== 'kb-reconciler');
+
 describe('every role contract carries working KB wiring', () => {
   const byRole = assetsByRole();
 
-  it('ships all 10 role contracts', () => {
+  it('ships all 11 role contracts', () => {
     expect([...byRole.keys()].sort()).toEqual([...ROLES].sort());
   });
 
-  it.each(ROLES)('%s has a Knowledge Bank step that primes the KB', (role) => {
+  it.each(KB_PRIMING_ROLES)('%s has a Knowledge Bank step that primes the KB', (role) => {
     const content = byRole.get(role)!;
     expect(content).toMatch(/^## Step 0[a-z]? -- Knowledge Bank/m);
     expect(content).toContain('kb_session_prime');
@@ -89,14 +97,36 @@ describe('the code index is reachable from the roles that read code', () => {
     }
   });
 
+  // apra-fleet-23c / KB trust pipeline Phase 2: doer and reviewer now DECIDE what to
+  // capture and report it via the `kb_captures` structured-output field -- the engine
+  // makes the actual kb_capture call (auto-sprint.js's "Engine-executed KB capture and
+  // promote"). doer still lists kb_capture as a documented fallback for dispatch
+  // contexts with no kb_captures field; reviewer deliberately does not (see reviewer.md
+  // Step 0's own note on this). Both still must prime and be able to query the KB.
   it.each(CODE_INTEL_ROLES)('%s still names the KB tools it must call', (role) => {
     const query = /Run ToolSearch with query\s*\n?\s*`([^`]*)`/.exec(byRole.get(role)!)!;
     expect(query[1]).toContain('mcp__apra-fleet__kb_session_prime');
+    expect(query[1]).toContain('mcp__apra-fleet__kb_query');
+  });
+
+  it('doer still carries kb_capture as its structured-output fallback', () => {
+    const query = /Run ToolSearch with query\s*\n?\s*`([^`]*)`/.exec(byRole.get('doer')!)!;
     expect(query[1]).toContain('mcp__apra-fleet__kb_capture');
   });
 
   it.each(CODE_INTEL_ROLES)('%s says what to do when the repo is not indexed', (role) => {
     expect(byRole.get(role)!).toMatch(/not indexed|no index|unindexed/i);
+  });
+
+  // kb-reconciler is the most code-intel-dependent role of any -- its own rules
+  // forbid Glob/Grep entirely, so code_context/code_impact/code_query are its ONLY
+  // way to read the merged code. Not folded into CODE_INTEL_ROLES above because it
+  // does not prime (KB_PRIMING_ROLES excludes it) and never calls kb_capture.
+  it('kb-reconciler names the code_* tools it needs to decide contradictions', () => {
+    const query = /Run ToolSearch with query\s*\n?\s*`([^`]*)`/.exec(byRole.get('kb-reconciler')!)!;
+    for (const tool of ['code_context', 'code_impact', 'code_query']) {
+      expect(query[1]).toContain(`mcp__apra-fleet__${tool}`);
+    }
   });
 });
 
@@ -104,7 +134,11 @@ describe('promotion stays reviewer-only', () => {
   const byRole = assetsByRole();
 
   it('reviewer is the sole role instructed to call kb_promote', () => {
-    const promoters = ROLES.filter((r) => byRole.get(r)!.includes('kb_promote'));
+    // kb-reconciler mentions kb_promote too, but only to explicitly forbid composing it
+    // with kb_feedback for a contradiction pair (kb_resolve_contradiction is its one,
+    // single write path) -- that is a prohibition, not an instruction to call it.
+    // Excluded from this "who is told to call it" check rather than weakening the check.
+    const promoters = ROLES.filter((r) => r !== 'kb-reconciler' && byRole.get(r)!.includes('kb_promote'));
     expect(promoters).toEqual(['reviewer']);
   });
 

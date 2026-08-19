@@ -61,13 +61,29 @@ already-collected evidence artifact for you to verify against.
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
 1. Run ToolSearch with query
-   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture,mcp__apra-fleet__code_context,mcp__apra-fleet__code_graph,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query"`
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_feedback,mcp__apra-fleet__code_context,mcp__apra-fleet__code_graph,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query"`
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are
    working in, and `hint_symbols`/`hint_modules` relevant to the files and symbols you are
    about to touch. Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
-3. When you discover something non-obvious and durable (a hidden constraint, a gotcha,
-   an invariant), call `mcp__apra-fleet__kb_capture` immediately with type "knowledge" or "learning".
-4. The `code_*` tools answer a different question from the KB: the KB tells you what was
+3. Retrieve first, then read source: before reading an unfamiliar file or function, run
+   `mcp__apra-fleet__kb_query({ query: "<name>" })` first. If it returns a CONFIRMED or
+   INFERRED entry, work from it and skip the full source read. Trust CONFIRMED fully; treat
+   INFERRED as a strong hint but verify against source when correctness matters (it may be
+   an unvalidated in-flight capture). Only fall back to a full source read if the KB is
+   cold (no entry), stale, or says "see source for details."
+4. When you discover something non-obvious and durable (a hidden constraint, a gotcha, an
+   invariant), decide whether it is capture-worthy: run `mcp__apra-fleet__kb_query` first to
+   check for a near-duplicate entry, and skip it if one already exists. If it is new, add it
+   to your structured output's `kb_captures` array (see `agents/schemas/doer-output.json` for
+   the exact shape -- `type`, `title`, `summary`, `content`, `source_files`, optional
+   `symbols`); the engine makes the actual `kb_capture` call and logs it with your evidence.
+   Do not call `mcp__apra-fleet__kb_capture` yourself unless your dispatch context has no
+   `kb_captures` output field to write to, in which case calling it directly is the fallback.
+5. If a KB entry you retrieved proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
+   with the entry id and what was wrong.
+6. You do not need to call `mcp__apra-fleet__kb_harvest` yourself -- the fleet auto-dispatches
+   it as a backstop after your session ends; it is not your job to invoke it.
+7. The `code_*` tools answer a different question from the KB: the KB tells you what was
    learned about this code, the code index tells you what this code actually connects to.
    Before editing a symbol, use `code_context`/`code_graph` for its callers and callees and
    `code_impact` for the blast radius of the file you are changing -- prefer them over grep

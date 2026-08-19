@@ -2,7 +2,7 @@
 /**
  * gen-sea-config.mjs — Generate SEA config with asset manifest
  *
- * Scans hooks/, scripts/, skills/pm/ and builds:
+ * Scans hooks/, scripts/, packages/apra-fleet-se/apra-pm/skills/pm/ and builds:
  * 1. dist/sea-manifest.json — asset index for install.ts
  * 2. dist/sea-config.json   — Node.js SEA configuration
  */

@@ -90,14 +90,14 @@ Report: `{ pairs, resolved, left_for_agent, skipped_directive }`.
 
 ### Step 4: Reconciler agent
 
-If `left_for_agent` is non-empty, dispatch the KB Reconciler
-(`tpl-kb-reconciler.md`, model tier cheap/standard -- claude-sonnet-4-6) with
-that array. It reads the MERGED code via `code_context`/`code_impact`/
+If `left_for_agent` is non-empty, dispatch the `kb-reconciler` agent
+(`agents/kb-reconciler.md`, model tier cheap/standard)
+with that array. It reads the MERGED code via `code_context`/`code_impact`/
 `code_query` (never Glob/Grep) for each remaining pair, resolves what the
 code decides via `kb_resolve_contradiction`, falls back to a trust-tier
 tiebreak (`CONFIRMED > INFERRED > UNVERIFIED`) when the code is silent, and
 leaves genuinely undecidable pairs flagged for `/pm kb-review`. Active
-user-directives are NEVER auto-retired. See `tpl-kb-reconciler.md` for the
+user-directives are NEVER auto-retired. See `agents/kb-reconciler.md` for the
 full process and the single-write-path rule.
 
 If `left_for_agent` is empty, skip straight to Step 5.
@@ -123,7 +123,7 @@ After all steps:
 Import:     imported=<n> skipped=<n> linked=<n> flagged=<n>
 Sweep:      checked=<n> staled=<n> unstaled=<n>
 Prefilter:  pairs=<n> resolved=<n> left_for_agent=<n> skipped_directive=<n>
-Reconciler: code_decided=<n> tier_decided=<n> deferred=<n>  (omitted if Step 4 was skipped)
+Reconciler: codeDecided=<n> tierDecided=<n> deferred=<n>  (omitted if Step 4 was skipped)
 Export:     exported=<n> committed=<true|false>
 ```
 
