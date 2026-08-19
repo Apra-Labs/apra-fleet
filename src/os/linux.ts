@@ -264,6 +264,17 @@ export class LinuxCommands implements OsCommands {
     return `rm -f "${credFile}" && git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
   }
 
+  ghAuthLogin(token: string, hostname = 'github.com'): string {
+    const escapedToken = escapeDoubleQuoted(token);
+    const escapedHostname = escapeDoubleQuoted(hostname);
+    // gh CLI has its own credential store (~/.config/gh/hosts.yml), entirely
+    // separate from the git credential helper written above -- gh never reads
+    // that file. `gh auth login --with-token` is gh's own non-interactive
+    // enrollment path. Best-effort: if `gh` isn't installed, no-op rather than
+    // fail the whole VCS auth deployment over an optional CLI.
+    return `if command -v gh >/dev/null 2>&1; then echo "${escapedToken}" | gh auth login --hostname "${escapedHostname}" --with-token; else echo "gh CLI not installed -- skipped gh auth login" >&2; fi`;
+  }
+
   // --- SSH key deployment ---
 
   deploySSHPublicKey(publicKeyLine: string): string[] {
