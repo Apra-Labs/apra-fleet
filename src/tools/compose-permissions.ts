@@ -347,29 +347,53 @@ function stableStringify(value: unknown): string {
  *      the parsed document must structurally match the merged content; for a
  *      TOML/string payload the expected text must be present. A mismatch (empty
  *      file, wrong path, quoting fault, etc.) throws a ConfigDeliveryError. */
+/** Join a work-folder-relative config path onto the member's absolute work
+ *  folder, OS-appropriately. `strategy.execCommand` issues a raw shell/SSH
+ *  exec with no cwd guarantee (LocalStrategy spawns with cwd=workFolder, but
+ *  RemoteStrategy's ssh2 client.exec() defaults to the SSH user's home
+ *  directory, not workFolder) -- so every command deliverConfigFile issues
+ *  must use an absolute path, never a bare relative one. See apra-fleet
+ *  incident: compose_permissions reported a verified grant while writing to
+ *  ~/.claude/settings.local.json on a remote member instead of
+ *  <workFolder>/.claude/settings.local.json -- the read-back verification
+ *  passed because it re-read the same (wrong) relative path it had just
+ *  written, so the mismatch was invisible to that check alone. */
+function resolveRemotePath(workFolder: string, relPath: string, isWindows: boolean): string {
+  if (isWindows) {
+    const base = workFolder.replace(/[\\/]+$/, '').replace(/\//g, '\\');
+    return `${base}\\${relPath.replace(/\//g, '\\')}`;
+  }
+  const base = workFolder.replace(/\/+$/, '');
+  return `${base}/${relPath}`;
+}
+
 async function deliverConfigFile(
   strategy: Awaited<ReturnType<typeof getStrategy>>,
   agentOs: string,
+  workFolder: string,
   filePath: string,
   content: Record<string, unknown> | string,
 ): Promise<void> {
   const isWindows = agentOs === 'windows';
-  const winPath = filePath.replace(/\//g, '\\');
-  const dir = filePath.split('/').slice(0, -1).join('/');
+  const absPath = resolveRemotePath(workFolder, filePath, isWindows);
+  const winPath = absPath.replace(/\//g, '\\');
+  const dir = isWindows
+    ? winPath.split('\\').slice(0, -1).join('\\')
+    : absPath.split('/').slice(0, -1).join('/');
   const mkdirCmd = isWindows
-    ? `New-Item -ItemType Directory -Force "${dir.replace(/\//g, '\\')}"`
-    : `mkdir -p ${dir}`;
+    ? `New-Item -ItemType Directory -Force "${dir}"`
+    : `mkdir -p "${dir}"`;
   const mkdirResult = await strategy.execCommand(mkdirCmd, 5000);
   if (mkdirResult.code !== 0) {
     throw new ConfigDeliveryError(
-      filePath,
+      absPath,
       `could not create parent directory "${dir}" (exit ${mkdirResult.code})${stderrExcerpt(mkdirResult.stderr)}`,
     );
   }
 
   const readCmd = isWindows
     ? `Get-Content -Raw "${winPath}" -ErrorAction SilentlyContinue`
-    : `cat ${filePath} 2>/dev/null || true`;
+    : `cat "${absPath}" 2>/dev/null || true`;
 
   let mergedContent: Record<string, unknown> | string = content;
   if (isPlainObject(content)) {
@@ -390,11 +414,11 @@ async function deliverConfigFile(
 
   const writeCmd = isWindows
     ? `[System.IO.File]::WriteAllText("${winPath}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
-    : `cat > ${filePath} << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`;
+    : `cat > "${absPath}" << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`;
   const writeResult = await strategy.execCommand(writeCmd, 5000);
   if (writeResult.code !== 0) {
     throw new ConfigDeliveryError(
-      filePath,
+      absPath,
       `write command failed (exit ${writeResult.code})${stderrExcerpt(writeResult.stderr)}`,
     );
   }
@@ -407,14 +431,14 @@ async function deliverConfigFile(
   const readBack = verifyResult.stdout.trim();
   if (!readBack) {
     throw new ConfigDeliveryError(
-      filePath,
+      absPath,
       `read-back verification failed: file is empty or missing after a write that reported success`,
     );
   }
   if (typeof mergedContent === 'string') {
     if (!readBack.includes(contentStr.trim())) {
       throw new ConfigDeliveryError(
-        filePath,
+        absPath,
         `read-back verification failed: expected content is not present on disk`,
       );
     }
@@ -424,13 +448,13 @@ async function deliverConfigFile(
       parsed = JSON.parse(readBack);
     } catch {
       throw new ConfigDeliveryError(
-        filePath,
+        absPath,
         `read-back verification failed: file on disk is not valid JSON`,
       );
     }
     if (stableStringify(parsed) !== stableStringify(mergedContent)) {
       throw new ConfigDeliveryError(
-        filePath,
+        absPath,
         `read-back verification failed: merged permissions did not land on disk`,
       );
     }
@@ -471,10 +495,18 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     let allow: string[];
 
     if (provider.name === 'claude') {
-      // Claude: read existing allow list and merge
+      // Claude: read existing allow list and merge. Must read the SAME absolute
+      // path deliverConfigFile will write below -- deepMerge overwrites arrays
+      // wholesale (see deepMerge doc comment), so an `allow` computed from the
+      // wrong file here would silently discard every pre-existing grant in the
+      // real settings.local.json once the write lands at the correct path.
+      const isWindowsAgent = (agent.os ?? 'linux') === 'windows';
+      const absSettingsPath = resolveRemotePath(agent.workFolder, '.claude/settings.local.json', isWindowsAgent);
       // TODO: unbranched POSIX `2>/dev/null || echo` -- same defect class as
       // orphan-recovery.ts's pid-alive/file-read commands. Not yet OS-branched.
-      const readResult = await strategy.execCommand('cat .claude/settings.local.json 2>/dev/null || echo "{}"', 5000);
+      const readResult = isWindowsAgent
+        ? await strategy.execCommand(`Get-Content -Raw "${absSettingsPath.replace(/\//g, '\\')}" -ErrorAction SilentlyContinue`, 5000)
+        : await strategy.execCommand(`cat "${absSettingsPath}" 2>/dev/null || echo "{}"`, 5000);
       let current: any;
       try {
         current = JSON.parse(readResult.stdout.trim());
@@ -493,7 +525,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     const paths = provider.permissionConfigPaths();
     try {
       for (let i = 0; i < paths.length; i++) {
-        await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i]);
       }
     } catch (e) {
       if (e instanceof ConfigDeliveryError) {
@@ -536,7 +568,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   try {
     for (let i = 0; i < paths.length; i++) {
-      await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+      await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i]);
     }
   } catch (e) {
     if (e instanceof ConfigDeliveryError) {
