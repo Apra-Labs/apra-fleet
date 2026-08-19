@@ -8,7 +8,7 @@ import type { Author, CaptureSource } from '../services/knowledge/types.js';
 // D5 (T2.3): the full Author enum. Kept as a plain array (not a zod enum on
 // the schema itself) so an invalid role hint degrades to 'unknown' at the
 // handler rather than rejecting the whole capture call at the schema layer.
-const AUTHOR_VALUES: readonly Author[] = ['doer', 'reviewer', 'planner', 'plan-reviewer', 'kb-agent', 'harvest', 'pm', 'user'];
+const AUTHOR_VALUES: readonly Author[] = ['doer', 'reviewer', 'planner', 'plan-reviewer', 'kb-agent', 'kb-reconciler', 'harvest', 'pm', 'user'];
 
 // D5 (T2.3): validate the caller's role hint against the Author enum. Any
 // value outside the enum -- including an absent hint -- stamps the literal

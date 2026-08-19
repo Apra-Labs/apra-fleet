@@ -123,7 +123,7 @@ After all steps:
 Import:     imported=<n> skipped=<n> linked=<n> flagged=<n>
 Sweep:      checked=<n> staled=<n> unstaled=<n>
 Prefilter:  pairs=<n> resolved=<n> left_for_agent=<n> skipped_directive=<n>
-Reconciler: code_decided=<n> tier_decided=<n> deferred=<n>  (omitted if Step 4 was skipped)
+Reconciler: codeDecided=<n> tierDecided=<n> deferred=<n>  (omitted if Step 4 was skipped)
 Export:     exported=<n> committed=<true|false>
 ```
 

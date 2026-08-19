@@ -2202,7 +2202,7 @@ async function runKbWork(repoPath, role, result) {
       `with repo_path "${repoPath}" and that object's fields verbatim. Do not ` +
       `reword, merge, split or invent entries.\n` +
       `Step 3: For EACH object in promotions below, call mcp__apra-fleet__kb_promote ` +
-      `with its id and reason verbatim.\n` +
+      `with repo_path "${repoPath}" and that object's id and reason verbatim.\n` +
       `Step 4: Return the counts. A call refused by the tool counts in failed, ` +
       `not captured/promoted -- report it, do not retry it with altered fields.\n\n` +
       `captures: ${JSON.stringify(captures)}\n` +

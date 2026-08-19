@@ -7,7 +7,7 @@ import type { Author } from '../services/knowledge/types.js';
 // is touched ONLY by T1.1 per PLAN.md's shared-file sequencing, so this tool
 // validates its own role hint against the same Author enum instead of
 // exporting a shared helper out of a file this task must not modify.
-const AUTHOR_VALUES: readonly Author[] = ['doer', 'reviewer', 'planner', 'plan-reviewer', 'kb-agent', 'harvest', 'pm', 'user'];
+const AUTHOR_VALUES: readonly Author[] = ['doer', 'reviewer', 'planner', 'plan-reviewer', 'kb-agent', 'kb-reconciler', 'harvest', 'pm', 'user'];
 
 function validateAuthor(role: string | undefined): Author | 'unknown' {
   if (role && (AUTHOR_VALUES as readonly string[]).includes(role)) {

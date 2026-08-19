@@ -10,13 +10,13 @@
       "Bash(find:*)", "Bash(wc:*)", "Bash(sort:*)", "Bash(diff:*)",
       "Bash(echo:*)", "Bash(grep:*)",
       "Bash(gh:*)", "Bash(jq:*)",
-      "mcp__apra-fleet-member__kb_session_prime",
-      "mcp__apra-fleet-member__kb_query",
-      "mcp__apra-fleet-member__kb_feedback",
-      "mcp__apra-fleet-member__code_context",
-      "mcp__apra-fleet-member__code_graph",
-      "mcp__apra-fleet-member__code_impact",
-      "mcp__apra-fleet-member__code_query"
+      "mcp__apra-fleet__kb_session_prime",
+      "mcp__apra-fleet__kb_query",
+      "mcp__apra-fleet__kb_feedback",
+      "mcp__apra-fleet__code_context",
+      "mcp__apra-fleet__code_graph",
+      "mcp__apra-fleet__code_impact",
+      "mcp__apra-fleet__code_query"
     ]
   }
 }

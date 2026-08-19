@@ -117,6 +117,17 @@ describe('the code index is reachable from the roles that read code', () => {
   it.each(CODE_INTEL_ROLES)('%s says what to do when the repo is not indexed', (role) => {
     expect(byRole.get(role)!).toMatch(/not indexed|no index|unindexed/i);
   });
+
+  // kb-reconciler is the most code-intel-dependent role of any -- its own rules
+  // forbid Glob/Grep entirely, so code_context/code_impact/code_query are its ONLY
+  // way to read the merged code. Not folded into CODE_INTEL_ROLES above because it
+  // does not prime (KB_PRIMING_ROLES excludes it) and never calls kb_capture.
+  it('kb-reconciler names the code_* tools it needs to decide contradictions', () => {
+    const query = /Run ToolSearch with query\s*\n?\s*`([^`]*)`/.exec(byRole.get('kb-reconciler')!)!;
+    for (const tool of ['code_context', 'code_impact', 'code_query']) {
+      expect(query[1]).toContain(`mcp__apra-fleet__${tool}`);
+    }
+  });
 });
 
 describe('promotion stays reviewer-only', () => {

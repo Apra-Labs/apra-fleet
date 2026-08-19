@@ -1,7 +1,7 @@
 ---
 name: kb-reconciler
 description: Resolves KB contradiction pairs a mechanical hash-prefilter could not settle, by reading the merged code and calling kb_resolve_contradiction; returns code/tier-decided and deferred counts.
-tools: [Read, Bash, ToolSearch]
+tools: [Read, ToolSearch]
 ---
 
 # KB Reconciliation
@@ -33,7 +33,7 @@ yourself via `kb_query`/`kb_list`.
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
 1. Run ToolSearch with query
-   `"select:mcp__apra-fleet__code_context,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query,mcp__apra-fleet__kb_resolve_contradiction,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_list,mcp__apra-fleet__kb_feedback,mcp__apra-fleet__kb_export"`
+   `"select:mcp__apra-fleet__code_context,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query,mcp__apra-fleet__kb_resolve_contradiction,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_list,mcp__apra-fleet__kb_export"`
 2. If ToolSearch returns no KB tools (MCP server not running), stop and report that
    reconciliation cannot proceed -- do not guess winners without `kb_resolve_contradiction`
    available.
@@ -127,17 +127,17 @@ Count it in `tierDecided`.
 ### Step 6: Still undecidable -- leave flagged
 
 If neither the code nor the trust tier settles it (same tier, code silent, or you are
-simply not confident), do NOT call `kb_resolve_contradiction` on a guess. Leave the pair
-exactly as it is -- still flagged, still linked -- and append a short note for a human
-via `kb_feedback` on EITHER side (not both) explaining what you found and why it stayed
-undecided, e.g.:
+simply not confident), do NOT call `kb_resolve_contradiction` on a guess, and do NOT
+call `kb_feedback` either -- `kb_feedback` marks the target entry `stale=1`, which would
+unilaterally retire whichever side you picked as "more informative", deciding the
+contradiction by attrition instead of leaving it undecided. Make NO tool call for this
+pair. Leave it exactly as it is -- still flagged, still linked -- and record your reason
+directly in this pair's `deferredPairs` entry (see Output schema) so a human sees why it
+stayed undecided at `/pm kb-review`, e.g.:
 
 ```
-kb_feedback({
-  id: "<originalId or challengerId, whichever is more informative>",
-  reason: "kb-reconciler: undecided -- <what the code showed, why it did not settle the tier tie>",
-  role: "kb-agent",
-})
+{ "originalId": "<originalId>", "challengerId": "<challengerId>",
+  "reason": "undecided -- <what the code showed, why it did not settle the tier tie>" }
 ```
 
 Count it in `deferred`. A human resolves it later.
