@@ -222,7 +222,6 @@ session. This recovery is transparent  -  no caller intervention required.
 | Antigravity (agy) | Full | `agy --conversation <sessionId>` |
 | Codex | Partial | `resume` command supported |
 | Copilot | None | Always starts fresh regardless of `resume` value |
-| Gemini | Full | Native session support |
 
 Session IDs are parsed from `execute_prompt` output and stored server-side per member.
 The output footer contains: `session: <sessionId>` when the provider supports it.
@@ -245,7 +244,6 @@ Per-provider flag behaviour:
 | Antigravity (agy) | None (config-file only via `compose_permissions`) | `--dangerously-skip-permissions` |
 | Codex | `--ask-for-approval auto-edit` | `--sandbox danger-full-access --ask-for-approval never` |
 | Copilot | Not supported  -  warns and runs interactively | Not supported |
-| Gemini | None (config-file only via `compose_permissions`) | `--yolo` |
 
 Auto-approval is delivered via config files written by `compose_permissions`  -  call it before every dispatch.
 
@@ -282,9 +280,9 @@ When you see this notice, surface it to the user verbatim before the rest of the
 
 | Concern | How to handle |
 |---------|---------------|
-| **Agent context file** | Use `member_detail` -> `llmProvider` to determine filename: CLAUDE.md (Claude), AGY.md (Antigravity), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT.md (Copilot) |
+| **Agent context file** | Use `member_detail` -> `llmProvider` to determine filename: CLAUDE.md (Claude), AGY.md (Antigravity), AGENTS.md (Codex), COPILOT.md (Copilot) |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md)  -  skip for all other providers |
-| **Timeouts** | Antigravity/Gemini members are slower -> use 2-3x timeout multiplier for `execute_prompt` dispatches to those members. Minimum `timeout_s: 900` for any non-trivial task. |
+| **Timeouts** | Antigravity members are slower -> use 2-3x timeout multiplier for `execute_prompt` dispatches to those members. Minimum `timeout_s: 900` for any non-trivial task. |
 
 ## Fleet Logs
 

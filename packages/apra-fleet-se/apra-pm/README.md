@@ -7,7 +7,7 @@ surfaces that share the same eight agents:
 
 | Surface | Provider | Entry point | State store |
 |---|---|---|---|
-| **`pm` skill** | Any (Claude, AGY, OpenCode, Gemini, ...) | `/pm` in your harness | beads + git |
+| **`pm` skill** | Any (Claude, AGY, OpenCode, ...) | `/pm` in your harness | beads + git |
 | **`auto-sprint` workflow** | Claude Code only | `/auto-sprint` in Claude Code | beads (no PLAN.md) |
 
 The `pm` skill is the provider-agnostic path: invoke it in any harness and it
@@ -148,7 +148,7 @@ docs/                    sprint-workflow.md user guide + design intent; dispatch
 Installs the skill, agents, and (for Claude) the workflow into your harness config.
 
 ```
-node install.mjs --llm claude     # or: gemini | agy | opencode   (default: claude)
+node install.mjs --llm claude     # or: agy | opencode   (default: claude)
 ```
 
 This writes:
@@ -200,7 +200,7 @@ node e2e/run-e2e.mjs --provider claude          # all claude suites for this hos
 node e2e/run-e2e.mjs --suite s1.2               # one suite
 ```
 
-Suites are grouped by provider: `s1`=Claude, `s7`=Gemini, `s8`=AGY, with `.1/.2/.3`
+Suites are grouped by provider: `s1`=Claude, `s8`=AGY, with `.1/.2/.3`
 as the Windows/Linux/macOS matrix (`e2e/suites.json`). CLI flags vary by tool;
 override a provider's command with e.g.
 `PMLITE_E2E_CMD_CLAUDE="claude -p {PROMPT} --permission-mode acceptEdits"`.
