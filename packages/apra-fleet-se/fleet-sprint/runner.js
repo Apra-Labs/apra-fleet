@@ -2683,6 +2683,82 @@ export function createUnattendedAutoProvisioner(opts = {}) {
 }
 
 /**
+ * Best-effort, self-heals the "Missing permission" class of deploy/integ/
+ * regression-test failure BEFORE it happens: reads deploy.md's own
+ * `## Permissions` section -- the exact list the deployer/integ-test-runner/
+ * regression-test-runner agent prompts already cross-check at their own
+ * Step 0a/0 -- and proactively grants every listed prefix to the target
+ * member via compose_permissions. Without this, a runbook permissions
+ * change (e.g. the `apra-fleet start` -> `apra-fleet run` swap, #395) only
+ * gets noticed when a dispatch fails, and only gets fixed once an operator
+ * greps deploy.md by hand and runs compose_permissions manually -- exactly
+ * the failure mode this closes the loop on.
+ *
+ * Reads deploy.md via `command()` against the ORCHESTRATOR member (its own
+ * checkout is the source of truth for what is about to be dispatched) and
+ * caches the parsed prefix list for the lifetime of the returned function --
+ * one read per sprint run, since deploy.md does not change mid-run on a
+ * healthy pipeline. Also caches per TARGET member, like
+ * createUnattendedAutoProvisioner above, so repeat cycles don't re-grant.
+ *
+ * Failure at any step (probe fails, deploy.md missing/unparseable,
+ * compose_permissions unreachable, a listed prefix hitting the
+ * NEVER_AUTO_GRANT denylist) is logged and swallowed. This is pure
+ * best-effort acceleration -- the deployer's own Step 0a check remains the
+ * authoritative, fail-closed backstop regardless of whether this succeeds.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, orchestratorMember: string, log?: Function }} opts
+ * @returns {(member: string) => Promise<void>}
+ */
+export function createDeployPermissionsProvisioner(opts = {}) {
+    const { callTool, command, orchestratorMember, log = () => {} } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+    /** @type {Set<string>} members already granted deploy.md's permissions this run. */
+    const provisioned = new Set();
+    /** @type {string[] | null | undefined} undefined = not yet attempted. */
+    let cachedPrefixes;
+
+    async function loadRequiredPrefixes() {
+        if (cachedPrefixes !== undefined) return cachedPrefixes;
+        try {
+            const res = await command(
+                `node -e "const fs=require('fs'); if(fs.existsSync('deploy.md')) process.stdout.write(fs.readFileSync('deploy.md','utf8'))"`,
+                { member_name: orchestratorMember, silent: true, label: `Read deploy.md permissions`, failSoft: true },
+            );
+            if (!res.ok || !res.output) {
+                cachedPrefixes = null;
+            } else {
+                const section = res.output.split(/^## Permissions/m)[1]?.split(/^## /m)[0] ?? '';
+                const prefixes = [...section.matchAll(/^-\s*`([^`]+)`/gm)].map(m => m[1]);
+                cachedPrefixes = prefixes.length ? prefixes : null;
+            }
+        } catch (err) {
+            log(`[deploy-permissions] could not read deploy.md's Permissions section (continuing without auto-provisioning): ${err.message}`);
+            cachedPrefixes = null;
+        }
+        return cachedPrefixes;
+    }
+
+    return async function ensureDeployPermissions(member) {
+        if (!member || provisioned.has(member)) return;
+        const prefixes = await loadRequiredPrefixes();
+        if (!prefixes) return;
+        try {
+            const result = await fleetApi.composePermissions({
+                member_name: member,
+                role: 'doer',
+                grant: prefixes,
+                grant_reason: "deploy.md's declared Permissions section, auto-provisioned before dispatch",
+            });
+            provisioned.add(member);
+            log(`[deploy-permissions] ensured deploy.md's required permissions on '${member}': ${result}`);
+        } catch (err) {
+            log(`[deploy-permissions] could not auto-provision deploy.md permissions on '${member}' (continuing -- the deployer's own Step 0a check remains the backstop): ${err.message}`);
+        }
+    };
+}
+
+/**
  * Builds the REACTIVE `onAuthFailure` self-heal callback runGitStep and
  * runDoltStep invoke on an 'auth' classification: re-provisions the failing
  * member's VCS credentials via provisionVcsAuthForMember (whose owner/repo is
@@ -6007,6 +6083,19 @@ async function runSprintCycle(context) {
     // deliberately outside contracts.ROLES.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
 
+    // Self-heals deploy.md's declared Permissions onto the deployer /
+    // integ-test-runner / regression-test-runner member before each of
+    // those dispatches -- see createDeployPermissionsProvisioner's doc
+    // comment. Same three-way precedence shape as ensureUnattendedAuto
+    // above: an explicitly-injected `context.ensureDeployPermissions` (for
+    // tests), else the real compose_permissions-backed provisioner built
+    // from `args.callTool`, else a no-op when neither is available.
+    const ensureDeployPermissions = context.ensureDeployPermissions ?? (
+        (args && typeof args.callTool === 'function')
+            ? createDeployPermissionsProvisioner({ callTool: args.callTool, command, orchestratorMember, log })
+            : async () => {}
+    );
+
     // ONE shared bracket wrapping EVERY role-identified agent() dispatch below
     // -- planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner,
     // harvester. No phase-based exemptions: a deployer or integ-test-runner
@@ -8897,6 +8986,7 @@ async function runSprintCycle(context) {
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
             await ensureUnattendedAuto(getMemberForRole('deployer'));
+            await ensureDeployPermissions(getMemberForRole('deployer'));
             let deployResult;
             // Turn budget for the deployer, with the same-session
             // turn-exhaustion resume below: a source-build fallback deploy runs
@@ -8980,6 +9070,7 @@ async function runSprintCycle(context) {
         if (hasPlaybook && deployedThisCycle) {
             phase(`Integ Test C${cycle}`);
             await ensureUnattendedAuto(getMemberForRole('integ-test-runner'));
+            await ensureDeployPermissions(getMemberForRole('integ-test-runner'));
             // apra-fleet-nwh.1: snapshot the running total BEFORE this
             // cycle's Integ Test dispatch(es) so the delta after (below) is
             // this phase's own spend, not the whole run's. budget.spent()
@@ -9925,6 +10016,7 @@ async function runSprintCycle(context) {
     if (hasRegressionPlaybook) {
         phase(`Regression Test C${finalCycleLabel}`);
         await ensureUnattendedAuto(getMemberForRole('regression-test-runner'));
+        await ensureDeployPermissions(getMemberForRole('regression-test-runner'));
         // The real functional suite alone spends roughly one turn per liveness
         // poll for the better part of an hour, and this single dispatch carries
         // both it and the sandbox smoke sprint -- hence the large turn budget
