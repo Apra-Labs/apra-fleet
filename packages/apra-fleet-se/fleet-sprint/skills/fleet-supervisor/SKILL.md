@@ -186,7 +186,7 @@ Create `~/Library/LaunchAgents/com.apra-fleet.supervisor.plist`:
   <string>com.apra-fleet.supervisor</string>
   <key>ProgramArguments</key>
   <array>
-    <string>node</string>
+    <string>/usr/local/bin/node</string>
     <string>/path/to/apra-fleet/packages/apra-fleet-se/bin/serve.mjs</string>
   </array>
   <key>RunAtLoad</key>
@@ -203,7 +203,10 @@ Create `~/Library/LaunchAgents/com.apra-fleet.supervisor.plist`:
 `RunAtLoad` starts it at login; `KeepAlive` is deliberately `false` -- the
 supervisor already runs indefinitely on its own (see section 0), so it does
 not need launchd to respawn it on exit (an explicit `POST /api/shutdown`
-should stay stopped, not bounce back up).
+should stay stopped, not bounce back up). launchd runs with a minimal PATH
+(`/usr/bin:/bin:/usr/sbin:/sbin`), so a bare `node` command will not resolve
+if node is installed via Homebrew or a version manager. Use the real path to
+`node` on your system (`which node`) if it differs from `/usr/local/bin/node`.
 
 Register (load) and start now:
 ```bash
