@@ -27,12 +27,11 @@ Every provider implements this typed signature.
 | Provider | File | Behavior |
 |----------|------|----------|
 | Claude | `src/providers/claude.ts:160` | Ignores `_role`, uses `allow` list directly |
-| Gemini | `src/providers/gemini.ts:161` | `doer` -> `mode: "auto_edit"`; `reviewer` -> `mode: "default"` |
 | Codex | `src/providers/codex.ts:148` | `doer` -> `approvalMode: "full-auto"`, `networkAccess: true`; `reviewer` -> `suggest`, `false` |
 | Copilot | `src/providers/copilot.ts:140` | `doer` -> `allow-all-tools: true`; `reviewer` -> deny list (write_file, edit_file, run_command) |
 | Agy | `src/providers/agy.ts:192` | Ignores `_role`, same config for both |
 
-**Key insight**: Only Gemini, Codex, and Copilot use role to change provider-level behavior. Claude and Agy ignore it entirely. The role-driven provider mode is a binary "can write" / "read-only" decision, not a rich role mapping.
+**Key insight**: Only Codex and Copilot use role to change provider-level behavior. Claude and Agy ignore it entirely. The role-driven provider mode is a binary "can write" / "read-only" decision, not a rich role mapping.
 
 #### 4. Permission Profiles
 
