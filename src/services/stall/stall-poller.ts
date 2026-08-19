@@ -25,6 +25,19 @@ export interface PollResult {
    * permission error, etc.) -- treated the same as "no signal" by callers.
    */
   mtimeMs?: number | null;
+  /**
+   * apra-fleet: when the tail's last entry is an assistant turn ending in an
+   * unresolved tool_use (no tool_result has been appended yet), that call's
+   * own declared `input.timeout` -- when present -- is a hard, model-declared
+   * budget for how long THIS specific call may legitimately run. Two real
+   * fleet-win-dev1 stalls (sprint apra-fleet-ivxi/u1qw/69pp) were killed by
+   * the fixed idle threshold while their pending tool_use carried an explicit
+   * timeout of 600000ms/900000ms -- both well inside their own declared
+   * budget. `null` when the last entry is not a pending tool_use, or the
+   * tool_use has no numeric `timeout` input. Claude-provider transcripts
+   * only -- see extractPendingToolTimeoutMs.
+   */
+  pendingToolTimeoutMs?: number | null;
 }
 
 export interface DirectoryActivity {
@@ -232,7 +245,8 @@ export async function pollLogFile(memberId: string, logFilePath: string): Promis
       : provider === 'agy'
       ? extractAgyTimestamp(memberId, lines, result.stdout)
       : extractClaudeTimestamp(memberId, lines, result.stdout);
-    return { ...extracted, mtimeMs };
+    const pendingToolTimeoutMs = extractPendingToolTimeoutMs(provider, lines);
+    return { ...extracted, mtimeMs, pendingToolTimeoutMs };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { lastTimestamp: null, error: msg };
@@ -318,6 +332,41 @@ function extractClaudeTimestamp(memberId: string, lines: string[], rawTail = '')
     logLine('stall_poll_format_error', JSON.stringify({ memberId, error: 'no entry with a timestamp in tail' }));
   }
   return { lastTimestamp: null };
+}
+
+/**
+ * apra-fleet: only the LAST line of the tail can be a genuinely unresolved
+ * tool_use -- this is a strict append-only JSONL log, so any tool_use
+ * appearing earlier in the tail already has its tool_result on a later line
+ * (this function would never reach it in a backward scan anyway). Read that
+ * one line directly rather than scanning: TAIL_LINES/TAIL_BYTES above already
+ * guarantee the final line is complete (the byte cap trims from the front),
+ * so no backward-scan-for-a-parseable-line fallback is needed here the way
+ * extractClaudeTimestamp needs one for the *first* usable entry.
+ *
+ * Claude-only by construction: the provider gate lives HERE, not in the
+ * caller, so pollLogFile's call site stays provider-agnostic and a future
+ * AGY/OpenCode/gemini transcript schema change can never accidentally start
+ * (or stop) feeding this function without an explicit case added below.
+ */
+function extractPendingToolTimeoutMs(provider: string, lines: string[]): number | null {
+  if (provider !== 'claude') return null;
+  if (lines.length === 0) return null;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(lines[lines.length - 1]) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (parsed['type'] !== 'assistant') return null;
+  const message = parsed['message'] as Record<string, unknown> | undefined;
+  const content = message?.['content'];
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const lastBlock = content[content.length - 1] as Record<string, unknown>;
+  if (lastBlock?.['type'] !== 'tool_use') return null;
+  const input = lastBlock['input'] as Record<string, unknown> | undefined;
+  const timeout = input?.['timeout'];
+  return typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0 ? timeout : null;
 }
 
 function extractGeminiTimestamp(memberId: string, lines: string[]): PollResult {

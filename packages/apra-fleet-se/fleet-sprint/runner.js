@@ -2639,6 +2639,126 @@ export function createMemberVcsProviderResolver(opts = {}) {
 }
 
 /**
+ * Best-effort provisions a member for unattended execution (`unattended:
+ * 'auto'`) before dispatching it as deployer, integ-test-runner, or
+ * regression-test-runner -- roles that run real deploy commands and test
+ * suites via a runbook and must never stall on an interactive permission
+ * prompt. Provisioning is a one-way member-registration change and is
+ * deliberately NOT reverted after the dispatch: `unattended` lives on the
+ * member (update_member), not on the dispatch, so there is nothing to revert
+ * to without also clobbering whatever the user set intentionally. In a
+ * single-member sprint the same member also plays doer/reviewer/etc, so it
+ * ends up unattended='auto' too -- accepted, not a bug.
+ *
+ * Cached per member for the lifetime of the returned function, so a sprint
+ * with many deploy/integ/regression dispatches across cycles calls
+ * update_member at most once per member. A failure (fleet unreachable,
+ * member not found) is logged and swallowed -- exactly like
+ * createMemberVcsProviderResolver above -- so a provisioning hiccup degrades
+ * to whatever permission mode the member already had, rather than aborting
+ * the phase.
+ *
+ * `callTool` is injected (the caller's MCP client), so this stays
+ * transport-agnostic and unit-testable without a live fleet server.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, log?: Function }} opts
+ * @returns {(member: string) => Promise<void>}
+ */
+export function createUnattendedAutoProvisioner(opts = {}) {
+    const { callTool, log = () => {} } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+    /** @type {Set<string>} members already confirmed unattended='auto' this run. */
+    const provisioned = new Set();
+
+    return async function ensureUnattendedAuto(member) {
+        if (provisioned.has(member)) return;
+        try {
+            await fleetApi.updateMember({ member_name: member, unattended: 'auto' });
+            provisioned.add(member);
+            log(`[unattended] member '${member}' set to unattended='auto' for this dispatch.`);
+        } catch (err) {
+            log(`[unattended] could not set unattended='auto' on member '${member}' (continuing with its existing permission mode): ${err.message}`);
+        }
+    };
+}
+
+/**
+ * Best-effort, self-heals the "Missing permission" class of deploy/integ/
+ * regression-test failure BEFORE it happens: reads deploy.md's own
+ * `## Permissions` section -- the exact list the deployer/integ-test-runner/
+ * regression-test-runner agent prompts already cross-check at their own
+ * Step 0a/0 -- and proactively grants every listed prefix to the target
+ * member via compose_permissions. Without this, a runbook permissions
+ * change (e.g. the `apra-fleet start` -> `apra-fleet run` swap, #395) only
+ * gets noticed when a dispatch fails, and only gets fixed once an operator
+ * greps deploy.md by hand and runs compose_permissions manually -- exactly
+ * the failure mode this closes the loop on.
+ *
+ * Reads deploy.md via `command()` against the ORCHESTRATOR member (its own
+ * checkout is the source of truth for what is about to be dispatched) and
+ * caches the parsed prefix list for the lifetime of the returned function --
+ * one read per sprint run, since deploy.md does not change mid-run on a
+ * healthy pipeline. Also caches per TARGET member, like
+ * createUnattendedAutoProvisioner above, so repeat cycles don't re-grant.
+ *
+ * Failure at any step (probe fails, deploy.md missing/unparseable,
+ * compose_permissions unreachable, a listed prefix hitting the
+ * NEVER_AUTO_GRANT denylist) is logged and swallowed. This is pure
+ * best-effort acceleration -- the deployer's own Step 0a check remains the
+ * authoritative, fail-closed backstop regardless of whether this succeeds.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, orchestratorMember: string, log?: Function }} opts
+ * @returns {(member: string) => Promise<void>}
+ */
+export function createDeployPermissionsProvisioner(opts = {}) {
+    const { callTool, command, orchestratorMember, log = () => {} } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+    /** @type {Set<string>} members already granted deploy.md's permissions this run. */
+    const provisioned = new Set();
+    /** @type {string[] | null | undefined} undefined = not yet attempted. */
+    let cachedPrefixes;
+
+    async function loadRequiredPrefixes() {
+        if (cachedPrefixes !== undefined) return cachedPrefixes;
+        try {
+            const res = await command(
+                `node -e "const fs=require('fs'); if(fs.existsSync('deploy.md')) process.stdout.write(fs.readFileSync('deploy.md','utf8'))"`,
+                { member_name: orchestratorMember, silent: true, label: `Read deploy.md permissions`, failSoft: true },
+            );
+            if (!res.ok || !res.output) {
+                cachedPrefixes = null;
+            } else {
+                const section = res.output.split(/^## Permissions/m)[1]?.split(/^## /m)[0] ?? '';
+                const prefixes = [...section.matchAll(/^-\s*`([^`]+)`/gm)].map(m => m[1]);
+                cachedPrefixes = prefixes.length ? prefixes : null;
+            }
+        } catch (err) {
+            log(`[deploy-permissions] could not read deploy.md's Permissions section (continuing without auto-provisioning): ${err.message}`);
+            cachedPrefixes = null;
+        }
+        return cachedPrefixes;
+    }
+
+    return async function ensureDeployPermissions(member) {
+        if (!member || provisioned.has(member)) return;
+        const prefixes = await loadRequiredPrefixes();
+        if (!prefixes) return;
+        try {
+            const result = await fleetApi.composePermissions({
+                member_name: member,
+                role: 'doer',
+                grant: prefixes,
+                grant_reason: "deploy.md's declared Permissions section, auto-provisioned before dispatch",
+            });
+            provisioned.add(member);
+            log(`[deploy-permissions] ensured deploy.md's required permissions on '${member}': ${result}`);
+        } catch (err) {
+            log(`[deploy-permissions] could not auto-provision deploy.md permissions on '${member}' (continuing -- the deployer's own Step 0a check remains the backstop): ${err.message}`);
+        }
+    };
+}
+
+/**
  * Builds the REACTIVE `onAuthFailure` self-heal callback runGitStep and
  * runDoltStep invoke on an 'auth' classification: re-provisions the failing
  * member's VCS credentials via provisionVcsAuthForMember (whose owner/repo is
@@ -3124,16 +3244,20 @@ export function validateArgs(args) {
         }
     }
 
-    // --- dispatch_timeout_s (optional, default 3600) -----------------------
+    // --- dispatch_timeout_s (optional, default 9000 = 150min/2.5h) ---------
     // Per-dispatch time budget in seconds, applied as BOTH timeout_s and
     // max_total_s on every agent dispatch: `claude -p` emits nothing until the
     // turn completes, so inactivity equals total runtime and the two timers
     // must be equal for the ceiling to be reachable. The integ-test dispatch
-    // ceiling is 2x this value, since its suites legitimately run past one
-    // budget. Lowering it bounds the cost of a live-but-silent member hang,
-    // which no timer can otherwise distinguish from work. Floor 60: below that
-    // even healthy dispatches cannot complete a single turn.
-    const dispatchTimeoutS = args.dispatch_timeout_s === undefined ? 3600 : args.dispatch_timeout_s;
+    // ceiling is 2x this value and the regression-test ceiling is 3x, since
+    // those suites legitimately run past one budget. Raised from the earlier
+    // 3600s default: an hour was tight enough to misclassify a slow-but-alive
+    // turn (a large diff, a chatty tool loop) as a stall, which is a false
+    // positive, not the genuine-hang protection this timer exists for.
+    // Lowering it still bounds the cost of a live-but-silent member hang,
+    // which no timer can otherwise distinguish from work. Floor 60: below
+    // that even healthy dispatches cannot complete a single turn.
+    const dispatchTimeoutS = args.dispatch_timeout_s === undefined ? 9000 : args.dispatch_timeout_s;
     if (typeof dispatchTimeoutS !== 'number' || !Number.isInteger(dispatchTimeoutS) || dispatchTimeoutS < 60) {
         throw new Error(`[Arg Contract] Invalid dispatch_timeout_s "${dispatchTimeoutS}": must be an integer >= 60 (seconds).`);
     }
@@ -5824,6 +5948,24 @@ async function runSprintCycle(context) {
             : undefined
     );
 
+    // Provisions a member unattended='auto' right before its deployer /
+    // integ-test-runner / regression-test-runner dispatch, so those
+    // real-command/real-suite roles never stall on an interactive permission
+    // prompt. See createUnattendedAutoProvisioner's doc comment for why this
+    // is one-way (never reverted) and safe in a single-member sprint.
+    //   1. `context.ensureUnattendedAuto` -- an explicitly-injected function
+    //      (tests wire an in-process one to prove the call site fires
+    //      without a live fleet server).
+    //   2. `args.callTool` -- the real update_member call via
+    //      createUnattendedAutoProvisioner (this file).
+    //   3. neither -- a no-op: no provisioning call is made and the member
+    //      dispatches under whatever permission mode it already has.
+    const ensureUnattendedAuto = context.ensureUnattendedAuto ?? (
+        (args && typeof args.callTool === 'function')
+            ? createUnattendedAutoProvisioner({ callTool: args.callTool, log })
+            : async () => {}
+    );
+
     // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
     // must result in zero fleet dispatches.
     const validated = validateArgs(args);
@@ -5940,6 +6082,19 @@ async function runSprintCycle(context) {
     // doc comment for why 'orchestrator' is an application-level pseudo-role
     // deliberately outside contracts.ROLES.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
+
+    // Self-heals deploy.md's declared Permissions onto the deployer /
+    // integ-test-runner / regression-test-runner member before each of
+    // those dispatches -- see createDeployPermissionsProvisioner's doc
+    // comment. Same three-way precedence shape as ensureUnattendedAuto
+    // above: an explicitly-injected `context.ensureDeployPermissions` (for
+    // tests), else the real compose_permissions-backed provisioner built
+    // from `args.callTool`, else a no-op when neither is available.
+    const ensureDeployPermissions = context.ensureDeployPermissions ?? (
+        (args && typeof args.callTool === 'function')
+            ? createDeployPermissionsProvisioner({ callTool: args.callTool, command, orchestratorMember, log })
+            : async () => {}
+    );
 
     // ONE shared bracket wrapping EVERY role-identified agent() dispatch below
     // -- planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner,
@@ -6358,16 +6513,13 @@ async function runSprintCycle(context) {
         const reviewerKnowledge = reviewerQueried.length > 0
             ? reviewerQueried
             : kbPriming.knowledgeOf(reviewerPool[0]);
-        // Stabilization log Issue 9: a full-cycle review is big -- run 6's
-        // reviewer genuinely ran out of the fleet's default turn budget
-        // (num_turns=51 after ~12 minutes of legitimate review work), and a
-        // fresh retry deterministically hits the same wall. Make the budget
-        // explicit and, on max_turns exhaustion, RESUME the same session with
-        // a doubled budget (mirrors the doer's resume-and-continue rationale
-        // at dispatchDoerResume: the session already holds the full review
-        // context, so a short continue-nudge finishes the job instead of
-        // restarting it).
-        const BASE_REVIEWER_MAX_TURNS = 60;
+        // A full-cycle review can genuinely exhaust the fleet's default turn
+        // budget, and a fresh retry deterministically hits the same wall. Make
+        // the budget explicit and, on max_turns exhaustion, RESUME the same
+        // session at a doubled budget: the session already holds the full
+        // review context, so a continue-nudge finishes the job instead of
+        // restarting it.
+        const BASE_REVIEWER_MAX_TURNS = 500;
         const reviewerDispatchOpts = {
             member_name: reviewerPool[0],
             agentType: 'reviewer',
@@ -6536,10 +6688,29 @@ async function runSprintCycle(context) {
     }
 
     // The sprint branch must be git-ensured on EVERY member that will operate
-    // on it, not just the orchestrator: doers round-robin across the doer pool
-    // and the reviewer runs from the reviewer pool, and on a real multi-member
-    // fleet each has its own checkout. Ensure on the UNION of the orchestrator,
-    // doer, and reviewer pools before the first doer round.
+    // on it, not just the orchestrator: doers round-robin across the doer pool,
+    // the reviewer runs from the reviewer pool, and every other role dispatched
+    // through withGitSync's shared bracket (planner, plan-reviewer, deployer,
+    // integ-test-runner, regression-test-runner, harvester -- see that bracket's
+    // own doc comment a few hundred lines up) gets a pre-dispatch G-pull that
+    // ASSUMES the correct branch is already checked out. On a real multi-member
+    // fleet each role can resolve to its own independent checkout, so ensure on
+    // the union of every role's member pool before the first doer round -- not
+    // just doer/reviewer.
+    //
+    // Without this, a role pinned via roleMap to a member that was never
+    // branch-ensured (e.g. deployer isolated onto its own machine, per the
+    // fleet-supervisor skill's own recommended layout) can pass its G-pull's
+    // `git merge --ff-only origin/<branch>` silently: a fast-forward merge does
+    // not care what branch HEAD is currently on, only that HEAD is an ancestor
+    // of the fetched tip. If that member happens to be sitting on a branch
+    // (e.g. main) that is still fast-forward-compatible with the sprint branch,
+    // the merge succeeds and silently advances THAT branch's pointer instead of
+    // checking out/creating a correctly-named local branch -- the deploy/test
+    // dispatch still gets the right code, but the member's local branch bookkeeping
+    // ends up mislabeled. See apra-fleet-ivxi/u1qw/69pp sprint run
+    // (fleet-sprint/ivxi-u1qw-69pp), where fleet-win-deploy's local `main`
+    // silently absorbed the sprint branch's commits this way.
     //
     // SUPPORTED-TOPOLOGY NOTE: there is no cross-member bd/git sync layer here.
     // Every `bd` command below runs against the orchestrator member's beads DB
@@ -6553,6 +6724,12 @@ async function runSprintCycle(context) {
         orchestratorMember,
         ...getMembersForRole(ROLE_DOER),
         ...getMembersForRole(ROLE_REVIEWER),
+        ...getMembersForRole('planner'),
+        ...getMembersForRole('plan-reviewer'),
+        ...getMembersForRole('deployer'),
+        ...getMembersForRole('integ-test-runner'),
+        ...getMembersForRole('regression-test-runner'),
+        ...getMembersForRole('harvester'),
     ])];
 
     // Read the requirementsFile (if any) once, up front, so its content can
@@ -7201,7 +7378,7 @@ async function runSprintCycle(context) {
             // meaningful gap. Like every dispatch site, max_turns exhaustion is
             // answered with a same-session resume at doubled turns; the planner
             // gets a doer-sized base because it builds the whole epic DAG.
-            const PLANNER_MAX_TURNS = 100;
+            const PLANNER_MAX_TURNS = 500;
             const plannerDispatchOpts = {
                 member_name: getMemberForRole('planner'),
                 agentType: 'planner',
@@ -7375,7 +7552,7 @@ async function runSprintCycle(context) {
             let verdict;
             // Reviewer-sized turn base, with the same same-session
             // turn-exhaustion resume every dispatch site uses.
-            const PLAN_REVIEWER_MAX_TURNS = 60;
+            const PLAN_REVIEWER_MAX_TURNS = 500;
             const planReviewerDispatchOpts = {
                 member_name: getMemberForRole('plan-reviewer'),
                 agentType: 'plan-reviewer',
@@ -7722,7 +7899,7 @@ async function runSprintCycle(context) {
                 for (const id of replanScopeIds) replannedThisCycle.add(id);
 
                 // --- Scoped planner pass ---
-                const SCOPED_REPLAN_PLANNER_MAX_TURNS = 100;
+                const SCOPED_REPLAN_PLANNER_MAX_TURNS = 500;
                 let scopedPlannerOk = true;
                 try {
                     const scopedPlannerRes = await withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
@@ -7768,7 +7945,7 @@ async function runSprintCycle(context) {
                 // --- Scoped plan-review pass ---
                 let scopedReplanApproved = false;
                 if (scopedPlannerOk) {
-                    const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 60;
+                    const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 500;
                     try {
                         const scopedVerdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
                             buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle }),
@@ -8048,7 +8225,7 @@ async function runSprintCycle(context) {
                 // default) so the max-turns-exhaustion resume path below has a
                 // known baseline to escalate from. Sized so a typical streak
                 // finishes in one dispatch and resume stays the exception.
-                const BASE_DOER_MAX_TURNS = 100;
+                const BASE_DOER_MAX_TURNS = 500;
                 // Bounded resume-and-continue attempts after a max_turns
                 // exhaustion, each doubling the turn budget. An identical retry
                 // is pointless (the doer would deterministically run out of
@@ -8808,11 +8985,13 @@ async function runSprintCycle(context) {
 
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
+            await ensureUnattendedAuto(getMemberForRole('deployer'));
+            await ensureDeployPermissions(getMemberForRole('deployer'));
             let deployResult;
             // Turn budget for the deployer, with the same-session
             // turn-exhaustion resume below: a source-build fallback deploy runs
             // npm ci plus two builds, comfortably beyond a small default budget.
-            const DEPLOYER_MAX_TURNS = 60;
+            const DEPLOYER_MAX_TURNS = 500;
             const deployerDispatchOpts = {
                 member_name: getMemberForRole('deployer'),
                 agentType: 'deployer',
@@ -8890,6 +9069,8 @@ async function runSprintCycle(context) {
         let verifySetForIntegTest = [];
         if (hasPlaybook && deployedThisCycle) {
             phase(`Integ Test C${cycle}`);
+            await ensureUnattendedAuto(getMemberForRole('integ-test-runner'));
+            await ensureDeployPermissions(getMemberForRole('integ-test-runner'));
             // apra-fleet-nwh.1: snapshot the running total BEFORE this
             // cycle's Integ Test dispatch(es) so the delta after (below) is
             // this phase's own spend, not the whole run's. budget.spent()
@@ -9002,7 +9183,7 @@ async function runSprintCycle(context) {
                 // re-runs, respect the poll cadence) a normal cycle needs far
                 // fewer than 300 turns. The resume ladder below still doubles from
                 // here (to 600) when a run legitimately needs more.
-                const INTEG_TEST_MAX_TURNS = 300;
+                const INTEG_TEST_MAX_TURNS = 500;
                 const integDispatchOpts = {
                     member_name: getMemberForRole('integ-test-runner'),
                     agentType: 'integ-test-runner',
@@ -9156,7 +9337,7 @@ async function runSprintCycle(context) {
                         if (gapCount > VERIFY_GAP_LIMIT) {
                             log(`Verify-route bounce cap: ${parentId} has failed verification ${gapCount} time(s) this sprint (limit ${VERIFY_GAP_LIMIT}) -- deferring rather than bouncing again.`);
                             await command(
-                                `bd update ${parentId} --status=deferred --append-notes "Deferred by apra-fleet-jfo's verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
+                                `bd update ${parentId} --status=deferred --append-notes "Deferred by the verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
                                 { member_name: orchestratorMember, silent: true }
                             );
                         } else {
@@ -9518,7 +9699,7 @@ async function runSprintCycle(context) {
     // reviewer. Without it a large sprint's final review dies at the default
     // turn limit and flips the whole sprint to a FAIL whose notes carry no
     // findings at all.
-    const FINAL_REVIEW_MAX_TURNS = 60;
+    const FINAL_REVIEW_MAX_TURNS = 500;
     // Final Review is the same 'reviewer' role as dispatchReview above
     // (read-side, pushCode: false) -- G-pull before, no-op G-push after every
     // attempt (including the retry below).
@@ -9834,11 +10015,13 @@ async function runSprintCycle(context) {
     const hasRegressionPlaybook = await probeFileExists('regression-test-playbook.md');
     if (hasRegressionPlaybook) {
         phase(`Regression Test C${finalCycleLabel}`);
+        await ensureUnattendedAuto(getMemberForRole('regression-test-runner'));
+        await ensureDeployPermissions(getMemberForRole('regression-test-runner'));
         // The real functional suite alone spends roughly one turn per liveness
         // poll for the better part of an hour, and this single dispatch carries
         // both it and the sandbox smoke sprint -- hence the large turn budget
         // and the wider hard ceiling.
-        const REGRESSION_TEST_MAX_TURNS = 200;
+        const REGRESSION_TEST_MAX_TURNS = 500;
         const REGRESSION_TEST_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 3;
         const regressionPrompt =
             `Run the full regression pass using regression-test-playbook.md at the repo root: part 1 ` +
@@ -10007,7 +10190,7 @@ async function runSprintCycle(context) {
     let harvesterResult = null;
     // Turn budget for the harvester, with the same-session turn-exhaustion
     // resume below: it writes docs/changelog across the whole epic.
-    const HARVESTER_MAX_TURNS = 60;
+    const HARVESTER_MAX_TURNS = 500;
     const harvesterDispatchOpts = {
         member_name: getMemberForRole('harvester'),
         agentType: 'harvester',

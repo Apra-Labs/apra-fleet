@@ -328,8 +328,10 @@ describe('composePermissions -- Claude reactive grant', () => {
     expect(result).toContain('Bash(docker-compose:*)');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    // Should have read the existing file
-    expect(allCmds.some(cmd => cmd.includes('cat .claude/settings.local.json'))).toBe(true);
+    // Should have read the existing file at its absolute (workFolder-resolved) path --
+    // a bare relative path would land in the wrong place on a remote member (apra-fleet
+    // incident: ssh2 client.exec() has no workFolder-scoped cwd, unlike LocalStrategy).
+    expect(allCmds.some(cmd => cmd.startsWith('cat ') && cmd.includes('/home/testuser/project/.claude/settings.local.json'))).toBe(true);
 
     // Write command should include both old and new permissions
     const writes = allCmds.filter(cmd => cmd.includes('cat >'));
@@ -479,7 +481,9 @@ describe('composePermissions -- preserves register_member mcpServers entry (apra
     });
     // Seed the file exactly as register_member left it; the merge-read returns
     // it, the merged write persists it, and the read-back verifies it landed.
-    installFsMock({ '.claude/settings.local.json': registeredByMember });
+    // Keyed by the absolute (workFolder-resolved), quoted path -- the same key
+    // shape the fs mock's read/write regexes extract from the real commands.
+    installFsMock({ '"/home/testuser/project/.claude/settings.local.json"': registeredByMember });
 
     await composePermissions({ member_id: member.id, role: 'doer' });
 

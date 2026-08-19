@@ -205,7 +205,7 @@ app's dev-server port (3001, from `npm run start:test` / `cross-env
 PORT=3001`): a prior abandoned attempt's background dev server (started by
 that attempt's own toy-repo fleet-sprint Deploy phase) can otherwise
 survive a Reset into the next attempt and cause `listen EADDRINUSE :::3001`
-in the next Deploy phase. apra-fleet-04g.7: this polls with a bounded
+in the next Deploy phase. The kill step polls with a bounded
 deadline (re-killing anything still bound each pass) and fails loud before
 the git reset ever runs if the port is still occupied once the deadline
 elapses -- a single fire-and-forget kill (the original approach) does not

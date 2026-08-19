@@ -26,5 +26,5 @@ export function authErrorAdvice(agentName: string): string {
 }
 
 export function workspaceNotTrustedAdvice(agentName: string): string {
-  return `Workspace not trusted on "${agentName}": Claude ignored the composed permissions.allow entries because this work folder has never been trusted (projects[].hasTrustDialogAccepted is unset in the member-side ~/.claude.json). Remediation: seed trust via ensureWorkspaceTrusted(workFolder) -- re-run compose_permissions once apra-fleet-eft.40.2 wires it in, or set projects['<work_folder>'].hasTrustDialogAccepted=true in the member's ~/.claude.json directly.`;
+  return `Workspace not trusted on "${agentName}": Claude ignored the composed permissions.allow entries because this work folder has never been trusted (projects[].hasTrustDialogAccepted is unset in the member-side ~/.claude.json). Remediation: seed trust via ensureWorkspaceTrusted(workFolder) -- re-run compose_permissions once that wiring lands, or set projects['<work_folder>'].hasTrustDialogAccepted=true in the member's ~/.claude.json directly.`;
 }

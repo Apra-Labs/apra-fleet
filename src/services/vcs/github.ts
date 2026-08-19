@@ -47,6 +47,20 @@ async function deployAppToken(
 
   await exec(cmds.gitCredentialHelperWrite(HOST, USERNAME, token, label, scopeUrl));
 
+  // Best-effort: also log the `gh` CLI itself in, using the same minted token.
+  // gh has its own auth store (never reads the git credential helper above),
+  // so without this, git access can work while `gh` (PRs, issues, Discussions
+  // GraphQL) stays unauthenticated. Never fail the whole deploy over this --
+  // git credential access is the load-bearing part; gh auth is a bonus that
+  // needs the App's own permission set to include 'discussions'/'issues' etc,
+  // an org-admin action on github.com outside this codebase's reach.
+  let ghAuthOk = true;
+  try {
+    await exec(cmds.ghAuthLogin(token, HOST));
+  } catch {
+    ghAuthOk = false;
+  }
+
   return {
     success: true,
     message: `GitHub App credentials deployed (expires ${expiresAt})`,
@@ -57,6 +71,7 @@ async function deployAppToken(
       token: token.substring(0, 4) + '****',
       expiresAt,
       permissions: JSON.stringify(permissions),
+      ghCliAuth: ghAuthOk ? 'ok' : 'failed (see member logs -- gh CLI missing or login rejected)',
     },
   };
 }
@@ -69,10 +84,27 @@ async function deployPat(
   scopeUrl?: string,
 ): Promise<VcsDeployResult> {
   await exec(cmds.gitCredentialHelperWrite(HOST, USERNAME, token, label, scopeUrl));
+
+  // Best-effort gh CLI login -- see the matching comment in deployAppToken.
+  // A PAT's scopes (including Discussions, via classic PAT `repo`/`write:discussion`
+  // or a fine-grained PAT's own permission picker) are whatever the user granted it
+  // when they created it, so this can succeed here even before an App's own
+  // permission set is updated.
+  let ghAuthOk = true;
+  try {
+    await exec(cmds.ghAuthLogin(token, HOST));
+  } catch {
+    ghAuthOk = false;
+  }
+
   return {
     success: true,
     message: 'GitHub PAT credentials deployed',
-    metadata: { mode: 'pat', token: token.substring(0, 4) + '****' },
+    metadata: {
+      mode: 'pat',
+      token: token.substring(0, 4) + '****',
+      ghCliAuth: ghAuthOk ? 'ok' : 'failed (see member logs -- gh CLI missing or login rejected)',
+    },
   };
 }
 

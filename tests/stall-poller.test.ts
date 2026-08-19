@@ -139,6 +139,137 @@ describe('pollLogFile', () => {
       );
     });
 
+    // apra-fleet: fleet-win-dev1 sprint apra-fleet-ivxi/u1qw/69pp, confirmed
+    // stall site d2e30668-83bd-422f-b439-25d0a92133f6. The transcript's last
+    // entry was this exact unresolved Bash tool_use (command/timeout verbatim
+    // from the raw transcript) -- fleet killed the dispatch at 136s idle even
+    // though the model itself had declared a 900000ms (15 min) budget for
+    // this specific call.
+    it('reads the pending tool_use timeout verbatim from a real stalled session (900000ms)', async () => {
+      const stdout = jsonLines(
+        { type: 'assistant', timestamp: '2026-08-14T12:38:34.128Z', model: 'claude-opus-5' },
+        {
+          type: 'assistant',
+          timestamp: '2026-08-14T12:38:36.128Z',
+          model: 'claude-opus-5',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_01WR9ZvHAmquoGZUSeYdm6wo',
+                name: 'Bash',
+                input: {
+                  command:
+                    'until grep -q "VITEST_EXIT=" /tmp/fulltest3.txt 2>/dev/null; do sleep 10; done; grep -E "Test Files|Tests  |VITEST_EXIT" /tmp/fulltest3.txt | tail -6',
+                  timeout: 900000,
+                },
+              },
+            ],
+          },
+        },
+      );
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBe(900000);
+    });
+
+    // apra-fleet: same sprint, confirmed stall site
+    // 963a1740-4a1c-4a63-b84f-8d6b9961aa2c -- last entry an unresolved Bash
+    // tool_use with an explicit 600000ms (10 min) budget, killed at 131s idle.
+    it('reads the pending tool_use timeout verbatim from a real stalled session (600000ms)', async () => {
+      const stdout = jsonLines({
+        type: 'assistant',
+        timestamp: '2026-08-14T11:38:42.451Z',
+        model: 'claude-opus-5',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_0159oAzyBrTcZcWoLJ72DGGX',
+              name: 'Bash',
+              input: {
+                command:
+                  'until [ -s /tmp/test.log ] && grep -q "TEST EXIT" /tmp/test.log 2>/dev/null; do sleep 5; done; echo done',
+                description: 'Wait until tests finish',
+                timeout: 600000,
+              },
+            },
+          ],
+        },
+      });
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBe(600000);
+    });
+
+    it('reports no pending tool timeout when the tail ends on plain assistant text, not a tool_use', async () => {
+      const stdout = jsonLines({
+        type: 'assistant',
+        timestamp: '2026-08-14T14:42:22.062Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'All steps completed and pushed successfully.' }] },
+      });
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBeNull();
+    });
+
+    it('reports no pending tool timeout when the pending tool_use has no timeout input', async () => {
+      const stdout = jsonLines({
+        type: 'assistant',
+        timestamp: '2026-08-14T14:32:31.803Z',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_01CyiQ9FZSM9jM6R4wdGCZw5',
+              name: 'Bash',
+              input: { command: 'node scripts/run-integ-suites.mjs --status --wait=45 2>&1 | head -14', description: 'Poll integ suite status' },
+            },
+          ],
+        },
+      });
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBeNull();
+    });
+
+    it('reports no pending tool timeout when the last entry is a resolved tool_result, not a pending tool_use', async () => {
+      const stdout = jsonLines(
+        {
+          type: 'assistant',
+          timestamp: '2026-08-14T10:00:00.000Z',
+          message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_x', name: 'Bash', input: { command: 'sleep 5', timeout: 900000 } }] },
+        },
+        {
+          type: 'user',
+          timestamp: '2026-08-14T10:00:05.000Z',
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'done' }] },
+        },
+      );
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBeNull();
+    });
+
+    it('never reads a pending tool timeout for non-claude providers (gemini)', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'gemini' }));
+      const stdout = jsonLines({
+        $set: { lastUpdated: '2026-08-14T10:00:00.000Z' },
+      });
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBeNull();
+    });
+
     it('falls back to the raw tail when a single huge entry leaves no complete line', async () => {
       // The sampled window lands INSIDE one oversized tool_result: the leading
       // fragment is unparseable JSON, but the timestamp text is still there.

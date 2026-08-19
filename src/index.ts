@@ -55,8 +55,8 @@ Usage:
   apra-fleet kb reject-directive <id>                  Reject a proposal or retire an active directive
   apra-fleet kb add-directive "<text>" [--symbols a,b] Create an already-active directive (human-only)
   apra-fleet kb commit [--repo <path>] [--global]      Re-export + auto-commit the canonical bible (manual/recovery)
-  apra-fleet join <member-jwt> [--hub-url <url>]  Activate a device using a member JWT obtained out-of-band from fleet-dashboard (apra-fleet-6bf)
-  apra-fleet spoke <origin-member-id>        Run as an outbound hub-connected spoke (apra-fleet-jfn); requires apra-fleet join first
+  apra-fleet join <member-jwt> [--hub-url <url>]  Activate a device using a member JWT obtained out-of-band from fleet-dashboard
+  apra-fleet spoke <origin-member-id>        Run as an outbound hub-connected spoke; requires apra-fleet join first
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);
   process.exit(0);

@@ -107,7 +107,7 @@ export const executePromptSchema = z.object({
     'the call is rejected with a clear error if neither is present.'
   ),
   sprint_id: z.string().optional().describe(
-    'Opaque identity of the sprint issuing this dispatch (apra-fleet-eft.29.1). ' +
+    'Opaque identity of the sprint issuing this dispatch. ' +
     'When provided, the server-side member-reservation check (see reservedBy below) ' +
     'compares this value directly against the reservation instead of falling back to ' +
     'this server process\'s APRA_FLEET_SPRINT_ID env var -- the same per-call value ' +
@@ -116,7 +116,7 @@ export const executePromptSchema = z.object({
     'omitting it preserves the pre-existing env-var-based behavior exactly.'
   ),
   expected_context_tokens: z.number().positive().optional().describe(
-    'Optional estimate (apra-fleet-eft.81.1) of how many tokens this dispatch will add ' +
+    'Optional estimate of how many tokens this dispatch will add ' +
     'to the target session\'s context. When set (or context_size is set), the server ' +
     'compares it against the session\'s remaining context-window headroom BEFORE ' +
     'invoking the LLM: too little headroom rejects the call with ' +
@@ -126,7 +126,7 @@ export const executePromptSchema = z.object({
     'fields disables the check entirely -- pre-existing behavior is unchanged.'
   ),
   context_size: z.enum(['S', 'M', 'L']).optional().describe(
-    'Optional size-bucket shorthand for expected_context_tokens (apra-fleet-eft.81.1): ' +
+    'Optional size-bucket shorthand for expected_context_tokens: ' +
     'S/M/L map to configured token estimates (fleet defaults, overridable via ' +
     'config.json\'s contextAdmission.sizeBucketTokens). Ignored when expected_context_tokens ' +
     'is also set. The auto-sprint engine supplies this from the dispatched task\'s size ' +

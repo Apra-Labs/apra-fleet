@@ -300,6 +300,17 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `Remove-Item "$env:USERPROFILE\\${credFileName}.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.${credUrl}.helper' 2>$null`;
   }
 
+  ghAuthLogin(token: string, hostname = 'github.com'): string {
+    const escapedToken = escapeWindowsArg(token).replace(/'/g, "''");
+    const escapedHostname = escapeWindowsArg(hostname).replace(/'/g, "''");
+    // gh CLI has its own credential store, entirely separate from the git
+    // credential helper written above -- gh never reads that file.
+    // `gh auth login --with-token` is gh's own non-interactive enrollment
+    // path. Best-effort: if `gh` isn't installed, no-op rather than fail the
+    // whole VCS auth deployment over an optional CLI.
+    return `if (Get-Command gh -ErrorAction SilentlyContinue) { '${escapedToken}' | gh auth login --hostname '${escapedHostname}' --with-token } else { Write-Warning 'gh CLI not installed -- skipped gh auth login' }`;
+  }
+
   // --- SSH key deployment ---
 
   deploySSHPublicKey(publicKeyLine: string): string[] {
