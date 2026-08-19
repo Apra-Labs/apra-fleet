@@ -72,7 +72,8 @@ async function tryFindLocal(
     }
   }
 
-  // Case A (fresh session) or Case B Gemini: mtime scan
+  // Case A (fresh session) or Case B (a non-Claude provider without a direct
+  // session-id path lookup): mtime scan
   const candidates = findLocalMtimeCandidates(logDir, t0);
   return pickLocalCandidate(candidates, inv);
 }
@@ -147,7 +148,8 @@ async function tryFindRemote(
     return lines.length > 0 ? lines[0] : null;
   }
 
-  // Case A or Case B Gemini: mtime scan
+  // Case A (fresh session) or Case B (a non-Claude provider without a direct
+  // session-id path lookup): mtime scan
   const candidates = await findRemoteMtimeCandidates(agent, logDir, t0);
   return pickRemoteCandidate(agent, candidates, inv, memberId);
 }

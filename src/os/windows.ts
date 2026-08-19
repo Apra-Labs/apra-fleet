@@ -44,7 +44,7 @@ export function wrapPowerShellEncoded(psScript: string): string {
   return `powershell -EncodedCommand ${encoded}`;
 }
 
-const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIGRAVITY_SOURCE_METADATA\',\'GEMINI_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
+const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIGRAVITY_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
 
 /**
  * Wrap PowerShell setup commands and a CLI invocation with PID capture.
@@ -143,8 +143,9 @@ export class WindowsCommands implements OsCommands {
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-    // Gemini activates a subagent via @<name> prepended to the prompt on EVERY dispatch.
-    // Claude and AGY activate a subagent via --agent <name> flag.
+    // Some providers activate a subagent via @<name> prepended to the prompt on
+    // EVERY dispatch (provider.agentNameFlag() returns the '@'-prefixed form).
+    // Claude and AGY instead activate a subagent via --agent <name> flag.
     const nameFlag = agentName ? provider.agentNameFlag(agentName) : '';
     if (nameFlag.startsWith('@')) {
       instruction = `${nameFlag}${instruction}`;

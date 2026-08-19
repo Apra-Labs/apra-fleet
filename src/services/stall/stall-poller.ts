@@ -240,9 +240,7 @@ export async function pollLogFile(memberId: string, logFilePath: string): Promis
 
     const lines = result.stdout.split('\n').filter(l => l.trim());
 
-    const extracted = provider === 'gemini'
-      ? extractGeminiTimestamp(memberId, lines)
-      : provider === 'agy'
+    const extracted = provider === 'agy'
       ? extractAgyTimestamp(memberId, lines, result.stdout)
       : extractClaudeTimestamp(memberId, lines, result.stdout);
     const pendingToolTimeoutMs = extractPendingToolTimeoutMs(provider, lines);
@@ -346,7 +344,7 @@ function extractClaudeTimestamp(memberId: string, lines: string[], rawTail = '')
  *
  * Claude-only by construction: the provider gate lives HERE, not in the
  * caller, so pollLogFile's call site stays provider-agnostic and a future
- * AGY/OpenCode/gemini transcript schema change can never accidentally start
+ * AGY/OpenCode transcript schema change can never accidentally start
  * (or stop) feeding this function without an explicit case added below.
  */
 function extractPendingToolTimeoutMs(provider: string, lines: string[]): number | null {
@@ -367,24 +365,4 @@ function extractPendingToolTimeoutMs(provider: string, lines: string[]): number 
   const input = lastBlock['input'] as Record<string, unknown> | undefined;
   const timeout = input?.['timeout'];
   return typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0 ? timeout : null;
-}
-
-function extractGeminiTimestamp(memberId: string, lines: string[]): PollResult {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const parsed = JSON.parse(lines[i]) as Record<string, unknown>;
-      const set = parsed['$set'] as Record<string, unknown> | undefined;
-      if (set !== undefined) {
-        const ts = set['lastUpdated'];
-        if (typeof ts === 'string') {
-          return { lastTimestamp: ts };
-        }
-        logLine('stall_poll_format_error', JSON.stringify({ memberId, error: '$set entry missing lastUpdated' }));
-        return { lastTimestamp: null };
-      }
-    } catch {
-      // partial line -- skip
-    }
-  }
-  return { lastTimestamp: null };
 }
