@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
+import { resolveRepoRemoteUrl } from '../services/member-remote-url.js';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types.js';
 import type { CloudConfig } from '../services/cloud/types.js';
@@ -324,6 +325,24 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       detectedOS = 'linux';
     }
     tempAgent.os = detectedOS;
+
+    // apra-fleet-tm7.9.1: resolve the origin URL of the repo this member's work
+    // folder is a clone of, ONCE, here -- where a remote round trip is already
+    // expected (the OS detection above makes three) rather than on every
+    // dispatch. Stored on the record so execute_prompt's auto-harvest can route
+    // to this member's own project KB without an exec of its own; without it a
+    // remote member's slug degrades to 'default' and its knowledge is pooled
+    // with every other member's. Best-effort by design: a member that is not a
+    // git clone, or whose probe fails, simply carries no URL and behaves
+    // exactly as before.
+    try {
+      const resolvedUrl = await resolveRepoRemoteUrl(tempAgent as Agent);
+      if (resolvedUrl) tempAgent.repoRemoteUrl = resolvedUrl;
+    } catch {
+      // Never block a registration on this -- it is an optimisation, not a
+      // prerequisite, and warnings.push() below is reserved for things the
+      // operator must act on.
+    }
 
     const cmds = getOsCommands(detectedOS);
     const provider = getProvider(input.llm_provider ?? 'claude');

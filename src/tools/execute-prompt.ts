@@ -1484,6 +1484,12 @@ session: ${parsed.sessionId}`;
       // dominate here: harvest's regex extraction frequently yields no file
       // paths at all, and an entry with no basis is refused by design. A high
       // rejected count is the invariant working, not a regression to tune away.
+      // apra-fleet-tm7.9.1: knownRepoRemoteUrl() now answers from the member's
+      // STORED origin URL, resolved once at registration (register_member's
+      // probe), so a remote member routes to its own project KB without this
+      // path issuing any exec of its own. Resolving it here instead was tried
+      // and reverted: the probe is detached, so it escaped every test's await
+      // boundary and raced 157 exec-count assertions across 14 files.
       void import('./kb-harvest.js')
         .then(({ kbHarvest }) =>
           kbHarvest({
