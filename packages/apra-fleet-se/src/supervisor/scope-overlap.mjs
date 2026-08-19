@@ -39,7 +39,7 @@
 // =============================================================================
 
 import { validateIssueId } from '../../fleet-sprint/runner.js';
-import { execBdAsync } from '../../../../scripts/lib/exec-bd.mjs';
+import { execBdAsync } from './lib/exec-bd.mjs';
 
 /**
  * Default `listChildren`: return the DIRECT child bead ids of a single parent

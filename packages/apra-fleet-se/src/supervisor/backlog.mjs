@@ -42,7 +42,7 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderBeadsHtml } from '../../fleet-sprint/viewer-extensions.mjs';
 import { sendJson } from './server.mjs';
-import { execBdAsync } from '../../../../scripts/lib/exec-bd.mjs';
+import { execBdAsync } from './lib/exec-bd.mjs';
 
 /**
  * Extract a bead's parent id from a raw `bd list --json` row. The parent-child

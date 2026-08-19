@@ -2,6 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-supervisor self-containment fix and lifecycle documentation
+
+Sprint goal: make the always-on fleet-sprint supervisor fully self-contained
+in an installed apra-fleet (npm install or the SEA binary) -- no git clone of
+the source repo required to run it -- and document its full operational
+lifecycle. **Sprint verdict: PASS.**
+
+A deployed supervisor could previously crash on boot with
+`ERR_MODULE_NOT_FOUND` because two of its modules imported a shared helper via
+a repo-root-relative path that reaches into a top-level directory the
+install/SEA packaging step deliberately excludes. The fix vendors a verbatim,
+clearly-marked copy of that helper inside the packaged supervisor tree so the
+import never has to leave it. Beyond that one file, every module reachable
+from the supervisor's entry point was audited end to end (41 modules) and
+confirmed to resolve entirely inside the packaged tree, with a new
+graph-shaped regression test that walks the same import graph an installed
+tree actually has and fails on any future out-of-tree import from any
+supervisor-reachable module, not just a previously-broken file.
+
+The fleet-supervisor skill documentation was substantially expanded: it now
+covers stopping the supervisor both gracefully (via its shutdown endpoint)
+and via a cross-platform PID-based hard-stop when the API itself is
+unresponsive, a discrete restart procedure, and registering the supervisor to
+auto-start on login/boot on Windows (Task Scheduler or a Windows service),
+macOS (a launchd user LaunchAgent, including a PATH caveat for a bare `node`
+invocation), and Linux (a systemd user unit) -- each with both register and
+de-register steps and a link back to the existing smoke test.
+
+Deploy verification could not complete this sprint for environment/config
+reasons unrelated to the code: native-module compilation failed on the local
+build toolchain in one attempt, and the CLI permission allowlist used for
+automated deploys was missing one required command prefix in the others. An
+independent verification step booted the deployed build directly and
+confirmed it serves its API correctly, so these are tracked as follow-on
+environment/config fixes, not code defects.
+
+Carried forward as low-priority backlog: a drift guard to keep the vendored
+helper copy in sync with its canonical source automatically instead of by
+hand; fixing the native-module build/toolchain compatibility issue in the
+deploy environment; adding the missing command prefix to the deploy
+permission allowlist; and updating the skill's own command examples to
+reference the installed-tree path rather than a repo-checkout path. A
+full-suite regression pass run informationally after the verdict surfaced a
+handful of pre-existing, already-tracked flaky/slow-test issues plus one new
+integration-test failure and one blocked smoke-test step, all filed for a
+future sprint.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $16.8512.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2033 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 34 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- KB anchor and cache-key fixes close out remote-member correctness
 
 Sprint goal: finish making the Knowledge Layer correct for remote members,

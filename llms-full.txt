@@ -441,6 +441,8 @@ third-party verticals.
 | Auto-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
 | Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
 | Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
+| fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
+| fleet-supervisor packaging self-containment audit | [packages/apra-fleet-se/docs/supervisor-selfcontainment-audit.md](packages/apra-fleet-se/docs/supervisor-selfcontainment-audit.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
 | MCP client SDK getting started | [packages/apra-fleet-client/docs/getting-started.md](packages/apra-fleet-client/docs/getting-started.md) |
@@ -2523,6 +2525,18 @@ never been opened and trusted in Claude Code directly, the permissions Fleet
 writes there are inert. Open the folder in Claude Code once and accept the
 trust prompt, then retry.
 
+**A deploy step is blocked at the permission pre-check even though similar commands are allowed**
+
+Check the allowlist for the *exact* subcommand the deploy step invokes, not
+just the binary name -- an allowlist entry scoped to one subcommand (e.g.
+`Bash(<tool> start)`) does not cover a different subcommand of the same
+binary (e.g. `Bash(<tool> run ...)`) even though both start the same
+long-running process. Read the deploy runbook's own Permissions section for
+the full list of required command prefixes and diff it against
+`.claude/settings.json` / `.claude/settings.local.json` before assuming the
+underlying operation itself is unsafe or needs a workaround -- add the
+missing prefix and re-trigger.
+
 ## Timeouts
 
 A dispatch can end in two distinct ways:
@@ -2559,6 +2573,22 @@ name=<NAME>`. The new value is picked up immediately on the next
 Minted VCS tokens may lack CI/CD permissions. Run those operations from your
 main AI coding session instead -- it has your full git credentials. See
 [docs/design-git-auth.md](design-git-auth.md).
+
+## Build & native dependencies
+
+**`npm ci`/`npm install` fails compiling a native module (e.g. `better-sqlite3`) via `node-gyp`**
+
+This is a toolchain/environment incompatibility, not a code defect -- do not
+patch the deploy or build scripts to work around it. On macOS it shows up as
+Xcode Command Line Tools' `libc++` headers rejecting newer C++20 constructs
+(`concept`, `requires`, `output_iterator_tag`/`contiguous_iterator_tag`) that
+the Node header set expects, once the Node major version and the installed
+CLT/node-gyp versions drift out of the combination that was actually tested.
+Resolve by aligning the toolchain, not the source tree: update Xcode Command
+Line Tools (`xcode-select --install` / reinstall), or build against a Node
+version known to match the installed CLT, or update `node-gyp` itself. Check
+the npm debug log path printed in the failure output for the exact compiler
+error before assuming this is the cause.
 
 ## Stuck agents
 
