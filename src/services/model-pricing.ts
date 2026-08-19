@@ -50,11 +50,6 @@ const PROVIDER_MODEL_PRICING: Partial<Record<LlmProvider, Record<string, { promp
     'gemini-3.5-flash': { prompt: 0.35, completion: 1.05 },
     'claude-sonnet-4.6': { prompt: 3.00, completion: 15.00 },
   },
-  gemini: {
-    'gemini-3.5-flash-lite': { prompt: 0.10, completion: 0.40 },
-    'gemini-3.5-flash': { prompt: 0.35, completion: 1.05 },
-    'gemini-3.1-pro-preview': { prompt: 3.50, completion: 10.50 },
-  },
   codex: {
     'gpt-5.4-mini': { prompt: 0.25, completion: 2.00 },
     'gpt-5.4': { prompt: 5.00, completion: 15.00 },
