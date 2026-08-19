@@ -33,12 +33,17 @@ a missing `base-branch`/`branch`: do not guess which branch to diff.
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_feedback"`
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being harvested,
    and `hint_symbols`/`hint_modules` relevant to the modules touched during the sprint.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
-3. When you extract durable knowledge during harvest, call `mcp__apra-fleet__kb_capture`
-   with type "knowledge" or "learning" for anything non-obvious that future sprints should know.
+3. When you extract durable knowledge during harvest -- anything non-obvious that future
+   sprints should know -- add it to the `kb_captures` array of your structured output (type
+   "knowledge" or "learning"; dedup against the KB with `kb_query` first). The engine makes
+   the actual `kb_capture` call from that field. Calling `mcp__apra-fleet__kb_capture`
+   directly is a fallback only, for dispatch contexts with no `kb_captures` output field.
+4. If a retrieved KB entry proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
+   with the entry id and what was wrong.
 
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
@@ -153,9 +158,12 @@ placeholder):
 ```json
 {
   "status": "OK",
-  "notes": "Wrote sprint analysis artifact, extracted durable docs, updated README/CHANGELOG, confirmed 2 P3 issues remain open as backlog, pushed branch."
+  "notes": "Wrote sprint analysis artifact, extracted durable docs, updated README/CHANGELOG, confirmed 2 P3 issues remain open as backlog, pushed branch.",
+  "kb_captures": []
 }
 ```
+
+`kb_captures` is optional -- omit it or send `[]` when there is nothing to capture.
 
 **Precedence**: If your dispatch prompt includes a JSON schema instruction, that schema is
 authoritative -- respond with exactly that JSON and nothing else. It is expected to match

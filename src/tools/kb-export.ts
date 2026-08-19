@@ -10,14 +10,14 @@ import { logWarn } from '../utils/log-helpers.js';
 // T3.4 (F8b, D8): export half of the shareable, diffable team bible. Writes
 // all CONFIRMED, non-superseded, non-stale project entries to
 // <repo>/.fleet/kb-canonical.json. Registered as a real MCP tool (not just an
-// exported helper) so the KB Agent -- which is MCP-only, it has no shell/git
-// access -- can invoke it directly after kb_promote.
+// exported helper) so any MCP-only caller -- one with no shell/git access --
+// can invoke it directly after kb_promote.
 // T2.3 (F6a, D5 AMENDED -- USER DIRECTIVE 2026-07-07): the tool itself now
-// commits the bible after writing it (see maybeAutoCommitBible below) -- the
-// PM no longer needs a manual "commit the bible" step. This is code, not
-// agent discretion: tpl-kb-agent.md documents that the export TOOL commits
-// with its own dedicated identity (pm-kb), so the KB Agent's "no git
-// operations" rule is not violated by this automatic side effect.
+// commits the bible after writing it (see maybeAutoCommitBible below) -- no
+// role needs a manual "commit the bible" step. This is code, not agent
+// discretion: the export TOOL commits with its own dedicated identity
+// (pm-kb), so no role's "no git operations" rule is violated by this
+// automatic side effect.
 // F4 (T1.6): repo path resolution precedence -- (1) explicit repo_path input,
 // validated (must exist and be a directory) or kb_export refuses with a clear
 // error; (2) validated session context -- this process's own working
