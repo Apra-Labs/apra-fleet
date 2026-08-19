@@ -48,11 +48,7 @@ export class CopilotProvider implements ProviderAdapter {
       cmd += ' --continue';
     }
     // Copilot CLI does not support unattended permission flags
-    if (unattended === 'auto') {
-      logWarn('copilot', "WARNING: unattended='auto' is not supported for Copilot — member will run interactively");
-    } else if (unattended === 'dangerous') {
-      logWarn('copilot', "WARNING: unattended='dangerous' is not supported for Copilot — member will run interactively");
-    }
+    this.resolvePermissionFlag(unattended);
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
     }
@@ -66,6 +62,13 @@ export class CopilotProvider implements ProviderAdapter {
   permissionModeAutoFlag(): string | null {
     logWarn('copilot', "WARNING: unattended='auto' is not supported for Copilot — member will run interactively");
     return null;
+  }
+
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    if (unattended === 'auto' || unattended === 'dangerous') {
+      logWarn('copilot', `WARNING: unattended='${unattended}' is not supported for Copilot — member will run interactively`);
+    }
+    return '';
   }
 
   parseResponse(result: SSHExecResult): ParsedResponse {

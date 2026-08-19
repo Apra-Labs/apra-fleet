@@ -61,8 +61,8 @@ describe('OpenCodeProvider core methods', () => {
     expect(p.skipPermissionsFlag()).toBe('--dangerously-skip-permissions');
   });
 
-  it('permissionModeAutoFlag returns null', () => {
-    expect(p.permissionModeAutoFlag()).toBeNull();
+  it('permissionModeAutoFlag returns --auto', () => {
+    expect(p.permissionModeAutoFlag()).toBe('--auto');
   });
 
   it('modelTiers returns static defaults', () => {
@@ -132,24 +132,24 @@ describe('OpenCodeProvider buildPromptCommand', () => {
     expect(cmd).not.toContain('--continue');
   });
 
-  it('adds skip-permissions for unattended=dangerous', () => {
+  it('adds --auto for unattended=dangerous', () => {
     const cmd = p.buildPromptCommand({
       folder: '/tmp/test',
       promptFile: '.fleet-task.md',
       unattended: 'dangerous',
       model: 'ollama/qwen3-coder:30b',
     });
-    expect(cmd).toContain('--dangerously-skip-permissions');
+    expect(cmd).toContain('--auto');
   });
 
-  it('does not add skip-permissions for unattended=auto', () => {
+  it('adds --auto for unattended=auto', () => {
     const cmd = p.buildPromptCommand({
       folder: '/tmp/test',
       promptFile: '.fleet-task.md',
       unattended: 'auto',
       model: 'ollama/qwen3-coder:30b',
     });
-    expect(cmd).not.toContain('--dangerously-skip-permissions');
+    expect(cmd).toContain('--auto');
   });
 
   it('adds resume with session ID', () => {
