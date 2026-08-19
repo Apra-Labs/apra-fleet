@@ -101,7 +101,6 @@ describe('loadCanonicalAgentSet', () => {
 describe('remoteAgentsDir', () => {
   it('maps each provider to its home-relative agents dir', () => {
     expect(remoteAgentsDir('claude')).toBe('.claude/agents');
-    expect(remoteAgentsDir('gemini')).toBe('.gemini/agents');
     expect(remoteAgentsDir('agy')).toBe('.gemini/antigravity-cli/agents');
     expect(remoteAgentsDir('opencode')).toBe('.config/opencode/agents');
   });

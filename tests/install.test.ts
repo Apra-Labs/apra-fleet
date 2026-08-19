@@ -69,11 +69,11 @@ describe('install config persistence (T5)', () => {
   });
 
   it('writes custom config with --llm and --skill flags', async () => {
-    await runInstall(['--llm', 'gemini', '--skill', 'none']);
+    await runInstall(['--llm', 'copilot', '--skill', 'none']);
 
     const writeCall = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === configPath);
     const data = JSON.parse(writeCall![1] as string);
-    expect(data.providers.gemini.skill).toBe('none');
+    expect(data.providers.copilot.skill).toBe('none');
   });
 
   it('handles --llm=value and --no-skill shorthand', async () => {
@@ -226,8 +226,8 @@ describe('auto-sprint-args skill install (GAP B)', () => {
   });
 
   it('does not install the skill for non-claude providers', async () => {
-    setup('gemini');
-    await runInstall(['--llm', 'gemini']);
+    setup('copilot');
+    await runInstall(['--llm', 'copilot']);
 
     const writtenPaths = vi.mocked(fs.writeFileSync).mock.calls.map(c => c[0].toString());
     expect(writtenPaths.some(p => p.includes('auto-sprint-args'))).toBe(false);
