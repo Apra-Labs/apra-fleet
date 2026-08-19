@@ -1371,7 +1371,9 @@ Committed work is buildable, fully tested, and matches the acceptance criteria f
 
 - **MCP config updated for all providers** -- the MCP server command
   registered during `apra-fleet install` now includes `run` as an explicit
-  argument for every provider (claude, gemini, agy, codex, copilot, opencode).
+  argument for every provider (claude, gemini, agy, codex, copilot, opencode --
+  gemini was a supported provider at the time of this release and has since
+  been removed).
   Example SEA mode: `{ "command": "/path/apra-fleet", "args": ["run"] }`.
 
 - **Claude `mcp add` command handles all args** -- the `claude mcp add`
