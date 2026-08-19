@@ -1,0 +1,12 @@
+{
+  "dev": [
+    "mcp__apra-fleet-member__code_context",
+    "mcp__apra-fleet-member__code_impact",
+    "mcp__apra-fleet-member__code_query",
+    "mcp__apra-fleet-member__kb_resolve_contradiction",
+    "mcp__apra-fleet-member__kb_query",
+    "mcp__apra-fleet-member__kb_list",
+    "mcp__apra-fleet-member__kb_feedback",
+    "mcp__apra-fleet-member__kb_export"
+  ]
+}

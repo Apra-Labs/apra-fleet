@@ -465,6 +465,16 @@ export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissi
       addRule('mcp', match ? match[1] : '*');
     } else if (item === 'Mcp') {
       addRule('mcp', '*');
+    } else if (item.startsWith('mcp__')) {
+      // Claude's real MCP permission-string format is `mcp__<server>__<tool>` (e.g.
+      // "mcp__apra-fleet-member__kb_capture") -- NOT the fictional `Mcp(name)` shape
+      // above. AGY's own permission model is server-granular, not per-tool (see the
+      // 'mcp' action's target), so every mcp__<server>__* entry collapses to one
+      // allow rule for that server -- addRule's Set-based dedup handles the collapse.
+      const rest = item.slice('mcp__'.length);
+      const sep = rest.indexOf('__');
+      const server = sep >= 0 ? rest.slice(0, sep) : rest;
+      addRule('mcp', server);
     } else if (item === 'Web' || item === 'Fetch' || item === 'WebSearch') {
       addRule('read_url', '*');
     } else {

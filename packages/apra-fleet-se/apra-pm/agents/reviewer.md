@@ -32,9 +32,10 @@ stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
 1. Run ToolSearch with query
-   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture,mcp__apra-fleet__code_context,mcp__apra-fleet__code_graph,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query"`
-   (`kb_list`/`kb_promote` are deliberately NOT here -- Step 5 promotes through your
-   structured output, not through a tool call.)
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_feedback,mcp__apra-fleet__code_context,mcp__apra-fleet__code_graph,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query"`
+   (`kb_list`/`kb_promote`/`kb_capture` are deliberately NOT here -- captures and
+   promotions both go through your structured output, not a direct tool call; see
+   Step 5 for promotions and item 3 below for captures.)
    The `code_*` tools answer what the KB cannot: what the changed code actually connects
    to. Use `code_impact` on each changed file to judge blast radius, and
    `code_context`/`code_graph`/`code_query` to trace callers before accepting a signature
@@ -42,12 +43,21 @@ stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
    the repo is not indexed, fall back to reading the diff and grep; do not build an index.
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under review,
    and `hint_symbols`/`hint_modules` relevant to the files changed in this review round.
-   Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
-3. When you find a gotcha, a missed invariant, or a non-obvious constraint during review,
-   call `mcp__apra-fleet__kb_capture` with type "knowledge". Leave confidence at its
-   default. `kb_capture` clamps every incoming CONFIRMED down to INFERRED by design --
-   passing CONFIRMED here does not mint it, it just returns `confidence_clamped: true`.
-   CONFIRMED is minted only in Step 5, and only for claims you actually verified.
+   Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts -- an INFERRED
+   entry may be an unvalidated in-flight capture.
+3. **Capture, don't call.** When you find a gotcha, a missed invariant, or a non-obvious
+   constraint during review, do NOT call `kb_capture` yourself -- add it to the
+   `kb_captures` array of your structured output instead (type `knowledge`, `learning`, or
+   `runbook`; full shape in Output schema below). The engine validates each entry and makes
+   the actual `kb_capture` call for you. Persisted captures are clamped to INFERRED
+   regardless of route -- passing a higher confidence does not mint CONFIRMED, it just gets
+   clamped down. CONFIRMED is minted only in Step 5, and only for claims you actually
+   verified. Before adding a capture, run `mcp__apra-fleet__kb_query` to dedupe -- skip it
+   if an equivalent entry already exists. Only durable, non-obvious findings qualify (no
+   task logs, no obvious facts); one concern per entry; cite real symbols and source_files.
+4. If a KB entry you retrieved proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
+   directly with the entry id and what was wrong -- this is a read/feedback operation, not
+   a mutation, so it does not go through structured output.
 
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
@@ -136,6 +146,11 @@ no matter how many times you've already narrated "still running."
 
 ## Step 5 -- Promote knowledge you verified
 
+This step covers promotions only -- promoting an existing INFERRED entry to CONFIRMED.
+New findings you want captured as fresh KB entries go in `kb_captures` (Step 0, item 3)
+instead; the two fields are independent parts of your structured output and you can return
+both in the same response.
+
 You are the only role permitted to mint CONFIRMED. `kb_capture` clamps to INFERRED, so
 without this step nothing an agent learns ever reaches the team bible -- it stays local to
 the machine that learned it, and `kb_export` (CONFIRMED-only) never sees it.
@@ -223,9 +238,24 @@ placeholder):
   "reopenIds": ["BD-14"],
   "newTasks": [
     { "title": "Add expired-token test", "description": "Cover the expired-token rejection path in auth_test.ts", "priority": "P2" }
+  ],
+  "kb_promotions": [
+    { "id": "kb-0042", "reason": "verified against src/auth/token.ts:88 and the expired-token test" }
+  ],
+  "kb_captures": [
+    {
+      "type": "knowledge",
+      "title": "Token refresh retries are not idempotent",
+      "summary": "Retrying a failed refresh call can double-consume the refresh token.",
+      "content": "src/auth/token.ts:refreshToken() does not guard against concurrent retries; a second caller racing a timed-out first call can consume the same refresh token twice, invalidating the session. Confirmed by tracing the retry wrapper in src/auth/retry.ts.",
+      "source_files": ["src/auth/token.ts", "src/auth/retry.ts"]
+    }
   ]
 }
 ```
+
+`kb_promotions` and `kb_captures` are both optional -- omit them, or send `[]`, when you
+have nothing to promote or capture this round.
 
 **Precedence**: If your dispatch prompt includes a JSON schema instruction, that schema is
 authoritative -- respond with exactly that JSON and nothing else. It is expected to match

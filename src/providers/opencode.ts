@@ -208,6 +208,16 @@ export class OpenCodeProvider implements ProviderAdapter {
     return ['.opencode/settings.json'];
   }
 
+  // `_allow` (the composed Claude-format permission list, including any
+  // `mcp__<server>__<tool>` entries) has no destination here: OpenCode's own
+  // `permission:` schema only has the three coarse categories below (edit/write/bash)
+  // -- no per-tool or per-server MCP granularity exists to map onto (confirmed against
+  // docs/opencode-exploration.md's live investigation). MCP tool access under OpenCode
+  // is all-or-nothing at the SERVER level, controlled by registerMcpEndpoint's
+  // `mcp.apra-fleet-member` registration (unconditionally enabled, no per-tool gate) --
+  // not by this permission map. This is a genuine platform limitation, not a gap to fix
+  // here; do not add MCP entries to the returned permission object, they would not be
+  // understood by OpenCode's schema.
   composePermissionConfig(role: 'doer' | 'reviewer', _allow: string[] = []): Array<Record<string, unknown> | string> {
     if (role === 'doer') {
       return [{ permission: { edit: 'allow', write: 'allow', bash: 'allow' } }];

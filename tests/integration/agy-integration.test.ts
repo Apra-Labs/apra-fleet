@@ -88,6 +88,17 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       ]);
     });
 
+    it('collapses mcp__<server>__<tool> entries to one server-granular mcp rule each', () => {
+      const claudeAllow = [
+        'mcp__apra-fleet-member__kb_session_prime',
+        'mcp__apra-fleet-member__kb_query',
+        'mcp__apra-fleet-member__kb_capture',
+      ];
+      const rules = convertClaudeAllowToAgyPermissions(claudeAllow);
+
+      expect(rules).toEqual([{ action: 'mcp', target: 'apra-fleet-member' }]);
+    });
+
     it('delivers native AGY permissions to .gemini/antigravity-cli/settings.json', () => {
       const provider = new AgyProvider();
       expect(provider.permissionConfigPaths()).toEqual(['.gemini/antigravity-cli/settings.json']);
