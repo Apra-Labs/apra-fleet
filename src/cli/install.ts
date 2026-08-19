@@ -22,7 +22,7 @@ import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
-import { isCodeIntelEnabled, writeRepoCodeIntelConfig } from '../services/knowledge/repo-config.js';
+import { writeRepoCodeIntelConfig } from '../services/knowledge/repo-config.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -922,7 +922,11 @@ Options:
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
   --code-intel            Record this repo as opted in to code intelligence (.apra-fleet/code-intel.json).
-  --no-code-intel         Record this repo as opted out of code intelligence (.apra-fleet/code-intel.json).`);
+  --no-code-intel         Record this repo as opted out of code intelligence (.apra-fleet/code-intel.json).
+                          The opt-out is per repo and enforced at call time: code_* tools return
+                          "disabled" for this repo. It does NOT suppress machine-global setup
+                          (~/.apra-fleet/data/code-intelligence/config.json, the ~/.claude/CLAUDE.md
+                          routing block), which other repos on this machine share.`);
     process.exit(0);
     return;
   }
@@ -1611,36 +1615,58 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     }
   }
 
-  // Check if code intelligence is enabled for this repo before setting up provider config
-  const codeIntelEnabled = await isCodeIntelEnabled(repoCwd);
+  // apra-fleet-tm7.22 DECISION: the two artifacts below are MACHINE-GLOBAL
+  // (~/.apra-fleet/data/code-intelligence/config.json and ~/.claude/CLAUDE.md),
+  // so they are deliberately NOT gated on the per-repo opt-out flag
+  // (<repoCwd>/.apra-fleet/code-intel.json) that apra-fleet-le1.1.2 used to
+  // check here. Gating them on a per-repo flag was over-broad and
+  // install-order dependent: installing from one opted-out repo withheld
+  // config every OTHER repo on the machine relies on (getProvider would fall
+  // back to codebase-memory instead of the intended gitnexus provider,
+  // machine-wide), and if another repo had already installed, the artifacts
+  // were left in place anyway -- same machine, different states depending on
+  // install order. The gate was also redundant: the opt-out is enforced at
+  // runtime, per repo, by getProvider()'s RepoDisabledProvider branch
+  // (src/tools/code-intelligence.ts), which is the layer that actually knows
+  // which repo a call is about. --no-code-intel still records the per-repo
+  // flag above; only its machine-global side effects are dropped.
+  //
+  // Rejected alternatives:
+  //  - Keep the gate and document the blast radius: leaves the install-order
+  //    dependence and the machine-wide provider downgrade in place.
+  //  - Make the provider config per-repo so the opt-out can be scoped: a real
+  //    option, but it changes the config's location/schema and every reader of
+  //    it, far beyond this fix; file it separately if per-repo provider
+  //    selection is ever wanted.
+  //
+  // Note the same reasoning already applies to copyGlobalBible(repoCwd) above,
+  // which distributes to the shared global KB dir and was likewise never gated
+  // on this flag -- that asymmetry is now resolved in favour of "global
+  // artifacts are never gated on a per-repo flag".
 
-  if (!codeIntelEnabled) {
-    console.log('    Code intelligence setup skipped: repo has opted out (enabled=false in .apra-fleet/code-intel.json)');
-  } else {
-    // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
-    try {
-      const ciConfigDir = path.join(os.homedir(), '.apra-fleet', 'data', 'code-intelligence');
-      fs.mkdirSync(ciConfigDir, { recursive: true });
-      fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
-      console.log('    [OK] Code intelligence provider config written');
-    } catch (err) {
-      console.warn('    ⚠ Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
-    }
+  // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
+  try {
+    const ciConfigDir = path.join(os.homedir(), '.apra-fleet', 'data', 'code-intelligence');
+    fs.mkdirSync(ciConfigDir, { recursive: true });
+    fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
+    console.log('    [OK] Code intelligence provider config written');
+  } catch (err) {
+    console.warn('    ⚠ Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
+  }
 
-    // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
-    try {
-      const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-      const sentinel = '<!-- apra-fleet:code-intelligence -->';
-      const block = `\n${sentinel}\nWhen code_graph, code_impact, code_query, or code_context tools are available,\nuse them for symbol lookups, call chain tracing, and impact analysis.\nNever use grep or file reads for structural questions when these tools are present.\n<!-- /apra-fleet:code-intelligence -->\n`;
-      const existing = fs.existsSync(claudeMdPath) ? fs.readFileSync(claudeMdPath, 'utf-8') : '';
-      if (!existing.includes(sentinel)) {
-        fs.mkdirSync(path.dirname(claudeMdPath), { recursive: true });
-        fs.appendFileSync(claudeMdPath, block);
-        console.log('    [OK] Code intelligence routing instruction written to ~/.claude/CLAUDE.md');
-      }
-    } catch (err) {
-      console.warn('    ⚠ ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
+  // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
+  try {
+    const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+    const sentinel = '<!-- apra-fleet:code-intelligence -->';
+    const block = `\n${sentinel}\nWhen code_graph, code_impact, code_query, or code_context tools are available,\nuse them for symbol lookups, call chain tracing, and impact analysis.\nNever use grep or file reads for structural questions when these tools are present.\n<!-- /apra-fleet:code-intelligence -->\n`;
+    const existing = fs.existsSync(claudeMdPath) ? fs.readFileSync(claudeMdPath, 'utf-8') : '';
+    if (!existing.includes(sentinel)) {
+      fs.mkdirSync(path.dirname(claudeMdPath), { recursive: true });
+      fs.appendFileSync(claudeMdPath, block);
+      console.log('    [OK] Code intelligence routing instruction written to ~/.claude/CLAUDE.md');
     }
+  } catch (err) {
+    console.warn('    ⚠ ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
   }
 
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;
