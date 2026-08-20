@@ -245,20 +245,20 @@ this is itself the coverage finding this section exists to record (F-10).
 implement all 12 (TypeScript enforces this via `implements MemoryProvider`).
 Per-method comparison of what each one actually DOES:**
 
-| # | Method | SqliteProvider (section 4.1) | HttpKbProvider (`src/services/knowledge/http-provider.ts`) | Divergence |
-|---|--------|-------------------------------|--------------------------------------------------------------|------------|
-| P-1 | `init` | schema/pragma setup, write | delegates to `this.fallback.init()` (an internal `SqliteProvider`) -- no remote init call at all | HttpKbProvider's "init" is really just its embedded fallback's init; the remote server is assumed already initialized |
-| P-2 | `capture` | full AUDN pipeline locally (clamp, directive-quarantine, contradiction-flagging) | POSTs `/api/kb/capture`; on connection error, enqueues to `offlineQueue` and returns a fabricated `{id: "offline-<random>", audn_decision: 'add'}` WITHOUT running any AUDN logic | offline capture always reports `audn_decision: 'add'` regardless of what the server would actually have decided -- the true decision is deferred until `tryFlushQueue` succeeds, and the caller is never told it changed |
-| P-3 | `query` | full `QueryOptions` support including `tag`, `flagged_only`, `fts_terms` | GETs `/api/kb/query` forwarding only `query, type, limit, l1_only, include_stale, include_superseded` -- `tag` and `flagged_only` are silently dropped, not sent as query params; on connection error falls back to `this.fallback.query(opts)` (full local support) | over a live remote connection, `tag`-filtered and `flagged_only` queries lose their filter; the SAME options object degrades to full support only when offline, which is backwards from what a caller would expect |
-| P-4 | `context` | read | GET `/api/kb/context`, fallback to local on connection error | equivalent net behavior, remote-first |
-| P-5 | `invalidate` | marks context-cache entries stale (real mutate) | POSTs `/api/kb/invalidate`; on connection error enqueues the op and returns `{invalidated: 0}` -- the local cache is NOT actually marked stale while offline | offline `invalidate` is a no-op report, not a degraded-but-real local mutation, despite `capture`'s offline path at least queuing for eventual replay |
-| P-6 | `getLinked` | read | ALWAYS delegates to `this.fallback.getLinked(id)` -- no remote route exists at all | not a proxy method for this provider; purely local regardless of connectivity |
-| P-7 | `prime` | read | POST `/api/kb/prime`, fallback to local on connection error | equivalent net behavior, remote-first |
-| P-8 | `promote` | mutate-trust, one-tier-per-call | ALWAYS delegates to `this.fallback.promote(id, reason)` -- no remote route exists at all | promotion is local-only even when the remote server is reachable; a promoted-over-HTTP entry never reaches the remote KB |
-| P-9 | `sync` | read/write (remote transfer) | hardcoded `return {synced: false, reason: 'local-only provider'}` -- ignores `opts` entirely, never contacts the remote server | ironic given the class name: the one method whose name promises remote transfer is the one HttpKbProvider refuses to perform at all |
-| P-10 | `stats` | read, full computation | hardcoded not-supported result (already documented as E-STATS-UNSUPPORTED in section 5.1) | confirmed consistent with section 5.1; no new finding |
-| P-11 | `touch` | telemetry write | ALWAYS delegates to `this.fallback.touch(ids)`; catches and swallows any error, returning `0` | no remote telemetry route exists; comment in the source explicitly says a telemetry write must never fail a prime |
-| P-12 | `relatedClaims` | read | ALWAYS delegates to `this.fallback.relatedClaims(ids, limit)`; catches and swallows any error, returning `[]` | no remote route exists; same never-fail rationale as `touch` |
+| # | Method | SqliteProvider (section 4.1) | HttpKbProvider (`src/services/knowledge/http-provider.ts`) | Divergence | Verdict class |
+|---|--------|-------------------------------|--------------------------------------------------------------|------------|----------------|
+| P-1 | `init` | schema/pragma setup, write | delegates to `this.fallback.init()` (an internal `SqliteProvider`) -- no remote init call at all | HttpKbProvider's "init" is really just its embedded fallback's init; the remote server is assumed already initialized | different signature/behavior |
+| P-2 | `capture` | full AUDN pipeline locally (clamp, directive-quarantine, contradiction-flagging) | POSTs `/api/kb/capture`; on connection error, enqueues to `offlineQueue` and returns a fabricated `{id: "offline-<random>", audn_decision: 'add'}` WITHOUT running any AUDN logic | offline capture always reports `audn_decision: 'add'` regardless of what the server would actually have decided -- the true decision is deferred until `tryFlushQueue` succeeds, and the caller is never told it changed | different signature/behavior |
+| P-3 | `query` | full `QueryOptions` support including `tag`, `flagged_only`, `fts_terms` | GETs `/api/kb/query` forwarding only `query, type, limit, l1_only, include_stale, include_superseded` -- `tag` and `flagged_only` are silently dropped, not sent as query params; on connection error falls back to `this.fallback.query(opts)` (full local support) | over a live remote connection, `tag`-filtered and `flagged_only` queries lose their filter; the SAME options object degrades to full support only when offline, which is backwards from what a caller would expect | different signature/behavior |
+| P-4 | `context` | read | GET `/api/kb/context`, fallback to local on connection error | equivalent net behavior, remote-first | consistent (no divergence) |
+| P-5 | `invalidate` | marks context-cache entries stale (real mutate) | POSTs `/api/kb/invalidate`; on connection error enqueues the op and returns `{invalidated: 0}` -- the local cache is NOT actually marked stale while offline | offline `invalidate` is a no-op report, not a degraded-but-real local mutation, despite `capture`'s offline path at least queuing for eventual replay | different signature/behavior |
+| P-6 | `getLinked` | read | ALWAYS delegates to `this.fallback.getLinked(id)` -- no remote route exists at all | not a proxy method for this provider; purely local regardless of connectivity | different signature/behavior |
+| P-7 | `prime` | read | POST `/api/kb/prime`, fallback to local on connection error | equivalent net behavior, remote-first | consistent (no divergence) |
+| P-8 | `promote` | mutate-trust, one-tier-per-call | ALWAYS delegates to `this.fallback.promote(id, reason)` -- no remote route exists at all | promotion is local-only even when the remote server is reachable; a promoted-over-HTTP entry never reaches the remote KB | different signature/behavior |
+| P-9 | `sync` | read/write (remote transfer) | hardcoded `return {synced: false, reason: 'local-only provider'}` -- ignores `opts` entirely, never contacts the remote server | ironic given the class name: the one method whose name promises remote transfer is the one HttpKbProvider refuses to perform at all. Same shape as P-10/E-STATS-UNSUPPORTED: a documented `{synced: false, reason}` result returned instead of a throw, so callers get a decision-coded outcome rather than an exception | documented not-supported degradation (same pattern as E-STATS-UNSUPPORTED, section 5.1) |
+| P-10 | `stats` | read, full computation | hardcoded not-supported result (already documented as E-STATS-UNSUPPORTED in section 5.1) | confirmed consistent with section 5.1; no new finding | documented not-supported degradation (E-STATS-UNSUPPORTED, section 5.1) |
+| P-11 | `touch` | telemetry write | ALWAYS delegates to `this.fallback.touch(ids)`; catches and swallows any error, returning `0` | no remote telemetry route exists; comment in the source explicitly says a telemetry write must never fail a prime | different signature/behavior |
+| P-12 | `relatedClaims` | read | ALWAYS delegates to `this.fallback.relatedClaims(ids, limit)`; catches and swallows any error, returning `[]` | no remote route exists; same never-fail rationale as `touch` | different signature/behavior |
 
 Pattern across P-6, P-8, P-11, P-12: four of the twelve interface methods on
 `HttpKbProvider` have NO remote code path whatsoever -- they are pure
@@ -269,15 +269,15 @@ notwithstanding. Only `capture`, `query`, `context`, `invalidate`, and `prime`
 **4.4.2 -- The 6 methods + 1 property reachable-but-undeclared on `MemoryProvider`
 (section 4.2): none of them exist on `HttpKbProvider` at all.**
 
-| # | Member | On `HttpKbProvider`? | Consequence |
-|---|--------|----------------------|--------------|
-| X-1 | `list` | absent | `kb_list` calls `providers.project.list(...)` where `providers.project` is typed `SqliteProvider` (section 4.4 preamble) -- structurally could not target an `HttpKbProvider` even if one were ever returned |
-| X-2 | `feedback` | absent | same shape of gap; `kb_feedback` -> `SqliteProvider.feedback` only |
-| X-3 | `freshnessSweep` | absent | `kb_freshness_sweep`, `kb_import` -> `SqliteProvider.freshnessSweep` only |
-| X-4 | `resolveContradiction` | absent | `kb_resolve_contradiction` -> `SqliteProvider.resolveContradiction` only |
-| X-5 | `reconcilePrefilter` | absent | `kb_reconcile_prefilter` -> `SqliteProvider.reconcilePrefilter` only |
-| X-6 | `hasEntry` | absent | `kb_import` -> `SqliteProvider.hasEntry` only |
-| X-7 | `repoPath` | absent (property) | `kb_freshness_sweep` reads `SqliteProvider.repoPath` directly; no analogous property on `HttpKbProvider` |
+| # | Member | On `HttpKbProvider`? | Consequence | Verdict class |
+|---|--------|----------------------|--------------|----------------|
+| X-1 | `list` | absent | `kb_list` calls `providers.project.list(...)` where `providers.project` is typed `SqliteProvider` (section 4.4 preamble) -- structurally could not target an `HttpKbProvider` even if one were ever returned | missing member |
+| X-2 | `feedback` | absent | same shape of gap; `kb_feedback` -> `SqliteProvider.feedback` only | missing member |
+| X-3 | `freshnessSweep` | absent | `kb_freshness_sweep`, `kb_import` -> `SqliteProvider.freshnessSweep` only | missing member |
+| X-4 | `resolveContradiction` | absent | `kb_resolve_contradiction` -> `SqliteProvider.resolveContradiction` only | missing member |
+| X-5 | `reconcilePrefilter` | absent | `kb_reconcile_prefilter` -> `SqliteProvider.reconcilePrefilter` only | missing member |
+| X-6 | `hasEntry` | absent | `kb_import` -> `SqliteProvider.hasEntry` only | missing member |
+| X-7 | `repoPath` | absent (property) | `kb_freshness_sweep` reads `SqliteProvider.repoPath` directly; no analogous property on `HttpKbProvider` | missing member |
 
 None of these are "missing" in the sense of an incomplete HTTP implementation
 that should be filled in -- per the 4.4 preamble, the six tools in this table
@@ -297,7 +297,14 @@ back to select it. Of the 12 interface methods it does implement, 4 (`getLinked`
 path while supporting them fully on its local fallback path. A v1 contract
 binding must not assume the two `MemoryProvider` implementations are
 behaviorally interchangeable merely because both compile against the same
-interface.
+interface. Every row of the 4.4.1 and 4.4.2 tables now carries an explicit
+"Verdict class" naming one of: missing member, different signature/behavior,
+consistent (no divergence), or documented not-supported degradation. `sync`
+(P-9) is classified in the same "documented not-supported degradation" class
+as `stats`/E-STATS-UNSUPPORTED (P-10, section 5.1): both return a designed
+`{..., reason}`-shaped result on the not-supported path rather than throwing,
+so a v1 contract binding should treat them with the same non-throwing,
+decision-coded-outcome handling.
 
 ## 5. Error and refusal paths
 
