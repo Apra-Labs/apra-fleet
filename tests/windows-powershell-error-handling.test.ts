@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { execSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { wrapPowerShellEncoded, WindowsCommands } from '../src/os/windows.js';
@@ -219,5 +219,55 @@ describe.runIf(hasPowerShell)('live-PowerShell harness self-test (apra-fleet-ot2
     clearReadOnly(lockedFile);
     const allowedWrite = runPs(wrapPowerShellEncoded(`Set-Content -Path "${lockedFile}" -Value "x"`));
     expect(allowedWrite.code).toBe(0);
+  }, 20000);
+});
+
+// -----------------------------------------------------------------------
+// apra-fleet-ot2z.15.2: writeTextFile / credentialFileWrite
+// -----------------------------------------------------------------------
+
+describe.runIf(hasPowerShell)('Live PowerShell: writeTextFile and credentialFileWrite (apra-fleet-ot2z.15.2)', () => {
+  const cmds = new WindowsCommands();
+
+  it('writeTextFile creates a not-yet-existing nested directory and writes exact content with no trailing newline', () => {
+    const { dir } = makeTempDir('wpse-writetext-new-');
+    const target = join(dir, 'nested', 'deep', 'file.txt');
+    const result = runPs(cmds.writeTextFile(target, 'hello world'));
+    expect(result.code).toBe(0);
+    expect(existsSync(target)).toBe(true);
+    expect(readFileSync(target, 'utf-8')).toBe('hello world');
+  }, 20000);
+
+  it('content with single quotes and embedded newlines round-trips unchanged', () => {
+    const { dir } = makeTempDir('wpse-writetext-quotes-');
+    const target = join(dir, 'quotes.txt');
+    const content = "line1'quote\nline2\r\nline3";
+    const result = runPs(cmds.writeTextFile(target, content));
+    expect(result.code).toBe(0);
+    expect(readFileSync(target, 'utf-8')).toBe(content);
+  }, 20000);
+
+  it('credentialFileWrite over an existing read-only file: exit code and on-disk content agree -- never exit 0 with the write silently dropped', () => {
+    const { dir } = makeTempDir('wpse-credwrite-ro-');
+    const target = join(dir, 'cred.txt');
+    writeFileSync(target, 'orig-content');
+    makeReadOnly(target);
+    try {
+      const result = runPs(cmds.credentialFileWrite('new-content', target));
+      const onDisk = readFileSync(target, 'utf-8');
+      // Verified live: a read-only existing file makes Set-Content throw
+      // "Access ... is denied", which the wrapper's try/catch turns into
+      // exit 1 -- the old content survives untouched. If that ever flips to
+      // exit 0, the new content MUST actually be on disk; either pairing is
+      // acceptable, but exit-0-with-stale-content is exactly the regression
+      // this bead exists to catch.
+      if (result.code === 0) {
+        expect(onDisk).toBe('new-content');
+      } else {
+        expect(onDisk).toBe('orig-content');
+      }
+    } finally {
+      clearReadOnly(target);
+    }
   }, 20000);
 });
