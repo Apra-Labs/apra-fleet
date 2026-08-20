@@ -70,7 +70,15 @@ export const provisionVcsAuthSchema = z.object({
   // at all -- conflating the two would silently start deleting a credential
   // whose PAT is merely nearing expiry, not gone. This field only ever flows
   // into deploy metadata to warn/cleanup, never to delete a stored secret.
-  pat_expires_at: z.string().optional().describe('ISO 8601 date/time the Azure DevOps PAT expires, as chosen when creating the token. Propagated to the member registry so provisioning can warn when the PAT is nearing expiry.'),
+  // A malformed value here is NOT harmless: it is truthy, so it reaches
+  // vcsTokenExpiresAt verbatim, makes every checkVcsTokenExpiry comparison
+  // NaN (silencing the warning entirely) and makes scheduleCredentialCleanup
+  // fall back to its 55-minute DEFAULT_TTL_MS -- i.e. it would auto-revoke the
+  // PAT that was just deployed. Rejected at the schema boundary so no caller
+  // can construct that state.
+  pat_expires_at: z.string().refine((v) => !Number.isNaN(Date.parse(v)), {
+    message: 'pat_expires_at must be a parseable date/time (ISO 8601, e.g. 2027-08-20T00:00:00Z)',
+  }).optional().describe('ISO 8601 date/time the Azure DevOps PAT expires, as chosen when creating the token. Propagated to the member registry so provisioning can warn when the PAT is nearing expiry.'),
 });
 
 export type ProvisionVcsAuthInput = z.infer<typeof provisionVcsAuthSchema>;
@@ -94,6 +102,13 @@ function buildCredentials(input: ProvisionVcsAuthInput): unknown | string {
     case 'azure-devops': {
       const azPat = input.pat ?? input.token;
       if (!input.org_url || !azPat) return 'Azure DevOps requires "org_url" and "pat" (or "token") fields.';
+      // Defence in depth behind the schema refine above: provisionVcsAuth is
+      // also reachable from callers that bypass zod (tool-registry casts the
+      // MCP payload with `as any`), and an unparseable expiry is worse than
+      // no expiry at all -- see the pat_expires_at comment above.
+      if (input.pat_expires_at !== undefined && Number.isNaN(Date.parse(input.pat_expires_at))) {
+        return `Azure DevOps "pat_expires_at" is not a parseable date/time: ${input.pat_expires_at}`;
+      }
       return { org_url: input.org_url, pat: azPat, expires_at: input.pat_expires_at };
     }
   }
