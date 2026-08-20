@@ -123,7 +123,7 @@ describe('updateMember', () => {
     const agent = makeTestAgent({ id: 'member-cache-3' });
     addAgent(agent);
 
-    await updateMember({ member_id: agent.id, llm_provider: 'gemini' });
+    await updateMember({ member_id: agent.id, llm_provider: 'agy' });
     expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(agent.id);
   });
 
@@ -301,12 +301,12 @@ describe('updateMember -- agent re-provisioning (remote members)', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
     mockUploadContentToHome.mockResolvedValue({ success: ['planner.md'], failed: [] });
 
-    const result = await updateMember({ member_id: member.id, llm_provider: 'gemini' });
+    const result = await updateMember({ member_id: member.id, llm_provider: 'agy' });
 
-    expect(result).toContain('Provider: gemini');
+    expect(result).toContain('Provider: agy');
     expect(mockUploadContentToHome).toHaveBeenCalledTimes(1);
     const [, , calledDir] = mockUploadContentToHome.mock.calls[0];
-    expect(calledDir).toBe('.gemini/agents');
+    expect(calledDir).toBe('.gemini/antigravity-cli/agents');
   });
 
   it('skips provisioning with a warning when unreachable, but still applies the update', async () => {

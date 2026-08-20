@@ -614,3 +614,44 @@ export class PostDispatchSyncError extends WorkflowError {
 export function isPostDispatchSyncFailure(err) {
     return err instanceof PostDispatchSyncError;
 }
+
+// ---------------------------------------------------------------------------
+// apra-fleet-p2to.4.2 -- resume could not re-reserve every member
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown when a cooperative resume (after a pause released this sprint's member
+ * reservations) cannot re-acquire one or more members because another sprint
+ * claimed them while this one was paused -- an OWNER-CHECKED re-reserve, so we
+ * refuse to silently continue on top of a member some other sprint now owns.
+ *
+ * The whole point of this error is that it NAMES the unavailable members, so an
+ * operator reading the failed resume knows exactly which members to free (or
+ * which other sprint to stop) before retrying the resume -- rather than a
+ * generic "resume failed" with no actionable detail.
+ *
+ * @property {string[]} members - the members that could NOT be re-reserved on
+ *   resume (each already reserved by a different sprint).
+ */
+export class MemberReservationResumeError extends WorkflowError {
+    /**
+     * @param {string[]} unavailableMembers
+     * @param {{ details?: object, cause?: unknown }} [opts]
+     */
+    constructor(unavailableMembers = [], opts = {}) {
+        const members = Array.isArray(unavailableMembers) ? unavailableMembers : [];
+        const { details, cause } = opts;
+        super(
+            `[Workflow Error] Resume failed: could not re-reserve ${members.length} member(s) ` +
+            `released at pause -- ${members.join(', ')} ` +
+            `${members.length === 1 ? 'is' : 'are'} now reserved by another sprint. ` +
+            `Free ${members.length === 1 ? 'it' : 'them'} (or stop the other sprint) before resuming.`,
+            {
+                code: 'MEMBER_RESERVATION_RESUME_FAILED',
+                details: { members, ...details },
+                cause,
+            }
+        );
+        this.members = members;
+    }
+}

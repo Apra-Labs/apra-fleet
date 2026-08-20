@@ -33,7 +33,6 @@ Replace `__SKILL_DIR__` with the absolute path for your provider:
 | Provider | `__SKILL_DIR__` |
 |----------|----------------|
 | Claude   | `~/.claude/skills/pm` |
-| Gemini   | `~/.gemini/skills/pm` |
 | AGY      | `~/.gemini/antigravity-cli/skills/pm` |
 | OpenCode | `~/.config/opencode/skills/pm` |
 

@@ -66,7 +66,7 @@ describe('OsCommands via getOsCommands', () => {
 
   describe('generic member CLI commands', () => {
     const claudeProvider = getProvider('claude');
-    const geminiProvider = getProvider('gemini');
+    const agyProvider = getProvider('agy');
 
     for (const [name, cmds] of all) {
       it(`${name}: agentVersion includes --version for claude provider`, () => {
@@ -74,9 +74,9 @@ describe('OsCommands via getOsCommands', () => {
         expect(cmds.agentVersion(claudeProvider)).toContain('claude');
       });
 
-      it(`${name}: agentVersion includes --version for gemini provider`, () => {
-        expect(cmds.agentVersion(geminiProvider)).toContain('--version');
-        expect(cmds.agentVersion(geminiProvider)).toContain('gemini');
+      it(`${name}: agentVersion includes --version for agy provider`, () => {
+        expect(cmds.agentVersion(agyProvider)).toContain('--version');
+        expect(cmds.agentVersion(agyProvider)).toContain('agy');
       });
 
       it(`${name}: agentCommand prepends PATH for claude`, () => {
@@ -88,15 +88,14 @@ describe('OsCommands via getOsCommands', () => {
         expect(cmds.installAgent(claudeProvider).length).toBeGreaterThan(10);
       });
 
-      it(`${name}: installAgent uses macos install for gemini on macos`, () => {
-        // macOS uses provider.installCommand('macos')
+      it(`${name}: installAgent uses provider's own OS-specific install command for agy`, () => {
+        // installAgent delegates to provider.installCommand(os)
         const isWindows = name === 'windows';
-        const isLinux = name === 'linux';
-        const cmd = cmds.installAgent(geminiProvider);
-        expect(cmd).toContain('gemini-cli');
-        if (!isWindows && !isLinux) {
-          // macOS: same npm command
-          expect(cmd).toContain('npm');
+        const cmd = cmds.installAgent(agyProvider);
+        if (isWindows) {
+          expect(cmd).toContain('antigravity.google/cli/install.ps1');
+        } else {
+          expect(cmd).toContain('antigravity.google/cli/install.sh');
         }
       });
 
@@ -117,20 +116,20 @@ describe('OsCommands via getOsCommands', () => {
           expect(generic).toContain('--max-turns 50');
         });
 
-        it(`${name}: gemini provider uses gemini binary`, () => {
-          const cmd = cmds.buildAgentPromptCommand(geminiProvider, opts);
-          expect(cmd).toContain('gemini');
+        it(`${name}: agy provider uses agy binary`, () => {
+          const cmd = cmds.buildAgentPromptCommand(agyProvider, opts);
+          expect(cmd).toContain('agy');
           expect(cmd).toContain('.fleet-task.md');
           expect(cmd).toContain('--output-format json');
-          expect(cmd).not.toContain('--max-turns'); // gemini doesn't support max-turns
+          expect(cmd).not.toContain('--max-turns'); // agy doesn't support max-turns
         });
       }
 
-      it('windows: gemini prompt command uses PowerShell syntax', () => {
-        const cmd = windows.buildAgentPromptCommand(geminiProvider, opts);
+      it('windows: agy prompt command uses PowerShell syntax', () => {
+        const cmd = windows.buildAgentPromptCommand(agyProvider, opts);
         expect(cmd).toContain('Set-Location');
         expect(cmd).toContain('.fleet-task.md');
-        expect(cmd).toContain('gemini');
+        expect(cmd).toContain('agy');
       });
 
       it('windows: claude prompt command includes max-turns', () => {

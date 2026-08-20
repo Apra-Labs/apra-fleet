@@ -49,7 +49,6 @@ Fleet can configure member permissions. Ask it to, for example, "Grant
 | Provider | Config location |
 |----------|-----------------|
 | Claude | `.claude/settings.local.json` |
-| Gemini | `.gemini/policies/` |
 | Codex | `.codex/config.toml` (approval mode) |
 | Copilot | `.github/copilot/settings.local.json` |
 
@@ -60,6 +59,18 @@ project folder is a **trusted workspace**. If the member's work folder has
 never been opened and trusted in Claude Code directly, the permissions Fleet
 writes there are inert. Open the folder in Claude Code once and accept the
 trust prompt, then retry.
+
+**A deploy step is blocked at the permission pre-check even though similar commands are allowed**
+
+Check the allowlist for the *exact* subcommand the deploy step invokes, not
+just the binary name -- an allowlist entry scoped to one subcommand (e.g.
+`Bash(<tool> start)`) does not cover a different subcommand of the same
+binary (e.g. `Bash(<tool> run ...)`) even though both start the same
+long-running process. Read the deploy runbook's own Permissions section for
+the full list of required command prefixes and diff it against
+`.claude/settings.json` / `.claude/settings.local.json` before assuming the
+underlying operation itself is unsafe or needs a workaround -- add the
+missing prefix and re-trigger.
 
 ## Timeouts
 
@@ -97,6 +108,22 @@ name=<NAME>`. The new value is picked up immediately on the next
 Minted VCS tokens may lack CI/CD permissions. Run those operations from your
 main AI coding session instead -- it has your full git credentials. See
 [docs/design-git-auth.md](design-git-auth.md).
+
+## Build & native dependencies
+
+**`npm ci`/`npm install` fails compiling a native module (e.g. `better-sqlite3`) via `node-gyp`**
+
+This is a toolchain/environment incompatibility, not a code defect -- do not
+patch the deploy or build scripts to work around it. On macOS it shows up as
+Xcode Command Line Tools' `libc++` headers rejecting newer C++20 constructs
+(`concept`, `requires`, `output_iterator_tag`/`contiguous_iterator_tag`) that
+the Node header set expects, once the Node major version and the installed
+CLT/node-gyp versions drift out of the combination that was actually tested.
+Resolve by aligning the toolchain, not the source tree: update Xcode Command
+Line Tools (`xcode-select --install` / reinstall), or build against a Node
+version known to match the installed CLT, or update `node-gyp` itself. Check
+the npm debug log path printed in the failure output for the exact compiler
+error before assuming this is the cause.
 
 ## Stuck agents
 

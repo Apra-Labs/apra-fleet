@@ -174,9 +174,9 @@ describe('dead-session detection contract (apra-fleet-iuc.3)', () => {
       const onStall = vi.fn();
       detector.add(member.id, makeStallEntry({ lastActivityAt: baseTime, onStall }));
 
-      // Jump past the default 120s stall threshold with the transcript
+      // Jump past the default 150s stall threshold with the transcript
       // (content and mtime alike) still pinned at its stale values.
-      vi.setSystemTime(baseTime + 130_000);
+      vi.setSystemTime(baseTime + 160_000);
       await detector._poll();
 
       expect(onStall).toHaveBeenCalledTimes(1);
@@ -206,7 +206,7 @@ describe('dead-session detection contract (apra-fleet-iuc.3)', () => {
 
       // Same elapsed time as the positive case above -- content parsing
       // alone would have crossed the threshold and false-killed this member.
-      vi.setSystemTime(baseTime + 130_000);
+      vi.setSystemTime(baseTime + 160_000);
       await detector._poll();
 
       expect(onStall).not.toHaveBeenCalled();

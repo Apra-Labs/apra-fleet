@@ -93,10 +93,12 @@ function extractLearnings(transcript: string): ExtractedLearning[] {
 // is the ONLY path that produces entries; do not remove it (see
 // tests/knowledge/kb-harvest-autowire.test.ts). Calling this tool manually
 // with no session_transcript (the "call kb_harvest yourself at session end"
-// pattern once documented in tpl-doer.md/tpl-reviewer.md) is a no-op -- see
-// the early return below -- and that instruction has been removed from the
-// templates. This is a separate, low-trust, regex-extracted path from the
-// KB Agent's direct kb_capture flow: every entry captured here is forced to
+// pattern once documented in the role prompts) is a no-op -- see the early
+// return below -- and that instruction has been removed from agents/doer.md,
+// agents/reviewer.md, etc. (they now note kb_harvest is an automatic
+// backstop, not something they need to call). This is a separate, low-trust,
+// regex-extracted path from a role's own kb_capture/kb_captures flow: every
+// entry captured here is forced to
 // confidence='UNVERIFIED' (never CONFIRMED, covered by the D1 clamp) with
 // author='harvest', source='harvest' so it is distinguishable in queries.
 export async function kbHarvest(input: KbHarvestInput): Promise<string> {

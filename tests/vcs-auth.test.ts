@@ -192,10 +192,14 @@ describe('Multi-label credential isolation', () => {
       'personal-github', 'https://github.com/personal',
     );
 
-    expect(execCalls[0]).toContain('.fleet-git-credential-work-github');
-    expect(execCalls[0]).toContain('credential.https://github.com/work-org.helper');
-    expect(execCalls[1]).toContain('.fleet-git-credential-personal-github');
-    expect(execCalls[1]).toContain('credential.https://github.com/personal.helper');
+    // Each github PAT deploy also issues a best-effort `gh auth login` call
+    // (see the ghCliAuth wiring in deployPat) alongside the credential-helper
+    // write, so filter to the writes rather than assuming a fixed index.
+    const credWrites = execCalls.filter(cmd => cmd.includes('.fleet-git-credential-'));
+    expect(credWrites[0]).toContain('.fleet-git-credential-work-github');
+    expect(credWrites[0]).toContain('credential.https://github.com/work-org.helper');
+    expect(credWrites[1]).toContain('.fleet-git-credential-personal-github');
+    expect(credWrites[1]).toContain('credential.https://github.com/personal.helper');
   });
 
   it('revoke with label removes only that label file', async () => {
@@ -251,11 +255,15 @@ describe('Multi-label credential isolation', () => {
       'az-work', 'https://dev.azure.com/myorg',
     );
 
-    expect(execCalls[0]).toContain('.fleet-git-credential-gh-work');
-    expect(execCalls[1]).toContain('.fleet-git-credential-az-work');
+    // github's deploy also issues a best-effort `gh auth login` call after its
+    // credential-helper write (see deployPat), so filter to the writes rather
+    // than assuming a fixed index -- azure-devops has no such extra call.
+    const credWrites = execCalls.filter(cmd => cmd.includes('.fleet-git-credential-'));
+    expect(credWrites[0]).toContain('.fleet-git-credential-gh-work');
+    expect(credWrites[1]).toContain('.fleet-git-credential-az-work');
     // Different scope URLs
-    expect(execCalls[0]).toContain('credential.https://github.com/org.helper');
-    expect(execCalls[1]).toContain('credential.https://dev.azure.com/myorg.helper');
+    expect(credWrites[0]).toContain('credential.https://github.com/org.helper');
+    expect(credWrites[1]).toContain('credential.https://dev.azure.com/myorg.helper');
   });
 });
 

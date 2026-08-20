@@ -62,7 +62,7 @@ One control plane. Any device. Any model. Any workflow. Any domain.
 | Pillar | Concretely |
 |---|---|
 | **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. Windows members are fully supported for dispatch, command execution, and background long-running tasks (launched detached via WMI). |
-| **Any model** | Claude, Codex, Gemini, Copilot, Antigravity, local models (any OpenAI-compatible endpoint via OpenCode) -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. Cross-provider review is a quality mechanism: a different model, with different blind spots, checks every change. |
+| **Any model** | Claude, Codex, Copilot, Antigravity, local models (any OpenAI-compatible endpoint via OpenCode) -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. Cross-provider review is a quality mechanism: a different model, with different blind spots, checks every change. |
 | **Any workflow** | Workflows are durable programs, not prompt chains: multi-hour, resumable, observable, with member reservations and atomic state. Write your own; ship it to the fleet. |
 | **Any domain** | Not just software development. The pattern fits wherever work decomposes into agent-sized pieces that need orchestration and an audit trail: nightly retail replenishment (reconcile inventory deltas, draft purchase orders for sign-off), logistics exception handling (triage a delayed shipment, re-book, notify), healthcare intake (summarize referrals, check completeness, route), back-office runs (invoice matching, compliance evidence collection). Software engineering is the vertical running today -- your domain is a workflow away. |
 
@@ -110,7 +110,7 @@ double-click it (installation is the default action):
 ```bash
 npm install -g @apralabs/apra-fleet
 apra-fleet                   # installs for Claude Code (default)
-apra-fleet --llm agy         # or OpenCode/Codex/Copilot/Gemini
+apra-fleet --llm agy         # or OpenCode/Codex/Copilot
 cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
@@ -181,8 +181,8 @@ flowchart LR
 
 - **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet.
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket.
-- **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, and per-activity persistent state.
-- **Supervisor**: always-on layer -- launch & stop sprints over HTTP, member reservation ledger, crash watchdog, run history.
+- **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, per-activity persistent state, and a cooperative pause/resume gate any workflow can hook into.
+- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger, crash watchdog (including a live "paused" state and base-branch-drift indicator), run history.
 
 ## Knowledge Layer
 
@@ -432,7 +432,8 @@ third-party verticals.
 | Hub-spoke cloud migration plan (historical; see tier-3 ownership ADR) | [docs/hub-spoke-master-plan.md](docs/hub-spoke-master-plan.md) |
 | Tier-3 ownership decision (fleet-dashboard vs `src/hub-service/`) | [docs/adr-tier3-ownership.md](docs/adr-tier3-ownership.md) |
 | Shared hub/dashboard API contract package | [packages/fleet-api-contract/README.md](packages/fleet-api-contract/README.md) |
-| Workflow engine internals (`agent()`/`parallel()`/`pipeline()`, journal, budget) | [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md) |
+| Workflow engine internals (`agent()`/`parallel()`/`pipeline()`, journal, budget, pause/resume) | [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md) |
+| Cooperative workflow pause/resume (engine, viewer, supervisor, fleet-sprint) | [docs/features/workflow-pause-resume.md](docs/features/workflow-pause-resume.md) |
 | Writing and running workflow scripts | [packages/apra-fleet-workflow/docs/workflow-guide.md](packages/apra-fleet-workflow/docs/workflow-guide.md) |
 | Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
 | Workflow launcher fleet-server resolution order (HTTP singleton vs. stdio) | [docs/adr-workflow-server-resolution.md](docs/adr-workflow-server-resolution.md) |
@@ -441,6 +442,8 @@ third-party verticals.
 | Auto-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
 | Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
 | Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
+| fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
+| fleet-supervisor packaging self-containment audit | [packages/apra-fleet-se/docs/supervisor-selfcontainment-audit.md](packages/apra-fleet-se/docs/supervisor-selfcontainment-audit.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
 | MCP client SDK getting started | [packages/apra-fleet-client/docs/getting-started.md](packages/apra-fleet-client/docs/getting-started.md) |
@@ -483,7 +486,7 @@ Apache 2.0 -- see [LICENSE](LICENSE).
   </doc>
 
   <doc title="Vocabulary" desc="Shared terminology -- member, task, skill, PM, fleet, doer/reviewer pattern.">
-<!-- llm-context: Defines the terminology used throughout apra-fleet — member, fleet, PM, doer, reviewer, provider, session, etc. Consult this first when you encounter an unfamiliar fleet-specific term to avoid misinterpreting user requests. -->
+<!-- llm-context: Defines the terminology used throughout apra-fleet -- member, fleet, PM, doer, reviewer, provider, session, etc. Consult this first when you encounter an unfamiliar fleet-specific term to avoid misinterpreting user requests. -->
 <!-- keywords: vocabulary, terminology, member, fleet, PM, doer, reviewer, provider, session, agent, orchestrator -->
 <!-- see-also: architecture.md (how these concepts relate), ../README.md (practical usage) -->
 
@@ -495,15 +498,15 @@ Apache 2.0 -- see [LICENSE](LICENSE).
 1. A fleet member (registered machine/folder that does work)
 2. A background Claude process the PM spawns to coordinate
 
-"The agent is running" — which one? This causes real confusion in logs, conversation, and status updates.
+"The agent is running" -- which one? This causes real confusion in logs, conversation, and status updates.
 
 ## Approach: Names Over Nouns
 
 Most of the time, use the **specific name** and drop the category word entirely:
 
-- "Sent to dev2" — not "sent to member dev2"
-- "review1 passed PR #13" — not "reviewer member passed"
-- "dev1 is on main" — not "the dev1 member is on main"
+- "Sent to dev2" -- not "sent to member dev2"
+- "review1 passed PR #13" -- not "reviewer member passed"
+- "dev1 is on main" -- not "the dev1 member is on main"
 
 Names are unambiguous. Category nouns are noise when the name is present.
 
@@ -517,16 +520,16 @@ For generic references ("list all ___", "register a new ___"), use:
 | **subagent** | A background Claude process spawned by the PM. Ephemeral. |
 | **session** | A conversation thread on a member. Context persists within it. |
 | **fleet** | The collection of all registered members. |
-| **PM** | The Project Manager — the master Claude instance that orchestrates everything. |
-| **provider** (or **LLM backend**) | The LLM CLI a member uses: `claude`, `gemini`, `codex`, or `copilot`. Each member has exactly one provider, set at registration and changeable via `update_member`. |
+| **PM** | The Project Manager -- the master Claude instance that orchestrates everything. |
+| **provider** (or **LLM backend**) | The LLM CLI a member uses: `claude`, `codex`, or `copilot`. Each member has exactly one provider, set at registration and changeable via `update_member`. |
 
 ## Rules
 
 1. **Prefer the name**: "dev2 rebased" not "the dev2 member rebased"
-2. **"Subagent" is always "subagent"** — never just "agent" when referring to a background Claude process
-3. **"Agent" is banned in PM conversation** — too ambiguous. Use the name or "member/worker" for fleet members, "subagent" for Claude processes.
-4. **API keeps `agent_id`** — backwards compat in code. User-facing language evolves separately.
-5. **Provider is a property of a member**, not a conversation topic. Say "dev2 uses Gemini" not "dev2 is a Gemini agent". The member identity (the name) is what matters; the provider is just how it executes prompts.
+2. **"Subagent" is always "subagent"** -- never just "agent" when referring to a background Claude process
+3. **"Agent" is banned in PM conversation** -- too ambiguous. Use the name or "member/worker" for fleet members, "subagent" for Claude processes.
+4. **API keeps `agent_id`** -- backwards compat in code. User-facing language evolves separately.
+5. **Provider is a property of a member**, not a conversation topic. Say "dev2 uses Codex" not "dev2 is a Codex agent". The member identity (the name) is what matters; the provider is just how it executes prompts.
 
 ## Example Fleet
 
@@ -534,14 +537,14 @@ For generic references ("list all ___", "register a new ___"), use:
 PM (orchestrator)
   |
   +-- dev1       (apra-focus, local, claude/standard)
-  +-- dev2       (apra-focus-dev2, remote, gemini/pro)
+  +-- dev2       (apra-focus-dev2, remote, codex/standard)
   +-- review1    (apra-focus-review, remote, claude/premium)
   +-- review2    (apra-focus-review2, remote, copilot)
 ```
 
 PM spawns **subagents** to interact with **members**. A subagent is ephemeral (dies after task). A member is persistent (registered, has sessions, has state).
 
-Members with different **providers** are interchangeable from the PM's perspective — same tools, same dispatch pattern, different CLI underneath.
+Members with different **providers** are interchangeable from the PM's perspective -- same tools, same dispatch pattern, different CLI underneath.
   </doc>
 
   <doc title="Architecture" desc="How the fleet hub, MCP server, and members interact at a system level.">
@@ -609,7 +612,7 @@ The codebase follows a strict layering:
   index.ts           <- MCP server entry point, tool registration
   tools/*            <- one file per tool, each self-contained
   services/*         <- core capabilities (strategy, registry, SSH, file transfer)
-  providers/*        <- LLM provider adapters (Claude, Antigravity, Codex, Copilot, Gemini)
+  providers/*        <- LLM provider adapters (Claude, Antigravity, Codex, Copilot)
   os/*               <- OS-specific command builders (Linux, macOS, Windows)
   utils/*            <- stateless helpers (crypto, shell escaping)
   types.ts           <- shared data structures
@@ -636,11 +639,11 @@ Fleet events (`credential:stored`, `task:completed`, `member:status-changed`, `s
 
 ## Provider Abstraction
 
-Fleet supports six LLM providers -- Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, Gemini CLI, and OpenCode -- plus a seventh null option, `'none'`, for a plain command executor with no LLM at all (`src/providers/none.ts`). Members can mix providers within a single fleet.
+Fleet supports five LLM providers -- Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, and OpenCode -- plus a sixth null option, `'none'`, for a plain command executor with no LLM at all (`src/providers/none.ts`). Members can mix providers within a single fleet.
 
 ### How It Works
 
-Each member has an optional `llmProvider` field (`'claude' | 'agy' | 'codex' | 'copilot' | 'gemini' | 'opencode' | 'none'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
+Each member has an optional `llmProvider` field (`'claude' | 'agy' | 'codex' | 'copilot' | 'opencode' | 'none'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
 
 A `'none'` member supports `execute_command` (already fully provider-agnostic, no changes needed) but never `execute_prompt` in either mode -- rejected immediately with a clear error rather than reaching `NoneProvider`'s methods, most of which throw by design (there is no CLI, no prompt, no model to build a command from). `register_member` skips CLI/auth verification entirely for these members, and status/detail views show `compute only` in place of a token count.
 
@@ -670,7 +673,6 @@ src/providers/
   agy.ts         - AgyProvider
   codex.ts       - CodexProvider (NDJSON parser)
   copilot.ts     - CopilotProvider
-  gemini.ts      - GeminiProvider
   opencode.ts    - OpenCodeProvider (NDJSON parser, local/self-hosted models)
   index.ts       - getProvider() singleton factory
 ```
@@ -683,7 +685,7 @@ A fleet can have members on different providers simultaneously. The PM dispatche
 PM (orchestrator, Claude)
   |
   +-- dev1   (claude,   remote)
-  +-- dev2   (gemini,   remote)
+  +-- dev2   (agy,      remote)
   +-- dev3   (codex,    local)
   +-- dev4   (opencode, local)   <- self-hosted model via Ollama
   +-- review (copilot,  remote)
@@ -693,12 +695,12 @@ All five members use the same `execute_prompt` tool call. The tool builds provid
 
 ### Key Differences Across Providers
 
-- **`max_turns`** - Claude-only. Ignored for Antigravity, Codex, Copilot, and Gemini.
+- **`max_turns`** - Claude-only. Ignored for Antigravity, Codex, and Copilot.
 - **OAuth credential copy** - Claude-only. Non-Claude providers require an API key (`provision_llm_auth` with `api_key`).
 - **JSON output format** - Codex emits NDJSON (one event per line). All others emit a single JSON object. Handled transparently by `provider.parseResponse()`.
-- **Session resume** - Claude, Antigravity, and Gemini support resuming specific session IDs. Codex and Copilot resume the most recent local session. OpenCode supports session resume via `--session <id>` or `--continue`.
+- **Session resume** - Claude and Antigravity support resuming specific session IDs. Codex and Copilot resume the most recent local session. OpenCode supports session resume via `--session <id>` or `--continue`.
 - **OpenCode** - uses any OpenAI-compatible endpoint (Ollama, vLLM). The user provisions the endpoint; Fleet installs the CLI and agents. Model tiers are set per member at registration via `model_tiers` (since models vary by deployment). Agent files are transformed from Claude format to OpenCode format at install time (tools allowlist -> permission map).
-- **Antigravity (agy) response capture** - `AgyProvider.parseResponse()` extracts both the reply text and, when the CLI's transcript exposes one, a `conversation_id` that is surfaced as the response's `sessionId` -- mirroring Claude/Gemini session-id capture instead of returning an empty session id for a provider that does expose one.
+- **Antigravity (agy) response capture** - `AgyProvider.parseResponse()` extracts both the reply text and, when the CLI's transcript exposes one, a `conversation_id` that is surfaced as the response's `sessionId` -- mirroring Claude's session-id capture instead of returning an empty session id for a provider that does expose one.
 
 ### Terminal-Signal and Dead-Session Detection Invariants
 
@@ -829,6 +831,20 @@ update-safe end-to-end; remaining gaps for this feature are tracked as
 individual open issues under `apra-fleet-7pm`, not as a phase-level
 placeholder.
 
+**Cooperative pause/resume** is a generic engine primitive available to any
+workflow run (`requestPause()`/`requestResume()`/`setPauseGuard()`), separate
+from cancellation (`requestStop()`): a pause is deferred until in-flight work
+drains to zero and an optional caller-supplied guard confirms the run is at a
+state boundary it considers clean, rather than landing wherever the request
+happened to arrive. The per-run viewer and the multi-sprint supervisor
+dashboard both surface it, and fleet-sprint is the first workflow to attach
+real domain behavior to it (releasing/re-acquiring member reservations and
+resyncing git/beads state across a pause). See
+[docs/features/workflow-pause-resume.md](features/workflow-pause-resume.md)
+for the full design and
+[packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](../packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md)
+section 4.7 for the engine-level contract.
+
 **Dev-mode manifest bundling is a transitive-dependency, not a top-level-only,
 contract.** The dev-mode install path bundles `@apralabs/apra-fleet-client`'s
 own package tree so the workflow runtime can load it without a real npm
@@ -910,7 +926,7 @@ which skills are installed, uninstalling, and self-updating.
 ## Requirements
 
 - An AI coding agent CLI on the machine where you run Fleet - Claude Code,
-  Antigravity (agy), Codex, Copilot, or Gemini.
+  Antigravity (agy), Codex, or Copilot.
 - SSH access to any remote machines you want to register as members. The local
   machine needs nothing extra; remote members need only an SSH server.
 
@@ -997,7 +1013,7 @@ implementations:
 | | `auto-sprint` (Claude Code workflow) | `fleet-sprint` (apra-fleet CLI workflow) |
 |---|---|---|
 | Written by | `install` (table above) | The root `@apralabs/apra-fleet` npm package's `bin.fleet-sprint`, resolving to `dist/fleet-sprint.mjs` |
-| Providers | Claude Code only | Any provider a fleet member is registered with (Claude, Gemini, Codex, Copilot, Antigravity/agy) |
+| Providers | Claude Code only | Any provider a fleet member is registered with (Claude, Codex, Copilot, Antigravity/agy) |
 | Source package | `packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js` | `packages/apra-fleet-se` (esbuild-bundled, apra-fleet-3ns.2) |
 | Model selection | Literal Claude model names | Fleet's `cheap`/`standard`/`premium` tier keywords, per-member |
 | How you run it | `/auto-sprint <bead-ids>` inside a Claude Code session (the Workflow tool) | `apra-fleet workflow fleet-sprint --issue ... --members ... --branch ... --base ...` -- the normal form. The same bundle is also exposed directly as a `fleet-sprint` bin (`npx fleet-sprint ...`, or bare if `@apralabs/apra-fleet` is installed with `-g`). See `packages/apra-fleet-se/docs/cli-reference.md` |
@@ -1053,7 +1069,7 @@ control exactly which skills are installed:
 | `install --skill none` | neither |
 | `install --no-skill` | neither (same as `--skill none`) |
 
-## Install for other providers (Antigravity, Codex, Copilot, Gemini)
+## Install for other providers (Antigravity, Codex, Copilot)
 
 By default, `install` configures Apra Fleet for **Claude Code**. Use the `--llm`
 flag to install for a different provider instead:
@@ -1062,7 +1078,6 @@ flag to install for a different provider instead:
 apra-fleet --llm agy         # Google Antigravity CLI
 apra-fleet --llm codex       # OpenAI Codex CLI
 apra-fleet --llm copilot     # GitHub Copilot CLI
-apra-fleet --llm gemini      # Gemini CLI
 apra-fleet --llm claude      # Claude Code (the default)
 ```
 
@@ -1071,24 +1086,15 @@ The `install` subcommand is also accepted and does the same thing:
 
 `--llm` decides which provider's configuration the installer writes to. The MCP
 server registration, hooks, statusline, permissions, and skills all go into that
-provider's config directory -- for example `~/.gemini/` for Gemini -- instead of
-`~/.claude/`. To support more than one provider on the same machine, run
-`install` once per provider.
+provider's config directory -- for example `~/.gemini/antigravity-cli/` for
+Antigravity -- instead of `~/.claude/`. To support more than one provider on the
+same machine, run `install` once per provider.
 
-`--llm` combines with `--skill`, e.g. `apra-fleet install --llm gemini --skill
-pm`. Supported values: `claude` (default), `agy`, `codex`, `copilot`, `gemini`.
+`--llm` combines with `--skill`, e.g. `apra-fleet install --llm agy --skill
+pm`. Supported values: `claude` (default), `agy`, `codex`, `copilot`.
 
 After a non-Claude install, load the server by restarting that provider's CLI --
 only Claude Code uses `/mcp`.
-
-### Gemini note
-
-`apra-fleet install --llm gemini` prints a one-time warning: the Gemini CLI does
-not support background agents, so when Gemini runs as the PM/orchestrator, fleet
-operations run **sequentially** -- one dispatch at a time, with no parallel
-fan-out. Gemini works well as a doer or reviewer, and as an orchestrator for
-serial workflows; for heavily parallel orchestration, Claude dispatches in
-parallel. This is a property of the Gemini CLI, not a Fleet limitation.
 
 ### Agy note
 
@@ -1117,7 +1123,7 @@ apra-fleet uninstall
 | `--dry-run` | Preview what would be removed, without modifying anything |
 | `--force` | Automatically stop the running fleet server before uninstalling |
 | `--yes` | Skip the confirmation prompt |
-| `--llm <provider>` | Remove only a specific provider (`claude`, `agy`, `codex`, `copilot`, `gemini`) |
+| `--llm <provider>` | Remove only a specific provider (`claude`, `agy`, `codex`, `copilot`) |
 | `--skill fleet\|pm\|workflows\|all` | Remove only the specified skill directories (default: `all`) |
 
 `--skill workflows` removes the shared workflow runtime and schemas
@@ -1186,7 +1192,7 @@ If you set `APRA_FLEET_DATA_DIR`, the file lives at
 }
 ```
 
-Provider keys: `claude`, `gemini`, `codex`, `copilot`, `agy`. Tier keys:
+Provider keys: `claude`, `codex`, `copilot`, `agy`. Tier keys:
 `cheap`, `standard`, `premium`. All fields are optional -- omitted tiers fall
 back to the provider's built-in default.
 
@@ -1876,12 +1882,12 @@ New tool: `provision_git_auth`
 
   <doc title="Provider Guide" desc="Choosing an LLM provider -- strengths, role recommendations, and gotchas.">
 <!-- llm-context: User-facing guide for choosing an LLM provider in apra-fleet. Consult when a user asks which provider to use for a role (PM, doer, reviewer), what each provider is good at, or what limitations to expect. For CLI flags, credential paths, and integration internals, see provider-matrix.md. -->
-<!-- keywords: provider, Claude, Gemini, Codex, Copilot, choose, role, PM, doer, reviewer, gotchas, limitations, context window, max_turns, OAuth -->
+<!-- keywords: provider, Claude, Antigravity, Codex, Copilot, choose, role, PM, doer, reviewer, gotchas, limitations, context window, max_turns, OAuth -->
 <!-- see-also: ../README.md (provider setup instructions), provider-matrix.md (full CLI and integration reference) -->
 
 # Choosing an LLM Provider
 
-Fleet supports Claude, Antigravity (agy), Codex, Copilot, and Gemini. Members can run different providers and mix them freely within a single fleet.
+Fleet supports Claude, Antigravity (agy), Codex, and Copilot. Members can run different providers and mix them freely within a single fleet.
 
 ## Provider strengths
 
@@ -1889,19 +1895,18 @@ Fleet supports Claude, Antigravity (agy), Codex, Copilot, and Gemini. Members ca
 - **Antigravity** - High-performance Gemini-based agentic CLI; supports large context windows, background tasks, and native beads task tracking.
 - **Codex** - Structured-output enforcement via `--output-schema`; native subagent parallelism for concurrent subtasks with less orchestration overhead.
 - **Copilot** - Multi-model marketplace (Claude + GPT families in one CLI); auto-compaction keeps sessions running indefinitely.
-- **Gemini** - 1M-token native context window; built-in Google Search for researching APIs and docs without an external tool.
 
 ## Recommended provider by role
 
 | Role | Recommended | Why |
 |------|-------------|-----|
 | PM (orchestrator) | Claude Code or Antigravity (agy) | Both plan and orchestrate well - both support planning, background tasks, and premium models (e.g., Opus / premium-tier). |
-| Doer | Any provider | Sonnet, Antigravity, Codex, Copilot, Gemini - mix freely. |
+| Doer | Any provider | Sonnet, Antigravity, Codex, Copilot - mix freely. |
 | Reviewer | Premium-tier models | Catches subtle issues smaller models miss. |
 
 ## Gotchas worth knowing
 
-- **`max_turns` is Claude-only.** On Gemini, Codex, Copilot, and Antigravity, use `timeout_s` instead to bound execution time.
+- **`max_turns` is Claude-only.** On Codex, Copilot, and Antigravity, use `timeout_s` instead to bound execution time.
 - **Copilot needs a paid GitHub Copilot subscription** (Pro, Business, or Enterprise) and has the smallest context window (64K). It is best suited for smaller, focused tasks.
 
 ## Mixing providers in one fleet
@@ -2235,7 +2240,7 @@ Skills are installed into your provider's skills directory:
 | Provider | Directory |
 |----------|-----------|
 | Claude | `~/.claude/skills/<name>/` |
-| Gemini | `~/.gemini/skills/<name>/` |
+| Antigravity (agy) | `~/.gemini/antigravity-cli/skills/<name>/` |
 
 Fleet's installer writes `fleet/` and `pm/` there. Your own skill is just
 another directory alongside them.
@@ -2424,7 +2429,7 @@ See [skills/pm/SKILL.md](../skills/pm/SKILL.md) for the full PM skill reference.
 # Frequently Asked Questions
 
 <!-- llm-context: This file points to the authoritative FAQ maintained as GitHub Discussions. Do NOT answer FAQ-type questions from cached knowledge -- fetch the linked discussion for the current, maintainer-verified answer. The discussion index at the link below is the single source of truth. -->
-<!-- keywords: install, setup, single machine, local, provider, Claude, Antigravity, Codex, Copilot, Gemini, doer, reviewer, token, cost, security, password, credential, A2A, agent2agent, FAQ, questions -->
+<!-- keywords: install, setup, single machine, local, provider, Claude, Antigravity, Codex, Copilot, doer, reviewer, token, cost, security, password, credential, A2A, agent2agent, FAQ, questions -->
 <!-- see-also: ../README.md (getting started), architecture.md (how it works), provider-guide.md (choosing a provider) -->
 
 > **For AI agents:** The FAQ is maintained as GitHub Discussions -- one discussion per question, with maintainer-verified answers. To answer a user's question: browse the index below, find the matching discussion, and fetch it for the authoritative answer. Do not paraphrase from this file -- follow the link.
@@ -2511,7 +2516,6 @@ Fleet can configure member permissions. Ask it to, for example, "Grant
 | Provider | Config location |
 |----------|-----------------|
 | Claude | `.claude/settings.local.json` |
-| Gemini | `.gemini/policies/` |
 | Codex | `.codex/config.toml` (approval mode) |
 | Copilot | `.github/copilot/settings.local.json` |
 
@@ -2522,6 +2526,18 @@ project folder is a **trusted workspace**. If the member's work folder has
 never been opened and trusted in Claude Code directly, the permissions Fleet
 writes there are inert. Open the folder in Claude Code once and accept the
 trust prompt, then retry.
+
+**A deploy step is blocked at the permission pre-check even though similar commands are allowed**
+
+Check the allowlist for the *exact* subcommand the deploy step invokes, not
+just the binary name -- an allowlist entry scoped to one subcommand (e.g.
+`Bash(<tool> start)`) does not cover a different subcommand of the same
+binary (e.g. `Bash(<tool> run ...)`) even though both start the same
+long-running process. Read the deploy runbook's own Permissions section for
+the full list of required command prefixes and diff it against
+`.claude/settings.json` / `.claude/settings.local.json` before assuming the
+underlying operation itself is unsafe or needs a workaround -- add the
+missing prefix and re-trigger.
 
 ## Timeouts
 
@@ -2559,6 +2575,22 @@ name=<NAME>`. The new value is picked up immediately on the next
 Minted VCS tokens may lack CI/CD permissions. Run those operations from your
 main AI coding session instead -- it has your full git credentials. See
 [docs/design-git-auth.md](design-git-auth.md).
+
+## Build & native dependencies
+
+**`npm ci`/`npm install` fails compiling a native module (e.g. `better-sqlite3`) via `node-gyp`**
+
+This is a toolchain/environment incompatibility, not a code defect -- do not
+patch the deploy or build scripts to work around it. On macOS it shows up as
+Xcode Command Line Tools' `libc++` headers rejecting newer C++20 constructs
+(`concept`, `requires`, `output_iterator_tag`/`contiguous_iterator_tag`) that
+the Node header set expects, once the Node major version and the installed
+CLT/node-gyp versions drift out of the combination that was actually tested.
+Resolve by aligning the toolchain, not the source tree: update Xcode Command
+Line Tools (`xcode-select --install` / reinstall), or build against a Node
+version known to match the installed CLT, or update `node-gyp` itself. Check
+the npm debug log path printed in the failure output for the exact compiler
+error before assuming this is the cause.
 
 ## Stuck agents
 

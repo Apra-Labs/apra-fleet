@@ -1,6 +1,8 @@
 # Architecture & Safety Rationalization: Google Antigravity (agy) Integration
 
 > **Internal document** -- architectural rationale for contributors and reviewers, not user-facing guidance. For user setup instructions see [docs/install.md](install.md).
+>
+> **Historical note:** this document records the state of the codebase at the time of the `feat/agy-support` integration, when the legacy Gemini provider adapter was still present (already being demoted in favor of AGY). Gemini has since been fully removed as a supported provider; references to it below are preserved as historical record, not current guidance.
 
 This document rationalizes the design decisions, safety mechanisms, and compatibility considerations implemented for the Google Antigravity CLI (provider key: "agy") support in apra-fleet.
 

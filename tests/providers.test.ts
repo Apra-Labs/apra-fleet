@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ClaudeProvider } from '../src/providers/claude.js';
-import { GeminiProvider } from '../src/providers/gemini.js';
 import { CodexProvider } from '../src/providers/codex.js';
 import { CopilotProvider } from '../src/providers/copilot.js';
 import { AgyProvider } from '../src/providers/agy.js';
@@ -367,261 +366,6 @@ describe('ClaudeProvider', () => {
   });
 });
 
-// --- GeminiProvider -----------------------------------------------------------
-
-describe('GeminiProvider', () => {
-  const p = new GeminiProvider();
-
-  it('has correct metadata', () => {
-    expect(p.name).toBe('gemini');
-    expect(p.processName).toBe('gemini');
-    expect(p.authEnvVar).toBe('GEMINI_API_KEY');
-    expect(p.credentialPath).toBe('~/.gemini/');
-    expect(p.instructionFileName).toBe('GEMINI.md');
-  });
-
-  it('builds installCommand same for all OS', () => {
-    expect(p.installCommand('linux')).toContain('@google/gemini-cli');
-    expect(p.installCommand('macos')).toContain('@google/gemini-cli');
-    expect(p.installCommand('windows')).toContain('@google/gemini-cli');
-  });
-
-  it('builds prompt command with defaults (no max-turns)', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS });
-    expect(cmd).toContain('gemini -p');
-    expect(cmd).toContain('--output-format json');
-    expect(cmd).not.toContain('--max-turns');
-    expect(cmd).not.toContain('--resume');
-    expect(cmd).not.toContain('--yolo');
-  });
-
-  it('builds prompt command with new session using --session-id', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'any-id', resuming: false });
-    expect(cmd).toContain('--session-id "any-id"');
-    expect(cmd).not.toContain('--resume');
-  });
-
-  it('builds prompt command with resume using --resume', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'any-id', resuming: true });
-    expect(cmd).toContain('--resume "any-id"');
-    expect(cmd).not.toContain('--session-id');
-  });
-
-  it('unattended=auto does not add a flag and does not warn (handled by settings file)', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'auto' });
-    expect(cmd).not.toContain('--yolo');
-    expect(spy).not.toHaveBeenCalled();
-    spy.mockRestore();
-  });
-
-  it('unattended=dangerous adds --yolo flag', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'dangerous' });
-    expect(cmd).toContain('--yolo');
-  });
-
-  it('builds prompt command with model', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS, model: 'gemini-2.5-flash' });
-    expect(cmd).toContain('--model "gemini-2.5-flash"');
-  });
-
-  it('parses successful JSON response with session_id', () => {
-    const resp = p.parseResponse(makeResult(JSON.stringify({ response: 'gemini result', session_id: 'gem-sess-42' })));
-    expect(resp.result).toBe('gemini result');
-    expect(resp.sessionId).toBe('gem-sess-42');
-    expect(resp.isError).toBe(false);
-  });
-
-  it('parses successful JSON response without session_id', () => {
-    const resp = p.parseResponse(makeResult(JSON.stringify({ response: 'gemini result' })));
-    expect(resp.result).toBe('gemini result');
-    expect(resp.sessionId).toBeUndefined();
-    expect(resp.isError).toBe(false);
-  });
-
-  it('parses response with is_error flag as error', () => {
-    const resp = p.parseResponse(makeResult(JSON.stringify({ response: 'error output', is_error: true })));
-    expect(resp.isError).toBe(true);
-  });
-
-  it('parses response with non-zero exit code -- sessionId is undefined', () => {
-    const resp = p.parseResponse(makeResult(JSON.stringify({ response: 'error output' }), 1));
-    expect(resp.isError).toBe(true);
-    expect(resp.sessionId).toBeUndefined();
-  });
-
-  it('parses non-JSON response with zero exit code -- sessionId is undefined', () => {
-    const resp = p.parseResponse(makeResult('raw text output'));
-    expect(resp.result).toBe('raw text output');
-    expect(resp.sessionId).toBeUndefined();
-    expect(resp.isError).toBe(false);
-  });
-
-  it('parses non-JSON response with non-zero exit code -- sessionId is undefined', () => {
-    const resp = p.parseResponse(makeResult('error text', 1));
-    expect(resp.result).toBe('error text');
-    expect(resp.sessionId).toBeUndefined();
-    expect(resp.isError).toBe(true);
-  });
-
-  it('extracts usage tokens from stats field when present', () => {
-    const payload = JSON.stringify({
-      response: 'gemini result',
-      session_id: 'gem-sess-42',
-      stats: { input_tokens: 500, output_tokens: 120, total_tokens: 620, cached: 0 },
-    });
-    const resp = p.parseResponse(makeResult(payload));
-    expect(resp.usage).toEqual({ input_tokens: 500, output_tokens: 120 });
-  });
-
-  it('extracts usage tokens from usage field (Gemini v0.42.0 format)', () => {
-    const payload = JSON.stringify({
-      response: 'gemini result',
-      session_id: 'gem-sess-99',
-      usage: { input_tokens: 300, output_tokens: 80 },
-    });
-    const resp = p.parseResponse(makeResult(payload));
-    expect(resp.usage).toEqual({ input_tokens: 300, output_tokens: 80 });
-  });
-
-  it('usage field takes priority over stats field when both present', () => {
-    const payload = JSON.stringify({
-      response: 'gemini result',
-      usage: { input_tokens: 10, output_tokens: 20 },
-      stats: { input_tokens: 999, output_tokens: 999 },
-    });
-    const resp = p.parseResponse(makeResult(payload));
-    expect(resp.usage).toEqual({ input_tokens: 10, output_tokens: 20 });
-  });
-
-  it('returns undefined usage when stats field is absent', () => {
-    const payload = JSON.stringify({ response: 'gemini result', session_id: 'gem-sess-42' });
-    const resp = p.parseResponse(makeResult(payload));
-    expect(resp.usage).toBeUndefined();
-  });
-
-  it('returns undefined usage when stats is missing required token fields', () => {
-    const payload = JSON.stringify({ response: 'gemini result', stats: { total_tokens: 100 } });
-    const resp = p.parseResponse(makeResult(payload));
-    expect(resp.usage).toBeUndefined();
-  });
-
-  it('extracts usage when stats uses input/output keys (Gemini v0.42.0)', () => {
-    const payload = JSON.stringify({
-      response: 'gemini result',
-      stats: { input: 100, output: 50 },
-    });
-    const resp = p.parseResponse(makeResult(payload));
-    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
-  });
-
-  it('extracts usage when usage uses input/output keys (Gemini v0.42.0)', () => {
-    const payload = JSON.stringify({
-      response: 'gemini result',
-      usage: { input: 100, output: 50 },
-    });
-    const resp = p.parseResponse(makeResult(payload));
-    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
-  });
-
-  it('extracts usage from tokens field with input_tokens/output_tokens keys', () => {
-    const payload = JSON.stringify({
-      response: 'gemini result',
-      tokens: { input_tokens: 100, output_tokens: 50 },
-    });
-    const resp = p.parseResponse(makeResult(payload));
-    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
-  });
-
-  it('extracts usage from tokens field with input/output keys', () => {
-    const payload = JSON.stringify({
-      response: 'gemini result',
-      tokens: { input: 100, output: 50 },
-    });
-    const resp = p.parseResponse(makeResult(payload));
-    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
-  });
-
-  it('does not support maxTurns', () => {
-    expect(p.supportsMaxTurns()).toBe(false);
-  });
-
-  it('resumeFlag with resuming=true returns --resume', () => {
-    expect(p.resumeFlag('gem-sess-42', true)).toBe('--resume "gem-sess-42"');
-  });
-
-  it('resumeFlag with resuming=false returns --session-id', () => {
-    expect(p.resumeFlag('gem-sess-42', false)).toBe('--session-id "gem-sess-42"');
-  });
-
-  it('resumeFlag without sessionId returns empty string (no --resume latest)', () => {
-    expect(p.resumeFlag()).toBe('');
-  });
-
-  it('maps model tiers', () => {
-    expect(p.modelForTier('cheap')).toBe('gemini-3.5-flash-lite');
-    expect(p.modelForTier('standard')).toBe('gemini-3.5-flash');
-    expect(p.modelForTier('premium')).toBe('gemini-3.1-pro-preview');
-  });
-
-  it('modelTiers() returns cheap/standard/premium mapping', () => {
-    const tiers = p.modelTiers();
-    expect(tiers.cheap).toBe('gemini-3.5-flash-lite');
-    expect(tiers.standard).toBe('gemini-3.5-flash');
-    expect(tiers.premium).toBe('gemini-3.1-pro-preview');
-  });
-
-  it('classifies auth errors', () => {
-    expect(p.classifyError('unauthorized')).toBe('auth');
-    expect(p.classifyError('invalid api key')).toBe('auth');
-  });
-
-  it('classifies server errors', () => {
-    expect(p.classifyError('503 service unavailable')).toBe('server');
-  });
-
-  it('classifies overloaded errors', () => {
-    expect(p.classifyError('rate limit exceeded')).toBe('overloaded');
-  });
-
-  it('does not support OAuth copy, supports API key', () => {
-    expect(p.supportsOAuthCopy()).toBe(false);
-    expect(p.supportsApiKey()).toBe(true);
-  });
-
-  it('composePermissionConfig disables all MCP servers via mcpServers: {} for doer (#219)', () => {
-    const [settings] = p.composePermissionConfig('doer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers).toEqual({});
-  });
-
-  it('composePermissionConfig disables all MCP servers via mcpServers: {} for reviewer (#219)', () => {
-    const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers).toEqual({});
-  });
-
-  // Task T5: Gemini MCP exclusion tests
-  it('buildPromptCommand includes --allowed-mcp-server-names to prevent fleet MCP loading (T5)', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS });
-    expect(cmd).toContain('--allowed-mcp-server-names');
-  });
-
-  it('fleet TOML does not reference apra-fleet in the allow list (T5)', () => {
-    const [, toml] = p.composePermissionConfig('doer', ['Read(*)', 'Write(*)']) as [Record<string, unknown>, string];
-    expect(typeof toml).toBe('string');
-    expect(toml).not.toContain('apra-fleet');
-    expect(toml).toContain('[policy]');
-    expect(toml).toContain('Read(*)');
-  });
-
-  it('fleet TOML does not reference apra-fleet in reviewer allow list (T5)', () => {
-    const [, toml] = p.composePermissionConfig('reviewer', ['Read(*)']) as [Record<string, unknown>, string];
-    expect(toml).not.toContain('apra-fleet');
-    expect(toml).toContain('[policy]');
-  });
-});
-
 // --- CodexProvider ------------------------------------------------------------
 
 describe('CodexProvider', () => {
@@ -879,10 +623,6 @@ describe('getProvider factory', () => {
     expect(getProvider('claude').name).toBe('claude');
   });
 
-  it('returns GeminiProvider for "gemini"', () => {
-    expect(getProvider('gemini').name).toBe('gemini');
-  });
-
   it('returns CodexProvider for "codex"', () => {
     expect(getProvider('codex').name).toBe('codex');
   });
@@ -893,7 +633,7 @@ describe('getProvider factory', () => {
 
   it('returns singleton instances (same object reference)', () => {
     expect(getProvider('claude')).toBe(getProvider('claude'));
-    expect(getProvider('gemini')).toBe(getProvider('gemini'));
+    expect(getProvider('agy')).toBe(getProvider('agy'));
   });
 
   it('throws TypeError for unknown provider strings (no silent fallback)', () => {
@@ -902,15 +642,26 @@ describe('getProvider factory', () => {
     expect(() => getProvider('bogus' as any)).toThrow(/Unknown LLM provider "bogus"/);
   });
 
-  it('error message lists supported providers', () => {
+  // apra-fleet-ytfy.1.7: the gemini provider identifier must no longer resolve
+  // now that the registry entry and GeminiProvider module have been removed.
+  it('throws TypeError for "gemini" -- provider was removed', () => {
+    expect(() => getProvider('gemini' as any)).toThrow(TypeError);
+    expect(() => getProvider('gemini' as any)).toThrow(/Unknown LLM provider "gemini"/);
+  });
+
+  it('error message lists supported providers and excludes gemini', () => {
+    let caught: Error | undefined;
     try {
       getProvider('nonsense' as any);
     } catch (e: any) {
-      expect(e.message).toMatch(/claude/);
-      expect(e.message).toMatch(/gemini/);
-      expect(e.message).toMatch(/codex/);
-      expect(e.message).toMatch(/copilot/);
+      caught = e;
     }
+    expect(caught).toBeDefined();
+    expect(caught!.message).toMatch(/claude/);
+    expect(caught!.message).toMatch(/codex/);
+    expect(caught!.message).toMatch(/copilot/);
+    expect(caught!.message).toMatch(/agy/);
+    expect(caught!.message).not.toMatch(/gemini/);
   });
 });
 
@@ -969,23 +720,6 @@ describe('cross-OS session flag consistency', () => {
     expect(winFlag).toBe('--resume "test-session-id"');
   });
 
-  it('Gemini: buildPromptCommand and resumeFlag produce consistent flags for new session', () => {
-    const p = new GeminiProvider();
-    const sid = 'gem-session-id';
-    const cmd = p.buildPromptCommand({ folder: '/work', promptFile: '.fleet-task.md', sessionId: sid, resuming: false });
-    const winFlag = p.resumeFlag(sid, false);
-    expect(cmd).toContain('--session-id "gem-session-id"');
-    expect(winFlag).toBe('--session-id "gem-session-id"');
-  });
-
-  it('Gemini: buildPromptCommand and resumeFlag produce consistent flags for resumed session', () => {
-    const p = new GeminiProvider();
-    const sid = 'gem-session-id';
-    const cmd = p.buildPromptCommand({ folder: '/work', promptFile: '.fleet-task.md', sessionId: sid, resuming: true });
-    const winFlag = p.resumeFlag(sid, true);
-    expect(cmd).toContain('--resume "gem-session-id"');
-    expect(winFlag).toBe('--resume "gem-session-id"');
-  });
 });
 
 // --- Claude dispatch: resume with no stored ID -----------------------------
@@ -1153,9 +887,8 @@ describe('AgyProvider', () => {
 });
 
 describe('SessionIdStrategy & Log Path Resolution', () => {
-  it('claude and gemini use caller-minted sessionIdStrategy', () => {
+  it('claude uses caller-minted sessionIdStrategy', () => {
     expect(getProvider('claude').sessionIdStrategy()).toEqual({ type: 'caller-minted' });
-    expect(getProvider('gemini').sessionIdStrategy()).toEqual({ type: 'caller-minted' });
   });
 
   it('agy, opencode, codex, copilot, none use provider-minted sessionIdStrategy', () => {

@@ -44,7 +44,7 @@ export function wrapPowerShellEncoded(psScript: string): string {
   return `powershell -EncodedCommand ${encoded}`;
 }
 
-const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIGRAVITY_SOURCE_METADATA\',\'GEMINI_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
+const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIGRAVITY_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
 
 /**
  * Wrap PowerShell setup commands and a CLI invocation with PID capture.
@@ -143,8 +143,9 @@ export class WindowsCommands implements OsCommands {
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-    // Gemini activates a subagent via @<name> prepended to the prompt on EVERY dispatch.
-    // Claude and AGY activate a subagent via --agent <name> flag.
+    // Some providers activate a subagent via @<name> prepended to the prompt on
+    // EVERY dispatch (provider.agentNameFlag() returns the '@'-prefixed form).
+    // Claude and AGY instead activate a subagent via --agent <name> flag.
     const nameFlag = agentName ? provider.agentNameFlag(agentName) : '';
     if (nameFlag.startsWith('@')) {
       instruction = `${nameFlag}${instruction}`;
@@ -298,6 +299,17 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
     const credUrl = scopeUrl ? escapeWindowsArg(scopeUrl).replace(/'/g, "''") : `https://${escapedHost}`;
     return `Remove-Item "$env:USERPROFILE\\${credFileName}.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.${credUrl}.helper' 2>$null`;
+  }
+
+  ghAuthLogin(token: string, hostname = 'github.com'): string {
+    const escapedToken = escapeWindowsArg(token).replace(/'/g, "''");
+    const escapedHostname = escapeWindowsArg(hostname).replace(/'/g, "''");
+    // gh CLI has its own credential store, entirely separate from the git
+    // credential helper written above -- gh never reads that file.
+    // `gh auth login --with-token` is gh's own non-interactive enrollment
+    // path. Best-effort: if `gh` isn't installed, no-op rather than fail the
+    // whole VCS auth deployment over an optional CLI.
+    return `if (Get-Command gh -ErrorAction SilentlyContinue) { '${escapedToken}' | gh auth login --hostname '${escapedHostname}' --with-token } else { Write-Warning 'gh CLI not installed -- skipped gh auth login' }`;
   }
 
   // --- SSH key deployment ---

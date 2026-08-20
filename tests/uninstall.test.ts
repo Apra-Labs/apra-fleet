@@ -102,18 +102,18 @@ describe('uninstall', () => {
   });
 
   it('removes recorded providers by default', async () => {
-    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({ 
-      providers: { 
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: {
         claude: { skill: 'all' },
-        gemini: { skill: 'fleet' }
-      } 
+        agy: { skill: 'fleet' }
+      }
     }));
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    
+
     await runUninstall(['--yes']);
-    
+
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Claude...'));
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Gemini...'));
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Antigravity...'));
     expect(fs.rmSync).toHaveBeenCalled();
   });
 
@@ -131,8 +131,8 @@ describe('uninstall', () => {
   });
 
   it('removes only specific skills if requested', async () => {
-    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({ 
-      providers: { gemini: { skill: 'all' } } 
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: { agy: { skill: 'all' } }
     }));
     
     // Only PM skills
@@ -150,18 +150,18 @@ describe('uninstall', () => {
   });
 
   it('removes specific LLM only', async () => {
-    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({ 
-      providers: { 
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: {
         claude: { skill: 'all' },
-        gemini: { skill: 'fleet' }
-      } 
+        agy: { skill: 'fleet' }
+      }
     }));
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    
-    await runUninstall(['--llm', 'gemini', '--yes']);
-    
+
+    await runUninstall(['--llm', 'agy', '--yes']);
+
     expect(consoleSpy).not.toHaveBeenCalledWith(expect.stringContaining('Cleaning up Claude...'));
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Gemini...'));
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Antigravity...'));
   });
 
   it('cleans up settings keys', async () => {
@@ -223,16 +223,16 @@ describe('uninstall', () => {
     // Mock old format
     vi.spyOn(fs, 'readFileSync').mockImplementation((p: any) => {
       if (typeof p === 'string' && p.includes('install-config.json')) {
-        return JSON.stringify({ llm: 'gemini', skill: 'pm' });
+        return JSON.stringify({ llm: 'agy', skill: 'pm' });
       }
       return '{}';
     });
-    
+
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     await runUninstall(['--yes']);
-    
-    // Should clean up Gemini
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Gemini...'));
+
+    // Should clean up Antigravity (agy)
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Antigravity...'));
   });
 
   it('falls back to scanning if no config exists', async () => {
@@ -250,9 +250,9 @@ describe('uninstall', () => {
 
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('No recorded installations found'));
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Claude...'));
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Gemini...'));
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Codex...'));
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Copilot...'));
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Antigravity...'));
   });
 
   describe('--skill workflows', () => {
@@ -339,7 +339,7 @@ describe('uninstall', () => {
 
   it('does not remove auto-sprint-args skill for non-claude providers', async () => {
     vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
-      providers: { gemini: { skill: 'all' } }
+      providers: { agy: { skill: 'all' } }
     }));
 
     await runUninstall(['--skill', 'pm', '--yes']);

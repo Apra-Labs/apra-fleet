@@ -107,8 +107,8 @@ describe('validateArgs', () => {
     // budget (timeout_s == max_total_s at every site; integ ceiling 2x).
     // -------------------------------------------------------------------
 
-    test('dispatch_timeout_s defaults to 3600 and accepts an explicit integer >= 60', () => {
-        assert.strictEqual(validateArgs(VALID_ARGS).dispatchTimeoutS, 3600);
+    test('dispatch_timeout_s defaults to 9000 and accepts an explicit integer >= 60', () => {
+        assert.strictEqual(validateArgs(VALID_ARGS).dispatchTimeoutS, 9000);
         assert.strictEqual(validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 600 }).dispatchTimeoutS, 600);
         assert.strictEqual(validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 60 }).dispatchTimeoutS, 60);
     });

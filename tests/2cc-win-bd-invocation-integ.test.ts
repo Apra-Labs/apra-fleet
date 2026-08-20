@@ -184,7 +184,7 @@ describe('scripts/check-toy-doer-credentials.mjs, spawned as a real child proces
     // ALWAYS exited 0 regardless of provisioning state -- this assertion is
     // exactly what would have stayed green (falsely) under that bug.
     expect(status).not.toBe(0);
-    expect(stdout + stderr).toMatch(/apra-fleet-vak/);
+    expect(stdout + stderr).toMatch(/JSON-shaped blob/);
   });
 
   it('exits zero for a healthy member (a valid clean-env credentials file with a sufficient session shape)', () => {

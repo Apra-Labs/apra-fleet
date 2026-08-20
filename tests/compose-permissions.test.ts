@@ -3,7 +3,7 @@
  *
  * Covers:
  * - Proactive mode: each provider gets its native config format delivered to the correct path(s)
- * - Reactive grant mode: Claude merges existing allow list; Gemini passes grants to TOML
+ * - Reactive grant mode: Claude merges existing allow list; non-Claude providers pass grants to their native config
  * - Member with no llmProvider defaults to Claude behavior
  * - NEVER_AUTO_GRANT blocks dangerous permissions for all providers
  */
@@ -13,7 +13,7 @@ import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-h
 import { addAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
-import { GeminiProvider } from '../src/providers/gemini.js';
+import { AgyProvider } from '../src/providers/agy.js';
 import type { SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -137,61 +137,6 @@ describe('composePermissions -- Claude proactive', () => {
 
     const writes = mockExecCommand.mock.calls.map(c => c[0] as string).filter(cmd => cmd.includes('cat >'));
     expect(writes.some(cmd => cmd.includes('.claude/settings.local.json'))).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Gemini proactive compose
-// ---------------------------------------------------------------------------
-
-describe('composePermissions -- Gemini proactive', () => {
-  it('delivers settings.json + fleet.toml for doer', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
-    addAgent(member);
-    installFsMock();
-
-    const result = await composePermissions({ member_id: member.id, role: 'doer' });
-
-    expect(result).toContain('gemini-doer');
-    expect(result).toContain('gemini');
-    expect(result).toContain('.gemini/settings.json');
-    expect(result).toContain('.gemini/policies/fleet.toml');
-
-    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const writes = allCmds.filter(cmd => cmd.includes('cat >'));
-
-    // Two write calls: one for settings.json, one for fleet.toml
-    expect(writes.some(cmd => cmd.includes('.gemini/settings.json'))).toBe(true);
-    expect(writes.some(cmd => cmd.includes('.gemini/policies/fleet.toml'))).toBe(true);
-
-    // settings.json should have auto_edit mode for doer
-    const settingsWrite = writes.find(cmd => cmd.includes('.gemini/settings.json'))!;
-    expect(settingsWrite).toContain('auto_edit');
-    // settings.json must disable all MCP servers via mcpServers: {} (#219)
-    expect(settingsWrite).toContain('mcpServers');
-    expect(settingsWrite).toContain('{}');
-
-    // fleet.toml should have [policy] section
-    const tomlWrite = writes.find(cmd => cmd.includes('fleet.toml'))!;
-    expect(tomlWrite).toContain('[policy]');
-    expect(tomlWrite).toContain('auto_edit');
-  });
-
-  it('delivers default mode for reviewer', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-reviewer', llmProvider: 'gemini', os: 'linux' });
-    addAgent(member);
-    installFsMock();
-
-    await composePermissions({ member_id: member.id, role: 'reviewer' });
-
-    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const writes = allCmds.filter(cmd => cmd.includes('cat >'));
-
-    const settingsWrite = writes.find(cmd => cmd.includes('.gemini/settings.json'))!;
-    expect(settingsWrite).toContain('"default"');
-    // settings.json must disable all MCP servers via mcpServers: {} (#219)
-    expect(settingsWrite).toContain('mcpServers');
-    expect(settingsWrite).toContain('{}');
   });
 });
 
@@ -328,8 +273,10 @@ describe('composePermissions -- Claude reactive grant', () => {
     expect(result).toContain('Bash(docker-compose:*)');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    // Should have read the existing file
-    expect(allCmds.some(cmd => cmd.includes('cat .claude/settings.local.json'))).toBe(true);
+    // Should have read the existing file at its absolute (workFolder-resolved) path --
+    // a bare relative path would land in the wrong place on a remote member (apra-fleet
+    // incident: ssh2 client.exec() has no workFolder-scoped cwd, unlike LocalStrategy).
+    expect(allCmds.some(cmd => cmd.startsWith('cat ') && cmd.includes('/home/testuser/project/.claude/settings.local.json'))).toBe(true);
 
     // Write command should include both old and new permissions
     const writes = allCmds.filter(cmd => cmd.includes('cat >'));
@@ -350,52 +297,6 @@ describe('composePermissions -- Claude reactive grant', () => {
 
     expect(result).toContain('Cannot auto-grant');
     expect(result).toContain('Bash(sudo:*)');
-    expect(mockExecCommand).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Reactive grant: Gemini -- TOML policy updated with grants
-// ---------------------------------------------------------------------------
-
-describe('composePermissions -- Gemini reactive grant', () => {
-  it('delivers updated TOML policy with granted tools', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
-    addAgent(member);
-    installFsMock();
-
-    const result = await composePermissions({
-      member_id: member.id,
-      role: 'doer',
-      grant: ['Bash(docker:*)'],
-    });
-
-    expect(result).toContain('Granted');
-    expect(result).toContain('Bash(docker:*)');
-
-    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const writes = allCmds.filter(cmd => cmd.includes('cat >'));
-
-    // Gemini: two files written
-    expect(writes.some(cmd => cmd.includes('.gemini/settings.json'))).toBe(true);
-    expect(writes.some(cmd => cmd.includes('fleet.toml'))).toBe(true);
-
-    // TOML should include the granted tool
-    const tomlWrite = writes.find(cmd => cmd.includes('fleet.toml'))!;
-    expect(tomlWrite).toContain('Bash(docker:*)');
-  });
-
-  it('blocks dangerous permissions for Gemini too', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
-    addAgent(member);
-
-    const result = await composePermissions({
-      member_id: member.id,
-      role: 'doer',
-      grant: ['Bash(sudo:*)'],
-    });
-
-    expect(result).toContain('Cannot auto-grant');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 });
@@ -479,7 +380,9 @@ describe('composePermissions -- preserves register_member mcpServers entry (apra
     });
     // Seed the file exactly as register_member left it; the merge-read returns
     // it, the merged write persists it, and the read-back verifies it landed.
-    installFsMock({ '.claude/settings.local.json': registeredByMember });
+    // Keyed by the absolute (workFolder-resolved), quoted path -- the same key
+    // shape the fs mock's read/write regexes extract from the real commands.
+    installFsMock({ '"/home/testuser/project/.claude/settings.local.json"': registeredByMember });
 
     await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -588,7 +491,7 @@ describe('composePermissions -- fails loudly when a config write does not land (
 
 describe('deliverConfigFile -- Windows BOM-free write (T4)', () => {
   it('uses WriteAllText with UTF8Encoding($false) on Windows, not Set-Content', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-win', llmProvider: 'gemini', os: 'windows' });
+    const member = makeTestAgent({ friendlyName: 'claude-win', llmProvider: 'claude', os: 'windows' });
     addAgent(member);
     installFsMock();
 
@@ -596,7 +499,7 @@ describe('deliverConfigFile -- Windows BOM-free write (T4)', () => {
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const settingsWrite = allCmds.find(cmd =>
-      (cmd.includes('.gemini\\settings.json') || cmd.includes('.gemini/settings.json')) && cmd.includes('WriteAllText')
+      (cmd.includes('.claude\\settings.local.json') || cmd.includes('.claude/settings.local.json')) && cmd.includes('WriteAllText')
     );
     expect(settingsWrite).toBeDefined();
     expect(settingsWrite).toContain('WriteAllText');
@@ -606,21 +509,21 @@ describe('deliverConfigFile -- Windows BOM-free write (T4)', () => {
   });
 
   it('uses heredoc form (cat >) on Linux', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-linux', llmProvider: 'gemini', os: 'linux' });
+    const member = makeTestAgent({ friendlyName: 'claude-linux', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
     installFsMock();
 
     await composePermissions({ member_id: member.id, role: 'doer' });
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const settingsWrite = allCmds.find(cmd => cmd.includes('cat >') && cmd.includes('.gemini/settings.json'));
+    const settingsWrite = allCmds.find(cmd => cmd.includes('cat >') && cmd.includes('.claude/settings.local.json'));
     expect(settingsWrite).toBeDefined();
     expect(settingsWrite).toContain('FLEET_PERMS_EOF');
     expect(settingsWrite).not.toContain('WriteAllText');
   });
 
   it('doubles single quotes in content for PowerShell string safety on Windows', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-win-quotes', llmProvider: 'gemini', os: 'windows' });
+    const member = makeTestAgent({ friendlyName: 'claude-win-quotes', llmProvider: 'claude', os: 'windows' });
     addAgent(member);
     installFsMock();
 
@@ -632,10 +535,12 @@ describe('deliverConfigFile -- Windows BOM-free write (T4)', () => {
     });
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const tomlWrite = allCmds.find(cmd => cmd.includes('fleet.toml'));
-    expect(tomlWrite).toBeDefined();
+    const settingsWrite = allCmds.find(cmd =>
+      (cmd.includes('.claude\\settings.local.json') || cmd.includes('.claude/settings.local.json')) && cmd.includes('WriteAllText')
+    );
+    expect(settingsWrite).toBeDefined();
     // Single quote must be doubled for PowerShell single-quoted strings
-    expect(tomlWrite).toContain("node ''exec''");
+    expect(settingsWrite).toContain("node ''exec''");
   });
 });
 
@@ -1000,12 +905,12 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     expect(written.projects['/home/testuser/project'].hasTrustDialogAccepted).toBe(true);
   });
 
-  it('is a no-op for non-Claude providers (e.g. Gemini) -- never touches the trust delivery channel', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
+  it('is a no-op for non-Claude providers (e.g. AGY) -- never touches the trust delivery channel', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-doer', llmProvider: 'agy', os: 'linux' });
     addAgent(member);
     installFsMock();
 
-    const spy = vi.spyOn(GeminiProvider.prototype, 'ensureWorkspaceTrusted');
+    const spy = vi.spyOn(AgyProvider.prototype, 'ensureWorkspaceTrusted');
 
     await composePermissions({ member_id: member.id, role: 'doer' });
 

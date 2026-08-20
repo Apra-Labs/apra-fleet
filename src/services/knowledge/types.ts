@@ -16,7 +16,7 @@ export type Confidence = 'CONFIRMED' | 'INFERRED' | 'UNVERIFIED';
 // list per the revised D7: harvest-sourced entries need a distinct author
 // from real KB-Agent captures (feedback.md LOW finding 6). This deviation
 // from D5's literal enum is recorded in progress.json notes for T2.3.
-export type Author = 'doer' | 'reviewer' | 'planner' | 'plan-reviewer' | 'kb-agent' | 'harvest' | 'pm' | 'user';
+export type Author = 'doer' | 'reviewer' | 'planner' | 'plan-reviewer' | 'kb-agent' | 'kb-reconciler' | 'harvest' | 'pm' | 'user';
 // T2.1 (F4, D3): 'import' is ADDED for the kb_import trusted-channel write path
 // -- entries absorbed from a git-reviewed, human-merged .fleet/kb-canonical.json
 // bible are stamped source='import' so provenance shows the channel. It is

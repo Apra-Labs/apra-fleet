@@ -16,7 +16,7 @@
  * @property {string} [session_id] - Optional explicit session ID to resume (shorthand alias for resume: "<sessionId>")
  * @property {Record<string, string>} [substitutions] - Optional map of token name to replacement value
  * @property {number} [timeout_s] - Inactivity timeout in seconds (default: 300)
- * @property {number} [expected_context_tokens] - Optional estimate (apra-fleet-eft.81.1) of how many
+ * @property {number} [expected_context_tokens] - Optional estimate of how many
  *   tokens this dispatch will add to the target session's context. When set (or context_size is
  *   set), the server compares it against the session's remaining context-window headroom BEFORE
  *   invoking the LLM: too little headroom rejects the call with {reason:
@@ -26,7 +26,7 @@
  *   pre-existing behavior is unchanged. Matches src/tools/execute-prompt.ts's
  *   expected_context_tokens field exactly (number, optional).
  * @property {'S'|'M'|'L'} [context_size] - Optional size-bucket shorthand for
- *   expected_context_tokens (apra-fleet-eft.81.1): S/M/L map to configured token estimates (fleet
+ *   expected_context_tokens: S/M/L map to configured token estimates (fleet
  *   defaults, overridable via config.json's contextAdmission.sizeBucketTokens). Ignored when
  *   expected_context_tokens is also set. Matches src/tools/execute-prompt.ts's context_size field
  *   exactly (enum 'S'|'M'|'L', optional).
@@ -174,6 +174,12 @@
  * @property {string} [project_folder] - Local project folder containing the
  *   permissions.json ledger. Omit to skip ledger merge.
  * @property {string[]} [grant] - Reactive mode: additional permissions to grant.
+ *   Each entry is checked against the NEVER_AUTO_GRANT denylist, which is
+ *   wildcard-matched (not exact-matched) against a normalized form of the
+ *   request: sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap,
+ *   `chmod 777`, any catch-all such as `Bash(*)`, and any payload containing a
+ *   shell-chaining metacharacter (| ; && backtick $() are rejected outright,
+ *   for every caller.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
  */
 

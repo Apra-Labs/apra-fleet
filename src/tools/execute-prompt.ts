@@ -96,18 +96,16 @@ export const executePromptSchema = z.object({
   agent: z.string().optional().describe(
     'Optional agent name to activate. ' +
     'For Claude: invokes claude --agent <name>. ' +
-    'For Gemini: prepends @<name> to the prompt on every dispatch. ' +
-    'For AGY: prepends @<name> to the prompt on every dispatch (same as Gemini). ' +
+    'For AGY: prepends @<name> to the prompt on every dispatch. ' +
     'Substitution runs before the @<name> prepend. ' +
     'Agent file must exist at the provider-specific path on the member: ' +
     'Claude: <workFolder>/.claude/agents/<name>.md or ~/.claude/agents/<name>.md; ' +
-    'Gemini: <workFolder>/.gemini/agents/<name>.md or ~/.gemini/agents/<name>.md; ' +
     'AGY: <workFolder>/.gemini/antigravity-cli/agents/<name>.md or ~/.gemini/antigravity-cli/agents/<name>.md; ' +
     'OpenCode: <workFolder>/.opencode/agents/<name>.md or ~/.config/opencode/agents/<name>.md -- ' +
     'the call is rejected with a clear error if neither is present.'
   ),
   sprint_id: z.string().optional().describe(
-    'Opaque identity of the sprint issuing this dispatch (apra-fleet-eft.29.1). ' +
+    'Opaque identity of the sprint issuing this dispatch. ' +
     'When provided, the server-side member-reservation check (see reservedBy below) ' +
     'compares this value directly against the reservation instead of falling back to ' +
     'this server process\'s APRA_FLEET_SPRINT_ID env var -- the same per-call value ' +
@@ -116,7 +114,7 @@ export const executePromptSchema = z.object({
     'omitting it preserves the pre-existing env-var-based behavior exactly.'
   ),
   expected_context_tokens: z.number().positive().optional().describe(
-    'Optional estimate (apra-fleet-eft.81.1) of how many tokens this dispatch will add ' +
+    'Optional estimate of how many tokens this dispatch will add ' +
     'to the target session\'s context. When set (or context_size is set), the server ' +
     'compares it against the session\'s remaining context-window headroom BEFORE ' +
     'invoking the LLM: too little headroom rejects the call with ' +
@@ -126,7 +124,7 @@ export const executePromptSchema = z.object({
     'fields disables the check entirely -- pre-existing behavior is unchanged.'
   ),
   context_size: z.enum(['S', 'M', 'L']).optional().describe(
-    'Optional size-bucket shorthand for expected_context_tokens (apra-fleet-eft.81.1): ' +
+    'Optional size-bucket shorthand for expected_context_tokens: ' +
     'S/M/L map to configured token estimates (fleet defaults, overridable via ' +
     'config.json\'s contextAdmission.sizeBucketTokens). Ignored when expected_context_tokens ' +
     'is also set. The auto-sprint engine supplies this from the dispatched task\'s size ' +
@@ -674,8 +672,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // but the routing decision itself must be provider-agnostic: whatever the
   // provider, a session is only an interactive-routing candidate if it
   // actually declared that capability at MCP initialize time (recorded as
-  // SessionState.channelCapable below). Gemini/Codex are confirmed [FAIL]
-  // today (no equivalent push mechanism) and so never end up channelCapable in
+  // SessionState.channelCapable below). Codex is confirmed [FAIL]
+  // today (no equivalent push mechanism) and so never ends up channelCapable in
   // practice, but that is a fact about what each provider adapter currently
   // advertises, not a name-based pre-filter here -- any provider that
   // implements the same MCP channel capability is picked up automatically. A
@@ -908,7 +906,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // the MEMBER's home directory, joined with the MEMBER's OS convention. Before
   // this, every remote member got a HUB-home path (os.homedir()) joined with the
   // HUB's path convention -- a path that can never exist on the member, which
-  // silently disabled stall detection for Claude/Gemini and manufactured
+  // silently disabled stall detection for Claude and manufactured
   // false-positive stall kills for AGY/OpenCode.
   //
   // This resolution is deliberately SYNCHRONOUS (cached probe result, else the

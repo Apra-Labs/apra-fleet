@@ -2,10 +2,10 @@
  * Integration tests for Phase 3 tool changes — provider-aware tools.
  *
  * Covers:
- * - execute-prompt with each provider (Claude, Gemini, Codex, Copilot)
+ * - execute-prompt with each provider (Claude, Codex, Copilot, Agy)
  * - provision-auth API key flow for each provider
  * - update-member-cli with each provider
- * - mixed fleet: Claude + Gemini member in same test
+ * - mixed fleet: Claude + Codex member in same test
  * - fleetProcessCheck uses correct processName per provider
  */
 
@@ -79,23 +79,6 @@ describe('executePrompt — provider routing', () => {
     expect(cmd).toContain('--output-format json');
   });
 
-  it('routes Gemini member through gemini CLI and parses response', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-member', llmProvider: 'gemini' });
-    addAgent(member);
-    mockExecCommand.mockResolvedValue({
-      stdout: JSON.stringify({ response: 'gemini response' }),
-      stderr: '',
-      code: 0,
-    });
-
-    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    expect(resultText(result)).toContain('gemini response');
-
-    // calls[0] = writePromptFile, calls[1] = main prompt command
-    const cmd = mockExecCommand.mock.calls[1][0] as string;
-    expect(cmd).toContain('gemini');
-  });
-
   it('routes Agy member through agy CLI and parses response', async () => {
     const member = makeTestAgent({ friendlyName: 'agy-member', llmProvider: 'agy' });
     addAgent(member);
@@ -149,11 +132,11 @@ describe('executePrompt — provider routing', () => {
     expect(cmd).toContain('copilot');
   });
 
-  it('mixed fleet: Claude and Gemini members use different CLIs', async () => {
+  it('mixed fleet: Claude and Codex members use different CLIs', async () => {
     const claudeAgent = makeTestAgent({ id: 'claude-1', friendlyName: 'claude-1', llmProvider: 'claude' });
-    const geminiAgent = makeTestAgent({ id: 'gemini-1', friendlyName: 'gemini-1', llmProvider: 'gemini' });
+    const codexAgent = makeTestAgent({ id: 'codex-1', friendlyName: 'codex-1', llmProvider: 'codex' });
     addAgent(claudeAgent);
-    addAgent(geminiAgent);
+    addAgent(codexAgent);
 
     mockExecCommand.mockResolvedValue({
       stdout: JSON.stringify({ result: 'ok' }),
@@ -165,15 +148,15 @@ describe('executePrompt — provider routing', () => {
     // calls[0] = writePromptFile, calls[1] = main prompt command
     const claudeCmd = mockExecCommand.mock.calls[1][0] as string;
     expect(claudeCmd).toContain('claude');
-    expect(claudeCmd).not.toContain('gemini');
+    expect(claudeCmd).not.toContain('codex');
 
     mockExecCommand.mockClear();
 
-    await executePrompt({ member_id: geminiAgent.id, prompt: 'hello', resume: false, timeout_s: 5 });
+    await executePrompt({ member_id: codexAgent.id, prompt: 'hello', resume: false, timeout_s: 5 });
     // calls[0] = writePromptFile, calls[1] = main prompt command
-    const geminiCmd = mockExecCommand.mock.calls[1][0] as string;
-    expect(geminiCmd).toContain('gemini');
-    expect(geminiCmd).not.toContain('claude -p');
+    const codexCmd = mockExecCommand.mock.calls[1][0] as string;
+    expect(codexCmd).toContain('codex');
+    expect(codexCmd).not.toContain('claude -p');
   });
 });
 
@@ -191,7 +174,7 @@ describe('provisionAuth — API key per provider', () => {
     restoreRegistry();
   });
 
-  const providerNames: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot', 'agy'];
+  const providerNames: LlmProvider[] = ['claude', 'codex', 'copilot', 'agy'];
 
   for (const llmProvider of providerNames) {
     it(`provisions ${llmProvider} API key using correct env var`, async () => {
@@ -225,16 +208,16 @@ describe('provisionAuth — API key per provider', () => {
     expect(cmds.some(c => c.includes('ANTHROPIC_API_KEY'))).toBe(false);
   });
   it('uses OOB API key entry for non-Claude providers without api_key', async () => {
-    const geminiProvider = providers.getProvider('gemini');
-    const spy = vi.spyOn(geminiProvider, 'oauthCredentialFiles').mockReturnValue(null);
+    const copilotProvider = providers.getProvider('copilot');
+    const spy = vi.spyOn(copilotProvider, 'oauthCredentialFiles').mockReturnValue(null);
 
-    const member = makeTestAgent({ friendlyName: 'gemini-oauth', llmProvider: 'gemini' });
+    const member = makeTestAgent({ friendlyName: 'copilot-oauth', llmProvider: 'copilot' });
     addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockCollectOobApiKey.mockResolvedValue({ fallback: '🔐 Could not open terminal. Run manually.' });
 
     const result = await provisionAuth({ member_id: member.id });
-    expect(mockCollectOobApiKey).toHaveBeenCalledWith('gemini-oauth', 'provision_llm_auth', expect.objectContaining({ prompt: expect.stringContaining('gemini') }));
+    expect(mockCollectOobApiKey).toHaveBeenCalledWith('copilot-oauth', 'provision_llm_auth', expect.objectContaining({ prompt: expect.stringContaining('copilot') }));
     expect(result).toContain('Could not open terminal');
 
     spy.mockRestore();
@@ -255,19 +238,19 @@ describe('updateAgentCli — provider install/update', () => {
     restoreRegistry();
   });
 
-  it('uses gemini version command when member is gemini provider', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-member', llmProvider: 'gemini' });
+  it('uses codex version command when member is codex provider', async () => {
+    const member = makeTestAgent({ friendlyName: 'codex-member', llmProvider: 'codex' });
     addAgent(member);
     mockExecCommand
-      .mockResolvedValueOnce({ stdout: 'gemini 1.0.0', stderr: '', code: 0 })  // version before
+      .mockResolvedValueOnce({ stdout: 'codex 1.0.0', stderr: '', code: 0 })  // version before
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })               // update
-      .mockResolvedValueOnce({ stdout: 'gemini 1.1.0', stderr: '', code: 0 }); // version after
+      .mockResolvedValueOnce({ stdout: 'codex 1.1.0', stderr: '', code: 0 }); // version after
 
     const result = await updateAgentCli({ member_id: member.id });
-    expect(result).toContain('gemini-member');
+    expect(result).toContain('codex-member');
 
     const cmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    expect(cmds.some(c => c.includes('gemini'))).toBe(true);
+    expect(cmds.some(c => c.includes('codex'))).toBe(true);
   });
 
   it('defaults to claude when llmProvider is undefined', async () => {
@@ -301,7 +284,6 @@ describe('fleetProcessCheck — processName per provider', () => {
 
   const cases: { provider: LlmProvider; processName: string }[] = [
     { provider: 'claude', processName: 'claude' },
-    { provider: 'gemini', processName: 'gemini' },
     { provider: 'codex', processName: 'codex' },
     { provider: 'copilot', processName: 'copilot' },
     { provider: 'agy', processName: 'agy' },

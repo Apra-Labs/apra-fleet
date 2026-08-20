@@ -18,7 +18,7 @@ export type TargetOS = 'linux' | 'macos' | 'windows';
  * Providers previously built member-side log paths with the default `path`
  * module, so a Windows hub produced backslash-joined paths for a Linux member
  * (and vice versa) -- a path that can never exist on the member, which silently
- * disables stall detection (Claude/Gemini) or manufactures a false-positive
+ * disables stall detection (Claude) or manufactures a false-positive
  * stall kill (AGY/OpenCode).
  *
  * `targetOs === undefined` deliberately keeps the legacy host-convention
@@ -59,7 +59,7 @@ export function encodeClaudeProjectDir(workFolder: string): string {
 
 /**
  * Build a `--resume <id>` flag with session ID sanitization and quoting.
- * Shared by providers that pass session IDs on the command line (Claude, Gemini).
+ * Shared by providers that pass session IDs on the command line (Claude).
  * @param sessionId - The raw session ID (will be sanitized)
  * @param fallback  - Value to return when sessionId is absent (default: '')
  */
@@ -230,7 +230,7 @@ export interface ProviderAdapter {
 
   // Agent name CLI flag
   /** Returns the CLI flag/prefix for activating a named agent.
-   *  Claude/AGY: '--agent "name"'. Gemini: '@name '. Others: ''. */
+   *  Claude/AGY: '--agent "name"'. Others: ''. */
   agentNameFlag(agentName: string): string;
 
   // Error classification
@@ -263,7 +263,7 @@ export interface ProviderAdapter {
   /** JSON output flag for the CLI (e.g. --output-format json, --json, --format json) */
   jsonOutputFlag(): string;
   /** Args for headless invocation with a safe literal prompt string.
-   *  Returns e.g. `-p "LITERAL"` for Claude/Gemini/Copilot or `exec "LITERAL"` for Codex. */
+   *  Returns e.g. `-p "LITERAL"` for Claude/AGY/Copilot or `exec "LITERAL"` for Codex. */
   headlessInvocation(promptLiteral: string): string;
 
   /** Register (or update) this member's apra-fleet MCP endpoint using the provider's own

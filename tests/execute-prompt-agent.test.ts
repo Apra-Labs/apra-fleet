@@ -72,51 +72,6 @@ describe('execute_prompt -- agent parameter', () => {
     expect(cmd).toContain('--agent "doer"');
   });
 
-  // --- Gemini: prompt has @<name> prepended ---
-
-  it('Gemini: CLI invocation prepends @<name> to the prompt', async () => {
-    const agentDir = path.join(tmpDir, '.gemini', 'agents');
-    fs.mkdirSync(agentDir, { recursive: true });
-    fs.writeFileSync(path.join(agentDir, 'doer.md'), '# doer agent');
-
-    const member = makeTestLocalAgent({
-      friendlyName: 'gemini-agent-test',
-      workFolder: tmpDir,
-      llmProvider: 'gemini',
-      os: 'linux',
-    });
-    addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
-
-    await executePrompt({ member_id: member.id, prompt: 'do the task', resume: false, timeout_s: 5, agent: 'doer' });
-
-    const cmd = mockExecCommand.mock.calls[0][0];
-    expect(cmd).toContain('@doer ');
-  });
-
-  // --- Gemini: @name prepend on resume=true ---
-
-  it('Gemini: @name prepend happens on resume=true dispatch', async () => {
-    const agentDir = path.join(tmpDir, '.gemini', 'agents');
-    fs.mkdirSync(agentDir, { recursive: true });
-    fs.writeFileSync(path.join(agentDir, 'doer.md'), '# doer agent');
-
-    const member = makeTestLocalAgent({
-      friendlyName: 'gemini-resume-agent-test',
-      workFolder: tmpDir,
-      llmProvider: 'gemini',
-      os: 'linux',
-      sessionId: 'existing-session-abc123',
-    });
-    addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
-
-    await executePrompt({ member_id: member.id, prompt: 'continue the task', resume: true, timeout_s: 5, agent: 'doer' });
-
-    const cmd = mockExecCommand.mock.calls[0][0];
-    expect(cmd).toContain('@doer ');
-  });
-
   // --- Unknown agent: error before CLI invoked ---
 
   it('unknown agent name: returns clear error, no CLI invoked', async () => {
@@ -151,25 +106,7 @@ describe('execute_prompt -- agent parameter', () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
-  it('Gemini: unknown agent name returns clear error, no CLI invoked', async () => {
-    // No agent file in tmpDir -- validation must fail for Gemini provider
-    const member = makeTestLocalAgent({
-      friendlyName: 'gemini-unknown-agent-test',
-      workFolder: tmpDir,
-      llmProvider: 'gemini',
-      os: 'linux',
-    });
-    addAgent(member);
-
-    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'nonexistent' });
-
-    expect(result).toContain('not found');
-    expect(result).toContain('nonexistent');
-    expect(result).toContain('.gemini/agents/nonexistent.md');
-    expect(mockExecCommand).not.toHaveBeenCalled();
-  });
-
-  // --- AGY: @name prepend (same as Gemini) ---
+  // --- AGY: --agent flag ---
 
   it('AGY: CLI invocation passes --agent flag', async () => {
     const agentDir = path.join(tmpDir, '.gemini', 'antigravity-cli', 'agents');
@@ -232,21 +169,21 @@ describe('execute_prompt -- agent parameter', () => {
 
   // --- Substitution-then-prepend ordering ---
 
-  it('Gemini: substitution runs before @name prepend -- both features work together', async () => {
-    const agentDir = path.join(tmpDir, '.gemini', 'agents');
+  it('AGY: substitution runs before --agent flag is appended -- both features work together', async () => {
+    const agentDir = path.join(tmpDir, '.gemini', 'antigravity-cli', 'agents');
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(path.join(agentDir, 'doer.md'), '# doer agent');
 
     const member = makeTestLocalAgent({
-      friendlyName: 'gemini-sub-order',
+      friendlyName: 'agy-sub-order',
       workFolder: tmpDir,
-      llmProvider: 'gemini',
+      llmProvider: 'agy',
       os: 'linux',
     });
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
 
-    // {{branch}} must be substituted first; then @doer is prepended to the CLI instruction.
+    // {{branch}} must be substituted first; then --agent "doer" is appended to the CLI command.
     const result = await executePrompt({
       member_id: member.id,
       prompt: 'Continue Phase 3. Branch: {{branch}}.',
@@ -256,13 +193,13 @@ describe('execute_prompt -- agent parameter', () => {
       substitutions: { branch: 'feat/x' },
     });
 
-    // No substitution error -- substitution ran before @name wrapping
+    // No substitution error -- substitution ran before --agent wrapping
     expect(result).not.toContain('substitution failed');
     expect(result).not.toContain('unresolved');
 
-    // CLI command has @doer prepended to the instruction string
+    // CLI command has --agent "doer" appended
     const cmd = mockExecCommand.mock.calls[0][0];
-    expect(cmd).toContain('@doer ');
+    expect(cmd).toContain('--agent "doer"');
 
     // Prompt file written with substitution applied (local agent writes directly)
     const promptPath = path.join(tmpDir, '.fleet-task.md');

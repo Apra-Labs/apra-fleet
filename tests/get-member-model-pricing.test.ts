@@ -50,14 +50,6 @@ describe('get_member_model_pricing', () => {
     expect(result.pricing.premium.model).toBe('claude-opus-4-5');
   });
 
-  it('gemini member with no override returns provider default pricing', async () => {
-    addAgent(makeTestAgent({ id: 'm-gemini', friendlyName: 'gemini-member', llmProvider: 'gemini' }));
-    const result = JSON.parse(await getMemberModelPricing({ member_id: 'm-gemini' }));
-    expect(result.pricing.cheap.model).toBe('gemini-3.5-flash-lite');
-    expect(result.pricing.premium.model).toBe('gemini-3.1-pro-preview');
-    expect(result.pricing.premium.promptPrice).toBe(3.50);
-  });
-
   it('opencode member with no override returns free-tier ($0) pricing, not null', async () => {
     addAgent(makeTestAgent({ id: 'm-opencode', friendlyName: 'opencode-member', llmProvider: 'opencode' }));
     const result = JSON.parse(await getMemberModelPricing({ member_id: 'm-opencode' }));

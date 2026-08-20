@@ -162,7 +162,7 @@ test('mock sprint: interactive Planner dispatch against a stalled/dead member se
         // Bounded, not silent-until-killed: see the file-level comment for the
         // exact derivation of this ceiling (5 watchdog-bounded attempts +
         // fixed retry backoff). Nowhere near "hangs forever" (apra-fleet-eft.28
-        // pre-fix) or the up-to-3600s default single-dispatch timeout_s.
+        // pre-fix) or the up-to-9000s default single-dispatch timeout_s.
         check(
             elapsedMs < REAL_TIME_CEILING_MS,
             `Expected the sprint to abort within the derived real-time ceiling (~560s), took ${elapsedMs}ms`

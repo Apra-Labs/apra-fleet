@@ -5,7 +5,7 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, MemberReservationResumeError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
 // runner.js call site uses the purpose-based entry points on DoltSync
 // (apra-fleet-417.2.2); the named primitives are imported here only to be
@@ -2046,16 +2046,30 @@ export function createMemberReservationClient(opts = {}) {
         return '';
     }
 
+    // Returns { ok, text } rather than throwing so BOTH the best-effort callers
+    // (reserveAll/releaseAll, which ignore the outcome) and the owner-checked
+    // resume caller (reReserveForResume, which MUST know per-member whether the
+    // reserve was granted or rejected) can share one call path. `ok` is false
+    // on a tool rejection ("already reserved by X") OR a transport throw; the
+    // caller decides what a failure means for its own contract.
     async function callFor(action, member) {
         try {
             const result = await callTool('member_reservation', { member_name: member, action, sprint_id: sprintId });
             const text = resultText(result);
             if ((result && result.isError) || text.startsWith('[-]')) {
                 log(`[member-reservation] ${action} rejected for member '${member}': ${text || '(no detail)'}`);
+                return { ok: false, text };
             }
+            return { ok: true, text };
         } catch (err) {
             log(`[member-reservation] ${action} failed for member '${member}' (non-fatal; execute_prompt's dispatch-time reservedBy check still applies): ${err.message}`);
+            return { ok: false, text: err.message };
         }
+    }
+
+    async function releaseAll() {
+        if (!active) return;
+        for (const member of members) await callFor('release', member);
     }
 
     return {
@@ -2063,9 +2077,66 @@ export function createMemberReservationClient(opts = {}) {
             if (!active) return;
             for (const member of members) await callFor('reserve', member);
         },
-        async releaseAll() {
-            if (!active) return;
-            for (const member of members) await callFor('release', member);
+        releaseAll,
+
+        // (apra-fleet-p2to.4.2) Pause hand-back: release EVERY member so a
+        // different sprint may claim it while this one is parked at a
+        // cooperative pause. Best-effort per member, exactly like releaseAll()
+        // -- a pause must never fail on a release hiccup, and execute_prompt's
+        // dispatch-time reservedBy check still fails loudly on any member this
+        // sprint later dispatches to without holding.
+        //
+        // (apra-fleet-p2to.4.4.1) releaseForPause() is intentionally the SAME
+        // operation as releaseAll() -- both release every member,
+        // best-effort, with no distinct behavior of their own -- so this
+        // calls straight through to releaseAll() rather than keeping a
+        // byte-identical second copy of the loop to drift out of sync. The
+        // two names stay separate call sites (not aliased) because they mean
+        // different things to a caller even though today they do the same
+        // work: this is intended to change independently if a pause hand-back
+        // ever needs behavior releaseAll() should not have (e.g. skipping a
+        // member expected back imminently).
+        releaseForPause: releaseAll,
+
+        // (apra-fleet-p2to.4.2) Resume re-acquire, OWNER-CHECKED: re-reserve
+        // every member released at pause. A member is "unavailable" when its
+        // reserve is rejected -- another sprint claimed it while we were paused,
+        // so it is no longer ours. We refuse to silently continue on top of a
+        // member some other sprint now owns: collect every unavailable member
+        // and, if any, fail the resume with a single clean error that NAMES
+        // them (MemberReservationResumeError) so the operator knows exactly what
+        // to free before retrying the resume.
+        //
+        // Every successfully re-acquired member then runs `resyncMember` (git
+        // fetch + decideEnsureBranchAction probe + bd dolt pull) UNCONDITIONALLY
+        // before any work continues -- while paused, origin and the beads DB can
+        // have moved (another sprint, a human push), so the re-sync is never
+        // gated on a "looks unchanged" heuristic.
+        //
+        // @param {{ resyncMember?: (member: string) => Promise<void> }} [opts]
+        // @returns {Promise<{ reacquired: string[] }>}
+        async reReserveForResume({ resyncMember } = {}) {
+            if (!active) return { reacquired: [] };
+            const reacquired = [];
+            const unavailable = [];
+            for (const member of members) {
+                const res = await callFor('reserve', member);
+                if (res.ok) reacquired.push(member);
+                else unavailable.push(member);
+            }
+            if (unavailable.length > 0) {
+                // Hand back the ones we DID re-grab so a failed resume does not
+                // leave this sprint holding a partial, unusable reservation set
+                // that blocks the very members another operator may need to free
+                // up the unavailable ones. Best-effort -- the resume is failing
+                // regardless.
+                for (const member of reacquired) await callFor('release', member);
+                throw new MemberReservationResumeError(unavailable);
+            }
+            if (typeof resyncMember === 'function') {
+                for (const member of reacquired) await resyncMember(member);
+            }
+            return { reacquired };
         },
     };
 }
@@ -2639,6 +2710,126 @@ export function createMemberVcsProviderResolver(opts = {}) {
 }
 
 /**
+ * Best-effort provisions a member for unattended execution (`unattended:
+ * 'auto'`) before dispatching it as deployer, integ-test-runner, or
+ * regression-test-runner -- roles that run real deploy commands and test
+ * suites via a runbook and must never stall on an interactive permission
+ * prompt. Provisioning is a one-way member-registration change and is
+ * deliberately NOT reverted after the dispatch: `unattended` lives on the
+ * member (update_member), not on the dispatch, so there is nothing to revert
+ * to without also clobbering whatever the user set intentionally. In a
+ * single-member sprint the same member also plays doer/reviewer/etc, so it
+ * ends up unattended='auto' too -- accepted, not a bug.
+ *
+ * Cached per member for the lifetime of the returned function, so a sprint
+ * with many deploy/integ/regression dispatches across cycles calls
+ * update_member at most once per member. A failure (fleet unreachable,
+ * member not found) is logged and swallowed -- exactly like
+ * createMemberVcsProviderResolver above -- so a provisioning hiccup degrades
+ * to whatever permission mode the member already had, rather than aborting
+ * the phase.
+ *
+ * `callTool` is injected (the caller's MCP client), so this stays
+ * transport-agnostic and unit-testable without a live fleet server.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, log?: Function }} opts
+ * @returns {(member: string) => Promise<void>}
+ */
+export function createUnattendedAutoProvisioner(opts = {}) {
+    const { callTool, log = () => {} } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+    /** @type {Set<string>} members already confirmed unattended='auto' this run. */
+    const provisioned = new Set();
+
+    return async function ensureUnattendedAuto(member) {
+        if (provisioned.has(member)) return;
+        try {
+            await fleetApi.updateMember({ member_name: member, unattended: 'auto' });
+            provisioned.add(member);
+            log(`[unattended] member '${member}' set to unattended='auto' for this dispatch.`);
+        } catch (err) {
+            log(`[unattended] could not set unattended='auto' on member '${member}' (continuing with its existing permission mode): ${err.message}`);
+        }
+    };
+}
+
+/**
+ * Best-effort, self-heals the "Missing permission" class of deploy/integ/
+ * regression-test failure BEFORE it happens: reads deploy.md's own
+ * `## Permissions` section -- the exact list the deployer/integ-test-runner/
+ * regression-test-runner agent prompts already cross-check at their own
+ * Step 0a/0 -- and proactively grants every listed prefix to the target
+ * member via compose_permissions. Without this, a runbook permissions
+ * change (e.g. the `apra-fleet start` -> `apra-fleet run` swap, #395) only
+ * gets noticed when a dispatch fails, and only gets fixed once an operator
+ * greps deploy.md by hand and runs compose_permissions manually -- exactly
+ * the failure mode this closes the loop on.
+ *
+ * Reads deploy.md via `command()` against the ORCHESTRATOR member (its own
+ * checkout is the source of truth for what is about to be dispatched) and
+ * caches the parsed prefix list for the lifetime of the returned function --
+ * one read per sprint run, since deploy.md does not change mid-run on a
+ * healthy pipeline. Also caches per TARGET member, like
+ * createUnattendedAutoProvisioner above, so repeat cycles don't re-grant.
+ *
+ * Failure at any step (probe fails, deploy.md missing/unparseable,
+ * compose_permissions unreachable, a listed prefix hitting the
+ * NEVER_AUTO_GRANT denylist) is logged and swallowed. This is pure
+ * best-effort acceleration -- the deployer's own Step 0a check remains the
+ * authoritative, fail-closed backstop regardless of whether this succeeds.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, orchestratorMember: string, log?: Function }} opts
+ * @returns {(member: string) => Promise<void>}
+ */
+export function createDeployPermissionsProvisioner(opts = {}) {
+    const { callTool, command, orchestratorMember, log = () => {} } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+    /** @type {Set<string>} members already granted deploy.md's permissions this run. */
+    const provisioned = new Set();
+    /** @type {string[] | null | undefined} undefined = not yet attempted. */
+    let cachedPrefixes;
+
+    async function loadRequiredPrefixes() {
+        if (cachedPrefixes !== undefined) return cachedPrefixes;
+        try {
+            const res = await command(
+                `node -e "const fs=require('fs'); if(fs.existsSync('deploy.md')) process.stdout.write(fs.readFileSync('deploy.md','utf8'))"`,
+                { member_name: orchestratorMember, silent: true, label: `Read deploy.md permissions`, failSoft: true },
+            );
+            if (!res.ok || !res.output) {
+                cachedPrefixes = null;
+            } else {
+                const section = res.output.split(/^## Permissions/m)[1]?.split(/^## /m)[0] ?? '';
+                const prefixes = [...section.matchAll(/^-\s*`([^`]+)`/gm)].map(m => m[1]);
+                cachedPrefixes = prefixes.length ? prefixes : null;
+            }
+        } catch (err) {
+            log(`[deploy-permissions] could not read deploy.md's Permissions section (continuing without auto-provisioning): ${err.message}`);
+            cachedPrefixes = null;
+        }
+        return cachedPrefixes;
+    }
+
+    return async function ensureDeployPermissions(member) {
+        if (!member || provisioned.has(member)) return;
+        const prefixes = await loadRequiredPrefixes();
+        if (!prefixes) return;
+        try {
+            const result = await fleetApi.composePermissions({
+                member_name: member,
+                role: 'doer',
+                grant: prefixes,
+                grant_reason: "deploy.md's declared Permissions section, auto-provisioned before dispatch",
+            });
+            provisioned.add(member);
+            log(`[deploy-permissions] ensured deploy.md's required permissions on '${member}': ${result}`);
+        } catch (err) {
+            log(`[deploy-permissions] could not auto-provision deploy.md permissions on '${member}' (continuing -- the deployer's own Step 0a check remains the backstop): ${err.message}`);
+        }
+    };
+}
+
+/**
  * Builds the REACTIVE `onAuthFailure` self-heal callback runGitStep and
  * runDoltStep invoke on an 'auth' classification: re-provisions the failing
  * member's VCS credentials via provisionVcsAuthForMember (whose owner/repo is
@@ -3124,16 +3315,20 @@ export function validateArgs(args) {
         }
     }
 
-    // --- dispatch_timeout_s (optional, default 3600) -----------------------
+    // --- dispatch_timeout_s (optional, default 9000 = 150min/2.5h) ---------
     // Per-dispatch time budget in seconds, applied as BOTH timeout_s and
     // max_total_s on every agent dispatch: `claude -p` emits nothing until the
     // turn completes, so inactivity equals total runtime and the two timers
     // must be equal for the ceiling to be reachable. The integ-test dispatch
-    // ceiling is 2x this value, since its suites legitimately run past one
-    // budget. Lowering it bounds the cost of a live-but-silent member hang,
-    // which no timer can otherwise distinguish from work. Floor 60: below that
-    // even healthy dispatches cannot complete a single turn.
-    const dispatchTimeoutS = args.dispatch_timeout_s === undefined ? 3600 : args.dispatch_timeout_s;
+    // ceiling is 2x this value and the regression-test ceiling is 3x, since
+    // those suites legitimately run past one budget. Raised from the earlier
+    // 3600s default: an hour was tight enough to misclassify a slow-but-alive
+    // turn (a large diff, a chatty tool loop) as a stall, which is a false
+    // positive, not the genuine-hang protection this timer exists for.
+    // Lowering it still bounds the cost of a live-but-silent member hang,
+    // which no timer can otherwise distinguish from work. Floor 60: below
+    // that even healthy dispatches cannot complete a single turn.
+    const dispatchTimeoutS = args.dispatch_timeout_s === undefined ? 9000 : args.dispatch_timeout_s;
     if (typeof dispatchTimeoutS !== 'number' || !Number.isInteger(dispatchTimeoutS) || dispatchTimeoutS < 60) {
         throw new Error(`[Arg Contract] Invalid dispatch_timeout_s "${dispatchTimeoutS}": must be an integer >= 60 (seconds).`);
     }
@@ -5588,8 +5783,207 @@ export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, br
     };
 }
 
+/**
+ * (apra-fleet-p2to.4.2) Map an `execute_command` tool result to the SOFT git
+ * runner contract resyncReacquiredMember() consumes:
+ *   { ok: boolean, stdout?: string, error?: string }
+ *
+ * `ok` MUST be derived from the command's real EXIT CODE, never from an
+ * `isError` flag: the fleet server's `execute_command` tool does NOT set
+ * `isError` on a non-zero exit (see src/services/tool-registry.ts wrapTool() --
+ * it returns `{ content, structuredContent: { exitCode } }` with no isError,
+ * and src/tools/execute-command.ts formats the text as `Exit code: N\n...`).
+ * Reading `isError` here would make EVERY git command look successful, which is
+ * catastrophic for `git merge-base --is-ancestor` where the whole point is that
+ * a NON-zero exit (1 = "not an ancestor") is the meaningful signal: misreading
+ * it as ok=true collapses 'ahead'/'diverged' into 'behind-or-equal' and lets
+ * resyncReacquiredMember() run `git checkout -B <branch> origin/<branch>`,
+ * resetting away committed-but-unpushed work. So: prefer the structured
+ * `exitCode`, else parse the `Exit code: N` line out of the text, and only as a
+ * last resort (no exit code recoverable at all -- e.g. a transport-level string
+ * failure from the tool) fall back to the `isError` flag.
+ *
+ * @param {any} res - an `execute_command` MCP result (`{ content, structuredContent }`),
+ *   a plain string, or `{ isError, ... }`.
+ * @returns {{ ok: boolean, stdout: string, error: string|undefined }}
+ */
+export function commandResultToSoftGit(res) {
+    let text = '';
+    if (typeof res === 'string') {
+        text = res;
+    } else if (res && Array.isArray(res.content)) {
+        text = res.content
+            .map((c) => (c && typeof c.text === 'string' ? c.text : ''))
+            .join('\n');
+    } else if (res && typeof res.text === 'string') {
+        text = res.text;
+    }
+
+    let exitCode;
+    if (res && res.structuredContent && typeof res.structuredContent.exitCode === 'number') {
+        exitCode = res.structuredContent.exitCode;
+    } else {
+        const m = /Exit code:\s*(-?\d+)/.exec(text);
+        if (m) exitCode = Number(m[1]);
+    }
+
+    const ok = exitCode !== undefined ? exitCode === 0 : !(res && res.isError);
+    return { ok, stdout: text, error: ok ? undefined : (text || 'unknown error') };
+}
+
+/**
+ * (apra-fleet-p2to.4.2) Re-sync ONE member that was just re-acquired on resume.
+ * Runs -- UNCONDITIONALLY, never gated on a "looks unchanged" heuristic -- the
+ * same three reconciliation steps a fresh dispatch would rely on, because while
+ * this sprint was paused both origin and the beads DB can have moved (another
+ * sprint, a human push) on top of the released member:
+ *
+ *   1. `git fetch` (base branch, then the sprint branch soft -- a brand-new
+ *      branch legitimately has no remote ref yet).
+ *   2. The pure decideEnsureBranchAction() probe: fetch outcome + a local-branch
+ *      existence probe + (when both tips exist) a two-way ancestor comparison,
+ *      fed into the SAME decision helper the Ensure Sprint Branch phase uses.
+ *      An 'abort' decision (fetch failed for a non-"missing ref" reason, or the
+ *      tips diverged) THROWS rather than touch git -- resuming onto a diverged
+ *      branch could silently discard real pushed work. A 'checkout' decision is
+ *      executed so the member's working branch is reconciled to origin's new
+ *      tip before work continues.
+ *   3. `bd dolt pull` -- re-sync the beads clone to whatever landed while paused.
+ *
+ * All I/O is injected so this stays transport-agnostic and unit-testable:
+ *   - `runGit(cmd)` -> Promise<{ ok: boolean, stdout?: string, error?: string }>
+ *     (a SOFT git runner: it never throws; this function decides which failures
+ *     are fatal).
+ *   - `doltPull(member)` -> Promise<any> (runs `bd dolt pull` on the member).
+ *
+ * @param {{ member: string, branch: string, baseBranch: string,
+ *           runGit: (cmd: string) => Promise<{ ok: boolean, stdout?: string, error?: string }>,
+ *           doltPull: (member: string) => Promise<any>, log?: Function }} opts
+ * @returns {Promise<void>}
+ */
+export async function resyncReacquiredMember(opts = {}) {
+    const { member, branch, baseBranch, runGit, doltPull, log = () => {} } = opts;
+    if (typeof runGit !== 'function' || typeof doltPull !== 'function') {
+        throw new TypeError('resyncReacquiredMember requires runGit() and doltPull() to be injected');
+    }
+
+    async function gitStep(cmd, { failSoft = false } = {}) {
+        const res = await runGit(cmd);
+        if (!failSoft && !(res && res.ok)) {
+            throw new Error(
+                `[resume-resync] '${cmd}' failed on member '${member}': ${(res && (res.error || res.stdout)) || 'unknown error'}`
+            );
+        }
+        return res || { ok: false };
+    }
+
+    // 1. git fetch: base (hard -- a missing base is a real problem) then the
+    //    sprint branch (soft -- a brand-new branch has no remote ref yet).
+    await gitStep(`git fetch origin ${baseBranch} --quiet`);
+    const branchFetch = await gitStep(`git fetch origin ${branch} --quiet`, { failSoft: true });
+
+    // 2. decideEnsureBranchAction probe: local-branch existence + tip comparison.
+    const localProbe = await gitStep(`git rev-parse --verify --quiet refs/heads/${branch}`, { failSoft: true });
+    const localBranchExists = localProbe.ok;
+    let localTipStatus;
+    if (branchFetch.ok && localBranchExists) {
+        const localIsAncestorOfRemote = await gitStep(
+            `git merge-base --is-ancestor ${branch} origin/${branch}`, { failSoft: true }
+        );
+        const remoteIsAncestorOfLocal = await gitStep(
+            `git merge-base --is-ancestor origin/${branch} ${branch}`, { failSoft: true }
+        );
+        if (localIsAncestorOfRemote.ok) {
+            localTipStatus = 'behind-or-equal';
+        } else if (remoteIsAncestorOfLocal.ok) {
+            localTipStatus = 'ahead';
+        } else {
+            localTipStatus = 'diverged';
+        }
+    }
+    const decision = decideEnsureBranchAction({
+        branch,
+        baseBranch,
+        branchFetchOk: branchFetch.ok,
+        branchFetchError: branchFetch.error,
+        localBranchExists,
+        localTipStatus,
+    });
+    if (decision.action === 'abort') {
+        throw new Error(`[resume-resync] ${decision.message} (member '${member}')`);
+    }
+    // Reconcile the member's working branch to origin's (possibly moved) tip.
+    await gitStep(decision.command);
+
+    // 3. bd dolt pull: re-sync the beads clone.
+    await doltPull(member);
+
+    log(`[resume-resync] member '${member}' re-synced (git fetch + branch reconcile + beads D-pull) before work resumed`);
+}
+
 async function runSprintCycle(context) {
-    const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget } = context;
+    const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget, setPauseGuard } = context;
+
+    // (apra-fleet-p2to.4.1) Clean-state pause guard: this is runner.js's OWN
+    // pause-awareness -- the engine's cooperative pause primitive
+    // (apra-fleet-p2to.1's requestPause()/setPauseGuard()) only ever engages
+    // a pending pause at a zero-in-flight-activity boundary that ALSO passes
+    // this predicate, so registering it here is what keeps a pause from
+    // landing mid-git/mid-dolt-sync (e.g. between a pull and its matching
+    // push, or mid-D-push) and leaving the workspace/beads clone in an
+    // inconsistent state to resume from. `openSyncBracketCount` counts every
+    // currently-open "bracket": withGitSync()'s FULL body (pre-dispatch sync
+    // through post-dispatch sync, wrapped as a single bracket below) and
+    // every standalone DoltSync.syncBefore()/syncAfter() call elsewhere in
+    // this file that is NOT already nested inside a withGitSync bracket (a
+    // nested one is harmless double-counting, never a leak, since
+    // withOpenSyncBracket()'s increment/decrement is always paired). The
+    // guard itself is trivial and adds NO behavior when no pause is pending
+    // -- the engine only ever consults it while a pause is deferred (see
+    // FleetWorkflow._guardPermitsPause(), packages/apra-fleet-workflow/src/
+    // workflow/index.mjs), so a clean run with setPauseGuard registered but
+    // no pause ever requested behaves identically to one with no guard at
+    // all. `setPauseGuard` is only present on `context` when this script
+    // runs through WorkflowEngine.executeFile() (see that module's
+    // _bindPrimitives()) -- guarded so direct/legacy callers of
+    // runSprintCycle() that never go through the engine (existing tests)
+    // keep working unchanged.
+    let openSyncBracketCount = 0;
+    if (typeof setPauseGuard === 'function') {
+        setPauseGuard(() => openSyncBracketCount === 0);
+    }
+    /**
+     * Runs `fn` with the open-sync-bracket counter incremented for its
+     * duration, decrementing again on EVERY exit path (success or throw) via
+     * `finally` -- never leaves a stale increment behind on an error.
+     * @template T
+     * @param {() => Promise<T>} fn
+     * @returns {Promise<T>}
+     */
+    async function withOpenSyncBracket(fn) {
+        openSyncBracketCount += 1;
+        try {
+            return await fn();
+        } finally {
+            openSyncBracketCount -= 1;
+            // (apra-fleet-p2to.4.4.1) Closing the LAST open sync bracket is
+            // itself a clean-state boundary a deferred pause may complete at,
+            // but the engine only re-checks its pause-engage condition
+            // (WorkflowEngine._maybeEngagePause()) at specific trigger points
+            // -- requestPause(), an in-flight activity draining to zero, the
+            // gate at the next agent()/command() dispatch, or setPauseGuard()
+            // itself (which re-checks as a side effect of registering). None
+            // of those necessarily fire here: this bracket can close with no
+            // further dispatch immediately following. Re-registering the SAME
+            // guard predicate is a deliberate poke -- it engages a pause
+            // requested while sync brackets were open the instant this guard
+            // opens, rather than leaving it stranded until some later
+            // dispatch happens to hit the gate.
+            if (openSyncBracketCount === 0 && typeof setPauseGuard === 'function') {
+                setPauseGuard(() => openSyncBracketCount === 0);
+            }
+        }
+    }
 
     // The shared full-DB beads snapshot served by fetchAllBeadsShared(), plus
     // the two choke points that keep it correct. Both wrappers are installed
@@ -5824,6 +6218,24 @@ async function runSprintCycle(context) {
             : undefined
     );
 
+    // Provisions a member unattended='auto' right before its deployer /
+    // integ-test-runner / regression-test-runner dispatch, so those
+    // real-command/real-suite roles never stall on an interactive permission
+    // prompt. See createUnattendedAutoProvisioner's doc comment for why this
+    // is one-way (never reverted) and safe in a single-member sprint.
+    //   1. `context.ensureUnattendedAuto` -- an explicitly-injected function
+    //      (tests wire an in-process one to prove the call site fires
+    //      without a live fleet server).
+    //   2. `args.callTool` -- the real update_member call via
+    //      createUnattendedAutoProvisioner (this file).
+    //   3. neither -- a no-op: no provisioning call is made and the member
+    //      dispatches under whatever permission mode it already has.
+    const ensureUnattendedAuto = context.ensureUnattendedAuto ?? (
+        (args && typeof args.callTool === 'function')
+            ? createUnattendedAutoProvisioner({ callTool: args.callTool, log })
+            : async () => {}
+    );
+
     // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
     // must result in zero fleet dispatches.
     const validated = validateArgs(args);
@@ -5941,6 +6353,19 @@ async function runSprintCycle(context) {
     // deliberately outside contracts.ROLES.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
 
+    // Self-heals deploy.md's declared Permissions onto the deployer /
+    // integ-test-runner / regression-test-runner member before each of
+    // those dispatches -- see createDeployPermissionsProvisioner's doc
+    // comment. Same three-way precedence shape as ensureUnattendedAuto
+    // above: an explicitly-injected `context.ensureDeployPermissions` (for
+    // tests), else the real compose_permissions-backed provisioner built
+    // from `args.callTool`, else a no-op when neither is available.
+    const ensureDeployPermissions = context.ensureDeployPermissions ?? (
+        (args && typeof args.callTool === 'function')
+            ? createDeployPermissionsProvisioner({ callTool: args.callTool, command, orchestratorMember, log })
+            : async () => {}
+    );
+
     // ONE shared bracket wrapping EVERY role-identified agent() dispatch below
     // -- planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner,
     // harvester. No phase-based exemptions: a deployer or integ-test-runner
@@ -6001,6 +6426,16 @@ async function runSprintCycle(context) {
     // agent-with-runbook resolution before failing the streak (a no-op for
     // non-code-writing roles; never fires for a plain divergence).
     async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, needsVcsAuth = pushCode || pushBeads, skipPreDispatchSync = false, skipPreDispatchDoltPull = false, resumeOntoRemoteTip = false } = {}) {
+      // (apra-fleet-p2to.4.1) The WHOLE withGitSync bracket -- pre-dispatch
+      // G-pull/D-pull, the dispatch itself, and post-dispatch G-push/D-push
+      // -- counts as ONE open sync bracket for the clean-state pause guard
+      // above: a pause must never land between, say, a pre-dispatch pull and
+      // its matching post-dispatch push, which would leave the workspace/
+      // beads clone mid-cycle. `finally` guarantees the decrement fires on
+      // every exit path (the normal return, or any of the throws below),
+      // never leaving a stale increment behind.
+      openSyncBracketCount += 1;
+      try {
         if (skipPreDispatchSync) {
             log(`[Sync] Skipping pre-dispatch G-pull/D-pull for member '${member}' on a retry after a terminal no-mutation dispatch failure (prior attempt published nothing -- workspace unchanged since the last pull).`);
         } else {
@@ -6094,6 +6529,18 @@ async function runSprintCycle(context) {
         }
         if (dispatchThrew) throw dispatchThrew;
         return dispatchResult;
+      } finally {
+        openSyncBracketCount -= 1;
+        // (apra-fleet-p2to.4.4.1) See withOpenSyncBracket()'s matching
+        // comment above: poke the engine's pause-engage check by
+        // re-registering the same guard predicate the instant this bracket
+        // -- the whole pre-dispatch sync/dispatch/post-dispatch sync unit --
+        // closes, so a pause deferred for its duration engages right away
+        // rather than waiting on whatever dispatch happens to come next.
+        if (openSyncBracketCount === 0 && typeof setPauseGuard === 'function') {
+          setPauseGuard(() => openSyncBracketCount === 0);
+        }
+      }
     }
 
     // Scope discovery cannot be built on `bd list --parent`: it accepts exactly
@@ -6358,16 +6805,13 @@ async function runSprintCycle(context) {
         const reviewerKnowledge = reviewerQueried.length > 0
             ? reviewerQueried
             : kbPriming.knowledgeOf(reviewerPool[0]);
-        // Stabilization log Issue 9: a full-cycle review is big -- run 6's
-        // reviewer genuinely ran out of the fleet's default turn budget
-        // (num_turns=51 after ~12 minutes of legitimate review work), and a
-        // fresh retry deterministically hits the same wall. Make the budget
-        // explicit and, on max_turns exhaustion, RESUME the same session with
-        // a doubled budget (mirrors the doer's resume-and-continue rationale
-        // at dispatchDoerResume: the session already holds the full review
-        // context, so a short continue-nudge finishes the job instead of
-        // restarting it).
-        const BASE_REVIEWER_MAX_TURNS = 60;
+        // A full-cycle review can genuinely exhaust the fleet's default turn
+        // budget, and a fresh retry deterministically hits the same wall. Make
+        // the budget explicit and, on max_turns exhaustion, RESUME the same
+        // session at a doubled budget: the session already holds the full
+        // review context, so a continue-nudge finishes the job instead of
+        // restarting it.
+        const BASE_REVIEWER_MAX_TURNS = 500;
         const reviewerDispatchOpts = {
             member_name: reviewerPool[0],
             agentType: 'reviewer',
@@ -6536,10 +6980,29 @@ async function runSprintCycle(context) {
     }
 
     // The sprint branch must be git-ensured on EVERY member that will operate
-    // on it, not just the orchestrator: doers round-robin across the doer pool
-    // and the reviewer runs from the reviewer pool, and on a real multi-member
-    // fleet each has its own checkout. Ensure on the UNION of the orchestrator,
-    // doer, and reviewer pools before the first doer round.
+    // on it, not just the orchestrator: doers round-robin across the doer pool,
+    // the reviewer runs from the reviewer pool, and every other role dispatched
+    // through withGitSync's shared bracket (planner, plan-reviewer, deployer,
+    // integ-test-runner, regression-test-runner, harvester -- see that bracket's
+    // own doc comment a few hundred lines up) gets a pre-dispatch G-pull that
+    // ASSUMES the correct branch is already checked out. On a real multi-member
+    // fleet each role can resolve to its own independent checkout, so ensure on
+    // the union of every role's member pool before the first doer round -- not
+    // just doer/reviewer.
+    //
+    // Without this, a role pinned via roleMap to a member that was never
+    // branch-ensured (e.g. deployer isolated onto its own machine, per the
+    // fleet-supervisor skill's own recommended layout) can pass its G-pull's
+    // `git merge --ff-only origin/<branch>` silently: a fast-forward merge does
+    // not care what branch HEAD is currently on, only that HEAD is an ancestor
+    // of the fetched tip. If that member happens to be sitting on a branch
+    // (e.g. main) that is still fast-forward-compatible with the sprint branch,
+    // the merge succeeds and silently advances THAT branch's pointer instead of
+    // checking out/creating a correctly-named local branch -- the deploy/test
+    // dispatch still gets the right code, but the member's local branch bookkeeping
+    // ends up mislabeled. See apra-fleet-ivxi/u1qw/69pp sprint run
+    // (fleet-sprint/ivxi-u1qw-69pp), where fleet-win-deploy's local `main`
+    // silently absorbed the sprint branch's commits this way.
     //
     // SUPPORTED-TOPOLOGY NOTE: there is no cross-member bd/git sync layer here.
     // Every `bd` command below runs against the orchestrator member's beads DB
@@ -6553,6 +7016,12 @@ async function runSprintCycle(context) {
         orchestratorMember,
         ...getMembersForRole(ROLE_DOER),
         ...getMembersForRole(ROLE_REVIEWER),
+        ...getMembersForRole('planner'),
+        ...getMembersForRole('plan-reviewer'),
+        ...getMembersForRole('deployer'),
+        ...getMembersForRole('integ-test-runner'),
+        ...getMembersForRole('regression-test-runner'),
+        ...getMembersForRole('harvester'),
     ])];
 
     // Read the requirementsFile (if any) once, up front, so its content can
@@ -6577,7 +7046,8 @@ async function runSprintCycle(context) {
     // Routed through the single dolt-sync module (apra-fleet-417.2.1):
     // readinessGate (apra-fleet-417.5 rename of healthGate) selects the
     // pre-flight variant of the BEFORE bracket.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
+    // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
@@ -6885,7 +7355,8 @@ async function runSprintCycle(context) {
     // doer's work, so pull again immediately before the verification read.
     // DoltSync.syncBefore() is a benign no-op when the clone is current and
     // when no dolt remote is configured at all.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
+    // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
 
     await updateDashboard();
 
@@ -7201,7 +7672,7 @@ async function runSprintCycle(context) {
             // meaningful gap. Like every dispatch site, max_turns exhaustion is
             // answered with a same-session resume at doubled turns; the planner
             // gets a doer-sized base because it builds the whole epic DAG.
-            const PLANNER_MAX_TURNS = 100;
+            const PLANNER_MAX_TURNS = 500;
             const plannerDispatchOpts = {
                 member_name: getMemberForRole('planner'),
                 agentType: 'planner',
@@ -7375,7 +7846,7 @@ async function runSprintCycle(context) {
             let verdict;
             // Reviewer-sized turn base, with the same same-session
             // turn-exhaustion resume every dispatch site uses.
-            const PLAN_REVIEWER_MAX_TURNS = 60;
+            const PLAN_REVIEWER_MAX_TURNS = 500;
             const planReviewerDispatchOpts = {
                 member_name: getMemberForRole('plan-reviewer'),
                 agentType: 'plan-reviewer',
@@ -7551,7 +8022,8 @@ async function runSprintCycle(context) {
                     { member_name: orchestratorMember, silent: true, label: `Attach plan-cap deferral finding to ${id}` }
                 );
             }
-            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
             planCapDeferredIds = contestedIds;
         }
 
@@ -7722,7 +8194,7 @@ async function runSprintCycle(context) {
                 for (const id of replanScopeIds) replannedThisCycle.add(id);
 
                 // --- Scoped planner pass ---
-                const SCOPED_REPLAN_PLANNER_MAX_TURNS = 100;
+                const SCOPED_REPLAN_PLANNER_MAX_TURNS = 500;
                 let scopedPlannerOk = true;
                 try {
                     const scopedPlannerRes = await withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
@@ -7768,7 +8240,7 @@ async function runSprintCycle(context) {
                 // --- Scoped plan-review pass ---
                 let scopedReplanApproved = false;
                 if (scopedPlannerOk) {
-                    const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 60;
+                    const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 500;
                     try {
                         const scopedVerdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
                             buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle }),
@@ -7818,7 +8290,8 @@ async function runSprintCycle(context) {
                 // and refresh the dashboard before re-evaluating the loop top.
                 // Routed through the single dolt-sync module's AFTER bracket
                 // (apra-fleet-417.2.1); behavior is identical.
-                await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+                // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+                await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
                 await updateDashboard();
                 continue;
             }
@@ -8048,7 +8521,7 @@ async function runSprintCycle(context) {
                 // default) so the max-turns-exhaustion resume path below has a
                 // known baseline to escalate from. Sized so a typical streak
                 // finishes in one dispatch and resume stays the exception.
-                const BASE_DOER_MAX_TURNS = 100;
+                const BASE_DOER_MAX_TURNS = 500;
                 // Bounded resume-and-continue attempts after a max_turns
                 // exhaustion, each doubling the turn budget. An identical retry
                 // is pointless (the doer would deterministically run out of
@@ -8309,9 +8782,11 @@ async function runSprintCycle(context) {
                         // SUCCEEDED: resuming it wastes a dispatch on a session with
                         // nothing left to do, and classifying it 'failed' would
                         // falsely re-lane already-completed work.
-                        const preResumeUnclosed = await verifyDoerStreakClosed({
+                        // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
+                        // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
+                        const preResumeUnclosed = await withOpenSyncBracket(() => verifyDoerStreakClosed({
                             command, orchestratorMember, beadIds: actualBeadIds, log,
-                        });
+                        }));
                         if (preResumeUnclosed.length === 0) {
                             log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns), but all assigned bead id(s) are already closed -- WARNING: the doer missed the VERIFY checkpoint (kept running after its last bd close instead of stopping). Treating this streak as a successful completion, not a failure; issuing NO resume dispatch.`);
                             dispatchError = null;
@@ -8406,9 +8881,11 @@ async function runSprintCycle(context) {
                     // assuming every bead in the streak is still open, so
                     // completed work is never discarded because a sibling in the
                     // same streak was never reached.
-                    const unclosedIds = await verifyDoerStreakClosed({
+                    // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
+                    // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
+                    const unclosedIds = await withOpenSyncBracket(() => verifyDoerStreakClosed({
                         command, orchestratorMember, beadIds: actualBeadIds, log,
-                    });
+                    }));
                     const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
                     log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);
                     if (batchStreaks) {
@@ -8459,9 +8936,11 @@ async function runSprintCycle(context) {
                 // D-pull this read sees stale (still-open) status and EVERY
                 // remote doer streak is falsely marked FAILED -- the single most
                 // divergence-sensitive read in the file.
-                const unclosedIds = await verifyDoerStreakClosed({
+                // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
+                // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
+                const unclosedIds = await withOpenSyncBracket(() => verifyDoerStreakClosed({
                     command, orchestratorMember, beadIds: actualBeadIds, log,
-                });
+                }));
                 const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
 
                 // KB trust pipeline Phase 2: the doer decides what to capture,
@@ -8763,7 +9242,8 @@ async function runSprintCycle(context) {
             // The orchestrator just MUTATED beads (reopens + newTask creates) in
             // its own clone -- D-push so members observe them on their next
             // dispatch's D-pull.
-            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
             } // end assignedBeadIds.length > 0 (Review dispatch + orchestrator-applied transitions)
 
             await updateDashboard();
@@ -8808,11 +9288,13 @@ async function runSprintCycle(context) {
 
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
+            await ensureUnattendedAuto(getMemberForRole('deployer'));
+            await ensureDeployPermissions(getMemberForRole('deployer'));
             let deployResult;
             // Turn budget for the deployer, with the same-session
             // turn-exhaustion resume below: a source-build fallback deploy runs
             // npm ci plus two builds, comfortably beyond a small default budget.
-            const DEPLOYER_MAX_TURNS = 60;
+            const DEPLOYER_MAX_TURNS = 500;
             const deployerDispatchOpts = {
                 member_name: getMemberForRole('deployer'),
                 agentType: 'deployer',
@@ -8890,6 +9372,8 @@ async function runSprintCycle(context) {
         let verifySetForIntegTest = [];
         if (hasPlaybook && deployedThisCycle) {
             phase(`Integ Test C${cycle}`);
+            await ensureUnattendedAuto(getMemberForRole('integ-test-runner'));
+            await ensureDeployPermissions(getMemberForRole('integ-test-runner'));
             // apra-fleet-nwh.1: snapshot the running total BEFORE this
             // cycle's Integ Test dispatch(es) so the delta after (below) is
             // this phase's own spend, not the whole run's. budget.spent()
@@ -9002,7 +9486,7 @@ async function runSprintCycle(context) {
                 // re-runs, respect the poll cadence) a normal cycle needs far
                 // fewer than 300 turns. The resume ladder below still doubles from
                 // here (to 600) when a run legitimately needs more.
-                const INTEG_TEST_MAX_TURNS = 300;
+                const INTEG_TEST_MAX_TURNS = 500;
                 const integDispatchOpts = {
                     member_name: getMemberForRole('integ-test-runner'),
                     agentType: 'integ-test-runner',
@@ -9156,7 +9640,7 @@ async function runSprintCycle(context) {
                         if (gapCount > VERIFY_GAP_LIMIT) {
                             log(`Verify-route bounce cap: ${parentId} has failed verification ${gapCount} time(s) this sprint (limit ${VERIFY_GAP_LIMIT}) -- deferring rather than bouncing again.`);
                             await command(
-                                `bd update ${parentId} --status=deferred --append-notes "Deferred by apra-fleet-jfo's verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
+                                `bd update ${parentId} --status=deferred --append-notes "Deferred by the verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
                                 { member_name: orchestratorMember, silent: true }
                             );
                         } else {
@@ -9198,7 +9682,8 @@ async function runSprintCycle(context) {
         // counts so the completion/stall math reads the current cross-member
         // beads state (every member's D-pushed closes) rather than the
         // orchestrator's stale local copy.
-        await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
+        // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+        await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -9427,7 +9912,8 @@ async function runSprintCycle(context) {
 
             // D-push the orchestrator's applied re-review reopens/newTask
             // creates, same as the Develop/Review transition site above.
-            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
         }
 
         // apra-fleet-jfo.2: verify-routed beads are decomposed parents, so
@@ -9486,7 +9972,8 @@ async function runSprintCycle(context) {
     // the sprint's closing evidence (finalOpenAtGoal / finalClosedCount)
     // reflects every member's D-pushed beads state, not the orchestrator's
     // stale local copy.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
+    // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
     const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
@@ -9518,7 +10005,7 @@ async function runSprintCycle(context) {
     // reviewer. Without it a large sprint's final review dies at the default
     // turn limit and flips the whole sprint to a FAIL whose notes carry no
     // findings at all.
-    const FINAL_REVIEW_MAX_TURNS = 60;
+    const FINAL_REVIEW_MAX_TURNS = 500;
     // Final Review is the same 'reviewer' role as dispatchReview above
     // (read-side, pushCode: false) -- G-pull before, no-op G-push after every
     // attempt (including the retry below).
@@ -9834,11 +10321,13 @@ async function runSprintCycle(context) {
     const hasRegressionPlaybook = await probeFileExists('regression-test-playbook.md');
     if (hasRegressionPlaybook) {
         phase(`Regression Test C${finalCycleLabel}`);
+        await ensureUnattendedAuto(getMemberForRole('regression-test-runner'));
+        await ensureDeployPermissions(getMemberForRole('regression-test-runner'));
         // The real functional suite alone spends roughly one turn per liveness
         // poll for the better part of an hour, and this single dispatch carries
         // both it and the sandbox smoke sprint -- hence the large turn budget
         // and the wider hard ceiling.
-        const REGRESSION_TEST_MAX_TURNS = 200;
+        const REGRESSION_TEST_MAX_TURNS = 500;
         const REGRESSION_TEST_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 3;
         const regressionPrompt =
             `Run the full regression pass using regression-test-playbook.md at the repo root: part 1 ` +
@@ -10007,7 +10496,7 @@ async function runSprintCycle(context) {
     let harvesterResult = null;
     // Turn budget for the harvester, with the same-session turn-exhaustion
     // resume below: it writes docs/changelog across the whole epic.
-    const HARVESTER_MAX_TURNS = 60;
+    const HARVESTER_MAX_TURNS = 500;
     const harvesterDispatchOpts = {
         member_name: getMemberForRole('harvester'),
         agentType: 'harvester',
@@ -10192,7 +10681,8 @@ async function runSprintCycle(context) {
                     log(`Publish PR: failed to close target issue '${id}' directly (non-fatal, continuing): ${closeRes.error}`);
                 }
             }
-            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
         } else {
             log('Publish PR: final verdict is FAIL -- leaving target issue(s) open (not closing on a non-PASS verdict).');
         }

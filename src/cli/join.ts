@@ -109,5 +109,5 @@ export async function runJoin(args: string[], deps: JoinDeps = realDeps): Promis
 
   console.log(`Enrolled machine ${result.member.id} in workspace ${workspaceId}.`);
   console.log(`Hub credentials stored at ${HUB_CREDENTIALS_PATH}.`);
-  console.log('Spoke mode (outbound hub connectivity, apra-fleet-us9.6) is not yet built -- this credential is stored for that future use.');
+  console.log('Spoke mode (outbound hub connectivity) is not yet built -- this credential is stored for that future use.');
 }

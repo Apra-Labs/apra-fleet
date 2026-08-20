@@ -68,13 +68,22 @@ export async function verifyAppConnectivity(
  * Map fleet access levels to GitHub App installation token permissions.
  */
 export function mapAccessLevel(level: string): Record<string, string> {
+  // 'discussions' is a fine-grained GitHub App permission (like 'issues' or
+  // 'pull_requests') that gates the Discussions GraphQL API (gh api graphql,
+  // the github-discussions-faq skill). Requesting it here only succeeds once
+  // the App's OWN permission set (github.com App settings -> Permissions,
+  // an org-admin action outside this codebase's reach) includes Discussions
+  // and the installation has accepted that grant -- otherwise mintGitToken's
+  // POST /access_tokens call 422s. Scoped to 'issues' and 'full' since those
+  // are the community/collaboration-oriented levels; 'read'/'push'/'push+pr'/
+  // 'admin' stay code-access-only.
   const levels: Record<string, Record<string, string>> = {
     read: { contents: 'read', metadata: 'read' },
     push: { contents: 'write', metadata: 'read' },
     'push+pr': { contents: 'write', pull_requests: 'write', metadata: 'read' },
     admin: { contents: 'write', administration: 'write', actions: 'write', metadata: 'read' },
-    issues: { issues: 'write', pull_requests: 'write', metadata: 'read' },
-    full: { contents: 'write', administration: 'write', issues: 'write', pull_requests: 'write', actions: 'write', metadata: 'read' },
+    issues: { issues: 'write', pull_requests: 'write', discussions: 'write', metadata: 'read' },
+    full: { contents: 'write', administration: 'write', issues: 'write', pull_requests: 'write', actions: 'write', discussions: 'write', metadata: 'read' },
   };
   return levels[level] ?? levels.read;
 }

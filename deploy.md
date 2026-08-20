@@ -5,6 +5,12 @@
 Commands below require these prefixes in `.claude/settings.json` under `permissions.allow`:
 - `Bash(apra-fleet* --version)`
 - `Bash(apra-fleet* run *)`
+- `Bash(apra-fleet* start)` -- kept alongside `run` above: `run` is what this
+  runbook's own Deploy step launches with (see the Windows scheduled-task
+  caveat there), but `start` is still a real, separately-invoked command
+  (e.g. OS-level auto-start registration, manual fallback) and a member
+  missing this grant fails Step 0a the moment anything tries it. Anchored
+  without a leading `*` for the same reason as the two entries above.
 - `Bash(node scripts/preflight-clear-build-locks.mjs)` -- pre-`npm ci` stale
   build-tool lock cleanup, see Deploy below
 - `Bash(npm ci)`
@@ -39,6 +45,9 @@ since it was a strictly redundant duplicate of the already-anchored
 a leading wildcard in the first place). The `*apra-fleet* start` entry that
 had drifted into `.claude/settings.json` was also replaced with `run`,
 matching this file's own "Use `run`, not `start`" guidance in ## Deploy.
+Update (merge of main, 2026-08-19): main restored a `start` grant with its
+own rationale (Step 0a needs it). It is kept, but anchored as
+`Bash(apra-fleet* start)` -- no leading `*` -- per the analysis above.
 Caveat: these anchored patterns match a command that literally starts with
 the token `apra-fleet`; if a deploying agent instead types the fully-quoted
 `"$HOME/.apra-fleet/bin/apra-fleet" ...` form shown in ## Deploy verbatim,

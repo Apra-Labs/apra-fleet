@@ -84,8 +84,8 @@ Do NOT attempt to add the permissions yourself, by editing any file directly:
 - `.claude/settings.local.json` is the correct target for an individual/local
   grant, but it must be provisioned via the `compose_permissions` MCP tool
   (grant mode), NOT hand-edited either -- that tool is the provider-agnostic
-  delivery mechanism (this repo supports non-Claude providers too: Gemini,
-  AGY, OpenCode, Codex -- each has its own native config path via the same
+  delivery mechanism (this repo supports non-Claude providers too: AGY,
+  OpenCode, Codex -- each has its own native config path via the same
   tool).
 The correct escalation when a required permission is missing from the merged
 effective set is: ask the orchestrator/operator to run `compose_permissions`

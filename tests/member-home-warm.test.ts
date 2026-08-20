@@ -1,10 +1,10 @@
 /**
- * SF-18: the member home-dir cache must actually get warmed for Claude/Gemini
+ * SF-18: the member home-dir cache must actually get warmed for Claude
  * remote members.
  *
  * `getMemberPathContext` (the probing resolver) had exactly one caller --
  * `pollDirectoryActivity`, which only runs for provisional dispatches with a
- * null logFilePath (AGY/OpenCode fresh turns). Claude and Gemini sessions are
+ * null logFilePath (AGY/OpenCode fresh turns). Claude sessions are
  * caller-minted, so their stall entries always carry a logFilePath and never
  * reach it: their cache stayed cold forever and the synchronous dispatch-path
  * resolver (`getCachedMemberPathContext`) permanently used the
@@ -77,7 +77,7 @@ describe('SF-18: member home-dir cache warming', () => {
   });
 
   describe('warmMemberHomeDirs', () => {
-    it.each(['claude', 'gemini'] as const)(
+    it.each(['claude'] as const)(
       'warms a remote %s member -- the guess is replaced by the PROBED home dir',
       async provider => {
         const agent = makeTestAgent({ username: 'bella', os: 'linux', llmProvider: provider });

@@ -275,7 +275,7 @@ runner-owned policy table, not a live read of fleet configuration):
 These tier keywords (`cheap`/`standard`/`premium`) are resolved to a concrete
 model **per member, server-side** (`execute-prompt.ts`'s
 `resolveModelForTier()`, via each member's registered `model_tiers`) -- this
-is what makes a mixed-provider fleet (Claude, Gemini, Codex, Copilot,
+is what makes a mixed-provider fleet (Claude, AGY, Codex, Copilot,
 OpenCode, ...) work correctly. Earlier revisions of this runner hardcoded
 Claude-specific literal model names (`opus`/`sonnet`) here instead. That was
 a real bug, not a stylistic choice: a fixed `opus` dispatch to a non-Claude
@@ -963,6 +963,53 @@ backlog, sprint CRUD, a proxy for each child's own cooperative stop endpoint)
 reuses the same request-validation helpers the CLI path already uses (never a
 second copy of the id/branch/member validation logic), so a malformed launch
 request is rejected identically regardless of entry point.
+
+## Supervisor: packaging self-containment
+
+The supervisor must run entirely from what an installed `apra-fleet` ships
+(npm install or the SEA binary) -- a user must never need a git checkout of
+the source repo just to keep it running. This is a standing invariant, not a
+one-time fix: `bin/serve.mjs` and everything reachable from it under
+`src/supervisor/*` and the `fleet-sprint/*` modules it imports must resolve
+entirely inside the packaged `apra-fleet-se` tree.
+
+The packaging boundary that matters is the exclude set applied recursively at
+every directory depth when building both the SEA asset tree
+(`scripts/gen-sea-config.mjs`) and the `apra-fleet install` tree
+(`src/cli/install.ts` `buildDevManifest()` ->
+`src/cli/workflow-assets.ts` `extractWorkflowSubsystemAssets()`):
+`test`, `docs`, `scripts`, `examples` are never shipped. A supervisor-reachable
+module that imports anything under a top-level `scripts/` directory (a
+repo-root-relative escape, e.g. `../../../../scripts/lib/foo.mjs`) will resolve
+in a dev git checkout but throw `ERR_MODULE_NOT_FOUND` the moment it runs from
+an installed tree, because `scripts/` is excluded from what gets shipped. The
+fix for a genuinely shared helper is to vendor a verbatim copy inside the
+packaged tree (e.g. `src/supervisor/lib/`) rather than reach out of it, and to
+mark the copy clearly as vendored (source of truth + why) so it doesn't drift
+silently. There is currently no automated guard keeping such a vendored copy
+in sync with its canonical source -- that is a known gap, kept in sync by hand
+today.
+
+Because this class of bug is easy to reintroduce one file at a time, the
+regression guard for it is graph-shaped rather than file-specific: walk the
+full static import graph from the installed `bin/serve.mjs` (using the exact
+same `buildDevManifest()`/`extractWorkflowSubsystemAssets()` path
+`apra-fleet install` itself uses to build the tree under test) and assert
+every resolved specifier stays inside the installed tree. That catches a
+future out-of-tree import from *any* supervisor-reachable module, not just a
+previously-broken file. A narrower test that only pins the previously-broken
+import path (boots `serve.mjs` from an installed tree and asserts a specific
+old import path is gone) is a useful smoke test but is a strict subset of the
+graph-shaped guard and does not substitute for it.
+
+One reachable module deliberately reads a source/build-only path at runtime
+without being a hard dependency on it: `fleet-sprint/contracts.mjs`'s schema
+loader tries a build artifact directory first, then falls back to the
+package-local (shipped) schema directory, then to hand-written literal
+schemas. A guarded, falling-back read of a source-only path is fine; an
+unguarded import of one is the self-containment bug this invariant exists to
+prevent. See `packages/apra-fleet-se/docs/supervisor-selfcontainment-audit.md`
+for the full enumerated audit of every supervisor-reachable module.
 
 ## Dashboard
 

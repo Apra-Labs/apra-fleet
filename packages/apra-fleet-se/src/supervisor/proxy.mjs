@@ -88,6 +88,13 @@ export function rewriteChildHtml(html, prefix) {
         .split("'/events'").join("'" + prefix + "/events'")
         .split("'/state?").join("'" + prefix + "/state?")
         .split("'/stop'").join("'" + prefix + "/stop'")
+        // (apra-fleet-p2to.3.1) the child viewer's own Pause/Resume buttons
+        // (apra-fleet-p2to.2.1, viewer/index.mjs's pauseWorkflow()/
+        // resumeWorkflow()) call these two absolute app-paths -- rewritten
+        // here exactly like '/stop' so the live-proxied view's buttons
+        // re-enter this proxy instead of hitting the supervisor root.
+        .split("'/pause'").join("'" + prefix + "/pause'")
+        .split("'/resume'").join("'" + prefix + "/resume'")
         .split("'/save_logs'").join("'" + prefix + "/save_logs'")
         .split("'/extensions/").join("'" + prefix + "/extensions/")
         .split("'/activities/").join("'" + prefix + "/activities/");
@@ -397,6 +404,15 @@ export function createLiveProxy(deps = {}) {
     const handleEvents = makeSubpath(() => '/events');
     const handleState = makeSubpath((url) => '/state' + (url && url.search ? url.search : ''));
     const handleStop = makeSubpath(() => '/stop');
+    // (apra-fleet-p2to.3.1) Proxy the child's own cooperative POST /pause and
+    // /resume (apra-fleet-p2to.2.1, viewer/index.mjs), which forward to the
+    // engine's requestPause()/requestResume() -- NEVER the kill+force-release
+    // route the Sprint Stack's Stop button uses (POST /api/reservations/
+    // :sprintId/force-release, dashboard.mjs). Same makeSubpath() plumbing as
+    // handleStop above: a request arriving after the child is gone answers
+    // 404 cleanly rather than a dead socket.
+    const handlePause = makeSubpath(() => '/pause');
+    const handleResume = makeSubpath(() => '/resume');
     const handleSaveLogs = makeSubpath(() => '/save_logs');
 
     // apra-fleet-04g.1: the generic on-demand-detail route (extension id +
@@ -435,6 +451,8 @@ export function createLiveProxy(deps = {}) {
         handleEvents,
         handleState,
         handleStop,
+        handlePause,
+        handleResume,
         handleSaveLogs,
         handleExtensionDetail,
         handleActivityOutput,
@@ -452,6 +470,10 @@ export function registerLiveRoutes(supervisor, proxy) {
     supervisor.route('GET', '/sprints/:id/live/events', proxy.handleEvents);
     supervisor.route('GET', '/sprints/:id/live/state', proxy.handleState);
     supervisor.route('POST', '/sprints/:id/live/stop', proxy.handleStop);
+    // (apra-fleet-p2to.3.1) Cooperative pause/resume proxy routes -- see
+    // createLiveProxy()'s handlePause/handleResume doc comment above.
+    supervisor.route('POST', '/sprints/:id/live/pause', proxy.handlePause);
+    supervisor.route('POST', '/sprints/:id/live/resume', proxy.handleResume);
     supervisor.route('POST', '/sprints/:id/live/save_logs', proxy.handleSaveLogs);
     supervisor.route('GET', '/sprints/:id/live/extensions/:extId/detail/:itemId', proxy.handleExtensionDetail);
     supervisor.route('GET', '/sprints/:id/live/activities/:activityId/output', proxy.handleActivityOutput);

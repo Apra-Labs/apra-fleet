@@ -43,6 +43,12 @@ export interface OsCommands {
   gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string;
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string;
 
+  /** Log the `gh` CLI itself into GitHub with `token` (persists to gh's own config,
+   *  e.g. ~/.config/gh/hosts.yml), independent of the git credential helper above --
+   *  `gh` never reads that file. No-ops (does not throw) when `gh` is not installed;
+   *  callers should treat this as best-effort. */
+  ghAuthLogin(token: string, hostname?: string): string;
+
   // --- SSH key deployment ---
   deploySSHPublicKey(publicKeyLine: string): string[];
 

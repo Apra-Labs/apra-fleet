@@ -24,7 +24,8 @@ node dist/index.js install     # Dev-mode install
 - ASCII only: never write non-ASCII characters to any file. Use `-` for dashes, `->` for arrows, `[OK]` for checkmarks, etc.
 - Permission blocks must be surfaced, not routed around: if a tool or git invocation is blocked by the permission layer, stop and report the block to the user/orchestrator. Do not author a wrapper script, alternate binary, or other workaround whose purpose is to bypass the block, even if the underlying operation is judged safe. See `scripts/recovery.sh` disposition note in the 2026-07-02 incident writeup (RECOVERY.md) for the precedent this guards against.
 - `packages/apra-fleet-client` must always be updated to catch up with any changes to the fleet MCP tools (`src/tools/*` schemas/behavior) in the same change -- it is the thin client wrapper other packages (fleet-sprint, apra-pm, workflows) use to call those tools, and a drifted client silently gives callers a stale or inconsistent view of what the server actually accepts/does. This is not optional cleanup; treat it as part of the tool change itself.
-- Never rely on shell-level variable expansion in a member-bound command string ($VAR/path, ~/, backticks) -- the target member's shell may be PowerShell, not POSIX. Resolve paths in JavaScript before building the command using probeCommandFor(targetOs) (src/services/member-home.ts:53-56) or branching on agent.os (src/providers/claude.ts:373-374). Wrap PowerShell commands explicitly (powershell -EncodedCommand, per src/os/windows.ts) rather than assuming the member's shell. A POSIX-only feature must hard-fail on Windows or gate with a surfaced error -- an advisory warning that never blocks is a false success. See apra-fleet-ot2z (originating incident) and regression tests apra-fleet-ot2z.2, .5, .7, .9.
+- Never rely on shell-level variable expansion in a member-bound command string ($VAR/path, ~/, backticks) -- the target member's shell may be PowerShell, not POSIX. Resolve paths in JavaScript before building the command using probeCommandFor(targetOs) (src/services/member-home.ts:53-56) or branching on agent.os (src/providers/claude.ts:373-374). Wrap PowerShell commands explicitly (powershell -EncodedCommand, per src/os/windows.ts) rather than assuming the member's shell. A POSIX-only feature must hard-fail on Windows or gate with a surfaced error -- an advisory warning that never blocks is a false success.
+- Never cite a bead id (apra-fleet-XXXX) in any LLM-facing text: prompts, playbooks, schema descriptions, or strings a script prints/writes at runtime. Bead ids are fine only in code comments and docs/.
 
 ## DeepWiki
 
@@ -56,6 +57,18 @@ bd close <id>         # Complete work
 - Use `bd remember` for persistent knowledge - do NOT use MEMORY.md files
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+
+### Persistent Memory - Which System
+
+Three memory systems exist; when asked to "remember" something, route by content:
+
+- **User/assistant preferences** (user's role, standing feedback on how the assistant collaborates, anything not about this repo's code) -> Claude's own auto-memory (`~/.claude/projects/.../memory/`). Not managed by this repo; named here only so it is not confused with the two below.
+- **Operational rules** (short, actionable directives for any dispatched agent during this project's beads-tracked work - test-harness gotchas, required flags, launch conventions) -> `bd remember`. Keep entries terse: the actionable rule only, no PR/bead/commit-ref padding.
+- **Technical facts about the codebase** (architecture decisions, gotchas, "why is it built this way" - tied to specific files/symbols, worth confidence-grading and contradiction-checking, shareable via `kb_export` to `.fleet/kb-canonical.json`) -> KB (`kb_capture`).
+
+When a rule is both operational and technical: prefer KB if it anchors to specific files/symbols and benefits from confidence-grading over time; prefer `bd remember` if it is a procedural directive with no file/symbol anchor.
+
+KB is opt-in per repo. If `kb_capture`/`kb_query` errors because `kb_setup` has not run here, do not treat it as a hard failure or drop the memory - fall back to `bd remember` (or tell the user) so the request still lands.
 
 ## Agent Context Profiles
 

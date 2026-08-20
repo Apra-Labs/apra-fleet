@@ -8,7 +8,7 @@
  * wrong user (hub `alice` vs member `bella`), and the resulting path can never
  * exist on the member:
  *
- *   - Claude / Gemini: the stall poller reads a path that is never created, so
+ *   - Claude: the stall poller reads a path that is never created, so
  *     `lastTimestamp` is always null, which the detector treats as "log not
  *     written yet -- do not count a stall cycle". Stall detection silently goes
  *     inert for that member.
@@ -213,7 +213,7 @@ const HOME_CAPABILITY_SENTINEL = '/__fleet_capability_probe__';
  * Before this, `getMemberPathContext` (the only probing resolver) had exactly
  * ONE caller: `pollDirectoryActivity`, which runs solely for provisional
  * dispatches with a null logFilePath -- i.e. AGY/OpenCode fresh turns. Claude
- * and Gemini sessions are caller-minted, so their stall entries always carry a
+ * sessions are caller-minted, so their stall entries always carry a
  * logFilePath and never reach it. Their cache therefore stayed empty forever,
  * and the synchronous dispatch-path resolver (`getCachedMemberPathContext`,
  * used by execute_prompt to name the transcript file) permanently fell back to

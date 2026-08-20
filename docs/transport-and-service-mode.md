@@ -5,7 +5,7 @@
 # Transport, Service Mode, and Supported Interfaces
 
 Fleet runs as a singleton service on your machine. When you start it, the server
-listens on port 7523 by default and multiple LLM clients (Claude Code, Gemini,
+listens on port 7523 by default and multiple LLM clients (Claude Code, Antigravity,
 Copilot, Codex) connect concurrently to the same fleet instance.
 
 ## HTTP+SSE Transport (default)

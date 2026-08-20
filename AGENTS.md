@@ -24,7 +24,8 @@ node dist/index.js install     # Dev-mode install
 - ASCII only: never write non-ASCII characters to any file. Use `-` for dashes, `->` for arrows, `[OK]` for checkmarks, etc.
 - Permission blocks must be surfaced, not routed around: if a tool or git invocation is blocked by the permission layer, stop and report the block to the user/orchestrator. Do not author a wrapper script, alternate binary, or other workaround whose purpose is to bypass the block, even if the underlying operation is judged safe. See `scripts/recovery.sh` disposition note in the 2026-07-02 incident writeup (RECOVERY.md) for the precedent this guards against.
 - `packages/apra-fleet-client` must always be updated to catch up with any changes to the fleet MCP tools (`src/tools/*` schemas/behavior) in the same change -- it is the thin client wrapper other packages (fleet-sprint, apra-pm, workflows) use to call those tools, and a drifted client silently gives callers a stale or inconsistent view of what the server actually accepts/does. This is not optional cleanup; treat it as part of the tool change itself.
-- Never rely on shell-level variable expansion in a member-bound command string ($VAR/path, ~/, backticks) -- the target member's shell may be PowerShell, not POSIX. Resolve paths in JavaScript before building the command using probeCommandFor(targetOs) (src/services/member-home.ts:53-56) or branching on agent.os (src/providers/claude.ts:373-374). Wrap PowerShell commands explicitly (powershell -EncodedCommand, per src/os/windows.ts) rather than assuming the member's shell. A POSIX-only feature must hard-fail on Windows or gate with a surfaced error -- an advisory warning that never blocks is a false success. See apra-fleet-ot2z (originating incident) and regression tests apra-fleet-ot2z.2, .5, .7, .9.
+- Never rely on shell-level variable expansion in a member-bound command string ($VAR/path, ~/, backticks) -- the target member's shell may be PowerShell, not POSIX. Resolve paths in JavaScript before building the command using probeCommandFor(targetOs) (src/services/member-home.ts:53-56) or branching on agent.os (src/providers/claude.ts:373-374). Wrap PowerShell commands explicitly (powershell -EncodedCommand, per src/os/windows.ts) rather than assuming the member's shell. A POSIX-only feature must hard-fail on Windows or gate with a surfaced error -- an advisory warning that never blocks is a false success.
+- Never cite a bead id (apra-fleet-XXXX) in any LLM-facing text: prompts, playbooks, schema descriptions, or strings a script prints/writes at runtime. Bead ids are fine only in code comments and docs/.
 
 ## DeepWiki
 
@@ -56,6 +57,18 @@ bd close <id>         # Complete work
 - Use `bd remember` for persistent knowledge - do NOT use MEMORY.md files
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+
+### Persistent Memory - Which System
+
+Three memory systems exist; when asked to "remember" something, route by content:
+
+- **User/assistant preferences** (user's role, standing feedback on how the assistant collaborates, anything not about this repo's code) -> Claude's own auto-memory (`~/.claude/projects/.../memory/`). Not managed by this repo; named here only so it is not confused with the two below.
+- **Operational rules** (short, actionable directives for any dispatched agent during this project's beads-tracked work - test-harness gotchas, required flags, launch conventions) -> `bd remember`. Keep entries terse: the actionable rule only, no PR/bead/commit-ref padding.
+- **Technical facts about the codebase** (architecture decisions, gotchas, "why is it built this way" - tied to specific files/symbols, worth confidence-grading and contradiction-checking, shareable via `kb_export` to `.fleet/kb-canonical.json`) -> KB (`kb_capture`).
+
+When a rule is both operational and technical: prefer KB if it anchors to specific files/symbols and benefits from confidence-grading over time; prefer `bd remember` if it is a procedural directive with no file/symbol anchor.
+
+KB is opt-in per repo. If `kb_capture`/`kb_query` errors because `kb_setup` has not run here, do not treat it as a hard failure or drop the memory - fall back to `bd remember` (or tell the user) so the request still lands.
 
 ## Agent Context Profiles
 
@@ -114,3 +127,48 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+<!-- gitnexus:start -->
+# GitNexus -- Code Intelligence
+
+This project is indexed by GitNexus as **apra-fleet** (12888 symbols, 30673 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root -- it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash -> `npm i -g gitnexus`; #1939).
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol -- callers, callees, which execution flows it participates in -- use `context({name: "symbolName"})`.
+- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source->sink flows; needs `analyze --pdg`).
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace -- use `rename` which understands the call graph.
+- NEVER commit changes without running `detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/apra-fleet/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/apra-fleet/clusters` | All functional areas |
+| `gitnexus://repo/apra-fleet/processes` | All execution flows |
+| `gitnexus://repo/apra-fleet/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->

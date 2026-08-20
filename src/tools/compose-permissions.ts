@@ -14,7 +14,7 @@ import type { Agent } from '../types.js';
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
-  role: z.enum(['doer', 'reviewer']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test). Provide at least one of role or tags.'),
+  role: z.enum(['doer', 'reviewer']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test). The hard-rejected NEVER_AUTO_GRANT patterns are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Provide at least one of role or tags.'),
   tags: z.array(z.string()).optional().describe('Member tags. Include "doer" or "reviewer" to set the primary mode (default doer); other tags (e.g. "gpu", "devops") load tag-<name>.json profiles and merge additively. When both role and tags are given, tags wins.'),
   project_folder: z.string().optional().describe('Local project folder containing permissions.json ledger. Omit to skip ledger merge.'),
   grant: z.array(z.string()).optional().describe('Reactive mode: additional permissions to grant (e.g. ["Bash(docker:*)", "Bash(docker-compose:*)"]). Appended to current permissions and re-delivered.'),
@@ -47,11 +47,94 @@ const CO_OCCURRENCE: Record<string, string[]> = {
   'Bash(python:*)': ['Bash(python3:*)'],
 };
 
-// Never auto-grant - require user escalation
-const NEVER_AUTO_GRANT = new Set([
-  'Bash(sudo:*)', 'Bash(su:*)', 'Bash(env:*)', 'Bash(printenv:*)',
-  'Bash(nc:*)', 'Bash(nmap:*)', 'Bash(chmod 777:*)',
-]);
+// Never auto-grant - require user escalation.
+//
+// apra-fleet PR#416 review (finding 3): this was previously a seven-entry Set
+// checked with exact string equality, so `Bash(sudo *)`, `Bash(sudo:*) `
+// (trailing space), `Bash(bash -c *)`, `Bash(sh -c *)`, `Bash(*)` and
+// `Bash(curl *|sh)` all sailed straight through -- i.e. arbitrary code
+// execution was one whitespace character away from being auto-grantable.
+// These are now wildcard *patterns* matched against a normalized form of the
+// requested permission. A denylist can never be complete (`Bash(perl -e *)`,
+// `Bash(node -e *)`, `Bash(make *)` remain arbitrary-execution in practice);
+// it is the unconditional floor that applies to EVERY caller of this tool.
+const NEVER_AUTO_GRANT_PATTERNS = [
+  'Bash(sudo*)',
+  'Bash(su *)',
+  'Bash(doas*)',
+  'Bash(*bash -c*)',
+  'Bash(*sh -c*)',
+  'Bash(*eval*)',
+  'Bash(chmod 777*)',
+  'Bash(env*)',
+  'Bash(printenv*)',
+  'Bash(nc*)',
+  'Bash(nmap*)',
+];
+
+// Shell metacharacters that turn a single approved command into an arbitrary
+// command chain. A grant payload containing any of these is rejected
+// structurally, regardless of which command it names.
+const SHELL_CHAINING_METACHARS = ['|', ';', '&&', '`', '$('];
+
+/** Escapes a string for literal use inside a RegExp, except '*' which callers
+ *  handle separately as the wildcard token. */
+function escapeRegExpExceptStar(s: string): string {
+  return s.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Matches `permission` against `pattern`, treating '*' in the pattern as a
+ *  wildcard (matches any run of characters, including none) rather than a
+ *  literal character. Falls back to exact equality for a wildcard-free
+ *  pattern. */
+function matchesDenyPattern(pattern: string, permission: string): boolean {
+  const regex = new RegExp(`^${pattern.split('*').map(escapeRegExpExceptStar).join('.*')}$`);
+  return regex.test(permission);
+}
+
+/** Splits `Tool(payload)` into its parts; returns null for a bare tool name. */
+function splitPermission(permission: string): { tool: string; payload: string } | null {
+  const m = /^([A-Za-z_][A-Za-z0-9_-]*)\((.*)\)$/.exec(permission.trim());
+  if (!m) return null;
+  return { tool: m[1]!, payload: m[2]! };
+}
+
+/**
+ * Canonical form used for denylist matching only (never for storage or
+ * delivery). Trims, collapses internal whitespace, and treats the ':' that
+ * separates the command token from its argument pattern as equivalent to a
+ * space, so `Bash(sudo:*)` and `Bash(sudo *)` are the same request.
+ */
+export function normalizePermission(permission: string): string {
+  const s = permission.trim().replace(/\s+/g, ' ');
+  const parts = splitPermission(s);
+  if (!parts) return s;
+  const payload = parts.payload.replace(':', ' ').replace(/\s+/g, ' ').trim();
+  return `${parts.tool}(${payload})`;
+}
+
+/**
+ * True when the requested permission must never be granted without explicit
+ * user escalation. Three independent rules, any of which rejects:
+ *  1. catch-all: a payload that is nothing but wildcards/whitespace -- e.g.
+ *     `Bash(*)` -- which is not "a wider grant", it is unrestricted execution.
+ *  2. shell chaining: the payload contains |, ;, &&, a backtick, or $( .
+ *  3. pattern match against NEVER_AUTO_GRANT_PATTERNS.
+ */
+export function isNeverAutoGrant(permission: string): boolean {
+  const normalized = normalizePermission(permission);
+  const parts = splitPermission(normalized);
+  const payload = parts?.payload ?? '';
+
+  // 1. Catch-all grant (Bash(*), Bash( ** ), ...).
+  if (parts && payload.replace(/[*\s]/g, '') === '') return true;
+
+  // 2. Shell chaining metacharacters anywhere in the payload.
+  if (SHELL_CHAINING_METACHARS.some(meta => payload.includes(meta))) return true;
+
+  // 3. Explicit deny patterns (wildcard-aware).
+  return NEVER_AUTO_GRANT_PATTERNS.some(pattern => matchesDenyPattern(pattern, normalized));
+}
 
 interface Ledger {
   stacks: string[];
@@ -264,29 +347,53 @@ function stableStringify(value: unknown): string {
  *      the parsed document must structurally match the merged content; for a
  *      TOML/string payload the expected text must be present. A mismatch (empty
  *      file, wrong path, quoting fault, etc.) throws a ConfigDeliveryError. */
+/** Join a work-folder-relative config path onto the member's absolute work
+ *  folder, OS-appropriately. `strategy.execCommand` issues a raw shell/SSH
+ *  exec with no cwd guarantee (LocalStrategy spawns with cwd=workFolder, but
+ *  RemoteStrategy's ssh2 client.exec() defaults to the SSH user's home
+ *  directory, not workFolder) -- so every command deliverConfigFile issues
+ *  must use an absolute path, never a bare relative one. See apra-fleet
+ *  incident: compose_permissions reported a verified grant while writing to
+ *  ~/.claude/settings.local.json on a remote member instead of
+ *  <workFolder>/.claude/settings.local.json -- the read-back verification
+ *  passed because it re-read the same (wrong) relative path it had just
+ *  written, so the mismatch was invisible to that check alone. */
+function resolveRemotePath(workFolder: string, relPath: string, isWindows: boolean): string {
+  if (isWindows) {
+    const base = workFolder.replace(/[\\/]+$/, '').replace(/\//g, '\\');
+    return `${base}\\${relPath.replace(/\//g, '\\')}`;
+  }
+  const base = workFolder.replace(/\/+$/, '');
+  return `${base}/${relPath}`;
+}
+
 async function deliverConfigFile(
   strategy: Awaited<ReturnType<typeof getStrategy>>,
   agentOs: string,
+  workFolder: string,
   filePath: string,
   content: Record<string, unknown> | string,
 ): Promise<void> {
   const isWindows = agentOs === 'windows';
-  const winPath = filePath.replace(/\//g, '\\');
-  const dir = filePath.split('/').slice(0, -1).join('/');
+  const absPath = resolveRemotePath(workFolder, filePath, isWindows);
+  const winPath = absPath.replace(/\//g, '\\');
+  const dir = isWindows
+    ? winPath.split('\\').slice(0, -1).join('\\')
+    : absPath.split('/').slice(0, -1).join('/');
   const mkdirCmd = isWindows
-    ? `New-Item -ItemType Directory -Force "${dir.replace(/\//g, '\\')}"`
-    : `mkdir -p ${dir}`;
+    ? `New-Item -ItemType Directory -Force "${dir}"`
+    : `mkdir -p "${dir}"`;
   const mkdirResult = await strategy.execCommand(mkdirCmd, 5000);
   if (mkdirResult.code !== 0) {
     throw new ConfigDeliveryError(
-      filePath,
+      absPath,
       `could not create parent directory "${dir}" (exit ${mkdirResult.code})${stderrExcerpt(mkdirResult.stderr)}`,
     );
   }
 
   const readCmd = isWindows
     ? `Get-Content -Raw "${winPath}" -ErrorAction SilentlyContinue`
-    : `cat ${filePath} 2>/dev/null || true`;
+    : `cat "${absPath}" 2>/dev/null || true`;
 
   let mergedContent: Record<string, unknown> | string = content;
   if (isPlainObject(content)) {
@@ -307,11 +414,11 @@ async function deliverConfigFile(
 
   const writeCmd = isWindows
     ? `[System.IO.File]::WriteAllText("${winPath}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
-    : `cat > ${filePath} << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`;
+    : `cat > "${absPath}" << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`;
   const writeResult = await strategy.execCommand(writeCmd, 5000);
   if (writeResult.code !== 0) {
     throw new ConfigDeliveryError(
-      filePath,
+      absPath,
       `write command failed (exit ${writeResult.code})${stderrExcerpt(writeResult.stderr)}`,
     );
   }
@@ -324,14 +431,14 @@ async function deliverConfigFile(
   const readBack = verifyResult.stdout.trim();
   if (!readBack) {
     throw new ConfigDeliveryError(
-      filePath,
+      absPath,
       `read-back verification failed: file is empty or missing after a write that reported success`,
     );
   }
   if (typeof mergedContent === 'string') {
     if (!readBack.includes(contentStr.trim())) {
       throw new ConfigDeliveryError(
-        filePath,
+        absPath,
         `read-back verification failed: expected content is not present on disk`,
       );
     }
@@ -341,13 +448,13 @@ async function deliverConfigFile(
       parsed = JSON.parse(readBack);
     } catch {
       throw new ConfigDeliveryError(
-        filePath,
+        absPath,
         `read-back verification failed: file on disk is not valid JSON`,
       );
     }
     if (stableStringify(parsed) !== stableStringify(mergedContent)) {
       throw new ConfigDeliveryError(
-        filePath,
+        absPath,
         `read-back verification failed: merged permissions did not land on disk`,
       );
     }
@@ -374,7 +481,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   // Reactive grant mode
   if (input.grant?.length) {
-    const blocked = input.grant.filter(p => NEVER_AUTO_GRANT.has(p));
+    const blocked = input.grant.filter(p => isNeverAutoGrant(p));
     if (blocked.length) {
       return `❌ Cannot auto-grant dangerous permissions: ${blocked.join(', ')}. Escalate to user.`;
     }
@@ -388,10 +495,18 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     let allow: string[];
 
     if (provider.name === 'claude') {
-      // Claude: read existing allow list and merge
+      // Claude: read existing allow list and merge. Must read the SAME absolute
+      // path deliverConfigFile will write below -- deepMerge overwrites arrays
+      // wholesale (see deepMerge doc comment), so an `allow` computed from the
+      // wrong file here would silently discard every pre-existing grant in the
+      // real settings.local.json once the write lands at the correct path.
+      const isWindowsAgent = (agent.os ?? 'linux') === 'windows';
+      const absSettingsPath = resolveRemotePath(agent.workFolder, '.claude/settings.local.json', isWindowsAgent);
       // TODO: unbranched POSIX `2>/dev/null || echo` -- same defect class as
       // orphan-recovery.ts's pid-alive/file-read commands. Not yet OS-branched.
-      const readResult = await strategy.execCommand('cat .claude/settings.local.json 2>/dev/null || echo "{}"', 5000);
+      const readResult = isWindowsAgent
+        ? await strategy.execCommand(`Get-Content -Raw "${absSettingsPath.replace(/\//g, '\\')}" -ErrorAction SilentlyContinue`, 5000)
+        : await strategy.execCommand(`cat "${absSettingsPath}" 2>/dev/null || echo "{}"`, 5000);
       let current: any;
       try {
         current = JSON.parse(readResult.stdout.trim());
@@ -410,7 +525,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     const paths = provider.permissionConfigPaths();
     try {
       for (let i = 0; i < paths.length; i++) {
-        await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i]);
       }
     } catch (e) {
       if (e instanceof ConfigDeliveryError) {
@@ -453,7 +568,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   try {
     for (let i = 0; i < paths.length; i++) {
-      await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+      await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i]);
     }
   } catch (e) {
     if (e instanceof ConfigDeliveryError) {

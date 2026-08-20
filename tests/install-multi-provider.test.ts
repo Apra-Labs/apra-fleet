@@ -100,26 +100,6 @@ describe('runInstall multi-provider', () => {
     vi.mocked(execSync).mockImplementation(() => Buffer.from(''));
   });
 
-  it('installs for Gemini when --llm gemini is passed', async () => {
-    await runInstall(['--llm', 'gemini']);
-    
-    // Check if Gemini paths are used
-    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
-    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
-      expect.stringContaining(geminiSettings),
-      expect.any(String)
-    );
-
-    // Should NOT run claude mcp add
-    const claudeCmd = vi.mocked(execSync).mock.calls.find(c => c[0].toString().includes('claude mcp add'));
-    expect(claudeCmd).toBeUndefined();
-
-    // Should have written to Gemini settings with trust: true
-    const geminiWrite = vi.mocked(fs.writeFileSync).mock.calls.filter(c => c[0].toString().includes(geminiSettings)).at(-1);
-    expect(geminiWrite).toBeDefined();
-    expect(geminiWrite![1].toString()).toContain('"trust": true');
-  });
-
   it('installs for Codex when --llm codex is passed', async () => {
     await runInstall(['--llm', 'codex']);
     
@@ -152,38 +132,6 @@ describe('runInstall multi-provider', () => {
     expect(copilotWrite![1].toString()).toContain('apra-fleet');
   });
 
-  it('installs skills to Gemini directory when --skill --llm gemini is passed', async () => {
-    // Mock readdirSync for copyDirSync in dev mode
-    vi.mocked(fs.readdirSync).mockImplementation((p: any) => {
-      const ps = p.toString();
-      if (ps.includes('skills') && ps.includes('pm')) {
-        return [{ name: 'SKILL.md', isDirectory: () => false }] as any;
-      }
-      return [];
-    });
-
-    await runInstall(['--skill', '--llm', 'gemini']);
-    
-    // Check if Gemini skill directory is created
-    const geminiSkillsDir = path.join(mockHome, '.gemini', 'skills', 'pm');
-    expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(
-      expect.stringContaining(geminiSkillsDir),
-      expect.any(Object)
-    );
-
-    // Check if skill file is copied to Gemini directory
-    expect(vi.mocked(fs.copyFileSync)).toHaveBeenCalledWith(
-      expect.stringContaining('SKILL.md'),
-      expect.stringContaining(geminiSkillsDir)
-    );
-
-    // Check if Gemini settings include the correct skill path in permissions
-    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
-    const geminiWrite = vi.mocked(fs.writeFileSync).mock.calls.filter(c => c[0].toString().includes(geminiSettings)).at(-1);
-    expect(geminiWrite).toBeDefined();
-    expect(geminiWrite![1].toString()).toContain('skills/pm');
-  });
-
   it('errors on unsupported provider', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
 
@@ -202,16 +150,6 @@ describe('runInstall multi-provider', () => {
     exitSpy.mockRestore();
   });
 
-  it('accepts --llm=gemini (equals form) and writes to ~/.gemini/', async () => {
-    await runInstall(['--llm=gemini']);
-
-    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
-    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
-      expect.stringContaining(geminiSettings),
-      expect.any(String)
-    );
-  });
-
   it('accepts --llm=codex (equals form) and writes to ~/.codex/config.toml', async () => {
     await runInstall(['--llm=codex']);
 
@@ -225,7 +163,6 @@ describe('runInstall multi-provider', () => {
   it('creates configDir for each provider via mkdirSync', async () => {
     for (const [llm, dir] of [
       ['claude', path.join(mockHome, '.claude')],
-      ['gemini', path.join(mockHome, '.gemini')],
       ['codex', path.join(mockHome, '.codex')],
       ['copilot', path.join(mockHome, '.copilot')],
     ] as [string, string][]) {
@@ -270,22 +207,7 @@ describe('runInstall multi-provider', () => {
     expect(addCall).toContain('--scope user');
   });
 
-  it('Gemini MCP registration embeds mcpServers.apra-fleet with trust:true', async () => {
-    await runInstall(['--llm', 'gemini']);
-
-    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
-    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
-      c[0].toString().includes(geminiSettings)
-    );
-    expect(writes.length).toBeGreaterThan(0);
-    const lastWrite = writes.at(-1)![1].toString();
-    const parsed = JSON.parse(lastWrite);
-    const serverKey = Object.keys(parsed.mcpServers).find(k => k === 'apra-fleet');
-        expect(serverKey).toBeDefined();
-        expect(parsed.mcpServers[serverKey!].trust).toBe(true);
-      });
-
-      it('Codex MCP registration writes [mcp_servers.apra-fleet] TOML section', async () => {
+  it('Codex MCP registration writes [mcp_servers.apra-fleet] TOML section', async () => {
         await runInstall(['--llm', 'codex']);
 
         const codexConfig = path.join(mockHome, '.codex', 'config.toml');
@@ -323,7 +245,7 @@ describe('runInstall multi-provider', () => {
 
   it('permissions include provider-specific skill path', async () => {
     for (const [llm, skillsDir] of [
-      ['gemini', path.join(mockHome, '.gemini', 'skills', 'pm')],
+      ['copilot', path.join(mockHome, '.copilot', 'skills', 'pm')],
       ['codex', path.join(mockHome, '.codex', 'skills', 'pm')],
     ] as [string, string][]) {
       vi.clearAllMocks();
@@ -384,20 +306,6 @@ describe('runInstall multi-provider', () => {
     // "sonnet" auto-resolves to the current generation (confirmed via `claude --settings`
     // and `claude --help`) instead of a pinned dated ID that goes stale on each release.
     expect(parsed.defaultModel).toBe('sonnet');
-  });
-
-  it('writes defaultModel for Gemini (gemini-3.5-flash) to settings.json', async () => {
-    await runInstall(['--llm', 'gemini']);
-
-    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
-    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
-      c[0].toString().includes(geminiSettings)
-    );
-    expect(writes.length).toBeGreaterThan(0);
-    const defaultModelWrite = writes.find(c => c[1].toString().includes('"defaultModel"'));
-    expect(defaultModelWrite).toBeDefined();
-    const parsed = JSON.parse(defaultModelWrite![1].toString());
-    expect(parsed.defaultModel).toBe('gemini-3.5-flash');
   });
 
   it('writes defaultModel for Codex (gpt-5.4) to config.toml', async () => {
@@ -706,86 +614,6 @@ describe('runInstall multi-provider', () => {
     logSpy.mockRestore();
   });
 
-  // ── Gemini hook name translation ──────────────────────────────────────────
-
-  it('translates PostToolUse -> AfterTool in Gemini settings.json', async () => {
-    const hooksConfig = {
-      hooks: {
-        PostToolUse: [{ matcher: 'mcp__apra-fleet__register_member', hooks: [{ type: 'command', command: 'bash hook.sh' }] }],
-      },
-    };
-    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
-      const ps = p.toString();
-      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
-      if (ps.includes('hooks-config.json')) return JSON.stringify(hooksConfig);
-      return '';
-    });
-
-    await runInstall(['--llm', 'gemini']);
-
-    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
-    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
-      c[0].toString().includes(geminiSettings)
-    );
-    const hooksWrite = writes.find(c => c[1].toString().includes('AfterTool'));
-    expect(hooksWrite).toBeDefined();
-    const parsed = JSON.parse(hooksWrite![1].toString());
-    expect(parsed.hooks.AfterTool).toBeDefined();
-    expect(parsed.hooks.PostToolUse).toBeUndefined();
-  });
-
-  it('deletes stale PostToolUse key when reinstalling for Gemini', async () => {
-    const fileState = new Map<string, string>();
-    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
-
-    // Pre-seed settings.json with a stale PostToolUse entry
-    fileState.set(
-      geminiSettings,
-      JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'mcp__apra-fleet__register_member', hooks: [] }] } })
-    );
-
-    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
-      const ps = p.toString();
-      if (ps.includes('version.json')) return true;
-      if (ps.includes('hooks-config.json')) return true;
-      if (fileState.has(ps)) return true;
-      return false;
-    });
-    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
-      const ps = p.toString();
-      if (fileState.has(ps)) return fileState.get(ps)!;
-      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
-      if (ps.includes('hooks-config.json')) return JSON.stringify({
-        hooks: { PostToolUse: [{ matcher: 'mcp__apra-fleet__register_member', hooks: [{ type: 'command', command: 'bash hook.sh' }] }] },
-      });
-      return '';
-    });
-    vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
-      fileState.set(p.toString(), content.toString());
-    });
-
-    await runInstall(['--llm', 'gemini']);
-
-    const finalContent = fileState.get(geminiSettings);
-    expect(finalContent).toBeDefined();
-    const parsed = JSON.parse(finalContent!);
-    expect(parsed.hooks.PostToolUse).toBeUndefined();
-    expect(parsed.hooks.AfterTool).toBeDefined();
-  });
-
-  it('mergePermissions adds catch-all skills directory permission for Gemini', async () => {
-    await runInstall(['--llm', 'gemini']);
-
-    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
-    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
-      c[0].toString().includes(geminiSettings)
-    );
-    expect(writes.length).toBeGreaterThan(0);
-    const lastContent = writes.at(-1)![1].toString();
-    // Catch-all: ~/.gemini/skills/** (covers user-defined and bundled skills beyond pm/ and fleet/)
-    expect(lastContent).toContain('/mock/home/.gemini/skills/**');
-  });
-
   it('-h prints usage and exits 0 with no side effects', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -823,7 +651,7 @@ describe('runInstall multi-provider', () => {
 
   // ── Agent install tests ──────────────────────────────────────────────
 
-  for (const llm of ['claude', 'gemini', 'agy'] as const) {
+  for (const llm of ['claude', 'agy'] as const) {
     it(`installs 4 agent files for ${llm}`, async () => {
       vi.mocked(fs.readdirSync).mockImplementation((p: any, opts?: any) => {
         const ps = p.toString();
@@ -931,7 +759,7 @@ describe('runInstall multi-provider', () => {
     'integ-test-runner.md',
   ];
 
-  for (const llm of ['claude', 'gemini', 'agy'] as const) {
+  for (const llm of ['claude', 'agy'] as const) {
     it(`all 8 agents (including deployer/harvester/ci-watcher/integ-test-runner) land for ${llm}`, async () => {
       vi.mocked(fs.readdirSync).mockImplementation((p: any, opts?: any) => {
         const ps = p.toString();
@@ -1064,7 +892,6 @@ describe('runInstall multi-provider', () => {
   it('cost.js is written to skillsDir for all providers when PM is installed', async () => {
     const providerSkillsDirs: Array<[string, string]> = [
       ['claude',   path.join(mockHome, '.claude', 'skills', 'pm', 'cost.js')],
-      ['gemini',   path.join(mockHome, '.gemini', 'skills', 'pm', 'cost.js')],
       ['agy',      path.join(mockHome, '.gemini', 'antigravity-cli', 'skills', 'pm', 'cost.js')],
       ['opencode', path.join(mockHome, '.config', 'opencode', 'skills', 'pm', 'cost.js')],
     ];
@@ -1114,15 +941,6 @@ describe('runInstall multi-provider', () => {
     expect(fileState.has(workflowDest)).toBe(false);
   });
 
-  it('auto-sprint.js is NOT written to ~/.claude/workflows/ for gemini install', async () => {
-    const fileState = setupWorkflowMocks();
-
-    await runInstall(['--llm', 'gemini']);
-
-    const workflowDest = path.join(mockHome, '.claude', 'workflows', 'auto-sprint.js');
-    expect(fileState.has(workflowDest)).toBe(false);
-  });
-
   it('Skill(auto-sprint) and Workflow(auto-sprint) are in claude settings.json allow list', async () => {
     const fileState = setupWorkflowMocks();
 
@@ -1156,21 +974,6 @@ describe('runInstall multi-provider', () => {
     // No claude workflows written either
     const workflowDest = path.join(mockHome, '.claude', 'workflows', 'auto-sprint.js');
     expect(fileState.has(workflowDest)).toBe(false);
-  });
-
-  it('Skill(auto-sprint) and Workflow(auto-sprint) are absent from gemini settings', async () => {
-    const fileState = setupWorkflowMocks();
-
-    await runInstall(['--llm', 'gemini']);
-
-    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
-    const content = fileState.get(geminiSettings);
-    if (content) {
-      const parsed = JSON.parse(content);
-      const allow: string[] = parsed?.permissions?.allow ?? [];
-      expect(allow).not.toContain('Skill(auto-sprint)');
-      expect(allow).not.toContain('Workflow(auto-sprint)');
-    }
   });
 
   it('auto-sprint.js is NOT written to ~/.claude/workflows/ for agy install', async () => {
@@ -1383,34 +1186,6 @@ describe('runInstall multi-provider', () => {
     expect(addCall).toBeDefined();
     expect(addCall).not.toContain('--transport http');
     expect(addCall).not.toContain('http://localhost:7523/mcp');
-  });
-
-  it('--transport http writes httpUrl for Gemini', async () => {
-    await runInstall(['--llm', 'gemini']);
-
-    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
-    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
-      c[0].toString().includes(geminiSettings)
-    );
-    expect(writes.length).toBeGreaterThan(0);
-    const lastWrite = writes.at(-1)![1].toString();
-    const parsed = JSON.parse(lastWrite);
-    expect(parsed.mcpServers['apra-fleet'].httpUrl).toBe('http://localhost:7523/mcp');
-    expect(parsed.mcpServers['apra-fleet'].trust).toBe(true);
-  });
-
-  it('--transport stdio writes command+args for Gemini', async () => {
-    await runInstall(['--llm', 'gemini', '--transport', 'stdio']);
-
-    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
-    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
-      c[0].toString().includes(geminiSettings)
-    );
-    expect(writes.length).toBeGreaterThan(0);
-    const lastWrite = writes.at(-1)![1].toString();
-    const parsed = JSON.parse(lastWrite);
-    expect(parsed.mcpServers['apra-fleet'].command).toBeDefined();
-    expect(parsed.mcpServers['apra-fleet'].httpUrl).toBeUndefined();
   });
 
   it('--transport http writes url+type for Copilot', async () => {

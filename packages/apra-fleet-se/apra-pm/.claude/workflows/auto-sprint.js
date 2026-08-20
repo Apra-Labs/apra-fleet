@@ -1634,7 +1634,7 @@ const INTEG_RUN_SCHEMA = {
       "items": {
         "type": "string"
       },
-      "description": "apra-fleet-jfo: verify-set bead ids (any issue_type, Step 1b) closed this run. Optional for backward compatibility -- absent/omitted on a dispatch that named no verify-set ids."
+      "description": "Verify-set bead ids (any issue_type, Step 1b) closed this run. Optional for backward compatibility -- absent/omitted on a dispatch that named no verify-set ids."
     },
     "verifySetLeftOpen": {
       "type": "array",
@@ -1653,7 +1653,7 @@ const INTEG_RUN_SCHEMA = {
           }
         }
       },
-      "description": "apra-fleet-jfo: verify-set bead ids (Step 1b) left open this run, with why (gap bug filed, or inconclusive). Optional for backward compatibility."
+      "description": "Verify-set bead ids (Step 1b) left open this run, with why (gap bug filed, or inconclusive). Optional for backward compatibility."
     },
     "observedFailures": {
       "type": "array",
@@ -2154,10 +2154,19 @@ function vetKbWork(role, result) {
       rejected.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
       continue;
     }
+    // apra-fleet-23c: kbCaptureSchema requires content (z.string().min(1)).
+    // Omitting it meant every kb_capture failed zod validation at the MCP
+    // boundary and persisted nothing. (This block had drifted out of sync with
+    // the canonical copy in lib/vet-kb-work.mjs -- restored to match exactly.)
+    if (typeof c.content !== 'string' || c.content.trim().length === 0) {
+      rejected.push(`${role}: capture "${c.title}" has no content`);
+      continue;
+    }
     captures.push({
       type: c.type,
       title: c.title,
       summary: c.summary,
+      content: c.content,
       source_files: c.source_files,
       symbols: Array.isArray(c.symbols) ? c.symbols : [],
     });
@@ -2208,7 +2217,7 @@ async function runKbWork(repoPath, role, result) {
       `with repo_path "${repoPath}" and that object's fields verbatim. Do not ` +
       `reword, merge, split or invent entries.\n` +
       `Step 3: For EACH object in promotions below, call mcp__apra-fleet__kb_promote ` +
-      `with its id and reason verbatim.\n` +
+      `with repo_path "${repoPath}" and that object's id and reason verbatim.\n` +
       `Step 4: Return the counts. A call refused by the tool counts in failed, ` +
       `not captured/promoted -- report it, do not retry it with altered fields.\n\n` +
       `captures: ${JSON.stringify(captures)}\n` +

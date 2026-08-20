@@ -3,7 +3,7 @@ import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.j
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 
-const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && unset ANTIGRAVITY_SOURCE_METADATA GEMINI_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && ';
+const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && unset ANTIGRAVITY_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && ';
 
 /**
  * Wrap a bash command string with PID capture.
@@ -262,6 +262,17 @@ export class LinuxCommands implements OsCommands {
     // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
     const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
     return `rm -f "${credFile}" && git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
+  }
+
+  ghAuthLogin(token: string, hostname = 'github.com'): string {
+    const escapedToken = escapeDoubleQuoted(token);
+    const escapedHostname = escapeDoubleQuoted(hostname);
+    // gh CLI has its own credential store (~/.config/gh/hosts.yml), entirely
+    // separate from the git credential helper written above -- gh never reads
+    // that file. `gh auth login --with-token` is gh's own non-interactive
+    // enrollment path. Best-effort: if `gh` isn't installed, no-op rather than
+    // fail the whole VCS auth deployment over an optional CLI.
+    return `if command -v gh >/dev/null 2>&1; then echo "${escapedToken}" | gh auth login --hostname "${escapedHostname}" --with-token; else echo "gh CLI not installed -- skipped gh auth login" >&2; fi`;
   }
 
   // --- SSH key deployment ---

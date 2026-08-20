@@ -41,7 +41,7 @@ Tags determine the primary mode and grant additional tool scopes:
 3. Load **custom tag profiles**: for each non-mode tag, load tag-<name>.json and merge its permissions for the primary mode
 4. Load **ledger grants**: merge any permissions previously granted in project_folder/permissions.json
 
-All merges are additive (Set-based) - order is independent, duplicates discarded. The final allow list is delivered to the member's provider (Claude, Gemini, etc.) in the provider's native config format.
+All merges are additive (Set-based) - order is independent, duplicates discarded. The final allow list is delivered to the member's provider (Claude, Codex, etc.) in the provider's native config format.
 
 ### Example
 
@@ -67,7 +67,7 @@ When `execute_prompt` output contains a permission denial, call `compose_permiss
 
 > "Grant Bash(docker:*) to build-server, reason: integration tests, project folder ./my-project"
 
-The tool validates (blocks dangerous tools like sudo/env), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
+The tool validates (wildcard-matched denylist -- blocks sudo/env, `bash -c`, catch-alls and shell chaining; see [Never auto-granted](#never-auto-granted)), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
 
 ## Role switch
 
@@ -75,7 +75,31 @@ When a member's primary mode changes (e.g., from doer to reviewer), re-run `comp
 
 ## Never auto-granted
 
-`sudo`, `su`, `env`, `printenv`, `nc`, `nmap` - the tool rejects these. Escalate to user.
+`compose_permissions` hard-rejects a `grant` request - from ANY caller, with or
+without a role - when it matches the `NEVER_AUTO_GRANT` denylist. Matching is
+wildcard-based against a normalized form of the request (whitespace collapsed;
+the `:` separating the command token from its argument pattern treated as a
+space), so `Bash(sudo:*)`, `Bash(sudo *)` and `Bash(sudo apt-get install *)`
+are all the same request and all rejected.
+
+Three rules, any of which rejects:
+
+1. **Catch-all** - a payload that is nothing but wildcards, e.g. `Bash(*)`.
+   That is not "a wider grant", it is unrestricted execution.
+2. **Shell chaining** - the payload contains `|`, `;`, `&&`, a backtick, or
+   `$(`, any of which turns one approved command into an arbitrary chain
+   (`Bash(curl *|sh)`).
+3. **Denied command patterns** - `sudo`, `su`, `doas`, `bash -c` / `sh -c`,
+   `eval`, `env`, `printenv`, `nc`, `nmap`, `chmod 777`.
+
+Escalate to the user for any of these. Note rule 3 is prefix-based, so an
+unrelated command that merely starts with a denied token (`ncdu`, `envsubst`)
+is also refused - over-blocking is the safe direction for a denylist, and an
+operator can still add such a permission by hand.
+
+A denylist can never be complete: `Bash(make *)`, `Bash(npm run *)`,
+`Bash(node -e *)` all remain arbitrary execution in practice. The denylist is
+the unconditional floor that applies to every caller.
 
 ## settings.json vs settings.local.json (Claude)
 
@@ -116,13 +140,13 @@ setting `projects[<work_folder>].hasTrustDialogAccepted = true` scoped **strictl
 that exact work folder (never a parent directory, never blanket) - delivered over the
 same channel `compose_permissions` already uses, so it works uniformly for local and
 remote (SSH) members. It logs distinctly whether it just seeded trust or found it
-already present. Other providers no-op: Gemini and OpenCode have their own trust gates
-but already bypass them per-dispatch (`--skip-trust`, `--dangerously-skip-permissions`);
+already present. Other providers no-op: OpenCode has its own trust gate
+but already bypasses it per-dispatch (`--dangerously-skip-permissions`);
 AGY has no per-project trust concept (machine-global config); Codex/Copilot have no
 known equivalent gate.
 
 If `execute_prompt` fails with a `workspace_not_trusted` structured error, the CLI's own
 stderr will contain a `"...this workspace has not been trusted"` message - seed trust
 via `ensureWorkspaceTrusted(workFolder)` (invoked automatically at
-register_member/update_member and on every `compose_permissions` call once
-apra-fleet-eft.40.2 wires it in), then retry.
+register_member/update_member, and on every `compose_permissions` call once that
+wiring lands), then retry.

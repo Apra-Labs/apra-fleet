@@ -41,15 +41,17 @@ export const DEFAULT_SAFETY_MARGIN_TOKENS = 20_000;
 /**
  * Known context windows (tokens) per provider, sourced from
  * docs/provider-matrix.md's "Context window" row (2026-07 snapshot):
- * Claude 200K (Sonnet)/1M (Opus 4.7), Gemini 1M, Codex 192K, Copilot 64K,
- * AGY 1M. `opencode`/`none` have no published figure in that survey --
- * default to Codex's documented 192K as a conservative (not optimistic)
- * fallback rather than inventing a number. Overridable via config.json's
- * `contextAdmission.contextWindows`.
+ * Claude 200K (Sonnet)/1M (Opus 4.7), Codex 192K, Copilot 64K, AGY 1M.
+ * `opencode`/`none` have no published figure in that survey -- default to
+ * Codex's documented 192K as a conservative (not optimistic) fallback
+ * rather than inventing a number. Overridable via config.json's
+ * `contextAdmission.contextWindows`. Partial (rather than an exhaustive
+ * Record<LlmProvider, number>) so an unlisted provider falls through to the
+ * codex-default lookup below instead of requiring every LlmProvider member
+ * to carry an entry here.
  */
-const DEFAULT_PROVIDER_WINDOW_TOKENS: Record<LlmProvider, number> = {
+const DEFAULT_PROVIDER_WINDOW_TOKENS: Partial<Record<LlmProvider, number>> = {
   claude: 200_000,
-  gemini: 1_000_000,
   codex: 192_000,
   copilot: 64_000,
   agy: 1_000_000,
@@ -84,7 +86,7 @@ export function contextWindowTokens(provider: LlmProvider, resolvedModel: string
   const overrides = loadUserConfig().contextAdmission?.contextWindows;
   if (overrides && overrides[provider] !== undefined) return overrides[provider]!;
   if (provider === 'claude' && CLAUDE_OPUS_MODEL_RE.test(resolvedModel)) return 1_000_000;
-  return DEFAULT_PROVIDER_WINDOW_TOKENS[provider] ?? DEFAULT_PROVIDER_WINDOW_TOKENS.codex;
+  return DEFAULT_PROVIDER_WINDOW_TOKENS[provider] ?? DEFAULT_PROVIDER_WINDOW_TOKENS.codex ?? 192_000;
 }
 
 /**

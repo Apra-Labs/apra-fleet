@@ -278,6 +278,17 @@ case. Schema resolution still finds the `dist/agents/schemas/` directory
 `packages/apra-fleet-se/docs/cli-reference.md` for the full schema- and
 server-resolution order.
 
+**The always-on supervisor process has the same self-containment obligation as
+the rest of the shipped engine, and it is easy to violate one file at a time:**
+any module the supervisor can reach must resolve entirely inside the shipped
+`packages/apra-fleet-se` tree, never via a repo-root-relative import into a
+top-level directory this packaging step excludes (`test`, `docs`, `scripts`,
+`examples`). See "Supervisor: packaging self-containment" in
+`packages/apra-fleet-se/docs/architecture.md` for the vendoring pattern used
+to fix a real instance of this and the graph-shaped regression guard that
+checks the whole reachable import graph, not just a single previously-broken
+file.
+
 **`@apralabs/apra-fleet-client` must be a real root `dependencies` entry, not
 just a shipped `files` path.** Shipping a package's source under the `files`
 allowlist makes it present on disk in an npm install, but that alone does not
