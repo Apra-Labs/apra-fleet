@@ -77,15 +77,15 @@ preserve, because zod strips an unknown key silently rather than erroring.
 
 ### 2.2 code_* tools (7)
 
-| # | Tool | Request schema | Request fields | Response (observed) |
-|---|------|----------------|----------------|---------------------|
-| 17 | `code_graph` | `codeGraphSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) |
-| 18 | `code_impact` | `codeImpactSchema` (`src/tools/code-intelligence.ts`) | target, direction, file_path, repo | `text(JSON): opaque` (provider payload) |
-| 19 | `code_query` | `codeQuerySchema` (`src/tools/code-intelligence.ts`) | query, repo | `text(JSON): opaque` (provider payload) |
-| 20 | `code_context` | `codeContextSchema` (`src/tools/code-intelligence.ts`) | name, repo, repo_remote_url | `text(JSON): opaque` (provider payload, KB-enriched by `enrichContextWithKb`) |
-| 21 | `code_map` | `codeMapSchema` (`src/tools/code-intelligence.ts`) | repo, top | `text(JSON): opaque` (provider payload) |
-| 22 | `code_flow` | `codeFlowSchema` (`src/tools/code-intelligence.ts`) | from, to, name, repo | `text(JSON): opaque` (provider payload) |
-| 23 | `code_tests` | `codeTestsSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) |
+| # | Tool | Request schema | Request fields | Response (observed) | Description (summarized) |
+|---|------|----------------|----------------|---------------------|---------------------------|
+| 17 | `code_graph` | `codeGraphSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) | Trace the call graph for a symbol. Returns callers and callees across the codebase for structural analysis (symbol lookup, call chains, impact). |
+| 18 | `code_impact` | `codeImpactSchema` (`src/tools/code-intelligence.ts`) | target, direction, file_path, repo | `text(JSON): opaque` (provider payload) | Find what is affected by changes to a symbol. Analyzes the blast radius of modifications across the codebase for impact assessment. |
+| 19 | `code_query` | `codeQuerySchema` (`src/tools/code-intelligence.ts`) | query, repo | `text(JSON): opaque` (provider payload) | Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Pre-indexed for instant answers. |
+| 20 | `code_context` | `codeContextSchema` (`src/tools/code-intelligence.ts`) | name, repo, repo_remote_url | `text(JSON): opaque` (provider payload, KB-enriched by `enrichContextWithKb`) | Get callers, callees, and execution flows for a symbol. Enriched with KB context for full understanding of symbol role and dependencies. |
+| 21 | `code_map` | `codeMapSchema` (`src/tools/code-intelligence.ts`) | repo, top | `text(JSON): opaque` (provider payload) | Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. |
+| 22 | `code_flow` | `codeFlowSchema` (`src/tools/code-intelligence.ts`) | from, to, name, repo | `text(JSON): opaque` (provider payload) | Find process flows (entry -> steps -> exit) matching a name or specific endpoints. Pre-indexed alternative to manual call chain tracing. |
+| 23 | `code_tests` | `codeTestsSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) | Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Faster than grep for test discovery. |
 
 `code_context` is the only `code_*` tool that takes `repo_remote_url`, because it
 is the only one that touches the KB.
