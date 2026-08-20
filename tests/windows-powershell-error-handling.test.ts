@@ -335,29 +335,25 @@ describe.runIf(hasPowerShell)('Live PowerShell: deepMergeJson (apra-fleet-ot2z.1
     expect(parsed.fresh).toBe('key');
   }, 20000);
 
-  it('nested object merge: exit code and on-disk content agree -- never exit 0 while the file is unchanged', () => {
+  it('nested object merge: exit 0, and the pre-existing and new nested keys are both present (apra-fleet-ot2z.17)', () => {
     const { dir } = makeTempDir('wpse-merge-nested-');
     const target = join(dir, 'merge.json');
     const original = JSON.stringify({ a: { x: 1 } });
     writeFileSync(target, original);
     const result = runPs(cmds.deepMergeJson(target, { a: { y: 2 } }));
+    expect(result.code).toBe(0);
     const onDisk = readFileSync(target, 'utf-8');
-    if (result.code === 0) {
-      const parsed = JSON.parse(onDisk);
-      expect(parsed.a).toEqual({ x: 1, y: 2 });
-    } else {
-      // Verified live: Merge-Objects's recursive branch calls
-      // $target.Contains($key) on $target[$key], but once that value has
-      // been assigned from $current's nested property it is a
-      // PSCustomObject (not a Hashtable) -- PSCustomObject has no .Contains
-      // method, so the recursive call throws and the whole write is
-      // aborted by the outer try/catch (exit 1). That is a real,
-      // reproducible production bug in the nested-merge path, distinct from
-      // the regression class this bead exists to catch -- but it still
-      // fails CLOSED (original bytes untouched), which is the property this
-      // assertion actually verifies.
-      expect(onDisk).toBe(original);
-    }
+    const parsed = JSON.parse(onDisk);
+    // apra-fleet-ot2z.17 fixed Merge-Objects: the recursive branch used to
+    // call $target.Contains($key) directly on $target[$key], but once that
+    // value had been assigned from $current's nested property it was a
+    // PSCustomObject (not a Hashtable) -- PSCustomObject has no .Contains
+    // method, so the recursive call always threw and the whole write was
+    // aborted (exit 1), even though it failed closed (original bytes
+    // untouched). Merge-Objects now converts a PSCustomObject target value to
+    // a Hashtable via ConvertTo-HashtableDeep before recursing into it, so a
+    // nested-key merge now succeeds and produces the true merged result.
+    expect(parsed.a).toEqual({ x: 1, y: 2 });
   }, 20000);
 
   it('target file exists but contains invalid JSON: exit code and file state agree -- never exit 0 with the write silently dropped', () => {

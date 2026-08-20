@@ -218,11 +218,20 @@ $merged = @{};
 if ($current) {
   $current.psobject.properties | ForEach-Object { $merged[$_.Name] = $_.Value }
 }
+function ConvertTo-HashtableDeep($obj) {
+    if ($obj -is [System.Management.Automation.PSCustomObject]) {
+        $h = @{};
+        $obj.psobject.properties | ForEach-Object { $h[$_.Name] = $_.Value };
+        return $h;
+    }
+    return $obj;
+}
 function Merge-Objects($target, $source) {
     $source.psobject.properties | ForEach-Object {
         $key = $_.Name;
         $value = $_.Value;
         if ($target.Contains($key) -and $target[$key] -is [System.Management.Automation.PSCustomObject] -and $value -is [System.Management.Automation.PSCustomObject]) {
+            $target[$key] = ConvertTo-HashtableDeep $target[$key];
             Merge-Objects $target[$key] $value;
         } else {
             $target[$key] = $value;
