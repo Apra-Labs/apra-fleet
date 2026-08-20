@@ -287,14 +287,30 @@ because a v1 contract binding generated only from `MemoryProvider` +
 `HttpKbProvider`'s declared surface would still miss these six tools' true
 provider dependency, same root cause as section 4.2's existing finding.
 
+**4.4.3 -- Asymmetries outside the `MemoryProvider` interface itself.** These are
+not covered by 4.4.1 (which only compares the 12 declared interface methods'
+BEHAVIOR) or 4.4.2 (which only lists tool-reachable members absent from
+`HttpKbProvider`): they are members that exist on one implementation under a
+different name, or with a different signature, than the other.
+
+| # | Member | SqliteProvider | HttpKbProvider | Divergence | Verdict class |
+|---|--------|-----------------|-----------------|------------|----------------|
+| X-8 | teardown | `close(): void` (sqlite-provider.ts:1887) | `dispose(): void` (http-provider.ts:65) | different method names for the same teardown responsibility -- a generated binding cannot call teardown polymorphically across both implementations without a name-mapping shim | missing member (name mismatch) |
+| X-9 | `capture` extra parameter | `capture(input: KBEntryInput, opts?: CaptureOpts): Promise<{id, audn_decision}>` (sqlite-provider.ts:792) | `capture(input: KBEntryInput): Promise<{id, audn_decision}>` (http-provider.ts:166) -- no second parameter | `SqliteProvider.capture` accepts an optional second `opts: CaptureOpts` argument that neither the `MemoryProvider` interface (section 4.1, P-2) nor `HttpKbProvider.capture` declares; a caller that passes `opts` through the interface type would not type-check against `HttpKbProvider` | different signature/behavior |
+
+Neither `close`/`dispose` nor the `capture` `opts` parameter is declared on
+`MemoryProvider` (section 4.1), so both are additional, implementation-specific
+surface a v1 contract binding must account for on top of the interface.
+
 **F-10 (new finding, added to the running list; numbering continues from
 section 3.1's F-9):** `HttpKbProvider` is fully implemented and type-checks
 against `MemoryProvider`, but is dead code in this tree -- no call site
 constructs one, and `kb_setup`'s `provider: 'http'` config value is never read
 back to select it. Of the 12 interface methods it does implement, 4 (`getLinked`,
 `promote`, `touch`, `relatedClaims`) have no remote code path at all, and one
-(`query`) drops two of its filter options (`tag`, `flagged_only`) on the remote
-path while supporting them fully on its local fallback path. A v1 contract
+(`query`) drops six of its filter options (`ids`, `symbols`, `source_files`,
+`tags`, `tag`, `flagged_only`) on the remote path while supporting them fully
+on its local fallback path. A v1 contract
 binding must not assume the two `MemoryProvider` implementations are
 behaviorally interchangeable merely because both compile against the same
 interface. Every row of the 4.4.1 and 4.4.2 tables now carries an explicit
