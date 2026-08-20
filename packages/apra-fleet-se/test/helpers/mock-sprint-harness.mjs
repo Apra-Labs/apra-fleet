@@ -623,7 +623,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             if (/^\$HOME\/\.fleet-git-credential-/.test(opts.command)) {
                 return mockCmdResult(0, 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n', '');
             }
-            if (/^curl -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
+            if (/^curl(?:\.exe)? -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
                 if (prCurlResponseQueueLocal && prCurlResponseQueueLocal.length > 0) {
                     const next = prCurlResponseQueueLocal.length > 1 ? prCurlResponseQueueLocal.shift() : prCurlResponseQueueLocal[0];
                     const resolved = typeof next === 'function' ? next() : next;
