@@ -424,6 +424,50 @@ export class FleetWorkflow extends EventEmitter {
         // controller.signal (via _currentSignal()) when the caller doesn't
         // pass its own opts.signal. See runWithContext()/requestStop() below.
         this._activeControllers = new Map();
+
+        // (apra-fleet-p2to.1) Cooperative pause/resume gate. This is the
+        // GENERIC engine primitive -- a soft, deferred barrier at every
+        // agent()/command() entry -- NOT a journaled interrupt(). See
+        // requestPause()/requestResume()/setPauseGuard() and _pauseGate()
+        // below for the full semantics. All state is instance-level (like
+        // requestStop()'s _activeControllers), so a single pause quiesces
+        // every run sharing this FleetWorkflow instance.
+        //
+        //   _pauseRequested : a pause has been asked for but has not yet
+        //                     "taken effect" (still draining in-flight work
+        //                     and/or waiting on the pause guard).
+        //   _paused         : the pause has taken effect at a clean-state
+        //                     boundary -- zero in-flight activities and the
+        //                     guard (if any) permitted it. New agent()/
+        //                     command() calls block at the gate while true.
+        //   _pauseGuard     : optional predicate (set via setPauseGuard) that
+        //                     defers a requested pause until it returns truthy
+        //                     -- i.e. lets the workflow script declare where a
+        //                     clean-state boundary actually is. Null means
+        //                     "any zero-in-flight point is a boundary".
+        //   _inFlight       : count of agent()/command() dispatches that have
+        //                     passed the gate and not yet completed. 'paused'
+        //                     is only declared when this reaches zero.
+        //   _pauseWaiters   : { resolve, reject } for every call currently
+        //                     blocked at the gate. requestResume() resolves
+        //                     them (they re-check and proceed); requestStop()
+        //                     rejects them with a CancelledError so a paused
+        //                     run tears down instead of hanging.
+        //   _preResumeHook  : optional async hook (set via setPreResumeHook)
+        //                     that requestResume() awaits as a HARD BARRIER
+        //                     before it clears pause state, releases any gate
+        //                     waiter, or emits 'resumed' -- so a caller's
+        //                     re-reserve/resync completes strictly ahead of the
+        //                     first post-resume dispatch. A hook rejection
+        //                     rejects requestResume() (the run stays paused)
+        //                     rather than being swallowed. Null means no
+        //                     barrier -- resume proceeds immediately.
+        this._pauseRequested = false;
+        this._paused = false;
+        this._pauseGuard = null;
+        this._preResumeHook = null;
+        this._inFlight = 0;
+        this._pauseWaiters = [];
     }
 
     // Returns the active per-run store (see runStorage above), or
@@ -501,9 +545,213 @@ export class FleetWorkflow extends EventEmitter {
      * @param {string} [reason]
      */
     requestStop(reason = 'Workflow run cancelled via requestStop()') {
+        // (apra-fleet-p2to.1) A stop supersedes any pause: reject every call
+        // blocked at the pause gate with a CancelledError so a paused run
+        // unwinds instead of hanging forever, and clear the pause state so a
+        // late-arriving activity doesn't re-block. The gate promise rejecting
+        // is what makes "requestStop() while paused tears down" work -- the
+        // blocked agent()/command() re-throws the CancelledError, which
+        // unwinds the run exactly like an aborted in-flight dispatch does.
+        this._pauseRequested = false;
+        this._paused = false;
+        const waiters = this._pauseWaiters;
+        this._pauseWaiters = [];
+        for (const waiter of waiters) {
+            waiter.reject(new CancelledError(`[Workflow Error] ${reason}`));
+        }
         for (const controller of this._activeControllers.values()) {
             controller.abort(new CancelledError(`[Workflow Error] ${reason}`));
         }
+    }
+
+    /**
+     * (apra-fleet-p2to.1) Registers (or clears, with `null`) the pause guard:
+     * a predicate consulted whenever a requested-but-not-yet-engaged pause is
+     * about to take effect. A pause only engages -- transitions to `_paused`
+     * and fires 'paused' -- when in-flight work has drained to zero AND this
+     * guard returns truthy. That lets a workflow script defer a mid-run pause
+     * to a boundary IT considers clean (e.g. "between phases", "not inside a
+     * transaction") rather than the mere between-activities gaps the engine
+     * can see on its own. A null guard (the default) treats every
+     * zero-in-flight point as an acceptable boundary. The guard is called with
+     * no arguments; a throwing guard is treated as "not at a boundary yet"
+     * (fail-closed: keep deferring rather than pause at a point the script
+     * couldn't vouch for) and logged.
+     *
+     * Generic engine hook only -- it carries no fleet-sprint (or any other
+     * caller's) semantics; the meaning of "clean" is entirely the guard's.
+     *
+     * @param {(() => boolean) | null} fn
+     */
+    setPauseGuard(fn) {
+        if (fn !== null && typeof fn !== 'function') {
+            throw new TypeError('[Workflow Error] setPauseGuard() requires a function or null');
+        }
+        this._pauseGuard = fn;
+        // Setting the guard at what the script now considers a clean boundary
+        // may be exactly the moment a deferred pause can finally engage.
+        this._maybeEngagePause();
+    }
+
+    /**
+     * (apra-fleet-p2to.1.3) Registers (or clears, with null) an async
+     * pre-resume hook that requestResume() awaits as a HARD BARRIER before it
+     * clears pause state, releases any gate waiter, or emits 'resumed'. This is
+     * the point at which a caller re-grabs/re-syncs whatever it released at
+     * pause (fleet-sprint's member re-reserve/resync) with the guarantee that
+     * the work completes strictly BEFORE the first post-resume agent()/
+     * command() dispatch -- no race with the resumed sprint loop.
+     *
+     * The hook is awaited; if it rejects, requestResume() rejects too and the
+     * run stays paused (pause state is never cleared on the reject path), so a
+     * failure surfaces to the caller instead of being silently swallowed --
+     * consistent with reReserveOnResume()'s rethrow contract.
+     *
+     * Generic engine hook only -- it carries no caller-specific semantics.
+     *
+     * @param {((reason: string) => (void | Promise<void>)) | null} fn
+     */
+    setPreResumeHook(fn) {
+        if (fn !== null && typeof fn !== 'function') {
+            throw new TypeError('[Workflow Error] setPreResumeHook() requires a function or null');
+        }
+        this._preResumeHook = fn;
+    }
+
+    /**
+     * (apra-fleet-p2to.1) Requests a cooperative pause of every run sharing
+     * this instance. Fires 'pause:requested' immediately, but the pause is
+     * DEFERRED: it only takes effect ('paused' fires, new dispatches block) at
+     * a clean-state boundary -- zero in-flight activities and, if a pause
+     * guard is set, that guard returning truthy. Calling it while already
+     * paused or pause-requested is a no-op.
+     *
+     * @param {string} [reason]
+     */
+    requestPause(reason = 'Workflow run paused via requestPause()') {
+        if (this._paused || this._pauseRequested) return;
+        this._pauseRequested = true;
+        this.emit('pause:requested', this._pauseEventPayload({ reason }));
+        // If we're already quiescent (nothing in flight, guard permits), the
+        // pause engages right now; otherwise it engages later as in-flight
+        // work drains (_exitActivity) or the guard opens (setPauseGuard).
+        this._maybeEngagePause();
+    }
+
+    /**
+     * (apra-fleet-p2to.1) Resumes a paused (or merely pause-requested) run.
+     * Clears the pause state and releases every call blocked at the gate so
+     * they proceed. Fires 'resumed'. No-op if not paused/pause-requested.
+     *
+     * (apra-fleet-p2to.1.3) When a pre-resume hook is registered (see
+     * setPreResumeHook), it is awaited as a HARD BARRIER FIRST -- while the run
+     * is still paused, so no gate waiter is released and no new dispatch slips
+     * through -- and only once it resolves are the waiters released and
+     * 'resumed' emitted. This guarantees the caller's re-reserve/resync
+     * completes strictly ahead of the first post-resume dispatch. A hook
+     * rejection propagates out of requestResume() with the pause state left
+     * intact (run stays paused), rather than being swallowed.
+     *
+     * @param {string} [reason]
+     * @returns {Promise<void>}
+     */
+    async requestResume(reason = 'Workflow run resumed via requestResume()') {
+        if (!this._paused && !this._pauseRequested) return;
+        // Barrier: drain the pre-resume hook BEFORE touching pause state. The
+        // run is still paused here, so waiters remain blocked and any fresh
+        // agent()/command() dispatch blocks at the gate -- the hook's work
+        // (e.g. member re-reserve/resync) cannot race the resumed loop. A
+        // rejection here surfaces to the caller with pause state untouched, so
+        // the run stays parked instead of resuming on a half-restored state.
+        if (this._preResumeHook) {
+            await this._preResumeHook(reason);
+        }
+        this._paused = false;
+        this._pauseRequested = false;
+        const waiters = this._pauseWaiters;
+        this._pauseWaiters = [];
+        for (const waiter of waiters) {
+            waiter.resolve();
+        }
+        this.emit('resumed', this._pauseEventPayload({ reason }));
+    }
+
+    // (apra-fleet-p2to.1) Phase/group (and runId) labels for pause lifecycle
+    // events, read from the active run store when there is one (falling back
+    // to the legacy instance-level fields), so subscribers can attribute a
+    // pause to where the run actually was -- exactly like log()/phase() do.
+    _pauseEventPayload(extra = {}) {
+        return {
+            phase: this._currentPhase(),
+            group: this._currentGroup(),
+            runId: this._currentRunId(),
+            ...extra
+        };
+    }
+
+    // (apra-fleet-p2to.1) True when a requested pause is allowed to take
+    // effect right now: null guard means "any zero-in-flight point is clean";
+    // otherwise the script's guard decides. A throwing guard fails closed
+    // (keep deferring) rather than pausing at an unvouched-for point.
+    _guardPermitsPause() {
+        if (!this._pauseGuard) return true;
+        try {
+            return !!this._pauseGuard();
+        } catch (err) {
+            console.error(`[Workflow] pause guard threw (deferring pause): ${err && err.message ? err.message : err}`);
+            return false;
+        }
+    }
+
+    // (apra-fleet-p2to.1) Engage a requested pause iff we're at a clean-state
+    // boundary: pause requested, not already paused, zero in-flight activities
+    // and the guard permits. Idempotent and cheap -- called from every point
+    // that can move us toward quiescence (requestPause, _exitActivity when the
+    // last activity drains, setPauseGuard opening the boundary, and the gate
+    // itself). This is the ONLY place 'paused' is emitted, which guarantees
+    // 'paused' can never fire while activities are still in flight.
+    _maybeEngagePause() {
+        if (!this._pauseRequested || this._paused) return;
+        if (this._inFlight > 0) return;
+        if (!this._guardPermitsPause()) return;
+        this._paused = true;
+        this.emit('paused', this._pauseEventPayload());
+    }
+
+    // (apra-fleet-p2to.1) The pause gate, awaited at the very start of every
+    // agent()/command() call (before it becomes in-flight). If a pause is
+    // engaged the call blocks here until requestResume() releases it (the
+    // awaited promise resolves) or requestStop() tears it down (the promise
+    // rejects with a CancelledError, which propagates out of agent()/command()
+    // and unwinds the run). A requested-but-not-yet-engaged pause is given a
+    // chance to engage first (this arrival at a gate is itself a between-
+    // activities boundary), so a pause requested while the run is idle takes
+    // effect on the next dispatch rather than slipping one through.
+    async _pauseGate() {
+        this._maybeEngagePause();
+        while (this._paused) {
+            await new Promise((resolve, reject) => {
+                this._pauseWaiters.push({ resolve, reject });
+            });
+            // Released by requestResume(); re-check in case another pause was
+            // requested in the meantime before we fall through to dispatch.
+            this._maybeEngagePause();
+        }
+    }
+
+    // (apra-fleet-p2to.1) In-flight bookkeeping bracketing the actual dispatch
+    // in agent()/command(). A call is "in flight" from the moment it clears
+    // the gate until it fully settles; 'paused' is withheld until this count
+    // returns to zero (see _maybeEngagePause), which is what "paused only at
+    // zero in-flight activities" means.
+    _enterActivity() {
+        this._inFlight += 1;
+    }
+
+    _exitActivity() {
+        this._inFlight = Math.max(0, this._inFlight - 1);
+        // Draining the last in-flight activity may complete a deferred pause.
+        this._maybeEngagePause();
     }
 
     log(msg) {
@@ -628,11 +876,25 @@ export class FleetWorkflow extends EventEmitter {
      * @param {string} prompt
      * @param {AgentOptions} [opts]
      */
+    // (apra-fleet-p2to.1) Public entry: passes through the cooperative pause
+    // gate, then brackets the real dispatch with in-flight bookkeeping so a
+    // pause only declares 'paused' once every such dispatch has settled. The
+    // try/finally guarantees the in-flight count is balanced on every exit
+    // path (success, throw, or a gate-rejecting requestStop()).
     async agent(prompt, opts = {}) {
         if (!opts.member_name && !opts.member_id) {
             throw new Error(`[Workflow Error] agent() requires either member_name or member_id`);
         }
+        await this._pauseGate();
+        this._enterActivity();
+        try {
+            return await this._agentDispatch(prompt, opts);
+        } finally {
+            this._exitActivity();
+        }
+    }
 
+    async _agentDispatch(prompt, opts = {}) {
         const effectivePhase = opts.phase || this._currentPhase();
         const runId = this._currentRunId();
         if (effectivePhase) {
@@ -1087,7 +1349,23 @@ export class FleetWorkflow extends EventEmitter {
      * @param {string} cmd
      * @param {CommandOptions} [opts]
      */
+    // (apra-fleet-p2to.1) Public entry: same pause-gate + in-flight bracketing
+    // as agent() above. The member-argument guard runs before the gate so a
+    // malformed call fails fast rather than blocking on a pause.
     async command(cmd, opts = {}) {
+        if (!opts.member_name && !opts.member_id) {
+            throw new Error(`[Workflow Error] command() requires either member_name or member_id`);
+        }
+        await this._pauseGate();
+        this._enterActivity();
+        try {
+            return await this._commandDispatch(cmd, opts);
+        } finally {
+            this._exitActivity();
+        }
+    }
+
+    async _commandDispatch(cmd, opts = {}) {
         // (apra-fleet-unw.17, A4) `opts.failSoft`: when set, a command
         // failure that would otherwise throw (a well-formed `isError`
         // result -> CommandError, a "Member not found" text sniff ->
@@ -1110,9 +1388,9 @@ export class FleetWorkflow extends EventEmitter {
             if (!failSoft) throw err;
             return { ok: false, output: '', error: err.message };
         };
-        if (!opts.member_name && !opts.member_id) {
-            throw new Error(`[Workflow Error] command() requires either member_name or member_id`);
-        }
+        // (apra-fleet-p2to.2.3) The member-argument guard lives solely in the
+        // public command() entrypoint above; _commandDispatch() is only ever
+        // reached through it, so a second copy here was dead code. Removed.
 
         const effectivePhase = opts.phase || this._currentPhase();
         const runId = this._currentRunId();
@@ -1587,7 +1865,13 @@ export class FleetWorkflow extends EventEmitter {
             publishState: this.publishState.bind(this),
             workflow: this.workflow.bind(this),
             group: this.group.bind(this),
-            endGroup: this.endGroup.bind(this)
+            endGroup: this.endGroup.bind(this),
+            // (apra-fleet-p2to.1) Script-facing: lets the workflow declare
+            // where a clean-state boundary is so a deferred pause engages
+            // there. requestPause()/requestResume()/requestStop() stay
+            // instance-only (driven by the viewer/orchestrator, like
+            // requestStop() already is), not part of the script context.
+            setPauseGuard: this.setPauseGuard.bind(this)
         };
     }
 

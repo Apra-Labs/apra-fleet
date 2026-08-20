@@ -181,8 +181,8 @@ flowchart LR
 
 - **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet.
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket.
-- **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, and per-activity persistent state.
-- **Supervisor**: always-on layer -- launch & stop sprints over HTTP, member reservation ledger, crash watchdog, run history.
+- **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, per-activity persistent state, and a cooperative pause/resume gate any workflow can hook into.
+- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger, crash watchdog (including a live "paused" state and base-branch-drift indicator), run history.
 
 ## Knowledge Layer
 
@@ -432,7 +432,8 @@ third-party verticals.
 | Hub-spoke cloud migration plan (historical; see tier-3 ownership ADR) | [docs/hub-spoke-master-plan.md](docs/hub-spoke-master-plan.md) |
 | Tier-3 ownership decision (fleet-dashboard vs `src/hub-service/`) | [docs/adr-tier3-ownership.md](docs/adr-tier3-ownership.md) |
 | Shared hub/dashboard API contract package | [packages/fleet-api-contract/README.md](packages/fleet-api-contract/README.md) |
-| Workflow engine internals (`agent()`/`parallel()`/`pipeline()`, journal, budget) | [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md) |
+| Workflow engine internals (`agent()`/`parallel()`/`pipeline()`, journal, budget, pause/resume) | [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md) |
+| Cooperative workflow pause/resume (engine, viewer, supervisor, fleet-sprint) | [docs/features/workflow-pause-resume.md](docs/features/workflow-pause-resume.md) |
 | Writing and running workflow scripts | [packages/apra-fleet-workflow/docs/workflow-guide.md](packages/apra-fleet-workflow/docs/workflow-guide.md) |
 | Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
 | Workflow launcher fleet-server resolution order (HTTP singleton vs. stdio) | [docs/adr-workflow-server-resolution.md](docs/adr-workflow-server-resolution.md) |
@@ -829,6 +830,20 @@ The workflow subsystem is now installable, self-healing, uninstallable, and
 update-safe end-to-end; remaining gaps for this feature are tracked as
 individual open issues under `apra-fleet-7pm`, not as a phase-level
 placeholder.
+
+**Cooperative pause/resume** is a generic engine primitive available to any
+workflow run (`requestPause()`/`requestResume()`/`setPauseGuard()`), separate
+from cancellation (`requestStop()`): a pause is deferred until in-flight work
+drains to zero and an optional caller-supplied guard confirms the run is at a
+state boundary it considers clean, rather than landing wherever the request
+happened to arrive. The per-run viewer and the multi-sprint supervisor
+dashboard both surface it, and fleet-sprint is the first workflow to attach
+real domain behavior to it (releasing/re-acquiring member reservations and
+resyncing git/beads state across a pause). See
+[docs/features/workflow-pause-resume.md](features/workflow-pause-resume.md)
+for the full design and
+[packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](../packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md)
+section 4.7 for the engine-level contract.
 
 **Dev-mode manifest bundling is a transitive-dependency, not a top-level-only,
 contract.** The dev-mode install path bundles `@apralabs/apra-fleet-client`'s

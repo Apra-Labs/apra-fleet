@@ -2,6 +2,133 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Cooperative workflow pause/resume: closing the resume-barrier gap
+
+Sprint goal: finish the cooperative pause/resume feature by closing three
+integration-verification gaps found in the prior round -- the resume-time
+reservation re-acquire/resync still raced the first post-resume dispatch
+instead of strictly preceding it, a duplicated member-argument guard
+remained in the workflow engine's internal dispatch path, and a requested
+regression test pinning a reservation-store failure marker had not actually
+been added. All three are now closed, verified against source rather than
+against child-task titles alone. Final verdict is a clean PASS.
+
+What shipped:
+
+- **Workflow engine**: a new `setPreResumeHook(fn)` primitive. `requestResume()`
+  is now `async` and awaits this hook as a hard barrier -- strictly before it
+  clears pause state, releases any gate waiter, or emits the resume event --
+  so a caller's reacquire/resync work is guaranteed to finish ahead of the
+  first post-resume dispatch instead of racing it. A rejecting hook
+  propagates out of `requestResume()` with pause state left intact, so a
+  failed resume leaves the run parked rather than resuming on a
+  half-restored state. `setPreResumeHook` is generic (no domain semantics of
+  its own) and defaults to a no-op barrier when unregistered, so callers with
+  nothing to do before resuming see no behavior change.
+- **fleet-sprint**: its reservation re-acquire and resync now run through the
+  new pre-resume hook instead of a fire-and-forget event listener, closing
+  the race described above. A pause requested while a git/dolt sync
+  "bracket" is open now also engages the instant that bracket closes, rather
+  than waiting on whatever dispatch happens to arrive next. The
+  reservation-release helper used for both a full teardown and a pause
+  hand-back is now a single shared implementation instead of two
+  independently-maintained copies of the same loop.
+- **Reservation store**: a reserve call that fails at the storage-write step
+  now returns a failure marker consistent with every other rejection path,
+  so a resume's re-reserve step correctly treats a failed store write as
+  "member not reacquired" instead of silently trusting it as a success. A
+  regression test now pins this marker directly.
+- **Workflow engine cleanup**: a duplicated member-argument validation guard
+  in the engine's internal dispatch path was removed; the public entry point
+  the internal path is exclusively reached through already enforces it.
+- See [docs/features/workflow-pause-resume.md](docs/features/workflow-pause-resume.md)
+  and `packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md`
+  section 4.7 for the full design, now describing the pre-resume hook as the
+  hard barrier it is rather than as a known limitation.
+
+Carried forward: a follow-up to add direct unit coverage for the
+`setPreResumeHook` type-guard paths (rejecting a non-function argument,
+clearing the hook with `null`) remains open, as does a follow-up to guard
+`requestResume()` against two concurrent resume calls both passing the pause
+gate and running the pre-resume hook in parallel. A same-day regression pass
+(informational, non-gating) reconfirmed several pre-existing, parent-less
+carry-over issues in an unrelated functional test suite, a slow-lane
+fixture-drift test, and a sandbox smoke-test preflight gate; no new defects
+were found in this sprint's own work and no new carry-over issues were filed.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $16.3035.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3214 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 25 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- Cooperative workflow pause/resume (engine, viewer, supervisor, fleet-sprint)
+
+Sprint goal: add a generic, cooperative pause/resume primitive to the workflow
+engine and wire it through every layer that needs to react to it -- the
+per-run viewer's UI, the multi-sprint supervisor's dashboard and watchdog, and
+fleet-sprint's own git/beads sync and member-reservation handling, as the
+first workflow to attach real domain state to a pause. All in-scope work
+closed; final verdict is a clean PASS.
+
+What shipped:
+
+- **Workflow engine**: `requestPause()`/`requestResume()`/`setPauseGuard()` on
+  the workflow engine, alongside the existing `requestStop()`. A pause is
+  deferred rather than immediate -- it only actually engages once every
+  in-flight dispatch has drained to zero and an optional caller-supplied guard
+  confirms the run is at a state boundary it considers clean -- so a pause can
+  never land mid-way through a sequence a workflow script considers atomic.
+  `requestStop()` while paused rejects every blocked dispatch so a paused run
+  tears down instead of hanging.
+- **Per-run viewer**: Pause/Resume buttons and a "paused since" badge, driven
+  entirely by the engine's own pause lifecycle events rather than by the
+  button click itself, so the UI always reflects what the engine actually did
+  (including the deferred window between request and engagement).
+- **Supervisor**: row-level Pause/Resume controls that proxy to the child
+  viewer's own routes (never the kill+force-release path Stop uses); the
+  crash watchdog now classifies a live, engine-paused child as a distinct
+  healthy "paused" state (never conflated with stalled or crashed, and never
+  auto-released); a base-branch-drift indicator shows how far a paused sprint
+  branch has fallen behind its base branch.
+- **fleet-sprint**: registers a pause guard so a pause only ever lands at a
+  clean git/dolt-sync boundary; releases its member reservations on pause
+  (so other sprints can use those members while this one is parked) and
+  re-acquires them on resume with an owner-checked re-reserve that fails
+  loudly (naming the unavailable members) if another sprint claimed one while
+  paused; every re-acquired member is unconditionally resynced (git fetch,
+  branch reconciliation, beads pull) before further work is dispatched to it,
+  since both git and the beads database can move independently of a paused
+  sprint. See [docs/features/workflow-pause-resume.md](docs/features/workflow-pause-resume.md)
+  for the full design and known limitations.
+- Bundled alongside this work: a fix to the Windows stall-poller's mtime probe
+  commands to avoid an intermediate PowerShell `$variable` pattern that a
+  remote execution path was found to silently strip, which had been turning
+  the probe into a parse error on every poll for at least one real Windows
+  member.
+
+Follow-up hardening (second cycle, same sprint): fleet-sprint's resume-time
+reservation re-acquire and resync is no longer best-effort -- `requestResume()`
+now awaits a caller-supplied pre-resume hook as a hard barrier before any
+post-resume dispatch can proceed, closing the race where a member could be
+dispatched to before its reservation/resync completed. The duplicated
+member-argument guard in `_commandDispatch()` was removed (the single copy in
+`command()` is now the only enforcement point). A regression test now pins the
+`[-]` store-write-failure marker so a reservation-store write failure is never
+misread as a successful resume re-reserve. A new follow-up
+(`apra-fleet-p2to.5`) was filed to guard `requestResume()` against concurrent
+double-invocation of the pre-resume hook.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $22.9383.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1429 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 34 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- fleet-supervisor self-containment fix and lifecycle documentation
 
 Sprint goal: make the always-on fleet-sprint supervisor fully self-contained
@@ -225,6 +352,7 @@ via its audit task, and the corresponding verification task confirmed the
 results. No bugs were filed as a result of the audit, consistent with a
 clean pass -- the full test suite (2314 tests, 0 failures) provides
 independent confirmation.
+
 ## [Unreleased] -- compose_permissions silent write no-op fix
 
 Sprint goal: fix a bug where `compose_permissions` could report a grant as
