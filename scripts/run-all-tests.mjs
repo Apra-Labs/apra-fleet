@@ -11,6 +11,11 @@ const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const suites = [
     { name: 'vitest', cmd: npmCmd, args: ['exec', '--', 'vitest', 'run'] },
     { name: 'apra-fleet-se', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-se'] },
+    // packages/apra-fleet-se/apra-pm is NOT an npm workspace (see ci.yml's
+    // "Run apra-pm test suite (node:test; not an npm workspace)" step), so
+    // it is otherwise reached only by CI's explicit --prefix invocation.
+    // Mirror that here so local runs get the same signal as CI.
+    { name: 'apra-pm', cmd: npmCmd, args: ['test', '--prefix', 'packages/apra-fleet-se/apra-pm'] },
 ];
 
 let failed = false;
