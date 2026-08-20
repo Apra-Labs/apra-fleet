@@ -35,8 +35,8 @@ test('claude provider settings merge pushes claudeOnlyPermissions (source check)
   );
 });
 
-test('gemini provider does not push claudeOnlyPermissions (source check)', () => {
-  // Confirm there is no unconditional or gemini-specific push of claudeOnlyPermissions.
+test('non-claude providers do not push claudeOnlyPermissions (source check)', () => {
+  // Confirm there is no unconditional or non-claude-specific push of claudeOnlyPermissions.
   // The only push of claudeOnlyPermissions must be inside the "if llm === claude" block.
   const pushOccurrences = [...src.matchAll(/perms\.push\(\.\.\.\s*claudeOnlyPermissions\(\)\s*\)/g)];
   assert.equal(pushOccurrences.length, 1, 'claudeOnlyPermissions() must be pushed exactly once');

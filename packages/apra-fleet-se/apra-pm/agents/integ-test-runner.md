@@ -58,7 +58,7 @@ there require the team/a PR, never a self-edit. `.claude/settings.local.json`
 is the correct target for an individual/local grant, but it must be
 provisioned via the `compose_permissions` MCP tool (grant mode), NOT
 hand-edited either -- that tool is the provider-agnostic delivery mechanism
-(this repo supports non-Claude providers too: Gemini, AGY, OpenCode, Codex --
+(this repo supports non-Claude providers too: AGY, OpenCode, Codex --
 each has its own native config path via the same tool). The correct
 escalation is to ask the orchestrator/operator to run `compose_permissions`
 with the missing grant. Do NOT proceed while any permissions are missing.

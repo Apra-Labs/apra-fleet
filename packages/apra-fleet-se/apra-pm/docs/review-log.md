@@ -22,7 +22,7 @@ message bus, cost.js extraction, installer changes.
 
 **R1-2 * Pre-migration beads tasks with model-ID metadata silently ran at wrong tier**
 - File: `.claude/workflows/auto-sprint.js` line 607
-- Finding: `parseReadyStreaks` used `t.m || defaultModel` directly; tasks created
+- Finding: `parseReadyStreaks` used `(t.m || defaultModel)` directly; tasks created
   before the `cheap/standard/premium` rename carried old model IDs (e.g.
   `claude-haiku-4-5`) which `resolveModel()` fell back to standard tier silently.
 - Fix: added normalisation block -- reverse-lookup `MODEL_TO_TIER` map, emit
@@ -97,6 +97,9 @@ placeholder, all skill `.md` files.
 - Finding: only a prose hint for Claude; Gemini/AGY/OpenCode paths undocumented.
   Orchestrators on non-Claude providers would be unable to resolve the path.
 - Fix: added a four-row table mapping each provider to its `__SKILL_DIR__` value.
+  (Historical: the table listed Gemini alongside Claude/AGY/OpenCode at the time
+  of this fix; Gemini was later dropped as a supported provider and its row
+  removed from the table.)
 
 **R2-8 * `simple-sprint.md` CHANGES NEEDED only mentioned `reopenIds`, not `newTasks`**
 - File: `skills/pm/simple-sprint.md` line 32

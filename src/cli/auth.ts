@@ -6,7 +6,6 @@ import { execSync } from 'node:child_process';
 /** Provider -> auth env var name */
 const PROVIDER_AUTH_ENV: Record<string, string> = {
   claude: 'ANTHROPIC_API_KEY',
-  gemini: 'GEMINI_API_KEY',
   codex: 'OPENAI_API_KEY',
   copilot: 'COPILOT_GITHUB_TOKEN',
   agy: 'ANTIGRAVITY_API_KEY',
@@ -260,7 +259,7 @@ async function handleOAuth(args: string[]): Promise<void> {
   const credPatch = getOAuthCredentialPatch(provider, token);
   if (!credPatch) {
     console.error(`✗ Provider "${provider}" does not support OAuth token provisioning.`);
-    console.error(`  Gemini and other API-key-only providers: use apra-fleet auth --api-key instead.`);
+    console.error(`  API-key-only providers: use apra-fleet auth --api-key instead.`);
     process.exit(1);
     return;
   }

@@ -26,7 +26,7 @@ Required:
 
 Common:
   --type <local|remote>    Member type (default: remote)
-  --llm <provider>         LLM provider: claude|gemini|codex|copilot|agy|opencode|none (default: claude)
+  --llm <provider>         LLM provider: claude|codex|copilot|agy|opencode|none (default: claude)
   --category <label>       Optional group label (e.g. "doers")
   --tags <a,b,c>           Comma-separated free-form tags (max 10)
   --unattended <mode>      Permission mode: false|auto|dangerous

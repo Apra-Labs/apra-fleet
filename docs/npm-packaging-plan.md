@@ -162,7 +162,7 @@ extended with a PID).
 | Hooks installation | `install` | YES (after asset fix) | files whitelist |
 | Scripts installation (statusline etc.) | `install` | YES (after asset fix) | files whitelist |
 | Self-update | `update` | REDIRECT needed | Detect npm; print npm update command |
-| Multi-provider (claude/gemini/codex/copilot/agy) | `install --llm` | YES | None |
+| Multi-provider (claude/codex/copilot/agy) | `install --llm` | YES | None |
 | version / --version | `version`, `-v` | YES | None |
 | Binary copy to BIN_DIR | `install` step 1 | NO (npm handles binary) | Accept absence; record npm binary path |
 
@@ -179,7 +179,7 @@ what must happen to `package.json` itself and to one post-build step (shebang in
 {
   "name": "@apra-labs/apra-fleet",
   "version": "0.2.1",
-  "description": "MCP server for orchestrating multiple agentic AI instances (Claude, Gemini, Codex, Copilot, AGY) across machines via SSH",
+  "description": "MCP server for orchestrating multiple agentic AI instances (Claude, Codex, Copilot, AGY) across machines via SSH",
   "author": "Apra Labs",
   "license": "Apache-2.0",
   "type": "module",
@@ -689,7 +689,7 @@ Sigstore attestation link on the npm package page.
 | `npx @apra-labs/apra-fleet --help` | [ ] | [ ] | [ ] |
 | `npm i -g @apra-labs/apra-fleet` | [ ] | [ ] | [ ] |
 | `apra-fleet install --llm claude --transport http` | [ ] | [ ] | [ ] |
-| `apra-fleet install --llm gemini --transport stdio` | [ ] | [ ] | [ ] |
+| `apra-fleet install --llm agy --transport stdio` | [ ] | [ ] | [ ] |
 | `apra-fleet status` (after install) | [ ] | [ ] | [ ] |
 | `apra-fleet start` / `stop` / `restart` | [ ] | [ ] | [ ] |
 | MCP server responds to list-tools (stdio) | [ ] | [ ] | [ ] |

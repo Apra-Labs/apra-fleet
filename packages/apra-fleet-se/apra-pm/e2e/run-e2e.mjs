@@ -15,7 +15,7 @@
 // cache) is captured per run and reported in the summary for cost-regression tracking.
 //
 // Usage:
-//   node e2e/run-e2e.mjs [--suite s1,s10] [--provider claude|gemini|agy|opencode] [--timeout 1800] [--keep-pr] [--keep-install]
+//   node e2e/run-e2e.mjs [--suite s1,s10] [--provider claude|agy|opencode] [--timeout 1800] [--keep-pr] [--keep-install]
 //
 // Selection: default is all suites. --suite accepts comma-separated IDs (e.g. s1,s10)
 // and may be repeated. --provider filters by provider. The skill must be installed
@@ -62,7 +62,6 @@ function scenarioFor(suite) {
 // us account tokens. Override with PMLITE_E2E_CMD_<P>.
 const CLI = {
   claude: ['claude', '-p', '{PROMPT}', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose', '--max-turns', '100'],
-  gemini: ['gemini', '-p', '{PROMPT}', '--model', 'auto', '--skip-trust', '--output-format', 'stream-json'],
   // agy print mode defaults to a 5m wait; a full sprint is ~30m, so raise it. agy
   // emits no stream-json: its transcript is read from disk after exit (see runAgy).
   agy: ['agy', '--print-timeout=40m', '-p', '{PROMPT}', '--dangerously-skip-permissions'],

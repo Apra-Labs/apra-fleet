@@ -38,7 +38,7 @@ It is tempting to read the problem as "the category list is wrong". The deeper d
 ## Architecture & Core Principles
 
 ### 1. Multi-Provider Unified Permission Abstraction (`grantsNeeded`)
-Fleet provides a single, unified permission abstraction layer across **all LLM providers (Claude, AGY, Codex, OpenCode, Gemini, Copilot)**.
+Fleet provides a single, unified permission abstraction layer across **all LLM providers (Claude, AGY, Codex, OpenCode, Copilot)**.
 
 Callers and workflows interact strictly using Fleet's standard **Claude permission vocabulary** -- which means the vocabulary already used by `skills/fleet/profiles/*.json` and by Claude itself, not a new dialect:
 - `Bash(<cmd>:*)` (e.g., `Bash(git:*)`, `Bash(docker:*)`, `Bash(cargo:*)`)
@@ -68,7 +68,6 @@ The three provider permission models are not the same shape, and the design must
 | :--- | :--- | :--- |
 | Claude | tool + argument pattern, `allow`/`deny`/`ask` in a settings file | Yes |
 | AGY | `{action, target}` rule list in a settings file | Yes |
-| Gemini | flag-gated (`--yolo`) plus MCP server allowlist | Partially |
 | Codex | sandbox mode + approval policy (`--sandbox`, `--ask-for-approval`) -- **no per-command allowlist exists** | No |
 | OpenCode | approval flag only | No |
 | Copilot | approval flag only | No |

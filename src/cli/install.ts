@@ -498,15 +498,6 @@ function writeAssetFile(destPath: string, content: string): void {
   fs.writeFileSync(destPath, content);
 }
 
-// Gemini CLI uses different hook event names than Claude CLI.
-const GEMINI_HOOK_NAME_MAP: Record<string, string> = {
-  PostToolUse:      'AfterTool',
-  PreToolUse:       'BeforeTool',
-  UserPromptSubmit: 'BeforeAgent',
-  Stop:             'SessionEnd',
-  PreCompact:       'PreCompress',
-};
-
 function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provider: LlmProvider): void {
   let settingsFile = paths.settingsFile;
   const isAgy = provider === 'agy';
@@ -528,14 +519,7 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provid
   settings.hooks = settings.hooks || {};
 
   for (const [claudeName, hookEntries] of Object.entries(hooksConfig.hooks || {})) {
-    const eventName = provider === 'gemini'
-      ? (GEMINI_HOOK_NAME_MAP[claudeName] ?? claudeName)
-      : claudeName;
-
-    // Remove stale Claude-style key if we're writing under a different Gemini name.
-    if (provider === 'gemini' && claudeName in GEMINI_HOOK_NAME_MAP && claudeName !== eventName) {
-      delete settings.hooks[claudeName];
-    }
+    const eventName = claudeName;
 
     settings.hooks[eventName] = settings.hooks[eventName] || [];
 
@@ -624,17 +608,6 @@ function configureStatusline(paths: ProviderInstallConfig, scriptPath: string, l
     type: 'command',
     command,
   };
-  writeConfig(paths, settings);
-}
-
-function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
-  const settings = readConfig(paths);
-  settings.mcpServers = settings.mcpServers || {};
-  settings.mcpServers['apra-fleet'] = {
-    ...mcpConfig,
-    trust: true,
-  };
-
   writeConfig(paths, settings);
 }
 
@@ -870,16 +843,14 @@ Usage:
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
   apra-fleet install --force           Stop a running server before installing
-  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
+  apra-fleet install --llm <provider>  Target LLM provider: claude (default), codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
   apra-fleet install --help            Show this help
 
 Options:
-  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot, agy, opencode.
-                          Defaults to claude. Note: --llm gemini shows a warning about sequential
-                          dispatch -- Gemini does not support background agents, so fleet operations
-                          run sequentially rather than in parallel.
+  --llm <provider>        LLM provider to configure. Supported: claude, codex, copilot, agy, opencode.
+                          Defaults to claude.
   --transport <mode>      MCP transport to use: http (default) or stdio. HTTP uses the singleton
                           fleet server at http://localhost:7523/mcp. stdio runs fleet as a subprocess.
   --skill <mode>          Which skills to install: all (default), fleet, pm, or none.
@@ -904,7 +875,7 @@ Options:
     }
   }
 
-  const supported: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot', 'agy', 'opencode'];
+  const supported: LlmProvider[] = ['claude', 'codex', 'copilot', 'agy', 'opencode'];
   if (!supported.includes(llm)) {
     console.error(`Error: Unsupported LLM provider "${llm}". Supported: ${supported.join(', ')}`);
     process.exit(1);
@@ -1018,10 +989,6 @@ Options:
   totalSteps++; // dolt CLI install step (apra-fleet-ire.3) -- unconditional, mirrors Beads step
   totalSteps++; // KB + code intelligence setup -- unconditional, runs after Beads
   if (serviceStep) totalSteps++;
-
-  if (llm === 'gemini' && (installFleet || installPm)) {
-    console.warn(`\n- Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
-  }
 
   // --- Running-process guard (SEA + npm modes -- dev mode runs via node, not a managed binary) ---
   //
@@ -1149,8 +1116,6 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
         } catch { /* not registered */ }
         run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`);
       }
-    } else if (llm === 'gemini') {
-      mergeGeminiConfig(paths, { httpUrl: fleetUrl });
     } else if (llm === 'codex') {
       mergeCodexConfig(paths, { url: fleetUrl });
     } else if (llm === 'copilot') {
@@ -1188,8 +1153,6 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
         } catch { /* not registered */ }
         run(cmd);
       }
-    } else if (llm === 'gemini') {
-      mergeGeminiConfig(paths, mcpConfig);
     } else if (llm === 'codex') {
       mergeCodexConfig(paths, mcpConfig);
     } else if (llm === 'copilot') {

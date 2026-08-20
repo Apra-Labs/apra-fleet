@@ -23,7 +23,7 @@ Skills are installed into your provider's skills directory:
 | Provider | Directory |
 |----------|-----------|
 | Claude | `~/.claude/skills/<name>/` |
-| Gemini | `~/.gemini/skills/<name>/` |
+| Antigravity (agy) | `~/.gemini/antigravity-cli/skills/<name>/` |
 
 Fleet's installer writes `fleet/` and `pm/` there. Your own skill is just
 another directory alongside them.

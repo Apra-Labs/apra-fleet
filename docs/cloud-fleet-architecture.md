@@ -112,7 +112,7 @@ not a sandbox -- it runs on the same machines where the work lives.
 Several design decisions separate fleet from other approaches:
 
 **Provider-agnostic dispatch.** Fleet members can run Claude, AGY (Antigravity),
-Gemini, or other LLM providers. The PM dispatches to members using the same tool
+Codex, Copilot, or other LLM providers. The PM dispatches to members using the same tool
 regardless of which provider the member uses. This means cost, capability, and
 provider risk are all manageable at the orchestration layer rather than being fixed
 at build time.
@@ -280,9 +280,6 @@ same interactive model as Claude; and (b) SSH+`-p` mode -- the existing
 (cleaner, bidirectional, no transcript reader needed). The SSH+`-p` path remains fully
 supported as an alternative. There is no pricing deadline pressure on AGY's `-p` path.
 
-**LLM-Gemini.** Same pattern as AGY. The `-p` path continues to work. Interactive
-mode is a future option.
-
 **No-LLM.** No AI model running. The fleet-service daemon (the existing apra-fleet
 binary in service mode) is installed on the machine and connects outbound to
 fleets.apralabs.com at startup. Only `execute_command` is available. Useful for build
@@ -311,7 +308,7 @@ independently of any active session.
 ### The two-plane model
 
 **Control plane (SSH + execute_command).** Responsible for starting, stopping,
-restarting, and monitoring the LLM process (`claude`, `agy`, `gemini`) on the member
+restarting, and monitoring the LLM process (`claude`, `agy`, `codex`) on the member
 machine. This is the existing fleet capability -- SSH-based `execute_command` already
 handles remote process management. No new infrastructure is needed for this plane.
 
@@ -356,7 +353,7 @@ These scenarios are process restart operations, not protocol operations.
 Kill the current process and relaunch without `--resume`. In fleet terms:
 
 ```
-execute_command: pkill -f "claude"  (or equivalent for agy/gemini)
+execute_command: pkill -f "claude"  (or equivalent for agy/codex)
 execute_command: cd <workFolder> && claude &
 ```
 
@@ -401,7 +398,7 @@ path as a manual restart.
 
 ### Updates
 
-When a new `claude`/`agy`/`gemini` binary is available:
+When a new `claude`/`agy`/`codex` binary is available:
 
 1. Fleet sends `update_llm_cli` command to the member (existing tool in
    `src/tools/update-member.ts`).
@@ -719,8 +716,6 @@ environment.
 (`~/.gemini/oauth_creds.json`, `~/.gemini/google_accounts.json`) can also be vaulted
 and delivered, matching the existing `AgyProvider.oauthCredentialFiles()` paths.
 
-**Gemini.** OAuth credentials, same vault-and-inject pattern.
-
 **Vault encryption.** Each credential is encrypted with a derived key. The derived key
 is wrapped by a per-project master key. The per-project master key is wrapped by the
 fleet server's HSM or cloud KMS master key. This is envelope encryption: compromising
@@ -904,7 +899,7 @@ clients when a credential is vaulted.
 
 ### execute_prompt
 
-For AGY and Gemini members, semantics are unchanged: SSH-based dispatch via
+For AGY, Codex, and Copilot members, semantics are unchanged: SSH-based dispatch via
 `AgyProvider.buildPromptCommand()` and the transcript reader. For Claude members in the
 cloud model, `execute_prompt` routes via `send_message` + wait-for-response over the
 member's SSE channel. The PM-facing parameters (`prompt`, `resume`, `timeout_s`,
@@ -1077,7 +1072,7 @@ so that the mandatory change (Claude `-p` restriction) is addressed before its d
 
 ### Phase 1 -- Now (current sprint)
 
-The current model is unchanged for AGY and Gemini. Claude members can optionally use
+The current model is unchanged for AGY, Codex, and Copilot. Claude members can optionally use
 the interactive session model as an opt-in -- the installer configures MCP connection
 and hooks, but `execute_prompt` still works in subprocess mode as a fallback.
 fleets.apralabs.com is not required. The local fleet server at `127.0.0.1:7523` remains
@@ -1148,7 +1143,7 @@ into the credential vault (Section 9) and are never visible again after submissi
 
 Secret entry surfaces:
 - LLM provider tokens: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, ANTIGRAVITY_API_KEY,
-  Gemini OAuth. Each has a dedicated input with provider-specific instructions.
+  OPENAI_API_KEY. Each has a dedicated input with provider-specific instructions.
 - VCS tokens: GitHub personal access token, GitLab token, SSH key pair upload or
   server-side generation. The dashboard can trigger a GitHub App authorization flow
   for organization-wide VCS access.
@@ -1257,7 +1252,7 @@ and transmission.
 | HTTP+SSE transport | `src/services/http-transport.ts` | Extend for multi-tenancy, internet binding, tenant JWT validation |
 | Event bus | `src/services/event-bus.ts` | Add project scoping, message queue per member |
 | Member registry | `src/services/registry.ts` | Add session registry (online/offline/busy/awaiting_human) |
-| execute_prompt | `src/tools/execute-prompt.ts` | Add send_message routing for Claude; subprocess path stays for AGY/Gemini |
+| execute_prompt | `src/tools/execute-prompt.ts` | Add send_message routing for Claude; subprocess path stays for AGY/Codex/Copilot |
 | ClaudeProvider | `src/providers/claude.ts` | buildPromptCommand() kept for SSH path; interactive routing added as alternative |
 | AgyProvider | `src/providers/agy.ts` | buildPromptCommand() kept for SSH path; interactive session support added |
 | Strategy pattern | `src/services/strategy.ts` | Third strategy: cloud SSE (joins remote/SSH and local/child_process) |

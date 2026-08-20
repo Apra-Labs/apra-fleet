@@ -63,7 +63,7 @@ Apra Fleet is becoming a hub-and-spoke orchestration platform for LLM-CLI agents
    compatibility fallback; SSH stops being a dispatch transport.
 2. **Hub-and-spoke topology.** The fleet server is the hub; members are spokes. A
    member is an LLM-CLI process running in a folder on some machine -- any of the
-   six supported providers (claude, gemini, codex, copilot, agy, opencode).
+   five supported providers (claude, codex, copilot, agy, opencode).
 3. **The hub can run anywhere**, including hosted in the cloud as fleet.apralabs.com.
    Every member connects to it with a JWT issued from the fleet web dashboard.
 4. **The JWT is the hard scope.** A workspace_id claim burned into the JWT places a
@@ -100,7 +100,7 @@ Apra Fleet is becoming a hub-and-spoke orchestration platform for LLM-CLI agents
 ## 2. The 3-tier architecture
 
 ```
-Tier 1: LLM CLI (claude | gemini | codex | copilot | agy | opencode)
+Tier 1: LLM CLI (claude | codex | copilot | agy | opencode)
         |  HTTP+SSE (MCP), localhost only, Bearer JWT
         v
 Tier 2: apra-fleet.exe  (one per machine; singleton service; the SPOKE)
@@ -460,7 +460,7 @@ and what de-centering requires:
    wrong mechanism by member-onboarding-journey.md section 2).
 5. docs/cloud-fleet-architecture.md section 7 -- hooks-as-control-plane
    (PreToolUse/PostToolUse/Stop/UserPromptSubmit) is Claude Code's hook system.
-   Gemini/codex/copilot/agy/opencode hook equivalents are unverified; the
+   codex/copilot/agy/opencode hook equivalents are unverified; the
    behavioral-contract enforcement design must degrade gracefully to "no hooks:
    trust + audit at the tool boundary" per provider.
 6. Mission text point 7 says "claude/agy/opencode -p prompt" -- fine as
@@ -580,7 +580,7 @@ sonnet = scoped implementation; haiku = mechanical):
 7. execute_command SSH-to-relay migration + deprecation inventory -- sonnet.
 8. execute_prompt two-mode formalization (mode selection in tier 2; per-provider
    capability flags) -- sonnet, after 2xs.7/.8.
-9. Interactive-injection capability survey across gemini/codex/copilot/agy/
+9. Interactive-injection capability survey across codex/copilot/agy/
    opencode -- fable.
 10. Web dashboard MVP (workspace mgmt, member status, token issuance, audit
     view) -- sonnet, after 4.
@@ -620,7 +620,7 @@ It also surfaces concrete product scope this plan had not accounted for:
 1. **"No LLM" members are a first-class member type**, not an edge case: a
    member can be "any LLM -- or no LLM at all" (a plain executor). Today's
    `register-member.ts` `llm_provider` enum
-   (`claude|gemini|codex|copilot|agy|opencode`) has no such option. This
+   (`claude|codex|copilot|agy|opencode`) has no such option. This
    affects `ProviderAdapter` selection (needs a null-object adapter),
    `execute_prompt` (mode (a)/(b) from section 8 don't apply -- a no-LLM
    member only ever executes commands, never prompts), and cost tracking

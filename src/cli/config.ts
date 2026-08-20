@@ -22,11 +22,14 @@ export const WORKFLOWS_DIR = path.join(FLEET_BASE, 'workflows');
 // current generation automatically, so they never go stale as Anthropic
 // ships new models. Other providers' CLIs don't share this alias support,
 // so their entries stay pinned to literal model IDs.
+// gemini-3.5-flash(-lite) remain here because they are AGY's (Antigravity's)
+// own model ids, not the removed gemini provider's -- AGY is built on
+// Google's Gemini stack and inherits its model catalog. See agy.ts's
+// modelTiers()/modelForTier().
 export const CURATED_CHEAP_MODELS = [
   'gpt-oss-120b',
   'gpt-120',
   'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite-preview',
   'haiku',
   'gpt-5.4-mini',
 ] as const;
@@ -36,7 +39,6 @@ export const CURATED_STANDARD_MODELS = [
   'gpt-oss-120b',
   'gpt-120',
   'sonnet',
-  'gemini-3-flash-preview',
   'gpt-5.4',
 ] as const;
 
@@ -44,12 +46,10 @@ export const CURATED_PREMIUM_MODELS = [
   'sonnet',
   'opus',
   'gpt-oss-120b',
-  'gemini-3.1-pro-preview',
 ] as const;
 
 export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
   claude: 'sonnet',
-  gemini: 'gemini-3.5-flash',
   codex: 'gpt-5.4',
   copilot: 'claude-sonnet-4-5',
   agy: 'gemini-3.5-flash',
@@ -85,15 +85,6 @@ export function getProviderInstallConfig(provider: LlmProvider): ProviderInstall
         fleetSkillsDir: path.join(home, '.gemini', 'antigravity-cli', 'skills', 'fleet'),
         agentsDir: path.join(home, '.gemini', 'antigravity-cli', 'agents'),
         name: 'Antigravity',
-      };
-    case 'gemini':
-      return {
-        configDir: path.join(home, '.gemini'),
-        settingsFile: path.join(home, '.gemini', 'settings.json'),
-        skillsDir: path.join(home, '.gemini', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.gemini', 'skills', 'fleet'),
-        agentsDir: path.join(home, '.gemini', 'agents'),
-        name: 'Gemini',
       };
     case 'codex':
       return {

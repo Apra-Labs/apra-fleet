@@ -2,7 +2,7 @@
 
 ## Why it exists
 
-Running `apra-fleet install --llm gemini` on a machine where only Claude was intended caused a split-brain problem: Gemini CLI sessions would spawn a second fleet server process sharing the same `FLEET_DIR`, resulting in `execute_prompt` sessions routing to the wrong server instance. There was no clean way to reverse an install — users had to manually edit provider config files with no guidance on what was installed or where.
+Running `apra-fleet install --llm gemini` (historical: Gemini has since been removed as a supported provider) on a machine where only Claude was intended caused a split-brain problem: Gemini CLI sessions would spawn a second fleet server process sharing the same `FLEET_DIR`, resulting in `execute_prompt` sessions routing to the wrong server instance. There was no clean way to reverse an install -- users had to manually edit provider config files with no guidance on what was installed or where.
 
 ## Design
 
@@ -14,18 +14,18 @@ At install time, fleet writes `~/.apra-fleet/data/install-config.json` with a ke
 {
   "providers": {
     "claude": { "skill": "all" },
-    "gemini": { "skill": "fleet" }
+    "agy": { "skill": "fleet" }
   }
 }
 ```
 
 `apra-fleet uninstall` (no flags) reads this file and reverses exactly what it recorded. If the file is missing or corrupt, the command falls back to scanning all known provider config paths and warns the user before proceeding.
 
-Multiple installs (e.g. first `--llm claude`, later `--llm gemini`) merge into the map rather than overwriting, so the uninstall can target each provider independently.
+Multiple installs (e.g. first `--llm claude`, later `--llm agy`) merge into the map rather than overwriting, so the uninstall can target each provider independently.
 
 ### Surgical settings cleanup
 
-Uninstall does not rewrite settings files wholesale — it removes only the keys fleet installed:
+Uninstall does not rewrite settings files wholesale -- it removes only the keys fleet installed:
 
 | Key | Action |
 |-----|--------|
@@ -43,7 +43,7 @@ For Claude, MCP removal uses the CLI command `claude mcp remove apra-fleet --sco
 
 ### Running server guard
 
-If the fleet server is running when uninstall is invoked, the command aborts with a clear error suggesting `--force`. With `--force`, the server is stopped automatically before proceeding. With `--dry-run --force`, the server-running state is reported but the server is not actually stopped — dry-run is purely observational.
+If the fleet server is running when uninstall is invoked, the command aborts with a clear error suggesting `--force`. With `--force`, the server is stopped automatically before proceeding. With `--dry-run --force`, the server-running state is reported but the server is not actually stopped -- dry-run is purely observational.
 
 ### anythingRemoved tracking
 

@@ -38,4 +38,4 @@ stored in the member's `tags` array.
 3. GitHub members rarely need extra skills -- gh CLI covers most operations
 4. Bitbucket/Azure DevOps members need provider-specific skills for devops/code-review tags (LLMs lack native API knowledge without skills)
 5. Project-specific skills layer on top of VCS skills
-6. Skills are independent of the member's LLM provider -- a Gemini member needs the same project skills as a Claude member. Skill selection is driven by VCS provider, project, and tags, not LLM provider.
+6. Skills are independent of the member's LLM provider -- a Codex member needs the same project skills as a Claude member. Skill selection is driven by VCS provider, project, and tags, not LLM provider.

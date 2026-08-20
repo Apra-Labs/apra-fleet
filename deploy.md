@@ -6,6 +6,11 @@ Commands below require these prefixes in `.claude/settings.json` under `permissi
 - `Bash(*apra-fleet-installer-* install *)`
 - `Bash(*apra-fleet* --version)`
 - `Bash(*apra-fleet* run *)`
+- `Bash(*apra-fleet* start)` -- kept alongside `run` above: `run` is what this
+  runbook's own Deploy step launches with (see the Windows scheduled-task
+  caveat there), but `start` is still a real, separately-invoked command
+  (e.g. OS-level auto-start registration, manual fallback) and a member
+  missing this grant fails Step 0a the moment anything tries it.
 - `Bash(node scripts/preflight-clear-build-locks.mjs)` -- pre-`npm ci` stale
   build-tool lock cleanup, see Deploy below
 - `Bash(npm ci)`

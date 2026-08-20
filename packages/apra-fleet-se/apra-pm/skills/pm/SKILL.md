@@ -335,7 +335,6 @@ filename -- each provider expects a different name:
 |----------|-------------|
 | Claude | CLAUDE.md |
 | Antigravity (agy) | AGY.md |
-| Gemini | GEMINI.md |
 | Codex | AGENTS.md |
 | Copilot | COPILOT.md |
 | OpenCode | OPENCODE.md |

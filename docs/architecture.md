@@ -62,7 +62,7 @@ The codebase follows a strict layering:
   index.ts           <- MCP server entry point, tool registration
   tools/*            <- one file per tool, each self-contained
   services/*         <- core capabilities (strategy, registry, SSH, file transfer)
-  providers/*        <- LLM provider adapters (Claude, Antigravity, Codex, Copilot, Gemini)
+  providers/*        <- LLM provider adapters (Claude, Antigravity, Codex, Copilot)
   os/*               <- OS-specific command builders (Linux, macOS, Windows)
   utils/*            <- stateless helpers (crypto, shell escaping)
   types.ts           <- shared data structures
@@ -89,11 +89,11 @@ Fleet events (`credential:stored`, `task:completed`, `member:status-changed`, `s
 
 ## Provider Abstraction
 
-Fleet supports six LLM providers -- Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, Gemini CLI, and OpenCode -- plus a seventh null option, `'none'`, for a plain command executor with no LLM at all (`src/providers/none.ts`). Members can mix providers within a single fleet.
+Fleet supports five LLM providers -- Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, and OpenCode -- plus a sixth null option, `'none'`, for a plain command executor with no LLM at all (`src/providers/none.ts`). Members can mix providers within a single fleet.
 
 ### How It Works
 
-Each member has an optional `llmProvider` field (`'claude' | 'agy' | 'codex' | 'copilot' | 'gemini' | 'opencode' | 'none'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
+Each member has an optional `llmProvider` field (`'claude' | 'agy' | 'codex' | 'copilot' | 'opencode' | 'none'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
 
 A `'none'` member supports `execute_command` (already fully provider-agnostic, no changes needed) but never `execute_prompt` in either mode -- rejected immediately with a clear error rather than reaching `NoneProvider`'s methods, most of which throw by design (there is no CLI, no prompt, no model to build a command from). `register_member` skips CLI/auth verification entirely for these members, and status/detail views show `compute only` in place of a token count.
 
@@ -123,7 +123,6 @@ src/providers/
   agy.ts         - AgyProvider
   codex.ts       - CodexProvider (NDJSON parser)
   copilot.ts     - CopilotProvider
-  gemini.ts      - GeminiProvider
   opencode.ts    - OpenCodeProvider (NDJSON parser, local/self-hosted models)
   index.ts       - getProvider() singleton factory
 ```
@@ -136,7 +135,7 @@ A fleet can have members on different providers simultaneously. The PM dispatche
 PM (orchestrator, Claude)
   |
   +-- dev1   (claude,   remote)
-  +-- dev2   (gemini,   remote)
+  +-- dev2   (agy,      remote)
   +-- dev3   (codex,    local)
   +-- dev4   (opencode, local)   <- self-hosted model via Ollama
   +-- review (copilot,  remote)
@@ -146,12 +145,12 @@ All five members use the same `execute_prompt` tool call. The tool builds provid
 
 ### Key Differences Across Providers
 
-- **`max_turns`** - Claude-only. Ignored for Antigravity, Codex, Copilot, and Gemini.
+- **`max_turns`** - Claude-only. Ignored for Antigravity, Codex, and Copilot.
 - **OAuth credential copy** - Claude-only. Non-Claude providers require an API key (`provision_llm_auth` with `api_key`).
 - **JSON output format** - Codex emits NDJSON (one event per line). All others emit a single JSON object. Handled transparently by `provider.parseResponse()`.
-- **Session resume** - Claude, Antigravity, and Gemini support resuming specific session IDs. Codex and Copilot resume the most recent local session. OpenCode supports session resume via `--session <id>` or `--continue`.
+- **Session resume** - Claude and Antigravity support resuming specific session IDs. Codex and Copilot resume the most recent local session. OpenCode supports session resume via `--session <id>` or `--continue`.
 - **OpenCode** - uses any OpenAI-compatible endpoint (Ollama, vLLM). The user provisions the endpoint; Fleet installs the CLI and agents. Model tiers are set per member at registration via `model_tiers` (since models vary by deployment). Agent files are transformed from Claude format to OpenCode format at install time (tools allowlist -> permission map).
-- **Antigravity (agy) response capture** - `AgyProvider.parseResponse()` extracts both the reply text and, when the CLI's transcript exposes one, a `conversation_id` that is surfaced as the response's `sessionId` -- mirroring Claude/Gemini session-id capture instead of returning an empty session id for a provider that does expose one.
+- **Antigravity (agy) response capture** - `AgyProvider.parseResponse()` extracts both the reply text and, when the CLI's transcript exposes one, a `conversation_id` that is surfaced as the response's `sessionId` -- mirroring Claude's session-id capture instead of returning an empty session id for a provider that does expose one.
 
 ### Terminal-Signal and Dead-Session Detection Invariants
 

@@ -65,7 +65,7 @@ Target audiences: VCs, ProductHunt, YC, high-profile people in agentic AI.
    Windows tower, GPU box, cloud VM) -- registered, credentialed,
    permission-composed, health-checked. Cloud members auto-start on
    demand (ensureCloudReady).
-2. **Every provider, simultaneously.** Claude, Codex, Gemini, Copilot,
+2. **Every provider, simultaneously.** Claude, Codex, Copilot,
    Antigravity, local models (OpenCode/vLLM) in ONE fleet. Tier-based
    routing (cheap/standard/premium) = cost governance built in.
 3. **Workflows as durable programs.** Multi-hour, resumable, observable

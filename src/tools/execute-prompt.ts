@@ -96,12 +96,10 @@ export const executePromptSchema = z.object({
   agent: z.string().optional().describe(
     'Optional agent name to activate. ' +
     'For Claude: invokes claude --agent <name>. ' +
-    'For Gemini: prepends @<name> to the prompt on every dispatch. ' +
-    'For AGY: prepends @<name> to the prompt on every dispatch (same as Gemini). ' +
+    'For AGY: prepends @<name> to the prompt on every dispatch. ' +
     'Substitution runs before the @<name> prepend. ' +
     'Agent file must exist at the provider-specific path on the member: ' +
     'Claude: <workFolder>/.claude/agents/<name>.md or ~/.claude/agents/<name>.md; ' +
-    'Gemini: <workFolder>/.gemini/agents/<name>.md or ~/.gemini/agents/<name>.md; ' +
     'AGY: <workFolder>/.gemini/antigravity-cli/agents/<name>.md or ~/.gemini/antigravity-cli/agents/<name>.md; ' +
     'OpenCode: <workFolder>/.opencode/agents/<name>.md or ~/.config/opencode/agents/<name>.md -- ' +
     'the call is rejected with a clear error if neither is present.'
@@ -674,8 +672,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // but the routing decision itself must be provider-agnostic: whatever the
   // provider, a session is only an interactive-routing candidate if it
   // actually declared that capability at MCP initialize time (recorded as
-  // SessionState.channelCapable below). Gemini/Codex are confirmed [FAIL]
-  // today (no equivalent push mechanism) and so never end up channelCapable in
+  // SessionState.channelCapable below). Codex is confirmed [FAIL]
+  // today (no equivalent push mechanism) and so never ends up channelCapable in
   // practice, but that is a fact about what each provider adapter currently
   // advertises, not a name-based pre-filter here -- any provider that
   // implements the same MCP channel capability is picked up automatically. A
@@ -908,7 +906,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // the MEMBER's home directory, joined with the MEMBER's OS convention. Before
   // this, every remote member got a HUB-home path (os.homedir()) joined with the
   // HUB's path convention -- a path that can never exist on the member, which
-  // silently disabled stall detection for Claude/Gemini and manufactured
+  // silently disabled stall detection for Claude and manufactured
   // false-positive stall kills for AGY/OpenCode.
   //
   // This resolution is deliberately SYNCHRONOUS (cached probe result, else the

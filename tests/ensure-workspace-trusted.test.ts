@@ -9,13 +9,12 @@
  *   entries and sibling fields on the SAME entry (history, allowedTools) are preserved
  * - Claude: path normalization (backslashes, trailing slash) hits the same entry
  * - Claude: Windows delivery path (PowerShell Get-Content / WriteAllText+Move-Item)
- * - Non-Claude providers (gemini, agy, opencode, codex, copilot, none) no-op and never
+ * - Non-Claude providers (agy, opencode, codex, copilot, none) no-op and never
  *   touch the delivery channel
  */
 
 import { describe, it, expect, vi } from 'vitest';
 import { ClaudeProvider } from '../src/providers/claude.js';
-import { GeminiProvider } from '../src/providers/gemini.js';
 import { AgyProvider } from '../src/providers/agy.js';
 import { OpenCodeProvider } from '../src/providers/opencode.js';
 import { CodexProvider } from '../src/providers/codex.js';
@@ -310,7 +309,6 @@ describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding
 
 describe('ensureWorkspaceTrusted no-ops for non-Claude providers (apra-fleet-eft.40 provider trust matrix)', () => {
   const cases: Array<[string, () => { ensureWorkspaceTrusted: any }]> = [
-    ['gemini', () => new GeminiProvider()],
     ['agy', () => new AgyProvider()],
     ['opencode', () => new OpenCodeProvider()],
     ['codex', () => new CodexProvider()],

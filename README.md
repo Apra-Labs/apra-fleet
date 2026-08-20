@@ -59,7 +59,7 @@ One control plane. Any device. Any model. Any workflow. Any domain.
 | Pillar | Concretely |
 |---|---|
 | **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. Windows members are fully supported for dispatch, command execution, and background long-running tasks (launched detached via WMI). |
-| **Any model** | Claude, Codex, Gemini, Copilot, Antigravity, local models (any OpenAI-compatible endpoint via OpenCode) -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. Cross-provider review is a quality mechanism: a different model, with different blind spots, checks every change. |
+| **Any model** | Claude, Codex, Copilot, Antigravity, local models (any OpenAI-compatible endpoint via OpenCode) -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. Cross-provider review is a quality mechanism: a different model, with different blind spots, checks every change. |
 | **Any workflow** | Workflows are durable programs, not prompt chains: multi-hour, resumable, observable, with member reservations and atomic state. Write your own; ship it to the fleet. |
 | **Any domain** | Not just software development. The pattern fits wherever work decomposes into agent-sized pieces that need orchestration and an audit trail: nightly retail replenishment (reconcile inventory deltas, draft purchase orders for sign-off), logistics exception handling (triage a delayed shipment, re-book, notify), healthcare intake (summarize referrals, check completeness, route), back-office runs (invoice matching, compliance evidence collection). Software engineering is the vertical running today -- your domain is a workflow away. |
 
@@ -107,7 +107,7 @@ double-click it (installation is the default action):
 ```bash
 npm install -g @apralabs/apra-fleet
 apra-fleet                   # installs for Claude Code (default)
-apra-fleet --llm agy         # or OpenCode/Codex/Copilot/Gemini
+apra-fleet --llm agy         # or OpenCode/Codex/Copilot
 cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
