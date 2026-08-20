@@ -1193,9 +1193,13 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
  * apra-fleet-unw.15 scenario: the plan-reviewer never approves (always
  * returns non-JSON free text containing "APPROVED" inside a rejection
  * sentence, exhausting the schema-repair loop every round). Expects
- * engine.executeFile() to REJECT with a SprintPlanRejectedError, and
- * expects zero doer dispatches -- the sprint must never reach Develop with
- * an unapproved plan.
+ * engine.executeFile() to REJECT -- with a PlanReviewDispatchFailedError
+ * (apra-fleet-9ta.4: persistent non-JSON output never yields a usable
+ * verdict, so the review channel never came back, which is distinct from a
+ * genuine SprintPlanRejectedError rejection; apra-fleet-ot2z.19 corrected
+ * this docstring and its callers' assertions, which had gone stale for
+ * SprintPlanRejectedError) -- and expects zero doer dispatches -- the sprint
+ * must never reach Develop with an unapproved plan.
  */
 export async function runRejectedPlanScenario(tag) {
     const { tempDir, epicBead } = await setup(tag);
@@ -1225,9 +1229,10 @@ export async function runRejectedPlanScenario(tag) {
         }
 
         // apra-fleet-x8r.5: this scenario's own documented contract (see the
-        // docstring above) is that engine.executeFile() REJECTS with a
-        // SprintPlanRejectedError -- that IS the success case, not merely
-        // "the harness didn't crash". Previously `passed` was set
+        // docstring above) is that engine.executeFile() REJECTS (as of
+        // apra-fleet-ot2z.19, with a PlanReviewDispatchFailedError) -- that
+        // IS the success case, not merely "the harness didn't crash".
+        // Previously `passed` was set
         // unconditionally here, so the marker printed PASS even on a run
         // where the plan was (incorrectly) never rejected, silencing the one
         // signal that would have flagged it.
