@@ -49,7 +49,36 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
   });
 }
 
-function listenOnPort(server: http.Server, port: number, host: string): Promise<number> {
+// The WHATWG fetch spec refuses to connect to a fixed list of ports
+// associated with other protocols (SMTP, IRC, etc.) -- see
+// https://fetch.spec.whatwg.org/#block-bad-port. Node's built-in `fetch`
+// (undici) enforces this, so StreamableHTTPClientTransport's `fetch()` call
+// throws "TypeError: fetch failed" / "Error: bad port" if our server ever
+// happens to be listening on one of these. This is normally impossible for
+// an OS-assigned ephemeral port, since the ephemeral range is well above
+// this list's highest entry (10080) -- EXCEPT on a host whose TCP dynamic
+// port range has been widened/lowered to start below it (e.g. the legacy
+// Windows default of starting at 1024), where `server.listen(0, ...)` can
+// occasionally hand back one of these exact ports under load (more sockets
+// open -> more of the range gets cycled through). See
+// node_modules/undici/lib/web/fetch/constants.js `badPorts` for the
+// upstream list this mirrors.
+const FETCH_BLOCKED_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137,
+  139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
+  540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723,
+  2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669,
+  6679, 6697, 10080,
+]);
+
+export function isFetchBlockedPort(port: number): boolean {
+  return FETCH_BLOCKED_PORTS.has(port);
+}
+
+const MAX_BLOCKED_PORT_RETRIES = 20;
+
+function listenOncePort(server: http.Server, port: number, host: string): Promise<number> {
   return new Promise((resolve, reject) => {
     server.listen(port, host, () => {
       const addr = server.address() as { port: number };
@@ -57,6 +86,28 @@ function listenOnPort(server: http.Server, port: number, host: string): Promise<
     });
     server.once('error', reject);
   });
+}
+
+/**
+ * Like listenOncePort, but when the caller asked for an OS-assigned port
+ * (port === 0) and the OS handed back one of fetch's blocked ports, close
+ * and retry rather than handing a dead-on-arrival port to callers that will
+ * `fetch()` it (apra-fleet-my-beads-db-27m.17). A caller-specified fixed
+ * port is returned as-is even if blocked -- that's a caller configuration
+ * choice, not something we can route around by retrying.
+ */
+async function listenOnPort(server: http.Server, port: number, host: string): Promise<number> {
+  if (port !== 0) {
+    return listenOncePort(server, port, host);
+  }
+  let bound = await listenOncePort(server, 0, host);
+  for (let attempt = 0; isFetchBlockedPort(bound) && attempt < MAX_BLOCKED_PORT_RETRIES; attempt++) {
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+    bound = await listenOncePort(server, 0, host);
+  }
+  return bound;
 }
 
 function isInitializeRequest(body: unknown): boolean {
