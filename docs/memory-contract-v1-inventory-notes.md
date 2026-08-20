@@ -22,60 +22,71 @@ tests.
 interface, but two divergences sit outside that interface and will break a
 generated binding that assumes polymorphism:
 
-- Teardown method names differ (one implementation names it one way, the
-  other names it differently). A generated client cannot call teardown
+- Teardown method names differ: `SqliteProvider.close()` vs.
+  `HttpKbProvider.dispose()`. A generated client cannot call teardown
   polymorphically across both without an adapter layer that normalizes the
   name.
-- One implementation's `capture` accepts an extra options parameter that the
-  interface signature and the other implementation do not have.
+- `SqliteProvider.capture(input, opts?: CaptureOpts)` accepts an extra
+  options parameter that the `MemoryProvider` interface signature and
+  `HttpKbProvider.capture` do not have.
 
 Any contract-generation step that walks the interface alone will miss both;
 they must be enumerated explicitly.
 
 ## A remote (HTTP) query is strictly weaker than an in-process query, in two independent stages
 
-`QueryOptions` declares more optional filter fields than the HTTP client
-forwards, and the server-side query handler reads fewer fields still than the
-client forwards. The two narrowings are independent and compose: a caller
-going through the HTTP provider and the in-tree query endpoint ends up with
-noticeably fewer effective filters than a caller holding a direct
-`SqliteProvider` reference. Any contract or SLA that says "query supports
-filter X" must state which access path (in-process vs. remote) that claim
-holds for -- it is not uniform across the two.
+`QueryOptions` (`src/services/knowledge/types.ts`) declares 13 optional
+filter fields; `HttpKbProvider.query` (`src/services/knowledge/http-provider.ts`)
+forwards only 6 of them; the in-tree `/api/kb/query` handler
+(`src/commands/kb-server.ts`) reads only 4 of what was forwarded. The two
+narrowings are independent and compose: a caller going through the HTTP
+provider against that handler ends up with 4 effective filters, not 13, not
+6. Any contract or SLA that says "query supports filter X" must state which
+access path (in-process `SqliteProvider`, in-process `HttpKbProvider`, or a
+live remote query through the handler) that claim holds for -- it is not
+uniform across the three.
 
-One filter field in particular (full-text-search terms) is dropped from the
-transport surface *by design*: it is declared internal-only and is reachable
-only by in-process callers that hold a provider reference directly (e.g. a
-session-priming tool that queries global and project scope providers before
-any HTTP boundary is crossed). Treat this as a documented mechanism, not a
-bug to fix by wiring it through the HTTP schema and server handler -- forwarding
-it would be the wrong remedy, not the right one.
+One filter field in particular, `fts_terms`, is dropped from the transport
+surface *by design*: `types.ts` declares it internal-only, structurally
+excluded from the request schema and the HTTP surface, and it is reachable
+only by in-process callers that hold a provider reference directly --
+`kb_session_prime` passes `fts_terms` when querying both the global and
+project scope providers before any HTTP boundary is crossed, and
+`SqliteProvider` honors it via `orJoinFtsTerms`. Treat this as a documented
+mechanism, not a bug to fix by wiring it through the HTTP schema and server
+handler -- forwarding it would be the wrong remedy, not the right one.
 
 ## A sweep root default living inside the provider is not the same as the caller passing an anchor
 
 Where a tool's stated contract is "operates against this repo's path," verify
 by checking what the call site actually passes, not by trusting a docstring
-or a prior note about it. A caller that names a path only in a comment, while
-the real anchoring happens via a no-argument call whose default resolves
-inside the provider implementation, means the effective binding point is the
-provider's default, not whatever the caller's local variable is named after.
-This is easy to get backwards when skimming, and worth re-checking directly
-against the call site any time an inventory or contract doc asserts which
-side owns anchoring.
+or a prior note about it. Concretely: `kb_freshness_sweep`
+(`src/tools/kb-freshness-sweep.ts`) calls `providers.project.freshnessSweep()`
+with no argument -- `repoPath` is named only in a comment at that call site.
+The real anchoring happens via that no-argument call, whose default resolves
+inside the provider implementation, so the effective binding point is the
+provider's internal default, not the caller's `repoPath` variable. This is
+easy to get backwards when skimming, and worth re-checking directly against
+the call site any time an inventory or contract doc (or a prior KB entry)
+asserts which side owns anchoring -- an earlier note claiming the caller
+anchors the sweep root this way did not hold up against the actual call
+site.
 
 ## Guard export-style writes by comparing the identity set, not size
 
-A local worktracker export that writes into a repo-committed file (id-based
-records, not raw text) must be guarded against silently replacing the
-committed record set with a different, unrelated one. A size or line-count
-based check is not sufficient: a replacement export can grow in total lines
-while still dropping the majority of previously-committed ids and adding a
-disjoint set of foreign ones. The correct guard compares the *set of ids*
-between the committed file and the new export and refuses (or requires an
-explicit opt-in) whenever the new export would drop ids present in the
-committed file. This mirrors an existing precedent elsewhere in the knowledge
-layer, where a shrinking write requires an explicit opt-in rather than
-proceeding silently.
+The beads issue export (`bd export -o .beads/issues.jsonl`, invoked from
+`auto-sprint.js` and then `git add`-ed automatically) must be guarded against
+silently replacing the committed issue-id set with a different, unrelated
+one. A size or line-count based check is not sufficient: a replacement
+export can grow in total lines while still dropping the majority of
+previously-committed ids and adding a disjoint set of foreign ones -- that is
+exactly the failure mode observed and fixed. The guard (in
+`export-shrink-guard.mjs`) instead compares the *set of ids* between the
+committed file and the new export and refuses (or requires an explicit
+opt-in) whenever the new export would drop ids present in the committed
+file. This mirrors an existing precedent in `src/tools/kb-export.ts`, where a
+shrinking knowledge-bible export similarly requires an explicit opt-in
+rather than proceeding silently.
 
 ## Local and CI test runners must reach the same suites
 
@@ -102,11 +113,14 @@ should be given a timeout that reflects what it actually needs to do.
 ## OS-assigned ports can land in a client-enforced "blocked port" list
 
 A server that lets the OS assign an ephemeral listening port can still fail
-client connections if the assigned port happens to fall in a fetch
-implementation's hardcoded blocked-port list (ports historically reserved for
-other protocols). This is more likely on a host whose OS-configured dynamic
-port range starts low enough to overlap that list. The fix is not to read the
-bound port earlier (the port is already correctly resolved by the time the
-listen callback fires) -- it is to detect that the freshly bound port is on
-the blocked list and close-and-relisten on a fresh OS-assigned port until a
-non-blocked one is obtained.
+client connections if the assigned port happens to fall in undici's (the
+WHATWG-fetch implementation's) hardcoded blocked-port list (ports
+historically reserved for other protocols). This is more likely on a host
+whose OS-configured dynamic port range starts low enough to overlap that
+list -- observed concretely on a host whose Windows dynamic port range
+starts at 1024, overlapping several blocked ports. The port itself is not
+read prematurely: `server.address()` already resolves the real bound port by
+the time the listen callback fires, so that is not the bug. The fix, in
+`listenOnPort` (`src/services/http-transport.ts`), is to detect that the
+freshly bound port is on the blocked list and close-and-relisten on a fresh
+OS-assigned port (`listen(0)`) until a non-blocked one is obtained.
