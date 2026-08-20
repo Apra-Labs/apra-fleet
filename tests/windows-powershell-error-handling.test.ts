@@ -1,8 +1,9 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import { execSync } from 'node:child_process';
-import { writeFileSync, readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { execSync, spawn } from 'node:child_process';
+import { writeFileSync, readFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { wrapPowerShellEncoded, WindowsCommands } from '../src/os/windows.js';
 
 /**
@@ -357,5 +358,69 @@ describe.runIf(hasPowerShell)('Live PowerShell: deepMergeJson (apra-fleet-ot2z.1
     expect(result.code).toBe(0);
     const parsed = JSON.parse(readFileSync(target, 'utf-8'));
     expect(parsed.note).toBe("it's a 'test'");
+  }, 20000);
+});
+
+// -----------------------------------------------------------------------
+// apra-fleet-ot2z.15.4: hashFilesRecursive
+// -----------------------------------------------------------------------
+
+describe.runIf(hasPowerShell)('Live PowerShell: hashFilesRecursive (apra-fleet-ot2z.15.4)', () => {
+  const cmds = new WindowsCommands();
+
+  it('a populated tree with a nested subdirectory: exit 0, one SHA-256 line per file with forward slashes, hashes match Node', () => {
+    const { dir, relDir } = makeTempDir('wpse-hash-pop-');
+    writeFileSync(join(dir, 'a.txt'), 'hello');
+    mkdirSync(join(dir, 'sub'));
+    writeFileSync(join(dir, 'sub', 'b.txt'), 'world');
+
+    const result = runPs(cmds.hashFilesRecursive(relDir));
+    expect(result.code).toBe(0);
+    const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean);
+    expect(lines.length).toBe(2);
+    for (const line of lines) {
+      expect(line).toMatch(/^[0-9a-f]{64}  \.\/.+$/);
+      expect(line).not.toContain('\\');
+    }
+    const aLine = lines.find(l => l.endsWith('./a.txt'));
+    expect(aLine).toBeDefined();
+    const expectedHash = createHash('sha256').update('hello').digest('hex');
+    expect(aLine!.split('  ')[0]).toBe(expectedHash);
+    const subLine = lines.find(l => l.includes('sub/b.txt'));
+    expect(subLine).toBeDefined();
+  }, 20000);
+
+  it('a directory that does not exist under $HOME: exit 0 with empty stdout (deliberate Test-Path tolerance, not a bug)', () => {
+    const result = runPs(cmds.hashFilesRecursive(`this-dir-does-not-exist-xyz-${Date.now()}`));
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  }, 20000);
+
+  it('a directory containing a locked file: exit code and stdout agree -- never a silent success pretending the locked file hashed fine', () => {
+    const { dir, relDir } = makeTempDir('wpse-hash-locked-');
+    writeFileSync(join(dir, 'ok.txt'), 'fine');
+    const lockedPath = join(dir, 'locked.txt');
+    writeFileSync(lockedPath, 'locked-content');
+
+    // Hold an exclusive read lock (FileShare.None) on lockedPath from a
+    // background PowerShell process, simulating a file mid-write by another
+    // process. Inlined via -Command rather than a checked-in .ps1 file,
+    // since this task may only touch this one test file.
+    const holdScript = `$fs = [System.IO.File]::Open('${lockedPath.replace(/'/g, "''")}', 'Open', 'Read', 'None'); Start-Sleep -Seconds 6; $fs.Close()`;
+    const holder = spawn('powershell', ['-Command', holdScript], { stdio: 'ignore' });
+    try {
+      execSync('powershell -Command "Start-Sleep -Milliseconds 2000"'); // let the holder acquire the lock
+      const result = runPs(cmds.hashFilesRecursive(relDir));
+      if (result.code === 0) {
+        // Silent-success is only acceptable if the locked file's hash is
+        // genuinely present -- never a "success" that just skipped it.
+        expect(result.stdout).toContain('./ok.txt');
+        expect(result.stdout).toContain('./locked.txt');
+      } else {
+        expect(result.stderr.length).toBeGreaterThan(0);
+      }
+    } finally {
+      holder.kill();
+    }
   }, 20000);
 });
