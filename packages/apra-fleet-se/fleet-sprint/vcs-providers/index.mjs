@@ -22,8 +22,38 @@
  *     rules:      { [VCS_FAILURE_KIND]: RegExp[] }   // classifyFailure() axis
  *     precedence: string[]|undefined      // optional kind-check order override
  *     extractProviderCode: (raw) => string|null       // classifyFailure() axis
- *     matchesHost: (host) => boolean                  // capabilities() axis
- *     capabilitiesForHost: (host) => { canOpenPullRequest: boolean }  // capabilities() axis
+ *     matchesHost: (host) => boolean                  // OPTIONAL; capabilities()
+ *                                          // axis. Which remote hosts this
+ *                                          // provider claims, for
+ *                                          // resolveVcsProviderForHost()
+ *                                          // below. Omit for a provider that
+ *                                          // never owns a host (dolt), and
+ *                                          // for the generic-git catch-all
+ *                                          // it returns true unconditionally.
+ *     capabilitiesForHost: (host) => { canOpenPullRequest: boolean }  // OPTIONAL;
+ *                                          // capabilities() axis. What a
+ *                                          // claimed host supports. MUST stay
+ *                                          // in lockstep with `builders`:
+ *                                          // report canOpenPullRequest:false
+ *                                          // while the create-pull-request
+ *                                          // builder is absent, so publish
+ *                                          // never builds an unsupported
+ *                                          // command (see ./azure-devops.mjs).
+ *                                          // A provider that omits this hook
+ *                                          // is treated as capability-less.
+ *     parseRepoRef: (url) => { org, project, repo, canonical }|null   // OPTIONAL;
+ *                                          // remote-URL axis. Parse a git
+ *                                          // remote URL into the coordinates
+ *                                          // this provider's REST API needs,
+ *                                          // for providers whose identity is
+ *                                          // not the portable "owner/name"
+ *                                          // pair (see ./azure-devops.mjs).
+ *                                          // MUST return null -- never throw,
+ *                                          // never a partial guess -- for
+ *                                          // input it does not recognize, so
+ *                                          // the caller can raise its own
+ *                                          // typed ERROR naming the expected
+ *                                          // shape.
  *     defaultAuthMode: string|null        // OPTIONAL, but declaring it (even
  *                                          // as null) is what makes a provider
  *                                          // part of resolveProvider()'s/
@@ -91,6 +121,16 @@ export function registerVcsProvider(impl) {
     }
     if (impl.extractProviderCode != null && typeof impl.extractProviderCode !== 'function') {
         throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`extractProviderCode\`.`);
+    }
+    // apra-fleet-5co8.1.1: the host/URL-axis hooks. All OPTIONAL (a
+    // classification-only provider declares none of them), but validated up
+    // front for the same reason as `extractProviderCode` above -- a malformed
+    // hook must fail at registration, not inside resolveVcsProviderForHost()
+    // or a remote-URL preflight where the error would mask the real failure.
+    for (const hook of ['matchesHost', 'capabilitiesForHost', 'parseRepoRef']) {
+        if (impl[hook] != null && typeof impl[hook] !== 'function') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`${hook}\`.`);
+        }
     }
     // apra-fleet-647.1.5.1: the two auth-backend fields folded in from
     // vcs-module.mjs's former BUILDERS/DEFAULT_AUTH_MODES tables. Both are
