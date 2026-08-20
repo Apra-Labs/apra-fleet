@@ -464,6 +464,11 @@ git clone https://github.com/Apra-Labs/apra-fleet && cd apra-fleet
 npm install && npm run build && npm test
 ```
 
+`npm test` runs the full local suite: the root vitest suite, the
+`apra-fleet-se` workspace suite, and the `apra-pm` suite (which is not an npm
+workspace and is otherwise only reachable via an explicit `--prefix`
+invocation) -- so a green local run and a green CI run see the same tests.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.
 
 ## License

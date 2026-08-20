@@ -2,6 +2,59 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- memory-contract/v1 inventory and test-suite stabilization
+
+Sprint goal: turn the existing MCP knowledge-tool surface into the
+memory-contract/v1 skeleton (JSON Schemas, method contract, error taxonomy,
+round-trip validation against the live sqlite provider), as a single sprint /
+single PR. **Sprint verdict: FAIL** (a final reviewer dispatch stalled and
+could not be repaired after retry; no PASS was reached).
+
+What landed: the contract-surface inventory (`memory-contract/v1/INVENTORY.md`)
+was corrected and hardened against several inaccuracies found during
+cross-checking against the real code (a tool-call-site miscount, an
+incomplete list of dropped HTTP query filters, a mis-stated anchoring claim,
+and an unflagged teardown-method-naming/extra-parameter asymmetry between the
+two provider implementations -- see `docs/memory-contract-v1-inventory-notes.md`
+for the durable findings). A baseline verification pass was recorded. A
+correctness bug was fixed in the automated beads-export commit guard, which
+could previously let a divergent local export silently replace the
+committed issue-id set while the exported file grew in size (a size-based
+check would not have caught it); the guard now compares id sets. The root
+local test runner now also runs the `apra-pm` suite (previously reachable
+only via CI's explicit `--prefix` invocation), and several tests that spawn
+real subprocesses (git clone, PowerShell, an external CLI) had their
+timeouts raised to real subprocess cost so they stop flaking under a loaded
+full-suite run; a real port-selection bug was also fixed where an
+OS-assigned ephemeral port could land in a client fetch implementation's
+blocked-port list.
+
+Carried forward (still open, core to the memory-contract/v1 deliverable):
+the zod-to-JSON-Schema generation path and its deterministic per-tool schema
+emit, the MemoryProvider method contract (`methods.json`), the error
+taxonomy with stable machine codes and its projection into MCP error
+payloads and the OpenAPI stub, the round-trip fixture corpus and its
+provider-parameterized validator (the sprint's stated exit criterion), the CI
+drift guard, and the final self-review/sign-off checklist. None of these
+were reached this sprint.
+
+Deploy could not be completed during this sprint: repeated attempts were
+blocked either by the runbook's own active-sprint safety gate (deploying
+while this sprint's own dispatch was still the active sprint) or by an `npm
+ci` failure unlinking a native `rollup` binary on Windows, which the existing
+lock-clearing preflight script does not detect (it only scans for orphaned
+`esbuild` holders). A regression pass afterward also could not run, blocked
+on missing command-allowlist entries for its own harness.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $28.4659.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 39 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- fleet-supervisor self-containment fix and lifecycle documentation
 
 Sprint goal: make the always-on fleet-sprint supervisor fully self-contained
