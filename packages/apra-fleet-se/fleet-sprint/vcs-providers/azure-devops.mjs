@@ -269,6 +269,77 @@ function parseRepoRef(remoteUrl) {
     return makeRef(prefix[0], prefix[1] || repo, repo);
 }
 
+/** The documented default credential-store entry holding an Azure DevOps PAT
+ *  (skills/fleet/auth-azdevops.md, "Storing tokens for reuse":
+ *  `credential_store_set name=azdevops_pat`). A per-sprint override is
+ *  deliberately NOT read here -- that is its own task; until then this default
+ *  is the single name both the runbook and this hook agree on. */
+const DEFAULT_PAT_SECRET = 'azdevops_pat';
+
+/** The canonical remote shape parseRepoRef() expects, quoted into every
+ *  operator-facing remedy this module produces (see `repoRefHint` below). */
+const REPO_REF_HINT = 'https://dev.azure.com/ORG/PROJECT/_git/REPO';
+
+/**
+ * Build the provision_vcs_auth argument object for an Azure DevOps member
+ * (apra-fleet-5co8.2.1).
+ *
+ * WHY A HOOK: the shared argument shape (`git_access` + a `repos` allowlist)
+ * is GitHub-App vocabulary. Azure DevOps has no App/installation model at all
+ * -- a PAT is minted by a human against an ORG, so what provision_vcs_auth
+ * needs here is `org_url` plus the token, and `git_access`/`repos` are
+ * meaningless. Expressing that as a descriptor hook keeps the difference in
+ * this file instead of adding a provider branch to the shared caller.
+ *
+ * SECRET TRANSPORT: the PAT is passed as a `{{secure.NAME}}` PLACEHOLDER, never
+ * a value. Resolution happens hub-side inside the fleet server; the orchestrator
+ * process that calls this hook never holds, logs or transports the plaintext,
+ * and a remote member (which has no secret store of its own) never has to.
+ * That is also why a missing store entry is a TYPED ERROR rather than a prompt:
+ * an unattended preflight/self-heal has no operator attached, and an
+ * out-of-band prompt there would stall the sprint instead of failing it.
+ *
+ * @param {{ base: object, repoRef: ({ org: string }|null|undefined),
+ *           availableSecrets: string[]|null, secretName?: string }} ctx
+ *   `base` is the shared argument object the caller would otherwise send;
+ *   `repoRef` is this provider's own parseRepoRef() output for the member's
+ *   remote; `availableSecrets` is the credential-store entry names the caller
+ *   observed (null when it could not be read -- then the check is skipped
+ *   rather than guessed, and a genuinely missing secret still fails loudly
+ *   server-side).
+ * @returns {{ args: object }|{ error: string }}
+ */
+function buildProvisionArgs(ctx) {
+    const { base = {}, repoRef, availableSecrets, secretName } = ctx || {};
+    const org = repoRef && typeof repoRef.org === 'string' ? repoRef.org.trim() : '';
+    if (!org) {
+        return {
+            error: `ERROR: cannot provision Azure DevOps auth for member '${base.member_name}': no organization could be derived from the member's git remote; expected a remote of the shape ${REPO_REF_HINT}`,
+        };
+    }
+
+    const name = (typeof secretName === 'string' && secretName.trim()) ? secretName.trim() : DEFAULT_PAT_SECRET;
+    if (Array.isArray(availableSecrets) && !availableSecrets.includes(name)) {
+        return {
+            error: `ERROR: cannot provision Azure DevOps auth for member '${base.member_name}': the credential store has no entry named '${name}'. Store the PAT first with: credential_store_set name=${name}`,
+        };
+    }
+
+    return {
+        args: {
+            member_name: base.member_name,
+            provider: base.provider,
+            // Base org URL with no trailing path -- see auth-azdevops.md's
+            // "Org URL must be base URL without trailing path" note and the
+            // TF400813 troubleshooting row, which is what a wrong org URL
+            // surfaces as.
+            org_url: `https://dev.azure.com/${org}`,
+            // Placeholder, NOT a value. See SECRET TRANSPORT above.
+            pat: `{{secure.${name}}}`,
+        },
+    };
+}
+
 export const AzureDevOpsVCS = Object.freeze({
     name: 'azure-devops',
     extends: 'generic-git',
@@ -291,7 +362,9 @@ export const AzureDevOpsVCS = Object.freeze({
     // one an operator copies out of the Azure DevOps "Clone" dialog; the ssh
     // and legacy visualstudio.com shapes parseRepoRef also accepts are
     // deliberately NOT listed, to keep the remedy a single copyable form.
-    repoRefHint: 'https://dev.azure.com/ORG/PROJECT/_git/REPO',
+    repoRefHint: REPO_REF_HINT,
+    // apra-fleet-5co8.2.1: OPTIONAL descriptor hook -- see ./index.mjs.
+    buildProvisionArgs,
     defaultAuthMode: null,
     builders: null,
 });

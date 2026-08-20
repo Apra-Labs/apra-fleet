@@ -68,6 +68,30 @@
  *                                          // literal -- out of the shared
  *                                          // callers. Only meaningful
  *                                          // alongside parseRepoRef.
+ *     buildProvisionArgs: (ctx) => { args }|{ error }   // OPTIONAL;
+ *                                          // provisioning axis. Build the
+ *                                          // provision_vcs_auth argument
+ *                                          // object for a member of this
+ *                                          // provider, given the shared
+ *                                          // caller's `base` args, this
+ *                                          // provider's own parseRepoRef()
+ *                                          // output for the member's remote
+ *                                          // (`repoRef`) and the credential-
+ *                                          // store entry names the caller
+ *                                          // observed (`availableSecrets`,
+ *                                          // null when unreadable). Omit it
+ *                                          // and the caller sends its shared
+ *                                          // GitHub-App-shaped arguments
+ *                                          // unchanged. MUST return a typed
+ *                                          // 'ERROR: ' string in `error`
+ *                                          // rather than prompting: the
+ *                                          // callers are unattended preflight
+ *                                          // and self-heal paths, where an
+ *                                          // out-of-band prompt stalls a
+ *                                          // sprint. MUST pass a secret as a
+ *                                          // {{secure.NAME}} placeholder,
+ *                                          // never a value -- resolution is
+ *                                          // hub-side (see ./azure-devops.mjs).
  *     defaultAuthMode: string|null        // OPTIONAL, but declaring it (even
  *                                          // as null) is what makes a provider
  *                                          // part of resolveProvider()'s/
@@ -141,7 +165,7 @@ export function registerVcsProvider(impl) {
     // front for the same reason as `extractProviderCode` above -- a malformed
     // hook must fail at registration, not inside resolveVcsProviderForHost()
     // or a remote-URL preflight where the error would mask the real failure.
-    for (const hook of ['matchesHost', 'capabilitiesForHost', 'parseRepoRef']) {
+    for (const hook of ['matchesHost', 'capabilitiesForHost', 'parseRepoRef', 'buildProvisionArgs']) {
         if (impl[hook] != null && typeof impl[hook] !== 'function') {
             throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`${hook}\`.`);
         }

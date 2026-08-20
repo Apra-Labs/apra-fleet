@@ -32,7 +32,7 @@ import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResol
 // hard-aborting the run at its readiness gate.
 import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef } from './vcs-module.mjs';
+import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
@@ -2246,18 +2246,78 @@ export function parseOwnerRepoFromRemoteUrl(url) {
  * That case returns a typed `error` naming the shape the provider expects, for
  * the caller to raise as a PREFLIGHT failure -- not a stderr classification.
  *
+ * `ref` carries the provider's full coordinate object when one was produced
+ * (null otherwise), so a caller can hand it back to that same provider's other
+ * hooks -- e.g. buildProvisionArgs, which derives an org URL from it
+ * (apra-fleet-5co8.2.1) -- without re-parsing or interpreting it here.
+ *
  * @param {string|null|undefined} url
- * @returns {{ repo: string|null, error: string|null }}
+ * @returns {{ repo: string|null, ref: object|null, error: string|null }}
  */
 export function parseRepoScopeFromRemoteUrl(url) {
     const text = String(url == null ? '' : url).trim();
-    if (!text) return { repo: null, error: null };
+    if (!text) return { repo: null, ref: null, error: null };
 
     const providerRef = parseProviderRepoRef(text);
-    if (providerRef && providerRef.error) return { repo: null, error: providerRef.error };
-    if (providerRef && providerRef.canonical) return { repo: providerRef.canonical, error: null };
+    if (providerRef && providerRef.error) return { repo: null, ref: null, error: providerRef.error };
+    if (providerRef && providerRef.canonical) return { repo: providerRef.canonical, ref: providerRef.ref, error: null };
 
-    return { repo: parseOwnerRepoFromRemoteUrl(text), error: null };
+    return { repo: parseOwnerRepoFromRemoteUrl(text), ref: null, error: null };
+}
+
+/**
+ * Read the credential-store entry NAMES (never values) currently registered on
+ * the hub, for a provider hook that needs to fail fast when the secret it
+ * intends to reference as a {{secure.NAME}} placeholder does not exist
+ * (apra-fleet-5co8.2.1).
+ *
+ * Returns null -- not an empty list -- when the store cannot be read or its
+ * response cannot be parsed, so a hook can tell "the store definitely lacks
+ * this entry" apart from "unknown" and skip the check rather than emit a
+ * false, sprint-stopping ERROR. A genuinely missing secret still fails loudly
+ * hub-side when placeholder resolution runs.
+ *
+ * @param {object} fleetApi
+ * @returns {Promise<string[]|null>}
+ */
+async function listCredentialStoreNames(fleetApi) {
+    if (!fleetApi || typeof fleetApi.credentialStoreList !== 'function') return null;
+    try {
+        const parsed = JSON.parse(selfHealResultText(await fleetApi.credentialStoreList()));
+        if (!Array.isArray(parsed)) return null;
+        return parsed
+            .map((entry) => (entry && typeof entry.name === 'string' ? entry.name : null))
+            .filter((name) => name !== null);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Build the provision_vcs_auth arguments for a member, dispatched through the
+ * resolved provider's OPTIONAL buildProvisionArgs hook (apra-fleet-5co8.2.1).
+ *
+ * A provider with no hook gets `base` verbatim -- the GitHub-App-shaped
+ * `git_access`/`repos` arguments this function has always sent -- so nothing
+ * changes for GitHub or any other existing provider. A provider WITH a hook
+ * owns its own argument shape entirely, including which credential-store entry
+ * it references and what remedy text a missing one prints. No provider name,
+ * no auth-mode knowledge and no raw credential value appears here.
+ *
+ * @param {{ provider: string, base: object, repoRef: object|null, fleetApi: object }} ctx
+ * @returns {Promise<object>} the arguments to send
+ */
+async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi }) {
+    const impl = getVcsProvider(provider);
+    if (!impl || typeof impl.buildProvisionArgs !== 'function') return base;
+
+    const availableSecrets = await listCredentialStoreNames(fleetApi);
+    const built = impl.buildProvisionArgs({ base, repoRef, availableSecrets });
+    if (built && typeof built.error === 'string') throw new Error(built.error);
+    if (!built || !built.args || typeof built.args !== 'object') {
+        throw new Error(`ERROR: VCS provider '${provider}' returned no provision arguments for member '${base.member_name}'.`);
+    }
+    return built.args;
 }
 
 // Shared MCP tool-result-to-text extractor for the self-heal callbacks below.
@@ -2297,6 +2357,7 @@ function selfHealResultText(result) {
 async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push' }) {
     let repos;
     let derivedRepo = null;
+    let derivedRef = null;
     // Reading the remote is best-effort (a failure here just means no explicit
     // repos scope), but PARSING it is not: a malformed remote on a host some
     // provider claims is a preflight ERROR that must escape this function
@@ -2316,6 +2377,7 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         if (scope.error) {
             throw new Error(`${logPrefix}: cannot provision VCS auth for member '${member}': ${scope.error}`);
         }
+        derivedRef = scope.ref;
         if (scope.repo) {
             repos = [scope.repo];
             derivedRepo = scope.repo;
@@ -2333,13 +2395,23 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // `<provider>_mode` when non-null, matching provision_vcs_auth's own
     // `github_mode` field name for the one provider that has one today.
     const { provider, authMode } = await resolveProvider(member, { fleetApi });
-    const provisionRes = await fleetApi.provisionVcsAuth({
-        member_name: member,
+    // apra-fleet-5co8.2.1: the argument shape itself is now provider-owned.
+    // What follows is the DEFAULT (GitHub-App) shape; a provider that declares
+    // a buildProvisionArgs hook replaces it wholesale -- see
+    // buildProvisionArgsForProvider above.
+    const provisionArgs = await buildProvisionArgsForProvider({
         provider,
-        ...(authMode ? { [`${provider}_mode`]: authMode } : {}),
-        git_access: gitAccess,
-        ...(repos ? { repos } : {}),
+        base: {
+            member_name: member,
+            provider,
+            ...(authMode ? { [`${provider}_mode`]: authMode } : {}),
+            git_access: gitAccess,
+            ...(repos ? { repos } : {}),
+        },
+        repoRef: derivedRef,
+        fleetApi,
     });
+    const provisionRes = await fleetApi.provisionVcsAuth(provisionArgs);
     const provisionText = selfHealResultText(provisionRes);
     // provision_vcs_auth NEVER throws on failure -- it returns a string
     // starting with the failure emoji. A failed provision must never be
