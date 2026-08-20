@@ -227,6 +227,78 @@ member therefore yields a nested content object inside the text, not an error.
 That is a shape a v1 response schema must tolerate; it is covered by the
 permissive `code_*` body from section 3.
 
+### 4.4 Implementation-coverage cross-check: SqliteProvider vs HttpKbProvider
+
+Both `MemoryProvider` implementations in `src/services/knowledge/` were checked
+against the section 4.1/4.2 tables. Finding up front, load-bearing for
+everything below: **`HttpKbProvider` is never constructed anywhere in `src/`
+outside its own class body and stray comments** (grep confirms this). `kb-providers.ts`
+types `KbProviders.project`/`.global` as `SqliteProvider` explicitly (not
+`MemoryProvider`), and `getKbProviders`/`createKbProvidersForSlug` only ever
+`new SqliteProvider(...)`. `kb_setup` can write `{provider: 'http', ...}` to
+its config file, but nothing under `src/services/knowledge` reads that config
+back to select a provider class. So every one of the divergences below is
+currently **dead code**, not a live behavioral difference an agent can hit --
+this is itself the coverage finding this section exists to record (F-10).
+
+**4.4.1 -- The 12 `MemoryProvider` interface methods (section 4.1): both classes
+implement all 12 (TypeScript enforces this via `implements MemoryProvider`).
+Per-method comparison of what each one actually DOES:**
+
+| # | Method | SqliteProvider (section 4.1) | HttpKbProvider (`src/services/knowledge/http-provider.ts`) | Divergence |
+|---|--------|-------------------------------|--------------------------------------------------------------|------------|
+| P-1 | `init` | schema/pragma setup, write | delegates to `this.fallback.init()` (an internal `SqliteProvider`) -- no remote init call at all | HttpKbProvider's "init" is really just its embedded fallback's init; the remote server is assumed already initialized |
+| P-2 | `capture` | full AUDN pipeline locally (clamp, directive-quarantine, contradiction-flagging) | POSTs `/api/kb/capture`; on connection error, enqueues to `offlineQueue` and returns a fabricated `{id: "offline-<random>", audn_decision: 'add'}` WITHOUT running any AUDN logic | offline capture always reports `audn_decision: 'add'` regardless of what the server would actually have decided -- the true decision is deferred until `tryFlushQueue` succeeds, and the caller is never told it changed |
+| P-3 | `query` | full `QueryOptions` support including `tag`, `flagged_only`, `fts_terms` | GETs `/api/kb/query` forwarding only `query, type, limit, l1_only, include_stale, include_superseded` -- `tag` and `flagged_only` are silently dropped, not sent as query params; on connection error falls back to `this.fallback.query(opts)` (full local support) | over a live remote connection, `tag`-filtered and `flagged_only` queries lose their filter; the SAME options object degrades to full support only when offline, which is backwards from what a caller would expect |
+| P-4 | `context` | read | GET `/api/kb/context`, fallback to local on connection error | equivalent net behavior, remote-first |
+| P-5 | `invalidate` | marks context-cache entries stale (real mutate) | POSTs `/api/kb/invalidate`; on connection error enqueues the op and returns `{invalidated: 0}` -- the local cache is NOT actually marked stale while offline | offline `invalidate` is a no-op report, not a degraded-but-real local mutation, despite `capture`'s offline path at least queuing for eventual replay |
+| P-6 | `getLinked` | read | ALWAYS delegates to `this.fallback.getLinked(id)` -- no remote route exists at all | not a proxy method for this provider; purely local regardless of connectivity |
+| P-7 | `prime` | read | POST `/api/kb/prime`, fallback to local on connection error | equivalent net behavior, remote-first |
+| P-8 | `promote` | mutate-trust, one-tier-per-call | ALWAYS delegates to `this.fallback.promote(id, reason)` -- no remote route exists at all | promotion is local-only even when the remote server is reachable; a promoted-over-HTTP entry never reaches the remote KB |
+| P-9 | `sync` | read/write (remote transfer) | hardcoded `return {synced: false, reason: 'local-only provider'}` -- ignores `opts` entirely, never contacts the remote server | ironic given the class name: the one method whose name promises remote transfer is the one HttpKbProvider refuses to perform at all |
+| P-10 | `stats` | read, full computation | hardcoded not-supported result (already documented as E-STATS-UNSUPPORTED in section 5.1) | confirmed consistent with section 5.1; no new finding |
+| P-11 | `touch` | telemetry write | ALWAYS delegates to `this.fallback.touch(ids)`; catches and swallows any error, returning `0` | no remote telemetry route exists; comment in the source explicitly says a telemetry write must never fail a prime |
+| P-12 | `relatedClaims` | read | ALWAYS delegates to `this.fallback.relatedClaims(ids, limit)`; catches and swallows any error, returning `[]` | no remote route exists; same never-fail rationale as `touch` |
+
+Pattern across P-6, P-8, P-11, P-12: four of the twelve interface methods on
+`HttpKbProvider` have NO remote code path whatsoever -- they are pure
+pass-throughs to the embedded `fallback: SqliteProvider`, connectivity
+notwithstanding. Only `capture`, `query`, `context`, `invalidate`, and `prime`
+(five methods) actually attempt an HTTP request first.
+
+**4.4.2 -- The 6 methods + 1 property reachable-but-undeclared on `MemoryProvider`
+(section 4.2): none of them exist on `HttpKbProvider` at all.**
+
+| # | Member | On `HttpKbProvider`? | Consequence |
+|---|--------|----------------------|--------------|
+| X-1 | `list` | absent | `kb_list` calls `providers.project.list(...)` where `providers.project` is typed `SqliteProvider` (section 4.4 preamble) -- structurally could not target an `HttpKbProvider` even if one were ever returned |
+| X-2 | `feedback` | absent | same shape of gap; `kb_feedback` -> `SqliteProvider.feedback` only |
+| X-3 | `freshnessSweep` | absent | `kb_freshness_sweep`, `kb_import` -> `SqliteProvider.freshnessSweep` only |
+| X-4 | `resolveContradiction` | absent | `kb_resolve_contradiction` -> `SqliteProvider.resolveContradiction` only |
+| X-5 | `reconcilePrefilter` | absent | `kb_reconcile_prefilter` -> `SqliteProvider.reconcilePrefilter` only |
+| X-6 | `hasEntry` | absent | `kb_import` -> `SqliteProvider.hasEntry` only |
+| X-7 | `repoPath` | absent (property) | `kb_freshness_sweep` reads `SqliteProvider.repoPath` directly; no analogous property on `HttpKbProvider` |
+
+None of these are "missing" in the sense of an incomplete HTTP implementation
+that should be filled in -- per the 4.4 preamble, the six tools in this table
+never receive anything except a `SqliteProvider` instance in this tree, so the
+gap is currently unreachable rather than a live bug. It is recorded here
+because a v1 contract binding generated only from `MemoryProvider` +
+`HttpKbProvider`'s declared surface would still miss these six tools' true
+provider dependency, same root cause as section 4.2's existing finding.
+
+**F-10 (new finding, added to the running list; numbering continues from
+section 3.1's F-9):** `HttpKbProvider` is fully implemented and type-checks
+against `MemoryProvider`, but is dead code in this tree -- no call site
+constructs one, and `kb_setup`'s `provider: 'http'` config value is never read
+back to select it. Of the 12 interface methods it does implement, 4 (`getLinked`,
+`promote`, `touch`, `relatedClaims`) have no remote code path at all, and one
+(`query`) drops two of its filter options (`tag`, `flagged_only`) on the remote
+path while supporting them fully on its local fallback path. A v1 contract
+binding must not assume the two `MemoryProvider` implementations are
+behaviorally interchangeable merely because both compile against the same
+interface.
+
 ## 5. Error and refusal paths
 
 Provisional names are assigned here so downstream schema and binding work has a
@@ -294,6 +366,10 @@ unrecognised `role` degrades to the literal `unknown`. Provisional name
 - Response-schema generation must handle three irregularities: `kb_query`'s
   two-shape union with an absent-vs-null `related_claims`, `kb_stats`'s
   spread-plus-optionals, and the seven permissive `code_*` bodies.
+- `HttpKbProvider` (section 4.4, F-10) is dead code in this tree: never
+  constructed, four of its twelve interface methods have no remote path, and
+  its `query` silently drops `tag`/`flagged_only` on the remote path. Do not
+  model it as a behaviorally-equivalent second implementation.
 
 ## Appendix A -- registration descriptions (verbatim)
 
