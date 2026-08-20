@@ -184,7 +184,9 @@
  *   for every caller. When `role` is also supplied AND that role has a
  *   bounds-<role>.json profile in the INSTALLED (host-side) profiles
  *   directory, an out-of-bounds permission is additionally REJECTED -- see
- *   `allow_out_of_bounds`.
+ *   `allow_out_of_bounds`. Pass the role whose runbook these prefixes came
+ *   from: a grant issued under an unrelated role is checked against the wrong
+ *   allowlist and refused wholesale.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
  * @property {boolean} [allow_out_of_bounds] - OPERATOR ESCALATION ONLY.
  *   Downgrades the enforcing per-role bounds check back to informational

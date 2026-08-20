@@ -58,13 +58,14 @@ const blockedDeploy = {
  * (called with the grant args; may throw to simulate a tool-level fault).
  *
  * Only HEAL-originated calls are recorded. createDeployPermissionsProvisioner
- * (the separate, PROACTIVE pre-dispatch provisioner that reads deploy.md out
- * of the working tree before every deploy/integ/regression dispatch) also
- * calls compose_permissions, and its calls are answered but deliberately not
- * counted here -- these assertions are about the reactive heal-and-retry path
- * only. It is distinguishable by its fixed grant_reason.
+ * (the separate, PROACTIVE pre-dispatch provisioner that reads each role's own
+ * runbook out of the working tree before every deploy/integ/regression
+ * dispatch) also calls compose_permissions, and its calls are answered but
+ * deliberately not counted here -- these assertions are about the reactive
+ * heal-and-retry path only. It is distinguishable by its grant_reason, which
+ * always carries the marker below (the role name follows it).
  */
-const PROACTIVE_GRANT_REASON = 'auto-provisioned before dispatch';
+const PROACTIVE_GRANT_REASON = 'auto-provisioned before the';
 
 function recordingCallTool(calls, composeResponse) {
     const base = defaultMockCallTool();

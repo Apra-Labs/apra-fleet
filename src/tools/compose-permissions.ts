@@ -14,7 +14,7 @@ import type { Agent } from '../types.js';
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
-  role: z.enum(['doer', 'reviewer', 'deployer', 'integ-test-runner', 'regression-test-runner']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test); deployer, integ-test-runner and regression-test-runner select their own base-dev/base-reviewer mode plus a matching bounds-<role>.json profile. When a `grant` request carries a role, each newly requested permission is checked against the bounds-<role>.json profile for that role (skills/fleet/profiles/); an out-of-bounds permission is still granted, never blocked, but its ledger entry is flagged outOfBounds:true with requestedByRole recorded for later audit. No role, or a role with no bounds file, skips the bounds check entirely. Bounds never loosen the hard-rejected NEVER_AUTO_GRANT patterns, which are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Provide at least one of role or tags.'),
+  role: z.enum(['doer', 'reviewer', 'deployer', 'integ-test-runner', 'regression-test-runner']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test); deployer, integ-test-runner and regression-test-runner select their own base-dev/base-reviewer mode plus a matching bounds-<role>.json profile. When a `grant` request carries a role, each newly requested permission is checked against the bounds-<role>.json profile for that role (skills/fleet/profiles/); with an INSTALLED host-side profiles directory an out-of-bounds permission REJECTS the whole grant unless allow_out_of_bounds is set, and with only the repo-relative dev-fallback profiles directory it degrades to informational (granted, ledger entry flagged outOfBounds:true with requestedByRole recorded for later audit). No role, or a role with no bounds file, skips the bounds check entirely. Pass the role whose runbook the requested prefixes came from -- a grant issued under an unrelated role is checked against the wrong allowlist and will be refused. Bounds never loosen the hard-rejected NEVER_AUTO_GRANT patterns, which are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Provide at least one of role or tags.'),
   tags: z.array(z.string()).optional().describe('Member tags. Include "doer" or "reviewer" to set the primary mode (default doer); other tags (e.g. "gpu", "devops") load tag-<name>.json profiles and merge additively. When both role and tags are given, tags wins.'),
   project_folder: z.string().optional().describe('Local project folder containing permissions.json ledger. Omit to skip ledger merge.'),
   grant: z.array(z.string()).optional().describe('Reactive mode: additional permissions to grant (e.g. ["Bash(docker:*)", "Bash(docker-compose:*)"]). Appended to current permissions and re-delivered.'),
@@ -84,11 +84,21 @@ function escapeRegExpExceptStar(s: string): string {
   return s.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Matches `permission` against `pattern`, treating '*' in the pattern as a
- *  wildcard (matches any run of characters, including none) rather than a
- *  literal character. Falls back to exact equality for a wildcard-free
- *  pattern. */
-function matchesDenyPattern(pattern: string, permission: string): boolean {
+/**
+ * Matches `permission` against `pattern`, treating '*' in the pattern as a
+ * wildcard (matches any run of characters, including none) rather than a
+ * literal character. A wildcard-free pattern still matches only by exact
+ * equality.
+ *
+ * ONE implementation, deliberately shared by both wildcard consumers in this
+ * file: the NEVER_AUTO_GRANT denylist (isNeverAutoGrant) and the per-role
+ * bounds allowlist (isWithinBounds). They were briefly two byte-for-byte
+ * identical functions -- `matchesDenyPattern` and `matchesBoundsPattern` --
+ * which is exactly how a floor and a ceiling drift apart on what `*` means.
+ * `matchesBoundsPattern` is kept as the exported alias because tests and
+ * callers outside this file already reference that name.
+ */
+export function matchesWildcardPattern(pattern: string, permission: string): boolean {
   const regex = new RegExp(`^${pattern.split('*').map(escapeRegExpExceptStar).join('.*')}$`);
   return regex.test(permission);
 }
@@ -134,7 +144,7 @@ export function isNeverAutoGrant(permission: string): boolean {
   if (SHELL_CHAINING_METACHARS.some(meta => payload.includes(meta))) return true;
 
   // 3. Explicit deny patterns (wildcard-aware).
-  return NEVER_AUTO_GRANT_PATTERNS.some(pattern => matchesDenyPattern(pattern, normalized));
+  return NEVER_AUTO_GRANT_PATTERNS.some(pattern => matchesWildcardPattern(pattern, normalized));
 }
 
 interface Ledger {
@@ -216,17 +226,12 @@ export function loadBounds(profilesDir: string, role: string | undefined): strin
   return bounds;
 }
 
-/** Matches a single bounds entry against a granted permission string, treating
- *  '*' in the bounds entry as a wildcard (matches any run of characters,
- *  including none) rather than a literal character. Bounds files hold prefix
- *  patterns like "Bash(npm run build*)" or "Bash(*apra-fleet* run *)", not
- *  verbatim permission strings, so exact equality was never the right check
- *  (apra-fleet-ivxi.2). A bounds entry with no '*' still matches only by
- *  exact equality, preserving today's behavior for wildcard-free entries. */
-export function matchesBoundsPattern(pattern: string, permission: string): boolean {
-  const regex = new RegExp(`^${pattern.split('*').map(escapeRegExpExceptStar).join('.*')}$`);
-  return regex.test(permission);
-}
+/** Matches a single bounds entry against a granted permission string. Bounds
+ *  files hold prefix patterns like "Bash(npm run build*)" or
+ *  "Bash(*apra-fleet* run *)", not verbatim permission strings, so exact
+ *  equality was never the right check (apra-fleet-ivxi.2). Thin alias over the
+ *  file's single wildcard matcher -- see matchesWildcardPattern. */
+export const matchesBoundsPattern = matchesWildcardPattern;
 
 /** True when `permission` is covered by at least one entry in `bounds`
  *  (wildcard-aware, see matchesBoundsPattern). */

@@ -182,6 +182,45 @@ Two independent controls covering each other's gaps: the denylist is the
 unconditional floor on every caller, bounds are the bounded ceiling on the
 autonomous path, and the base-branch read decides what may even be asked for.
 
+### The proactive pre-dispatch provisioner obeys the same role contract
+
+The reactive heal described above is not the only caller of the autonomous
+grant path. `createDeployPermissionsProvisioner` in
+`packages/apra-fleet-se/fleet-sprint/runner.js` returns
+`ensureDeployPermissions(member, role)`, which the runner invokes *before* each
+Deploy, Integ Test, and Regression Test dispatch: it reads that role's runbook
+`## Permissions` section from the orchestrator's own checkout and grants the
+declared prefixes up front, so a runbook permissions change is applied without
+first costing a failed dispatch.
+
+Because it is an autonomous caller, it is bounds-checked exactly like the
+reactive heal, and therefore has to satisfy the same contract:
+
+- **It grants under the phase's real role.** The runbook it reads and the
+  `role` it passes both come from `RUNBOOK_FOR_ROLE`, so a deployer grant is
+  checked against `bounds-deployer.json`, an integ-test-runner grant against
+  `bounds-integ-test-runner.json`, and so on. Each `bounds-<role>.json` file is
+  the curated mirror of that role's own runbook, which is what makes the
+  proactive grant in-bounds by construction.
+- **It fails open, not silently.** It inspects `compose_permissions`' own
+  success/rejection marker (`isComposePermissionsSuccess`, the same check the
+  reactive heal uses) and only records the member as provisioned on a confirmed
+  success. A refused grant is logged with the tool's reason and left
+  retryable, so the reactive heal above still gets its chance.
+
+This was a real defect, now fixed, not a hypothetical: the first version of the
+provisioner read `deploy.md` for all three phases and always passed
+`role: 'doer'`. Once bounds became enforcing, deploy.md's prefixes were
+wholesale outside `bounds-doer.json` (a generic build/test allowlist), so every
+proactive grant was rejected -- and since the provisioner ignored the returned
+marker and unconditionally cached the member as provisioned, it no-oped
+silently for the rest of the run and quietly promoted the reactive heal from
+rare fallback to load-bearing, burning a retry cycle per phase.
+`tests/deploy-permissions-runbook-bounds.test.ts` pins the fixed behaviour by
+running the *real* `composePermissions` against the *real* installed bounds
+profiles and the *real* parsed runbook lists; it also doubles as a drift guard,
+failing if a runbook gains a prefix its role's bounds profile does not cover.
+
 ### Bounds-file audit note
 
 Enforcing bounds only makes the worst case *bounded*, not *safe*: the ceiling
