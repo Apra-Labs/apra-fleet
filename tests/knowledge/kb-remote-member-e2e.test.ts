@@ -192,5 +192,12 @@ describe('remote-member KB scoping end-to-end (apra-fleet-b4g.11)', () => {
       hint_symbols: [`remoteE2eChanged${tok}`],
     } as any);
     expect(await rawStale(localClone, changedTitle)).toBe(1);
-  });
+  // my-beads-db-27m.19: this test does a real git clone plus sqlite work (two
+  // captures, a session prime, stats, list, and a second prime after a file
+  // change) -- 3869ms observed in isolation, 77% of vitest's 5000ms default,
+  // so it flakes under full-suite host load. 30000ms leaves comfortable
+  // margin, matching the remedy already applied to register-member.test.ts /
+  // register-member-bootstrap-gate.test.ts / 2cc-win-bd-invocation-integ.test.ts
+  // / eft-41-symlinked-entry.test.ts on this branch.
+  }, 30000);
 });
