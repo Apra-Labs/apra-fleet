@@ -45,6 +45,7 @@ See sub-documents for detailed usage:
 - `skill-matrix.md`  -  skill installation matrix by project + VCS + role
 - `auth-github.md`, `auth-bitbucket.md`, `auth-azdevops.md`  -  VCS auth provisioning per provider
 - `beads.md`  -  Beads persistent task DB: commands, backlog ops, session recovery patterns
+- `beads-conflict-resolution.md`  -  manual dolt SQL recovery when `bd dolt pull`/`push` reports a real merge conflict
 
 ## Beads  -  Persistent Task Tracking
 
