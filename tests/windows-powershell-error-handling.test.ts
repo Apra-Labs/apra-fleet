@@ -104,6 +104,18 @@ export function runPs(cmd: string): { code: number; stdout: string; stderr: stri
   }
 }
 
+// Fixtures created by makeTempDir() while a test is actually running (i.e.
+// from inside an it() body) are collected here instead of registering their
+// own afterAll() at call time. Calling afterAll() from within a running
+// it() body registers a runtime hook that never gets attached to the file
+// suite -- measured live: a full suite run left 16 of 16 fixtures on disk
+// (a delta of +16 wpse-* dirs under the operator's real home directory)
+// despite the suite reporting fully green. A single top-level afterAll,
+// registered at collection time below, drains this array instead so every
+// fixture is actually removed regardless of which hook (it body vs.
+// top-level describe) created it.
+const tempDirsToClean: string[] = [];
+
 /** Create a fresh temp directory UNDER os.homedir() -- NOT os.tmpdir().
  *  hashFilesRecursive (src/os/windows.ts:382-386) builds its PowerShell path
  *  with `Join-Path $HOME '<relative-path>'`, so a fixture tree exercised by
@@ -114,17 +126,28 @@ export function runPs(cmd: string): { code: number; stdout: string; stderr: stri
  *  Returns both the absolute `dir` (for direct fs access / attrib calls) and
  *  `relDir` (the path relative to homedir(), i.e. what a $HOME-relative
  *  PowerShell script like hashFilesRecursive's expects as its `dir` arg).
- *  Registers its own `afterAll` cleanup (recursive force-remove) so callers
- *  never need to remember to tear it down themselves -- vitest hooks are
- *  file-scoped, so this correctly attaches to whichever spec file called it. */
+ *  Cleanup is NOT registered here via afterAll() -- this is routinely called
+ *  from inside a running it() body, and afterAll() called at that point
+ *  never attaches to the file suite (see tempDirsToClean above). Instead the
+ *  created path is pushed onto the module-level tempDirsToClean array, which
+ *  a single afterAll registered at collection time (below) drains. */
 export function makeTempDir(prefix: string): { dir: string; relDir: string } {
   const dir = mkdtempSync(join(homedir(), prefix));
   const relDir = relative(homedir(), dir);
-  afterAll(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
+  tempDirsToClean.push(dir);
   return { dir, relDir };
 }
+
+// Registered at collection time (this call is at module top level, not
+// inside any it() body), so it reliably attaches to this file's suite and
+// runs once after all tests here have finished, removing every fixture any
+// makeTempDir() call pushed onto tempDirsToClean -- regardless of whether
+// that call happened during collection or while a test was running.
+afterAll(() => {
+  for (const dir of tempDirsToClean) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 /** Set the Windows read-only file attribute on `path` (file or directory),
  *  so a call site's PowerShell error-handling (e.g. deleteFiles's
@@ -398,7 +421,7 @@ describe.runIf(hasPowerShell)('Live PowerShell: hashFilesRecursive (apra-fleet-o
     expect(result.stdout.trim()).toBe('');
   }, 20000);
 
-  it('a directory containing a locked file: exit code and stdout agree -- never a silent success pretending the locked file hashed fine', () => {
+  it('a directory containing a locked file: exit code and stdout agree -- never a silent success pretending the locked file hashed fine', async () => {
     const { dir, relDir } = makeTempDir('wpse-hash-locked-');
     writeFileSync(join(dir, 'ok.txt'), 'fine');
     const lockedPath = join(dir, 'locked.txt');
@@ -410,6 +433,16 @@ describe.runIf(hasPowerShell)('Live PowerShell: hashFilesRecursive (apra-fleet-o
     // since this task may only touch this one test file.
     const holdScript = `$fs = [System.IO.File]::Open('${lockedPath.replace(/'/g, "''")}', 'Open', 'Read', 'None'); Start-Sleep -Seconds 6; $fs.Close()`;
     const holder = spawn('powershell', ['-Command', holdScript], { stdio: 'ignore' });
+    // Resolves once the holder process has actually exited (not merely been
+    // signaled), so its exclusive file handle on lockedPath is guaranteed
+    // released before teardown's rmSync runs. holder.kill() alone does not
+    // wait for OS-level handle release -- rmSync({force:true}) does NOT
+    // swallow EBUSY, so racing it against a still-closing handle can leave
+    // the fixture directory behind and fail the suite's own cleanup step.
+    const holderExited = new Promise<void>((resolve) => {
+      holder.once('exit', () => resolve());
+      holder.once('error', () => resolve());
+    });
     try {
       execSync('powershell -Command "Start-Sleep -Milliseconds 2000"'); // let the holder acquire the lock
       const result = runPs(cmds.hashFilesRecursive(relDir));
@@ -423,6 +456,7 @@ describe.runIf(hasPowerShell)('Live PowerShell: hashFilesRecursive (apra-fleet-o
       }
     } finally {
       holder.kill();
+      await holderExited;
     }
   }, 20000);
 });
