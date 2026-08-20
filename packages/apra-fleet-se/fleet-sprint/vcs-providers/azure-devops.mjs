@@ -44,21 +44,83 @@
  * a shared file. capabilitiesForHost() reports canOpenPullRequest:false while
  * `builders` is null and flips true in the SAME change that adds them.
  *
+ * apra-fleet-5co8.4.1 adds two more additive rules on top of the bare
+ * TF401019 AUTH_DENIED rule above (which stays exactly as-is): a REST 401 /
+ * TF400813 both mean the PAT itself is expired or revoked (AUTH_EXPIRED --
+ * re-minting the token is the fix), while a REST 403 is a missing-scope
+ * refusal (AUTH_DENIED -- widening the PAT's scopes is the fix, per
+ * skills/fleet/auth-azdevops.md's role/scope table). See the AUTH_EXPIRED /
+ * AUTH_DENIED doc comments below for the exact texts and why each is
+ * additive only, with no verdict moved for the pre-existing TF401019 case.
+ *
  * ASCII only.
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
 
+/** Credential no longer good -- re-minting a PAT (skills/fleet/auth-azdevops.md
+ *  "401 Unauthorized -> Create new PAT and re-deploy") is the remedy, so
+ *  AUTH_EXPIRED, same split GenericGitVCS/GitHubVCS already use for a 401 vs a
+ *  403.
+ *
+ *  apra-fleet-5co8.4.1: two independent signals both mean "the PAT itself is
+ *  expired/revoked", not "wrong scope":
+ *    - A bare trailing REST status line of '401'. VCSModule's curl builders
+ *      append `-w '\n%{http_code}'` (see ./github.mjs's identical convention),
+ *      so a REST call's own stdout ends in a status-code-only line; anchored
+ *      to end-of-string/line so an inline "401" mentioned mid-sentence (which
+ *      says nothing about THIS call's own outcome) is never matched.
+ *      azure-devops.mjs has no REST builders yet (`builders: null` below),
+ *      but classifyFailure() is reachable standalone (see
+ *      vcs-classify-failure.test.mjs AC1/'providers listed as known but
+ *      unimplemented ... still classify'), and PAT validation elsewhere in
+ *      the fleet already shells a curl+`-w '\n%{http_code}'` call against this
+ *      same REST API (skills/fleet/auth-azdevops.md's own `curl -sf` Test
+ *      section) whose failure text this rule must classify correctly today.
+ *    - TF400813, whose text is a generic "resource not available" refusal
+ *      that Azure DevOps also emits for an expired/revoked PAT (the org-URL
+ *      misconfiguration case in the troubleshooting table above resolves
+ *      through the SAME message; re-minting -- which also forces a fresh
+ *      provision_vcs_auth pass where the org URL is re-checked -- is still the
+ *      correct first remedy, per the design recorded on the parent
+ *      apra-fleet-5co8.4 goal). */
+const AUTH_EXPIRED = [
+    /(?:^|\n)\s*401\s*$/,
+    /TF400813/,
+];
+
+/** Identity understood, PAT itself still valid, access refused -- re-minting
+ *  the SAME credential cannot fix either of these; the remedy is a broader
+ *  scope (skills/fleet/auth-azdevops.md's role/scope table) or -- for
+ *  TF401019 specifically -- the repo/permission grant itself. AUTH_DENIED.
+ *
+ *  apra-fleet-5co8.4.1:
+ *    - A bare trailing REST status line of '403' (skills/fleet/auth-
+ *      azdevops.md "403 Forbidden -> Create PAT with broader scopes"). Same
+ *      anchored shape and same rationale as the 401 rule above -- mirrors it
+ *      exactly, just the denied half of the 401/403 HTTP split.
+ *    - TF401019 (unchanged from before this task -- see the module doc
+ *      comment above and vcs-nongithub-auth-selfheal.test.mjs's real-bd
+ *      end-to-end assertion through withGitSync, which this rule must keep
+ *      passing verbatim): "does not exist, or you do not have permission" is
+ *      Azure DevOps' deliberately ambiguous repo-not-found-or-no-access
+ *      message; re-minting the identical PAT cannot fix either case. */
 const AUTH_DENIED = [
+    /(?:^|\n)\s*403\s*$/,
     /TF401019/,
 ];
 
 /** Best-effort Azure DevOps TF-numbered error code, purely DIAGNOSTIC: never
- *  branch on it -- branch on `kind`. */
+ *  branch on it -- branch on `kind`. Falls back to a bare trailing REST status
+ *  line (the `-w '\n%{http_code}'` convention -- see ./github.mjs's
+ *  extractProviderCode for the same fallback), so a REST 401/403 with no
+ *  TF-numbered code still surfaces its status for diagnostics. */
 function extractProviderCode(raw) {
     const text = String(raw == null ? '' : raw);
-    const match = text.match(/\b(TF\d{6})\b/);
-    return match ? match[1] : null;
+    const tf = text.match(/\b(TF\d{6})\b/);
+    if (tf) return tf[1];
+    const trailing = text.match(/(?:^|\n)\s*(\d{3})\s*$/);
+    return trailing ? trailing[1] : null;
 }
 
 /** The three Azure DevOps host forms, ANCHORED (never a substring test -- see
@@ -211,6 +273,7 @@ export const AzureDevOpsVCS = Object.freeze({
     name: 'azure-devops',
     extends: 'generic-git',
     rules: Object.freeze({
+        [K.AUTH_EXPIRED]: AUTH_EXPIRED,
         [K.AUTH_DENIED]: AUTH_DENIED,
     }),
     extractProviderCode,
