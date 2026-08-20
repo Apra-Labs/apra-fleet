@@ -37,6 +37,13 @@
  * with vcs-classify-failure.test.mjs's own AC1 example provider, which models
  * TF401019 the same way.
  *
+ * apra-fleet-5co8.1.1 adds the host/URL axis: matchesHost(),
+ * capabilitiesForHost() and parseRepoRef(). All three are descriptor hooks
+ * dispatched from shared code (./index.mjs's resolveVcsProviderForHost(),
+ * vcs-module.mjs's capabilities()), so no Azure DevOps conditional leaks into
+ * a shared file. capabilitiesForHost() reports canOpenPullRequest:false while
+ * `builders` is null and flips true in the SAME change that adds them.
+ *
  * ASCII only.
  */
 
@@ -54,6 +61,152 @@ function extractProviderCode(raw) {
     return match ? match[1] : null;
 }
 
+/** The three Azure DevOps host forms, ANCHORED (never a substring test -- see
+ *  the lookalike cases in test/vcs-azure-devops-repo-ref.test.mjs):
+ *    - dev.azure.com          https remotes
+ *    - ssh.dev.azure.com      the v3 ssh remotes
+ *    - <org>.visualstudio.com the legacy host, plus bare visualstudio.com
+ *  Contrast GitHubVCS.matchesHost(), which is deliberately a substring test
+ *  because GitHub Enterprise Server hosts have no fixed domain; Azure DevOps
+ *  is a hosted-only service with exactly these domains, so anchoring costs
+ *  nothing and keeps `dev.azure.com.evil.example` from being claimed. */
+const HOST_RE = /^(?:dev\.azure\.com|ssh\.dev\.azure\.com|(?:[a-z0-9-]+\.)*visualstudio\.com)$/i;
+
+/** Host-recognition for VCSModule.capabilities() and
+ *  resolveVcsProviderForHost() (see ./index.mjs). */
+function matchesHost(host) {
+    return typeof host === 'string' && HOST_RE.test(host.trim());
+}
+
+/** Azure DevOps cannot open a pull request yet: `builders` is still null, so
+ *  advertising the capability would let a caller (runner.js's Publish-PR gate)
+ *  reach buildVcsCommand() only to get a typed "does not yet implement action"
+ *  ERROR. This flips to true in the SAME change that adds the builders. */
+function capabilitiesForHost(_host) {
+    return { canOpenPullRequest: false };
+}
+
+/** Percent-decode one path segment; an invalid escape (e.g. a bare '%') is
+ *  left as-is rather than throwing, because parseRepoRef must never throw. */
+function decodeSegment(segment) {
+    try {
+        return decodeURIComponent(segment);
+    } catch {
+        return segment;
+    }
+}
+
+/** Split `path` into non-empty, percent-decoded segments with any trailing
+ *  '.git' stripped off the LAST one. */
+function pathSegments(path) {
+    const raw = String(path).split('/').filter((part) => part !== '');
+    if (raw.length === 0) return raw;
+    raw[raw.length - 1] = raw[raw.length - 1].replace(/\.git$/i, '');
+    return raw.map(decodeSegment);
+}
+
+/** Split a remote URL into { host, path } for BOTH shapes git speaks: a real
+ *  scheme'd URL (https/ssh, with optional userinfo and port) and the scp-like
+ *  shorthand `git@host:path` that `new URL()` cannot parse at all. */
+function splitRemote(url) {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+        let parsed;
+        try {
+            parsed = new URL(url);
+        } catch {
+            return null;
+        }
+        if (!parsed.hostname) return null;
+        return { host: parsed.hostname.toLowerCase(), path: parsed.pathname };
+    }
+    const scp = /^(?:[^@\s/]+@)?([^:\s/]+):(.*)$/.exec(url);
+    if (!scp) return null;
+    return { host: scp[1].toLowerCase(), path: `/${scp[2]}` };
+}
+
+function makeRef(org, project, repo) {
+    if (!org || !project || !repo) return null;
+    return {
+        org,
+        project,
+        repo,
+        canonical: `${org}/${project}/${repo}`,
+    };
+}
+
+/**
+ * Parse an Azure DevOps git remote URL into its { org, project, repo,
+ * canonical } coordinates -- the identity every Azure DevOps REST call needs
+ * (https://dev.azure.com/{org}/{project}/_apis/git/repositories/{repo}/...).
+ *
+ * Recognized shapes:
+ *   https://[user@]dev.azure.com/ORG/PROJECT/_git/REPO[.git][/]
+ *   https://[user@]dev.azure.com/ORG/_git/REPO            (project == repo)
+ *   git@ssh.dev.azure.com:v3/ORG/PROJECT/REPO[.git]
+ *   ssh://git@ssh.dev.azure.com[:22]/v3/ORG/PROJECT/REPO[.git]
+ *   https://ORG.visualstudio.com/[DefaultCollection/]PROJECT/_git/REPO[.git]
+ *   https://ORG.visualstudio.com/_git/REPO                (project == repo)
+ *
+ * The project-omitted shorthand is how Azure DevOps itself renders a repo
+ * whose name equals its project's, so taking the repo name as the project is
+ * the correct expansion, not a guess.
+ *
+ * Percent-encoded project names (the common case -- Azure DevOps allows
+ * spaces in project names) are decoded in EVERY returned field, so `canonical`
+ * is a display/identity key, not a URL fragment: re-encode per segment before
+ * building a request URL from it.
+ *
+ * NEVER throws and NEVER partially guesses: anything that is not one of the
+ * shapes above -- including a non-Azure host and a lookalike like
+ * `dev.azure.com.evil.example` -- returns null, so the caller can raise its
+ * own typed ERROR naming the expected shape (apra-fleet-5co8.1.2) instead of
+ * proceeding with half-parsed coordinates.
+ *
+ * @param {unknown} remoteUrl
+ * @returns {{ org: string, project: string, repo: string, canonical: string }|null}
+ */
+function parseRepoRef(remoteUrl) {
+    if (typeof remoteUrl !== 'string') return null;
+    const url = remoteUrl.trim();
+    if (!url) return null;
+
+    const split = splitRemote(url);
+    if (!split || !matchesHost(split.host)) return null;
+
+    const segments = pathSegments(split.path);
+    if (segments.length === 0) return null;
+
+    // ssh v3 form: exactly v3/ORG/PROJECT/REPO -- no _git marker, no
+    // project-omitted shorthand (Azure DevOps always emits all three).
+    if (segments[0].toLowerCase() === 'v3') {
+        if (segments.length !== 4) return null;
+        return makeRef(segments[1], segments[2], segments[3]);
+    }
+
+    // https forms: the '_git' marker separates the org/project prefix from
+    // the single repo segment. Requiring the marker to be second-from-last is
+    // what rejects both a missing repo and any extra trailing segment.
+    const marker = segments.indexOf('_git');
+    if (marker === -1 || marker !== segments.length - 2) return null;
+    const repo = segments[segments.length - 1];
+    let prefix = segments.slice(0, marker);
+
+    const legacy = /visualstudio\.com$/i.test(split.host);
+    if (legacy) {
+        // Legacy host: the org is the HOSTNAME label, not a path segment, and
+        // an explicit collection segment (historically 'DefaultCollection')
+        // may precede the project.
+        const org = split.host.split('.')[0];
+        if (!org || org.toLowerCase() === 'visualstudio') return null;
+        if (prefix.length > 0 && prefix[0].toLowerCase() === 'defaultcollection') prefix = prefix.slice(1);
+        if (prefix.length > 1) return null;
+        return makeRef(org, prefix[0] || repo, repo);
+    }
+
+    if (prefix.length < 1 || prefix.length > 2) return null;
+    return makeRef(prefix[0], prefix[1] || repo, repo);
+}
+
 export const AzureDevOpsVCS = Object.freeze({
     name: 'azure-devops',
     extends: 'generic-git',
@@ -61,6 +214,13 @@ export const AzureDevOpsVCS = Object.freeze({
         [K.AUTH_DENIED]: AUTH_DENIED,
     }),
     extractProviderCode,
+    matchesHost,
+    capabilitiesForHost,
+    // apra-fleet-5co8.1.1: remote-URL -> { org, project, repo, canonical }.
+    // An OPTIONAL descriptor hook (see ./index.mjs's REQUIRED EXPORT SHAPE):
+    // only providers whose REST identity is not the portable "owner/name"
+    // pair need it, which is why it lives here rather than in shared code.
+    parseRepoRef,
     defaultAuthMode: null,
     builders: null,
 });
