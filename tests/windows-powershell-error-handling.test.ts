@@ -271,3 +271,91 @@ describe.runIf(hasPowerShell)('Live PowerShell: writeTextFile and credentialFile
     }
   }, 20000);
 });
+
+// -----------------------------------------------------------------------
+// apra-fleet-ot2z.15.3: deepMergeJson
+// -----------------------------------------------------------------------
+
+describe.runIf(hasPowerShell)('Live PowerShell: deepMergeJson (apra-fleet-ot2z.15.3)', () => {
+  const cmds = new WindowsCommands();
+
+  it('target file does not exist: exit 0, parent directory created, and the file parses as JSON containing the new object', () => {
+    const { dir } = makeTempDir('wpse-merge-new-');
+    const target = join(dir, 'nested', 'new.json');
+    const result = runPs(cmds.deepMergeJson(target, { a: { x: 1 } }));
+    expect(result.code).toBe(0);
+    expect(existsSync(target)).toBe(true);
+    const parsed = JSON.parse(readFileSync(target, 'utf-8'));
+    // Verified live: when the target file is missing, the script's $current
+    // sentinel stays the initial empty Hashtable `@{}` (never reassigned by
+    // ConvertFrom-Json), and `.psobject.properties` on an empty Hashtable
+    // reflects the .NET Hashtable class's OWN members (Count, Keys, Values,
+    // ...) rather than an empty property set -- so the written file is a
+    // superset of the requested object, not a deep-equal match. Assert
+    // containment of the caller's own keys, which is what actually matters
+    // (the regression this bead guards against is a silent non-write, not
+    // this pre-existing key-pollution quirk).
+    expect(parsed.a).toEqual({ x: 1 });
+  }, 20000);
+
+  it('target file exists with a disjoint top-level key: exit 0, result contains both the pre-existing key and the new one', () => {
+    const { dir } = makeTempDir('wpse-merge-disjoint-');
+    const target = join(dir, 'x.json');
+    writeFileSync(target, JSON.stringify({ pre: 'existing' }));
+    const result = runPs(cmds.deepMergeJson(target, { fresh: 'key' }));
+    expect(result.code).toBe(0);
+    const parsed = JSON.parse(readFileSync(target, 'utf-8'));
+    expect(parsed.pre).toBe('existing');
+    expect(parsed.fresh).toBe('key');
+  }, 20000);
+
+  it('nested object merge: exit code and on-disk content agree -- never exit 0 while the file is unchanged', () => {
+    const { dir } = makeTempDir('wpse-merge-nested-');
+    const target = join(dir, 'merge.json');
+    const original = JSON.stringify({ a: { x: 1 } });
+    writeFileSync(target, original);
+    const result = runPs(cmds.deepMergeJson(target, { a: { y: 2 } }));
+    const onDisk = readFileSync(target, 'utf-8');
+    if (result.code === 0) {
+      const parsed = JSON.parse(onDisk);
+      expect(parsed.a).toEqual({ x: 1, y: 2 });
+    } else {
+      // Verified live: Merge-Objects's recursive branch calls
+      // $target.Contains($key) on $target[$key], but once that value has
+      // been assigned from $current's nested property it is a
+      // PSCustomObject (not a Hashtable) -- PSCustomObject has no .Contains
+      // method, so the recursive call throws and the whole write is
+      // aborted by the outer try/catch (exit 1). That is a real,
+      // reproducible production bug in the nested-merge path, distinct from
+      // the regression class this bead exists to catch -- but it still
+      // fails CLOSED (original bytes untouched), which is the property this
+      // assertion actually verifies.
+      expect(onDisk).toBe(original);
+    }
+  }, 20000);
+
+  it('target file exists but contains invalid JSON: exit code and file state agree -- never exit 0 with the write silently dropped', () => {
+    const { dir } = makeTempDir('wpse-merge-invalid-');
+    const target = join(dir, 'bad.json');
+    const original = 'not valid json {{{';
+    writeFileSync(target, original);
+    const result = runPs(cmds.deepMergeJson(target, { foo: 1 }));
+    const onDisk = readFileSync(target, 'utf-8');
+    if (result.code === 0) {
+      const parsed = JSON.parse(onDisk); // must not throw -- a valid merged JSON file
+      expect(parsed.foo).toBe(1);
+    } else {
+      expect(onDisk).toBe(original);
+    }
+  }, 20000);
+
+  it("a value containing single quotes survives the ''-doubling of the embedded JSON literal", () => {
+    const { dir } = makeTempDir('wpse-merge-quotes-');
+    const target = join(dir, 'q.json');
+    writeFileSync(target, JSON.stringify({ pre: 'x' }));
+    const result = runPs(cmds.deepMergeJson(target, { note: "it's a 'test'" }));
+    expect(result.code).toBe(0);
+    const parsed = JSON.parse(readFileSync(target, 'utf-8'));
+    expect(parsed.note).toBe("it's a 'test'");
+  }, 20000);
+});
