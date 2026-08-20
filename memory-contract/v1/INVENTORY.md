@@ -44,24 +44,16 @@ No tool in this surface declares a response zod schema; see section 3.
 
 ### 2.1 kb_* tools (16)
 
-| # | Tool | Request schema | Request fields | Response (observed) |
-|---|------|----------------|----------------|---------------------|
-| 1 | `kb_capture` | `kbCaptureSchema` (`src/tools/kb-capture.ts`) | repo_remote_url, repo_path, type, title, summary, content, source_files, symbols, module, tags, source_file, role, confidence, scope, supersedes | `text(JSON): {id, audn_decision, confidence_clamped}` |
-| 2 | `kb_invalidate` | `kbInvalidateSchema` (`src/tools/kb-invalidate.ts`) | repo_remote_url, repo_path, files | `text(JSON): {invalidated, files}` |
-| 3 | `kb_context` | `kbContextSchema` (`src/tools/kb-context.ts`) | repo_remote_url, repo_path, files | `text(JSON): {fresh, stale, missing}` |
-| 4 | `kb_session_prime` | `kbSessionPrimeSchema` (`src/tools/kb-session-prime.ts`) | repo_remote_url, session_files, hint_symbols, hint_modules, repo_path | `text(JSON): PrimedContext {session_warm, stale_files, top_entries, fresh_summaries, recommended_code_calls, token_estimate}` |
-| 5 | `kb_query` | `kbQuerySchema` (`src/tools/kb-query.ts`) | repo_remote_url, repo_path, query, type, tag, limit, include_stale, flagged_only, expand_related | TWO shapes -- default: `text(JSON): {l1_results, l2_expanded, related_claims?}`; with `flagged_only` true: `text(JSON): {flagged_entries, total, note}` |
-| 6 | `kb_list` | `kbListSchema` (`src/tools/kb-list.ts`) | repo_remote_url, repo_path, confidence, type, module, symbol, tag, limit | `text(JSON): {results, total}` |
-| 7 | `kb_harvest` | `kbHarvestSchema` (`src/tools/kb-harvest.ts`) | repo_remote_url, repo_path, session_transcript, session_id | `text(JSON): {entries_captured, entries_updated, entries_skipped, entries_rejected}` |
-| 8 | `kb_promote` | `kbPromoteSchema` (`src/tools/kb-promote.ts`) | repo_remote_url, repo_path, id, reason | `text(JSON): {id, previous_confidence, new_confidence}` |
-| 9 | `kb_freshness_sweep` | `kbFreshnessSweepSchema` (`src/tools/kb-freshness-sweep.ts`) | repo_remote_url, repo_path | `text(JSON): {checked, staled, unstaled}` |
-| 10 | `kb_import` | `kbImportSchema` (`src/tools/kb-import.ts`) | repo_remote_url, path, repo, repo_path, scope, skip_sweep | `text(JSON): KbImportReport {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}` |
-| 11 | `kb_resolve_contradiction` | `kbResolveContradictionSchema` (`src/tools/kb-resolve-contradiction.ts`) | repo_remote_url, repo_path, winnerId, loserId, evidence | `text(JSON): {winnerId, loserId}` |
-| 12 | `kb_reconcile_prefilter` | `kbReconcilePrefilterSchema` (`src/tools/kb-reconcile-prefilter.ts`) | repo_remote_url, repo_path | `text(JSON): {pairs, resolved[], left_for_agent[], skipped_directive}` |
-| 13 | `kb_setup` | `kbSetupSchema` (`src/tools/kb-setup.ts`) | repo_path, provider, remote, token | `text(JSON): {success, steps}` |
-| 14 | `kb_export` | `kbExportSchema` (`src/tools/kb-export.ts`) | repo_remote_url, repo_path, scope | `text(JSON): {exported, path, scope, committed}` |
-| 15 | `kb_stats` | `kbStatsSchema` (`src/tools/kb-stats.ts`) | repo_remote_url, repo, repo_path, symbols | `text(JSON): ProviderStats spread plus bible` -- `{supported?, reason?, totals, stale, flagged, superseded, retrieval, promote_ratio, coverage?, bible}` |
-| 16 | `kb_feedback` | `kbFeedbackSchema` (`src/tools/kb-feedback.ts`) | repo_remote_url, repo_path, id, reason, role | `text(JSON): {id, stale, flagged_for_review, confidence}` |
+| # | Tool | Request schema | Request fields | Response (observed) | Description (summarized) |
+|---|------|----------------|----------------|---------------------|---------------------------|
+| 1 | `kb_capture` | `kbCaptureSchema` (`src/tools/kb-capture.ts`) | repo_remote_url, repo_path, type, title, summary, content, source_files, symbols, module, tags, source_file, role, confidence, scope, supersedes | `text(JSON): {id, audn_decision, confidence_clamped}` | Capture a learning/fact/file summary into the KB. Confidence is capped at INFERRED (CONFIRMED is minted only via `kb_promote`). Returns `audn_decision` (add/none/update/flagged); `supersedes` retires a prior entry only if AUDN independently matches it. |
+| 2 | `kb_invalidate` | `kbInvalidateSchema` (`src/tools/kb-invalidate.ts`) | repo_remote_url, repo_path, files | `text(JSON): {invalidated, files}` | Mark context-cache entries stale for the given file paths. Call after modifying files so the KB reflects current state. |
+| 3 | `kb_context` | `kbContextSchema` (`src/tools/kb-context.ts`) | repo_remote_url, repo_path, files | `text(JSON): {fresh, stale, missing}` | Check freshness of files against the KB. Fresh files can be skipped; stale/missing files must be re-read. |
+| 4 | `kb_session_prime` | `kbSessionPrimeSchema` (`src/tools/kb-session-prime.ts`) | repo_remote_url, session_files, hint_symbols, hint_modules, repo_path | `text(JSON): PrimedContext {session_warm, stale_files, top_entries, fresh_summaries, recommended_code_calls, token_estimate}` | Prime a session with KB context: session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls. |
+| 5 | `kb_query` | `kbQuerySchema` (`src/tools/kb-query.ts`) | repo_remote_url, repo_path, query, type, tag, limit, include_stale, flagged_only, expand_related | TWO shapes -- default: `text(JSON): {l1_results, l2_expanded, related_claims?}`; with `flagged_only` true: `text(JSON): {flagged_entries, total, note}` | Two-level KB search: L1 FTS5 on title+summary (up to 20 hits), L2 full content for top 5. `tag` alone lists all entries with that tag; `flagged_only` lists contradiction pairs; `expand_related` adds refines/contradiction_of links. |
+| 6 | `kb_list` | `kbListSchema` (`src/tools/kb-list.ts`) | repo_remote_url, repo_path, confidence, type, module, symbol, tag, limit | `text(JSON): {results, total}` | List KB entries by confidence/type/module/symbol/tag, excluding superseded/stale, without touching FTS ranking or use_count telemetry. |
+| 7 | `kb_harvest` | `kbHarvestSchema` (`src/tools/kb-harvest.ts`) | repo_remote_url, repo_path, session_transcript, session_id | `text(JSON): {entries_captured, entries_updated, entries_skipped, entries_rejected}` | Scan a session transcript for learnings and capture them into the KB. Extracted entries are UNVERIFIED with author/source=harvest. |
+| 8 | `kb_promote` | `kbPromoteSchema` (`src/tools/kb-promote.ts`) | repo_remote_url, repo_path, id, reason | `text(JSON): {id, previous_confidence, new_confidence}` | Upgrade KB entry confidence UNVERIFIED -> INFERRED -> CONFIRMED, appending a promotion note as evidence trail. No-op on an already-CONFIRMED entry. |
 
 Scope-field note: 15 of the 16 `kb_*` request schemas spread the shared
 `kbScopeFields` (`src/services/knowledge/kb-scope-input.ts`), which is where
