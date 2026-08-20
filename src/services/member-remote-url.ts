@@ -77,8 +77,23 @@ const inFlightProbes = new Map<string, Promise<string | undefined>>();
 
 const PROBE_TIMEOUT_MS = 10_000;
 
-/** Clear the probe cache. Exposed for tests and for member re-registration. */
-export function clearRepoRemoteUrlCache(): void {
+/**
+ * Clear the probe cache. Exposed for tests, for member re-registration, and for
+ * update_member when a member's work folder is repointed at a different
+ * checkout: the cached URL describes the OLD folder's clone, so keeping it
+ * would route that member's harvest into a repo it no longer works in --
+ * silently wrong, which is strictly worse than the honest 'default' pooling the
+ * absence of a URL falls back to.
+ *
+ * Pass a memberId to drop just that member's entry; omit it to clear every
+ * member (the original test-only behaviour).
+ */
+export function clearRepoRemoteUrlCache(memberId?: string): void {
+  if (memberId !== undefined) {
+    remoteUrlCache.delete(memberId);
+    inFlightProbes.delete(memberId);
+    return;
+  }
   remoteUrlCache.clear();
   inFlightProbes.clear();
 }
