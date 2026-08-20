@@ -25,13 +25,20 @@ const KNOWN_MEMBERS = new Set(['fleet-dev', 'apra-pm']);
  * executePrompt()/executeCommand(). No network or external process involved.
  */
 function createMockFleetApi() {
-    // apra-fleet-02s.3 / apra-fleet-dnri: a schema-repair re-ask FORCES
-    // resume:true and sends a prompt that LEADS with the validation errors
-    // (the original prompt is reattached further down as reference, not
-    // echoed at the front) -- so the prompt-prefix matches below cannot
-    // classify a repair round's dispatch. Stick to
-    // whichever branch the last FRESH (non-repair) call matched, mirroring
-    // what a real resumed session actually is: the same logical exchange.
+    // apra-fleet-02s.3 / apra-fleet-dnri: a schema-repair re-ask RESUMES the
+    // session that just failed and sends a prompt that LEADS with the
+    // validation errors (the original prompt is reattached further down as
+    // reference, not echoed at the front) -- so the prompt-prefix matches
+    // below cannot classify a repair round's dispatch. Stick to whichever
+    // branch the last FRESH (non-repair) call matched, mirroring what a real
+    // resumed session actually is: the same logical exchange.
+    //
+    // A repair re-ask now names the failed attempt's session id EXPLICITLY
+    // (a string), rather than passing a bare boolean true which resolves to
+    // whatever session the member happened to store last. This mock therefore
+    // reports a session id like a resume-capable provider does, and counts a
+    // dispatch as resumed when `resume` is either `true` or that exact id.
+    const MOCK_SESSION_ID = 'mock-session-0001';
     let lastFreshBranch = null;
     return {
         async executePrompt(payload) {
@@ -43,8 +50,10 @@ function createMockFleetApi() {
             const usage = { prompt_tokens: 30, completion_tokens: 12, total_tokens: 42 };
             const prompt = payload.prompt || '';
 
+            const isResumed = payload.resume === true || payload.resume === MOCK_SESSION_ID;
+
             let branch;
-            if (payload.resume === true && lastFreshBranch) {
+            if (isResumed && lastFreshBranch) {
                 branch = lastFreshBranch;
             } else if (prompt.includes('DO NOT OUTPUT VALID JSON')) {
                 branch = 'garbage';
@@ -55,19 +64,24 @@ function createMockFleetApi() {
             } else {
                 branch = 'default';
             }
-            if (payload.resume !== true) lastFreshBranch = branch;
+            if (!isResumed) lastFreshBranch = branch;
+
+            // Every reply carries the session id, as a resume-capable
+            // provider's execute_prompt does, so a repair re-ask has an id to
+            // target.
+            const structuredContent = { sessionId: MOCK_SESSION_ID, usage };
 
             if (branch === 'garbage') {
-                return { content: [{ text: '{{{ [[[ "test": garbage ,,,' }], usage };
+                return { content: [{ text: '{{{ [[[ "test": garbage ,,,' }], usage, structuredContent };
             }
             if (branch === 'schema-post') {
-                return { content: [{ text: '{"test": 1}' }], usage };
+                return { content: [{ text: '{"test": 1}' }], usage, structuredContent };
             }
             if (branch === 'ok-value') {
-                return { content: [{ text: JSON.stringify({ test: 'ok-value' }) }], usage };
+                return { content: [{ text: JSON.stringify({ test: 'ok-value' }) }], usage, structuredContent };
             }
 
-            return { content: [{ text: `Mock response to: ${prompt.slice(0, 60)}` }], usage };
+            return { content: [{ text: `Mock response to: ${prompt.slice(0, 60)}` }], usage, structuredContent };
         },
 
         async executeCommand(payload) {

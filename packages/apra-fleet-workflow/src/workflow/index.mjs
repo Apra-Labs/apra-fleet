@@ -270,8 +270,10 @@ function summarizeExtractionAttempts(attempts) {
  * byte-identical on every repair round and the prompt does not grow.
  *
  * The reattachment is framed as REFERENCE material, not as a fresh order:
- * with `resume: true` the member may have already done the underlying work,
- * and a prompt that restates the task can read as an instruction to redo it.
+ * when the repair re-ask resumes the failed attempt's own session (see the
+ * resume disposition at the dispatch payload below) the member may have
+ * already done the underlying work, and a prompt that restates the task can
+ * read as an instruction to redo it.
  *
  * @param {string} errorsText - Summary of every failed extraction attempt.
  * @param {string} initialPrompt - The fully-resolved original dispatch prompt
@@ -960,6 +962,14 @@ export class FleetWorkflow extends EventEmitter {
 
         let currentPrompt = initialPrompt;
         let lastActivityMeta = null;
+        // apra-fleet-dnri: the session id reported by the attempt that just
+        // failed, used as an EXPLICIT resume target by the repair dispatch of
+        // the NEXT iteration (see the resume disposition comment on the
+        // payload below). Declared outside the loop because the capture site
+        // sits after the payload is built within the same iteration. It is
+        // re-assigned (or cleared) on every turn, so a repair round never
+        // reuses an older round's id.
+        let failedAttemptSessionId = null;
         const budget = this._currentBudget();
 
         // (apra-fleet-unw.11, F6) Journal replay. `replayKey` is computed
@@ -1076,6 +1086,47 @@ export class FleetWorkflow extends EventEmitter {
             lastActivityMeta = activityMeta;
             this.emit('activity:start', activityMeta);
 
+            // apra-fleet-dnri -- RESUME DISPOSITION for a schema-repair
+            // re-ask, corrected after a live reproduction:
+            //
+            // A repair dispatch SHOULD continue the session that produced the
+            // invalid output -- by repair time the member may already have
+            // done real, side-effecting work for this request (files edited,
+            // commits made, tracker items claimed), and a fresh session with
+            // the task restated invites it to redo that work. But the naive
+            // way of asking for that -- a bare boolean `true` -- does NOT
+            // mean "the session that just failed". execute_prompt resolves
+            // `resume: true` to `explicitResumeId ?? agent.sessionId`, i.e.
+            // the member's single globally-stored LAST session, shared across
+            // every role with no task scoping. Observed live: a doer's repair
+            // retry landed in the immediately-prior plan-reviewer session and
+            // came back with reviewer-shaped output carrying a field that is
+            // not in the doer schema at all.
+            //
+            // So the repair dispatch names the session EXPLICITLY, by id
+            // (execute_prompt's resume accepts a session-id string for
+            // exactly this). When no id was reported for the failed attempt
+            // (a provider without resume support, or a dispatch that returned
+            // none), we degrade LOUDLY to a fresh, self-contained session and
+            // pass the boolean `false` EXPLICITLY -- never `undefined`, since
+            // execute_prompt's schema declares `.default(true)` on this field
+            // and an omitted key would silently restore the exact
+            // wrong-session bug above.
+            //
+            // Correctness does not depend on the resume landing: the repair
+            // prompt reattaches the original prompt and schema itself (see
+            // buildRepairPrompt), so the re-ask works whether or not the
+            // resumed session still carries the original context.
+            let repairResume = false;
+            if (isRepair) {
+                if (typeof failedAttemptSessionId === 'string' && failedAttemptSessionId) {
+                    repairResume = failedAttemptSessionId;
+                } else {
+                    console.error(`[Agent Schema Repair] DEGRADED: no session id was reported for the attempt that just failed on member '${opts.member_name || opts.member_id}', so this repair re-ask CANNOT target that session and is being dispatched in a FRESH session (resume: false). Any side-effecting work the member already did for this request is not visible to it; the repair prompt is self-contained, so the re-ask is still answerable.`);
+                    repairResume = false;
+                }
+            }
+
             const payload = {
                 prompt: currentPrompt,
                 model: opts.model,
@@ -1091,27 +1142,10 @@ export class FleetWorkflow extends EventEmitter {
                 sprint_id: opts.sprint_id,
                 // F10: default to a self-contained (non-resumed) session for
                 // the INITIAL dispatch of a workflow-authored prompt. See
-                // AgentOptions.resume above and apra-fleet-unw.3.
-                // apra-fleet-02s.3: a schema-repair re-ask (isRepair===true)
-                // is a different case -- it FORCES resume:true regardless of
-                // opts.resume.
-                //
-                // apra-fleet-dnri -- RESUME DISPOSITION, decided explicitly:
-                // resume STAYS forced true, but it is no longer load-bearing
-                // for correctness. It is kept because by repair time the
-                // member may already have done real, side-effecting work for
-                // this request (files edited, commits made, tracker items
-                // claimed/closed); re-dispatching into a FRESH session with
-                // the full task restated would invite it to do that work a
-                // second time. Resuming preserves what it already did and
-                // costs nothing extra.
-                // What changed is the fallback: resume is an optimization,
-                // not a guarantee that the session still holds the original
-                // prompt/schema (observed live: it did not), so
-                // buildRepairPrompt() now reattaches those inputs itself.
-                // The re-ask is therefore correct whether or not the resumed
-                // session actually carries the original context.
-                resume: isRepair ? true : (opts.resume ?? false),
+                // AgentOptions.resume above and apra-fleet-unw.3. The
+                // non-repair value is unchanged; the repair value is resolved
+                // above (apra-fleet-dnri).
+                resume: isRepair ? repairResume : (opts.resume ?? false),
                 // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
                 timeoutMs: opts.timeoutMs,
                 // apra-fleet-unw.10: defaults to the active run's cooperative
@@ -1143,6 +1177,31 @@ export class FleetWorkflow extends EventEmitter {
                         await new Promise((resolve) => setTimeout(resolve, busyPollMs));
                         result = await this.fleetApi.executePrompt(payload);
                     }
+                }
+
+                // apra-fleet-dnri: naming the failed attempt's session id
+                // explicitly (above) converts one previously self-healing
+                // case into a hard failure. execute_prompt rejects an
+                // unknown/expired EXPLICIT id up front with
+                // {isError, reason: 'session_not_found'}, making no LLM call,
+                // and its transparent retry-in-a-fresh-session recovery is
+                // gated on `resume === true`, so it does not apply here. Left
+                // alone, the dispatch-error branch below would turn that into
+                // an AgentDispatchError and abort the whole step -- worse
+                // than the boolean behaviour this replaced.
+                // Scope is deliberately narrow: for REPAIR dispatches only,
+                // for that ONE reason, re-dispatch exactly once with the SAME
+                // repair prompt in a fresh self-contained session, inside the
+                // existing maxRepairs budget. No new retry framework, no new
+                // budget, no broader error taxonomy.
+                if (
+                    isRepair
+                    && result && result.structuredContent && result.structuredContent.isError
+                    && result.structuredContent.reason === 'session_not_found'
+                ) {
+                    console.error(`[Agent Schema Repair] the session targeted by this repair re-ask (${payload.resume}) is gone or expired on member '${opts.member_name || opts.member_id}'; re-dispatching the same repair prompt once in a fresh self-contained session (resume: false).`);
+                    payload.resume = false;
+                    result = await this.fleetApi.executePrompt(payload);
                 }
 
                 // execute_prompt's dispatch-level structuredContent (added
@@ -1214,6 +1273,21 @@ export class FleetWorkflow extends EventEmitter {
                 // engine falls back to a fresh session (a capability signal, not
                 // a provider-name check). Best-effort: a throwing callback must
                 // never break the dispatch.
+                // apra-fleet-dnri: record THIS attempt's session id so that,
+                // if its output turns out to be schema-invalid, the repair
+                // dispatch of the next iteration can resume exactly this
+                // session by id rather than whatever session the member
+                // happens to have stored last. Assigned unconditionally (to
+                // null when the provider reported none) so a later round can
+                // never silently reuse an earlier round's id -- a provider may
+                // mint a new id per turn. Deliberately NOT nested inside the
+                // opts.onSessionId gate below: most callers pass no callback,
+                // and gating the capture on it would mean the explicit-id
+                // path never runs for them.
+                failedAttemptSessionId = (structured && typeof structured.sessionId === 'string' && structured.sessionId)
+                    ? structured.sessionId
+                    : null;
+
                 if (
                     structured
                     && typeof structured.sessionId === 'string'
