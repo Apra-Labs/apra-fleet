@@ -219,6 +219,34 @@ describe('OpenCodeProvider session support', () => {
   });
 });
 
+// -- apra-fleet-9iaz.1: resolveSessionLogDir regression coverage --
+//
+// Locks down two facts that a future edit could silently break:
+//   1. The resolved directory is always .local/share/opencode/log (the LIVE
+//      poller's scan root) -- never storage/chats (a different, non-pollable
+//      OpenCode directory this dispatch never scans).
+//   2. An unresolvable member home dir (homeDir === null) returns null rather
+//      than fabricating a hub-home path, matching resolveHomeDir's contract.
+describe('OpenCodeProvider resolveSessionLogDir', () => {
+  it('returns the log dir (never storage/chats) for a linux target', () => {
+    const dir = p.resolveSessionLogDir('/home/bella/work/repo', '/home/bella', 'linux');
+    expect(dir).toBe('/home/bella/.local/share/opencode/log');
+    expect(dir).not.toContain('storage/chats');
+  });
+
+  it('returns the log dir (never storage/chats) for a windows target', () => {
+    const dir = p.resolveSessionLogDir('C:\\Users\\bella\\work\\repo', 'C:\\Users\\bella', 'windows');
+    expect(dir).toBe('C:\\Users\\bella\\.local\\share\\opencode\\log');
+    expect(dir).not.toContain('storage/chats');
+    expect(dir).not.toContain('storage\\chats');
+  });
+
+  it('returns null when the member home dir is unresolvable', () => {
+    const dir = p.resolveSessionLogDir('/home/bella/work/repo', null, 'linux');
+    expect(dir).toBeNull();
+  });
+});
+
 // -- T3.4: parseResponse --
 
 describe('OpenCodeProvider parseResponse', () => {
