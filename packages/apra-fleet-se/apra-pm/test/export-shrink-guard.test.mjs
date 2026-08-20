@@ -18,6 +18,24 @@ const WORKFLOW_SRC = readFileSync(
   join(HERE, '../.claude/workflows/auto-sprint.js'), 'utf-8'
 );
 
+// Extract the PURE_FUNCTIONS block so buildExportShrinkGuardCmd's actual OUTPUT can be
+// executed for real (my-beads-db-27m.12 round-2: a string-shape regex assertion let a
+// syntactically-invalid `node -e "..."` command -- broken by JSON.stringify(repoPath)
+// emitting double quotes into an outer double-quoted shell string -- pass review).
+const pureFnMatch = WORKFLOW_SRC.match(/\/\/ PURE_FUNCTIONS_BEGIN[^\n]*\n([\s\S]*?)\/\/ PURE_FUNCTIONS_END/);
+if (!pureFnMatch) throw new Error('PURE_FUNCTIONS_BEGIN/END markers not found');
+// eslint-disable-next-line no-new-func
+const { buildExportShrinkGuardCmd } =
+  new Function(`${pureFnMatch[1]}; return { buildExportShrinkGuardCmd };`)();
+
+// The inline copy is dispatched to a shell (bash, per the dispatched-agent convention this
+// file uses throughout), never spawned directly -- so it must be executed through a real
+// shell, not just called as a JS function, to catch quoting breakage.
+function runInlineGuardCmd(repo) {
+  const cmd = buildExportShrinkGuardCmd(repo);
+  return execFileSync('bash', ['-c', cmd], { cwd: repo, encoding: 'utf8' });
+}
+
 function jsonl(ids) {
   return ids.map((id) => JSON.stringify({ id, title: id })).join('\n') + '\n';
 }
@@ -141,6 +159,67 @@ test('CLI: a normal superset export stages unchanged (OK, no override note)', ()
   const out = execFileSync('node', [GUARD_SCRIPT, repo], { encoding: 'utf8' });
   assert.match(out, /EXPORT_GUARD_OK/);
   assert.doesNotMatch(out, /override used/);
+});
+
+// ---- inline auto-sprint.js copy: executed for real through a shell --------------
+// (my-beads-db-27m.12 round-2 reopen: the earlier version of these tests only regexed
+// the command STRING and never ran it, so a `node -e "..."` broken by JSON.stringify
+// emitting inner double quotes passed review. These spawn the real generated command.)
+
+test('inline guard cmd: disjoint export refuses to stage, exits 0, leaves index unchanged', () => {
+  const repo = makeRepoFixture(['id-1', 'id-2', 'id-3'], ['id-9', 'id-10']);
+  const out = runInlineGuardCmd(repo);
+
+  assert.match(out, /EXPORT_GUARD_REFUSED/);
+  assert.match(out, /AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1/);
+  assert.doesNotMatch(stagedContent(repo), /id-9/);
+  assert.match(stagedContent(repo), /id-1/);
+});
+
+test('inline guard cmd: superset export (normal incremental export) stages unchanged', () => {
+  const repo = makeRepoFixture(['id-1', 'id-2'], ['id-1', 'id-2', 'id-3']);
+  const out = runInlineGuardCmd(repo);
+
+  assert.match(out, /EXPORT_GUARD_OK/);
+  assert.doesNotMatch(out, /override used/);
+  const staged = stagedContent(repo);
+  assert.match(staged, /id-1/);
+  assert.match(staged, /id-2/);
+  assert.match(staged, /id-3/);
+});
+
+test('inline guard cmd: AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1 stages a disjoint export anyway', () => {
+  const repo = makeRepoFixture(['id-1', 'id-2', 'id-3'], ['id-9', 'id-99']);
+  const cmd = buildExportShrinkGuardCmd(repo);
+  const out = execFileSync('bash', ['-c', cmd], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: { ...process.env, AUTO_SPRINT_ALLOW_EXPORT_SHRINK: '1' },
+  });
+
+  assert.match(out, /EXPORT_GUARD_OK/);
+  assert.match(out, /override used/);
+  assert.match(stagedContent(repo), /id-9/);
+});
+
+test('inline guard cmd: repo path containing a space survives the shell round-trip', () => {
+  // Regression target for the exact defect: JSON.stringify(repoPath) broke the outer
+  // double-quoted `node -e "..."` string for EVERY path, but a path with a space is
+  // also the case the fix's `"${repoPath}"` shell-arg quoting must handle correctly.
+  const parent = mkdtempSync(join(tmpdir(), 'export-shrink-guard-'));
+  const repo = join(parent, 'has space');
+  mkdirSync(repo, { recursive: true });
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.local', 'config', 'commit.gpgsign', 'false'], { cwd: repo });
+  mkdirSync(join(repo, '.beads'), { recursive: true });
+  writeFileSync(join(repo, '.beads', 'issues.jsonl'), jsonl(['id-1']));
+  execFileSync('git', ['add', '.beads/issues.jsonl'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.local', 'commit', '-m', 'seed'], { cwd: repo });
+  writeFileSync(join(repo, '.beads', 'issues.jsonl'), jsonl(['id-1', 'id-2']));
+
+  const out = runInlineGuardCmd(repo);
+  assert.match(out, /EXPORT_GUARD_OK/);
+  assert.match(stagedContent(repo), /id-2/);
 });
 
 // ---- source introspection: the inline auto-sprint.js copy stays wired in --------

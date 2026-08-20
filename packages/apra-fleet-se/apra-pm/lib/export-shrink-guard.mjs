@@ -84,10 +84,12 @@ export function runExportShrinkGuard(repoPath, { allowShrink = false } = {}) {
 
 // CLI entry point, mirroring the inline auto-sprint.js command:
 //   node export-shrink-guard.mjs <repoPath>
-// Exit code is always 0 (refusing to stage is a normal, non-fatal outcome so the
-// surrounding dispatched shell sequence is not aborted by a step's exit code -- see
-// auto-sprint.js's SHELL_DISPATCH_PROMPT_HEADER, which runs every listed command
-// regardless of prior exit status).
+// Exit code is always 0 (refusing to stage is a normal, non-fatal outcome, not an error
+// this step should report as a failure). Note this is NOT because
+// SHELL_DISPATCH_PROMPT_HEADER (auto-sprint.js) tolerates non-zero exit -- it doesn't; it
+// only instructs the dispatched agent to run each listed command exactly once, in order,
+// and says nothing about exit status. Exit 0 here matters because the guard's own refusal
+// must not look like a broken command to whatever reads this step's result.
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   const repoPath = process.argv[2];
   const allowShrink = process.env.AUTO_SPRINT_ALLOW_EXPORT_SHRINK === '1';

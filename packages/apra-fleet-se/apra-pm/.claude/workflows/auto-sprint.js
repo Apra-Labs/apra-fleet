@@ -1294,11 +1294,31 @@ function worktreeNamesFor(sprintBranch, taskId, worktreeRoot) {
 // lib/parse-sprint-args.mjs). Pure -- no I/O, just builds a command string -- so it lives
 // in this PURE_FUNCTIONS block and test/export-shrink-guard.test.mjs can extract and call
 // it the same way test/sprint-cost.test.mjs extracts computeSprintQuote.
+// repoPath is passed as a shell argument (process.argv[1]), NOT interpolated into the JS
+// source: node -e "code" runs inside an outer double-quoted shell string, and
+// JSON.stringify(repoPath) emits its own double quotes that terminate that string early,
+// leaving the shell to hand node a broken program (my-beads-db-27m.12 round-2 reopen).
+// Quoting the trailing "${repoPath}" argument matches every other `-C "${repo}"` call in
+// this file.
+//
+// DESIGN DECISION (predicate is "any dropped id", deliberately, not "loud warning" only):
+// the guard refuses to stage on ANY committed id missing from the fresh export, with no
+// narrower allowance for legitimate removals (compaction, deletion, an id moved out of
+// scope). A legitimate removal therefore looks identical to corruption from here and
+// silently stops the export from being committed on every later sprint until an operator
+// notices the EXPORT_GUARD_REFUSED line in that command's dispatched stdout and either
+// investigates or sets AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1. This is intentional: refusing
+// (and requiring a human to look) is judged safer than guessing which drops are
+// legitimate, mirroring the kb-export.ts shrink guard's same all-or-nothing predicate.
+// The tradeoff is real -- there is currently no operator-facing alert beyond that stdout
+// line -- so if EXPORT_GUARD_REFUSED output ever needs to surface louder (e.g. failing the
+// sprint outright instead of committing an empty change), change this predicate and its
+// counterpart in lib/export-shrink-guard.mjs together.
 function buildExportShrinkGuardCmd(repoPath) {
   return `node -e "` +
     `const{execSync}=require('child_process');` +
     `const fs=require('fs');` +
-    `const repo=${JSON.stringify(repoPath)};` +
+    `const repo=process.argv[1];` +
     `const outPath=repo+'/.beads/issues.jsonl';` +
     `function ids(t){const s=new Set();for(const l of String(t||'').split(/\\n/)){const x=l.trim();if(!x)continue;try{const o=JSON.parse(x);if(o&&o.id)s.add(o.id);}catch(e){}}return s;}` +
     `let before='';try{before=execSync('git show HEAD:.beads/issues.jsonl',{cwd:repo,encoding:'utf8'});}catch(e){before='';}` +
@@ -1313,7 +1333,7 @@ function buildExportShrinkGuardCmd(repoPath) {
     `}` +
     `execSync('git add .beads/issues.jsonl',{cwd:repo});` +
     `console.log('EXPORT_GUARD_OK: staged .beads/issues.jsonl'+(dropped.length?' (override used, '+dropped.length+' dropped)':''));` +
-    `"`;
+    `" "${repoPath}"`;
 }
 
 // PURE_FUNCTIONS_END
