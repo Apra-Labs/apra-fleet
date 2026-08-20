@@ -32,7 +32,7 @@ import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResol
 // hard-aborting the run at its readiness gate.
 import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict } from './vcs-module.mjs';
+import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef } from './vcs-module.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -2217,6 +2217,40 @@ export function parseOwnerRepoFromRemoteUrl(url) {
     return null;
 }
 
+/**
+ * Resolve the `repos` scope for a member's git remote (apra-fleet-5co8.1.2).
+ *
+ * The two-line-generic parse above cannot express every provider's repository
+ * identity: Azure DevOps' is org/project/repo behind a '_git' marker, which
+ * the owner/repo regexes score as "unrecognized" (null) and therefore silently
+ * drop the repos scope. So the URL is first offered to whichever registered
+ * provider CLAIMS its host, via VCSModule.parseProviderRepoRef() -> that
+ * provider's own parseRepoRef hook, and only falls back to the generic parse
+ * when no provider claims the host or the claiming one has no hook. Every
+ * provider-specific rule (legal URL shapes, coordinate names, remedy text)
+ * stays in the provider file: this function -- and runner.js as a whole --
+ * never names or branches on a provider.
+ *
+ * A host CLAIMED by a provider whose hook rejects the URL is a different
+ * failure from an unrecognized one: the remote is malformed, and proceeding
+ * with no scope would provision credentials against the wrong (or no) repo.
+ * That case returns a typed `error` naming the shape the provider expects, for
+ * the caller to raise as a PREFLIGHT failure -- not a stderr classification.
+ *
+ * @param {string|null|undefined} url
+ * @returns {{ repo: string|null, error: string|null }}
+ */
+export function parseRepoScopeFromRemoteUrl(url) {
+    const text = String(url == null ? '' : url).trim();
+    if (!text) return { repo: null, error: null };
+
+    const providerRef = parseProviderRepoRef(text);
+    if (providerRef && providerRef.error) return { repo: null, error: providerRef.error };
+    if (providerRef && providerRef.canonical) return { repo: providerRef.canonical, error: null };
+
+    return { repo: parseOwnerRepoFromRemoteUrl(text), error: null };
+}
+
 // Shared MCP tool-result-to-text extractor for the self-heal callbacks below.
 // The provision_* tools do not throw on failure: they return plain
 // human-readable text with a leading status emoji (check mark = success,
@@ -2254,18 +2288,31 @@ function selfHealResultText(result) {
 async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push' }) {
     let repos;
     let derivedRepo = null;
+    // Reading the remote is best-effort (a failure here just means no explicit
+    // repos scope), but PARSING it is not: a malformed remote on a host some
+    // provider claims is a preflight ERROR that must escape this function
+    // rather than be swallowed by the read's catch -- hence the parse sits
+    // outside the try. See parseRepoScopeFromRemoteUrl (apra-fleet-5co8.1.2).
+    let remoteUrl = '';
+    let remoteReadFailed = false;
     try {
         const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
-        const url = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
-        const repo = parseOwnerRepoFromRemoteUrl(url);
-        if (repo) {
-            repos = [repo];
-            derivedRepo = repo;
-        } else {
-            log(`${logPrefix}: could not derive an owner/repo from member '${member}' git remote (raw: '${url}'); calling provision_vcs_auth without an explicit repos scope.`);
-        }
+        remoteUrl = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
     } catch (remoteErr) {
+        remoteReadFailed = true;
         log(`${logPrefix}: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
+    }
+    if (!remoteReadFailed) {
+        const scope = parseRepoScopeFromRemoteUrl(remoteUrl);
+        if (scope.error) {
+            throw new Error(`${logPrefix}: cannot provision VCS auth for member '${member}': ${scope.error}`);
+        }
+        if (scope.repo) {
+            repos = [scope.repo];
+            derivedRepo = scope.repo;
+        } else {
+            log(`${logPrefix}: could not derive an owner/repo from member '${member}' git remote (raw: '${remoteUrl}'); calling provision_vcs_auth without an explicit repos scope.`);
+        }
     }
 
     // apra-fleet-647.1.2.1: provider and auth-mode are resolved from the
