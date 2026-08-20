@@ -165,6 +165,25 @@ export function defaultMockCallTool() {
 // bd AND capture fixtures). Non-bd commands always exec for real.
 export const runCmd = (cmd, cwd) => bdRunCmd(cmd, cwd);
 
+// PR #416 review (findings 1+2): the deterministic missing-permissions heal
+// parses a runbook's `## Permissions` LIST ENTRIES out of the base-branch copy.
+// Every mock runbook carries this section so the heal has something real to
+// parse. The prose line is deliberately included: it mentions a backticked
+// `Bash(git:*)` that is NOT a declaration, and the parser must not grant it
+// (only list items count) -- the same shape regression-test-playbook.md has.
+export const MOCK_PERMISSIONS_SECTION = [
+    '',
+    '## Permissions',
+    '',
+    'A broader prefix entry counts as coverage -- e.g. `Bash(git:*)` covers `git clone`.',
+    '- `Bash(docker compose*)`',
+    '- `Bash(npm ci)` -- dependency install, see above',
+    '',
+    '## Teardown',
+    '',
+    'Nothing to tear down in the mock.',
+].join('\n');
+
 export const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 
 export async function setup(tempDirSuffix) {
@@ -403,6 +422,25 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // real runner.js phase probes for that file and skips the dispatch
         // entirely otherwise, same as deploy.md/integ-test-playbook.md.
         regressionHandler = null,
+        // apra-fleet-u1qw.2.3: optional (opts, tempDir, runCmd, epicBead) =>
+        // result override for the 'permissions-composer' dispatch -- the
+        // orchestrator-side heal dispatch runner.js's
+        // healMissingPermissionsOnce() makes when a Deploy/Integ Test/
+        // Regression Test result carries blockedReason='missing_permissions'.
+        // Deliberately has NO default stub (unlike deployer/integ/regression
+        // above): there is no sensible "default" composer verdict, and a
+        // scenario that does NOT expect a heal wants a stray composer dispatch
+        // to fail loudly rather than be silently absorbed. See the throw in the
+        // dispatch switch below.
+        permissionsComposerHandler = null,
+        // PR #416 review (findings 1+2): optional
+        // { '<runbook>.md': '<content>' | null } map overriding what
+        // `git show origin/<base>:<runbook>` returns for the deterministic
+        // missing-permissions heal. Defaults to the copy in tempDir (base and
+        // working tree agree); `null` simulates the runbook being absent from
+        // the base branch, and a divergent string simulates the intentional
+        // "this sprint declared a new prefix that base does not have" case.
+        baseBranchRunbooks = null,
         // Optional (cmd: string) => boolean predicate: when it returns
         // true for a given executeCommand() invocation, the mock returns a
         // nonzero-exit result (apra-fleet-1cb.1: normal data, no isError --
@@ -685,6 +723,38 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // non-hosted).
                 if (/^git remote get-url origin\b/.test(opts.command)) {
                     return mockCmdResult(0, originUrl, '');
+                }
+
+                // PR #416 review (findings 1+2): the missing-permissions heal
+                // reads the failing phase's runbook from the BASE BRANCH --
+                // `git show origin/<base>:<runbook>` -- never from the working
+                // tree. tempDir is not a real git repo, so answer that read
+                // here. By default the "base branch" copy is simply the file
+                // the scenario wrote into tempDir; `baseBranchRunbooks` lets a
+                // scenario diverge them, which is what makes the intentional
+                // "declared in this sprint but not yet in base" failure mode
+                // testable (map the filename to null to simulate absence).
+                const showMatch = /^git show origin\/\S+:(\S+)\s*$/.exec(opts.command);
+                if (showMatch) {
+                    const wanted = showMatch[1];
+                    if (baseBranchRunbooks && Object.prototype.hasOwnProperty.call(baseBranchRunbooks, wanted)) {
+                        const override = baseBranchRunbooks[wanted];
+                        if (override === null || override === undefined) {
+                            return mockCmdResult(128, '', `fatal: path '${wanted}' does not exist in 'origin/base'`);
+                        }
+                        return mockCmdResult(0, override, '');
+                    }
+                    try {
+                        return mockCmdResult(0, await fs.readFile(path.join(tempDir, wanted), 'utf-8'), '');
+                    } catch {
+                        return mockCmdResult(128, '', `fatal: path '${wanted}' does not exist in 'origin/base'`);
+                    }
+                }
+
+                // The heal resolves the ledger's project_folder from the
+                // orchestrator's checkout root; tempDir stands in for it.
+                if (/^git rev-parse --show-toplevel\s*$/.test(opts.command)) {
+                    return mockCmdResult(0, tempDir, '');
                 }
 
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
@@ -1084,6 +1154,20 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 };
             }
 
+            // --- permissions heal (apra-fleet-u1qw.2.3: schema-validated
+            //     against runner.js's permissionsComposerReport) ---
+            //
+            // Only reachable when a Deploy/Integ Test/Regression Test result
+            // reported blockedReason='missing_permissions'. No default stub on
+            // purpose: a scenario that supplies no handler is asserting that
+            // NO heal dispatch happens, so make that fail by construction.
+            if (opts.agent === 'permissions-composer') {
+                if (permissionsComposerHandler) return permissionsComposerHandler({ opts, tempDir, runCmd, epicBead });
+                throw new Error(
+                    `advanced-mock-runner-test: permissions-composer dispatched but this scenario supplied no permissionsComposerHandler (label=${opts.label})`
+                );
+            }
+
             // Any agentType reaching here means runner.js dispatched something
             // this mock doesn't know about -- fail loudly instead of silently
             // falling through to a generic stub (that's exactly the bug this
@@ -1264,6 +1348,15 @@ export async function runDevelopLoopScenario(tag, {
     // `withRegressionPlaybook` below (writes regression-test-playbook.md so
     // the real probe finds it and the phase actually dispatches).
     regressionHandler,
+    // apra-fleet-u1qw.2.3: optional (opts, tempDir, runCmd, epicBead) =>
+    // result override for the orchestrator-side 'permissions-composer' heal
+    // dispatch -- see buildMockFleetApi's option comment above. Omit it to
+    // assert that a scenario triggers no heal at all.
+    permissionsComposerHandler,
+    // PR #416 review (findings 1+2): override what
+    // `git show origin/<base>:<runbook>` returns for the deterministic
+    // missing-permissions heal -- see buildMockFleetApi's option comment.
+    baseBranchRunbooks,
     goal = 'P1/P2', maxCycles = 1,
     // Optional hook invoked with {tempDir, runCmd, epicBead, tasks} AFTER
     // setupMinimal() creates the epic/tasks but BEFORE the sprint runs --
@@ -1325,11 +1418,11 @@ export async function runDevelopLoopScenario(tag, {
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
-        await fs.writeFile(path.join(tempDir, 'deploy.md'), '# Deploy\nrun `npm publish`');
-        await fs.writeFile(path.join(tempDir, 'integ-test-playbook.md'), '# Integ Test\nRun `vitest e2e`');
+        await fs.writeFile(path.join(tempDir, 'deploy.md'), `# Deploy\nrun \`npm publish\`\n${MOCK_PERMISSIONS_SECTION}`);
+        await fs.writeFile(path.join(tempDir, 'integ-test-playbook.md'), `# Integ Test\nRun \`vitest e2e\`\n${MOCK_PERMISSIONS_SECTION}`);
     }
     if (withRegressionPlaybook) {
-        await fs.writeFile(path.join(tempDir, 'regression-test-playbook.md'), '# Regression\nRun the full suite, then the sandbox smoke test, then Teardown.');
+        await fs.writeFile(path.join(tempDir, 'regression-test-playbook.md'), `# Regression\nRun the full suite, then the sandbox smoke test, then Teardown.\n${MOCK_PERMISSIONS_SECTION}`);
     }
     if (beforeSprint) {
         await beforeSprint({ tempDir, runCmd, epicBead, tasks });
@@ -1382,6 +1475,8 @@ export async function runDevelopLoopScenario(tag, {
             integHandler,
             finalReviewHandler,
             regressionHandler,
+            permissionsComposerHandler,
+            baseBranchRunbooks,
             commandFailurePattern,
             commandLogDetailed,
             memberGitState,

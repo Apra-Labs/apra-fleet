@@ -41,7 +41,7 @@ Tags determine the primary mode and grant additional tool scopes:
 3. Load **custom tag profiles**: for each non-mode tag, load tag-<name>.json and merge its permissions for the primary mode
 4. Load **ledger grants**: merge any permissions previously granted in project_folder/permissions.json
 
-All merges are additive (Set-based) - order is independent, duplicates discarded. The final allow list is delivered to the member's provider (Claude, Codex, etc.) in the provider's native config format.
+All merges are additive (Set-based) - order is independent, duplicates discarded. The final allow list is delivered to the member's provider (Claude, Gemini, etc.) in the provider's native config format.
 
 ### Example
 
@@ -68,6 +68,83 @@ When `execute_prompt` output contains a permission denial, call `compose_permiss
 > "Grant Bash(docker:*) to build-server, reason: integration tests, project folder ./my-project"
 
 The tool validates (wildcard-matched denylist -- blocks sudo/env, `bash -c`, catch-alls and shell chaining; see [Never auto-granted](#never-auto-granted)), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
+
+## Per-role bounds and the out-of-bounds ledger flag
+
+When a `grant` request carries a `role` (see [Primary Mode](#primary-mode)), `compose_permissions`
+loads that role's bounds file, `skills/fleet/profiles/bounds-<role>.json`
+(for example `bounds-doer.json`, `bounds-reviewer.json`, `bounds-deployer.json`,
+`bounds-integ-test-runner.json`, `bounds-regression-test-runner.json`), and checks
+each newly requested permission against it before recording the grant.
+
+- **Shape**: a bounds file is a flat JSON array of permission prefix patterns, e.g.:
+  ```json
+  [
+    "Bash(bd:*)",
+    "Bash(git:*)",
+    "Bash(npm run build*)",
+    "Bash(npm test*)"
+  ]
+  ```
+  `*` in a pattern is a wildcard matching any run of characters (including none);
+  a pattern with no `*` matches only by exact equality. See `matchesBoundsPattern`
+  in `src/tools/compose-permissions.ts`.
+- **Which roles ship a bounds file**: `doer`, `reviewer`, `deployer`,
+  `integ-test-runner`, and `regression-test-runner` each have their own
+  `bounds-<role>.json` under `skills/fleet/profiles/`. A `grant` request with no
+  `role`, or with a role that has no matching bounds file, skips the bounds check
+  entirely (a defined-empty bounds list means "no bounds check", never "deny
+  everything" -- see `loadBounds`).
+- **Out-of-bounds handling is ENFORCING on the autonomous grant path**: when a
+  `grant` request carries a role that has a bounds file in the INSTALLED
+  (`~/.claude/skills/fleet/profiles/`) directory, an out-of-bounds permission is
+  **rejected** -- the whole request is refused, nothing is delivered and nothing
+  is written to the ledger. That role-gated allowlist is what gives the
+  autonomous self-heal path a *bounded* worst case, rather than the *enumerated*
+  one a denylist alone can offer. The rejection names the offending prefixes and
+  the bounds file to edit.
+  Three carve-outs keep the check non-blocking, and each still records the
+  informational ledger flag (`outOfBounds: true` plus
+  `requestedByRole: "<role>"`, alongside the usual `permission`/`reason`/`date`):
+  - no `role`, or a role with no bounds file (manual/operator grants -- the
+    denylist is their only gate);
+  - `allow_out_of_bounds: true`, an explicit operator escalation that autonomous
+    callers must never set;
+  - a repo-relative dev-fallback profiles directory (see the next bullet), which
+    is not a trust boundary and so cannot legitimately block anything.
+  An in-bounds grant, or a grant made with no role, gets no bounds fields at all --
+  identical shape to the ledger's pre-bounds behavior. A co-occurrence expansion
+  the tool adds itself is *dropped* when out of bounds rather than failing the
+  caller's whole request.
+- **Bounds never loosen `NEVER_AUTO_GRANT`**: the hard-rejected patterns (`sudo`,
+  `su`, `doas`, `bash -c`/`sh -c`, `eval`, `env`, `printenv`, `nc`, `nmap`,
+  `chmod 777`, any catch-all such as `Bash(*)`, and any payload containing a
+  shell-chaining metacharacter -- see [Never auto-granted](#never-auto-granted))
+  are checked first and unconditionally, before any bounds lookup happens. A role's bounds file cannot widen this set;
+  even if a bounds file were to list `Bash(sudo:*)`, the request is still rejected.
+- **Bounds files are not a member-editable surface -- ONLY when installed**: they
+  ship as static profiles under `skills/fleet/profiles/` alongside the other
+  profile JSON (base-dev, stack profiles, tag profiles) and are installed to
+  `~/.claude/skills/fleet/profiles/`, where members and their dispatched work
+  never write. Only a repo change (reviewed like any other profile edit) can add
+  or widen a role's bounds.
+  `findProfilesDir()` prefers that installed path, but falls back to walking up
+  from `__dirname` looking for `skills/fleet/profiles` when no installed skill
+  exists. **That fallback is not a trust boundary**: in a dogfood configuration
+  (apra-fleet building apra-fleet from a checkout) it resolves INSIDE the repo a
+  sprint can write to, i.e. the sprint could edit the very file meant to bound
+  it. Every use of the fallback logs a loud warning naming the resolved path,
+  and the bounds check downgrades itself to informational there rather than
+  pretending to enforce. Install the fleet skill to restore enforcement.
+- **Bounds entries are a reviewed ceiling, not a safety proof**: enforcement
+  bounds the worst case to whatever a human put in the profile. Some current
+  entries are themselves broad -- `bounds-integ-test-runner.json`'s
+  `Bash(npm run *)` is arbitrary execution via `package.json` scripts, and
+  `bounds-regression-test-runner.json` carries `Bash(mkdir *)` and
+  `Bash(git clone *)`. All are declared verbatim by their own runbook's
+  `## Permissions` section, so narrowing the bounds file without narrowing the
+  runbook in the same change would just break the self-heal. Treat tightening
+  them as a separate, deliberate pass.
 
 ## Role switch
 
@@ -99,7 +176,8 @@ operator can still add such a permission by hand.
 
 A denylist can never be complete: `Bash(make *)`, `Bash(npm run *)`,
 `Bash(node -e *)` all remain arbitrary execution in practice. The denylist is
-the unconditional floor that applies to every caller.
+the unconditional *floor* that applies to every caller; the per-role bounds
+check is the *ceiling* on the autonomous self-heal path.
 
 ## settings.json vs settings.local.json (Claude)
 
@@ -140,8 +218,8 @@ setting `projects[<work_folder>].hasTrustDialogAccepted = true` scoped **strictl
 that exact work folder (never a parent directory, never blanket) - delivered over the
 same channel `compose_permissions` already uses, so it works uniformly for local and
 remote (SSH) members. It logs distinctly whether it just seeded trust or found it
-already present. Other providers no-op: OpenCode has its own trust gate
-but already bypasses it per-dispatch (`--dangerously-skip-permissions`);
+already present. Other providers no-op: Gemini and OpenCode have their own trust gates
+but already bypass them per-dispatch (`--skip-trust`, `--dangerously-skip-permissions`);
 AGY has no per-project trust concept (machine-global config); Codex/Copilot have no
 known equivalent gate.
 

@@ -14,11 +14,12 @@ import type { Agent } from '../types.js';
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
-  role: z.enum(['doer', 'reviewer']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test). The hard-rejected NEVER_AUTO_GRANT patterns are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Provide at least one of role or tags.'),
+  role: z.enum(['doer', 'reviewer', 'deployer', 'integ-test-runner', 'regression-test-runner']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test); deployer, integ-test-runner and regression-test-runner select their own base-dev/base-reviewer mode plus a matching bounds-<role>.json profile. When a `grant` request carries a role, each newly requested permission is checked against the bounds-<role>.json profile for that role (skills/fleet/profiles/); with an INSTALLED host-side profiles directory an out-of-bounds permission REJECTS the whole grant unless allow_out_of_bounds is set, and with only the repo-relative dev-fallback profiles directory it degrades to informational (granted, ledger entry flagged outOfBounds:true with requestedByRole recorded for later audit). No role, or a role with no bounds file, skips the bounds check entirely. Pass the role whose runbook the requested prefixes came from -- a grant issued under an unrelated role is checked against the wrong allowlist and will be refused. Bounds never loosen the hard-rejected NEVER_AUTO_GRANT patterns, which are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Provide at least one of role or tags.'),
   tags: z.array(z.string()).optional().describe('Member tags. Include "doer" or "reviewer" to set the primary mode (default doer); other tags (e.g. "gpu", "devops") load tag-<name>.json profiles and merge additively. When both role and tags are given, tags wins.'),
   project_folder: z.string().optional().describe('Local project folder containing permissions.json ledger. Omit to skip ledger merge.'),
   grant: z.array(z.string()).optional().describe('Reactive mode: additional permissions to grant (e.g. ["Bash(docker:*)", "Bash(docker-compose:*)"]). Appended to current permissions and re-delivered.'),
   grant_reason: z.string().optional().describe('Reason for the grant (stored in ledger)'),
+  allow_out_of_bounds: z.boolean().optional().describe('OPERATOR ESCALATION ONLY. When a `grant` request carries a role that has a bounds-<role>.json profile, an out-of-bounds permission is REJECTED by default -- that role-gated allowlist is what bounds the worst case of the autonomous self-heal path. Set true to downgrade the check back to informational (permission granted, ledger entry flagged outOfBounds) for a deliberate one-off human grant. Autonomous callers (fleet-sprint\'s missing-permissions heal) must never set this: a member escalating its own permissions is exactly what the bounds check exists to prevent. Ignored when no role is supplied, when the role has no bounds file, or when the request contains no `grant`.'),
 });
 
 export type ComposePermissionsInput = z.infer<typeof composePermissionsSchema>;
@@ -83,11 +84,21 @@ function escapeRegExpExceptStar(s: string): string {
   return s.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Matches `permission` against `pattern`, treating '*' in the pattern as a
- *  wildcard (matches any run of characters, including none) rather than a
- *  literal character. Falls back to exact equality for a wildcard-free
- *  pattern. */
-function matchesDenyPattern(pattern: string, permission: string): boolean {
+/**
+ * Matches `permission` against `pattern`, treating '*' in the pattern as a
+ * wildcard (matches any run of characters, including none) rather than a
+ * literal character. A wildcard-free pattern still matches only by exact
+ * equality.
+ *
+ * ONE implementation, deliberately shared by both wildcard consumers in this
+ * file: the NEVER_AUTO_GRANT denylist (isNeverAutoGrant) and the per-role
+ * bounds allowlist (isWithinBounds). They were briefly two byte-for-byte
+ * identical functions -- `matchesDenyPattern` and `matchesBoundsPattern` --
+ * which is exactly how a floor and a ceiling drift apart on what `*` means.
+ * `matchesBoundsPattern` is kept as the exported alias because tests and
+ * callers outside this file already reference that name.
+ */
+export function matchesWildcardPattern(pattern: string, permission: string): boolean {
   const regex = new RegExp(`^${pattern.split('*').map(escapeRegExpExceptStar).join('.*')}$`);
   return regex.test(permission);
 }
@@ -133,31 +144,69 @@ export function isNeverAutoGrant(permission: string): boolean {
   if (SHELL_CHAINING_METACHARS.some(meta => payload.includes(meta))) return true;
 
   // 3. Explicit deny patterns (wildcard-aware).
-  return NEVER_AUTO_GRANT_PATTERNS.some(pattern => matchesDenyPattern(pattern, normalized));
+  return NEVER_AUTO_GRANT_PATTERNS.some(pattern => matchesWildcardPattern(pattern, normalized));
 }
 
 interface Ledger {
   stacks: string[];
-  granted: Array<{ permission: string; reason: string; date: string }>;
+  granted: Array<{
+    permission: string;
+    reason: string;
+    date: string;
+    /** True when this grant fell outside the requesting role's bounds profile.
+     *  Informational only -- never filters the entry out of the granted list. */
+    outOfBounds?: true;
+    /** Role that requested this grant, recorded for out-of-bounds auditing. */
+    requestedByRole?: string;
+  }>;
 }
+
+/** True when the located profiles dir is the installed, host-side one rather
+ *  than a repo-relative dev fallback. Only the installed path is a genuine
+ *  trust boundary -- see findProfilesDir(). */
+let profilesDirIsInstalled = true;
 
 function findProfilesDir(): string {
   // Installed: ~/.claude/skills/fleet/profiles/ (new location after skill split)
   const installedFleet = path.join(os.homedir(), '.claude', 'skills', 'fleet', 'profiles');
-  if (fs.existsSync(installedFleet)) return installedFleet;
+  if (fs.existsSync(installedFleet)) { profilesDirIsInstalled = true; return installedFleet; }
   // Installed (legacy): ~/.claude/skills/pm/profiles/
   const installedPm = path.join(os.homedir(), '.claude', 'skills', 'pm', 'profiles');
-  if (fs.existsSync(installedPm)) return installedPm;
-  // Dev: walk up from __dirname looking for skills/fleet/profiles/
+  if (fs.existsSync(installedPm)) { profilesDirIsInstalled = true; return installedPm; }
+  // Dev fallback: walk up from __dirname looking for skills/fleet/profiles/.
+  //
+  // apra-fleet PR#416 review: this fallback is NOT a trust boundary. The whole
+  // premise of the enforcing bounds check below is that bounds-<role>.json is
+  // host-side and outside the sprint's write reach -- but in the dogfood
+  // configuration (apra-fleet building apra-fleet from a checkout) this walk
+  // resolves INTO the repo, where a doer can edit the very file that is
+  // supposed to bound it. It is kept because a dev checkout with no installed
+  // skill still needs to compose permissions at all, but every use is flagged
+  // loudly and the bounds check downgrades itself to non-blocking when it
+  // fires, so nobody mistakes an in-repo profiles dir for the boundary it is
+  // not.
   let dir = __dirname;
   for (let i = 0; i < 6; i++) {
     const candidateFleet = path.join(dir, 'skills', 'fleet', 'profiles');
-    if (fs.existsSync(candidateFleet)) return candidateFleet;
+    if (fs.existsSync(candidateFleet)) { warnRepoRelativeProfiles(candidateFleet); return candidateFleet; }
     const candidatePm = path.join(dir, 'skills', 'pm', 'profiles');
-    if (fs.existsSync(candidatePm)) return candidatePm;
+    if (fs.existsSync(candidatePm)) { warnRepoRelativeProfiles(candidatePm); return candidatePm; }
     dir = path.dirname(dir);
   }
   throw new Error('Cannot find profiles directory');
+}
+
+function warnRepoRelativeProfiles(resolved: string): void {
+  profilesDirIsInstalled = false;
+  console.warn(
+    `[fleet] compose_permissions: NO installed profiles directory found ` +
+    `(${path.join(os.homedir(), '.claude', 'skills', 'fleet', 'profiles')}); ` +
+    `falling back to the REPO-RELATIVE dev path "${resolved}". ` +
+    `This is not a trust boundary: in a dogfood configuration that directory is ` +
+    `inside the checkout a sprint can write to, so per-role bounds are treated as ` +
+    `INFORMATIONAL here and cannot block an out-of-bounds auto-grant. ` +
+    `Install the fleet skill to restore the enforcing bounds check.`,
+  );
 }
 
 function loadProfile(profilesDir: string, name: string): any {
@@ -166,7 +215,31 @@ function loadProfile(profilesDir: string, name: string): any {
   return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 }
 
-function loadLedger(projectFolder: string): Ledger {
+/** Loads the per-role bounds file (bounds-<role>.json) listing Bash permission
+ *  prefix patterns considered in-scope for that role. Returns a defined empty
+ *  array (never undefined/deny-all) for an unknown or missing role -- callers
+ *  must treat an empty result as "no bounds check", not "deny everything". */
+export function loadBounds(profilesDir: string, role: string | undefined): string[] {
+  if (!role) return [];
+  const bounds = loadProfile(profilesDir, `bounds-${role}`);
+  if (!Array.isArray(bounds)) return [];
+  return bounds;
+}
+
+/** Matches a single bounds entry against a granted permission string. Bounds
+ *  files hold prefix patterns like "Bash(npm run build*)" or
+ *  "Bash(*apra-fleet* run *)", not verbatim permission strings, so exact
+ *  equality was never the right check (apra-fleet-ivxi.2). Thin alias over the
+ *  file's single wildcard matcher -- see matchesWildcardPattern. */
+export const matchesBoundsPattern = matchesWildcardPattern;
+
+/** True when `permission` is covered by at least one entry in `bounds`
+ *  (wildcard-aware, see matchesBoundsPattern). */
+export function isWithinBounds(bounds: string[], permission: string): boolean {
+  return bounds.some(pattern => matchesBoundsPattern(pattern, permission));
+}
+
+export function loadLedger(projectFolder: string): Ledger {
   const ledgerPath = path.join(projectFolder, 'permissions.json');
   if (fs.existsSync(ledgerPath)) {
     const raw = JSON.parse(fs.readFileSync(ledgerPath, 'utf-8'));
@@ -175,7 +248,7 @@ function loadLedger(projectFolder: string): Ledger {
   return { stacks: [], granted: [] };
 }
 
-function saveLedger(projectFolder: string, ledger: Ledger): void {
+export function saveLedger(projectFolder: string, ledger: Ledger): void {
   const ledgerPath = path.join(projectFolder, 'permissions.json');
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2) + '\n');
 }
@@ -486,10 +559,61 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       return `❌ Cannot auto-grant dangerous permissions: ${blocked.join(', ')}. Escalate to user.`;
     }
 
-    // Expand co-occurrences
+    // apra-fleet PR#416 review, finding 3 (option 3B): the per-role bounds
+    // allowlist is ENFORCING on the autonomous grant path.
+    //
+    // The denylist above is an unconditional floor, but a denylist can never
+    // be complete. Bounds are the ceiling: when a request carries a role that
+    // has a bounds-<role>.json profile, an auto-grant can only ever produce a
+    // prefix a human put in a host-side product profile. That makes the worst
+    // case BOUNDED rather than enumerated.
+    //
+    // PR #416's original design argued against blocking -- it "would convert
+    // an audit signal into a new failure mode for a role whose bounds file
+    // happens to be slightly stale". That is real, and it resolves the same
+    // way the base-branch runbook read does: fail closed and surface it. A
+    // stale bounds file is a five-second human fix; an unbounded auto-grant
+    // is not.
+    //
+    // Three deliberate carve-outs keep this from breaking legitimate use:
+    //   1. No role, or a role with no bounds file -> no check at all (today's
+    //      behavior, unchanged). Manual/operator grants keep the denylist as
+    //      their only gate, which is why finding 3A had to land as well.
+    //   2. `allow_out_of_bounds: true` -> explicit operator escalation,
+    //      downgrades to the informational ledger flag. Autonomous callers
+    //      never set it.
+    //   3. A repo-relative (dev fallback) profiles dir is NOT a trust
+    //      boundary in the dogfood configuration -- a sprint could edit the
+    //      bounds file that is supposed to bound it -- so blocking there
+    //      would be security theatre. Downgrade to informational and say so.
+    const bounds = loadBounds(profilesDir, input.role);
+    const boundsEnforcing = bounds.length > 0 && !input.allow_out_of_bounds && profilesDirIsInstalled;
+    if (boundsEnforcing) {
+      const outOfBounds = input.grant.filter(p => !isWithinBounds(bounds, p));
+      if (outOfBounds.length) {
+        return `❌ Out of bounds for role "${input.role}": ${outOfBounds.join(', ')}. ` +
+          `That role's allowlist (skills/fleet/profiles/bounds-${input.role}.json) does not cover ` +
+          `${outOfBounds.length === 1 ? 'it' : 'them'}, so this grant is refused rather than flagged. ` +
+          `If the permission is genuinely in scope for the role, add it to the bounds profile in a ` +
+          `reviewed repo change; for a deliberate one-off human grant, re-issue with ` +
+          `allow_out_of_bounds: true.`;
+      }
+    }
+
+    // Expand co-occurrences. These are added by this tool, not requested by
+    // the caller, so an out-of-bounds expansion is DROPPED rather than made to
+    // fail the whole request -- the caller asked for something legitimate and
+    // should get it.
     const expanded = new Set(input.grant);
+    const droppedCoOccurrences: string[] = [];
     for (const p of input.grant) {
-      for (const co of CO_OCCURRENCE[p] ?? []) expanded.add(co);
+      for (const co of CO_OCCURRENCE[p] ?? []) {
+        if (boundsEnforcing && !isWithinBounds(bounds, co)) {
+          droppedCoOccurrences.push(co);
+          continue;
+        }
+        expanded.add(co);
+      }
     }
 
     let allow: string[];
@@ -540,9 +664,24 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     if (input.project_folder) {
       const reason = input.grant_reason ?? 'granted mid-sprint';
       const date = new Date().toISOString().slice(0, 10);
+      // apra-fleet-ivxi.1.3: when the request carries a role, flag any grant
+      // outside that role's bounds profile for later audit. A defined-empty
+      // bounds result (no role supplied, or an unknown/missing role -- see
+      // loadBounds) means "no bounds check".
+      //
+      // Reaching this point with an out-of-bounds permission now means the
+      // check was NON-enforcing for one of the three reasons documented at
+      // the enforcement site above (no bounds file, an explicit
+      // allow_out_of_bounds operator escalation, or a repo-relative dev
+      // profiles dir). The ledger flag is what makes that visible afterwards.
       for (const p of expanded) {
         if (!ledger.granted.some(e => e.permission === p)) {
-          ledger.granted.push({ permission: p, reason, date });
+          const entry: Ledger['granted'][number] = { permission: p, reason, date };
+          if (bounds.length > 0 && !isWithinBounds(bounds, p)) {
+            entry.outOfBounds = true;
+            entry.requestedByRole = input.role;
+          }
+          ledger.granted.push(entry);
         }
       }
       saveLedger(input.project_folder, ledger);
@@ -553,7 +692,10 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     // trust was never seeded, gets fixed the next time permissions are composed).
     await seedWorkspaceTrust(agent, strategy, 'compose_permissions');
 
-    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}`;
+    const droppedLine = droppedCoOccurrences.length
+      ? `\n  (dropped ${droppedCoOccurrences.length} co-occurrence expansion(s) outside role "${input.role}"'s bounds: ${droppedCoOccurrences.join(', ')})`
+      : '';
+    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${droppedLine}`;
   }
 
   // Proactive compose mode

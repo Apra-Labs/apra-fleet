@@ -1,0 +1,11 @@
+[
+  "Bash(bd:*)",
+  "Bash(git:*)",
+  "Bash(npm run build*)",
+  "Bash(npm run lint*)",
+  "Bash(npm test*)",
+  "Bash(tsc*)",
+  "Bash(cargo build*)",
+  "Bash(cargo clippy*)",
+  "Bash(eslint*)"
+]

@@ -80,6 +80,18 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // max_turns-exhaustion resume, each in its own read-side (pushCode:false,
 // pushBeads:true -- it files carry-over bug beads but never writes code)
 // withGitSync(...) bracket. pushCode:true stays at 4.
+// 22 -> 23 agent()/20 -> 21 withGitSync (apra-fleet-u1qw.2.2): the shared
+// missing-permissions heal helper added ONE new dispatch -- permissions-composer
+// -- in its own read-side withGitSync(...) bracket, because it read the failing
+// phase's runbook out of the orchestrator's own clone.
+// 23 -> 22 agent()/21 -> 20 withGitSync (PR #416 review, findings 1+2): both
+// are gone. The heal no longer dispatches an agent and no longer reads the
+// WORKING TREE at all -- it reads the runbook from origin/<base_branch> via
+// git fetch + git show, which is precisely what makes the grant source
+// non-member-writable, so a withGitSync bracket (whose whole job is to freshen
+// the working tree) would be meaningless here. The three phase retries re-run
+// the existing per-phase dispatch closures, which are already bracketed.
+// pushCode:true stays at 4.
 const EXPECTED_AGENT_COUNT = 22;
 const EXPECTED_WITHGITSYNC_CALL_COUNT = 20;
 const STREAK_ASSIGNMENT_MARKERS = [

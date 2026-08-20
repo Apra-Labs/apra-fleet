@@ -120,6 +120,111 @@ const FIXED_ROLE_TIER = {
 export const meta = { name: 'fleet-sprint-runner' };
 
 // ---------------------------------------------------------------------------
+// Missing-permissions self-heal: runbook parsing
+// ---------------------------------------------------------------------------
+//
+// When a deploy/integ-test/regression phase fails on a missing permission,
+// the runner deterministically parses the failing phase's runbook from
+// `origin/<base_branch>` (the human-reviewed, merged line -- never the
+// sprint's own working tree) and grants exactly the prefixes it declares, via
+// a plain JavaScript parse + a direct compose_permissions call. No LLM sits
+// in the permission-grant path, and no member-writable content can influence
+// what gets granted.
+//
+// KNOWN, INTENTIONAL FAILURE MODE: a permission need introduced BY THIS SPRINT
+// and correctly documented in the same PR is not in the base branch, so it does
+// NOT self-heal. The phase fails for real and a human reviews the PR. That is
+// the correct seam for a human -- a sprint must not be able to authorize its
+// own new permission -- and it is logged distinguishably so operators can tell
+// it apart from a plain missing grant.
+
+/** Role -> the runbook whose `## Permissions` section declares its prefixes. */
+export const RUNBOOK_FOR_ROLE = {
+    deployer: 'deploy.md',
+    'integ-test-runner': 'integ-test-playbook.md',
+    'regression-test-runner': 'regression-test-playbook.md',
+};
+
+/**
+ * Extracts the permission prefixes a runbook's `## Permissions` section
+ * DECLARES, deterministically.
+ *
+ * The contract (the shape every shipped runbook uses) is: one prefix per
+ * markdown LIST ITEM, the prefix backticked and written as `Tool(payload)`,
+ * optionally followed by prose commentary on the same or a continuation line.
+ *
+ * Only LIST ITEMS are considered, and within a list item the first backticked
+ * token that is SHAPED like a permission wins -- integ-test-playbook.md writes
+ * its entries as "- `npm run ...` (e.g. `Bash(npm run *)`)", where the prefix
+ * is the second backticked token, so "first backtick" alone would parse that
+ * whole runbook as declaring nothing. Restricting to list items is what keeps
+ * the parser from picking up the
+ * explanatory prose these sections also contain -- regression-test-playbook.md's
+ * Permissions preamble mentions `Bash(node:*)`, `Bash(git:*)` and `Bash(bd:*)`
+ * as examples of "a broader prefix entry counts as coverage", and a naive
+ * "every backticked Bash(...) in the section" scan would grant all three.
+ *
+ * Fails closed: an unparseable or absent section yields an empty array, which
+ * every caller must treat as "nothing to grant", never as "grant everything".
+ *
+ * @param {string} markdown - full runbook text
+ * @returns {string[]} declared prefixes, in document order, de-duplicated
+ */
+export function parseRunbookPermissions(markdown) {
+    if (typeof markdown !== 'string' || markdown.length === 0) return [];
+    const lines = markdown.split(/\r?\n/);
+    const start = lines.findIndex((l) => /^##\s+Permissions\s*$/i.test(l.trim()));
+    if (start === -1) return [];
+    const out = [];
+    for (let i = start + 1; i < lines.length; i++) {
+        const line = lines[i];
+        // Any subsequent heading of the same or higher level ends the section.
+        if (/^#{1,2}\s+\S/.test(line)) break;
+        if (!/^\s*[-*+]\s+/.test(line)) continue;
+        for (const m of line.matchAll(/`([^`]+)`/g)) {
+            const candidate = m[1].trim();
+            // Must be a well-formed `Tool(payload)` permission string.
+            if (!/^[A-Za-z][A-Za-z0-9_-]*\(.*\)$/.test(candidate)) continue;
+            if (!out.includes(candidate)) out.push(candidate);
+            break; // one declaration per list item
+        }
+    }
+    return out;
+}
+
+/**
+ * First text block of an MCP tool result, or ''. Module-level so both the
+ * proactive deploy-permissions provisioner and the reactive missing-permissions
+ * heal read a tool response the same way.
+ * @param {any} res
+ * @returns {string}
+ */
+export function toolResultText(res) {
+    return (res && Array.isArray(res.content) && res.content[0] && typeof res.content[0].text === 'string')
+        ? res.content[0].text
+        : '';
+}
+
+/**
+ * True only when compose_permissions' return string explicitly confirms the
+ * grant. The tool answers with human-readable text, prefixed U+2705 on success
+ * and U+274C on any rejection (NEVER_AUTO_GRANT denylist, out-of-bounds,
+ * delivery failure, unresolvable member). Fails CLOSED: an empty, truncated or
+ * unrecognized response is treated as "not granted", never as success.
+ * (The escape, rather than the literal glyph, keeps this file ASCII.)
+ * @param {string} toolText
+ * @returns {boolean}
+ */
+export function isComposePermissionsSuccess(toolText) {
+    if (typeof toolText !== 'string') return false;
+    const head = toolText.trim();
+    if (head.length === 0) return false;
+    const first = head.codePointAt(0);
+    if (first === 0x274c) return false;  // U+274C CROSS MARK -- every failure path
+    return first === 0x2705;             // U+2705 WHITE HEAVY CHECK MARK -- success
+}
+
+// ---------------------------------------------------------------------------
 // bd JSON-parse helper
 // ---------------------------------------------------------------------------
 //
@@ -2755,76 +2860,106 @@ export function createUnattendedAutoProvisioner(opts = {}) {
 
 /**
  * Best-effort, self-heals the "Missing permission" class of deploy/integ/
- * regression-test failure BEFORE it happens: reads deploy.md's own
- * `## Permissions` section -- the exact list the deployer/integ-test-runner/
- * regression-test-runner agent prompts already cross-check at their own
- * Step 0a/0 -- and proactively grants every listed prefix to the target
- * member via compose_permissions. Without this, a runbook permissions
- * change (e.g. the `apra-fleet start` -> `apra-fleet run` swap, #395) only
- * gets noticed when a dispatch fails, and only gets fixed once an operator
- * greps deploy.md by hand and runs compose_permissions manually -- exactly
- * the failure mode this closes the loop on.
+ * regression-test failure BEFORE it happens: reads the TARGET ROLE'S OWN
+ * runbook `## Permissions` section -- the exact list the deployer /
+ * integ-test-runner / regression-test-runner agent prompts already cross-check
+ * at their own Step 0a/0 -- and proactively grants every listed prefix to the
+ * target member via compose_permissions, UNDER THAT ROLE. Without this, a
+ * runbook permissions change (e.g. the `apra-fleet start` -> `apra-fleet run`
+ * swap, #395) only gets noticed when a dispatch fails, and only gets fixed
+ * once an operator greps the runbook by hand and runs compose_permissions
+ * manually -- exactly the failure mode this closes the loop on.
  *
- * Reads deploy.md via `command()` against the ORCHESTRATOR member (its own
+ * ROLE CORRECTNESS (load-bearing, not cosmetic). Both the runbook and the
+ * `role` argument are derived from RUNBOOK_FOR_ROLE, never hardcoded. An
+ * earlier revision read deploy.md for all three phases and always passed
+ * `role: 'doer'`; once compose_permissions' per-role bounds check became
+ * ENFORCING, that combination was rejected wholesale (deploy.md's prefixes
+ * appear nowhere in bounds-doer.json), which silently turned the proactive
+ * grant into a no-op and made the reactive heal load-bearing for every
+ * deploy/integ/regression dispatch. Each bounds-<role>.json profile is the
+ * curated mirror of that role's own runbook, so reading the role's runbook
+ * and granting under that role is the only combination that is in-bounds by
+ * construction. tests/deploy-permissions-runbook-bounds.test.ts pins that
+ * agreement against the real profiles and the real runbooks.
+ *
+ * Reads the runbook via `command()` against the ORCHESTRATOR member (its own
  * checkout is the source of truth for what is about to be dispatched) and
- * caches the parsed prefix list for the lifetime of the returned function --
- * one read per sprint run, since deploy.md does not change mid-run on a
- * healthy pipeline. Also caches per TARGET member, like
- * createUnattendedAutoProvisioner above, so repeat cycles don't re-grant.
+ * caches the parsed prefix list per runbook for the lifetime of the returned
+ * function -- one read per runbook per sprint run, since runbooks do not
+ * change mid-run on a healthy pipeline. Also caches per role+member pair, like
+ * createUnattendedAutoProvisioner above, so repeat cycles don't re-grant --
+ * but ONLY on a CONFIRMED success, so a rejected grant stays retryable next
+ * cycle and still falls through to the reactive heal instead of being recorded
+ * as "already handled".
  *
- * Failure at any step (probe fails, deploy.md missing/unparseable,
+ * Failure at any step (probe fails, runbook missing/unparseable,
  * compose_permissions unreachable, a listed prefix hitting the
- * NEVER_AUTO_GRANT denylist) is logged and swallowed. This is pure
- * best-effort acceleration -- the deployer's own Step 0a check remains the
- * authoritative, fail-closed backstop regardless of whether this succeeds.
+ * NEVER_AUTO_GRANT denylist or the role's bounds profile) is logged and
+ * swallowed. This is pure best-effort acceleration -- the phase agent's own
+ * Step 0a check and healMissingPermissionsOnce remain the authoritative,
+ * fail-closed backstops regardless of whether this succeeds.
  *
  * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, orchestratorMember: string, log?: Function }} opts
- * @returns {(member: string) => Promise<void>}
+ * @returns {(member: string, role: string) => Promise<void>}
  */
 export function createDeployPermissionsProvisioner(opts = {}) {
     const { callTool, command, orchestratorMember, log = () => {} } = opts;
     const fleetApi = new ApraFleet({ callTool });
-    /** @type {Set<string>} members already granted deploy.md's permissions this run. */
+    /** @type {Set<string>} `${role}::${member}` pairs already granted this run. */
     const provisioned = new Set();
-    /** @type {string[] | null | undefined} undefined = not yet attempted. */
-    let cachedPrefixes;
+    /** @type {Map<string, string[] | null>} runbook -> parsed prefixes (null = unusable). */
+    const cachedPrefixes = new Map();
 
-    async function loadRequiredPrefixes() {
-        if (cachedPrefixes !== undefined) return cachedPrefixes;
+    async function loadRequiredPrefixes(runbook) {
+        if (cachedPrefixes.has(runbook)) return cachedPrefixes.get(runbook);
+        let prefixes = null;
         try {
+            const lit = JSON.stringify(runbook);
             const res = await command(
-                `node -e "const fs=require('fs'); if(fs.existsSync('deploy.md')) process.stdout.write(fs.readFileSync('deploy.md','utf8'))"`,
-                { member_name: orchestratorMember, silent: true, label: `Read deploy.md permissions`, failSoft: true },
+                `node -e "const fs=require('fs'); if(fs.existsSync(${lit})) process.stdout.write(fs.readFileSync(${lit},'utf8'))"`,
+                { member_name: orchestratorMember, silent: true, label: `Read ${runbook} permissions`, failSoft: true },
             );
-            if (!res.ok || !res.output) {
-                cachedPrefixes = null;
-            } else {
-                const section = res.output.split(/^## Permissions/m)[1]?.split(/^## /m)[0] ?? '';
-                const prefixes = [...section.matchAll(/^-\s*`([^`]+)`/gm)].map(m => m[1]);
-                cachedPrefixes = prefixes.length ? prefixes : null;
+            if (res && res.ok && res.output) {
+                const parsed = parseRunbookPermissions(String(res.output));
+                prefixes = parsed.length ? parsed : null;
             }
         } catch (err) {
-            log(`[deploy-permissions] could not read deploy.md's Permissions section (continuing without auto-provisioning): ${err.message}`);
-            cachedPrefixes = null;
+            log(`[deploy-permissions] could not read ${runbook}'s Permissions section (continuing without auto-provisioning): ${err.message}`);
+            prefixes = null;
         }
-        return cachedPrefixes;
+        cachedPrefixes.set(runbook, prefixes);
+        return prefixes;
     }
 
-    return async function ensureDeployPermissions(member) {
-        if (!member || provisioned.has(member)) return;
-        const prefixes = await loadRequiredPrefixes();
+    return async function ensureDeployPermissions(member, role) {
+        if (!member || !role) return;
+        const cacheKey = `${role}::${member}`;
+        if (provisioned.has(cacheKey)) return;
+        const runbook = RUNBOOK_FOR_ROLE[role];
+        if (!runbook) {
+            log(`[deploy-permissions] no runbook is mapped to role '${role}' (known roles: ${Object.keys(RUNBOOK_FOR_ROLE).join(', ')}) -- skipping the proactive grant.`);
+            return;
+        }
+        const prefixes = await loadRequiredPrefixes(runbook);
         if (!prefixes) return;
         try {
-            const result = await fleetApi.composePermissions({
+            const toolText = toolResultText(await fleetApi.composePermissions({
                 member_name: member,
-                role: 'doer',
+                role,
                 grant: prefixes,
-                grant_reason: "deploy.md's declared Permissions section, auto-provisioned before dispatch",
-            });
-            provisioned.add(member);
-            log(`[deploy-permissions] ensured deploy.md's required permissions on '${member}': ${result}`);
+                grant_reason: `${runbook}'s declared Permissions section, auto-provisioned before the ${role} dispatch`,
+            }));
+            if (!isComposePermissionsSuccess(toolText)) {
+                // Do NOT mark provisioned: a rejected grant must stay retryable
+                // and must not masquerade as "already handled" to later cycles.
+                log(`[deploy-permissions] compose_permissions did NOT confirm the ${role} grant on '${member}' from ${runbook} (continuing -- the phase's own Step 0a check and the reactive permissions heal remain the backstop): ${toolText ? toolText.replace(/\s+/g, ' ').slice(0, 400) : '(empty tool response)'}`);
+                return;
+            }
+            provisioned.add(cacheKey);
+            log(`[deploy-permissions] ensured ${runbook}'s required permissions for role '${role}' on '${member}': ${toolText.replace(/\s+/g, ' ').slice(0, 400)}`);
         } catch (err) {
-            log(`[deploy-permissions] could not auto-provision deploy.md permissions on '${member}' (continuing -- the deployer's own Step 0a check remains the backstop): ${err.message}`);
+            log(`[deploy-permissions] could not auto-provision ${runbook} permissions for role '${role}' on '${member}' (continuing -- the phase's own Step 0a check remains the backstop): ${err.message}`);
         }
     };
 }
@@ -6353,9 +6488,11 @@ async function runSprintCycle(context) {
     // deliberately outside contracts.ROLES.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
 
-    // Self-heals deploy.md's declared Permissions onto the deployer /
-    // integ-test-runner / regression-test-runner member before each of
-    // those dispatches -- see createDeployPermissionsProvisioner's doc
+    // Self-heals each role's OWN runbook-declared Permissions onto the
+    // deployer / integ-test-runner / regression-test-runner member before each
+    // of those dispatches, granting under that same role so the grant lands
+    // inside that role's bounds profile -- see
+    // createDeployPermissionsProvisioner's doc
     // comment. Same three-way precedence shape as ensureUnattendedAuto
     // above: an explicitly-injected `context.ensureDeployPermissions` (for
     // tests), else the real compose_permissions-backed provisioner built
@@ -6365,6 +6502,203 @@ async function runSprintCycle(context) {
             ? createDeployPermissionsProvisioner({ callTool: args.callTool, command, orchestratorMember, log })
             : async () => {}
     );
+
+    // --- Missing-permissions self-heal (apra-fleet-u1qw.2.2) ----------------
+    //
+    // ONE helper shared by all three runbook-driven phases (Deploy, Integ
+    // Test, Regression Test). Each of those roles' output schemas carries the
+    // optional `blockedReason` field (apra-fleet-u1qw.1.1/.1.2); the only
+    // value it ever takes is 'missing_permissions', meaning "I could not do my
+    // work because a Bash prefix my own runbook declares was not granted to
+    // me". That is a mechanically fixable failure, not a real phase verdict.
+    //
+    // DETERMINISTIC, NO LLM. Reading the runbook from a doer-writable working
+    // tree, or trusting an LLM's self-report of what it granted, would let a
+    // doer append e.g. `Bash(bash -c *)` to deploy.md's `## Permissions`,
+    // commit it, and have it granted with no human involved -- a self-report
+    // produced AFTER the tool call already landed cannot constrain the side
+    // effect it describes either. Both holes are structurally impossible
+    // here: the heal is four plain steps, all in JavaScript:
+    //   1. git fetch origin <base_branch> on the orchestrator member, then
+    //      `git show origin/<base_branch>:<runbook>` -- the runbook comes from
+    //      the human-reviewed, merged line, never from the working tree.
+    //   2. parseRunbookPermissions() extracts the declared prefixes.
+    //   3. compose_permissions is called DIRECTLY through the injected MCP
+    //      `callTool`, with the failing phase's role (so the tool applies that
+    //      role's bounds) and exactly the parsed prefixes -- no more, no fewer.
+    //   4. the tool's own return string is inspected for the success/rejection
+    //      shape, and the phase is retried once on success.
+    // There is no agent, therefore no self-report to trust and no
+    // AgentOutputError branch.
+    //
+    // KNOWN, INTENTIONAL FAILURE MODE: a permission need introduced BY THIS
+    // SPRINT and correctly documented in the same PR is not in the base
+    // branch, so it does NOT self-heal. The phase fails for real and a human
+    // reviews the PR. That is the correct seam for a human -- a sprint must
+    // not be able to authorize its own new permission -- and it is logged
+    // distinguishably ("requested prefix not present in base-branch runbook")
+    // so operators can tell it apart from a plain missing grant.
+    //
+    // The retry shape deliberately mirrors two existing patterns:
+    //   - the max_turns resume block at each phase's dispatch site (dispatch,
+    //     inspect the outcome, re-dispatch once with the fault addressed), and
+    //   - src/tools/execute-prompt.ts's trustHealAttempted gate: heal once,
+    //     retry once, and treat a REPEAT of the same failure as terminal
+    //     rather than looping.
+    //
+    // Guard state is per phase per cycle (`permissionHealAttempted`, keyed
+    // `C<cycle>:<phase>`), so:
+    //   - a second consecutive missing_permissions in the SAME cycle/phase is
+    //     terminal and surfaces through the phase's normal failure path, and
+    //   - a LATER cycle still gets its own fresh heal attempt (a genuinely new
+    //     permission need in a later cycle is not the loop this guards).
+    // The retried result is fed back through this same helper, which is what
+    // makes that terminal branch reachable (and observable in the log) without
+    // any second dispatch.
+    //
+    // EVERY terminal outcome -- a NEVER_AUTO_GRANT / out-of-bounds rejection,
+    // an unreadable base-branch runbook, an empty `## Permissions` section, a
+    // missing MCP connection, a thrown tool error -- propagates the ORIGINAL
+    // failure unchanged (with the reason appended to its notes/summary), so
+    // the phase fails for real exactly as it would have without this helper.
+    // The heal is best-effort and must never convert a phase failure into a
+    // thrown sprint abort.
+    const permissionHealAttempted = new Set();
+
+    /**
+     * @param {object} opts
+     * @param {string} opts.phaseName - human-readable phase name, e.g. 'Deploy'
+     * @param {string} opts.role - the failing phase's role, e.g. 'deployer'
+     * @param {number|string} opts.cycleLabel - cycle number/label, for the per-cycle guard key
+     * @param {any} opts.result - the phase's schema-valid result object
+     * @param {() => Promise<any>} opts.redispatch - re-runs the ORIGINAL phase dispatch once
+     * @param {string} [opts.noteField] - result field to append the terminal reason to
+     * @returns {Promise<any>} the original result, or the retried dispatch's result
+     */
+    const healMissingPermissionsOnce = async ({ phaseName, role, cycleLabel, result, redispatch, noteField = 'notes' }) => {
+        if (!result || result.blockedReason !== 'missing_permissions') return result;
+        const guardKey = `C${cycleLabel}:${phaseName}`;
+        if (permissionHealAttempted.has(guardKey)) {
+            log(`${phaseName}: still blockedReason=missing_permissions after the permissions heal-retry (${guardKey}) -- TERMINAL, surfacing the failure normally (no second heal, no loop).`);
+            return result;
+        }
+        permissionHealAttempted.add(guardKey);
+        const targetMember = getMemberForRole(role);
+        const appendReason = (reason) => {
+            const existing = typeof result[noteField] === 'string' ? result[noteField] : '';
+            return { ...result, [noteField]: `${existing}${existing ? ' ' : ''}[permissions heal] ${reason}` };
+        };
+        const terminal = (reason) => {
+            log(`${phaseName}: permissions heal did NOT grant -- TERMINAL, propagating the original failure (never retried): ${reason}`);
+            return appendReason(`terminal permissions-heal failure, phase NOT retried: ${reason}`);
+        };
+
+        const runbook = RUNBOOK_FOR_ROLE[role];
+        if (!runbook) {
+            return terminal(`no runbook is mapped to role '${role}' (known roles: ${Object.keys(RUNBOOK_FOR_ROLE).join(', ')})`);
+        }
+
+        log(`${phaseName}: reported blockedReason=missing_permissions -- reading ${runbook} from origin/${validated.baseBranch} (the reviewed base branch, NOT the sprint working tree) to heal role ${role} on member ${targetMember}, then retrying this phase exactly once.`);
+
+        // --- 1. Read the runbook from the BASE branch ------------------------
+        let runbookText;
+        try {
+            const fetchRes = await command(`git fetch origin ${validated.baseBranch}`, {
+                member_name: orchestratorMember, silent: true, failSoft: true,
+                label: `Fetch base branch '${validated.baseBranch}' for the ${phaseName} permissions heal`,
+            });
+            if (!fetchRes || !fetchRes.ok) {
+                return terminal(`could not fetch origin/${validated.baseBranch} on '${orchestratorMember}': ${(fetchRes && fetchRes.error) || 'unknown git failure'}`);
+            }
+            const showRes = await command(`git show origin/${validated.baseBranch}:${runbook}`, {
+                member_name: orchestratorMember, silent: true, failSoft: true,
+                label: `Read ${runbook} from origin/${validated.baseBranch} for the ${phaseName} permissions heal`,
+            });
+            if (!showRes || !showRes.ok) {
+                return terminal(`${runbook} could not be read from origin/${validated.baseBranch}: ${(showRes && showRes.error) || 'unknown git failure'}`);
+            }
+            runbookText = String(showRes.output === undefined || showRes.output === null ? '' : showRes.output);
+        } catch (err) {
+            return terminal(`reading ${runbook} from origin/${validated.baseBranch} threw: ${err.message}`);
+        }
+
+        // --- 2. Parse its `## Permissions` section ---------------------------
+        const declared = parseRunbookPermissions(runbookText);
+        if (declared.length === 0) {
+            return terminal(`origin/${validated.baseBranch}:${runbook} has no parseable '## Permissions' list entries -- failing closed rather than improvising a prefix list`);
+        }
+
+        // Advisory only: name any prefix the failing phase mentioned that the
+        // BASE-branch runbook does not declare. This is the distinguishable
+        // operator signal for the intentional failure mode documented above --
+        // a permission need introduced within this sprint and not yet reviewed
+        // into the base branch.
+        const mentioned = new Set();
+        for (const field of ['notes', 'summary']) {
+            const text = typeof result[field] === 'string' ? result[field] : '';
+            for (const m of text.matchAll(/\b([A-Za-z][A-Za-z0-9_-]*\([^)]*\))/g)) mentioned.add(m[1]);
+        }
+        const notInBase = [...mentioned].filter((p) => !declared.includes(p));
+        if (notInBase.length > 0) {
+            log(`${phaseName}: requested prefix not present in base-branch runbook -- not auto-granted: [${notInBase.join(', ')}]. origin/${validated.baseBranch}:${runbook} declares only [${declared.join(', ')}]. A permission need introduced within this sprint must be reviewed into ${validated.baseBranch} by a human before it can self-heal; this is intentional, not a bug.`);
+        }
+
+        // --- 3. Call compose_permissions DIRECTLY ----------------------------
+        if (!args || typeof args.callTool !== 'function') {
+            return terminal('no fleet MCP connection is wired into this run (args.callTool absent), so compose_permissions cannot be called');
+        }
+        // `project_folder` is the ledger location compose_permissions reads and
+        // writes. Resolve it from the orchestrator member's own checkout root
+        // -- exactly what the previous agent-based heal passed ("the repository
+        // checkout root you are running in"). Omitted, never guessed, when the
+        // probe fails: the grant still lands, only the ledger entry is skipped.
+        let projectFolder;
+        try {
+            const rootRes = await command('git rev-parse --show-toplevel', {
+                member_name: orchestratorMember, silent: true, failSoft: true,
+                label: `Resolve checkout root for the ${phaseName} permissions-heal ledger`,
+            });
+            if (rootRes && rootRes.ok) {
+                const root = String(rootRes.output === undefined || rootRes.output === null ? '' : rootRes.output).trim().split(/\r?\n/)[0];
+                if (root) projectFolder = root.trim();
+            }
+        } catch { /* best effort -- see comment above */ }
+        if (!projectFolder) {
+            log(`${phaseName}: could not resolve the orchestrator checkout root -- calling compose_permissions without project_folder (grant still delivered, ledger entry skipped).`);
+        }
+
+        let toolText;
+        try {
+            const grantArgs = {
+                role,
+                member_name: targetMember,
+                grant: declared,
+                grant_reason: `heal: ${role} missing permissions, from origin/${validated.baseBranch}:${runbook}`,
+            };
+            if (projectFolder) grantArgs.project_folder = projectFolder;
+            toolText = toolResultText(await args.callTool('compose_permissions', grantArgs));
+        } catch (err) {
+            return terminal(`compose_permissions threw: ${err.message}`);
+        }
+
+        // --- 4. Inspect the tool's OWN return string -------------------------
+        // compose_permissions returns a human-readable string prefixed with a
+        // success or failure marker. Anything that is not an explicit success
+        // is terminal: failing closed is the only safe default for a string
+        // this runner did not author.
+        if (!isComposePermissionsSuccess(toolText)) {
+            return terminal(`compose_permissions rejected or did not confirm the grant: ${toolText ? toolText.replace(/\s+/g, ' ').slice(0, 400) : '(empty tool response)'}`);
+        }
+
+        log(`${phaseName}: compose_permissions granted [${declared.join(', ')}] from origin/${validated.baseBranch}:${runbook} -- retrying the ${phaseName} dispatch exactly once.`);
+        // Feed the retry's result back through this same helper: the guard is
+        // already set, so a repeat missing_permissions takes the terminal
+        // branch above instead of healing again.
+        return await healMissingPermissionsOnce({
+            phaseName, role, cycleLabel, redispatch, noteField,
+            result: await redispatch(),
+        });
+    };
 
     // ONE shared bracket wrapping EVERY role-identified agent() dispatch below
     // -- planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner,
@@ -9289,7 +9623,7 @@ async function runSprintCycle(context) {
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
             await ensureUnattendedAuto(getMemberForRole('deployer'));
-            await ensureDeployPermissions(getMemberForRole('deployer'));
+            await ensureDeployPermissions(getMemberForRole('deployer'), 'deployer');
             let deployResult;
             // Turn budget for the deployer, with the same-session
             // turn-exhaustion resume below: a source-build fallback deploy runs
@@ -9306,50 +9640,67 @@ async function runSprintCycle(context) {
                 max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: DEPLOYER_MAX_TURNS,
             };
-            try {
-                // The deployer is a read-side role (pushCode: false) -- but a
-                // deployer on a stale checkout is as damaging as a stale reviewer
-                // diff, so it still gets the pre-dispatch G-pull.
+            // The WHOLE deploy attempt -- dispatch, max_turns resume ladder and
+            // the failure classification below it -- as one named closure, so
+            // the missing-permissions heal (apra-fleet-u1qw.2.2) can re-run
+            // EXACTLY the original dispatch once after a grant, rather than a
+            // hand-copied approximation of it. Always returns a result object;
+            // only a non-dispatch error escapes.
+            const dispatchDeployAttempt = async () => {
                 try {
-                    deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
-                        'Deploy to test env using deploy.md.',
-                        { ...deployerDispatchOpts, member_name: getMemberForRole('deployer') }
-                    ));
-                } catch (err) {
-                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        log(`Deployer exhausted its turn limit (max_turns=${DEPLOYER_MAX_TURNS}) -- resuming the same session with max_turns=${DEPLOYER_MAX_TURNS * 2}.`);
-                        await memberSessionGuard.killIfAlive(getMemberForRole('deployer'));
-                        deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
-                            'Continue the deploy exactly where you left off in this same session -- do not restart deploy.md from the top if steps already completed. Finish the remaining steps and the smoke test, and return your final report now.',
-                            {
-                                ...deployerDispatchOpts,
-                                member_name: getMemberForRole('deployer'),
-                                label: `Deploy (resume, max_turns=${DEPLOYER_MAX_TURNS * 2})`,
-                                resume: true,
-                                max_turns: DEPLOYER_MAX_TURNS * 2,
-                            }
+                    // The deployer is a read-side role (pushCode: false) -- but a
+                    // deployer on a stale checkout is as damaging as a stale reviewer
+                    // diff, so it still gets the pre-dispatch G-pull.
+                    try {
+                        return await withGitSync(getMemberForRole('deployer'), false, () => agent(
+                            'Deploy to test env using deploy.md.',
+                            { ...deployerDispatchOpts, member_name: getMemberForRole('deployer') }
                         ));
-                    } else {
+                    } catch (err) {
+                        if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                            log(`Deployer exhausted its turn limit (max_turns=${DEPLOYER_MAX_TURNS}) -- resuming the same session with max_turns=${DEPLOYER_MAX_TURNS * 2}.`);
+                            await memberSessionGuard.killIfAlive(getMemberForRole('deployer'));
+                            return await withGitSync(getMemberForRole('deployer'), false, () => agent(
+                                'Continue the deploy exactly where you left off in this same session -- do not restart deploy.md from the top if steps already completed. Finish the remaining steps and the smoke test, and return your final report now.',
+                                {
+                                    ...deployerDispatchOpts,
+                                    member_name: getMemberForRole('deployer'),
+                                    label: `Deploy (resume, max_turns=${DEPLOYER_MAX_TURNS * 2})`,
+                                    resume: true,
+                                    max_turns: DEPLOYER_MAX_TURNS * 2,
+                                }
+                            ));
+                        }
                         throw err;
                     }
-                }
-            } catch (err) {
-                if (err instanceof AgentOutputError) {
-                    log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
-                    deployResult = { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
-                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                    // Self-heal now so the next cycle's Deployer dispatch on this
-                    // same member isn't walking into the identical unhealed auth
-                    // failure.
-                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                        await onLlmAuthFailure({ member: getMemberForRole('deployer'), label: 'Deployer dispatch', error: err.message });
+                } catch (err) {
+                    if (err instanceof AgentOutputError) {
+                        log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
+                        return { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
+                    } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                        // Self-heal now so the next cycle's Deployer dispatch on this
+                        // same member isn't walking into the identical unhealed auth
+                        // failure.
+                        if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                            await onLlmAuthFailure({ member: getMemberForRole('deployer'), label: 'Deployer dispatch', error: err.message });
+                        }
+                        log(`Deployer: agent dispatch failed, treating as deployed:false: ${err.message}`);
+                        return { deployed: false, notes: `Deployer dispatch failed: ${err.message}` };
                     }
-                    log(`Deployer: agent dispatch failed, treating as deployed:false: ${err.message}`);
-                    deployResult = { deployed: false, notes: `Deployer dispatch failed: ${err.message}` };
-                } else {
                     throw err;
                 }
-            }
+            };
+            deployResult = await dispatchDeployAttempt();
+            // No-op unless the deployer reported blockedReason=missing_permissions;
+            // a deploy with no blockedReason is returned untouched.
+            deployResult = await healMissingPermissionsOnce({
+                phaseName: 'Deploy',
+                role: 'deployer',
+                cycleLabel: cycle,
+                result: deployResult,
+                redispatch: dispatchDeployAttempt,
+                noteField: 'notes',
+            });
             // No duplicate log() dump -- see dispatchReview() for why.
             deployedThisCycle = deployResult.deployed === true;
             if (!deployedThisCycle) {
@@ -9373,7 +9724,7 @@ async function runSprintCycle(context) {
         if (hasPlaybook && deployedThisCycle) {
             phase(`Integ Test C${cycle}`);
             await ensureUnattendedAuto(getMemberForRole('integ-test-runner'));
-            await ensureDeployPermissions(getMemberForRole('integ-test-runner'));
+            await ensureDeployPermissions(getMemberForRole('integ-test-runner'), 'integ-test-runner');
             // apra-fleet-nwh.1: snapshot the running total BEFORE this
             // cycle's Integ Test dispatch(es) so the delta after (below) is
             // this phase's own spend, not the whole run's. budget.spent()
@@ -9526,13 +9877,21 @@ async function runSprintCycle(context) {
                         max_turns: INTEG_TEST_MAX_TURNS * 2,
                     }
                 ), { pushBeads: true });
+                // The dispatch plus its resume ladder as one named closure, so
+                // the missing-permissions heal (apra-fleet-u1qw.2.2) re-runs
+                // exactly this, once, after a grant. Deliberately does NOT
+                // include the scope derivation above it (bdListScoped /
+                // classifyVerifySet / verifyEverIds): a retry must not
+                // recompute or re-register this cycle's verify set. Dispatch
+                // errors still propagate to the outer catch, unchanged.
+                const dispatchIntegWithResumeLadder = async () => {
                 try {
-                    integResult = await dispatchIntegOnce();
+                    return await dispatchIntegOnce();
                 } catch (err) {
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                         log(`Integ Test Runner exhausted its turn limit (max_turns=${INTEG_TEST_MAX_TURNS}) -- resuming the same session with max_turns=${INTEG_TEST_MAX_TURNS * 2} instead of restarting the run.`);
                         await memberSessionGuard.killIfAlive(getMemberForRole('integ-test-runner'));
-                        integResult = await dispatchIntegResume();
+                        return await dispatchIntegResume();
                     } else if (err instanceof AgentDispatchError && isInfraDispatchFailure(err)) {
                         // An INFRA dispatch failure (empty_response / inactivity
                         // timeout / orphan-recovery timeout) is NOT a test
@@ -9548,11 +9907,23 @@ async function runSprintCycle(context) {
                         // failure.
                         log(`Integ Test Runner: infrastructure dispatch failure (${err.details?.reason}) -- the member CLI produced no test verdict (no result envelope). This is NOT a test failure; resuming the same session once to recover before recording anything.`);
                         await memberSessionGuard.killIfAlive(getMemberForRole('integ-test-runner'));
-                        integResult = await dispatchIntegResume();
+                        return await dispatchIntegResume();
                     } else {
                         throw err;
                     }
                 }
+                };
+                integResult = await dispatchIntegWithResumeLadder();
+                // No-op unless the runner reported
+                // blockedReason=missing_permissions.
+                integResult = await healMissingPermissionsOnce({
+                    phaseName: 'Integ Test',
+                    role: 'integ-test-runner',
+                    cycleLabel: cycle,
+                    result: integResult,
+                    redispatch: dispatchIntegWithResumeLadder,
+                    noteField: 'summary',
+                });
             } catch (err) {
                 if (err instanceof AgentOutputError) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
@@ -10322,7 +10693,7 @@ async function runSprintCycle(context) {
     if (hasRegressionPlaybook) {
         phase(`Regression Test C${finalCycleLabel}`);
         await ensureUnattendedAuto(getMemberForRole('regression-test-runner'));
-        await ensureDeployPermissions(getMemberForRole('regression-test-runner'));
+        await ensureDeployPermissions(getMemberForRole('regression-test-runner'), 'regression-test-runner');
         // The real functional suite alone spends roughly one turn per liveness
         // poll for the better part of an hour, and this single dispatch carries
         // both it and the sandbox smoke sprint -- hence the large turn budget
@@ -10357,8 +10728,13 @@ async function runSprintCycle(context) {
         try {
             // Mutates beads (files carry-over bugs) but never touches code:
             // pushCode false / pushBeads true, exactly like the integ runner.
+            //
+            // Dispatch + resume ladder as one named closure so the
+            // missing-permissions heal (apra-fleet-u1qw.2.2) re-runs exactly
+            // the original dispatch once after a grant.
+            const dispatchRegressionWithResumeLadder = async () => {
             try {
-                regressionResult = await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
+                return await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
                     regressionPrompt,
                     { ...regressionDispatchOpts, member_name: getMemberForRole('regression-test-runner') }
                 ), { pushBeads: true });
@@ -10370,7 +10746,7 @@ async function runSprintCycle(context) {
                     // dispatch's scope/filing rules -- a bare "continue" would
                     // lose the parent-less filing rule, which is the whole point
                     // of this phase.
-                    regressionResult = await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
+                    return await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
                         'Continue the regression pass exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining work, run Teardown, and return your final report now. ' +
                         'Your original instructions, restated so a resumed dispatch never loses them: ' + regressionPrompt,
                         {
@@ -10385,6 +10761,19 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
+            };
+            regressionResult = await dispatchRegressionWithResumeLadder();
+            // No-op unless the runner reported
+            // blockedReason=missing_permissions. finalCycleLabel (not `cycle`)
+            // is this once-per-sprint phase's cycle label.
+            regressionResult = await healMissingPermissionsOnce({
+                phaseName: 'Regression Test',
+                role: 'regression-test-runner',
+                cycleLabel: finalCycleLabel,
+                result: regressionResult,
+                redispatch: dispatchRegressionWithResumeLadder,
+                noteField: 'summary',
+            });
             if (regressionResult.passed !== true) {
                 log(`Regression pass reported FAILURES (carry-over beads: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}): ${regressionResult.summary}`);
             } else {

@@ -1575,6 +1575,13 @@ const DEPLOYER_SCHEMA = {
     },
     "notes": {
       "type": "string"
+    },
+    "blockedReason": {
+      "type": "string",
+      "enum": [
+        "missing_permissions"
+      ],
+      "description": "Optional. Set only when the deploy phase could not proceed because of a permission denial. Value is always missing_permissions."
     }
   }
 };
@@ -1662,6 +1669,13 @@ const INTEG_RUN_SCHEMA = {
         }
       },
       "description": "Out-of-scope test failures observed per integ-test-runner.md Step 1c, each cross-linked to an existing bead or a newly filed one. Optional for backward compatibility -- absent/omitted when no out-of-scope failures were observed."
+    },
+    "blockedReason": {
+      "type": "string",
+      "enum": [
+        "missing_permissions"
+      ],
+      "description": "Optional. Set only when the integ-test phase could not proceed because of a permission denial. Value is always missing_permissions."
     }
   }
 };
@@ -1719,6 +1733,13 @@ const REGRESSION_RUN_SCHEMA = {
           "description": "The toy repo's head commit SHA after the toy sprint."
         }
       }
+    },
+    "blockedReason": {
+      "type": "string",
+      "enum": [
+        "missing_permissions"
+      ],
+      "description": "Optional. Set only when the regression-test phase could not proceed because of a permission denial. Value is always missing_permissions."
     }
   }
 };

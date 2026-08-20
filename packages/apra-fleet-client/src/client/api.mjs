@@ -168,7 +168,9 @@
  * @typedef {Object} ComposePermissionsOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
- * @property {"doer" | "reviewer"} [role] - Base profile. Provide at least one of role or tags.
+ * @property {"doer" | "reviewer" | "deployer" | "integ-test-runner" | "regression-test-runner"} [role] - Base profile
+ *   (doer/reviewer also select the compose mode; deployer/integ-test-runner/regression-test-runner select their
+ *   own bounds-<role>.json). Provide at least one of role or tags.
  * @property {string[]} [tags] - Member tags; "doer"/"reviewer" sets the primary mode
  *   and wins over role when both are given. Other tags load tag-<name>.json profiles.
  * @property {string} [project_folder] - Local project folder containing the
@@ -179,8 +181,19 @@
  *   request: sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap,
  *   `chmod 777`, any catch-all such as `Bash(*)`, and any payload containing a
  *   shell-chaining metacharacter (| ; && backtick $() are rejected outright,
- *   for every caller.
+ *   for every caller. When `role` is also supplied AND that role has a
+ *   bounds-<role>.json profile in the INSTALLED (host-side) profiles
+ *   directory, an out-of-bounds permission is additionally REJECTED -- see
+ *   `allow_out_of_bounds`. Pass the role whose runbook these prefixes came
+ *   from: a grant issued under an unrelated role is checked against the wrong
+ *   allowlist and refused wholesale.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
+ * @property {boolean} [allow_out_of_bounds] - OPERATOR ESCALATION ONLY.
+ *   Downgrades the enforcing per-role bounds check back to informational
+ *   (permission granted, ledger entry flagged outOfBounds) for a deliberate
+ *   one-off human grant. Autonomous callers must never set it: a member
+ *   escalating its own permissions is what the bounds check exists to
+ *   prevent. Never loosens the NEVER_AUTO_GRANT denylist.
  */
 
 /**

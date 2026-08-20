@@ -268,7 +268,14 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // The two bumps above are independent (different commits, different
 // history) and both land in this rebase, so the deltas combine:
 // 40 - 3 + 1 + 1 = 39.
-const EXPECTED_COMMAND_COUNT = 40;
+// 40 -> 43 (PR #416 review, findings 1+2): the missing-permissions heal is now
+// deterministic and reads the failing phase's runbook from the BASE branch
+// instead of dispatching a permissions-composer agent against the working
+// tree. That replaces one agent() site with THREE command() sites --
+// `git fetch origin <base>`, `git show origin/<base>:<runbook>` and
+// `git rev-parse --show-toplevel` (ledger project_folder) -- each carrying
+// member_name: orchestratorMember, verified compliant.
+const EXPECTED_COMMAND_COUNT = 43;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -295,6 +302,16 @@ const EXPECTED_COMMAND_COUNT = 40;
 // call sites -- the dispatch itself and its max_turns-exhaustion
 // resume-and-continue, both `member_name:
 // getMemberForRole('regression-test-runner')`, verified compliant.
+// 22 -> 23 (apra-fleet-u1qw.2.2): the shared missing-permissions heal helper
+// (healMissingPermissionsOnce, used by all three of Deploy / Integ Test /
+// Regression Test) added exactly ONE new agent() call site -- the
+// permissions-composer dispatch.
+// 23 -> 22 (PR #416 review, findings 1+2): that dispatch is GONE. The heal is
+// now deterministic JavaScript -- read the runbook from origin/<base_branch>,
+// parse its `## Permissions` list, call compose_permissions directly through
+// the injected MCP callTool -- so there is no LLM anywhere in the permission
+// grant path and no agent() call site for it. The three phase retries still
+// reuse the existing dispatch closures, so they add no call sites.
 const EXPECTED_AGENT_COUNT = 22;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
