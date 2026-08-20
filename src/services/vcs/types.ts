@@ -40,6 +40,19 @@ export interface BitbucketCredentials {
 export interface AzureDevOpsCredentials {
   org_url: string;
   pat: string;
+  /**
+   * apra-fleet-5co8.5.1: OPTIONAL, caller-supplied ISO 8601 expiry for `pat`
+   * (the operator picks this when creating the PAT -- see skills/fleet/
+   * auth-azdevops.md's "Set expiration" step -- Azure DevOps exposes no API
+   * to query it back, so there is nothing for the fleet server to resolve on
+   * its own). Deliberately distinct from credential-store TTL semantics
+   * (services/credential-store.ts's `expiresAt`, which DELETES the entry on
+   * a resolve past its TTL): this field only ever flows into deploy metadata
+   * for the existing vcsTokenExpiresAt/checkVcsTokenExpiry/
+   * scheduleCredentialCleanup plumbing to warn/cleanup, never to delete a
+   * stored secret early. Absent -> no expiry propagated, no behavior change.
+   */
+  expires_at?: string;
 }
 
 export type VcsCredentials =

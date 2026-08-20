@@ -49,7 +49,22 @@ export function setIdleTouchHook(fn: (agentId: string) => void): void {
   idleTouchHook = fn;
 }
 
-const EXPIRY_WARNING_MS = 10 * 60 * 1000; // 10 minutes
+const EXPIRY_WARNING_MS = 10 * 60 * 1000; // 10 minutes -- sized for GitHub App tokens (~1hr lifetime)
+
+// apra-fleet-5co8.5.1: long-lived PAT providers (Azure DevOps PATs run
+// weeks/months per skills/fleet/auth-azdevops.md's "Set expiration"
+// guidance, unlike a GitHub App token's ~1hr lifetime the 10-minute
+// threshold above was designed for) need a heads-up long before the
+// minute-scale check above would ever fire.
+const DAY_SCALE_WARNING_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// apra-fleet-5co8.5.1: providers this day-scale threshold applies to.
+// Deliberately scoped by provider rather than made unconditional: a
+// GitHub App token's remaining lifetime is always well inside 7 days, so an
+// unscoped check would spuriously warn on every fresh GitHub deploy and
+// change existing GitHub short-lived-token behavior (see
+// agent-helpers.test.ts 'returns null when token is not near expiry').
+const DAY_SCALE_WARNING_PROVIDERS: ReadonlySet<NonNullable<Agent['vcsProvider']>> = new Set(['azure-devops']);
 
 /**
  * Check if an agent's VCS token is expired or expiring soon.
@@ -65,6 +80,10 @@ export function checkVcsTokenExpiry(agent: Agent, now: Date = new Date()): strin
   if (remaining <= EXPIRY_WARNING_MS) {
     const mins = Math.ceil(remaining / 60000);
     return `⚠️ VCS token expires in ${mins} minute${mins === 1 ? '' : 's'} (${agent.vcsTokenExpiresAt}) — consider refreshing.`;
+  }
+  if (agent.vcsProvider && DAY_SCALE_WARNING_PROVIDERS.has(agent.vcsProvider) && remaining <= DAY_SCALE_WARNING_MS) {
+    const days = Math.ceil(remaining / (24 * 60 * 60 * 1000));
+    return `⚠️ VCS token expires in ${days} day${days === 1 ? '' : 's'} (${agent.vcsTokenExpiresAt}) — consider refreshing.`;
   }
   return null;
 }

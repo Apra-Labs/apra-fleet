@@ -162,6 +162,9 @@
  * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)
  * @property {string} [pat] - Azure DevOps personal access token. Supports {{secure.NAME}}
  *   token -- resolved from the credential store server-side before use.
+ * @property {string} [pat_expires_at] - ISO 8601 date/time the Azure DevOps PAT expires, as
+ *   chosen when creating the token. Propagated to the member registry so provisioning can
+ *   warn when the PAT is nearing expiry.
  */
 
 /**
