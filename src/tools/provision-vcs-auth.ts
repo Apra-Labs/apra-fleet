@@ -198,9 +198,13 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
     ? Object.entries(deployResult.metadata).map(([k, v]) => `  ${k}: ${v}`).join('\n')
     : '';
 
-  // Check if the just-deployed token is already near expiry
+  // Check if the just-deployed token is already near expiry. `agent` was
+  // resolved before the updateAgent() call above, so its own vcsProvider may
+  // still be stale/absent (e.g. a member's first-ever azure-devops
+  // provision) -- pass input.provider explicitly rather than relying on
+  // `agent.vcsProvider` reflecting the write that just happened.
   const expiryWarning = deployResult.metadata?.expiresAt
-    ? checkVcsTokenExpiry({ ...agent, vcsTokenExpiresAt: deployResult.metadata.expiresAt })
+    ? checkVcsTokenExpiry({ ...agent, vcsProvider: input.provider, vcsTokenExpiresAt: deployResult.metadata.expiresAt })
     : null;
 
   return `✅ ${deployResult.message} on "${agent.friendlyName}"\n`

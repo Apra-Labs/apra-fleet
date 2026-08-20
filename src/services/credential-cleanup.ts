@@ -9,6 +9,17 @@ import type { VcsProviderService } from './vcs/types.js';
 
 const DEFAULT_TTL_MS = 55 * 60 * 1000; // 55 minutes
 
+// apra-fleet-5co8.5.1: setTimeout's delay is a signed 32-bit int internally;
+// Node (and browsers) SILENTLY CLAMP an overflowing delay to ~1ms rather than
+// running it after the full requested duration (see Node's lib/timers.js
+// `timeoutInfo` overflow handling / the Node TimeoutOverflowWarning). A
+// long-lived Azure DevOps PAT (skills/fleet/auth-azdevops.md recommends 90
+// days, i.e. ~7.8e9 ms) blows well past this ceiling -- scheduling a raw
+// setTimeout for it would auto-revoke the credential we just deployed
+// almost immediately, the exact opposite of "warn, never delete" this task
+// was scoped to.
+const MAX_TIMEOUT_MS = 2 ** 31 - 1; // ~24.8 days
+
 const cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 const providers: Record<string, VcsProviderService> = {
@@ -24,7 +35,16 @@ export function scheduleCredentialCleanup(agentId: string, expiresAt?: string): 
   if (expiresAt) {
     const expiresMs = new Date(expiresAt).getTime();
     if (!isNaN(expiresMs)) {
-      delayMs = Math.max(0, expiresMs - Date.now());
+      const untilExpiry = expiresMs - Date.now();
+      if (untilExpiry > MAX_TIMEOUT_MS) {
+        // Beyond setTimeout's ceiling: do not schedule an auto-revoke that
+        // would silently fire near-immediately instead of at the real
+        // expiry. checkVcsTokenExpiry's day-scale warning (fired on the next
+        // provision/preflight check) and reactive AUTH_EXPIRED
+        // classification are the backstop for this horizon instead.
+        return;
+      }
+      delayMs = Math.max(0, untilExpiry);
     }
   }
 
