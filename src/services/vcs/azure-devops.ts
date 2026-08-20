@@ -20,7 +20,16 @@ export const azureDevOpsProvider: VcsProviderService = {
     return {
       success: true,
       message: 'Azure DevOps credentials deployed',
-      metadata: { org: extractOrg(creds.org_url) },
+      // apra-fleet-5co8.5.1: `expiresAt` (when the caller supplied one --
+      // see AzureDevOpsCredentials.expires_at) is what feeds the EXISTING
+      // vcsTokenExpiresAt / checkVcsTokenExpiry / scheduleCredentialCleanup
+      // plumbing (see provision-vcs-auth.ts), same as GitHub App tokens
+      // already do. Absent an expiry, metadata carries no `expiresAt` key at
+      // all and that plumbing behaves exactly as it did before this task.
+      metadata: {
+        org: extractOrg(creds.org_url),
+        ...(creds.expires_at ? { expiresAt: creds.expires_at } : {}),
+      },
     };
   },
 

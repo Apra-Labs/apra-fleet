@@ -60,6 +60,17 @@ export const provisionVcsAuthSchema = z.object({
   // Azure DevOps fields
   org_url: z.string().optional().describe('Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)'),
   pat: z.string().optional().describe('Azure DevOps personal access token. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
+  // apra-fleet-5co8.5.1: OPTIONAL, caller-supplied -- Azure DevOps exposes no
+  // API to query a PAT's expiry back, so this must come from the operator
+  // (the date they picked in the "Set expiration" step when creating the
+  // PAT; see skills/fleet/auth-azdevops.md). Deliberately NOT the
+  // credential-store's own TTL (credential_store_set ttl_seconds): that
+  // mechanism DELETES the stored secret on a resolve past its TTL, which is
+  // why e.g. the fleet-e2e-ado store entry is set up with no store-side TTL
+  // at all -- conflating the two would silently start deleting a credential
+  // whose PAT is merely nearing expiry, not gone. This field only ever flows
+  // into deploy metadata to warn/cleanup, never to delete a stored secret.
+  pat_expires_at: z.string().optional().describe('ISO 8601 date/time the Azure DevOps PAT expires, as chosen when creating the token. Propagated to the member registry so provisioning can warn when the PAT is nearing expiry.'),
 });
 
 export type ProvisionVcsAuthInput = z.infer<typeof provisionVcsAuthSchema>;
@@ -83,7 +94,7 @@ function buildCredentials(input: ProvisionVcsAuthInput): unknown | string {
     case 'azure-devops': {
       const azPat = input.pat ?? input.token;
       if (!input.org_url || !azPat) return 'Azure DevOps requires "org_url" and "pat" (or "token") fields.';
-      return { org_url: input.org_url, pat: azPat };
+      return { org_url: input.org_url, pat: azPat, expires_at: input.pat_expires_at };
     }
   }
 }
