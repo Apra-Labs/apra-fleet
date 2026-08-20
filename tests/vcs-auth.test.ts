@@ -341,6 +341,65 @@ describe('Azure DevOps provider', () => {
 // checkVcsTokenExpiry comparison NaN (no warning at all) and make
 // scheduleCredentialCleanup fall back to DEFAULT_TTL_MS -- a 55-minute
 // auto-revoke of the PAT that was just deployed. Rejected at the boundary.
+// apra-fleet-5co8.3.1: the credential-assembly and missing-credential
+// descriptors are a VERBATIM move of the provider switch / out-of-band
+// if-blocks that still live in src/tools/provision-vcs-auth.ts (the call-site
+// rewrite is a separate task). These assertions therefore pin the MOVED logic
+// against the behaviour the tool has today -- same defaults, same error
+// strings, same prompt text -- so the later rewrite is provably a no-op.
+describe('provider credential assembly (apra-fleet-5co8.3.1)', () => {
+  it('github: defaults to github-app mode and passes access/repos through', () => {
+    expect(githubProvider.buildCredentials!({ provider: 'github', git_access: 'push', repos: ['acme/widgets'] }))
+      .toEqual({ type: 'github-app', git_access: 'push', repos: ['acme/widgets'] });
+  });
+
+  it('github: pat mode returns the pat credential', () => {
+    expect(githubProvider.buildCredentials!({ provider: 'github', github_mode: 'pat', token: 'ghp_x' }))
+      .toEqual({ type: 'pat', token: 'ghp_x' });
+  });
+
+  it('github: pat mode without a token returns the error string', () => {
+    expect(githubProvider.buildCredentials!({ provider: 'github', github_mode: 'pat' }))
+      .toBe('GitHub PAT mode requires "token" field.');
+  });
+
+  it('bitbucket: returns the credential when all three fields are present', () => {
+    expect(bitbucketProvider.buildCredentials!({ provider: 'bitbucket', email: 'd@co.com', api_token: 't', workspace: 'ws' }))
+      .toEqual({ email: 'd@co.com', api_token: 't', workspace: 'ws' });
+  });
+
+  it('bitbucket: returns the error string when any field is missing', () => {
+    for (const input of [
+      { provider: 'bitbucket' as const, api_token: 't', workspace: 'ws' },
+      { provider: 'bitbucket' as const, email: 'd@co.com', workspace: 'ws' },
+      { provider: 'bitbucket' as const, email: 'd@co.com', api_token: 't' },
+    ]) {
+      expect(bitbucketProvider.buildCredentials!(input)).toBe('Bitbucket requires "email", "api_token", and "workspace" fields.');
+    }
+  });
+});
+
+describe('provider missing-credential descriptors (apra-fleet-5co8.3.1)', () => {
+  it('github: prompts only in pat mode with no token', () => {
+    const d = githubProvider.missingCredential!;
+    expect(d.field).toBe('token');
+    expect(d.isMissing({ provider: 'github', github_mode: 'pat' })).toBe(true);
+    expect(d.isMissing({ provider: 'github', github_mode: 'pat', token: 'ghp_x' })).toBe(false);
+    // github-app mode mints server-side and must never reach a prompt.
+    expect(d.isMissing({ provider: 'github' })).toBe(false);
+    expect(d.isMissing({ provider: 'github', github_mode: 'github-app' })).toBe(false);
+    expect(d.promptFor('alice')).toBe('Enter GitHub personal access token for alice');
+  });
+
+  it('bitbucket: prompts whenever api_token is absent', () => {
+    const d = bitbucketProvider.missingCredential!;
+    expect(d.field).toBe('api_token');
+    expect(d.isMissing({ provider: 'bitbucket', email: 'd@co.com', workspace: 'ws' })).toBe(true);
+    expect(d.isMissing({ provider: 'bitbucket', api_token: 't' })).toBe(false);
+    expect(d.promptFor('bob')).toBe('Enter Bitbucket API token for bob');
+  });
+});
+
 describe('provisionVcsAuthSchema pat_expires_at', () => {
   it('accepts a parseable ISO 8601 expiry', async () => {
     const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');

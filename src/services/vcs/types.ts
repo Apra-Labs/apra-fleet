@@ -71,10 +71,77 @@ export interface VcsDeployResult {
 }
 
 // ---------------------------------------------------------------------------
+// Credential assembly / missing-credential descriptor (apra-fleet-5co8.3.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The provider-agnostic view of a provision_vcs_auth payload that credential
+ * assembly needs. Structural on purpose: `ProvisionVcsAuthInput` (the zod
+ * inference in src/tools/provision-vcs-auth.ts) is assignable to it, so the
+ * tool can hand its input straight to a provider WITHOUT this seam importing
+ * the tool layer -- services must never depend on tools, and the zod schema
+ * carries wire concerns (descriptions, member identifiers) that credential
+ * assembly has no business seeing.
+ */
+export interface VcsCredentialInput {
+  provider: VcsProvider;
+  github_mode?: 'github-app' | 'pat';
+  token?: string;
+  git_access?: Agent['gitAccess'];
+  repos?: string[];
+  email?: string;
+  api_token?: string;
+  workspace?: string;
+  org_url?: string;
+  pat?: string;
+  pat_expires_at?: string;
+}
+
+/**
+ * Which input field a provider's credential lives in, and when it must be
+ * collected out of band instead of read from the payload.
+ *
+ * This replaces the per-provider `if (input.provider === 'x' && ...)` blocks
+ * in provision_vcs_auth: the tool asks the resolved provider whether its
+ * credential is missing, prompts with the provider's own text, and writes the
+ * collected secret back into the provider's own `field`. No provider name and
+ * no auth-mode knowledge is left at the call site.
+ */
+export interface VcsMissingCredentialDescriptor {
+  /** The `VcsCredentialInput` key an out-of-band collected secret fills. */
+  field: 'token' | 'api_token' | 'pat';
+  /** True when the credential is absent from the payload for THIS input --
+   *  provider-specific, e.g. GitHub only needs one in `pat` mode, and Azure
+   *  DevOps accepts either `pat` or `token`. */
+  isMissing(input: VcsCredentialInput): boolean;
+  /** The exact operator-facing prompt for the out-of-band collection. */
+  promptFor(memberName: string): string;
+}
+
+// ---------------------------------------------------------------------------
 // Provider service interface
 // ---------------------------------------------------------------------------
 
 export interface VcsProviderService {
+  /**
+   * Assemble this provider's credential object from a provision payload, or
+   * return a plain error string naming the fields it requires (apra-fleet-
+   * 5co8.3.1). Pure/deterministic: validation and shaping only -- never
+   * network, filesystem or credential-store access, all of which happen
+   * before (secure-token resolution) or after (deploy) this call.
+   *
+   * OPTIONAL only while providers are migrated onto the seam one at a time;
+   * the tool keeps its own switch for a provider that has not implemented it.
+   */
+  buildCredentials?(input: VcsCredentialInput): unknown | string;
+
+  /**
+   * How this provider's credential is collected when the payload omits it.
+   * OPTIONAL: a provider whose credential is always derived server-side (a
+   * GitHub App minting flow) has nothing to prompt for.
+   */
+  missingCredential?: VcsMissingCredentialDescriptor;
+
   /** Deploy credentials to the agent's filesystem and configure git credential helper. */
   deploy(
     agent: Agent,
