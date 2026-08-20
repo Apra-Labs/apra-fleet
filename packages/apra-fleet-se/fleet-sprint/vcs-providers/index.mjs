@@ -54,6 +54,20 @@
  *                                          // the caller can raise its own
  *                                          // typed ERROR naming the expected
  *                                          // shape.
+ *     repoRefHint: string                 // OPTIONAL; remote-URL axis. The
+ *                                          // human-readable remote shape
+ *                                          // parseRepoRef() expects, e.g.
+ *                                          // 'https://dev.azure.com/ORG/
+ *                                          // PROJECT/_git/REPO'. Quoted
+ *                                          // verbatim into the typed ERROR
+ *                                          // VCSModule.parseProviderRepoRef()
+ *                                          // raises for a claimed-but-
+ *                                          // unrecognized remote, which is
+ *                                          // what keeps that remedy text --
+ *                                          // and every other provider-specific
+ *                                          // literal -- out of the shared
+ *                                          // callers. Only meaningful
+ *                                          // alongside parseRepoRef.
  *     defaultAuthMode: string|null        // OPTIONAL, but declaring it (even
  *                                          // as null) is what makes a provider
  *                                          // part of resolveProvider()'s/
@@ -131,6 +145,12 @@ export function registerVcsProvider(impl) {
         if (impl[hook] != null && typeof impl[hook] !== 'function') {
             throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`${hook}\`.`);
         }
+    }
+    // apra-fleet-5co8.1.2: the remedy text quoted into a preflight ERROR. A
+    // non-string here would land the literal 'undefined'/'[object Object]' in
+    // an operator-facing error, so reject it at registration too.
+    if (impl.repoRefHint != null && typeof impl.repoRefHint !== 'string') {
+        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-string \`repoRefHint\`.`);
     }
     // apra-fleet-647.1.5.1: the two auth-backend fields folded in from
     // vcs-module.mjs's former BUILDERS/DEFAULT_AUTH_MODES tables. Both are

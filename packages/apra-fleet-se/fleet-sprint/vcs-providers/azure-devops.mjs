@@ -284,6 +284,14 @@ export const AzureDevOpsVCS = Object.freeze({
     // only providers whose REST identity is not the portable "owner/name"
     // pair need it, which is why it lives here rather than in shared code.
     parseRepoRef,
+    // apra-fleet-5co8.1.2: the remedy text for a remote this provider claims
+    // but parseRepoRef() rejects. Lives here, not in the caller, so runner.js
+    // can raise a provider-specific preflight ERROR with no Azure DevOps
+    // literal (or conditional) of its own. The canonical https shape is the
+    // one an operator copies out of the Azure DevOps "Clone" dialog; the ssh
+    // and legacy visualstudio.com shapes parseRepoRef also accepts are
+    // deliberately NOT listed, to keep the remedy a single copyable form.
+    repoRefHint: 'https://dev.azure.com/ORG/PROJECT/_git/REPO',
     defaultAuthMode: null,
     builders: null,
 });

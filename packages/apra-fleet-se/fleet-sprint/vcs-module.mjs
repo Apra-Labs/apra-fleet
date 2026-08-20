@@ -404,8 +404,59 @@ export function capabilities(remoteUrl) {
     return { hasRemote: true, canOpenPullRequest: !!providerCaps.canOpenPullRequest, host: parsed.host };
 }
 
+/**
+ * Resolve a git remote URL into the repository coordinates its OWN provider
+ * defines, by dispatching to that provider's optional parseRepoRef() hook
+ * (apra-fleet-5co8.1.2). This is the shared half of the remote-URL axis: the
+ * host is parsed here, the provider is chosen by the registry, and every
+ * provider-specific rule -- which URL shapes are legal, what the coordinates
+ * are called, what shape to tell the operator to use -- lives in the provider
+ * file, so no caller (runner.js in particular) needs a provider conditional.
+ *
+ * Three outcomes, deliberately distinct so a caller can tell "not my business"
+ * apart from "your remote is wrong":
+ *   - null            no provider claims this host, or the claiming provider
+ *                     has no parseRepoRef hook. The caller keeps its own
+ *                     generic owner/repo parse -- behavior unchanged for
+ *                     GitHub and every other provider.
+ *   - { canonical, ref, provider }
+ *                     the provider recognized the remote; `canonical` is its
+ *                     display/identity key (e.g. org/project/repo for Azure
+ *                     DevOps) and `ref` the full coordinate object.
+ *   - { error }       the provider CLAIMS this host but does not recognize the
+ *                     URL -- a malformed remote, not an unknown one. A typed
+ *                     'ERROR: ' string naming the shape the provider expects
+ *                     (its optional `repoRefHint`), for the caller to surface
+ *                     as a preflight failure rather than proceeding with
+ *                     half-parsed coordinates.
+ *
+ * @param {unknown} remoteUrl
+ * @returns {{ canonical: string, ref: object, provider: string }|{ error: string }|null}
+ */
+export function parseProviderRepoRef(remoteUrl) {
+    const url = String(remoteUrl ?? '').trim();
+    const parsed = parseRemote(url);
+    if (!parsed || !parsed.host) return null;
+
+    const provider = resolveVcsProviderForHost(parsed.host);
+    if (!provider || typeof provider.parseRepoRef !== 'function') return null;
+
+    const ref = provider.parseRepoRef(url);
+    if (ref && typeof ref.canonical === 'string' && ref.canonical) {
+        return { canonical: ref.canonical, ref, provider: provider.name };
+    }
+
+    const hint = (typeof provider.repoRefHint === 'string' && provider.repoRefHint.trim())
+        ? provider.repoRefHint.trim()
+        : '(this provider documents no expected remote shape)';
+    return {
+        error: `ERROR: git remote '${url}' is claimed by VCS provider '${provider.name}' but is not a repository URL it recognizes; expected the shape ${hint}`,
+    };
+}
+
 export const VCSModule = {
     buildCreatePrCommand,
+    parseProviderRepoRef,
     buildCommentCommand,
     classifyFailure,
     toGitVerdict,
