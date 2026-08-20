@@ -5,6 +5,7 @@ import { join, relative } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { wrapPowerShellEncoded, WindowsCommands } from '../src/os/windows.js';
+import { buildWindowsDeleteFilesScript } from '../src/services/strategy.js';
 
 /**
  * apra-fleet-ot2z.12: on PS 5.1, `powershell -EncodedCommand <script>`'s raw
@@ -421,6 +422,56 @@ describe.runIf(hasPowerShell)('Live PowerShell: hashFilesRecursive (apra-fleet-o
       }
     } finally {
       holder.kill();
+    }
+  }, 20000);
+});
+
+// -----------------------------------------------------------------------
+// apra-fleet-ot2z.15.5: strategy.ts RemoteStrategy.deleteFiles
+// -----------------------------------------------------------------------
+
+describe.runIf(hasPowerShell)('Live PowerShell: strategy.ts deleteFiles (apra-fleet-ot2z.15.5)', () => {
+  it('two existing files: exit 0 and both are gone from disk', () => {
+    const { dir } = makeTempDir('wpse-del-two-');
+    const f1 = join(dir, 'a.txt');
+    const f2 = join(dir, 'b.txt');
+    writeFileSync(f1, 'x');
+    writeFileSync(f2, 'y');
+    const result = runPs(buildWindowsDeleteFilesScript(dir, ['a.txt', 'b.txt']));
+    expect(result.code).toBe(0);
+    expect(existsSync(f1)).toBe(false);
+    expect(existsSync(f2)).toBe(false);
+  }, 20000);
+
+  it('one existing plus one already-missing file: exit 0 (SilentlyContinue tolerance) and the existing file is actually deleted', () => {
+    const { dir } = makeTempDir('wpse-del-mixed-');
+    const existing = join(dir, 'present.txt');
+    writeFileSync(existing, 'x');
+    const result = runPs(buildWindowsDeleteFilesScript(dir, ['present.txt', 'missing.txt']));
+    expect(result.code).toBe(0);
+    expect(existsSync(existing)).toBe(false);
+  }, 20000);
+
+  it('all paths missing: exit 0, no throw', () => {
+    const { dir } = makeTempDir('wpse-del-allmissing-');
+    const result = runPs(buildWindowsDeleteFilesScript(dir, ['gone1.txt', 'gone2.txt']));
+    expect(result.code).toBe(0);
+  }, 20000);
+
+  it('a read-only file: exit code and on-disk presence agree -- Remove-Item -Force removes read-only files, so a silent no-op must not pass unnoticed', () => {
+    const { dir } = makeTempDir('wpse-del-ro-');
+    const target = join(dir, 'ro.txt');
+    writeFileSync(target, 'x');
+    makeReadOnly(target);
+    const result = runPs(buildWindowsDeleteFilesScript(dir, ['ro.txt']));
+    const survived = existsSync(target);
+    if (survived) clearReadOnly(target); // ensure cleanup can always remove the fixture
+    if (result.code === 0) {
+      // -Force overrides the read-only attribute -- assert deletion
+      // explicitly rather than only trusting exit 0.
+      expect(survived).toBe(false);
+    } else {
+      expect(survived).toBe(true);
     }
   }, 20000);
 });
