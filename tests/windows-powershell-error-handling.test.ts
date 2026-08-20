@@ -288,15 +288,16 @@ describe.runIf(hasPowerShell)('Live PowerShell: deepMergeJson (apra-fleet-ot2z.1
     expect(result.code).toBe(0);
     expect(existsSync(target)).toBe(true);
     const parsed = JSON.parse(readFileSync(target, 'utf-8'));
-    // Verified live: when the target file is missing, the script's $current
-    // sentinel stays the initial empty Hashtable `@{}` (never reassigned by
-    // ConvertFrom-Json), and `.psobject.properties` on an empty Hashtable
-    // reflects the .NET Hashtable class's OWN members (Count, Keys, Values,
-    // ...) rather than an empty property set -- so the written file is a
-    // superset of the requested object, not a deep-equal match. Assert
-    // containment of the caller's own keys, which is what actually matters
-    // (the regression this bead guards against is a silent non-write, not
-    // this pre-existing key-pollution quirk).
+    // apra-fleet-ot2z.16 fixed a Hashtable-metadata-pollution bug where the
+    // script's $current sentinel started as an empty Hashtable `@{}` (never
+    // reassigned when the target file was missing), and `.psobject.properties`
+    // on an empty Hashtable enumerated the .NET Hashtable class's OWN members
+    // (Count, Keys, Values, ...) instead of an empty property set -- so the
+    // written file used to be a superset of the requested object, not a
+    // deep-equal match. $current now starts as $null, so the written file
+    // contains only the caller's own keys; assert containment (rather than a
+    // full deep-equal against the whole file) because the regression this
+    // test guards against is a silent non-write, not exact file shape.
     expect(parsed.a).toEqual({ x: 1 });
   }, 20000);
 

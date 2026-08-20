@@ -210,7 +210,7 @@ export class WindowsCommands implements OsCommands {
     const psScript = `
 $p = '${escapedPath}';
 $new = '${newJson}' | ConvertFrom-Json;
-$current = @{};
+$current = $null;
 if (Test-Path $p) {
   try { $current = Get-Content -Path $p -Raw | ConvertFrom-Json -ErrorAction Stop } catch {}
 }
