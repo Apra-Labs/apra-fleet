@@ -188,13 +188,13 @@ against `MemoryProvider` would not cover them.
 
 | # | Member | Signature | Tools routing through it | Effect | Idempotent |
 |---|--------|-----------|--------------------------|--------|------------|
-| X-1 | `list` | `list(opts: {confidence?, type?, module?, symbol?, tag?, limit?}): Promise<KBEntry[]>` | `kb_list`, `kb_stats` (bible drift comparison) | read, no telemetry bump | yes |
+| X-1 | `list` | `list(opts: {confidence?, type?, module?, symbol?, tag?, limit?}): Promise<KBEntry[]>` | `kb_list`, `kb_stats` (bible drift comparison), `kb_export` (`src/tools/kb-export.ts:337`, `source.list({confidence: 'CONFIRMED'})` to select entries to export) | read, no telemetry bump | yes |
 | X-2 | `feedback` | `feedback(id, reason, author): Promise<KBEntry>` | `kb_feedback` | mutate-trust (sets `stale` plus `flagged_for_review`, appends note; never deletes, never touches confidence) | no (each call appends another note) |
 | X-3 | `freshnessSweep` | `freshnessSweep(root?): Promise<{checked, staled, unstaled}>` | `kb_freshness_sweep`, `kb_import` (post-import unless `skip_sweep`) | mutate-trust (bidirectional stale/unstale) | yes for a fixed worktree |
 | X-4 | `resolveContradiction` | `resolveContradiction(winnerId, loserId, evidence): Promise<{winnerId, loserId}>` | `kb_resolve_contradiction`, and internally from `reconcilePrefilter` | mutate-trust (winner to CONFIRMED with flags cleared; loser superseded plus stale) | NO -- a second call REFUSES, because the loser is now superseded |
 | X-5 | `reconcilePrefilter` | `reconcilePrefilter(): Promise<{pairs, resolved[], left_for_agent[], skipped_directive}>` | `kb_reconcile_prefilter` | mutate-trust (writes only via `resolveContradiction`) | yes in effect (resolved pairs are no longer flagged) |
 | X-6 | `hasEntry` | `hasEntry(id: string): boolean` -- SYNCHRONOUS, the only non-Promise member on this list | `kb_import` | read | yes |
-| X-7 | `repoPath` | property, not a method | read by `kb_freshness_sweep` to anchor the sweep root | read | n/a |
+| X-7 | `repoPath` | property, not a method | NOT read by `kb_freshness_sweep` -- `src/tools/kb-freshness-sweep.ts:30` calls `providers.project.freshnessSweep()` with NO argument; the tool only names `repoPath` in a comment at line 27, and the sweep root defaults inside `freshnessSweep()` itself (`SqliteProvider`'s own stored anchor), not from a value the tool passes in | read (by the provider internally, not by this tool) | n/a |
 
 Also off-interface and reachable, but CLI-only rather than tool-reachable (listed
 so the v1 contract does not mistake them for MCP surface): `approveDirective`,
