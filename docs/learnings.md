@@ -495,3 +495,32 @@ test command unless that workspace's script is explicitly chained into it.
 A green root test run is only a meaningful gate if it actually executes
 every workspace's suite -- silently excluding one because it uses a
 different runner lets regressions in that workspace pass CI unnoticed.
+## `bd`'s dolt remote-list output can be the literal string `null`
+
+Code that shells out to `bd` and parses its dolt-remote-list output must
+treat a parsed result of `null` (or a whitespace-padded `null\n`) as "no
+remotes configured", not as a malformed-output error. `bd` prints the
+literal token `null` for this case rather than an empty array or empty
+string, which is easy to miss if the parser's happy path only anticipates
+an array or a genuinely empty string. Any other non-array, non-null parse
+result is still a real error and should throw -- only the specific `null`
+shape is a legitimate "empty" signal.
+
+## `.claude/settings.json` is a tracked deliverable, not local machine state
+
+Despite living under a path pattern that `.gitignore`'s Beads/Dolt block
+would otherwise ignore, this project's top-level `.claude/settings.json` is
+deliberately force-added and tracked. Its content -- the `SessionStart` hook
+that runs `bd prime` and the `permissions.allow` list sourced from
+`deploy.md`'s "## Permissions" section -- is machine-independent: neither
+`bd init`/`bd setup claude` (which merge idempotently and are a no-op on
+already-matching content) nor `apra-fleet install` (which writes its own
+settings to the user's home directory, never to this project-local file)
+rewrite it per clone. That machine-independence is exactly what makes
+tracking it safe -- without it, every clone would carry a permanently dirty
+working tree. `deploy.md`'s permission list is the single source of truth
+for what belongs in this file's `permissions.allow`; entries needed by
+other playbooks (e.g. the `bd` command family needed by the integration and
+regression test playbooks) belong in a member's locally-composed
+`.claude/settings.local.json` via `compose_permissions`, not in this
+tracked file, precisely because they are not part of the deploy contract.

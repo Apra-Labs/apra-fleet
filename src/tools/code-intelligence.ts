@@ -2,10 +2,11 @@ import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
 import { z } from 'zod';
-import { GitNexusProvider } from './code-intelligence-gitnexus.js';
+import { GitNexusProvider, repoHasGitNexusIndex } from './code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
 import { getAgent } from '../services/registry.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { isCodeIntelEnabled, readRepoCodeIntelConfig } from '../services/knowledge/repo-config.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -33,6 +34,56 @@ export class NullProvider implements CodeIntelligenceProvider {
   async map(_params: Record<string, unknown>): Promise<unknown> { return nullResult('map'); }
   async flow(_params: Record<string, unknown>): Promise<unknown> { return nullResult('flow'); }
   async tests(_params: Record<string, unknown>): Promise<unknown> { return nullResult('tests'); }
+}
+
+function repoDisabledResult(method: string): { content: { type: string; text: string }[] } {
+  return {
+    content: [{ type: 'text', text: `Code intelligence is disabled for this repo (method: ${method}). Set enabled: true in .apra-fleet/code-intel.json to turn it on.` }],
+  };
+}
+
+// Returned by getProvider() when the target repo has explicitly opted out
+// via .apra-fleet/code-intel.json (enabled: false). Distinct from NullProvider
+// so the message reflects a repo-level, not member-level, opt-out.
+export class RepoDisabledProvider implements CodeIntelligenceProvider {
+  async graph(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('graph'); }
+  async impact(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('impact'); }
+  async query(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('query'); }
+  async context(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('context'); }
+  async map(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('map'); }
+  async flow(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('flow'); }
+  async tests(_params: Record<string, unknown>): Promise<unknown> { return repoDisabledResult('tests'); }
+}
+
+function optInPromptResult(method: string): { content: { type: string; text: string }[] } {
+  return {
+    content: [{
+      type: 'text',
+      text:
+        `Code intelligence has not been set up for this repo yet (method: ${method}). ` +
+        'Indexing builds a local call-graph/symbol database so code_graph, code_impact, code_query, ' +
+        'code_context, code_map, code_flow, and code_tests can answer structural questions without ' +
+        'grepping the tree. Nothing has been indexed automatically. ' +
+        "Run 'apra-fleet install --code-intel' in the repo to opt in, then 'npx gitnexus analyze' " +
+        "in the repo (or /pm index) to build the index, " +
+        "or run 'apra-fleet install --no-code-intel' to opt out and stop seeing this prompt.",
+    }],
+  };
+}
+
+// Returned by getProvider() when the target repo has never recorded a
+// code-intel choice (no .apra-fleet/code-intel.json) -- distinct from
+// RepoDisabledProvider (explicit enabled: false) and from a plain
+// "no index" result: this is the first-call opt-in prompt (apra-fleet-le1.2.1),
+// shown instead of silently indexing or silently failing.
+export class OptInPromptProvider implements CodeIntelligenceProvider {
+  async graph(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('graph'); }
+  async impact(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('impact'); }
+  async query(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('query'); }
+  async context(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('context'); }
+  async map(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('map'); }
+  async flow(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('flow'); }
+  async tests(_params: Record<string, unknown>): Promise<unknown> { return optInPromptResult('tests'); }
 }
 
 export const PROVIDERS: Record<string, CodeIntelligenceProvider> = {
@@ -84,45 +135,95 @@ export const codeTestsSchema = z.object({
 // ---------------------------------------------------------------------------
 // Handler functions -- thin wrappers that resolve the per-member provider and
 // delegate to the appropriate method. memberId is optional: when omitted,
-// getProvider() falls back to the global config.
+// getProvider() falls back to the global config. `repo`, when present on the
+// input, is the repo path getProvider() uses for the repo-level opt-out check.
 // ---------------------------------------------------------------------------
 
+function repoPathOf(input: Record<string, unknown>): string | undefined {
+  return typeof input.repo === 'string' ? input.repo : undefined;
+}
+
 export async function handleCodeGraph(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.graph(input);
 }
 
 export async function handleCodeImpact(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.impact(input);
 }
 
 export async function handleCodeQuery(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.query(input);
 }
 
 export async function handleCodeContext(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.context(input);
 }
 
 export async function handleCodeMap(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.map(input);
 }
 
 export async function handleCodeFlow(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.flow(input);
 }
 
 export async function handleCodeTests(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
-  const provider = await getProvider(memberId);
+  const provider = await getProvider(memberId, repoPathOf(input));
   return provider.tests(input);
 }
 
-export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
+export async function getProvider(memberId?: string, repoPath?: string): Promise<CodeIntelligenceProvider> {
+  // Repo-level opt-out takes priority over member/global provider resolution,
+  // but it is enforced ONLY for repo-qualified calls (repoPath present).
+  //
+  // apra-fleet-tm7.21 decision: when repoPath is omitted, this check is
+  // skipped -- it does NOT fall back to process.cwd() or to "the" indexed
+  // repo. There is no single well-defined "current repo" at this layer: the
+  // MCP server process is shared across members/repos, and process.cwd() is
+  // exactly the kind of server-process-bound assumption that made kb_harvest
+  // repo-blind elsewhere in this epic (apra-fleet-tm7, apra-fleet-3zl) --
+  // reintroducing it here for the opt-out check would silently enforce (or
+  // fail to enforce) the wrong repo's config whenever the server's cwd
+  // differs from the repo a caller means. Concretely: a caller that omits
+  // `repo` on a single-repo-style call gets a live provider even if that
+  // repo has code-intel.json enabled:false; only repo-qualified calls are
+  // covered by the opt-out. Callers that need the opt-out enforced MUST pass
+  // `repo`. See tests/code-intelligence.test.ts 'getProvider() repo-level
+  // opt-out' for the pinned behavior.
+  if (repoPath && !(await isCodeIntelEnabled(repoPath))) {
+    return new RepoDisabledProvider();
+  }
+
+  // First-call opt-in prompt (apra-fleet-le1.2.1): a repo with no
+  // .apra-fleet/code-intel.json has never recorded a code-intel choice at
+  // all -- readRepoCodeIntelConfig() returning null is the discriminator
+  // between "never asked" and "explicitly enabled" (isCodeIntelEnabled()
+  // above collapses both to true and cannot tell them apart on its own).
+  // That config-only signal is not sufficient by itself, though: an
+  // upgraded machine can have a repo that was indexed BEFORE this opt-in
+  // config existed, and such a repo must keep working unchanged rather than
+  // suddenly seeing this prompt. repoHasGitNexusIndex() is a genuinely
+  // per-repo signal (<repo>/.gitnexus/meta.json), unlike
+  // CodebaseMemoryProvider's hasIndex() (machine-global cache directory --
+  // deliberately NOT consulted here, since a different repo being indexed on
+  // this machine must not suppress the prompt for this one). Enforced only
+  // for repo-qualified calls, same scoping as the opt-out check above -- see
+  // the comment on this function for why repoPath-less calls are not
+  // covered.
+  if (
+    repoPath &&
+    (await readRepoCodeIntelConfig(repoPath)) === null &&
+    !repoHasGitNexusIndex(repoPath)
+  ) {
+    return new OptInPromptProvider();
+  }
+
   // When a memberId is supplied, check the agent's per-member override first.
   if (memberId) {
     const agent = getAgent(memberId);

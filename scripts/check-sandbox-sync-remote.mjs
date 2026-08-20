@@ -360,6 +360,15 @@ export function checkNoOutboundCommits(repoPath, deps = {}) {
  * Parse the JSON array 'bd dolt remote list --json' prints (one entry per
  * configured Dolt remote, each with at least {name, url}).
  *
+ * apra-fleet-tm7.11: a real `bd` prints the JSON literal `null` (not `[]`)
+ * for "no remotes configured" -- confirmed against both a fresh `bd init`
+ * with no remote added and an embeddeddolt directory with no actual Dolt
+ * database underneath it, e.g. this file's own
+ * checkDoltRemoteAbsent-embeddeddolt-recognition test's fixture. `null` is
+ * treated the same as `[]` here; any other non-array JSON value (an object,
+ * a number, ...) still throws, since that shape is not one `bd` is known to
+ * produce and is worth surfacing rather than silently swallowing.
+ *
  * @param {string} output
  * @returns {Array<{name: string, url?: string}>}
  */
@@ -402,7 +411,7 @@ const BEADS_DATABASE_DIRS = ['.dolt', 'db', 'embeddeddolt'];
  *
  * @param {string} repoPath
  * @param {string} [sandboxPath] sandbox root; defaults to the parent of repoPath.
- * @param {{execFileSync: typeof execFileSync}} [deps] injectable for tests
+ * @param {{execFileSync?: typeof execFileSync, skipLayoutCheck?: boolean}} [deps] injectable for tests
  * @returns {{ok: boolean, message: string}}
  */
 export function checkDoltRemoteAbsent(repoPath, sandboxPath = defaultSandboxPath(repoPath), deps = {}) {
@@ -424,7 +433,16 @@ export function checkDoltRemoteAbsent(repoPath, sandboxPath = defaultSandboxPath
   // nothing for bd to query. Return the vacuously-safe result without trying to run bd.
   // (Skip this optimization when deps.execFileSync is provided, to allow tests to
   // inject custom executors for paths that don't actually exist on disk.)
-  if (!deps.execFileSync) {
+  //
+  // apra-fleet-tm7.18: `deps.skipLayoutCheck` decouples "skip the optimization"
+  // from "an execFileSync was injected" -- previously the two were the exact
+  // same condition, which made it impossible for a test to inject a fake
+  // execFileSync (to avoid shelling out to a real `bd`) while STILL exercising
+  // this filesystem layout-recognition branch against a real on-disk
+  // .beads/embeddeddolt directory. Defaults to `!!deps.execFileSync` so every
+  // pre-existing caller (none of which pass this new field) is unaffected.
+  const skipLayoutCheck = deps.skipLayoutCheck ?? !!deps.execFileSync;
+  if (!skipLayoutCheck) {
     const beadsDir = path.join(repoPath, '.beads');
     if (!fs.existsSync(beadsDir)) {
       return {

@@ -243,7 +243,15 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
   // skipped when hint_symbols is empty/absent.
   if (input.hint_symbols?.length) {
     try {
-      const provider = await getProvider();
+      // apra-fleet-tm7.20: forward repo_path so a repo that has opted out via
+      // .apra-fleet/code-intel.json (enabled:false) gets RepoDisabledProvider
+      // here too, instead of always resolving a live provider regardless of
+      // the opt-out. RepoDisabledProvider.context() returns a structured
+      // { content: [...] } result whose text is a plain message, not JSON --
+      // parseContextNeighbors' JSON.parse of that text throws and is caught
+      // internally, degrading to "no neighbors" rather than a malformed
+      // response, so this hard-skip block still exits cleanly.
+      const provider = await getProvider(undefined, input.repo_path);
 
       // Collect distinct neighbor names not already in hint_symbols, capped at
       // NEIGHBOR_CAP. A per-symbol try/catch keeps one bad symbol from aborting

@@ -15,6 +15,7 @@ import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
+import { clearRepoRemoteUrlCache } from '../services/member-remote-url.js';
 
 export const updateMemberSchema = z.object({
   ...memberIdentifier,
@@ -203,6 +204,22 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   }
   if (input.key_path) updates.keyPath = input.key_path;
   if (input.work_folder) updates.workFolder = input.work_folder;
+
+  // A repointed work folder invalidates the repo identity probed at
+  // registration: repoRemoteUrl describes the clone that USED to live at the
+  // old path, and knownRepoRemoteUrl() ranks it above everything else, so
+  // leaving it in place would keep routing this member's KB harvest into the
+  // previous repo's slug. Silently wrong is worse than nothing, so drop it
+  // (and the in-memory probe cache) and let the member fall back to the honest
+  // 'default' pooling until it is re-registered and re-probed. Deliberately
+  // NOT re-probed inline: registration is where the remote round trips already
+  // live (see register-member.ts), and update_member must not grow a blocking
+  // remote exec -- nor fail an otherwise valid update when the member is
+  // unreachable.
+  if (folderChanged) {
+    updates.repoRemoteUrl = undefined;
+    clearRepoRemoteUrlCache(existing.id);
+  }
   if (input.git_access) updates.gitAccess = input.git_access;
   if (input.git_repos) updates.gitRepos = input.git_repos;
 

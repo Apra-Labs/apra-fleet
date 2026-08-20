@@ -281,6 +281,91 @@ Tracked spend (priced dispatches only): $11.9020.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
 Pricing source: all 19 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+## [Unreleased] -- Remote-member KB routing, per-repo code-intel opt-out, and kb_harvest repo hygiene
+
+Sprint goal: continue the `kb_harvest` repo-blindness epic, and make
+code-intelligence setup a per-repo choice rather than a machine-global one.
+**The epic's own P1 intent -- remote-member auto-harvest routing to that
+member's actual repo KB instead of a shared `default` KB -- did land.** A
+member's repo identity is now resolved by asking the host that actually has
+the clone (`git remote get-url origin`, run in the member's work folder on
+the member host, cross-shell), probed ONCE at registration where remote
+round trips are already expected rather than on the dispatch hot path,
+stored on the member record as `repoRemoteUrl`, and preferred by
+`knownRepoRemoteUrl()`/`resolveProjectSlug` over anything inferred from the
+registration access list. A probe that fails, or returns anything that is
+not a git URL, is refused rather than adopted: no URL means the honest
+`default` pooling, which is strictly better than routing writes into a slug
+that matches no real clone.
+
+What shipped:
+
+- **Remote-member KB routing** (above). `execute_prompt`'s auto-harvest is
+  answered from the stored value and issues no exec of its own, so the
+  dispatch path pays nothing. Existing members carry no URL until they are
+  re-registered and behave exactly as before.
+- **Stale-identity invalidation**: repointing a member's `work_folder` via
+  `update_member` now clears the stored `repoRemoteUrl` and the in-memory
+  probe cache entry. Without this a member moved from repo A to repo B would
+  keep harvesting into repo A's slug -- silently wrong, and worse than the
+  generic pooling it replaced. Cleared rather than re-probed inline:
+  registration is where the remote round trips belong, and an update must
+  not fail because a member is momentarily unreachable.
+- **Per-repo code-intelligence opt-out**: `install --code-intel` /
+  `--no-code-intel` record the choice per repository, and the first-call
+  opt-in prompt for an unindexed repo honours a per-repo gitnexus index.
+  Machine-global code-intel setup is no longer gated on a per-repo opt-out.
+- The repository's tracked `.claude/settings.json` now carries the full set
+  of deploy-phase command permissions, unblocking the deploy phase; its
+  status as a deliberately tracked (not machine-local) file is now
+  documented inline.
+- A previously-red pre-existing test covering how the sandbox-sync tooling
+  parses `bd`'s dolt remote-list output was fixed: a literal `null` result
+  (which `bd` prints for "no remotes configured") is now recognized as
+  empty rather than treated as malformed output.
+- A non-ASCII character introduced by an earlier edit to `.gitignore` was
+  fixed. The sprint had also resolved the sprint-logs/ contradiction by
+  un-ignoring the durable per-sprint cost ledgers, but that `.gitignore`
+  change (and the matching doc update) was deliberately not replayed here to
+  avoid fighting PR #421, which is landing its own resolution of the same
+  contradiction on `main`. As of this entry, `.gitignore` still discards
+  `sprint-logs/*.jsonl`, `*.analysis.md`, and the whole `/sprint-logs/`
+  directory, so ledgers `git add sprint-logs/` stages are silently dropped
+  until #421 (or an equivalent fix) lands.
+- Sprint-log ledgers no longer bake the runner's absolute home directory
+  (and OS username) into the committed `transcriptDir` field of their meta
+  record -- the path is now written `$HOME`-relative when it falls under
+  the runner's home directory.
+
+Explicitly out of scope, and still open: a remote member cannot yet query
+the KB directly at runtime -- this sprint routes what the fleet server
+harvests ON that member's behalf to the right project KB, which is a
+different (and narrower) thing than giving the member its own read path.
+The per-repo code-intel opt-out and opt-in-prompt checks are likewise still
+resolved against the orchestrator's filesystem, so they describe the repo
+the fleet server sees rather than the repo a remote member is working in --
+the same limitation class the KB anchor work has been chipping away at, and
+tracked as its own follow-up rather than papered over here. Resolving
+remote-member identity on the dispatch path (rather than at registration)
+was implemented first and deliberately reverted: the auto-harvest is
+detached, so the probe's exec escaped every test's await boundary and raced
+exec-count assertions across fourteen files. Integration and regression
+testing were both blocked in every attempted cycle by a missing local
+permission grant for the `bd` command family; this is filed as its own
+follow-up rather than folded into the deploy-permission file, since that
+file's scope is deliberately limited to what the deploy runbook itself
+lists. A handful of P2/P3 follow-ups
+(reviewing newly-tracked wildcard permission prefixes, hardening a KB
+provider-construction guard, deciding on already-committed home-path
+leakage in older ledgers, and making one sandbox-sync test hermetic instead
+of shelling out to a real `bd`) remain open as backlog.
+
+#### Sprint cost analysis
+Budget ceiling: $15.0000.
+Tracked spend (priced dispatches only): $11.8950.
+Remaining budget: $3.1050.
+Integ-test-runner spend: $0.1299 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 21 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- kb_harvest auto-harvest is now repo-scoped, not server-cwd-scoped

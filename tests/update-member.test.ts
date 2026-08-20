@@ -5,6 +5,7 @@ import { updateMember } from '../src/tools/update-member.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
 import { invalidatePreflightCache } from '../src/services/preflight-check.js';
+import { resolveRepoRemoteUrl, clearRepoRemoteUrlCache } from '../src/services/member-remote-url.js';
 import type { SSHExecResult } from '../src/types.js';
 
 // tests/setup.ts globally mocks preflight-check.js with vi.fn() implementations
@@ -38,6 +39,7 @@ describe('updateMember', () => {
     mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
     mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
     mockInvalidatePreflightCache.mockClear();
+    clearRepoRemoteUrlCache();
   });
 
   afterEach(() => {
@@ -257,6 +259,7 @@ describe('updateMember -- agent re-provisioning (remote members)', () => {
     mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
     mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
     mockInvalidatePreflightCache.mockClear();
+    clearRepoRemoteUrlCache();
   });
 
   afterEach(() => {
@@ -425,4 +428,90 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
     expect(mockTestConnection).not.toHaveBeenCalled();
     spy.mockRestore();
   });
+
+});
+
+// repoRemoteUrl is probed ONCE at registration and then outranks everything
+// else in knownRepoRemoteUrl(). Repointing work_folder at a different checkout
+// makes that stored URL describe a repo the member no longer works in, so the
+// member's KB harvest would keep landing in the OLD repo's slug -- silently
+// wrong, and strictly worse than the honest 'default' pooling that an absent
+// URL falls back to.
+describe('updateMember -- repoRemoteUrl invalidation on work_folder change', () => {
+    beforeEach(() => {
+      backupAndResetRegistry();
+      mockExecCommand.mockReset();
+      mockTestConnection.mockReset();
+      mockUploadContentToHome.mockReset();
+      mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
+      mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
+      clearRepoRemoteUrlCache();
+    });
+
+    afterEach(() => {
+      restoreRegistry();
+      clearRepoRemoteUrlCache();
+    });
+
+    const findAgent = (id: string) => getAllAgents().find(a => a.id === id);
+
+    it('clears a stored repoRemoteUrl when work_folder is repointed elsewhere', async () => {
+      const member = makeTestAgent({
+        workFolder: '/home/testuser/repo-a',
+        repoRemoteUrl: 'https://github.com/acme/repo-a.git',
+      });
+      addAgent(member);
+
+      const result = await updateMember({ member_id: member.id, work_folder: '/home/testuser/repo-b' });
+
+      expect(result).toContain('updated');
+      const updated = findAgent(member.id);
+      expect(updated?.workFolder).toBe('/home/testuser/repo-b');
+      expect(updated?.repoRemoteUrl).toBeUndefined();
+    });
+
+    it('drops the in-memory probe cache entry too, so a re-probe is not answered from the old folder', async () => {
+      const member = makeTestAgent({ workFolder: '/home/testuser/repo-a' });
+      addAgent(member);
+
+      // Warm the module-level probe cache against the ORIGINAL folder.
+      mockExecCommand.mockResolvedValue({ stdout: 'https://github.com/acme/repo-a.git', stderr: '', code: 0 });
+      expect(await resolveRepoRemoteUrl(member)).toBe('https://github.com/acme/repo-a.git');
+
+      await updateMember({ member_id: member.id, work_folder: '/home/testuser/repo-b' });
+
+      // A fresh probe must hit the member again rather than return the cached
+      // repo-a URL. Point the mock at repo-b to prove the answer is re-derived.
+      mockExecCommand.mockResolvedValue({ stdout: 'https://github.com/acme/repo-b.git', stderr: '', code: 0 });
+      const reprobed = await resolveRepoRemoteUrl({ ...member, workFolder: '/home/testuser/repo-b' });
+      expect(reprobed).toBe('https://github.com/acme/repo-b.git');
+    });
+
+    it('leaves repoRemoteUrl intact when work_folder is passed unchanged (no-op update)', async () => {
+      const member = makeTestAgent({
+        workFolder: '/home/testuser/repo-a',
+        repoRemoteUrl: 'https://github.com/acme/repo-a.git',
+      });
+      addAgent(member);
+
+      const result = await updateMember({ member_id: member.id, work_folder: '/home/testuser/repo-a' });
+
+      expect(result).toContain('updated');
+      expect(findAgent(member.id)?.repoRemoteUrl).toBe('https://github.com/acme/repo-a.git');
+    });
+
+    it('leaves repoRemoteUrl intact when the update does not touch work_folder at all', async () => {
+      const member = makeTestAgent({
+        workFolder: '/home/testuser/repo-a',
+        repoRemoteUrl: 'https://github.com/acme/repo-a.git',
+      });
+      addAgent(member);
+
+      const result = await updateMember({ member_id: member.id, category: 'doers' });
+
+      expect(result).toContain('updated');
+      const updated = findAgent(member.id);
+      expect(updated?.workFolder).toBe('/home/testuser/repo-a');
+      expect(updated?.repoRemoteUrl).toBe('https://github.com/acme/repo-a.git');
+    });
 });

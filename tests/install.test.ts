@@ -14,6 +14,21 @@ vi.mock('node:os', () => ({
 vi.mock('node:fs');
 vi.mock('node:child_process');
 
+// apra-fleet-le1.1.3: install.ts imports isCodeIntelEnabled/writeRepoCodeIntelConfig
+// directly from repo-config.js, which reads/writes via 'fs/promises' -- NOT
+// the 'node:fs' mocked above. A node:fs mock does not intercept fs/promises
+// calls (see apra-fleet-tm7.22), so without mocking this module directly,
+// those two calls would perform real disk I/O against process.cwd() (the
+// real repoCwd) every time a test makes isGitRepo true. Mocking the module
+// keeps every test in this file writing nowhere real.
+const mockIsCodeIntelEnabled = vi.hoisted(() => vi.fn());
+const mockWriteRepoCodeIntelConfig = vi.hoisted(() => vi.fn());
+
+vi.mock('../src/services/knowledge/repo-config.js', () => ({
+  isCodeIntelEnabled: mockIsCodeIntelEnabled,
+  writeRepoCodeIntelConfig: mockWriteRepoCodeIntelConfig,
+}));
+
 const mockHome = '/mock/home';
 const configPath = path.join(mockHome, '.apra-fleet', 'data', 'install-config.json');
 
@@ -544,5 +559,149 @@ describe('install step 9 -- global bible copy (T3.4, F9b, D8)', () => {
 
     const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(warns).toContain('Global knowledge bible copy skipped');
+  });
+});
+
+// apra-fleet-tm7.22: the KB + code-intelligence step writes two MACHINE-GLOBAL
+// artifacts (~/.apra-fleet/data/code-intelligence/config.json and the
+// ~/.claude/CLAUDE.md routing block). Those are deliberately NOT gated on the
+// per-repo opt-out flag any more -- apra-fleet-le1.1.2's isCodeIntelEnabled
+// gate was over-broad (it withheld machine-wide config because ONE repo opted
+// out) and install-order dependent, and it was redundant with the per-repo
+// runtime check in getProvider() (RepoDisabledProvider). These tests pin that:
+// even with the repo opted out, both global artifacts are still written, and
+// install never consults isCodeIntelEnabled at all.
+// isCodeIntelEnabled/writeRepoCodeIntelConfig are mocked directly (see the
+// module-level vi.mock above): they read/write via 'fs/promises', which the
+// blanket node:fs mock in this file does NOT intercept, so mocking node:fs
+// alone would leave every call here hitting the real filesystem at the real
+// process.cwd() (the MOCKING GOTCHA this bead calls out). os.homedir() is
+// mocked to /mock/home, so nothing here can touch the real ~/.claude or
+// ~/.apra-fleet either.
+describe('machine-global code-intelligence setup is not gated on the per-repo opt-out (apra-fleet-tm7.22)', () => {
+  const ciConfigPath = path.join(mockHome, '.apra-fleet', 'data', 'code-intelligence', 'config.json');
+  const claudeMdPath = path.join(mockHome, '.claude', 'CLAUDE.md');
+  const sentinel = '<!-- apra-fleet:code-intelligence -->';
+
+  function setupGitRepo(): void {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps === path.join(process.cwd(), '.git')) return true; // isGitRepo gate
+      return false; // includes claudeMdPath -- no pre-existing file/sentinel
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    setupGitRepo();
+    mockWriteRepoCodeIntelConfig.mockResolvedValue(undefined);
+    _setSeaOverride(false);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+  });
+
+  it('repo opted out (enabled=false): still writes both the provider config.json and the CLAUDE.md routing block', async () => {
+    mockIsCodeIntelEnabled.mockResolvedValue(false);
+
+    await runInstall([]);
+
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === ciConfigPath);
+    expect(writeCall).toBeDefined();
+    expect(JSON.parse(writeCall![1] as string)).toEqual({ provider: 'gitnexus' });
+    const appendCall = vi.mocked(fs.appendFileSync).mock.calls.find(c => c[0] === claudeMdPath);
+    expect(appendCall).toBeDefined();
+    expect((appendCall![1] as string)).toContain(sentinel);
+  });
+
+  it('--no-code-intel: records the per-repo opt-out but still writes both global artifacts', async () => {
+    mockIsCodeIntelEnabled.mockResolvedValue(false);
+
+    await runInstall(['--no-code-intel']);
+
+    expect(mockWriteRepoCodeIntelConfig).toHaveBeenCalledWith(process.cwd(), { enabled: false });
+    expect(vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === ciConfigPath)).toBeDefined();
+    expect(vi.mocked(fs.appendFileSync).mock.calls.find(c => c[0] === claudeMdPath)).toBeDefined();
+  });
+
+  it('never reads the per-repo flag: install does not call isCodeIntelEnabled at all', async () => {
+    mockIsCodeIntelEnabled.mockResolvedValue(false);
+
+    await runInstall([]);
+
+    expect(mockIsCodeIntelEnabled).not.toHaveBeenCalled();
+  });
+
+  it('repo opted in / no config: writes both the provider config.json and the CLAUDE.md routing block', async () => {
+    mockIsCodeIntelEnabled.mockResolvedValue(true);
+
+    await runInstall([]);
+
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === ciConfigPath);
+    expect(writeCall).toBeDefined();
+    expect(JSON.parse(writeCall![1] as string)).toEqual({ provider: 'gitnexus' });
+    const appendCall = vi.mocked(fs.appendFileSync).mock.calls.find(c => c[0] === claudeMdPath);
+    expect(appendCall).toBeDefined();
+    expect((appendCall![1] as string)).toContain(sentinel);
+  });
+});
+
+// apra-fleet-le1.1.3, apra-fleet-le1.1.4: the --code-intel / --no-code-intel
+// flags must record the choice via writeRepoCodeIntelConfig(repoCwd, {enabled}),
+// and a bare install (neither flag) must not write any config at all -- an
+// absent file has to stay distinguishable from an explicit choice (see
+// isCodeIntelEnabled's backward-compat default).
+describe('--code-intel / --no-code-intel flags record the opt-in/opt-out choice (apra-fleet-le1.1.4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps === path.join(process.cwd(), '.git')) return true; // isGitRepo gate
+      return false;
+    });
+    mockIsCodeIntelEnabled.mockResolvedValue(true);
+    mockWriteRepoCodeIntelConfig.mockResolvedValue(undefined);
+    _setSeaOverride(false);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+  });
+
+  it('--no-code-intel writes { enabled: false } to <repoCwd>/.apra-fleet/code-intel.json', async () => {
+    await runInstall(['--no-code-intel']);
+
+    expect(mockWriteRepoCodeIntelConfig).toHaveBeenCalledWith(process.cwd(), { enabled: false });
+  });
+
+  it('--code-intel writes { enabled: true } to <repoCwd>/.apra-fleet/code-intel.json', async () => {
+    await runInstall(['--code-intel']);
+
+    expect(mockWriteRepoCodeIntelConfig).toHaveBeenCalledWith(process.cwd(), { enabled: true });
+  });
+
+  it('bare install (neither flag) does not write any code-intel config at all', async () => {
+    await runInstall([]);
+
+    expect(mockWriteRepoCodeIntelConfig).not.toHaveBeenCalled();
   });
 });

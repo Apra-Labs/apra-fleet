@@ -28,6 +28,16 @@ export interface Agent {
   icon?: string;
   gitAccess?: 'read' | 'push' | 'push+pr' | 'admin' | 'issues' | 'full';
   gitRepos?: string[];
+  /**
+   * apra-fleet-tm7.9.1: the origin URL of the repo `workFolder` is a clone of,
+   * resolved from the member host at registration. gitRepos is an ACCESS LIST
+   * and its entries are usually bare "owner/repo" identifiers, so it cannot
+   * answer this; and a remote member's workFolder cannot answer it either,
+   * because resolveProjectSlug runs git in that directory and it lives on
+   * another machine. Without this the slug degrades to 'default' and every
+   * remote member's harvested knowledge lands in one shared bucket.
+   */
+  repoRemoteUrl?: string;
   vcsProvider?: 'github' | 'bitbucket' | 'azure-devops';
   vcsTokenExpiresAt?: string;  // ISO 8601
   llmProvider?: LlmProvider;  // default: 'claude' for backwards compat

@@ -22,6 +22,7 @@ import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
+import { writeRepoCodeIntelConfig } from '../services/knowledge/repo-config.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -846,6 +847,8 @@ Usage:
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
+  apra-fleet install --code-intel      Explicitly opt this repo in to code intelligence
+  apra-fleet install --no-code-intel   Opt this repo out of code intelligence
   apra-fleet install --help            Show this help
 
 Options:
@@ -858,7 +861,13 @@ Options:
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
-  --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
+  --force                 Stop a running apra-fleet server before installing (SEA mode only).
+  --code-intel            Record this repo as opted in to code intelligence (.apra-fleet/code-intel.json).
+  --no-code-intel         Record this repo as opted out of code intelligence (.apra-fleet/code-intel.json).
+                          The opt-out is per repo and enforced at call time: code_* tools return
+                          "disabled" for this repo. It does NOT suppress machine-global setup
+                          (~/.apra-fleet/data/code-intelligence/config.json, the ~/.claude/CLAUDE.md
+                          routing block), which other repos on this machine share.`);
     process.exit(0);
     return;
   }
@@ -941,6 +950,17 @@ Options:
   // Parse --force flag
   const force = args.includes('--force');
 
+  // Parse --code-intel / --no-code-intel (apra-fleet-le1.1.4): records the
+  // opt-in/opt-out choice at install time via writeRepoCodeIntelConfig()
+  // below. undefined (neither flag given) means "write nothing" -- absence
+  // of the config file must keep meaning "enabled" (isCodeIntelEnabled's
+  // backward-compat default).
+  const codeIntelFlag: boolean | undefined = args.includes('--no-code-intel')
+    ? false
+    : args.includes('--code-intel')
+      ? true
+      : undefined;
+
   // Parse --transport flag (default: http)
   type TransportMode = 'http' | 'stdio';
   let transport: TransportMode = 'http';
@@ -968,7 +988,7 @@ Options:
 
   // Reject unknown flags to catch typos early
   const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--help', '-h']);
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--code-intel', '--no-code-intel', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1470,7 +1490,8 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   const kbStep = serviceStep ? totalSteps - 1 : totalSteps;
   console.log(`  [${kbStep}/${totalSteps}] Setting up Knowledge Bank and code intelligence...`);
   const repoCwd = process.cwd();
-  if (fs.existsSync(path.join(repoCwd, '.git'))) {
+  const isGitRepo = fs.existsSync(path.join(repoCwd, '.git'));
+  if (isGitRepo) {
     // Clean up prior installs: remove legacy gitnexus entry from .mcp.json if present
     try {
       const mcpJsonPath = path.join(repoCwd, '.mcp.json');
@@ -1494,6 +1515,50 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // data dir. Independent of the .git check above -- the source file's own
   // presence is the only gate, and the step is fully non-fatal.
   copyGlobalBible(repoCwd);
+
+  // Record the --code-intel/--no-code-intel choice (apra-fleet-le1.1.4). This
+  // write has no effect on the rest of this install run -- nothing below reads
+  // it (see the apra-fleet-tm7.22 decision comment); it is consumed only at
+  // call time by the code_* tools' per-repo check. Skipped for non-git repos
+  // and when neither flag was passed -- "no config" must stay distinguishable
+  // from an explicit choice (see isCodeIntelEnabled's backward-compat default).
+  if (isGitRepo && codeIntelFlag !== undefined) {
+    try {
+      await writeRepoCodeIntelConfig(repoCwd, { enabled: codeIntelFlag });
+      console.log(`    [OK] Code intelligence opt-${codeIntelFlag ? 'in' : 'out'} recorded (.apra-fleet/code-intel.json)`);
+    } catch (err) {
+      console.warn('    ⚠ Code intelligence opt-in/out recording skipped:', err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // apra-fleet-tm7.22 DECISION: the two artifacts below are MACHINE-GLOBAL
+  // (~/.apra-fleet/data/code-intelligence/config.json and ~/.claude/CLAUDE.md),
+  // so they are deliberately NOT gated on the per-repo opt-out flag
+  // (<repoCwd>/.apra-fleet/code-intel.json) that apra-fleet-le1.1.2 used to
+  // check here. Gating them on a per-repo flag was over-broad and
+  // install-order dependent: installing from one opted-out repo withheld
+  // config every OTHER repo on the machine relies on (getProvider would fall
+  // back to codebase-memory instead of the intended gitnexus provider,
+  // machine-wide), and if another repo had already installed, the artifacts
+  // were left in place anyway -- same machine, different states depending on
+  // install order. The gate was also redundant: the opt-out is enforced at
+  // runtime, per repo, by getProvider()'s RepoDisabledProvider branch
+  // (src/tools/code-intelligence.ts), which is the layer that actually knows
+  // which repo a call is about. --no-code-intel still records the per-repo
+  // flag above; only its machine-global side effects are dropped.
+  //
+  // Rejected alternatives:
+  //  - Keep the gate and document the blast radius: leaves the install-order
+  //    dependence and the machine-wide provider downgrade in place.
+  //  - Make the provider config per-repo so the opt-out can be scoped: a real
+  //    option, but it changes the config's location/schema and every reader of
+  //    it, far beyond this fix; file it separately if per-repo provider
+  //    selection is ever wanted.
+  //
+  // Note the same reasoning already applies to copyGlobalBible(repoCwd) above,
+  // which distributes to the shared global KB dir and was likewise never gated
+  // on this flag -- that asymmetry is now resolved in favour of "global
+  // artifacts are never gated on a per-repo flag".
 
   // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
   try {
