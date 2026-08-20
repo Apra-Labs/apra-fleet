@@ -1277,6 +1277,45 @@ function worktreeNamesFor(sprintBranch, taskId, worktreeRoot) {
   };
 }
 
+// EXPORT SHRINK GUARD (my-beads-db-27m.12): replaces the unguarded
+// `git -C "${repo}" add .beads/issues.jsonl` step. Compares the id set of the freshly
+// written .beads/issues.jsonl against the ids committed at HEAD BEFORE staging it, so a
+// `bd export` run against a workspace whose Dolt DB has diverged from the repo's
+// committed export cannot silently clobber the committed id set (a line-count/size
+// check would miss this: the file can grow while still dropping most committed ids).
+// Mirrors the kb-export.ts shrink guard (src/tools/kb-export.ts, maybeAutoCommitBible):
+// written to disk but NOT staged/committed unless AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1 is
+// set as an explicit operator opt-in.
+//
+// DUPLICATED (intentionally) from lib/export-shrink-guard.mjs's runExportShrinkGuard, so
+// this stays a single self-contained shell command -- the dispatched agent runs inside
+// an arbitrary target repo's checkout, not this monorepo, and cannot `require()` that
+// file. Keep both in sync when changing the algorithm (same convention as
+// lib/parse-sprint-args.mjs). Pure -- no I/O, just builds a command string -- so it lives
+// in this PURE_FUNCTIONS block and test/export-shrink-guard.test.mjs can extract and call
+// it the same way test/sprint-cost.test.mjs extracts computeSprintQuote.
+function buildExportShrinkGuardCmd(repoPath) {
+  return `node -e "` +
+    `const{execSync}=require('child_process');` +
+    `const fs=require('fs');` +
+    `const repo=${JSON.stringify(repoPath)};` +
+    `const outPath=repo+'/.beads/issues.jsonl';` +
+    `function ids(t){const s=new Set();for(const l of String(t||'').split(/\\n/)){const x=l.trim();if(!x)continue;try{const o=JSON.parse(x);if(o&&o.id)s.add(o.id);}catch(e){}}return s;}` +
+    `let before='';try{before=execSync('git show HEAD:.beads/issues.jsonl',{cwd:repo,encoding:'utf8'});}catch(e){before='';}` +
+    `const committed=ids(before);` +
+    `let after='';try{after=fs.readFileSync(outPath,'utf8');}catch(e){after='';}` +
+    `const fresh=ids(after);` +
+    `const dropped=[...committed].filter(id=>!fresh.has(id));` +
+    `const allow=process.env.AUTO_SPRINT_ALLOW_EXPORT_SHRINK==='1';` +
+    `if(dropped.length>0&&!allow){` +
+      `console.log('EXPORT_GUARD_REFUSED: '+dropped.length+' committed id(s) missing from new export (e.g. '+dropped.slice(0,5).join(', ')+'). Written to disk but NOT staged/committed. Set AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1 to override.');` +
+      `process.exit(0);` +
+    `}` +
+    `execSync('git add .beads/issues.jsonl',{cwd:repo});` +
+    `console.log('EXPORT_GUARD_OK: staged .beads/issues.jsonl'+(dropped.length?' (override used, '+dropped.length+' dropped)':''));` +
+    `"`;
+}
+
 // PURE_FUNCTIONS_END
 
 // ROLE_SCHEMAS_GENERATED_BEGIN -- do not hand-edit; run `node scripts/gen-auto-sprint-schemas.mjs` to regenerate from agents/schemas/*.json
@@ -2995,7 +3034,7 @@ while (cycleCount < maxCycles) {
           `doer_tokens=${t.doerTokens} reviewer_tokens=${t.reviewerTokens} output_usd=${t.outputUsd.toFixed(4)}"`
         ),
         `bd export -o "${repo}/.beads/issues.jsonl"`,
-        `git -C "${repo}" add .beads/issues.jsonl`,
+        buildExportShrinkGuardCmd(repo),
         `git -C "${repo}" -c user.name='pm' -c user.email='pm@pm.local' commit --allow-empty -m "plan: approve task DAG"`,
         `git -C "${repo}" push origin ${branch}`,
       ];
@@ -3790,9 +3829,11 @@ await dispatch(
   `  rm -f "${repo}/feedback.md" "${repo}/requirements.md" 2>/dev/null || true\n\n` +
   `Step 2 -- Export beads state:\n` +
   `  bd export -o "${repo}/.beads/issues.jsonl"\n` +
-  `  git -C "${repo}" add .beads/issues.jsonl\n` +
+  `  ${buildExportShrinkGuardCmd(repo)}\n` +
   `  git -C "${repo}" diff --cached --quiet || git -C "${repo}" -c user.name='pm' -c user.email='pm@pm.local' commit -m "chore: export beads state"\n` +
-  `  (The "diff --cached --quiet || commit" pattern only commits if something actually changed.)\n\n` +
+  `  (The "diff --cached --quiet || commit" pattern only commits if something actually changed.\n` +
+  `   The guard step above refuses to stage a export that would drop ids committed at HEAD --\n` +
+  `   a refusal there is not an error, it just means nothing gets added/committed here.)\n\n` +
   `Step 3 -- Check what process files are still in the PR diff:\n` +
   `  git -C "${repo}" diff --name-only ${base_branch}...${branch}\n\n` +
   `Step 4 -- For each of requirements.md, feedback.md that appears in the diff:\n` +
