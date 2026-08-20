@@ -13,10 +13,14 @@ import { FleetWorkflow, WorkflowError, AgentOutputError } from '../src/workflow/
 //   3. Persistent garbage across all repair attempts throws AgentOutputError
 //      (instanceof check) with `.details` carrying ajv errors, and every
 //      attempt is visible as its own activity event.
-//   4. (apra-fleet-02s.3) The repair re-ask FORCES resume:true (so the
-//      member's session already has the original prompt/invalid output in
-//      context) and is a lean reminder -- validation/parse errors only, not
-//      a re-embedding of the original prompt or the invalid output.
+//   4. (apra-fleet-02s.3 + apra-fleet-dnri) The repair re-ask FORCES
+//      resume:true -- so any real work the member already performed for this
+//      request is preserved rather than redone -- AND is self-contained: it
+//      reattaches the original prompt plus the schema instruction as
+//      reference alongside the validation/parse errors, because a resumed
+//      session is not guaranteed to still hold them. The reattachment is
+//      bounded: identical on every repair round, and it never embeds the
+//      invalid output or the session transcript.
 
 const KNOWN_MEMBER = 'fleet-dev';
 const SCHEMA = {
@@ -118,13 +122,22 @@ describe('apra-fleet-unw.8: bounded schema-repair loop', () => {
         assert.strictEqual(activityEvents[1].repairAttempt, 1);
     });
 
-    test('apra-fleet-02s.3: the repair re-ask forces resume:true and is a lean reminder (no re-embedded original prompt/invalid output)', async () => {
+    // apra-fleet-dnri: this test used to assert the OPPOSITE -- that the
+    // repair prompt is a lean reminder which must NOT re-embed the original
+    // prompt, because the forced resume:true was assumed to keep the original
+    // prompt/schema in the member's session. Observed live, that assumption
+    // failed: a re-asked dispatch received only the validator errors, had no
+    // task inputs at all, and correctly refused to guess. The re-ask is now
+    // self-contained; resume:true is kept for a different reason (see the
+    // payload comment in index.mjs -- it preserves work the member may have
+    // already performed rather than inviting it to redo the work).
+    test('the repair re-ask forces resume:true and reattaches the original prompt + schema, bounded and identical every round', async () => {
         let calls = 0;
         const capturedPayloads = [];
         const wf = new FleetWorkflow(createMockFleetApi(async (payload) => {
             calls++;
             capturedPayloads.push(payload);
-            if (calls === 1) {
+            if (calls <= 2) {
                 return { content: [{ text: 'garbage {{{' }], usage: { total_tokens: 5 } };
             }
             return { content: [{ text: JSON.stringify({ value: 'ok' }) }], usage: { total_tokens: 5 } };
@@ -132,22 +145,29 @@ describe('apra-fleet-unw.8: bounded schema-repair loop', () => {
 
         await wf.agent('ORIGINAL_PROMPT_MARKER', { member_name: KNOWN_MEMBER, schema: SCHEMA });
 
-        assert.strictEqual(capturedPayloads.length, 2);
+        // 1 original + 2 repairs (default schemaRetries).
+        assert.strictEqual(capturedPayloads.length, 3);
         // The initial dispatch stays self-contained/non-resumed by default...
         assert.strictEqual(capturedPayloads[0].resume, false);
-        // ...but the repair re-ask FORCES resume:true, since the session
-        // already has the original prompt/invalid output in context.
+        // ...and the repair re-asks FORCE resume:true, so the member keeps
+        // whatever work it already did for this request.
         assert.strictEqual(capturedPayloads[1].resume, true);
+        assert.strictEqual(capturedPayloads[2].resume, true);
 
-        const repairPrompt = capturedPayloads[1].prompt;
-        assert.ok(!repairPrompt.includes('ORIGINAL_PROMPT_MARKER'), 'repair prompt must NOT re-embed the original prompt (relies on resume:true instead)');
-        // NOTE: the errorsText itself may still quote a short snippet of the
-        // invalid output as part of a JSON.parse error message (e.g. Node's
-        // `Unexpected token 'g', "garbage {{{" is not valid JSON`) -- that's
-        // inherent diagnostic content of the validation error, not the prompt
-        // re-embedding the full original prompt/output the way the old
-        // self-contained buildRepairPrompt() used to.
-        assert.ok(/error/i.test(repairPrompt), 'repair prompt must still include the validation/parse errors');
+        const repairPrompts = [capturedPayloads[1].prompt, capturedPayloads[2].prompt];
+        for (const repairPrompt of repairPrompts) {
+            assert.ok(repairPrompt.includes('ORIGINAL_PROMPT_MARKER'), 'repair prompt must reattach the original dispatch prompt unchanged');
+            assert.ok(repairPrompt.includes(JSON.stringify(SCHEMA, null, 2)), 'repair prompt must state the expected JSON schema explicitly');
+            assert.ok(/error/i.test(repairPrompt), 'repair prompt must still include the validation/parse errors');
+        }
+
+        // Bounded: the reattached block is byte-identical across rounds and
+        // appears exactly once, i.e. repair 2 does not nest repair 1.
+        const extractReference = (p) => p.slice(p.indexOf('--- BEGIN ORIGINAL REQUEST ---'), p.indexOf('--- END ORIGINAL REQUEST ---'));
+        assert.ok(extractReference(repairPrompts[0]).includes('ORIGINAL_PROMPT_MARKER'));
+        assert.strictEqual(extractReference(repairPrompts[0]), extractReference(repairPrompts[1]), 'the reattached portion must not grow or change between repair rounds');
+        assert.strictEqual(repairPrompts[1].split('--- BEGIN ORIGINAL REQUEST ---').length - 1, 1, 'repair 2 must be built from the original prompt, not from repair 1');
+        assert.strictEqual(repairPrompts[1].split('Your previous response could not be used.').length - 1, 1, 'repair 2 must not nest the previous repair prompt');
     });
 
     test('apra-fleet-02s.3: an explicit opts.resume is honored on the initial dispatch but overridden to true on repair', async () => {

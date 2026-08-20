@@ -25,10 +25,11 @@ const KNOWN_MEMBERS = new Set(['fleet-dev', 'apra-pm']);
  * executePrompt()/executeCommand(). No network or external process involved.
  */
 function createMockFleetApi() {
-    // apra-fleet-02s.3: a schema-repair re-ask now FORCES resume:true and
-    // sends a lean reminder prompt (validation errors only), no longer a
-    // self-contained echo of the original prompt -- so the prompt-prefix
-    // matches below cannot classify a repair round's dispatch. Stick to
+    // apra-fleet-02s.3 / apra-fleet-dnri: a schema-repair re-ask FORCES
+    // resume:true and sends a prompt that LEADS with the validation errors
+    // (the original prompt is reattached further down as reference, not
+    // echoed at the front) -- so the prompt-prefix matches below cannot
+    // classify a repair round's dispatch. Stick to
     // whichever branch the last FRESH (non-repair) call matched, mirroring
     // what a real resumed session actually is: the same logical exchange.
     let lastFreshBranch = null;
