@@ -328,57 +328,89 @@ Provisional names are assigned here so downstream schema and binding work has a
 stable vocabulary. Grouping is by mechanism, because several of these paths do not
 throw at all and a throw-site scan cannot find them.
 
+Completeness audit (T1.0.2d): a grep of `throw new` across
+`src/services/knowledge/*.ts` and `src/tools/kb-*.ts` returns 28 hits (22 in
+`src/services/knowledge/` -- 20 in `sqlite-provider.ts`, 2 in
+`path-validation.ts` -- plus 6 in `src/tools/kb-*.ts`), reconciled below
+against section 5.2's provisional names. All 28 map onto an existing or
+newly-added row; none is out-of-contract-surface. `src/tools/code-
+intelligence.ts` (the `code_*` side) is swept separately in 5.5 since its two
+throw sites are not part of the `kb_*` grep set above.
+
 ### 5.1 Non-throwing paths (silent transformation or decision-coded outcome)
 
 | Provisional name | Where | Mechanism | Observable signal |
 |------------------|-------|-----------|-------------------|
-| `E-CLAMP` | `src/tools/kb-capture.ts` (UX copy) and `SqliteProvider.capture` (enforcement copy) | an incoming `CONFIRMED` on a non-directive type is DOWNGRADED to `INFERRED`, with a bracketed note appended to content | `confidence_clamped: true` in the `kb_capture` response, plus the content note. NOT an error |
-| `E-DIRECTIVE-QUARANTINE` | `SqliteProvider.capture` directive gate | a `user-directive` capture is forced to a PENDING PROPOSAL: confidence to `UNVERIFIED`, `flagged_for_review` set, `directive:pending` tag added, scope forced to `project` | the stored entry differs from the requested one; activation is CLI-only. NOT an error |
-| `E-CONTRADICTION-FLAGGED` | `makeAudnDecision`, `src/services/knowledge/audn.ts` | symbol overlap PLUS a contradiction signal (keyword hit or opposite polarity); cross-type allowed, file overlap not required | `audn_decision: flagged` in the capture response, and a `contradiction_of` link. NOT an error |
-| `E-SUPERSEDE-CONSENT-MISSING` | `makeAudnDecision` explicit-supersede branch | a `supersedes` request takes effect ONLY if AUDN independently matches that candidate under the dedup gates (same type, symbol overlap, file overlap, target not an ACTIVE user-directive). Otherwise the request silently falls through to the ordinary paths | the named target is NOT retired and `audn_decision` is whatever the fallthrough decided. NO error is raised -- the most easily missed refusal in the surface |
-| `E-DEDUP-NONE` | `makeAudnDecision` | exact content equality, or a same-topic match with no contradiction signal | `audn_decision: none` -- the capture is skipped, not failed |
-| `E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD` | `makeAudnDecision` | an ACTIVE (CONFIRMED) user-directive candidate can never be superseded or updated by any `capture()` path; the loop skips past it | the candidate degrades to `flagged` (if a contradiction signal was present) or is skipped. NOT an error |
-| `E-CODE-INTEL-DISABLED` | `NullProvider`, `src/tools/code-intelligence.ts` | code intelligence disabled for the member | a text payload naming the disabled method. NOT an error |
-| `E-STATS-UNSUPPORTED` | `ProviderStats.supported === false` (HTTP provider, per design D4) | a provider that cannot compute stats returns a documented not-supported result rather than throwing | `{supported: false, reason}` in the `kb_stats` response |
-| `E-BIBLE-READ-DEGRADED` | `src/tools/kb-stats.ts` | any failure reading or comparing the canonical bible is swallowed | the response falls back to the absent/drift-zero bible shape. `kb_stats` never throws over the bible file |
-| `E-RELATED-CLAIMS-DEGRADED` | `src/tools/kb-query.ts` | `relatedClaims` throws | caught; `related_claims` becomes `[]` and the query result still returns |
+| `E-CLAMP` | `src/tools/kb-capture.ts:105-106` (UX copy) and `SqliteProvider.capture`, `src/services/knowledge/sqlite-provider.ts:889-893` (enforcement copy) | an incoming `CONFIRMED` on a non-directive type is DOWNGRADED to `INFERRED`, with a bracketed note appended to content | `confidence_clamped: true` in the `kb_capture` response, plus the content note. NOT an error |
+| `E-DIRECTIVE-QUARANTINE` | `SqliteProvider.capture` directive gate, `src/services/knowledge/sqlite-provider.ts:806-818` | a `user-directive` capture is forced to a PENDING PROPOSAL: confidence to `UNVERIFIED`, `flagged_for_review` set, `directive:pending` tag added, scope forced to `project` | the stored entry differs from the requested one; activation is CLI-only. NOT an error |
+| `E-CONTRADICTION-FLAGGED` | `makeAudnDecision`, `src/services/knowledge/audn.ts:196-206` | symbol overlap PLUS a contradiction signal (keyword hit or opposite polarity); cross-type allowed, file overlap not required | `audn_decision: flagged` in the capture response, and a `contradiction_of` link. NOT an error |
+| `E-SUPERSEDE-CONSENT-MISSING` | `makeAudnDecision` explicit-supersede branch, `src/services/knowledge/audn.ts:145-157` | a `supersedes` request takes effect ONLY if AUDN independently matches that candidate under the dedup gates (same type, symbol overlap, file overlap, target not an ACTIVE user-directive). Otherwise the request silently falls through to the ordinary paths | the named target is NOT retired and `audn_decision` is whatever the fallthrough decided. NO error is raised -- the most easily missed refusal in the surface |
+| `E-DEDUP-NONE` | `makeAudnDecision`, `src/services/knowledge/audn.ts:180-183` (exact-match pre-pass) and `:231-233` (loop) | exact content equality, or a same-topic match with no contradiction signal | `audn_decision: none` -- the capture is skipped, not failed |
+| `E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD` | `makeAudnDecision`, `src/services/knowledge/audn.ts:224` | an ACTIVE (CONFIRMED) user-directive candidate can never be superseded or updated by any `capture()` path; the loop skips past it | the candidate degrades to `flagged` (if a contradiction signal was present) or is skipped. NOT an error |
+| `E-CODE-INTEL-DISABLED` | `NullProvider`, `src/tools/code-intelligence.ts:22-26` (`nullResult`) and `:28-36` (class body) | code intelligence disabled for the member | a text payload naming the disabled method. NOT an error |
+| `E-STATS-UNSUPPORTED` | `ProviderStats.supported === false` (HTTP provider, per design D4), `src/services/knowledge/http-provider.ts:284-287` | a provider that cannot compute stats returns a documented not-supported result rather than throwing | `{supported: false, reason}` in the `kb_stats` response |
+| `E-BIBLE-READ-DEGRADED` | `src/tools/kb-stats.ts:116-122` (nested `catch` blocks) | any failure reading or comparing the canonical bible is swallowed | the response falls back to the absent/drift-zero bible shape. `kb_stats` never throws over the bible file |
+| `E-RELATED-CLAIMS-DEGRADED` | `src/tools/kb-query.ts:113-118` | `relatedClaims` throws | caught; `related_claims` becomes `[]` and the query result still returns |
 
 ### 5.2 Throwing paths (refusals)
 
 | Provisional name | Where | Trigger |
 |------------------|-------|---------|
-| `E-NO-BASIS` | `SqliteProvider.assertCheckableBasis`, raising `KbCaptureRejected('no_source_files')` | an entry cites zero source files. Exempt: `user-directive`, which is not a claim about code. Rationale: the freshness sweep builds its work set only from entries with a parsed basis, so a basis-less entry is structurally unfalsifiable |
-| `E-BASIS-MISSING-FILES` | `SqliteProvider.assertCheckableBasis`, raising `KbCaptureRejected('missing_source_files')` | cited source files do not resolve in this worktree. NO exemption for harvest-sourced entries or for import mode |
-| `E-PROVIDER-UNINITIALIZED` | `SqliteProvider.getDb` | any method called before `init()` |
-| `E-ENTRY-NOT-FOUND` | `promote`, `feedback` | the id has no row |
-| `E-PROMOTE-SUPERSEDED` | `promote` | the target entry is already superseded |
-| `E-PROMOTE-REFUSED-DIRECTIVE` | `promote` guard block | promotion of a `user-directive` entry; activation is CLI-only |
-| `E-RESOLVE-MISSING-ENTRY` | `resolveContradiction` | either id does not exist. Writes NOTHING |
-| `E-RESOLVE-ALREADY-SUPERSEDED` | `resolveContradiction` | either entry is already superseded. Writes NOTHING |
-| `E-RESOLVE-NOT-A-PAIR` | `resolveContradiction` | the ids do not form a genuinely linked contradiction pair. Writes NOTHING |
-| `E-RESOLVE-DIRECTIVE-PAIR` | `resolveContradiction` | the pair involves an ACTIVE user-directive; directives are never auto-resolved. Writes NOTHING |
-| `E-DIRECTIVE-NOT-FOUND` | `approveDirective`, `rejectDirective` | the id has no row (CLI-only surface) |
-| `E-DIRECTIVE-WRONG-TYPE` | `approveDirective`, `rejectDirective` | the entry is not a `user-directive` (CLI-only surface) |
-| `E-DIRECTIVE-ALREADY-DECIDED` | `approveDirective`, `rejectDirective` | already active, or already rejected (CLI-only surface) |
-| `E-PATH-TRAVERSAL` | `src/services/knowledge/path-validation.ts` | an absolute path, or a parent-directory traversal, in a file list |
-| `E-QUERY-NO-SELECTOR` | `src/tools/kb-query.ts` | none of `query`, `tag`, `flagged_only` was supplied |
-| `E-REPO-PATH-INVALID` | `src/tools/kb-export.ts`, `src/tools/kb-import.ts` | an explicitly supplied repo path does not exist or is not a directory. Both refuse rather than silently falling back to the server cwd |
-| `E-BIBLE-NOT-FOUND` | `src/tools/kb-import.ts` | the resolved bible file does not exist |
-| `E-BIBLE-NOT-JSON` | `src/tools/kb-import.ts` | the bible file is not valid JSON |
-| `E-BIBLE-WRONG-SHAPE` | `src/tools/kb-import.ts` | the bible parses but is neither an entry array nor the v2 envelope |
+| `E-NO-BASIS` | `SqliteProvider.assertCheckableBasis`, `src/services/knowledge/sqlite-provider.ts:339`, raising `KbCaptureRejected('no_source_files')` | an entry cites zero source files. Exempt: `user-directive`, which is not a claim about code. Rationale: the freshness sweep builds its work set only from entries with a parsed basis, so a basis-less entry is structurally unfalsifiable |
+| `E-BASIS-MISSING-FILES` | `SqliteProvider.assertCheckableBasis`, `src/services/knowledge/sqlite-provider.ts:349`, raising `KbCaptureRejected('missing_source_files')` | cited source files do not resolve in this worktree. NO exemption for harvest-sourced entries or for import mode |
+| `E-PROVIDER-UNINITIALIZED` | `SqliteProvider.getDb`, `src/services/knowledge/sqlite-provider.ts:197` | any method called before `init()` |
+| `E-ENTRY-NOT-FOUND` | `promote` (`sqlite-provider.ts:1340`), `feedback` (`sqlite-provider.ts:1431`) | the id has no row |
+| `E-PROMOTE-SUPERSEDED` | `promote`, `src/services/knowledge/sqlite-provider.ts:1343` | the target entry is already superseded |
+| `E-PROMOTE-REFUSED-DIRECTIVE` | `promote` guard block, `src/services/knowledge/sqlite-provider.ts:1353-1357` | promotion of a `user-directive` entry; activation is CLI-only |
+| `E-PROMOTE-REASON-REQUIRED` | `promote`, `src/services/knowledge/sqlite-provider.ts:1366-1370` (newly named -- not previously listed) | `reason` fails `isNonTrivialPromoteReason` (absent or shorter than `MIN_PROMOTE_REASON_LENGTH`); a CONFIRMED promotion must carry a recorded evidence string |
+| `E-PROMOTE-BASIS-UNRESOLVED` | `promote`, `src/services/knowledge/sqlite-provider.ts:1377-1384` (newly named -- not previously listed) | the entry has zero `source_files`, or one or more cited files no longer resolve in this worktree; an unfalsifiable/stale basis cannot earn CONFIRMED |
+| `E-RESOLVE-MISSING-ENTRY` | `resolveContradiction`, `src/services/knowledge/sqlite-provider.ts:1554-1555` | either id does not exist. Writes NOTHING |
+| `E-RESOLVE-ALREADY-SUPERSEDED` | `resolveContradiction`, `src/services/knowledge/sqlite-provider.ts:1560-1561` | either entry is already superseded. Writes NOTHING |
+| `E-RESOLVE-NOT-A-PAIR` | `resolveContradiction`, `src/services/knowledge/sqlite-provider.ts:1564-1566` | the ids do not form a genuinely linked contradiction pair. Writes NOTHING |
+| `E-RESOLVE-DIRECTIVE-PAIR` | `resolveContradiction`, `src/services/knowledge/sqlite-provider.ts:1569-1571` | the pair involves an ACTIVE user-directive; directives are never auto-resolved. Writes NOTHING |
+| `E-DIRECTIVE-NOT-FOUND` | `approveDirective` (`sqlite-provider.ts:1723`), `rejectDirective` (`sqlite-provider.ts:1746`) | the id has no row (CLI-only surface) |
+| `E-DIRECTIVE-WRONG-TYPE` | `approveDirective` (`sqlite-provider.ts:1725`), `rejectDirective` (`sqlite-provider.ts:1748`) | the entry is not a `user-directive` (CLI-only surface) |
+| `E-DIRECTIVE-ALREADY-DECIDED` | `approveDirective` (`sqlite-provider.ts:1726` already-rejected, `:1727` already-active), `rejectDirective` (`sqlite-provider.ts:1749` already-rejected) | already active, or already rejected (CLI-only surface) |
+| `E-PATH-TRAVERSAL` | `validateFilePaths`, `src/services/knowledge/path-validation.ts:6` (absolute path) and `:10` (parent-directory traversal) | an absolute path, or a parent-directory traversal, in a file list |
+| `E-QUERY-NO-SELECTOR` | `src/tools/kb-query.ts:34` | none of `query`, `tag`, `flagged_only` was supplied |
+| `E-REPO-PATH-INVALID` | `src/tools/kb-export.ts:157`, `src/tools/kb-import.ts:75` | an explicitly supplied repo path does not exist or is not a directory. Both refuse rather than silently falling back to the server cwd |
+| `E-BIBLE-NOT-FOUND` | `src/tools/kb-import.ts:143` | the resolved bible file does not exist |
+| `E-BIBLE-NOT-JSON` | `src/tools/kb-import.ts:150` | the bible file is not valid JSON |
+| `E-BIBLE-WRONG-SHAPE` | `src/tools/kb-import.ts:168` | the bible parses but is neither an entry array nor the v2 envelope |
+
+Reconciliation: the 28 `throw new` hits map onto the 19 pre-existing names plus
+the 2 newly-added names above (`E-PROMOTE-REASON-REQUIRED`,
+`E-PROMOTE-BASIS-UNRESOLVED`) -- `sqlite-provider.ts:1367` and `:1379` were
+unlisted throw sites inside `promote()` found by this audit, not covered by
+any prior row. Every other throw site maps to an existing name; several names
+cover more than one throw site (e.g. `E-ENTRY-NOT-FOUND` covers both
+`promote` and `feedback`; `E-DIRECTIVE-ALREADY-DECIDED` covers three sites
+across `approveDirective`/`rejectDirective`). No throw site was found to be
+out-of-contract-surface.
 
 ### 5.3 Import-time entry rejection (counted, not thrown)
 
 | Provisional name | Where | Mechanism |
 |------------------|-------|-----------|
-| `E-IMPORT-ENTRY-REJECTED` | `src/tools/kb-import.ts`, surfaced as `KbImportReport.rejected` | a single bible entry that fails `E-NO-BASIS` or `E-BASIS-MISSING-FILES` is counted in `rejected` and skipped; the import as a whole still succeeds. Per-entry validation failures (`isBibleEntry`: bad id, type, title, summary or confidence; non-array `symbols`/`source_files`) are likewise counted, not thrown |
+| `E-IMPORT-ENTRY-REJECTED` | `src/tools/kb-import.ts:222-234`, surfaced as `KbImportReport.rejected` | a single bible entry that fails `E-NO-BASIS` or `E-BASIS-MISSING-FILES` (via a caught `KbCaptureRejected` from `provider.capture(...)`) is counted in `rejected` and skipped; the import as a whole still succeeds. Per-entry SHAPE validation failures are a SEPARATE counter: `isValidBibleEntry` (`src/tools/kb-import.ts:98-109` -- bad/empty id, type, title, summary or confidence; non-array `symbols`/`source_files`) and the pre-existing-id check (`kb-import.ts:193-196`) are counted in `skipped`, not `rejected` -- correcting this row's prior claim that they were counted alongside the basis rejections and correcting the prior function name `isBibleEntry` (no such symbol exists; the actual name is `isValidBibleEntry`) |
 
 ### 5.4 Author/role validation
 
-`validateAuthor` exists in BOTH `src/tools/kb-capture.ts` and
-`src/tools/kb-feedback.ts` (duplicated, not shared). It never throws: an
+`validateAuthor` exists in BOTH `src/tools/kb-capture.ts:16-20` and
+`src/tools/kb-feedback.ts:12-16` (duplicated, not shared). It never throws: an
 unrecognised `role` degrades to the literal `unknown`. Provisional name
 `E-ROLE-UNKNOWN-DEGRADED`.
+
+### 5.5 `code_*` side: provider configuration refusals
+
+The `code_*` tools route through `getProvider()` in
+`src/tools/code-intelligence.ts`, which is the only throwing surface on this
+side (the seven `handleCode*` wrappers and `NullProvider`, 5.1, never throw
+themselves).
+
+| Provisional name | Where | Trigger |
+|------------------|-------|---------|
+| `E-CODE-PROVIDER-UNCONFIGURED` | `getProvider`, `src/tools/code-intelligence.ts:131-135` (per-member `codeIntelProvider` override names a key absent from `PROVIDERS`) and `:151-155` (global `config.json`'s `provider` field, read from `CONFIG_PATH`, names a key absent from `PROVIDERS`; the `codebase-memory` default itself IS registered, so this site only fires when the config file names something else unregistered) | the resolved provider key has no entry in the `PROVIDERS` map (`codebase-memory`, `gitnexus`, `none`). Both sites throw the same message shape naming the bad key and pointing at `apra-fleet install` |
 
 ## 6. Downstream notes
 
