@@ -14,6 +14,36 @@ function extractOrg(orgUrl: string): string {
 }
 
 export const azureDevOpsProvider: VcsProviderService = {
+  // apra-fleet-5co8.3.2: moved VERBATIM out of the provider switch in
+  // src/tools/provision-vcs-auth.ts -- same `pat ?? token` alias, same
+  // required-field error text, same unparseable-expiry rejection and the same
+  // returned shape (expires_at is always present, undefined when unset).
+  // The pat_expires_at check stays defence in depth behind the zod refine in
+  // the tool schema: tool-registry casts the MCP payload with `as any`, so a
+  // caller can bypass zod, and an unparseable expiry is worse than none at all
+  // (NaN silences every checkVcsTokenExpiry comparison and makes
+  // scheduleCredentialCleanup fall back to its 55-minute default, auto-revoking
+  // the PAT that was just deployed).
+  buildCredentials(input) {
+    const azPat = input.pat ?? input.token;
+    if (!input.org_url || !azPat) return 'Azure DevOps requires "org_url" and "pat" (or "token") fields.';
+    if (input.pat_expires_at !== undefined && Number.isNaN(Date.parse(input.pat_expires_at))) {
+      return `Azure DevOps "pat_expires_at" is not a parseable date/time: ${input.pat_expires_at}`;
+    }
+    return { org_url: input.org_url, pat: azPat, expires_at: input.pat_expires_at };
+  },
+
+  // apra-fleet-5co8.3.2: the former
+  // `if (provider === 'azure-devops' && pat === undefined && token === undefined)`
+  // block, verbatim. Either field can carry the PAT, so the credential only
+  // counts as missing when BOTH are absent; the collected secret lands in
+  // `pat`, which is what buildCredentials prefers.
+  missingCredential: {
+    field: 'pat',
+    isMissing: (input) => input.pat === undefined && input.token === undefined,
+    promptFor: (memberName) => `Enter Azure DevOps personal access token for ${memberName}`,
+  },
+
   async deploy(_agent, cmds, exec, credentials, label?, scopeUrl?) {
     const creds = credentials as AzureDevOpsCredentials;
     await exec(cmds.gitCredentialHelperWrite(HOST, '', creds.pat, label, scopeUrl));

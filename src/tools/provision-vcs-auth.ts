@@ -83,37 +83,6 @@ export const provisionVcsAuthSchema = z.object({
 
 export type ProvisionVcsAuthInput = z.infer<typeof provisionVcsAuthSchema>;
 
-function buildCredentials(input: ProvisionVcsAuthInput): unknown | string {
-  switch (input.provider) {
-    case 'github': {
-      const mode = input.github_mode ?? 'github-app';
-      if (mode === 'pat') {
-        if (!input.token) return 'GitHub PAT mode requires "token" field.';
-        return { type: 'pat', token: input.token };
-      }
-      return { type: 'github-app', git_access: input.git_access, repos: input.repos };
-    }
-    case 'bitbucket': {
-      if (!input.email || !input.api_token || !input.workspace) {
-        return 'Bitbucket requires "email", "api_token", and "workspace" fields.';
-      }
-      return { email: input.email, api_token: input.api_token, workspace: input.workspace };
-    }
-    case 'azure-devops': {
-      const azPat = input.pat ?? input.token;
-      if (!input.org_url || !azPat) return 'Azure DevOps requires "org_url" and "pat" (or "token") fields.';
-      // Defence in depth behind the schema refine above: provisionVcsAuth is
-      // also reachable from callers that bypass zod (tool-registry casts the
-      // MCP payload with `as any`), and an unparseable expiry is worse than
-      // no expiry at all -- see the pat_expires_at comment above.
-      if (input.pat_expires_at !== undefined && Number.isNaN(Date.parse(input.pat_expires_at))) {
-        return `Azure DevOps "pat_expires_at" is not a parseable date/time: ${input.pat_expires_at}`;
-      }
-      return { org_url: input.org_url, pat: azPat, expires_at: input.pat_expires_at };
-    }
-  }
-}
-
 export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -131,30 +100,29 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
     }
   }
 
-  // OOB fallback for absent credential fields
-  if (resolvedInput.provider === 'github' && (resolvedInput.github_mode ?? 'github-app') === 'pat' && resolvedInput.token === undefined) {
+  // OOB fallback for an absent credential field, dispatched through the
+  // resolved provider (apra-fleet-5co8.3.2). The provider owns which field its
+  // secret lives in, when it counts as missing and what the operator is asked
+  // -- no provider name and no auth-mode knowledge is left at this call site.
+  // Order is unchanged: {{secure.NAME}} resolution first, then OOB collection
+  // (an OOB-collected secret is deliberately NOT re-run through
+  // resolveSecureField), then credential assembly.
+  const missing = service.missingCredential;
+  if (missing && missing.isMissing(resolvedInput)) {
     const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
-      prompt: `Enter GitHub personal access token for ${agent.friendlyName}`,
+      prompt: missing.promptFor(agent.friendlyName),
     });
     if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
-    resolvedInput.token = decryptPassword(oob.password!);
-  }
-  if (resolvedInput.provider === 'bitbucket' && resolvedInput.api_token === undefined) {
-    const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
-      prompt: `Enter Bitbucket API token for ${agent.friendlyName}`,
-    });
-    if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
-    resolvedInput.api_token = decryptPassword(oob.password!);
-  }
-  if (resolvedInput.provider === 'azure-devops' && resolvedInput.pat === undefined && resolvedInput.token === undefined) {
-    const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
-      prompt: `Enter Azure DevOps personal access token for ${agent.friendlyName}`,
-    });
-    if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
-    resolvedInput.pat = decryptPassword(oob.password!);
+    resolvedInput[missing.field] = decryptPassword(oob.password!);
   }
 
-  const creds = buildCredentials(resolvedInput);
+  // buildCredentials is still optional on VcsProviderService while the seam is
+  // being adopted; every provider registered above implements it, so an absent
+  // implementation is a wiring bug, reported rather than silently deploying
+  // undefined credentials.
+  const creds = service.buildCredentials
+    ? service.buildCredentials(resolvedInput)
+    : `Provider "${input.provider}" does not support credential assembly.`;
   if (typeof creds === 'string') return `❌ ${creds}`;
 
   const label = input.label ?? input.provider;
