@@ -249,7 +249,7 @@ Per-method comparison of what each one actually DOES:**
 |---|--------|-------------------------------|--------------------------------------------------------------|------------|----------------|
 | P-1 | `init` | schema/pragma setup, write | delegates to `this.fallback.init()` (an internal `SqliteProvider`) -- no remote init call at all | HttpKbProvider's "init" is really just its embedded fallback's init; the remote server is assumed already initialized | different signature/behavior |
 | P-2 | `capture` | full AUDN pipeline locally (clamp, directive-quarantine, contradiction-flagging) | POSTs `/api/kb/capture`; on connection error (`isConnectionError`, http-provider.ts:28-39), enqueues to `offlineQueue` and returns a fabricated `{id: "offline-<random>", audn_decision: 'add'}` WITHOUT running any AUDN logic; on any other error -- remote HTTP >=400 (`rawRequest` rejects with code `HTTP_<status>`, http-provider.ts:114-122) or a malformed remote body (plain `Error('Invalid JSON response from KB server')`, http-provider.ts:124-126) -- the error is RETHROWN, not degraded | offline capture always reports `audn_decision: 'add'` regardless of what the server would actually have decided -- the true decision is deferred until `tryFlushQueue` succeeds, and the caller is never told it changed; separately, a remote 500 or bad JSON propagates as a throw instead of falling back, unlike the connection-error path | different signature/behavior |
-| P-3 | `query` | full `QueryOptions` support including `ids`, `tag`, `flagged_only`, `symbols`, `source_files`, `tags`, `fts_terms` | GETs `/api/kb/query` forwarding only `query, type, limit, l1_only, include_stale, include_superseded` (http-provider.ts:181-190) -- `ids`, `symbols`, `source_files`, `tags`, `tag` and `flagged_only` are all silently dropped, not sent as query params; on connection error falls back to `this.fallback.query(opts)` (full local support); on a non-connection error (remote HTTP >=400 or bad JSON, http-provider.ts:114-126) it RETHROWS instead of falling back | over a live remote connection, `ids`-keyed, `tag`-filtered and `flagged_only` queries all lose their filter; `ids` is the load-bearing one -- `kb-query.ts:93` and `:97` call `query({ids})` for L2 hydration and cross-scope fill, and `SqliteProvider.query` (sqlite-provider.ts:965-969) treats `ids` as a direct exact-id lookup bypassing FTS entirely, so an HTTP-backed L2 hydration would degrade to a parameter-less remote GET instead of fetching the requested rows; the SAME options object degrades to full support only when offline, which is backwards from what a caller would expect; and a remote 500/malformed body throws rather than degrading, the same rethrow gap as P-2 | different signature/behavior |
+| P-3 | `query` | full `QueryOptions` support (`types.ts:108-135`, 13 optional fields: `query`, `fts_terms`, `type`, `symbols`, `source_files`, `tags`, `tag`, `include_stale`, `include_superseded`, `flagged_only`, `l1_only`, `limit`, `ids`) including `ids`, `tag`, `flagged_only`, `symbols`, `source_files`, `tags`, `fts_terms` | GETs `/api/kb/query` forwarding only `query, type, limit, l1_only, include_stale, include_superseded` (http-provider.ts:181-190) -- SEVEN of the 13 optional fields are silently dropped client-side: `ids`, `symbols`, `source_files`, `tags`, `tag`, `flagged_only`, and `fts_terms` (13 - 6 forwarded = 7); on connection error falls back to `this.fallback.query(opts)` (full local support); on a non-connection error (remote HTTP >=400 or bad JSON, http-provider.ts:114-126) it RETHROWS instead of falling back | Two mechanisms, not one blame: (a) `ids`, `symbols`, `source_files`, `tags`, `tag`, `flagged_only` (six fields) are dropped because `http-provider.ts:181-190` simply never reads them -- an ordinary omission, and `ids` is the load-bearing one of the six -- `kb-query.ts:93` and `:97` call `query({ids})` for L2 hydration and cross-scope fill, and `SqliteProvider.query` (sqlite-provider.ts:965-969) treats `ids` as a direct exact-id lookup bypassing FTS entirely, so an HTTP-backed L2 hydration would degrade to a parameter-less remote GET instead of fetching the requested rows. (b) `fts_terms` (the seventh) is dropped for a DIFFERENT, deliberate reason: `types.ts:113-119` declares it INTERNAL ONLY, structurally excluded from `kbQuerySchema` and the `/api/kb/query` route, with an explicit do-not-add directive -- it has a live in-process caller (`kb_session_prime`: `kb-session-prime.ts:221` passes it to `providers.global.query`, `:276` to `providers.project.query`, and `SqliteProvider` honors it via `orJoinFtsTerms`, `sqlite-provider.ts:1019-1024`), so it IS reachable in-process, just never over the wire; forwarding it is NOT the implied remedy, unlike the other six. (c) Server-side narrowing, independent of the client: the only in-tree `/api/kb/query` handler (`kb-server.ts:146-155`) reads just `query, type, limit, l1_only` from the query string, so `include_stale` and `include_superseded` are dropped SERVER-side even though the client forwards them -- net four filters survive a live remote round trip (`query`, `type`, `limit`, `l1_only`), not six. Also: the SAME options object degrades to full support only when offline, which is backwards from what a caller would expect; and a remote 500/malformed body throws rather than degrading, the same rethrow gap as P-2 | different signature/behavior |
 | P-4 | `context` | read | GET `/api/kb/context`, fallback to local on connection error (`isConnectionError`, http-provider.ts:28-39); on a non-connection error -- remote HTTP >=400 or a malformed JSON body (http-provider.ts:114-126) -- `context` (http-provider.ts:201-214) RETHROWS instead of falling back to `this.fallback.context(files)` | net-equivalent only on the connection-error path; on a remote 500 or bad JSON, `context` throws where `SqliteProvider.context` would have returned data | different signature/behavior |
 | P-5 | `invalidate` | marks context-cache entries stale (real mutate) | POSTs `/api/kb/invalidate`; on connection error enqueues the op and returns `{invalidated: 0}` -- the local cache is NOT actually marked stale while offline; on a non-connection error (remote HTTP >=400 or bad JSON, http-provider.ts:114-126) it RETHROWS instead of enqueuing | offline `invalidate` is a no-op report, not a degraded-but-real local mutation, despite `capture`'s offline path at least queuing for eventual replay; and a remote 500/bad JSON throws rather than degrading, the same rethrow gap as P-2/P-3 | different signature/behavior |
 | P-6 | `getLinked` | read | ALWAYS delegates to `this.fallback.getLinked(id)` -- no remote route exists at all | not a proxy method for this provider; purely local regardless of connectivity | different signature/behavior |
@@ -308,9 +308,12 @@ against `MemoryProvider`, but is dead code in this tree -- no call site
 constructs one, and `kb_setup`'s `provider: 'http'` config value is never read
 back to select it. Of the 12 interface methods it does implement, 4 (`getLinked`,
 `promote`, `touch`, `relatedClaims`) have no remote code path at all, and one
-(`query`) drops six of its filter options (`ids`, `symbols`, `source_files`,
-`tags`, `tag`, `flagged_only`) on the remote path while supporting them fully
-on its local fallback path. A v1 contract
+(`query`) drops seven of QueryOptions' 13 optional fields on the remote path
+while supporting all 13 fully on its local fallback path: six by omission
+(`ids`, `symbols`, `source_files`, `tags`, `tag`, `flagged_only`) plus
+`fts_terms`, which is dropped deliberately as internal-only rather than as an
+oversight (section 4.4.1, P-3). The server side narrows the surviving set
+further still, to four. A v1 contract
 binding must not assume the two `MemoryProvider` implementations are
 behaviorally interchangeable merely because both compile against the same
 interface. Every row of the 4.4.1 and 4.4.2 tables now carries an explicit
@@ -423,11 +426,17 @@ themselves).
   spread-plus-optionals, and the seven permissive `code_*` bodies.
 - `HttpKbProvider` (section 4.4, F-10) is dead code in this tree: never
   constructed, four of its twelve interface methods have no remote path, and
-  its `query` silently drops `ids`, `symbols`, `source_files`, `tags`, `tag`
-  and `flagged_only` on the remote path -- `ids` is the load-bearing one,
-  since it is how `kb_query`'s L2 hydration and cross-scope fill work (section
-  4.4.1, P-3). Do not model it as a behaviorally-equivalent second
-  implementation.
+  its `query` silently drops SEVEN of QueryOptions' 13 optional fields on the
+  client side -- `ids`, `symbols`, `source_files`, `tags`, `tag`,
+  `flagged_only` (dropped by omission; `ids` is the load-bearing one, since it
+  is how `kb_query`'s L2 hydration and cross-scope fill work) plus `fts_terms`
+  (dropped deliberately -- internal-only, excluded from the transport surface
+  by design, reachable only in-process via `kb_session_prime`; see section
+  4.4.1, P-3 for the full mechanism). The server side narrows further: the
+  only in-tree `/api/kb/query` handler drops `include_stale` and
+  `include_superseded` too, so only four filters (`query`, `type`, `limit`,
+  `l1_only`) survive a live remote round trip. Do not model
+  `HttpKbProvider` as a behaviorally-equivalent second implementation.
 
 ## Appendix A -- registration descriptions (verbatim)
 
