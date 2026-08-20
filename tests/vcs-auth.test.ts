@@ -312,6 +312,63 @@ describe('Azure DevOps provider', () => {
     const result = await azureDevOpsProvider.testConnectivity(makeAgent(), exec);
     expect(result.success).toBe(false);
   });
+
+  // apra-fleet-5co8.5.1: the expiry is caller-supplied (Azure DevOps exposes
+  // no API to read a PAT's expiry back), so deploy metadata must carry it
+  // through when present and be BYTE-IDENTICAL to the old shape when absent --
+  // an `expiresAt: undefined` key would still flow into the registry write.
+  it('deploy: propagates a supplied expires_at into metadata.expiresAt', async () => {
+    const exec = async () => '';
+    const result = await azureDevOpsProvider.deploy(
+      makeAgent(), cmds, exec,
+      { org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-123', expires_at: '2027-08-20T00:00:00Z' },
+    );
+    expect(result.metadata?.expiresAt).toBe('2027-08-20T00:00:00Z');
+  });
+
+  it('deploy: omits expiresAt entirely when no expiry is supplied', async () => {
+    const exec = async () => '';
+    const result = await azureDevOpsProvider.deploy(
+      makeAgent(), cmds, exec,
+      { org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-123' },
+    );
+    expect(result.metadata && 'expiresAt' in result.metadata).toBe(false);
+  });
+});
+
+// apra-fleet-5co8.5.1: an unparseable pat_expires_at is NOT a harmless typo.
+// It is truthy, so it would reach vcsTokenExpiresAt verbatim, make every
+// checkVcsTokenExpiry comparison NaN (no warning at all) and make
+// scheduleCredentialCleanup fall back to DEFAULT_TTL_MS -- a 55-minute
+// auto-revoke of the PAT that was just deployed. Rejected at the boundary.
+describe('provisionVcsAuthSchema pat_expires_at', () => {
+  it('accepts a parseable ISO 8601 expiry', async () => {
+    const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');
+    const result = provisionVcsAuthSchema.safeParse({
+      member_id: 'a', provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg',
+      pat: 'p', pat_expires_at: '2027-08-20T00:00:00Z',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an omitted expiry', async () => {
+    const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');
+    const result = provisionVcsAuthSchema.safeParse({
+      member_id: 'a', provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'p',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an unparseable expiry', async () => {
+    const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');
+    for (const bad of ['not-a-date', '', '2027-13-45']) {
+      const result = provisionVcsAuthSchema.safeParse({
+        member_id: 'a', provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg',
+        pat: 'p', pat_expires_at: bad,
+      });
+      expect(result.success, `expected rejection for ${JSON.stringify(bad)}`).toBe(false);
+    }
+  });
 });
 
 describe('provisionVcsAuthSchema git_access', () => {

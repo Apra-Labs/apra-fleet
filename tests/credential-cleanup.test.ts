@@ -83,6 +83,30 @@ describe('scheduleCredentialCleanup', () => {
     expect(_getCleanupTimers().has('member-1')).toBe(true);
   });
 
+  // apra-fleet-5co8.5.1: setTimeout's delay is a signed 32-bit int and Node
+  // SILENTLY CLAMPS an overflowing one to ~1ms instead of firing it later, so
+  // a 90-day Azure DevOps PAT would be auto-revoked moments after deployment.
+  // Beyond the ceiling we schedule NOTHING and rely on checkVcsTokenExpiry's
+  // day-scale warning plus reactive AUTH_EXPIRED classification instead.
+  it('schedules no timer at all when expiresAt is beyond setTimeout\'s ~24.8-day ceiling', () => {
+    const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', expiresAt);
+    expect(_getCleanupTimers().has('member-1')).toBe(false);
+  });
+
+  it('still schedules just inside the ceiling', () => {
+    const expiresAt = new Date(Date.now() + 20 * 24 * 60 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', expiresAt);
+    expect(_getCleanupTimers().has('member-1')).toBe(true);
+  });
+
+  it('cancels an existing timer even when the new expiry is beyond the ceiling', () => {
+    scheduleCredentialCleanup('member-1');
+    expect(_getCleanupTimers().has('member-1')).toBe(true);
+    scheduleCredentialCleanup('member-1', new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString());
+    expect(_getCleanupTimers().has('member-1')).toBe(false);
+  });
+
   it('calls revoke when timer fires and member has vcsProvider', async () => {
     const member = makeAgent();
     mockGetAllAgents.mockReturnValue([member]);
