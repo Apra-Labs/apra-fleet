@@ -56,12 +56,23 @@ const blockedDeploy = {
  * compose_permissions invocation and letting a test script the tool's answer.
  * `composeResponse` may be a string (the tool's return text) or a function
  * (called with the grant args; may throw to simulate a tool-level fault).
+ *
+ * Only HEAL-originated calls are recorded. createDeployPermissionsProvisioner
+ * (the separate, PROACTIVE pre-dispatch provisioner that reads deploy.md out
+ * of the working tree before every deploy/integ/regression dispatch) also
+ * calls compose_permissions, and its calls are answered but deliberately not
+ * counted here -- these assertions are about the reactive heal-and-retry path
+ * only. It is distinguishable by its fixed grant_reason.
  */
+const PROACTIVE_GRANT_REASON = 'auto-provisioned before dispatch';
+
 function recordingCallTool(calls, composeResponse) {
     const base = defaultMockCallTool();
     return async (name, toolArgs) => {
         if (name !== 'compose_permissions') return base(name, toolArgs);
-        calls.push(toolArgs);
+        const isProactive = typeof toolArgs?.grant_reason === 'string'
+            && toolArgs.grant_reason.includes(PROACTIVE_GRANT_REASON);
+        if (!isProactive) calls.push(toolArgs);
         const answer = typeof composeResponse === 'function' ? composeResponse(toolArgs) : composeResponse;
         return { content: [{ text: answer }] };
     };

@@ -14,7 +14,7 @@ import type { Agent } from '../types.js';
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
-  role: z.enum(['doer', 'reviewer', 'deployer', 'integ-test-runner', 'regression-test-runner']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test); deployer, integ-test-runner and regression-test-runner select their own base-dev/base-reviewer mode plus a matching bounds-<role>.json profile. When a `grant` request carries a role, each newly requested permission is checked against that role's bounds-<role>.json (skills/fleet/profiles/); an out-of-bounds permission is still granted, never blocked, but its ledger entry is flagged outOfBounds:true with requestedByRole recorded for later audit. No role, or a role with no bounds file, skips the bounds check entirely. Bounds never loosen the hard-rejected NEVER_AUTO_GRANT patterns, which are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Provide at least one of role or tags.'),
+  role: z.enum(['doer', 'reviewer', 'deployer', 'integ-test-runner', 'regression-test-runner']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test); deployer, integ-test-runner and regression-test-runner select their own base-dev/base-reviewer mode plus a matching bounds-<role>.json profile. When a `grant` request carries a role, each newly requested permission is checked against the bounds-<role>.json profile for that role (skills/fleet/profiles/); an out-of-bounds permission is still granted, never blocked, but its ledger entry is flagged outOfBounds:true with requestedByRole recorded for later audit. No role, or a role with no bounds file, skips the bounds check entirely. Bounds never loosen the hard-rejected NEVER_AUTO_GRANT patterns, which are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Provide at least one of role or tags.'),
   tags: z.array(z.string()).optional().describe('Member tags. Include "doer" or "reviewer" to set the primary mode (default doer); other tags (e.g. "gpu", "devops") load tag-<name>.json profiles and merge additively. When both role and tags are given, tags wins.'),
   project_folder: z.string().optional().describe('Local project folder containing permissions.json ledger. Omit to skip ledger merge.'),
   grant: z.array(z.string()).optional().describe('Reactive mode: additional permissions to grant (e.g. ["Bash(docker:*)", "Bash(docker-compose:*)"]). Appended to current permissions and re-delivered.'),
@@ -214,12 +214,6 @@ export function loadBounds(profilesDir: string, role: string | undefined): strin
   const bounds = loadProfile(profilesDir, `bounds-${role}`);
   if (!Array.isArray(bounds)) return [];
   return bounds;
-}
-
-/** Escapes a string for literal use inside a RegExp, except '*' which callers
- *  handle separately as the wildcard token. */
-function escapeRegExpExceptStar(s: string): string {
-  return s.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** Matches a single bounds entry against a granted permission string, treating
