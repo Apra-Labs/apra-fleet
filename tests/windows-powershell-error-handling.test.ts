@@ -1,8 +1,8 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { execSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { tmpdir, homedir } from 'node:os';
 import { wrapPowerShellEncoded, WindowsCommands } from '../src/os/windows.js';
 
 /**
@@ -74,6 +74,73 @@ const hasPowerShell = process.platform === 'win32' && (() => {
   }
 })();
 
+// -----------------------------------------------------------------------
+// apra-fleet-ot2z.15.1: reusable live-PowerShell harness. The per-call-site
+// live tests under apra-fleet-ot2z.15 (deepMergeJson, hashFilesRecursive,
+// writeTextFile/credentialFileWrite, strategy.ts deleteFiles, ...) import
+// these instead of hand-rolling their own execSync/temp-dir/attrib plumbing.
+// -----------------------------------------------------------------------
+
+/** Run a `powershell -EncodedCommand ...` (or any shell) command string via
+ *  execSync and return its outcome WITHOUT throwing on a non-zero exit --
+ *  execSync throws on non-zero, so callers that want to assert an exit code
+ *  (rather than only the happy path) need this instead of a bare execSync
+ *  call. `(e as {status?:number}).status` is `undefined` when the process
+ *  was killed by a signal rather than exiting normally; treat that as 1
+ *  (generic failure) so callers always get a concrete number. */
+export function runPs(cmd: string): { code: number; stdout: string; stderr: string } {
+  try {
+    const stdout = execSync(cmd, { encoding: 'utf-8' });
+    return { code: 0, stdout, stderr: '' };
+  } catch (e) {
+    const err = e as { status?: number; stdout?: Buffer | string; stderr?: Buffer | string };
+    return {
+      code: err.status ?? 1,
+      stdout: err.stdout ? err.stdout.toString() : '',
+      stderr: err.stderr ? err.stderr.toString() : '',
+    };
+  }
+}
+
+/** Create a fresh temp directory UNDER os.homedir() -- NOT os.tmpdir().
+ *  hashFilesRecursive (src/os/windows.ts:382-386) builds its PowerShell path
+ *  with `Join-Path $HOME '<relative-path>'`, so a fixture tree exercised by
+ *  that call site (or anything else rooted at $HOME) must actually live
+ *  under the real home directory, not the OS temp directory, or the
+ *  generated script would look in the wrong place.
+ *
+ *  Returns both the absolute `dir` (for direct fs access / attrib calls) and
+ *  `relDir` (the path relative to homedir(), i.e. what a $HOME-relative
+ *  PowerShell script like hashFilesRecursive's expects as its `dir` arg).
+ *  Registers its own `afterAll` cleanup (recursive force-remove) so callers
+ *  never need to remember to tear it down themselves -- vitest hooks are
+ *  file-scoped, so this correctly attaches to whichever spec file called it. */
+export function makeTempDir(prefix: string): { dir: string; relDir: string } {
+  const dir = mkdtempSync(join(homedir(), prefix));
+  const relDir = relative(homedir(), dir);
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { dir, relDir };
+}
+
+/** Set the Windows read-only file attribute on `path` (file or directory),
+ *  so a call site's PowerShell error-handling (e.g. deleteFiles's
+ *  -ErrorAction SilentlyContinue tolerance, or a genuine access-denied
+ *  assertion) can be provoked against a real locked file. `attrib` is a
+ *  cmd.exe builtin available on every Windows box without needing to go
+ *  through wrapPowerShellEncoded for this bookkeeping step. */
+export function makeReadOnly(path: string): void {
+  execSync(`attrib +R "${path}"`);
+}
+
+/** Clear the read-only attribute set by makeReadOnly(), so cleanup (rmSync
+ *  in afterAll/afterEach) can actually delete the fixture afterward -- a
+ *  read-only file/dir left set would make teardown fail on Windows. */
+export function clearReadOnly(path: string): void {
+  execSync(`attrib -R "${path}"`);
+}
+
 describe.runIf(hasPowerShell)('wrapPowerShellEncoded: live PowerShell exit codes', () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'wpse-test-'));
   const failBat = join(tmpDir, 'fail.bat');
@@ -113,5 +180,44 @@ describe.runIf(hasPowerShell)('wrapPowerShellEncoded: live PowerShell exit codes
       code = (e as { status?: number }).status;
     }
     expect(code).toBe(0);
+  }, 20000);
+});
+
+describe.runIf(hasPowerShell)('live-PowerShell harness self-test (apra-fleet-ot2z.15.1)', () => {
+  it('runPs never throws on a non-zero exit and surfaces the real exit code', () => {
+    expect(runPs(wrapPowerShellEncoded('exit 3')).code).not.toBe(0);
+    expect(runPs(wrapPowerShellEncoded('exit 3')).code).toBeTypeOf('number');
+  }, 20000);
+
+  it('runPs surfaces exit 0 and captures stdout on success', () => {
+    const result = runPs(wrapPowerShellEncoded('Write-Output "ok"'));
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe('ok');
+  }, 20000);
+
+  it('makeTempDir creates a fixture directly under os.homedir(), not os.tmpdir()', () => {
+    const { dir, relDir } = makeTempDir('wpse-harness-');
+    expect(existsSync(dir)).toBe(true);
+    expect(dir.startsWith(homedir())).toBe(true);
+    // relDir must be usable as hashFilesRecursive's `dir` arg (joined with
+    // $HOME by the caller) -- i.e. a bare relative path, no leading `..`.
+    expect(relDir.startsWith('..')).toBe(false);
+  });
+
+  it('makeReadOnly/clearReadOnly toggle the Windows read-only attribute so an access-denied case can be provoked then cleaned up', () => {
+    const { dir } = makeTempDir('wpse-harness-ro-');
+    const lockedFile = join(dir, 'locked.txt');
+    writeFileSync(lockedFile, 'do not touch');
+
+    makeReadOnly(lockedFile);
+    const deniedWrite = runPs(wrapPowerShellEncoded(`Set-Content -Path "${lockedFile}" -Value "x"`));
+    expect(deniedWrite.code).not.toBe(0);
+
+    // Clearing read-only must allow the write to succeed again, and must
+    // itself succeed so afterAll's rmSync teardown (registered by
+    // makeTempDir) can actually delete the fixture.
+    clearReadOnly(lockedFile);
+    const allowedWrite = runPs(wrapPowerShellEncoded(`Set-Content -Path "${lockedFile}" -Value "x"`));
+    expect(allowedWrite.code).toBe(0);
   }, 20000);
 });
