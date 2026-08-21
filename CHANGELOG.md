@@ -88,8 +88,7 @@ for all 23 inventoried tools (46 documents in memory-contract/v1/schemas/),
 with a demonstrated byte-identical re-run guarantee.
 
 Carried forward (still open, core to the memory-contract/v1 deliverable):
-the MemoryProvider method contract (`methods.json`), the error
-taxonomy with stable machine codes and its projection into MCP error
+the error taxonomy with stable machine codes and its projection into MCP error
 payloads and the OpenAPI stub, the round-trip fixture corpus and its
 provider-parameterized validator (the sprint's stated exit criterion), the CI
 drift guard, and the final self-review/sign-off checklist.
