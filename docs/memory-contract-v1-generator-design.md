@@ -18,7 +18,7 @@ one described below:
   surface's schemas are v3-authored. Migrating all tool schemas to v4 to use
   it is out of scope for a schema-generation task and would be a much larger,
   separate change.
-- The commonly available third-party generator's own "2020-12 target" mode is
+- The `zod-to-json-schema` package's own "2020-12 target" mode is
   a net regression versus its plain draft-07 mode for this surface: it omits
   `$schema` entirely (an undeclared dialect, which fails a "declare 2020-12
   exactly" requirement by omission) and it emits exclusive numeric bounds in
@@ -26,7 +26,7 @@ one described below:
   the 2020-12 metaschema rejects outright (2020-12 requires the bound itself
   to carry the number).
 
-The chosen path is therefore: emit with the generator's plain (draft-07-like)
+The chosen path is therefore: emit with `zod-to-json-schema`'s plain (draft-07-like)
 target and `$defs` as the definitions path, then run every document through a
 small, pure, deterministic postprocessing module that mechanically fixes up
 exactly four things:

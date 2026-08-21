@@ -84,13 +84,16 @@ OS-assigned ephemeral port could land in a client fetch implementation's
 blocked-port list.
 
 Carried forward (still open, core to the memory-contract/v1 deliverable):
-the zod-to-JSON-Schema generation path and its deterministic per-tool schema
-emit, the MemoryProvider method contract (`methods.json`), the error
+the MemoryProvider method contract (`methods.json`), the error
 taxonomy with stable machine codes and its projection into MCP error
 payloads and the OpenAPI stub, the round-trip fixture corpus and its
 provider-parameterized validator (the sprint's stated exit criterion), the CI
-drift guard, and the final self-review/sign-off checklist. None of these
-were reached this sprint.
+drift guard, and the final self-review/sign-off checklist.
+
+Editor's note: the zod-to-JSON-Schema generation path and its deterministic
+per-tool schema emit, listed as carried-forward when this entry was first
+written, did in fact land in a later cycle of this same sprint -- see the
+newer entry above for what shipped and what is still open.
 
 Deploy could not be completed during this sprint: repeated attempts were
 blocked either by the runbook's own active-sprint safety gate (deploying
