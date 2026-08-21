@@ -24,7 +24,7 @@
  */
 
 import { buildEnvelope, classifyEndpointFailure, dispatchFailureFromHttp } from './core.mjs';
-import { joinUrl, postJson, requireString, resolveFetch } from './http.mjs';
+import { joinUrl, postJson, requireString, resolveFetch, resolveRequestTimeoutMs } from './http.mjs';
 
 /** Path appended to the configured base URL. */
 export const ANTHROPIC_MESSAGES_PATH = '/v1/messages';
@@ -59,13 +59,17 @@ export const DEFAULT_ANTHROPIC_MAX_TOKENS = 4096;
  * @property {Record<string,string>} [headers] - extra request headers (e.g.
  *   an `anthropic-beta` opt-in).
  * @property {Function} [fetch] - injected fetch; defaults to globalThis.fetch.
+ * @property {number} [timeoutMs] - default request deadline (ms) used when a
+ *   dispatch's own options.timeoutMs/timeout_s is not set; falls back to
+ *   DEFAULT_REQUEST_TIMEOUT_MS (see http.mjs) when neither is set. A stalled
+ *   connection never hangs a dispatch indefinitely (apra-fleet-5se.16).
  */
 
 /**
  * Build the executePrompt half of a FleetApi over the Anthropic native API.
  *
  * @param {AnthropicEndpointConfig} config
- * @returns {{executePrompt: (options?: {prompt?: string, signal?: AbortSignal}) => Promise<object>, url: string}}
+ * @returns {{executePrompt: (options?: {prompt?: string, signal?: AbortSignal, timeoutMs?: number, timeout_s?: number}) => Promise<object>, url: string}}
  */
 export function createAnthropicTransport(config = {}) {
     const baseUrl = requireString(config.baseUrl, 'baseUrl');
@@ -93,7 +97,8 @@ export function createAnthropicTransport(config = {}) {
             ...(typeof config.system === 'string' && config.system !== '' ? { system: config.system } : {})
         };
 
-        const res = await postJson({ fetchImpl, url, headers, body, signal: options.signal });
+        const timeoutMs = resolveRequestTimeoutMs(options, config);
+        const res = await postJson({ fetchImpl, url, headers, body, signal: options.signal, timeoutMs });
 
         if (!res.ok) {
             return dispatchFailureFromHttp({

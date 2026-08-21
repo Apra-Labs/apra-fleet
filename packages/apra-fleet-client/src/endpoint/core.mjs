@@ -202,15 +202,23 @@ export function httpFailureReason(status) {
  *                    caller's AbortSignal, i.e. FleetWorkflow.requestStop() --
  *                    NOT a network failure, see the http.mjs abort detection
  *                    this feeds)
+ *   - 'timeout'   -> FleetTransportError  (the request's own deadline --
+ *                    options.timeoutMs/timeout_s -- expired before a response
+ *                    arrived. Kept distinct from 'aborted': that is a
+ *                    deliberate caller cancellation, this is nobody asking to
+ *                    stop, just a stalled provider. details.reason is
+ *                    'timeout', same string httpFailureReason() already uses
+ *                    for an HTTP 408.)
  *   - 'network'   -> FleetTransportError  (request never got a response:
  *                    DNS/socket failure, TLS error -- genuine connectivity
- *                    failures only, now that abort has its own kind)
+ *                    failures only, now that abort and timeout have their own
+ *                    kinds)
  *   - 'malformed' -> AgentOutputError     (a response arrived but this
  *                    transport could not read a reply out of it)
  *   - 'http'      -> AgentDispatchError   (a well-formed non-2xx: the
  *                    dispatch failed before any LLM content existed)
  *
- * @param {{kind: 'aborted'|'network'|'malformed'|'http', status?: number, statusText?: string,
+ * @param {{kind: 'aborted'|'timeout'|'network'|'malformed'|'http', status?: number, statusText?: string,
  *   body?: unknown, detail?: string, url?: string, cause?: unknown}} failure
  * @returns {CancelledError|FleetTransportError|AgentOutputError|AgentDispatchError}
  */
@@ -223,6 +231,14 @@ export function classifyEndpointFailure(failure) {
         return new CancelledError(
             `[Endpoint Transport] the provider request${where} was cancelled: ${why}`,
             { details: { reason: 'cancelled', url }, cause }
+        );
+    }
+
+    if (kind === 'timeout') {
+        const why = detail || (cause && cause.message) || 'the request deadline expired before a response was received';
+        return new FleetTransportError(
+            `[Endpoint Transport] the provider request${where} timed out: ${why}`,
+            { details: { reason: 'timeout', url }, cause }
         );
     }
 

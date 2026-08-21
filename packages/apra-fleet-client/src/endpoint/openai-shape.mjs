@@ -28,7 +28,7 @@
  */
 
 import { buildEnvelope, classifyEndpointFailure, dispatchFailureFromHttp } from './core.mjs';
-import { joinUrl, postJson, requireString, resolveFetch } from './http.mjs';
+import { joinUrl, postJson, requireString, resolveFetch, resolveRequestTimeoutMs } from './http.mjs';
 
 /** Call pattern -> path appended to the configured base URL. */
 export const OPENAI_PATTERNS = Object.freeze({
@@ -52,6 +52,10 @@ export const OPENAI_PATTERNS = Object.freeze({
  * @property {Record<string,string>} [headers] - extra request headers (e.g.
  *   openrouter.ai's HTTP-Referer / X-Title attribution headers).
  * @property {Function} [fetch] - injected fetch; defaults to globalThis.fetch.
+ * @property {number} [timeoutMs] - default request deadline (ms) used when a
+ *   dispatch's own options.timeoutMs/timeout_s is not set; falls back to
+ *   DEFAULT_REQUEST_TIMEOUT_MS (see http.mjs) when neither is set. A stalled
+ *   connection never hangs a dispatch indefinitely (apra-fleet-5se.16).
  */
 
 /**
@@ -59,7 +63,7 @@ export const OPENAI_PATTERNS = Object.freeze({
  * endpoint.
  *
  * @param {OpenAiEndpointConfig} config
- * @returns {{executePrompt: (options?: {prompt?: string, signal?: AbortSignal}) => Promise<object>, url: string, pattern: string}}
+ * @returns {{executePrompt: (options?: {prompt?: string, signal?: AbortSignal, timeoutMs?: number, timeout_s?: number}) => Promise<object>, url: string, pattern: string}}
  */
 export function createOpenAiTransport(config = {}) {
     const baseUrl = requireString(config.baseUrl, 'baseUrl');
@@ -91,7 +95,8 @@ export function createOpenAiTransport(config = {}) {
             : { model, prompt };
         if (typeof config.maxTokens === 'number') body.max_tokens = config.maxTokens;
 
-        const res = await postJson({ fetchImpl, url, headers, body, signal: options.signal });
+        const timeoutMs = resolveRequestTimeoutMs(options, config);
+        const res = await postJson({ fetchImpl, url, headers, body, signal: options.signal, timeoutMs });
 
         // A non-2xx is a dispatch that failed before any LLM content existed,
         // which is exactly the engine's isError channel -- reported, not

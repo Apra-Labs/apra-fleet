@@ -34,6 +34,86 @@ function isAbortError(cause) {
 }
 
 /**
+ * Recognize the abort reason `AbortSignal.timeout()` produces, so a request
+ * that hit ITS deadline can be classified as its own 'timeout' kind rather
+ * than folded into 'aborted' (the CancelledError/cooperative-cancellation
+ * meaning -- see classifyEndpointFailure's kind doc in core.mjs).
+ * `AbortSignal.timeout()` fires with a `DOMException` whose name is
+ * `'TimeoutError'`, distinct from the `'AbortError'` name/`ABORT_ERR' code an
+ * explicit `controller.abort()` produces.
+ *
+ * @param {unknown} cause
+ * @returns {boolean}
+ */
+function isTimeoutError(cause) {
+    if (!cause || typeof cause !== 'object') return false;
+    return cause.name === 'TimeoutError';
+}
+
+/**
+ * Fallback request deadline (ms) applied when neither the caller
+ * (`options.timeoutMs` / `options.timeout_s`) nor the transport config
+ * (`config.timeoutMs`) supplies one. A stalled connection must never hang a
+ * dispatch indefinitely -- see apra-fleet-5se.16 -- so this is the last
+ * resort, not an opt-in.
+ */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+
+/**
+ * Resolve the request deadline (ms) for a dispatch: the caller's
+ * `options.timeoutMs` first, then `options.timeout_s` (seconds -> ms), then
+ * the transport's own `config.timeoutMs`, then DEFAULT_REQUEST_TIMEOUT_MS.
+ * Never returns undefined/0 -- a deadline is always enforced.
+ *
+ * @param {{timeoutMs?: number, timeout_s?: number}} [options]
+ * @param {{timeoutMs?: number}} [config]
+ * @returns {number}
+ */
+export function resolveRequestTimeoutMs(options = {}, config = {}) {
+    if (typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0) {
+        return options.timeoutMs;
+    }
+    if (typeof options.timeout_s === 'number' && Number.isFinite(options.timeout_s) && options.timeout_s > 0) {
+        return options.timeout_s * 1000;
+    }
+    if (typeof config.timeoutMs === 'number' && Number.isFinite(config.timeoutMs) && config.timeoutMs > 0) {
+        return config.timeoutMs;
+    }
+    return DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
+/**
+ * Compose the caller's signal (if any) with a deadline that fires after
+ * `timeoutMs`, so either one aborting the request is honoured. `AbortSignal.any`
+ * preserves whichever sub-signal's `.reason` actually fired, which is what
+ * lets postJson tell a deadline expiry (`TimeoutError`) apart from a caller
+ * cancellation (`AbortError`) after the fact.
+ *
+ * Deliberately NOT `AbortSignal.timeout()`: that helper's own internal timer
+ * is unref'd (Node will not keep the process alive on its account alone), so
+ * a dispatch whose only other work is a fetch with no live handle yet (DNS
+ * still resolving, or a hand-written test stub) could have the process exit
+ * before the deadline ever fires, silently defeating the whole point of this
+ * fix. Using a plain (ref'd) `setTimeout` here means the deadline is
+ * guaranteed to fire; `clearDeadline()` releases it as soon as the request
+ * settles for any other reason, so a fast/successful call never holds the
+ * process open for the rest of `timeoutMs`.
+ *
+ * @param {AbortSignal | undefined} signal
+ * @param {number} timeoutMs
+ * @returns {{signal: AbortSignal, clearDeadline: () => void}}
+ */
+function withDeadline(signal, timeoutMs) {
+    const deadlineController = new AbortController();
+    const timer = setTimeout(() => {
+        deadlineController.abort(new DOMException('The operation timed out', 'TimeoutError'));
+    }, timeoutMs);
+    const clearDeadline = () => clearTimeout(timer);
+    const combined = signal ? AbortSignal.any([signal, deadlineController.signal]) : deadlineController.signal;
+    return { signal: combined, clearDeadline };
+}
+
+/**
  * @param {unknown} value
  * @param {string} what - the config field name, used verbatim in the error.
  * @returns {string}
@@ -91,73 +171,94 @@ export function joinUrl(baseUrl, path) {
  *
  * Throws only for the failures that are not about the provider's answer:
  *   - the caller's signal was already, or became, aborted -> CancelledError
+ *   - the request deadline (timeoutMs) expired first -> FleetTransportError
+ *     with details.reason 'timeout' (its own kind, not folded into the
+ *     cancellation above -- see classifyEndpointFailure's kind doc)
  *   - the request never got a response for any other reason -> FleetTransportError
  *   - a response arrived whose body could not even be read -> AgentOutputError
  * A non-2xx is NOT thrown: it comes back as `ok: false` for the adapter to
  * report on the engine's isError channel via dispatchFailureFromHttp().
  *
  * @param {{fetchImpl: Function, url: string, headers?: Record<string,string>,
- *   body: unknown, signal?: AbortSignal}} request
+ *   body: unknown, signal?: AbortSignal, timeoutMs?: number}} request -
+ *   `timeoutMs`, when supplied, is enforced via a deadline composed with the
+ *   caller's `signal` (see resolveRequestTimeoutMs() and withDeadline()).
  * @returns {Promise<{ok: boolean, status: number, statusText: string, url: string,
  *   body: unknown, isJson: boolean}>}
  */
-export async function postJson({ fetchImpl, url, headers = {}, body, signal } = {}) {
-    // A signal that fired before fetch was even called (requestStop() raced
-    // ahead of dispatch) must be honoured the same way as an abort that
-    // happens mid-flight -- some fetch implementations only surface this via
-    // the AbortError rejection below, but not all are guaranteed to.
-    if (signal && signal.aborted) {
-        throw classifyEndpointFailure({ kind: 'aborted', url, cause: signal.reason });
-    }
+export async function postJson({ fetchImpl, url, headers = {}, body, signal, timeoutMs } = {}) {
+    const hasDeadline = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0;
+    const deadline = hasDeadline ? withDeadline(signal, timeoutMs) : null;
+    const requestSignal = deadline ? deadline.signal : signal;
 
-    let response;
     try {
-        response = await fetchImpl(url, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', ...headers },
-            body: JSON.stringify(body),
-            ...(signal ? { signal } : {})
-        });
-    } catch (cause) {
-        if (isAbortError(cause)) {
-            throw classifyEndpointFailure({ kind: 'aborted', url, cause });
+        // A signal that fired before fetch was even called (requestStop() raced
+        // ahead of dispatch, or the deadline was already in the past) must be
+        // honoured the same way as an abort that happens mid-flight -- some fetch
+        // implementations only surface this via the AbortError rejection below,
+        // but not all are guaranteed to.
+        if (requestSignal && requestSignal.aborted) {
+            const kind = isTimeoutError(requestSignal.reason) ? 'timeout' : 'aborted';
+            throw classifyEndpointFailure({ kind, url, cause: requestSignal.reason });
         }
-        throw classifyEndpointFailure({ kind: 'network', url, cause });
-    }
 
-    let text;
-    try {
-        text = await response.text();
-    } catch (cause) {
-        throw classifyEndpointFailure({
-            kind: 'malformed',
-            url,
-            detail: 'the response body could not be read',
-            cause
-        });
-    }
-
-    let parsed;
-    let isJson = false;
-    if (typeof text === 'string' && text !== '') {
+        let response;
         try {
-            parsed = JSON.parse(text);
-            isJson = true;
-        } catch {
-            // Left as raw text on purpose -- see the doc comment above.
+            response = await fetchImpl(url, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', ...headers },
+                body: JSON.stringify(body),
+                ...(requestSignal ? { signal: requestSignal } : {})
+            });
+        } catch (cause) {
+            if (isTimeoutError(cause)) {
+                throw classifyEndpointFailure({ kind: 'timeout', url, cause });
+            }
+            if (isAbortError(cause)) {
+                throw classifyEndpointFailure({ kind: 'aborted', url, cause });
+            }
+            throw classifyEndpointFailure({ kind: 'network', url, cause });
         }
-    }
 
-    const status = typeof response.status === 'number' ? response.status : -1;
-    return {
-        // Derived from the status rather than read off `response.ok`, so a
-        // hand-written stub in a test only has to supply what a real provider
-        // reply actually carries.
-        ok: status >= 200 && status <= 299,
-        status,
-        statusText: typeof response.statusText === 'string' ? response.statusText : '',
-        url,
-        body: isJson ? parsed : text,
-        isJson
-    };
+        let text;
+        try {
+            text = await response.text();
+        } catch (cause) {
+            throw classifyEndpointFailure({
+                kind: 'malformed',
+                url,
+                detail: 'the response body could not be read',
+                cause
+            });
+        }
+
+        let parsed;
+        let isJson = false;
+        if (typeof text === 'string' && text !== '') {
+            try {
+                parsed = JSON.parse(text);
+                isJson = true;
+            } catch {
+                // Left as raw text on purpose -- see the doc comment above.
+            }
+        }
+
+        const status = typeof response.status === 'number' ? response.status : -1;
+        return {
+            // Derived from the status rather than read off `response.ok`, so a
+            // hand-written stub in a test only has to supply what a real provider
+            // reply actually carries.
+            ok: status >= 200 && status <= 299,
+            status,
+            statusText: typeof response.statusText === 'string' ? response.statusText : '',
+            url,
+            body: isJson ? parsed : text,
+            isJson
+        };
+    } finally {
+        // Release the deadline timer as soon as the request settles for any
+        // reason, so a fast/successful call never holds the process open for
+        // the remainder of timeoutMs.
+        if (deadline) deadline.clearDeadline();
+    }
 }

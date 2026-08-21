@@ -130,6 +130,25 @@ test('classifyEndpointFailure - aborted is a distinct constructor from the other
     assert.notStrictEqual(aborted.constructor, network.constructor);
 });
 
+test('classifyEndpointFailure - a request deadline expiry classifies to FleetTransportError (reason: timeout), not CancelledError (apra-fleet-5se.16)', () => {
+    const cause = Object.assign(new Error('signal timed out'), { name: 'TimeoutError' });
+    const err = classifyEndpointFailure({ kind: 'timeout', cause });
+    assert.ok(err instanceof FleetTransportError);
+    assert.strictEqual(err.code, 'TRANSPORT_ERROR');
+    assert.strictEqual(err.details.reason, 'timeout');
+    assert.strictEqual(err.cause, cause);
+    assert.strictEqual(err instanceof CancelledError, false);
+});
+
+test('classifyEndpointFailure - timeout and aborted stay distinct kinds even though both come off an abort signal', () => {
+    const timeout = classifyEndpointFailure({ kind: 'timeout', detail: 'deadline expired' });
+    const aborted = classifyEndpointFailure({ kind: 'aborted', detail: 'cancelled' });
+
+    assert.notStrictEqual(timeout.constructor, aborted.constructor);
+    assert.ok(timeout instanceof FleetTransportError);
+    assert.ok(aborted instanceof CancelledError);
+});
+
 test('dispatchFailureFromHttp - a non-2xx becomes a classified isError envelope, not a thrown error', () => {
     const envelope = dispatchFailureFromHttp({ status: 401, statusText: 'Unauthorized', body: 'bad api key' });
 

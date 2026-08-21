@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createOpenAiTransport } from '../src/endpoint/openai-shape.mjs';
 import { createAnthropicTransport, DEFAULT_ANTHROPIC_MAX_TOKENS, DEFAULT_ANTHROPIC_VERSION } from '../src/endpoint/anthropic-shape.mjs';
+import { FleetTransportError, CancelledError } from '../src/errors/workflow-errors.mjs';
 
 // Request/response CONTRACT for both shape adapters, over a stubbed fetch:
 // what each adapter puts ON THE WIRE, and that both converge on the same
@@ -188,4 +189,67 @@ test('no process.env read - config comes only from the injected object', async (
         const withoutComments = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
         assert.ok(!withoutComments.includes('process.env'), `${relPath} must never read process.env directly`);
     }
+});
+
+// Regression coverage for apra-fleet-5se.16: both shape adapters used to read
+// only options.prompt/options.signal and ignore options.timeoutMs/timeout_s
+// entirely, so a provider that accepted the connection and then stalled hung
+// the dispatch indefinitely. Both adapters must now derive a request deadline
+// from those options (or the transport's own config.timeoutMs) and reject
+// with FleetTransportError (reason: timeout) rather than hanging forever.
+
+/** A fetch stub whose signal never fires on its own -- only reacts to abort. */
+function neverSettlingFetch() {
+    return (url, init) => new Promise((resolve, reject) => {
+        init.signal.addEventListener('abort', () => {
+            const cause = init.signal.reason;
+            reject(cause instanceof Error ? cause : Object.assign(new Error(String(cause)), { name: 'AbortError' }));
+        }, { once: true });
+    });
+}
+
+test('OpenAI transport - a stalled provider is bounded by options.timeoutMs, not left to hang', async () => {
+    const transport = createOpenAiTransport({
+        baseUrl: 'https://api.openai.com/v1', apiKey: 'k', model: 'gpt-test', fetch: neverSettlingFetch()
+    });
+
+    await assert.rejects(
+        transport.executePrompt({ prompt: 'hello', timeoutMs: 20 }),
+        (err) => {
+            assert.ok(err instanceof FleetTransportError, `expected FleetTransportError, got ${err.constructor.name}`);
+            assert.strictEqual(err.details.reason, 'timeout');
+            assert.strictEqual(err instanceof CancelledError, false);
+            return true;
+        }
+    );
+});
+
+test('Anthropic transport - options.timeout_s (seconds) is honoured, converted to a millisecond deadline', async () => {
+    const transport = createAnthropicTransport({
+        baseUrl: 'https://api.anthropic.com', apiKey: 'k', model: 'claude-test', fetch: neverSettlingFetch()
+    });
+
+    await assert.rejects(
+        transport.executePrompt({ prompt: 'hello', timeout_s: 0.02 }),
+        (err) => {
+            assert.ok(err instanceof FleetTransportError);
+            assert.strictEqual(err.details.reason, 'timeout');
+            return true;
+        }
+    );
+});
+
+test('OpenAI transport - a config-level timeoutMs default applies when the dispatch does not set one', async () => {
+    const transport = createOpenAiTransport({
+        baseUrl: 'https://api.openai.com/v1', apiKey: 'k', model: 'gpt-test', fetch: neverSettlingFetch(), timeoutMs: 20
+    });
+
+    await assert.rejects(
+        transport.executePrompt({ prompt: 'hello' }),
+        (err) => {
+            assert.ok(err instanceof FleetTransportError);
+            assert.strictEqual(err.details.reason, 'timeout');
+            return true;
+        }
+    );
 });
