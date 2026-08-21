@@ -44,6 +44,16 @@ test('makeEndpointApi - unrecognized provider is a construction-time TypeError',
     );
 });
 
+test('makeEndpointApi - prototype-chain provider names are a construction-time TypeError, not a broken FleetApi', () => {
+    for (const provider of ['constructor', 'toString', 'hasOwnProperty']) {
+        assert.throws(
+            () => makeEndpointApi({ provider, baseUrl: 'x', apiKey: 'x', model: 'x' }),
+            TypeError,
+            `provider: ${provider} should throw TypeError`
+        );
+    }
+});
+
 test('makeEndpointApi - the returned object is accepted by new FleetWorkflow()', () => {
     const api = makeEndpointApi({
         provider: 'openai',

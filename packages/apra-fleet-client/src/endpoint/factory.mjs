@@ -51,7 +51,8 @@ const PROVIDERS = Object.freeze({
  *   baseUrl/apiKey/model).
  */
 export function makeEndpointApi(config = {}) {
-    const createTransport = PROVIDERS[config.provider];
+    const hasProvider = Object.prototype.hasOwnProperty.call(PROVIDERS, config.provider);
+    const createTransport = hasProvider ? PROVIDERS[config.provider] : undefined;
     if (typeof createTransport !== 'function') {
         throw new TypeError(
             `[Endpoint Transport] config.provider must be one of ${Object.keys(PROVIDERS).join(', ')}, ` +
