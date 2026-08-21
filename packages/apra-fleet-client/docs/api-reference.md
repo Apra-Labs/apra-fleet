@@ -453,3 +453,88 @@ test file covering `factory.mjs` (`test/fleet-client-*.test.mjs` covers
 with this path being currently broken/unexercised. The `.`, `./client`,
 and `./transport` exports are unaffected -- `ApraFleet`, `McpClient`, and
 the transports can be used standalone without going through this factory.
+
+## `src/endpoint/factory.mjs`
+
+### `function makeEndpointApi(config = {})`
+
+Builds a complete `FleetApi` object that talks to an LLM endpoint (OpenAI or
+Anthropic) directly, without requiring a running `apra-fleet` MCP server.
+
+The returned object implements the three-method `FleetApi` surface
+(`executePrompt`, `executeCommand`, `getMemberModelPricing`) and is accepted
+by `new FleetWorkflow(fleetApi)` exactly like an MCP-backed `ApraFleet`.
+
+**Config object:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `provider` | `'openai' \| 'anthropic'` | Yes | Which LLM endpoint shape to use. |
+| `baseUrl` | `string` | Yes | Base URL of the LLM endpoint (e.g. `'https://api.openai.com/v1'` or `'https://api.anthropic.com'`). |
+| `apiKey` | `string` | Yes | API key for the endpoint (e.g. `'sk-...'` for OpenAI, `'sk-ant-...'` for Anthropic). |
+| `model` | `string` | Yes | Model ID to dispatch on every request (e.g. `'gpt-4o'` or `'claude-3-5-sonnet-20241022'`). Since this transport has no member to resolve tier keywords against, `'cheap'`, `'standard'`, and `'premium'` keywords are ignored and this model is used for all tiers. |
+| `pricing` | `{promptPrice: number, completionPrice: number}?` | No | Per-token pricing in USD per 1M tokens. If omitted, `getMemberModelPricing()` signals unpriced to the workflow engine. Both must be present if the field is given; a partial object is rejected. |
+| `pattern` | `string?` | No | Passed to the OpenAI shape adapter; see its source for accepted patterns. |
+| `maxTokens` | `number?` | No | Max output tokens, forwarded to the shape adapter. |
+| `headers` | `object?` | No | Extra HTTP headers to merge into every request (e.g. custom auth, provider-specific options). |
+| `system` | `string?` | No | System prompt (OpenAI shape only; Anthropic shape ignores this). |
+| `anthropicVersion` | `string?` | No | API version header (Anthropic shape only; OpenAI shape ignores this). |
+| `fetch` | `function?` | No | Custom fetch implementation (defaults to Node's built-in `fetch`). |
+
+**Important notes:**
+
+- **Config is never read from `process.env`.** All values (baseUrl, apiKey,
+  model, pricing) are passed in as-is by the caller. The package does not
+  read environment variables, relying instead on the caller to supply
+  configuration from their own source of truth (e.g. a cloud function's
+  secrets manager, a local config file, or explicit arguments).
+- **`executeCommand` always refuses.** This transport has no member, no SSH
+  connection, and no work folder, so shell commands cannot be executed.
+  Calling `executeCommand()` rejects with a `CommandError` whose `details.reason`
+  is `'command_execution_unsupported'`. Use an MCP-backed `ApraFleet` if you
+  need command execution.
+- **Tier keywords are ignored.** Every dispatch (whether the workflow asks for
+  `'cheap'`, `'standard'`, or `'premium'`) uses the single configured `model`.
+  Since there is no per-tier resolution, `getMemberModelPricing()` reports the
+  same price for all three tiers (the one in `config.pricing`), or signals
+  unpriced if `config.pricing` was omitted.
+
+**Returns:**
+
+An object with three async methods:
+
+- **`executePrompt(options)`** -- dispatches a prompt to the configured LLM
+  endpoint. Accepts the full `ExecutePromptOptions` shape (see
+  `src/client/api.mjs` in api-reference.md above), but ignores the `model`
+  tier keyword and always sends the configured model. Returns the same
+  structured result as an MCP-backed prompt (content, usage, stop_reason, etc.).
+- **`executeCommand(options)`** -- always rejects with a `CommandError`.
+- **`getMemberModelPricing(options)`** -- returns pricing for the configured
+  model if `config.pricing` was supplied, or an unpriced signal otherwise.
+  Returns the standard MCP tool response envelope (`{content: [{type: 'text',
+  text: '<json>'}]}`).
+
+**Errors:**
+
+Throws a plain `TypeError` if `config.provider` is not one of `'openai'` or
+`'anthropic'`, or if the chosen shape adapter rejects the rest of config
+(e.g. missing or empty `baseUrl`, `apiKey`, or `model`).
+
+**Example:**
+
+```js
+import { makeEndpointApi } from '@apralabs/apra-fleet-client/endpoint';
+import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
+
+const fleetApi = makeEndpointApi({
+  provider: 'openai',
+  baseUrl: 'https://api.openai.com/v1',
+  apiKey: process.env.OPENAI_API_KEY_FROM_CONFIG_LAYER,
+  model: 'gpt-4o',
+  pricing: { promptPrice: 2.5, completionPrice: 10.0 }
+});
+
+const workflow = new FleetWorkflow(fleetApi);
+const result = await workflow.agent('Write a summary', { timeoutMs: 60_000 });
+console.log(result.output);
+```
