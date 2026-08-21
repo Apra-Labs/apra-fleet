@@ -9,11 +9,13 @@ memory-contract/v1 skeleton (JSON Schemas, method contract, error taxonomy,
 round-trip validation against the live sqlite provider), as a single sprint /
 single PR. **Sprint verdict: FAIL**, judged against the epic's own acceptance
 criteria rather than closed-task count: no round-trip validator exists yet
-(the epic's own stated exit criterion), no CI drift guard was wired, the
-fixture corpus directory is still empty, and the `bindings/mcp/`/`bindings/openapi/`
-layers remain unowned empty stubs. See `docs/memory-contract-v1-generator-design.md`
-for the full design of what did land and `docs/learnings.md` for the review
-approach that reached this verdict.
+(the epic's own stated exit criterion), no CI drift guard was wired, and the
+fixture corpus directory is still empty. `bindings/mcp/` now holds 23
+committed tool definitions (commit `fcccf19f`, one per inventoried tool);
+`bindings/openapi/` remains an unowned empty stub. See
+`docs/memory-contract-v1-generator-design.md` for the full design of what did
+land and `docs/learnings.md` for the review approach that reached this
+verdict.
 
 What landed: the zod-to-JSON-Schema generation path was selected, proven
 against every hard construct in the surface (discriminated unions, closed
@@ -25,13 +27,20 @@ step that normalizes the generator's raw output to 2020-12 (dialect
 declaration, `definitions`-to-`$defs` renaming, exclusive-bound numeric
 form, tuple encoding) was hardened to be container-aware when repointing
 `$ref` pointers, so a data field that happens to be named "definitions" is
-no longer mistaken for a schema container and incorrectly rewritten. A real,
-previously-undetected contract defect was found and recorded: the published
-response schemas model a single fixed text block, but the real MCP response
-wrapper can emit up to three content blocks with optional annotations plus
-a top-level `structuredContent` field, so a real response carrying a display
-preamble would fail its own published schema -- this is exactly the gap the
-still-missing round-trip validator is meant to catch. Also fixed: a real
+no longer mistaken for a schema container and incorrectly rewritten. A claim
+recorded earlier in this cycle -- that a real response carrying a display
+preamble would fail its own published response schema -- does not hold for
+any of the 23 inventoried kb_*/code_* tools: `wrapTool`'s onboarding preamble
+and nudge suffix only ever attach when the tool result is non-JSON
+(`isJsonResponse` false), all 23 kb_*/code_* handlers return
+`JSON.stringify(...)`, and the nudge-suffix path is gated to `register_member`
+only (`src/services/tool-registry.ts`, `src/services/onboarding.ts`). The
+published single-text-block response schemas are still narrower than the real
+three-block `wrapTool` envelope in general -- `register_member`,
+`execute_prompt`, and any future non-JSON-returning tool can still trigger
+it, and that gap is exactly what the still-missing round-trip validator is
+meant to catch -- but it is not reachable through the 23 tools this contract
+actually covers. Also fixed: a real
 port-selection bug where an OS-assigned ephemeral port could land in a
 client fetch implementation's blocked-port list, and the beads-export commit
 guard's argument-passing bug in its inline copy. The `apra-pm` test suite
@@ -49,12 +58,14 @@ Note: dispatches using an unpriced model id are not reflected above (see N10, fe
 ```
 
 Carried forward (still open, core to the memory-contract/v1 deliverable): the
-MemoryProvider method contract (`methods.json`), the error taxonomy with
-stable machine codes and its projection into MCP error payloads and the
-OpenAPI stub, MCP binding definitions for every inventoried tool, the
-round-trip fixture corpus and its provider-parameterized validator (the
-sprint's stated exit criterion), the CI drift guard, and the final
-self-review/sign-off checklist. None of these were reached this sprint.
+error taxonomy with stable machine codes and its projection into MCP error
+payloads and the OpenAPI stub, the round-trip fixture corpus and its
+provider-parameterized validator (the sprint's stated exit criterion), the CI
+drift guard, and the final self-review/sign-off checklist. Two items
+previously carried forward here have since landed in later cycles of this
+same continuing sprint and are no longer open: the MemoryProvider method
+contract (`methods.json`, commit `c4161584`) and MCP binding definitions for
+every inventoried tool (`bindings/mcp/`, commit `fcccf19f`).
 
 ## [Unreleased] -- memory-contract/v1 inventory and test-suite stabilization
 
