@@ -1,6 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_query.request.json#",
+  "x-invariant": [
+    "INV-08"
+  ],
   "$ref": "#/$defs/v1-kb_query-request",
   "$defs": {
     "v1-kb_query-request": {

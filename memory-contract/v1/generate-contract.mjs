@@ -88,6 +88,12 @@ const REQUEST_INVARIANTS = {
   kb_import: ['INV-05'],
   kb_stats: ['INV-05'],
   kb_setup: ['INV-06'],
+  // INV-08's second half is a request-side guard: "at least one of query, tag
+  // or flagged_only MUST be supplied; the handler throws when all three are
+  // absent" (src/tools/kb-query.ts). Nothing in the zod schema can express
+  // that (D5: no .refine/.superRefine/.transform anywhere in the surface), so
+  // it is annotated on the request document too, not just the response.
+  kb_query: ['INV-08'],
 };
 // INV-09 ("no tool declares a response zod schema; shapes are OBSERVED, not
 // authoritative") applies to every response document. INV-08 (kb_query's two
@@ -107,6 +113,23 @@ function validateOrThrow(tool, kind, doc) {
 /**
  * Emit one schema document: zod -> jsonSchema7+$defs -> postprocess to
  * 2020-12 -> stamp $id and x-invariant -> validate -> stringify.
+ *
+ * $defs dedupe, stated explicitly rather than left implicit: zod-to-json-
+ * schema's `definitionPath: '$defs'` factors a sub-schema into `$defs` when
+ * the SAME zod object (by reference) is visited more than once within one
+ * `zodToJsonSchema()` call -- e.g. the recursive-entry case proved in
+ * GENERATOR-DECISION.md section 2. `kbScopeFields` (repo_path/repo_remote_url,
+ * INVENTORY.md 2.1's scope-field note), the one shape genuinely shared across
+ * 15 of the 16 kb_* request schemas, is mixed in via OBJECT SPREAD at each
+ * call site in src/tools/*.ts, not by re-using one shared zod object
+ * reference. Spread produces 15 structurally-identical but reference-distinct
+ * sub-schemas, so there is no single shared sub-schema for the dedupe
+ * mechanism to find -- each tool's request document legitimately inlines its
+ * own copy. This is a property of how the source schemas are authored, not a
+ * gap in this generator: any tool whose zod schema DOES reference the same
+ * sub-schema object more than once (recursive shapes, or a future refactor
+ * that shares an object reference instead of spreading) is deduped into
+ * $defs automatically, with no change needed here.
  */
 function buildDoc(tool, kind, zodSchema) {
   const name = `v1-${tool}-${kind}`;
