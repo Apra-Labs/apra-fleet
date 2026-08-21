@@ -18,6 +18,20 @@ const __dirname = path.dirname(__filename);
 // Set MOCK_SPRINT_DELAY_MS to simulate LLM latency locally; defaults to 0 for CI.
 export const DELAY_MS = Number(process.env.MOCK_SPRINT_DELAY_MS || 0);
 
+// apra-fleet-ot2z.22: buildMockFleetApi's executePrompt wrapper reports a
+// session id (MOCK_SESSION_ID) on every reply by default, filling in
+// whichever key a scenario's handler didn't set on its own
+// `structuredContent`. That means a handler can no longer simulate "no
+// resume capability was reported" simply by OMITTING sessionId (the natural
+// way before that default existed) -- omission is always filled in now. A
+// scenario that wants to exercise the workflow's DEGRADED fresh-session
+// fallback (see packages/apra-fleet-workflow/src/workflow/index.mjs's
+// "no session id was reported" log) must set `sessionId: NO_SESSION_ID_MARKER`
+// EXPLICITLY on its returned structuredContent -- a present key beats the
+// wrapper's fill-in-the-gap merge, so this reaches the workflow as a
+// genuine `sessionId: null`.
+export const NO_SESSION_ID_MARKER = null;
+
 // apra-fleet-1cb.1 AUDIT NOTE: grepped runner.js for every read of
 // `result.isError` / `.isError` on an execute_command (bd/git/node shell)
 // response. The ONLY hit is createMemberReservationClient()'s `callFor()`
@@ -1115,18 +1129,28 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
     // to tell apart. Merged into (never replacing) whatever structuredContent
     // a handler already returned, so the dispatch-failure simulations
     // (structuredContent: { isError: true, reason: ... }) keep working.
-    // A handler that reports its OWN sessionId (the round-resume scenarios
-    // mint a distinct id per dispatch to assert runner.js's registry wiring,
-    // and one deliberately reports none to exercise the no-resume-capability
-    // path) always wins: this default only fills the gap where no id was
-    // reported at all.
+    //
+    // apra-fleet-ot2z.22: a handler that reports its OWN sessionId (the
+    // round-resume scenarios mint a distinct id per dispatch to assert
+    // runner.js's registry wiring) always wins over MOCK_SESSION_ID -- but
+    // only an OMITTED sessionId key falls through to the default below.
+    // Before this default existed, a handler could simulate "no resume
+    // capability" simply by never setting sessionId on its returned
+    // structuredContent; now that omission always inherits MOCK_SESSION_ID,
+    // the ONLY way left to express the no-resume-capability / DEGRADED
+    // fresh-session path is for the handler to set `sessionId: null`
+    // EXPLICITLY (a present-but-falsy key beats hasOwnProperty, so the
+    // object-spread merge below keeps it instead of filling in the
+    // default) -- see NO_SESSION_ID_MARKER, exported so scenario code
+    // doesn't have to spell out the literal `null` inline.
     const rawExecutePrompt = api.executePrompt;
     api.executePrompt = async (opts) => {
         const result = await rawExecutePrompt(opts);
         if (!result || typeof result !== 'object') return result;
+        const handlerStructured = result.structuredContent || {};
         return {
             ...result,
-            structuredContent: { sessionId: MOCK_SESSION_ID, ...(result.structuredContent || {}) },
+            structuredContent: { sessionId: MOCK_SESSION_ID, ...handlerStructured },
         };
     };
 
