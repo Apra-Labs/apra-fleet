@@ -47,6 +47,10 @@ export const DIALECT_2020_12 = 'https://json-schema.org/draft/2020-12/schema';
  *   2. `definitions` is renamed to `$defs` (merged in, never clobbering a
  *      `$defs` the node already carries), and every `/definitions/` segment
  *      of a `$ref` pointer is repointed at `/$defs/`, including nested ones.
+ *      Both halves are container-aware: a `definitions`/`$defs` key (or
+ *      pointer segment) is only treated as the container keyword at a schema
+ *      position -- never when it is a property name, pattern, or definition
+ *      entry name that merely happens to be spelled "definitions".
  *   3. Draft-04 boolean exclusive bounds are converted to the numeric 2020-12
  *      form: {minimum: N, exclusiveMinimum: true} -> {exclusiveMinimum: N}
  *      (same for the maximum pair). A bound that is already numeric is left
@@ -71,6 +75,12 @@ export function postprocessTo2020_12(schema) {
 
 // --- internals ---------------------------------------------------------------
 
+// Keys whose OWN VALUE is a map of opaque identifiers -> schema, not a schema
+// keyword object: iterating that value's keys as if they were keywords is
+// exactly the container-blindness bug this fix removes (a property, pattern,
+// or $defs/definitions entry can itself be named "definitions").
+const SCHEMA_MAP_KEYWORDS = new Set(['properties', 'patternProperties']);
+
 function normaliseNode(node) {
   if (Array.isArray(node)) return node.map(normaliseNode);
   if (!isPlainObject(node)) return node;
@@ -78,24 +88,35 @@ function normaliseNode(node) {
   const out = {};
   for (const [key, value] of Object.entries(node)) {
     if (key === 'definitions') {
-      // Fix 2: draft-07 `definitions` -> 2020-12 `$defs`. Merge rather than
-      // overwrite: a node can carry BOTH keys (e.g. a native $defs plus a
-      // stray definitions container), and a plain assignment here would
-      // silently drop whichever one is processed first. A native $defs entry
-      // wins on key collision, since it is already in the target dialect.
-      out.$defs = { ...normaliseNode(value), ...out.$defs };
+      // Fix 2: draft-07 `definitions` -> 2020-12 `$defs`, but ONLY when
+      // `definitions` appears at a schema position (here: as a keyword of
+      // this schema node). The container's own entries are names, not
+      // keywords -- normalised via normaliseSchemaMap so an entry literally
+      // named "definitions" is never mistaken for a nested container.
+      // Merge rather than overwrite: a node can carry BOTH keys (e.g. a
+      // native $defs plus a stray definitions container), and a plain
+      // assignment here would silently drop whichever one is processed
+      // first. A native $defs entry wins on key collision, since it is
+      // already in the target dialect.
+      const entries = isPlainObject(value) ? normaliseSchemaMap(value) : normaliseNode(value);
+      out.$defs = { ...entries, ...out.$defs };
       continue;
     }
     if (key === '$defs') {
-      out.$defs = { ...out.$defs, ...normaliseNode(value) };
+      const entries = isPlainObject(value) ? normaliseSchemaMap(value) : normaliseNode(value);
+      out.$defs = { ...out.$defs, ...entries };
       continue;
     }
     if (key === '$ref' && typeof value === 'string') {
-      // Global replace: a pointer can repoint through more than one
-      // `definitions` segment (e.g. '#/definitions/a/definitions/b'), and
-      // every such segment is renamed by the branch above, so every segment
-      // of the pointer must be repointed too, not just the first.
-      out.$ref = value.replace(/\/definitions\//g, '/$defs/');
+      out.$ref = rewriteDefinitionsPointer(value);
+      continue;
+    }
+    if (SCHEMA_MAP_KEYWORDS.has(key) && isPlainObject(value)) {
+      // `properties` / `patternProperties`: the KEYS here are user-chosen
+      // property names or regex patterns, never schema keywords, so a key
+      // literally called "definitions" must pass through unrenamed. Each
+      // VALUE is still a full schema and is normalised as one.
+      out[key] = normaliseSchemaMap(value);
       continue;
     }
     out[key] = normaliseNode(value);
@@ -105,6 +126,66 @@ function normaliseNode(node) {
   convertExclusiveBound(out, 'maximum', 'exclusiveMaximum');
   convertTupleItems(out);
   return out;
+}
+
+// Normalises a "map" node -- the value of `properties`, `patternProperties`,
+// `$defs` or `definitions` -- whose keys are opaque identifiers (property
+// names, regex patterns, or definition names) rather than schema keywords.
+// Keys are passed through untouched; each value is a normal schema node.
+function normaliseSchemaMap(map) {
+  const out = {};
+  for (const [key, value] of Object.entries(map)) {
+    out[key] = normaliseNode(value);
+  }
+  return out;
+}
+
+// Fix 2 (pointer half). Repoints every `/definitions/` SEGMENT of a $ref that
+// is actually a container reference, by walking the pointer's JSON-Pointer
+// segments with the same container knowledge as normaliseNode above -- never
+// by a blind string replace, which cannot tell a container segment (e.g.
+// '#/definitions/Foo') from a same-named property/definition segment (e.g.
+// '#/properties/definitions/properties/x', where "definitions" is a data
+// name one level below `properties` and must NOT be rewritten).
+//
+// State machine over the pointer's segments:
+//   'schema'  -- expecting a schema keyword next (the initial/default state).
+//                A `definitions` segment here is a container keyword and is
+//                rewritten to `$defs`; a `$defs`/`properties`/
+//                `patternProperties` segment here is also a container
+//                keyword (left as-is) and both put the NEXT segment into
+//                'mapName' state. Any other segment is passed through
+//                unchanged and the state stays 'schema'.
+//   'mapName' -- the segment is an opaque name (property name, pattern, or
+//                $defs/definitions entry name) belonging to the container
+//                just entered. Passed through unchanged regardless of its
+//                literal value, then the state returns to 'schema' for that
+//                entry's own nested keys.
+function rewriteDefinitionsPointer(ref) {
+  const hashIndex = ref.indexOf('#');
+  if (hashIndex === -1) return ref; // no fragment to walk
+  const fragment = ref.slice(hashIndex + 1);
+  if (!fragment.startsWith('/')) return ref; // not a JSON Pointer fragment
+
+  const segments = fragment.split('/').slice(1);
+  let state = 'schema';
+  const rewritten = segments.map((segment) => {
+    if (state === 'mapName') {
+      state = 'schema';
+      return segment;
+    }
+    if (segment === 'definitions') {
+      state = 'mapName';
+      return '$defs';
+    }
+    if (segment === '$defs' || SCHEMA_MAP_KEYWORDS.has(segment)) {
+      state = 'mapName';
+      return segment;
+    }
+    return segment;
+  });
+
+  return `${ref.slice(0, hashIndex)}#/${rewritten.join('/')}`;
 }
 
 // Fix 3. The draft-04 form spells an exclusive bound as an inclusive bound plus

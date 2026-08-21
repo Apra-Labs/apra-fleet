@@ -110,6 +110,50 @@ describe('postprocessTo2020_12 edge cases (fixes 2 and 3)', () => {
     expect(conforms(out).ok).toBe(true);
   });
 
+  it('fix 2: a property named "definitions" is left alone -- only container positions are renamed', () => {
+    const input = {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      properties: {
+        definitions: {
+          type: 'object',
+          properties: { x: { type: 'string' } },
+        },
+        ref: { $ref: '#/properties/definitions/properties/x' },
+      },
+    };
+
+    const out = postprocessTo2020_12(input) as any;
+
+    // The property named "definitions" keeps its name and is NOT folded into
+    // $defs -- it is data, not a schema keyword, at this position.
+    expect(out.properties.definitions).toEqual({
+      type: 'object',
+      properties: { x: { type: 'string' } },
+    });
+    expect(out.$defs).toBeUndefined();
+    // The pointer through it is untouched for the same reason: the
+    // "definitions" segment here names a property, not the $defs container.
+    expect(out.properties.ref.$ref).toBe('#/properties/definitions/properties/x');
+    expect(conforms(out).ok).toBe(true);
+  });
+
+  it('fix 2: a $defs entry named "definitions" is preserved as a definition, not treated as a nested container', () => {
+    const input = {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      definitions: {
+        definitions: { type: 'string' },
+      },
+      $ref: '#/definitions/definitions',
+    };
+
+    const out = postprocessTo2020_12(input) as any;
+
+    expect(out.$defs.definitions).toEqual({ type: 'string' });
+    expect(out.$ref).toBe('#/$defs/definitions');
+    expect(conforms(out).ok).toBe(true);
+  });
+
   it('fix 3: still converts a true draft-04 exclusive bound to the numeric 2020-12 form (no regression)', () => {
     const input = {
       $schema: 'http://json-schema.org/draft-07/schema#',
