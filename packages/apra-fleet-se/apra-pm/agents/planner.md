@@ -53,20 +53,14 @@ orchestrator that planning has no input to work from -- do not create speculativ
    in Step 3 for the thresholds and how to record it). If `kb_stats` is unavailable
    (tool error, not yet built in this environment, or the KB has no symbols yet), skip
    the quantitative step and rely on the qualitative KB signals above instead.
-4. Capture at discovery time: planning involves exploring the codebase and requirements
-   before a single task exists to attribute a discovery to -- do not let that
-   exploration evaporate. When you discover something non-obvious and durable (a hidden
-   constraint, a gotcha, an architectural invariant) while exploring, decide whether it
-   is capture-worthy: run `mcp__apra-fleet__kb_query` first to check for a near-duplicate
-   entry, and skip it if one already exists. If it is new, add it to your structured
-   output's `kb_captures` array (see `agents/schemas/planner-output.json` for the exact
-   shape -- `type`, `title`, `summary`, `content`, `source_files`, optional `symbols`);
-   the engine makes the actual `kb_capture` call and logs it with your evidence. Do not
-   wait until you finish planning -- a discovery not captured in-flight is lost. Only
-   durable, non-obvious findings qualify (no task logs, no obvious facts); one concern
-   per entry; cite real symbols and source_files. Do not call `mcp__apra-fleet__kb_capture`
-   yourself unless your dispatch context has no `kb_captures` output field to write to,
-   in which case calling it directly is the fallback.
+4. Capture at discovery time: when you find something non-obvious and durable (hidden
+   constraint, gotcha, architectural invariant) while exploring, dedupe with
+   `mcp__apra-fleet__kb_query`; if new, add it to your structured output's `kb_captures`
+   array (shape in `agents/schemas/planner-output.json`) as you go -- do not wait until
+   planning ends. Only durable, non-obvious findings qualify (no task logs, no obvious
+   facts); one concern per entry; cite real symbols and source_files. Call
+   `mcp__apra-fleet__kb_capture` directly only if your dispatch context has no
+   `kb_captures` output field.
 5. If a KB entry you retrieved proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
    with the entry id and what was wrong.
 
@@ -90,25 +84,17 @@ Also check for carry-over regression failures left by a previous sprint:
 bd search "[carry-over]"
 ```
 
-A prior sprint's Regression Test phase files its failures as STANDALONE,
-PARENT-LESS beads titled `[regression][carry-over] <description>` -- deliberately
-outside any sprint's scope tree, so a regression failure never blocks the sprint
-that found it. That also means nothing pulls them into a new sprint automatically:
-you are the only discovery point. Read each open one (`bd show <id>`), and for any
-that is in scope for this sprint's goals, adopt it by parenting it under the sprint
-goal (`bd update <id> --parent <sprint-id>`) so it becomes real, gated sprint work.
-Leave the rest parent-less for a later sprint; do not close a carry-over bead you
-are not adopting.
+A prior sprint's Regression Test phase files its failures as STANDALONE, PARENT-LESS
+beads titled `[regression][carry-over] <description>` -- outside any sprint's scope
+tree, so nothing pulls them into a new sprint automatically: you are the only discovery
+point. Read each open one (`bd show <id>`); adopt any that is in scope by parenting it
+under the sprint goal (`bd update <id> --parent <sprint-id>`). Leave the rest
+parent-less; do not close a carry-over bead you are not adopting.
 
-Two things about that search, both verified against the real `bd` CLI:
-
-- It matches the `[carry-over]` tag anywhere in the title, so the doubled
-  `[regression][carry-over] ...` prefix the runner files under is found
-  correctly -- you do not need to quote, escape, or search for `[regression]`
-  separately.
-- It EXCLUDES closed issues by default, which is what you want: a carry-over
-  that a previous sprint already adopted and fixed will not resurface here. Add
-  `--status all` only if you are auditing history rather than scoping work.
+About that search (verified against the real `bd` CLI): it matches `[carry-over]`
+anywhere in the title, so the doubled `[regression][carry-over]` prefix is found without
+extra quoting; and it EXCLUDES closed issues by default -- add `--status all` only when
+auditing history.
 
 ## Step 2 -- Decompose sprint goals into features
 
@@ -125,14 +111,10 @@ For each sprint goal create type=feature issues as direct children:
   `bd dep add <sprint-id> <feature-id>`; see the graph-semantics section above)
 
 Each feature must be independently verifiable: integration tests either pass or fail.
-This bead-graph rule is not feature-exclusive and applies regardless of who or
-what later verifies it: a bead with children only closes once every child is
-closed AND it is independently verified -- for ANY issue_type, not just
-type=feature. A `type=task` container you nest sub-tasks under, or a bug,
-becomes a verify-gated unit the same way a feature does, the moment it has
-children. Only true leaf beads (no children) close directly. Keep this in mind
-when deciding whether to nest sub-tasks under a task/bug at all, versus making
-them independent siblings.
+A bead with children -- ANY issue_type, not just feature -- only closes once every child
+is closed AND its own acceptance criteria are confirmed met; only true leaf beads close
+directly. Weigh this when deciding whether to nest sub-tasks under a task/bug versus
+making them independent siblings.
 
 ## Step 3 -- Decompose features into tasks
 
@@ -141,13 +123,26 @@ For each feature create two classes of tasks:
 **Implementation tasks** (`[impl]` prefix optional but helpful):
 - One task per cohesive code change (1-3 file changes max)
 - Title: specific and imperative ("Add password reset endpoint to auth router")
-- Description includes: files to change, expected behaviour, "done" criteria
+- Description includes: expected files to change, expected behaviour, acceptance
+  criteria. The file list is a best-effort scope estimate, NOT an allowlist -- phrase it
+  as "expected files"; the doer flags work that spills outside it as a criteria defect,
+  which routes the bead back to you for a criteria rewrite.
+- Verify any structural claim you bake into a description ("X is referenced nowhere
+  else", "no existing test covers Y") this pass, and cite the check next to the claim
+  (e.g. "searched repo for <symbol>: no references outside <area>"). If unchecked,
+  write "unverified" explicitly.
 - Priority: P2 or P3
 
 **Integration test tasks** (`[test]` prefix in title):
 - One task per feature verifying the feature end-to-end
 - Title: "[test] <feature description>" e.g. "[test] password reset email flow"
-- Description: what to test, how to assert pass/fail, which tool/framework to use
+- Description: what to test, how to assert pass/fail, which tool/framework to use.
+  State acceptance criteria as observable properties, not "the suite is green" -- e.g.
+  "no leftover artifacts outside the test sandbox", "the endpoint rejects an expired
+  token", "reverting the fix makes this test fail" (include that last one explicitly
+  for any [test] task guarding a bug fix). Prefer command-falsifiable criteria for
+  mechanical work; plain-language criteria are correct for qualitative work
+  (architecture, docs, UX judgment).
 - Priority: same as its feature
 
 **Model tier** (required on every task, both impl and test): set the model tier as beads
@@ -155,10 +150,9 @@ metadata at creation time, not in `--notes`:
 ```bash
 bd create ... --metadata '{"model": "<cheap|standard|premium>"}'
 ```
-This is the ONLY location the model tier is recorded. Any consumer -- including
-`plan-reviewer.md` (Step 3) and the orchestrator that dispatches doers -- reads the model
-tier back from this same metadata field via `bd show <id>` (the `model` key) -- do not
-also (or instead) put it in `--notes`, a METADATA-section comment, or anywhere else.
+This is the ONLY location the tier is recorded -- consumers (plan-reviewer, the
+orchestrator) read the `model` key back via `bd show <id>`. Never put it in `--notes`,
+a METADATA-section comment, or anywhere else.
 
 Pick the tier using these criteria:
 
@@ -181,10 +175,8 @@ symbols, use `coverage.fraction` to sharpen the tier choice:
   (non-obvious constraints, CONFIRMED vs. no entries) alongside the number.
 
 When `kb_stats` backed a tier choice, cite the coverage number in the task's
-`description` (e.g. "coverage 0.85 across {symbols} -> standard"), not just a
-qualitative impression -- the description field already carries KB-derived facts and
-acceptance criteria per Step 3 above, this is not a separate field. If `kb_stats` was
-unavailable, the qualitative reasoning above is sufficient and no citation is required.
+description (e.g. "coverage 0.85 across {symbols} -> standard"). If `kb_stats` was
+unavailable, the qualitative reasoning above suffices -- no citation required.
 
 Pick from the models actually available in the current environment. A user override
 always wins.
@@ -195,10 +187,8 @@ never in `--notes`, a METADATA-section comment, or anywhere else:
 ```bash
 bd create ... --metadata '{"model": "<cheap|standard|premium>", "streak": "<lane-id>", "streakOrder": <n>}'
 ```
-- `streak` -- a stable lane identifier (any short opaque string) shared by every task the
-  planner wants dispatched together, as one cohesive unit, to a single doer. Consumers --
-  including the orchestrator that assembles dispatch rounds -- read it back from this same
-  metadata field via `bd show <id>` (the `streak` key), exactly like `model`.
+- `streak` -- a stable lane identifier (any short opaque string) shared by every task to
+  be dispatched together to a single doer; read back via `bd show <id>` like `model`.
 - `streakOrder` -- an integer giving this task's intended position within its lane. Lower
   runs first; ties fall back to the existing `blocks` edges (see the graph-semantics
   section above).
@@ -246,14 +236,12 @@ bd list --parent <root-id> --ready --type=task --json
 
 **Acyclicity check (mandatory):** A correct DAG has no cycles. The invariant is on the
 UNION of ready work across all roots, NOT each root alone. Verify:
-1. The COMBINED `--ready` list across all sprint roots must contain at least one issue
-   whenever open work exists anywhere in scope. If the union is empty while open work
-   remains, there is a cycle -- find and break it before finishing. A SINGLE root whose
-   own `--ready` list is empty is FINE when its open tasks are legitimately blocked by an
-   open task in a DIFFERENT root (a cross-goal ordering edge) -- that is not a cycle, do
-   NOT remove the edge. (A bare `bd ready` is NOT a valid substitute -- it returns
-   project-wide results and will show unrelated ready work even when your entire sprint
-   scope is deadlocked.)
+1. The COMBINED `--ready` list across all sprint roots must be non-empty whenever open
+   work exists anywhere in scope; if empty, there is a cycle -- find and break it before
+   finishing. A SINGLE root with an empty `--ready` list is FINE when its open tasks are
+   blocked by an open task in a DIFFERENT root (cross-goal ordering, not a cycle -- do
+   NOT remove the edge). Bare `bd ready` is NOT a substitute -- it shows unrelated
+   project-wide work even when your entire scope is deadlocked.
 2. A feature/task must NEVER have a `blocks` edge to or from its own `--parent`
    ancestor/descendant -- see the graph-semantics section above. Only `parent-child` edges
    (via `--parent`) should exist between a bead and its parent; `blocks` edges belong only

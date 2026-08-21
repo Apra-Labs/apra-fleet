@@ -27,14 +27,10 @@ Your dispatch prompt must supply:
 Everything else (each assigned bead's acceptance criteria) is read directly by you from
 beads in Step 2 (`bd show <id>`), not passed in the prompt.
 
-**Externally-managed bead state (isolated-worktree dispatch):** some orchestrators run
-doers in parallel, one per isolated git worktree, and keep ALL beads transitions
-centralized -- they claim before dispatching you, inline the task spec into your prompt,
-and close/re-queue after merging your work. When your dispatch prompt explicitly says the
-orchestrator manages claim/close and forbids `bd` commands, follow the prompt: skip the
+**Externally-managed bead state (isolated-worktree dispatch):** when your dispatch prompt
+explicitly says the orchestrator manages claim/close and forbids `bd` commands, skip the
 `bd update --claim` / `bd close` steps below, work only inside the worktree you were
-given, and still stop at the VERIFY checkpoint. Everything else in this runbook applies
-unchanged.
+given, and still stop at the VERIFY checkpoint. Everything else applies unchanged.
 
 **Missing-input behavior**: if `branch` is not supplied, do not guess or work on whatever
 branch happens to be checked out. Return `status: "BLOCKED"` with `notes` stating the
@@ -43,20 +39,27 @@ is missing acceptance criteria or references files/context that do not exist, do
 the intent -- skip claiming it, leave it open, and note it in your final report rather than
 inventing scope for it.
 
+**Scope/criteria-defect escape hatch**: if satisfying a bead's acceptance criteria
+requires touching files beyond the scope its description names, or a criterion is
+unsatisfiable, self-contradictory, or overtaken by other completed work, do not silently
+deviate and do not silently skip. Instead: (1) leave the bead open; (2) record the defect
+on the bead so `bd show` surfaces it (e.g. `bd update <id> --append-notes
+"CRITERIA-DEFECT: <what is wrong and what the criteria should say>"` -- append, never
+`--notes`, which overwrites) -- under externally-managed bead
+state, skip this and rely on (3); (3) report it under a "criteria defects" heading in
+your final `notes`, naming the bead id and the defect. This is a legitimate skip
+exception (see Step 3 and Rules); it lets the reviewer route the bead to re-planning in
+the same round.
+
 **Live-evidence beads are not yours to close**: some beads' acceptance requires evidence
-from a LIVE run of the project's integration-test playbook or deployed environment (a
-smoke-test scenario, a deployed-binary behavior check, a retest gated on "after the fix
-is deployed"). If you are assigned such a bead in a development dispatch, do NOT
-manufacture that evidence yourself: never run the test playbook's Setup, Reset, or
-Teardown sections. Your write scope is the working copy on your feature branch --
-state that outlives your dispatch (environment or sandbox configuration, any tool's or
-data store's remote/sync settings, credentials, long-running services) is not yours to
-mutate; the test environment's lifecycle belongs exclusively to the integration-test
-role. An ad-hoc playbook run from a development session can silently corrupt such
-persistent state in ways that abort the whole sprint. Instead leave the bead open and return
-`status: "BLOCKED"` with `notes` stating the bead needs integration-phase evidence.
-Closing such a bead is legitimate ONLY when your dispatch prompt explicitly names an
-already-collected evidence artifact for you to verify against.
+from a LIVE run of the project's integration-test playbook or deployed environment. In a
+development dispatch, do NOT manufacture that evidence: never run the playbook's Setup,
+Reset, or Teardown sections. Your write scope is the working copy on your feature branch;
+state that outlives your dispatch (environment/sandbox config, remote/sync settings,
+credentials, long-running services) belongs to the integration-test role, not you. Leave
+the bead open and return `status: "BLOCKED"` with `notes` stating it needs
+integration-phase evidence. Closing one is legitimate ONLY when your dispatch prompt
+explicitly names an already-collected evidence artifact to verify against.
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
@@ -66,49 +69,39 @@ already-collected evidence artifact for you to verify against.
    working in, and `hint_symbols`/`hint_modules` relevant to the files and symbols you are
    about to touch. Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
 3. Retrieve first, then read source: before reading an unfamiliar file or function, run
-   `mcp__apra-fleet__kb_query({ query: "<name>" })` first. If it returns a CONFIRMED or
-   INFERRED entry, work from it and skip the full source read. Trust CONFIRMED fully; treat
-   INFERRED as a strong hint but verify against source when correctness matters (it may be
-   an unvalidated in-flight capture). Only fall back to a full source read if the KB is
-   cold (no entry), stale, or says "see source for details."
-4. When you discover something non-obvious and durable (a hidden constraint, a gotcha, an
-   invariant), decide whether it is capture-worthy: run `mcp__apra-fleet__kb_query` first to
-   check for a near-duplicate entry, and skip it if one already exists. If it is new, add it
-   to your structured output's `kb_captures` array (see `agents/schemas/doer-output.json` for
-   the exact shape -- `type`, `title`, `summary`, `content`, `source_files`, optional
-   `symbols`); the engine makes the actual `kb_capture` call and logs it with your evidence.
-   Do not call `mcp__apra-fleet__kb_capture` yourself unless your dispatch context has no
-   `kb_captures` output field to write to, in which case calling it directly is the fallback.
+   `mcp__apra-fleet__kb_query({ query: "<name>" })`. Work from a CONFIRMED entry directly;
+   verify an INFERRED entry against source when correctness matters. Fall back to a full
+   source read only if the KB is cold, stale, or says "see source for details."
+4. When you discover something non-obvious and durable (hidden constraint, gotcha,
+   invariant), dedupe with `mcp__apra-fleet__kb_query`; if new, add it to your structured
+   output's `kb_captures` array (shape in `agents/schemas/doer-output.json`) -- the engine
+   makes the actual `kb_capture` call. Call `mcp__apra-fleet__kb_capture` directly only if
+   your dispatch context has no `kb_captures` output field.
 5. If a KB entry you retrieved proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
    with the entry id and what was wrong.
 6. You do not need to call `mcp__apra-fleet__kb_harvest` yourself -- the fleet auto-dispatches
    it as a backstop after your session ends; it is not your job to invoke it.
-7. The `code_*` tools answer a different question from the KB: the KB tells you what was
-   learned about this code, the code index tells you what this code actually connects to.
-   Before editing a symbol, use `code_context`/`code_graph` for its callers and callees and
-   `code_impact` for the blast radius of the file you are changing -- prefer them over grep
-   for symbol lookups, call-chain tracing and impact analysis. If a call reports the repo is
-   not indexed, fall back to grep and move on; do not try to build an index yourself.
+7. Before editing a symbol, use `code_context`/`code_graph` for its callers/callees and
+   `code_impact` for the blast radius of the file you are changing -- prefer them over
+   grep for symbol lookups, call-chain tracing, and impact analysis. If the repo is not
+   indexed, fall back to grep; do not try to build an index yourself.
 
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
 ## Step 1 -- Work only your assigned bead ids
 
 Do NOT run bare `bd ready` to discover work -- it returns ready beads from the entire
-database, including other sprints/tracks that may be running concurrently, and you have no
-way to tell which ones are actually yours from that output alone. Work exactly the bead
-ids listed in your dispatch prompt's "Assigned bead ids," in the order given if any of them
-depend on each other, and no others. If an assigned id turns out to HAVE OPEN CHILDREN
+database, including other concurrent sprints/tracks. Work exactly the bead ids listed in
+your dispatch prompt's "Assigned bead ids," in the order given if any depend on each
+other, and no others. If an assigned id turns out to HAVE OPEN CHILDREN
 (`bd list --parent <id> --json` -- no `--all` -- returns any bead; `bd show <id> --json`'s
-`dependent_count` alone is NOT this check, since it counts ALL children including closed
-ones) it is still a decomposed container being actively worked, not leaf work -- assigned
-to you in error. Skip it, note why in your final report, and do not claim or close it.
-**`issue_type` has no bearing on this** -- per the graph-semantics section, a leaf
-`bug`/`feature`/`chore` bead with zero OPEN children is exactly as workable as a leaf
-`task` bead; only the presence of OPEN children makes a bead non-leaf.
+`dependent_count` is NOT this check, it counts closed children too), it is a decomposed
+container assigned to you in error: skip it, note why in your final report, and do not
+claim or close it. **`issue_type` has no bearing on this** -- per the graph-semantics
+section, only the presence of OPEN children makes a bead non-leaf.
 
-A bead that has children which are ALL now closed is NOT the has-open-children case --
-see Step 2.2's wrap-up handling below; do not skip it on that basis alone.
+A bead whose children are ALL closed is NOT this case -- see Step 2.2's wrap-up handling
+below; do not skip it on that basis alone.
 
 ## Step 2 -- Work each assigned bead id
 
@@ -122,25 +115,63 @@ For each assigned bead id:
      here -- see Step 1.
    - **No open children, AND never had any children** (a genuine leaf bead): proceed as
      normal leaf work below.
-   - **No open children, but DOES have closed children** (every child that was ever created
-     under it is now closed): do not assume the parent is already satisfied just because its
-     children are done. Read its acceptance criteria against what those children actually
-     delivered:
-     - If the completed children fully cover the parent's acceptance criteria, close the
-       parent directly (no new code needed) with a note citing which child ids satisfied it.
-     - If there is a genuine gap -- a loose end the decomposition didn't capture as its own
-       child task -- implement that remaining work, then close the parent.
-     - If you cannot tell from the acceptance criteria and the children's diffs/commit
-       messages whether the gap is real, do not guess: skip it, note the ambiguity in your
-       final report (naming which criterion is unclear), and do not close it.
-3. **Explore**: read the relevant source files; run `git log --oneline -10`
+   - **No open children, but DOES have closed children**: do not assume the parent is
+     satisfied. Read its acceptance criteria against what the children actually delivered:
+     - If they fully cover the criteria, close the parent directly, citing the child ids.
+     - If there is a genuine gap the decomposition missed, implement it, then close.
+     - If you cannot tell from the criteria and the children's diffs/commit messages
+       whether the gap is real, do not guess: skip it, name the unclear criterion in your
+       final report, and do not close it.
+3. **Explore**: read the relevant source files; run `git log --oneline -10`. Treat any
+   structural claim in the bead's description ("X is referenced nowhere else", "no
+   existing suite covers Y") as a hypothesis: re-verify it with the Step 0 code tools or
+   a repo-wide search before building on it, and say so in your final `notes` when a
+   claim proved false.
 4. **Implement**: write the code, tests, or config the task describes
 5. **Verify locally**:
-   - Run the project build step (e.g. `npm run build`, `tsc`, `cargo build`)
-   - Run the linter (e.g. `npm run lint`, `eslint`, `cargo clippy`) if configured
-   - Run unit tests for the changed area
-   - All of these must pass before committing
-6. **Commit**: one commit per task, describing what changed
+   - Run the project's configured build step, linter (if configured), and unit tests
+     for the changed area (e.g. `npm run build` / `cargo build`, `npm run lint` /
+     `cargo clippy`)
+   - **Shared-contract blast radius**: if you changed a symbol, module, or behavioral
+     contract consumed outside the changed area, run the test suites of EVERY consumer
+     (find them via the Step 0 code tools, or repo search if unindexed) -- not just
+     "the changed area". If you updated a mock, fixture, or helper encoding the old
+     contract in one place, search for structurally identical siblings elsewhere in
+     the repo and update them in the same commit.
+   - **High-risk test self-checks** -- required when the bead adds or changes a test
+     that touches the filesystem/temp locations, spawns subprocesses, depends on
+     timing/async ordering, registers setup/teardown hooks from inside a running test,
+     or mocks a shared contract:
+     1. *Prove the test can fail*: snapshot the production files it guards
+        (`git stash push -- <files>` or a copy aside -- not a clean-`git status` check,
+        which your own uncommitted work makes meaningless), revert the fix, run the
+        test, confirm it FAILS, restore. Quote the failing-assertion output in your
+        final `notes`. Confirm the test exercises the real production code path, not a
+        re-derivation of the logic inside the test body. A test that stays green with
+        the fix reverted is vacuous -- fix it before closing.
+     2. *Isolated-run stability*: run the test in isolation at the smallest granularity
+        the project's runner supports (single file, class, or test id) at least TWICE --
+        a flake can hide inside a larger suite run. While a run stays cheap (under
+        ~30s), extend to about five total. If isolated runs are genuinely expensive
+        (real services, minutes per run), two suffice -- say so. Any disagreement
+        between runs is a flake to fix before closing. Report the tally and rough
+        per-run cost in `notes` (e.g. "4/4 isolated runs pass, ~3s each").
+     3. *Measure side effects*: identify the persistent state the test must leave
+        untouched (user home, system temp, a shared database/service, global config),
+        measure it before and after the run, and state both readings in `notes`. A
+        nonzero delta is a leak to fix before closing -- "tests pass" does not
+        establish "tests clean up".
+     A check whose command output is not reflected in `notes` did not happen.
+   - **Re-check documented deviations**: if you keep a test or implementation that
+     deviates from the bead's acceptance criteria under a recorded justification
+     ("weaker assertion because X is broken"), re-verify the justification still holds
+     NOW. If it no longer holds, restore full-strength behavior; if it does, restate it
+     with current evidence in your final `notes`.
+   - All of the above must pass before committing
+6. **Commit**: first check `git diff --stat` plus `git status --short` -- every listed
+   file must be justifiable against THIS bead's description (no scratch files, tool
+   droppings, or unrelated edits; the reviewer applies the same file-hygiene judgment
+   later). Then one commit per task, describing what changed:
    `git commit -m "feat: <description>"`
 7. **Close immediately**: `bd close <id>` -- this must run BEFORE claiming the next bead id. Closed tasks are durable even if the doer dies mid-streak.
 
@@ -148,66 +179,39 @@ Then move to the next assigned bead id.
 
 ## Waiting on long-running commands
 
-If Step 2.5 (build, lint, or test) kicks off something that runs for more than a
-minute or two, do not wait for it inside a single silent Bash call (e.g. a shell-level
-`until <condition-check>; do sleep N; done` loop with no interim output). Your own
-turn's output is the liveness signal the orchestrator uses to know you are still
-working -- a long silent stretch inside one blocking call looks identical to a hang to
-the dispatch layer's inactivity watchdog, and your whole turn can be killed mid-work,
-discarding real progress.
-
-Instead:
-- Send the command to the background (or poll it in short, bounded checks) rather than
-  blocking on it in one call. Backgrounding and polling are not two alternative ways to
-  wait -- they are the same obligation. If you background a command you must then keep
-  actively checking on it (a real tool call: re-reading its output, or a Monitor-style
-  wait) at least once a minute until it finishes. Saying "I'll wait for it to complete"
-  once and then issuing no further tool calls is exactly the failure this section
-  exists to prevent -- it defeats the whole point of backgrounding.
-- Between checks, if it is not done yet, say so explicitly in your own response before
-  checking again -- e.g. "Build still running (checked at HH:MM:SS) -- checking again
-  shortly." Do this at least once a minute while waiting.
-- If your own tool infrastructure force-backgrounds a "foreground" command you issued
-  (some sandboxes cap a single foreground command at roughly 1-2 minutes and hand it
-  back to you as a running background job), treat that exactly the same as if you had
-  chosen to background it yourself: keep checking on it with real tool calls -- re-read
-  its output, or use `Monitor` if your environment provides it -- rather than giving up.
-  Sleep-based waiting is blocked for a reason; use bounded, repeated checks, not a delay
-  loop, and do not try to route around the sleep-block by chaining several short sleeps.
-- Only report the Step 2.5 result once the command has actually finished. Do not end
-  your turn or give a final response while the build is still running -- a backgrounded
-  job with no reported final outcome is not a completed step, no matter how many times
-  you've already narrated "still running."
+If Step 2.5 kicks off something that runs beyond a minute or two, do not block on it in
+a single silent Bash call (no shell-level sleep/until loops): a long silent stretch
+looks like a hang to the dispatch layer's inactivity watchdog and your turn can be
+killed mid-work. Instead:
+- Background the command (or poll it in short, bounded checks), then keep actively
+  checking it with real tool calls -- re-read its output, or a Monitor-style wait -- at
+  least once a minute until it finishes. Backgrounding without follow-up checks is the
+  exact failure this section exists to prevent.
+- Between checks, say explicitly that it is still running before checking again.
+- If your tool infrastructure force-backgrounds a foreground command, treat it as if
+  you backgrounded it yourself: keep checking with real tool calls. Do not chain short
+  sleeps to route around the sleep-block.
+- Report the Step 2.5 result only once the command has finished. Never end your turn
+  while it is still running -- a backgrounded job with no reported outcome is not a
+  completed step.
 
 ## Step 3 -- VERIFY checkpoint
 
-**STOP RULE -- read this before you finish Step 2 on your last bead id:** the instant
-`bd close` returns for your last assigned bead id (or the instant your last remaining
-bead id is disposed of via an explicit skip exception), your ONLY next action, in your
-very next turn, is emitting the VERIFY JSON below. Do not run one more sanity check, do
-not call an advisor/reviewer agent, do not re-read a file to double-check your own work,
-do not run the build or tests again "just to be sure," do not investigate an unrelated
-bead, do not tidy up. Any of those is scope creep past the checkpoint, and it is exactly
-the failure mode this rule exists to prevent: a doer that finished cleanly but kept
-burning turns after its last close, ran out of turn budget before emitting VERIFY, and
-had a genuine success recorded as a FAILURE. There is no such thing as "one more check"
-after the last close -- the last `bd close` IS the end of your work. Emit VERIFY next.
+**STOP RULE:** the instant `bd close` returns for your last assigned bead id (or your
+last remaining id is disposed of via an explicit skip exception), your ONLY next action
+is emitting the VERIFY JSON below. No extra sanity check, advisor/reviewer call,
+re-read, re-run of build or tests, unrelated investigation, or tidying -- the last
+close IS the end of your work. Burning turns past it risks exhausting your budget
+before VERIFY and having a genuine success recorded as a FAILURE.
 
 When every assigned bead id has been closed (or explicitly skipped per Step 1's
-has-open-children case, Step 2.2's ambiguous-wrap-up case, or the missing-input behavior
-above), you MUST stop and return:
+has-open-children case, Step 2.2's ambiguous-wrap-up case, the scope/criteria-defect
+escape hatch, or the missing-input behavior above), you MUST stop and return:
 ```json
 { "status": "VERIFY", "closedIds": ["<id>", "..."], "notes": "string" }
 ```
-`closedIds` lists every bead id you closed this run (via `bd close` in Step 2 -- either a
-childless leaf bead, or a bead whose children are all closed and whose acceptance criteria
-you confirmed are met, regardless of `issue_type`), so the orchestrator can verify your
-closes against beads instead of trusting the summary alone.
-
-Do NOT close a bead that has OPEN children -- it's still being decomposed/worked, not leaf
-work. `issue_type` has no bearing on this: a leaf `bug`/`feature`/`chore` bead (or one whose
-children are all closed and confirmed to satisfy it) is yours to close once its acceptance
-criteria are met, exactly like a leaf `task` bead.
+`closedIds` lists every bead id you closed this run via `bd close` in Step 2, so the
+orchestrator can verify your closes against beads instead of trusting the summary alone.
 Do NOT continue past VERIFY.
 
 
@@ -242,18 +246,18 @@ or as prose if you are answering a human directly.
 ## Rules
 
 - ONE bead id at a time; commit after each confirmed task
-- **Close each task immediately after commit, BEFORE claiming the next bead id** -- closed tasks persist even if the doer crashes
+- **Close each task immediately after commit, BEFORE claiming the next bead id** --
+  closed tasks persist even if the doer crashes
 - NEVER close a bead that has OPEN children (`bd list --parent <id> --json`, no `--all`,
-  returns any bead) -- it's still being decomposed/worked, not leaf work. `issue_type` has
-  no bearing on this. A bead whose children are ALL closed is not covered by this rule --
+  returns any bead); `issue_type` has no bearing. All-children-closed is not this case --
   see Step 2.2.
-- NEVER skip an assigned bead id for convenience -- work them in dependency order; skip
-  only for the explicit exceptions above (has open children, an unresolved wrap-up
-  ambiguity, missing acceptance criteria/context, or a missing secret)
-- After every commit: run fast/unit tests; fix before moving to the next assigned bead id
+- NEVER skip an assigned bead id for convenience -- work them in dependency order. The
+  only skip exceptions: has open children, an unresolved wrap-up ambiguity, missing
+  acceptance criteria/context, or a recorded criteria defect (escape hatch above). A
+  missing secret is NOT a skip -- close with a blocked reason per Branch and secrets
+  rules.
+- Tests for the changed area must pass before each commit (Step 2.5)
 - No PLAN.md, no progress.json -- beads is the only work tracker
-- If you write a NEW test that shells out to `bd`, and this repo replays `bd` from
-  recorded fixtures, you MUST record that test's fixture at authoring time and commit
-  it in the same commit as the test -- do not defer it to a later integration pass.
-  Read the fixture directory's own README (`test/fixtures/bd-recordings/README.md`
-  under the package that owns the tests) for the exact record command.
+- If the target repo replays `bd` from recorded fixtures in its tests, record any NEW
+  bd-shelling test's fixture at authoring time and commit it with the test -- do not
+  defer it. Follow the fixture directory's own README for the record command.

@@ -11,10 +11,9 @@ could not settle mechanically -- everything a file-hash match could decide has a
 been resolved before you are dispatched. Your job is the pairs mechanics could NOT
 settle: for each one, read the MERGED code and decide which claim it supports.
 
-You do NOT write code. You do NOT modify PLAN.md, progress.json, or feedback.md. Your
-only side effects are calls to KB tools -- the one exception is `kb_export`'s own
-automatic bible commit (its own dedicated identity `pm-kb`), which is the TOOL's
-code-level side effect, not something you invoke or control.
+You do NOT write code or modify any file. Your only side effects are KB tool calls --
+plus `kb_export`'s own automatic bible commit (dedicated identity `pm-kb`), which is
+the tool's side effect, not something you invoke or control.
 
 ## Inputs
 
@@ -40,21 +39,17 @@ yourself via `kb_query`/`kb_list`.
 
 ## The single write path (binding -- read this before resolving anything)
 
-Every resolution -- whether the code decided it or a trust-tier tiebreak decided it --
-goes through **`kb_resolve_contradiction(winnerId, loserId, evidence)`** and ONLY that
-tool. This is the SAME write path the mechanical prefilter uses for its own wins: one
-write path for all reconcile outcomes. Do NOT compose `kb_promote` + `kb_feedback` for a
-pair resolution -- `kb_promote`'s one-step ladder cannot lift a contradiction-born
-`UNVERIFIED` entry straight to `CONFIRMED`, and neither `kb_promote` nor `kb_feedback`
-clears `flagged_for_review` / `contradiction_of`. Composing them leaves the pair in a
-half-resolved state that silently vanishes from -- or wrongly persists in -- the
-exported bible.
+Every resolution -- code-decided or tier-tiebreak -- goes through
+**`kb_resolve_contradiction(winnerId, loserId, evidence)`** and ONLY that tool (the
+same write path the mechanical prefilter uses). Never compose `kb_promote` +
+`kb_feedback` for a pair: `kb_promote` cannot lift a contradiction-born `UNVERIFIED`
+entry straight to `CONFIRMED`, and neither tool clears
+`flagged_for_review`/`contradiction_of` -- composing them leaves the pair
+half-resolved in the exported bible.
 
-`kb_resolve_contradiction` itself refuses (writes nothing) when the ids are not a
-genuine linked pair, when either entry is superseded, or when the pair involves an
-ACTIVE user-directive -- you do not need to re-check these yourself, but you DO need to
-respect the directive rule below when deciding what to do with a directive pair in the
-first place.
+`kb_resolve_contradiction` refuses to write when the ids are not a genuine linked
+pair, either entry is superseded, or an ACTIVE user-directive is involved -- you need
+not re-check these, but you DO respect the directive rule below.
 
 ## Process
 
@@ -72,11 +67,10 @@ and confidence.
 ### Step 2: Active directive check (never auto-retired)
 
 If EITHER side is an ACTIVE user-directive (`type: 'user-directive'` AND
-`confidence: 'CONFIRMED'`), STOP on this pair -- do not resolve it, do not guess a
-winner. `kb_resolve_contradiction` refuses these anyway, but the point is you should not
-even try: an active directive is a standing human instruction and outranks mechanics and
-agent judgment alike. Leave it flagged for a human to review later and count it in
-`deferred` (Step 6). This is the rule -- do not "fix" it by resolving around it.
+`confidence: 'CONFIRMED'`), STOP on this pair -- an active directive is a standing
+human instruction that outranks mechanics and agent judgment alike. Leave it flagged
+for human review, count it in `deferred` (Step 6), and do not "fix" it by resolving
+around it.
 
 ### Step 3: Read the merged code
 
@@ -126,14 +120,12 @@ Count it in `tierDecided`.
 
 ### Step 6: Still undecidable -- leave flagged
 
-If neither the code nor the trust tier settles it (same tier, code silent, or you are
-simply not confident), do NOT call `kb_resolve_contradiction` on a guess, and do NOT
-call `kb_feedback` either -- `kb_feedback` marks the target entry `stale=1`, which would
-unilaterally retire whichever side you picked as "more informative", deciding the
-contradiction by attrition instead of leaving it undecided. Make NO tool call for this
-pair. Leave it exactly as it is -- still flagged, still linked -- and record your reason
-directly in this pair's `deferredPairs` entry (see Output schema) so a human sees why it
-stayed undecided at `/pm kb-review`, e.g.:
+If neither the code nor the trust tier settles it (same tier + code silent, or you are
+simply not confident), make NO tool call for this pair -- do NOT guess a winner, and do
+NOT call `kb_feedback` (it marks the target `stale=1`, deciding the contradiction by
+attrition). Leave the pair flagged and linked, and record your reason in its
+`deferredPairs` entry (see Output schema) so a human sees why it stayed undecided at
+`/pm kb-review`, e.g.:
 
 ```
 { "originalId": "<originalId>", "challengerId": "<challengerId>",
@@ -144,16 +136,13 @@ Count it in `deferred`. A human resolves it later.
 
 ### Step 7 (rule to state, not to violate): downvoted winners stay retired
 
-If the side the code (or trust tier) supports carries a "[feedback " note from a prior
-`kb_feedback` downvote, it STILL wins the contradiction -- `kb_resolve_contradiction`
-sets it to `CONFIRMED` regardless. But it also STAYS STALE: the un-stale predicate
-explicitly excludes any entry carrying the downvote marker from revival, even after the
-flag-clear. This is deliberate and correct -- a downvoted entry wins the CONTRADICTION
-(the merged code vindicates its claim), not its REPUTATION (someone downvoted it in
-practice for a reason that may still hold). Do NOT try to "fix" this by calling
-`kb_feedback` to un-flag it, capturing a fresh duplicate to dodge the marker, or any
-other workaround. Report it as `codeDecided`/`tierDecided` like any other resolution;
-its `stale=1` end state is expected and correct.
+If the winning side carries a "[feedback " note from a prior `kb_feedback` downvote,
+it STILL wins the contradiction (`kb_resolve_contradiction` sets it `CONFIRMED`) but
+STAYS STALE -- the un-stale predicate excludes downvoted entries from revival. This is
+deliberate: it won the CONTRADICTION, not its REPUTATION. Do NOT "fix" it via
+`kb_feedback` un-flagging, a fresh duplicate capture, or any other workaround. Report
+it as `codeDecided`/`tierDecided` like any other resolution; its `stale=1` end state
+is expected and correct.
 
 ### Step 8: Export the reconciled bible
 

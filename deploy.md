@@ -2,7 +2,9 @@
 
 ## Permissions
 
-Commands below require these prefixes in `.claude/settings.json` under `permissions.allow`:
+Commands below require these prefixes covered by SOME entry in `permissions.allow` of
+EITHER `.claude/settings.json` OR `.claude/settings.local.json` (where the fleet's
+compose_permissions tool delivers); a broader prefix entry counts as coverage:
 - `Bash(*apra-fleet-installer-* install *)`
 - `Bash(*apra-fleet* --version)`
 - `Bash(*apra-fleet* run *)`
