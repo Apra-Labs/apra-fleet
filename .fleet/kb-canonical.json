@@ -1,11 +1,29 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "08ad5f1554e1a401d77320bf63f7f579c527387a",
-    "branch": "chore/kb-bible-reconcile",
-    "entry_count": 24
+    "commit": "84ebad25f77fc41e04b12ad0c5a1e753e9dc7ed4",
+    "branch": "feat/endpoint-transport",
+    "entry_count": 45
   },
   "entries": [
+    {
+      "id": "00071854-a1e7-4685-af0f-3afe5c399f3d",
+      "type": "knowledge",
+      "title": "Endpoint transport reads prompt, signal, timeoutMs, and timeout_s from ExecutePromptOptions",
+      "summary": "The endpoint transport's executePrompt method processes only five fields from ExecutePromptOptions: prompt (required), signal (AbortSignal), timeoutMs (milliseconds), timeout_s (seconds), and silently ignores all others including agent, max_total_s, max_turns, member_id, member_name, model, resume, session_id, and substitutions.",
+      "symbols": [
+        "resolveRequestTimeoutMs",
+        "DEFAULT_REQUEST_TIMEOUT_MS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/endpoint/openai-shape.mjs",
+        "packages/apra-fleet-client/src/endpoint/anthropic-shape.mjs",
+        "packages/apra-fleet-client/src/endpoint/http.mjs",
+        "packages/apra-fleet-client/docs/api-reference.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T18:27:55.797Z"
+    },
     {
       "id": "0e10e4ea-5c23-4fc9-bd7a-baf1af522a3e",
       "type": "knowledge",
@@ -44,6 +62,22 @@
       "updated_at": "2026-08-21T05:24:37.838Z"
     },
     {
+      "id": "1108df07-c12f-4f2e-9127-d996635d7583",
+      "type": "knowledge",
+      "title": "The endpoint transport now honors timeoutMs and timeout_s, with a 120s default deadline",
+      "summary": "Supersedes the earlier claim that executePrompt reads only prompt and signal: both shape adapters now resolve a request deadline from options.timeoutMs, options.timeout_s, config.timeoutMs or DEFAULT_REQUEST_TIMEOUT_MS (120s), so an unconfigured endpoint dispatch is always bounded.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-client/src/endpoint/http.mjs",
+        "packages/apra-fleet-client/src/endpoint/openai-shape.mjs",
+        "packages/apra-fleet-client/src/endpoint/anthropic-shape.mjs",
+        "packages/apra-fleet-client/src/endpoint/core.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T18:08:50.756Z"
+    },
+    {
       "id": "130bc73b-fade-4d3a-8254-2ad3b2e1bfef",
       "type": "knowledge",
       "title": "KB provider cache is now keyed by (slug, repoPath), not slug alone",
@@ -58,8 +92,8 @@
     {
       "id": "16ba5328-63a9-4f98-8614-fa3137afe2f3",
       "type": "knowledge",
-      "title": "secure.NAME token values arrive already shell-escaped, and the escaping is OS-branched",
-      "summary": "execute_command replaces each secure.NAME token with a value that has ALREADY been quoted for the target member's shell -- escapePowerShellArg for windows members, escapeShellArg otherwise, chosen from agentOs. Reference the token bare in a command string; wrapping it in your own quotes double-escapes the value and surfaces as a false 401 or invalid-token error. This entry deliberately writes the token without its surrounding double braces: kb_session_prime injects KB entries verbatim into every agent dispatch prompt, and execute_prompt rejects any prompt matching the braced secure-token pattern, so spelling it in full here makes every dispatch in a sprint fail.",
+      "title": "{{secure.NAME}} values arrive already shell-escaped, and the escaping is OS-branched",
+      "summary": "execute_command replaces each {{secure.NAME}} token with a value that has ALREADY been quoted for the target member's shell -- escapePowerShellArg for windows members, escapeShellArg otherwise, chosen from agentOs. Reference the token bare in a command string; wrapping it in your own quotes double-escapes the value and surfaces as a false 401 or invalid-token error.",
       "symbols": [
         "escapeShellArg",
         "escapePowerShellArg",
@@ -184,6 +218,25 @@
       "updated_at": "2026-08-21T05:24:37.879Z"
     },
     {
+      "id": "4c4d363b-76d5-4acd-8e9c-89846e06cee4",
+      "type": "knowledge",
+      "title": "The endpoint transport's memberless pricing does resolve real cost through the engine's tier path",
+      "summary": "Despite the transport sending one configured model for every tier, an endpoint dispatch made with model:'premium' (or cheap/standard) and config.pricing set is priced by _resolveCost() as REAL pricing, incrementing budget._pricedReal -- the tier keyword still gates entry into the real-pricing branch.",
+      "symbols": [
+        "_resolveCost",
+        "_getMemberPricing",
+        "createMemberlessMethods",
+        "getMemberModelPricing"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-client/src/endpoint/memberless.mjs",
+        "packages/apra-fleet-client/test/endpoint-engine-e2e.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T18:44:08.639Z"
+    },
+    {
       "id": "6241ee4c-ceb3-4b58-b1b4-015a0d8d8ec1",
       "type": "knowledge",
       "title": "The .trim() guard in resolveProjectSlug is provably redundant and cannot be pinned by any test",
@@ -200,6 +253,92 @@
       "updated_at": "2026-08-21T05:24:37.888Z"
     },
     {
+      "id": "64025a66-ff2c-414c-baa3-9333e8e43c38",
+      "type": "knowledge",
+      "title": "endpoint/core.mjs is unreachable from outside apra-fleet-client -- package.json has no ./endpoint subpath",
+      "summary": "packages/apra-fleet-client declares an \"exports\" map, so the new endpoint transport core can only be imported by siblings inside the package via a relative path; any external import fails with ERR_PACKAGE_PATH_NOT_EXPORTED.",
+      "symbols": [
+        "buildEnvelope",
+        "classifyEndpointFailure"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/package.json",
+        "packages/apra-fleet-client/src/endpoint/core.mjs",
+        "packages/apra-fleet-workflow/src/workflow/errors.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T16:48:18.790Z"
+    },
+    {
+      "id": "65f3eb56-327a-429f-8007-eea03dcd1087",
+      "type": "learning",
+      "title": "agent()/command() now emit activity:end for a WorkflowError raised directly by fleetApi, not just ones the engine itself throws",
+      "summary": "The catch blocks in _agentDispatch()/_commandDispatch() used to assume every instanceof WorkflowError had already had activity:end emitted at an internal throw site; that broke for a FleetApi (like the endpoint transport) that raises the engine's own typed errors directly from executePrompt/executeCommand.",
+      "symbols": [
+        "_agentDispatch",
+        "_commandDispatch",
+        "activityEndEmitted"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-workflow/test/apra-fleet-workflow-errors.test.mjs",
+        "packages/apra-fleet-client/src/endpoint/memberless.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T17:13:15.713Z"
+    },
+    {
+      "id": "67488d37-be2d-4282-9464-20aa63c7025f",
+      "type": "knowledge",
+      "title": "dist/ is fully gitignored -- the dist-pm staleness guard is a local-only, no-op-on-CI check",
+      "summary": "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs only activates when a developer's local dist/agents/schemas build artifact exists; dist/ has never been tracked in git (repo-root .gitignore line 2: `dist/`). Fixing a reported staleness failure means running `npm run dist-pm` locally, not committing anything -- there is nothing under dist/ to commit.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
+        ".gitignore",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T16:48:18.786Z"
+    },
+    {
+      "id": "72a284c2-00d9-4a00-b084-30e413e6988c",
+      "type": "knowledge",
+      "title": "The engine's typed error taxonomy now lives in apra-fleet-client, not apra-fleet-workflow",
+      "summary": "WorkflowError and its subclasses moved to packages/apra-fleet-client/src/errors/workflow-errors.mjs ('@apralabs/apra-fleet-client/errors'); packages/apra-fleet-workflow/src/workflow/errors.mjs is now a re-export shim. The move was forced by the dependency direction: apra-fleet-workflow depends on apra-fleet-client, so any transport living in the client package could otherwise only reach the taxonomy through a circular package dependency.",
+      "symbols": [
+        "WorkflowError",
+        "FleetTransportError",
+        "AgentDispatchError",
+        "AgentOutputError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/errors/workflow-errors.mjs",
+        "packages/apra-fleet-workflow/src/workflow/errors.mjs",
+        "packages/apra-fleet-client/package.json",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-client/src/client/errors.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T16:25:34.389Z"
+    },
+    {
+      "id": "7a07072f-eba3-4887-b8e0-ce8299c9a64e",
+      "type": "learning",
+      "title": "Root npm test does not run the client or workflow package suites",
+      "summary": "scripts/run-all-tests.mjs drives only vitest and the apra-fleet-se workspace, and vitest's include glob misses packages/*/test/*.test.mjs on both the directory name and the extension, so a green root run proves nothing about the endpoint transport.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "vitest.config.ts",
+        ".github/workflows/ci.yml",
+        "packages/apra-fleet-client/package.json",
+        "packages/apra-fleet-workflow/package.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T18:44:08.658Z"
+    },
+    {
       "id": "7cc58351-c7f9-4f14-99b0-cdd04cf83d7c",
       "type": "knowledge",
       "title": "Member OS resolution: always via agent.os",
@@ -214,6 +353,39 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-21T05:24:37.927Z"
+    },
+    {
+      "id": "82e9dcbc-5c4e-4d03-abe2-9ca228249d53",
+      "type": "knowledge",
+      "title": "FleetWorkflow.agent() requires member_name or member_id even for a memberless FleetApi",
+      "summary": "agent() hard-throws before dispatch when neither member_name nor member_id is set, so an endpoint-transport caller must still pass a placeholder member identifier despite there being no member behind the transport.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-client/src/endpoint/factory.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T17:55:33.503Z"
+    },
+    {
+      "id": "87c991ce-a9af-4f2f-9aae-638aa062a3ac",
+      "type": "learning",
+      "title": "Assert details.reason to prove a typed error passed through the engine unwrapped",
+      "summary": "FleetWorkflow's agent() catch re-throws an instanceof WorkflowError untouched but wraps anything else in a fresh FleetTransportError, so an instanceof-only assertion cannot tell pass-through from re-wrap and silently passes under a regression.",
+      "symbols": [
+        "FleetTransportError",
+        "classifyEndpointFailure",
+        "_agentDispatch",
+        "WorkflowError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-client/src/endpoint/core.mjs",
+        "packages/apra-fleet-client/test/endpoint-engine-e2e.test.mjs",
+        "packages/apra-fleet-client/src/errors/workflow-errors.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T19:06:12.225Z"
     },
     {
       "id": "8997f326-d6e7-485f-ad84-782650030314",
@@ -269,6 +441,25 @@
       "updated_at": "2026-08-21T05:35:02.929Z"
     },
     {
+      "id": "9d25baed-ff82-4103-8c76-13f9b01b5e77",
+      "type": "learning",
+      "title": "An endpoint-transport test stub must reject on abort, not merely never resolve",
+      "summary": "A fetch stub that returns a forever-pending promise hangs any endpoint-transport test that expects a cancellation, because postJson only classifies an abort inside its catch blocks -- the stub must reject with an AbortError when its signal fires, the way a real fetch does.",
+      "symbols": [
+        "postJson",
+        "classifyBySignalState",
+        "withDeadline",
+        "DEFAULT_REQUEST_TIMEOUT_MS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/endpoint/http.mjs",
+        "packages/apra-fleet-client/test/endpoint-engine-e2e.test.mjs",
+        "packages/apra-fleet-client/test/endpoint-transport-cancellation.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T18:44:08.642Z"
+    },
+    {
       "id": "a96e64d8-e304-4a46-baeb-d36fe1371a94",
       "type": "knowledge",
       "title": "Lockfile drift is invisible to npm test",
@@ -304,6 +495,43 @@
       "updated_at": "2026-08-17T21:58:44.645Z"
     },
     {
+      "id": "b16e5366-71b1-441c-bea3-71e3255aa209",
+      "type": "learning",
+      "title": "postJson now distinguishes an aborted fetch (CancelledError) from a genuine network failure (FleetTransportError)",
+      "summary": "postJson in http.mjs used to classify every fetch rejection as kind:'network', which always yields FleetTransportError and made cooperative requestStop() cancellation indistinguishable from a real socket failure at the engine boundary.",
+      "symbols": [
+        "postJson",
+        "classifyEndpointFailure",
+        "isAbortError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/endpoint/http.mjs",
+        "packages/apra-fleet-client/src/endpoint/core.mjs",
+        "packages/apra-fleet-client/src/errors/workflow-errors.mjs",
+        "packages/apra-fleet-client/src/endpoint/memberless.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T17:13:15.708Z"
+    },
+    {
+      "id": "bdc32149-075c-4a90-94c4-a53ba5496c1d",
+      "type": "knowledge",
+      "title": "normalizeUsage drops a provider report that carries only total_tokens",
+      "summary": "The endpoint core treats usage as unreported unless the provider broke out an input or output count; a body with total_tokens alone yields null, so the whole usage key is omitted and the call records as unknown spend.",
+      "symbols": [
+        "normalizeUsage",
+        "buildEnvelope"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/endpoint/core.mjs",
+        "packages/apra-fleet-workflow/src/workflow/pricing.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T16:48:18.782Z"
+    },
+    {
       "id": "beb4faf7-40fa-4484-9cf5-b287df8f47d2",
       "type": "knowledge",
       "title": "resolveProjectSlug prefers an explicit git remote URL over shelling git against repo_path",
@@ -315,6 +543,43 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-17T20:10:22.943Z"
+    },
+    {
+      "id": "c136860a-48cf-4a9e-bf37-b3027f7ba6e5",
+      "type": "knowledge",
+      "title": "Repo-root npm test does not run the workspace node:test suites -- only CI does",
+      "summary": "scripts/run-all-tests.mjs runs vitest plus apra-fleet-se only, so a green root npm test says nothing about apra-fleet-client or apra-fleet-workflow; ci.yml closes the gap with a separate npm test --workspaces step.",
+      "symbols": [
+        "SUITES"
+      ],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "vitest.config.ts",
+        ".github/workflows/ci.yml",
+        "packages/apra-fleet-client/package.json",
+        "packages/apra-fleet-workflow/package.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T17:31:39.174Z"
+    },
+    {
+      "id": "c213ee23-10e1-4ed8-82d5-27f5aed90f89",
+      "type": "knowledge",
+      "title": "Endpoint adapters must derive HTTP ok from status, not from response.ok",
+      "summary": "postJson in src/endpoint/http.mjs computes ok as status 200-299 and always consumes the body once, so hand-written fetch stubs only need {status, text()} and both the success and failure paths see the same already-read body.",
+      "symbols": [
+        "postJson",
+        "resolveFetch",
+        "dispatchFailureFromHttp",
+        "classifyEndpointFailure"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/endpoint/http.mjs",
+        "packages/apra-fleet-client/src/endpoint/core.mjs",
+        "packages/apra-fleet-client/src/endpoint/openai-shape.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T16:48:18.777Z"
     },
     {
       "id": "c2899616-0cb1-41e8-b229-76e291a0cd81",
@@ -357,6 +622,82 @@
       "updated_at": "2026-08-17T21:02:37.675Z"
     },
     {
+      "id": "cf677a6e-cd72-4224-b3fc-c1c6cead9ec8",
+      "type": "knowledge",
+      "title": "agent() returns structuredContent.response verbatim when no schema is given",
+      "summary": "For a no-schema dispatch the engine returns structured.response unmodified whenever the transport supplies it, so the endpoint transport's reply text reaches a workflow script byte-for-byte; only the wrapper-stripping fallback path (older MCP servers with no structuredContent.response) rewrites the text.",
+      "symbols": [
+        "agent",
+        "buildEnvelope"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-client/src/endpoint/core.mjs",
+        "packages/apra-fleet-client/test/endpoint-engine-e2e.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T18:44:08.646Z"
+    },
+    {
+      "id": "d8655091-8b32-454d-9dd7-b54274781446",
+      "type": "knowledge",
+      "title": "postJson classifies by signal state at all three call sites, including the body-read catch",
+      "summary": "A cancellation or deadline expiry can surface as a response.text() rejection rather than a fetch rejection, so postJson checks the signal's own aborted state at the body-read catch too, via a shared classifyBySignalState() helper.",
+      "symbols": [
+        "classifyBySignalState",
+        "postJson",
+        "classifyEndpointFailure",
+        "isTimeoutError",
+        "isAbortError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/endpoint/http.mjs",
+        "packages/apra-fleet-client/src/endpoint/core.mjs",
+        "packages/apra-fleet-client/src/errors/workflow-errors.mjs",
+        "packages/apra-fleet-client/test/endpoint-http.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T18:44:08.652Z"
+    },
+    {
+      "id": "dac1e2f8-5fe0-4d02-8945-df07d62db297",
+      "type": "knowledge",
+      "title": "Memberless getMemberModelPricing signals unpriced with an error key and no pricing key",
+      "summary": "The engine's _getMemberPricing treats a parsed payload as unpriced when parsed.error is truthy OR parsed.pricing is missing, degrading to null and warning once per member; it never throws, so an endpoint transport must use that channel rather than rejecting.",
+      "symbols": [
+        "createMemberlessMethods",
+        "getMemberModelPricing",
+        "_getMemberPricing",
+        "_resolveCost"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/endpoint/memberless.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-workflow/src/workflow/pricing.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T17:13:15.717Z"
+    },
+    {
+      "id": "e6b384a3-0d26-4843-a46b-7f9eb26df618",
+      "type": "knowledge",
+      "title": "Do not use AbortSignal.timeout() for a request deadline in this repo -- its timer is unref'd",
+      "summary": "AbortSignal.timeout()'s internal timer does not keep the Node event loop alive, so a deadline built on it can be silently skipped when the only other pending work is a fetch with no live handle yet.",
+      "symbols": [
+        "withDeadline",
+        "postJson",
+        "classifyBySignalState",
+        "resolveRequestTimeoutMs"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/endpoint/http.mjs",
+        "packages/apra-fleet-client/src/endpoint/core.mjs",
+        "packages/apra-fleet-client/test/endpoint-http.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T19:29:46.024Z"
+    },
+    {
       "id": "f4bbc2aa-3e45-4112-860c-aab263e2736a",
       "type": "learning",
       "title": "Wrap getKbProviders with a delegating vi.mock to assert real provider anchoring",
@@ -376,6 +717,28 @@
       "updated_at": "2026-08-17T21:02:37.669Z"
     },
     {
+      "id": "f5df26a2-7693-4127-ad01-c923b706c4dc",
+      "type": "knowledge",
+      "title": "The endpoint transport sends one configured model, so tier keywords never resolve",
+      "summary": "Both endpoint shape adapters send config.model on every dispatch and ignore the engine's per-dispatch cheap/standard/premium tier keyword, because there is no member to resolve a tier against; the memberless pricing method therefore reports the same configured-model price for all three tiers rather than a per-tier table.",
+      "symbols": [
+        "createMemberlessMethods",
+        "createOpenAiTransport",
+        "createAnthropicTransport",
+        "_getMemberPricing",
+        "_resolveCost"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/endpoint/memberless.mjs",
+        "packages/apra-fleet-client/src/endpoint/openai-shape.mjs",
+        "packages/apra-fleet-client/src/endpoint/anthropic-shape.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-workflow/src/workflow/pricing.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T16:48:18.780Z"
+    },
+    {
       "id": "f92f896f-cc6d-4c1f-8144-f42ce2a3707f",
       "type": "knowledge",
       "title": "A missing-anchor freshness regression surfaces first as kb_list dropping entries, not as a stale-flag assertion",
@@ -392,6 +755,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-17T22:08:25.572Z"
+    },
+    {
+      "id": "fe265420-dada-4057-8920-50ece2927022",
+      "type": "knowledge",
+      "title": "Engine envelope contract: structuredContent.usage must be omitted, never zero-filled",
+      "summary": "FleetWorkflow decides an activity had real spend with `typeof reportedUsage.total_tokens === 'number'`, and prices it from usage.input_tokens/usage.output_tokens. A transport that zero-fills usage when the provider reported none makes a paid call read as real-but-free spend; the field must be absent instead. execute_prompt itself emits it with a conditional spread for exactly this reason.",
+      "symbols": [
+        "normalizeUsage",
+        "buildEnvelope",
+        "calculateCost",
+        "_resolveCost"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-workflow/src/workflow/pricing.mjs",
+        "src/tools/execute-prompt.ts",
+        "packages/apra-fleet-client/src/endpoint/core.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T16:25:34.393Z"
     },
     {
       "id": "ff6f9eff-1532-4e9a-85fb-f3b4778e4733",
