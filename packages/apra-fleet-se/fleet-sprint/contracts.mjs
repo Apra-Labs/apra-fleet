@@ -94,31 +94,37 @@ export function validateRole(role) {
 // 2. Role-owned schema loader (apra-fleet-unw.22, packaging-safe per apra-fleet-bun)
 // ---------------------------------------------------------------------------
 //
-// Schema resolution is layout-aware and bundled-location-first (apra-fleet-
-// bun), because apra-fleet-se must resolve its apra-pm role schemas
-// correctly regardless of how it ended up on disk: a full monorepo git
-// clone (this repo, today), a standalone `npm install @apralabs/apra-fleet-
-// se`, or bundled into the root @apralabs/apra-fleet package's dist/auto-
-// sprint.mjs. `resolveSchemasDir()` below tries, in order:
+// Schema resolution is layout-aware and freshness-first between the two
+// bundled/local candidates (apra-fleet-ot2z.20), because apra-fleet-se must
+// resolve its apra-pm role schemas correctly regardless of how it ended up
+// on disk: a full monorepo git clone (this repo, today), a standalone `npm
+// install @apralabs/apra-fleet-se`, or bundled into the root
+// @apralabs/apra-fleet package's dist/auto-sprint.mjs. `resolveSchemasDir()`
+// below tries, in order:
 //
 //   1. process.env.APRA_FLEET_SE_SCHEMAS_DIR, if set -- an explicit
-//      override, used as-is with no further fallback. Tests use this to
-//      point at a fixture directory; any deployment may also use it to pin
-//      an exact schemas directory.
-//   2. <root>/dist/agents/schemas -- the sibling directory scripts/dist-
-//      pm.mjs ALREADY populates at the root package's `prepublishOnly`
-//      (cpSync of packages/apra-fleet-se/apra-pm/agents -> dist/agents, which includes its
-//      schemas/ subdir). This is what a dist/fleet-sprint.mjs bundle
-//      resolves once apra-fleet-3ns.2 ships it as a dist/ sibling -- no new
-//      copy step needed, this artifact already exists today.
-//   3. packages/apra-fleet-se/apra-pm/agents/schemas -- the package-local apra-pm 
-//      directory. This is what a standalone install of @apralabs/apra-fleet-se
-//      resolves, or a dev checkout.
+//      override, used as-is with no further fallback and no freshness
+//      lookup at all. Tests use this to point at a fixture directory; any
+//      deployment may also use it to pin an exact schemas directory.
+//   2. If only one of <root>/dist/agents/schemas (the sibling directory
+//      scripts/dist-pm.mjs populates at the root package's
+//      `prepublishOnly`, cpSync of packages/apra-fleet-se/apra-pm/agents ->
+//      dist/agents, which includes its schemas/ subdir) or
+//      packages/apra-fleet-se/apra-pm/agents/schemas (the package-local
+//      apra-pm directory) exists, resolve that one. This is the path every
+//      real deployment (standalone install, dist bundle, clean CI checkout)
+//      takes.
+//   3. If BOTH exist, resolve the NEWER one, where a directory's freshness
+//      is the MAXIMUM mtime over the .json files it contains, searched
+//      recursively (not the directory's own mtime, which only moves on
+//      entry create/delete/rename and would miss an in-place edit to an
+//      existing schema file). Ties resolve to dist, preserving the
+//      pre-apra-fleet-ot2z.20 behaviour.
 //
-// If none of 1-3 exist as a directory, `resolveSchemasDir()` returns `null`;
-// `loadVendorSchema` already treats a null/absent directory as the expected,
-// quiet graceful-degradation case (every schema falls back to its hand-
-// written literal in section 3) -- unchanged from before apra-fleet-bun.
+// If neither candidate exists as a directory, `resolveSchemasDir()` returns
+// `null`; `loadVendorSchema` already treats a null/absent directory as the
+// expected, quiet graceful-degradation case (every schema falls back to its
+// hand-written literal in section 3) -- unchanged from before apra-fleet-bun.
 const PACKAGE_ROOT = path.join(__dirname, '..');
 const REPO_ROOT = path.join(PACKAGE_ROOT, '..', '..');
 // Exported (not just module-local) so a drift guard test can compare the two
@@ -136,22 +142,64 @@ function isDirectory(candidate) {
 }
 
 /**
+ * Default freshness lookup for `resolveSchemasDir()`'s both-exist branch:
+ * the maximum mtime (ms) over every `.json` file found by a recursive walk
+ * of `dir`. Tolerates an unreadable or empty directory by treating it as
+ * freshness 0 rather than throwing -- a directory disappearing or being
+ * unreadable between the `exists()` check and this walk must not crash
+ * schema resolution.
+ * @param {string} dir
+ * @returns {number}
+ */
+function newestJsonMtimeMs(dir) {
+    let newest = 0;
+    let entries;
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return 0;
+    }
+    for (const entry of entries) {
+        const entryPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            newest = Math.max(newest, newestJsonMtimeMs(entryPath));
+        } else if (entry.isFile() && entry.name.endsWith('.json')) {
+            try {
+                newest = Math.max(newest, fs.statSync(entryPath).mtimeMs);
+            } catch {
+                // Unreadable file between readdir and stat -- ignore it.
+            }
+        }
+    }
+    return newest;
+}
+
+/**
  * Resolves the directory to load vendored role schemas from, per the
- * bundled-location-first precedence documented above. Exported (and
+ * freshness-first precedence documented above. Exported (and
  * side-effect-injectable via `deps`) so tests can exercise every branch in
  * isolation without needing real directories on disk for each case.
- * @param {{ env?: Record<string, string | undefined>, exists?: (candidate: string) => boolean }} [deps]
+ * @param {{ env?: Record<string, string | undefined>, exists?: (candidate: string) => boolean, newestJsonMtimeMs?: (dir: string) => number }} [deps]
  * @returns {string | null}
  */
 export function resolveSchemasDir(deps = {}) {
     const env = deps.env || process.env;
     const exists = deps.exists || isDirectory;
+    const freshnessOf = deps.newestJsonMtimeMs || newestJsonMtimeMs;
 
     const override = env.APRA_FLEET_SE_SCHEMAS_DIR;
     if (override) return override;
 
-    if (exists(DIST_BUNDLED_SCHEMAS_DIR)) return DIST_BUNDLED_SCHEMAS_DIR;
-    if (exists(PACKAGE_LOCAL_SCHEMAS_DIR)) return PACKAGE_LOCAL_SCHEMAS_DIR;
+    const distExists = exists(DIST_BUNDLED_SCHEMAS_DIR);
+    const localExists = exists(PACKAGE_LOCAL_SCHEMAS_DIR);
+
+    if (distExists && localExists) {
+        const localFreshness = freshnessOf(PACKAGE_LOCAL_SCHEMAS_DIR);
+        const distFreshness = freshnessOf(DIST_BUNDLED_SCHEMAS_DIR);
+        return localFreshness > distFreshness ? PACKAGE_LOCAL_SCHEMAS_DIR : DIST_BUNDLED_SCHEMAS_DIR;
+    }
+    if (distExists) return DIST_BUNDLED_SCHEMAS_DIR;
+    if (localExists) return PACKAGE_LOCAL_SCHEMAS_DIR;
 
     return null;
 }
@@ -533,11 +581,7 @@ const FALLBACK_regressionReport = {
         summary: { type: 'string' },
         smokeEvidence: {
             type: 'object',
-            properties: {
-                versionStdout: { type: 'string' },
-                canaryStatus: { type: 'string' },
-                toyRepoHeadSha: { type: 'string' },
-            },
+            additionalProperties: true,
         },
     },
     required: ['passed', 'suitePassed', 'smokePassed', 'bugsFiled', 'summary'],

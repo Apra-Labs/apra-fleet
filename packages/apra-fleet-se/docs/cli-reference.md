@@ -174,9 +174,17 @@ independent of the server-command resolution above:
    this package's own directory tree. Legacy layout: nothing populates it now
    that apra-pm lives in this monorepo, so it normally does not exist.
 4. `packages/apra-fleet-se/apra-pm/agents/schemas/`, three levels up -- the
-   apra-pm package in this monorepo. Dev-convenience fallback only; emits a
-   one-time `console.warn` when used, since it does not exist in a
-   packaged/installed layout.
+   apra-pm package in this monorepo.
+
+Tiers 2 and 4 are NOT a strict "dist always wins" order (apra-fleet-ot2z.20):
+if only one of the two exists, that one resolves, same as before. If BOTH
+exist, `resolveSchemasDir()` picks the NEWER one -- freshness is the maximum
+mtime over the `.json` files each directory contains, found by a recursive
+walk (not the directory's own mtime, which does not move on an in-place
+edit to an existing schema file). A tie resolves to `dist`, preserving the
+pre-apra-fleet-ot2z.20 default. Whichever directory resolves, a `console.warn`
+still fires if that directory exists but is missing an individual role's
+schema file (see `warnIfVendorFileUnexpectedlyMissing` in `docs/role-contracts.md`).
 
 If none of the four resolve, every role falls back to a hand-written literal
 schema shipped inside `contracts.mjs` itself (a deliberate, permanent

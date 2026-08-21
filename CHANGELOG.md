@@ -2,6 +2,74 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Windows/PowerShell shell portability and schema-repair retry correctness
+
+Sprint goal: close out the remaining holistic-audit acceptance criteria for
+member-bound command construction that silently assumed a POSIX shell, and
+fix a schema-repair retry path that could resume the wrong session or lose
+the original request across repair rounds.
+
+What shipped:
+
+- **Cross-shell command construction**: the GitHub VCS command builder now
+  emits `curl.exe` explicitly on Windows members instead of relying on a
+  bare `curl` invocation, which PowerShell silently resolves to its
+  incompatible `Invoke-WebRequest` alias -- confirmed wired through the real
+  production OS-resolution path, not just a test fixture. Golden POSIX
+  command output is unchanged. A PowerShell deep-merge helper no longer
+  throws on nested JSON objects (`PSCustomObject` does not support the
+  `Hashtable` method the merge previously assumed) and no longer leaks
+  internal accumulator metadata keys into merged JSON output. A Windows
+  delete-files script builder was extracted into its own exported function
+  so the regression suite exercises the real production script instead of a
+  hand-duplicated copy that could silently drift.
+- **Live-PowerShell regression coverage**: a reusable live-PowerShell test
+  harness now backs exit-code and on-disk assertions for the credential
+  file write, deep-merge, recursive file hashing, and delete-files code
+  paths, closing the risk that a platform-gated suite reports green purely
+  by skipping rather than by actually exercising real PowerShell.
+- **Schema-repair retry contract**: a schema-invalid dispatch response is
+  now retried by reattaching the original prompt and schema as explicit
+  reference text on every repair round (re-derived from the one true
+  original each time, so repeated rounds don't compound), and by resuming
+  the exact session that produced the failed attempt via its captured
+  session id rather than a generic "resume most recent session" flag. When
+  no session id was captured, the retry now degrades to an explicit,
+  loudly-logged fresh dispatch instead of silently guessing. A
+  session-not-found response to an exact-id resume now triggers one
+  additional fresh-dispatch attempt within the existing repair budget,
+  rather than failing the whole repair outright.
+- **Schema directory resolution**: the packaged-schema loader now picks
+  whichever of its two built-in candidate directories (bundled vs
+  package-local) was most recently edited, based on the newest contained
+  schema file's modification time, rather than always preferring one by
+  fixed convention -- preventing a stale bundled copy from silently
+  shadowing an edited source schema.
+- **Housekeeping**: stray root-level scratch artifacts were removed and the
+  ignore rules widened so equivalent artifacts don't get re-added by
+  accident; several pre-existing test-suite failures were triaged and fixed.
+- See [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md)
+  and [docs/dispatch-reliability-hardening.md](docs/dispatch-reliability-hardening.md)
+  for the full patterns behind these fixes.
+
+Carried forward: extending the root test run to cover the workflow package
+directly (rather than only via a separate invocation), a couple of
+follow-ups on schema-directory-resolution edge cases and an unused
+production caller for one Windows helper, and a same-sprint regression pass
+that reconfirmed several pre-existing, parent-less carry-over issues (long
+single-file test durations, a setup-failure cluster in one test group, a
+couple of flaky timeouts, and a sandbox smoke-test credential-provisioning
+precondition) -- no new defects were found in this sprint's own work and no
+new carry-over issues were filed.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $30.6565.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1440 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 52 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Cooperative workflow pause/resume: closing the resume-barrier gap
 
 Sprint goal: finish the cooperative pause/resume feature by closing three

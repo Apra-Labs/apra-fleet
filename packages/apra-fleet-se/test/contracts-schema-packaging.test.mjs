@@ -18,7 +18,15 @@ const FIXTURES_DIR = path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas');
 const { resolveSchemasDir } = await import('../fleet-sprint/contracts.mjs');
 
 describe('resolveSchemasDir path-precedence (direct exercise, no real filesystem dependency)', () => {
-    test('scenario a: dist/agents/schemas present resolves first, even with lower-precedence candidates also present', () => {
+    test('scenario a: dist/agents/schemas present resolves on a freshness tie, even with lower-precedence candidates also present', () => {
+        // apra-fleet-ot2z.20.1: when both candidates exist, resolution is
+        // freshness-first (newer .json content wins), not
+        // dist-always-wins -- a tie still resolves to dist, preserving the
+        // pre-apra-fleet-ot2z.20 default. newestJsonMtimeMs is injected
+        // alongside exists so this stays a pure branch test rather than
+        // falling through to a real recursive filesystem walk of whatever
+        // dist/ and package-local directories happen to exist on this
+        // machine.
         const seen = [];
         const result = resolveSchemasDir({
             env: {},
@@ -26,6 +34,7 @@ describe('resolveSchemasDir path-precedence (direct exercise, no real filesystem
                 seen.push(candidate);
                 return true; // every candidate "exists" -- precedence order must still pick the first checked
             },
+            newestJsonMtimeMs: () => 1000, // both candidates equally fresh -> tie resolves to dist
         });
         assert.ok(/dist[\\/]agents[\\/]schemas$/.test(result), result);
         // dist/agents/schemas must be the FIRST candidate probed, proving the

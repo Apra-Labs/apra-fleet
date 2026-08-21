@@ -246,20 +246,48 @@ function summarizeExtractionAttempts(attempts) {
 }
 
 /**
- * Builds the lean repair re-ask prompt sent to the SAME member after an
- * invalid structured-output attempt. apra-fleet-02s.3: repair re-asks now
- * force `resume: true` (see the payload construction below), so the member's
- * session already has the original prompt/schema and its own invalid
- * output in context -- re-embedding all of that here would just re-spend
- * tokens re-sending what the resumed session already has. Only the
- * validation errors plus a short corrected-JSON instruction are needed.
- * @param {string} errorsText
+ * Builds the repair re-ask prompt sent to the SAME member after an invalid
+ * structured-output attempt.
+ *
+ * HISTORY -- this deliberately REVERSES apra-fleet-02s.3, which shrank this
+ * to a lean reminder (validation errors only) on the theory that the forced
+ * `resume: true` on repair (see the payload construction below) guarantees
+ * the member's session still holds the original prompt and schema.
+ * apra-fleet-dnri: that assumption does not always hold. Observed live on
+ * 2026-08-20, a reviewer dispatch that failed schema validation twice was
+ * re-asked with only the validator text; the resumed session did not carry
+ * the task inputs, so the agent had no base branch, no branch and no work
+ * ids, correctly refused to guess, and its refusal was read as a real
+ * verdict -- aborting the whole sprint. Resume is an optimization, not a
+ * guarantee, so the re-ask must be self-contained on its own.
+ *
+ * BOUNDED ON PURPOSE (the original token-cost decision still stands): only
+ * `initialPrompt` is reattached -- the caller's original prompt plus the same
+ * schema instruction the initial dispatch appended. The invalid response
+ * text, the session transcript and any per-attempt accumulated history are
+ * NOT re-embedded, and callers must always pass the ORIGINAL `initialPrompt`
+ * (never the previous round's repair prompt), so the reattached portion is
+ * byte-identical on every repair round and the prompt does not grow.
+ *
+ * The reattachment is framed as REFERENCE material, not as a fresh order:
+ * when the repair re-ask resumes the failed attempt's own session (see the
+ * resume disposition at the dispatch payload below) the member may have
+ * already done the underlying work, and a prompt that restates the task can
+ * read as an instruction to redo it.
+ *
+ * @param {string} errorsText - Summary of every failed extraction attempt.
+ * @param {string} initialPrompt - The fully-resolved original dispatch prompt
+ *   (caller prompt + appended schema instruction), unchanged.
  */
-function buildRepairPrompt(errorsText) {
+function buildRepairPrompt(errorsText, initialPrompt) {
     return `Your previous response could not be used.\n\n` +
         `Validation errors:\n${errorsText}\n\n` +
-        `Please respond again with corrected JSON only, strictly conforming to the schema from your previous instructions. ` +
-        `Do not include any commentary, explanation, or text outside the JSON.`;
+        `For reference, the original request and the required JSON schema were:\n` +
+        `--- BEGIN ORIGINAL REQUEST ---\n${initialPrompt}\n--- END ORIGINAL REQUEST ---\n\n` +
+        `Do NOT redo any work you have already completed for this request -- report the ` +
+        `result you already determined. Respond again with corrected JSON only, strictly ` +
+        `conforming to the schema above. Do not include any commentary, explanation, or ` +
+        `text outside the JSON.`;
 }
 
 /**
@@ -329,10 +357,13 @@ function buildRepairPrompt(errorsText) {
  * @property {number} [schemaRetries] - Only meaningful when `schema` is set. Bounded number
  *   of repair re-asks to the SAME member after a parse/validation failure, before giving up
  *   and throwing AgentOutputError. Defaults to 2 (so up to 3 total dispatches: 1 original +
- *   2 repairs). Each repair re-ask FORCES `resume: true` (apra-fleet-02s.3) so the member's
- *   session already has the original prompt/schema and its own invalid output in context --
- *   the re-ask itself is a lean reminder containing only the ajv validation/parse errors
- *   plus a corrected-JSON instruction, not a re-embedding of the full original prompt/output.
+ *   2 repairs). Each repair re-ask FORCES `resume: true` (apra-fleet-02s.3) so any real work
+ *   the member already performed for this request is preserved rather than redone -- but the
+ *   re-ask is SELF-CONTAINED and does not depend on that resume carrying context
+ *   (apra-fleet-dnri): it reattaches the original prompt plus the schema instruction as
+ *   reference, alongside the ajv validation/parse errors and a corrected-JSON instruction.
+ *   The reattached portion is identical on every repair round (the invalid output, the
+ *   session transcript and per-attempt history are never embedded), so repairs do not grow.
  *   Each attempt emits its own activity:start/activity:end pair and is cost-accounted
  *   individually. (apra-fleet-unw.8)
  * @property {number} [busyWaitMs] - How long (ms) to keep waiting-and-retrying when the
@@ -931,6 +962,14 @@ export class FleetWorkflow extends EventEmitter {
 
         let currentPrompt = initialPrompt;
         let lastActivityMeta = null;
+        // apra-fleet-dnri: the session id reported by the attempt that just
+        // failed, used as an EXPLICIT resume target by the repair dispatch of
+        // the NEXT iteration (see the resume disposition comment on the
+        // payload below). Declared outside the loop because the capture site
+        // sits after the payload is built within the same iteration. It is
+        // re-assigned (or cleared) on every turn, so a repair round never
+        // reuses an older round's id.
+        let failedAttemptSessionId = null;
         const budget = this._currentBudget();
 
         // (apra-fleet-unw.11, F6) Journal replay. `replayKey` is computed
@@ -1047,6 +1086,47 @@ export class FleetWorkflow extends EventEmitter {
             lastActivityMeta = activityMeta;
             this.emit('activity:start', activityMeta);
 
+            // apra-fleet-dnri -- RESUME DISPOSITION for a schema-repair
+            // re-ask, corrected after a live reproduction:
+            //
+            // A repair dispatch SHOULD continue the session that produced the
+            // invalid output -- by repair time the member may already have
+            // done real, side-effecting work for this request (files edited,
+            // commits made, tracker items claimed), and a fresh session with
+            // the task restated invites it to redo that work. But the naive
+            // way of asking for that -- a bare boolean `true` -- does NOT
+            // mean "the session that just failed". execute_prompt resolves
+            // `resume: true` to `explicitResumeId ?? agent.sessionId`, i.e.
+            // the member's single globally-stored LAST session, shared across
+            // every role with no task scoping. Observed live: a doer's repair
+            // retry landed in the immediately-prior plan-reviewer session and
+            // came back with reviewer-shaped output carrying a field that is
+            // not in the doer schema at all.
+            //
+            // So the repair dispatch names the session EXPLICITLY, by id
+            // (execute_prompt's resume accepts a session-id string for
+            // exactly this). When no id was reported for the failed attempt
+            // (a provider without resume support, or a dispatch that returned
+            // none), we degrade LOUDLY to a fresh, self-contained session and
+            // pass the boolean `false` EXPLICITLY -- never `undefined`, since
+            // execute_prompt's schema declares `.default(true)` on this field
+            // and an omitted key would silently restore the exact
+            // wrong-session bug above.
+            //
+            // Correctness does not depend on the resume landing: the repair
+            // prompt reattaches the original prompt and schema itself (see
+            // buildRepairPrompt), so the re-ask works whether or not the
+            // resumed session still carries the original context.
+            let repairResume = false;
+            if (isRepair) {
+                if (typeof failedAttemptSessionId === 'string' && failedAttemptSessionId) {
+                    repairResume = failedAttemptSessionId;
+                } else {
+                    console.error(`[Agent Schema Repair] DEGRADED: no session id was reported for the attempt that just failed on member '${opts.member_name || opts.member_id}', so this repair re-ask CANNOT target that session and is being dispatched in a FRESH session (resume: false). Any side-effecting work the member already did for this request is not visible to it; the repair prompt is self-contained, so the re-ask is still answerable.`);
+                    repairResume = false;
+                }
+            }
+
             const payload = {
                 prompt: currentPrompt,
                 model: opts.model,
@@ -1062,15 +1142,10 @@ export class FleetWorkflow extends EventEmitter {
                 sprint_id: opts.sprint_id,
                 // F10: default to a self-contained (non-resumed) session for
                 // the INITIAL dispatch of a workflow-authored prompt. See
-                // AgentOptions.resume above and apra-fleet-unw.3.
-                // apra-fleet-02s.3: a schema-repair re-ask (isRepair===true)
-                // is a different case -- it now FORCES resume:true,
-                // regardless of opts.resume, so the member's session already
-                // has the original prompt/schema and its own invalid output
-                // in context; buildRepairPrompt() was shrunk accordingly to a
-                // lean reminder (validation errors only), since re-sending
-                // that context fresh every repair round would waste tokens.
-                resume: isRepair ? true : (opts.resume ?? false),
+                // AgentOptions.resume above and apra-fleet-unw.3. The
+                // non-repair value is unchanged; the repair value is resolved
+                // above (apra-fleet-dnri).
+                resume: isRepair ? repairResume : (opts.resume ?? false),
                 // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
                 timeoutMs: opts.timeoutMs,
                 // apra-fleet-unw.10: defaults to the active run's cooperative
@@ -1102,6 +1177,31 @@ export class FleetWorkflow extends EventEmitter {
                         await new Promise((resolve) => setTimeout(resolve, busyPollMs));
                         result = await this.fleetApi.executePrompt(payload);
                     }
+                }
+
+                // apra-fleet-dnri: naming the failed attempt's session id
+                // explicitly (above) converts one previously self-healing
+                // case into a hard failure. execute_prompt rejects an
+                // unknown/expired EXPLICIT id up front with
+                // {isError, reason: 'session_not_found'}, making no LLM call,
+                // and its transparent retry-in-a-fresh-session recovery is
+                // gated on `resume === true`, so it does not apply here. Left
+                // alone, the dispatch-error branch below would turn that into
+                // an AgentDispatchError and abort the whole step -- worse
+                // than the boolean behaviour this replaced.
+                // Scope is deliberately narrow: for REPAIR dispatches only,
+                // for that ONE reason, re-dispatch exactly once with the SAME
+                // repair prompt in a fresh self-contained session, inside the
+                // existing maxRepairs budget. No new retry framework, no new
+                // budget, no broader error taxonomy.
+                if (
+                    isRepair
+                    && result && result.structuredContent && result.structuredContent.isError
+                    && result.structuredContent.reason === 'session_not_found'
+                ) {
+                    console.error(`[Agent Schema Repair] the session targeted by this repair re-ask (${payload.resume}) is gone or expired on member '${opts.member_name || opts.member_id}'; re-dispatching the same repair prompt once in a fresh self-contained session (resume: false).`);
+                    payload.resume = false;
+                    result = await this.fleetApi.executePrompt(payload);
                 }
 
                 // execute_prompt's dispatch-level structuredContent (added
@@ -1173,6 +1273,21 @@ export class FleetWorkflow extends EventEmitter {
                 // engine falls back to a fresh session (a capability signal, not
                 // a provider-name check). Best-effort: a throwing callback must
                 // never break the dispatch.
+                // apra-fleet-dnri: record THIS attempt's session id so that,
+                // if its output turns out to be schema-invalid, the repair
+                // dispatch of the next iteration can resume exactly this
+                // session by id rather than whatever session the member
+                // happens to have stored last. Assigned unconditionally (to
+                // null when the provider reported none) so a later round can
+                // never silently reuse an earlier round's id -- a provider may
+                // mint a new id per turn. Deliberately NOT nested inside the
+                // opts.onSessionId gate below: most callers pass no callback,
+                // and gating the capture on it would mean the explicit-id
+                // path never runs for them.
+                failedAttemptSessionId = (structured && typeof structured.sessionId === 'string' && structured.sessionId)
+                    ? structured.sessionId
+                    : null;
+
                 if (
                     structured
                     && typeof structured.sessionId === 'string'
@@ -1258,8 +1373,9 @@ export class FleetWorkflow extends EventEmitter {
 
                     if (attempt < maxRepairs) {
                         // Bounded repair: re-dispatch to the SAME member with
-                        // a fresh, self-contained prompt (original prompt +
-                        // invalid output + ajv errors). This attempt is still
+                        // a self-contained prompt (ajv errors + the original
+                        // prompt/schema reattached as reference, but NOT the
+                        // invalid output). This attempt is still
                         // recorded as its own activity:end (success: false)
                         // so the journal/dashboard show it as a distinct step
                         // before the repair attempt that follows.
@@ -1277,7 +1393,11 @@ export class FleetWorkflow extends EventEmitter {
                         // dashboard's structured activity data.
                         console.error(`[Agent API Error]`, repairMsg);
                         this.emit('activity:end', { ...activityMeta, error: repairMsg, output: text, duration, usage: result.usage, cost, success: false });
-                        currentPrompt = buildRepairPrompt(errorsText);
+                        // apra-fleet-dnri: always re-derive from
+                        // `initialPrompt`, never from `currentPrompt` --
+                        // otherwise repair round 2 would nest round 1's
+                        // prompt and the re-ask would grow per attempt.
+                        currentPrompt = buildRepairPrompt(errorsText, initialPrompt);
                         continue;
                     }
 

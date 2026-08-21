@@ -1612,7 +1612,7 @@ const INTEG_RUN_SCHEMA = {
     },
     "deployedSha": {
       "type": "string",
-      "description": "The deploy-verified git commit part 2 (smoke test) actually ran against. Optional for backward compatibility, but an orchestrator that supplied a deployed SHA in the dispatch prompt treats a missing or mismatching value as INCONCLUSIVE evidence (never a pass). See integ-test-runner.md 'Part-2 evidence freshness'."
+      "description": "The git commit the verification actually ran against. Optional for backward compatibility, but an orchestrator that supplied a deployed SHA in the dispatch prompt treats a missing or mismatching value as INCONCLUSIVE evidence (never a pass). See integ-test-runner.md Step 4."
     },
     "verifySetClosed": {
       "type": "array",
@@ -1689,7 +1689,7 @@ const REGRESSION_RUN_SCHEMA = {
     },
     "smokePassed": {
       "type": "boolean",
-      "description": "Result of playbook Part 2 -- the toy-sprint smoke test."
+      "description": "Result of playbook Part 2 -- the sandbox smoke test."
     },
     "bugsFiled": {
       "type": "array",
@@ -1704,21 +1704,8 @@ const REGRESSION_RUN_SCHEMA = {
     },
     "smokeEvidence": {
       "type": "object",
-      "description": "Optional structured evidence from Part 2 (the toy-sprint smoke test), so the result is machine-checkable instead of self-reported prose.",
-      "properties": {
-        "versionStdout": {
-          "type": "string",
-          "description": "Verbatim stdout of running the toy CLI's --version on the sprint branch."
-        },
-        "canaryStatus": {
-          "type": "string",
-          "description": "The status field from `bd show gh-toy-4ef` (e.g. \"closed\")."
-        },
-        "toyRepoHeadSha": {
-          "type": "string",
-          "description": "The toy repo's head commit SHA after the toy sprint."
-        }
-      }
+      "additionalProperties": true,
+      "description": "Optional structured evidence from Part 2 (the target repo's own smoke test), so the result is machine-checkable instead of self-reported prose. This schema does not define its shape -- the target repo's regression-test-playbook.md (Part 2 / smoke test section) does. Omit if that playbook defines no structured evidence."
     }
   }
 };

@@ -50,6 +50,22 @@ function shQuote(value, os) {
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+/** Which curl binary token to emit for a given member OS. On Windows the bare
+ *  word `curl` is a built-in PowerShell alias for Invoke-WebRequest, NOT the
+ *  real curl -- Invoke-WebRequest's -Headers parameter wants a hashtable, not
+ *  curl's repeatable `-H 'k: v'` string syntax, so a bare `curl -H ...`
+ *  command sent to a Windows/PowerShell member fails with a parameter-bind
+ *  error (observed live on the Publish PR step). The real curl.exe binary has
+ *  shipped in %SystemRoot%\System32 since Windows 10 1803 and is resolvable
+ *  from PowerShell's default PATH (verified locally: `where curl.exe` and
+ *  `Get-Command curl.exe` both resolve on a live Windows box), so emitting
+ *  the explicit `curl.exe` token sidesteps the alias entirely without
+ *  needing a different request mechanism. Non-Windows os values keep the
+ *  bare `curl` token byte-identical to before this branch existed. */
+function curlBinary(os) {
+    return os === 'windows' ? 'curl.exe' : 'curl';
+}
+
 function assertRepo(repo) {
     const value = String(repo ?? '').trim();
     if (!REPO_RE.test(value)) {
@@ -82,7 +98,7 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os }
     const url = `${GITHUB_API}/repos/${safeRepo}/pulls`;
 
     const buildCurl = (authToken) => [
-        'curl -sS -X POST',
+        `${curlBinary(os)} -sS -X POST`,
         `-H ${shQuote(`Authorization: Bearer ${authToken}`, os)}`,
         `-H ${shQuote('Accept: application/vnd.github+json', os)}`,
         `-H ${shQuote('Content-Type: application/json', os)}`,
@@ -126,7 +142,7 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
     const url = `${GITHUB_API}/repos/${safeRepo}/issues/${issueNumber}/comments`;
 
     const buildCurl = (authToken) => [
-        'curl -sS -X POST',
+        `${curlBinary(os)} -sS -X POST`,
         `-H ${shQuote(`Authorization: Bearer ${authToken}`, os)}`,
         `-H ${shQuote('Accept: application/vnd.github+json', os)}`,
         `-H ${shQuote('Content-Type: application/json', os)}`,

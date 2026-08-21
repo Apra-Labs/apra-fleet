@@ -48,6 +48,9 @@ gh run list --pr <prNumber> --limit 5 --json databaseId,status,conclusion,headSh
 (In PR-scoped mode, apply Step 2 to the runs for the PR's head commit instead of
 `expectedHeadSha`.)
 
+If `gh` is unavailable or the repo's remote is not GitHub, do not guess at another CI
+system: return `status: "not_configured"` with `notes` naming what was found.
+
 ## Step 2 -- Interpret the result
 
 **No runs returned**: CI has never been triggered on this branch.
