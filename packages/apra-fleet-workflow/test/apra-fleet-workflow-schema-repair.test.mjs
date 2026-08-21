@@ -409,3 +409,185 @@ describe('apra-fleet-dnri.2: the repair dispatch payload carries the original in
         assert.strictEqual(calls, 1, 'a call without a schema must never enter the repair loop');
     });
 });
+
+// apra-fleet-dnri.4: pins the resume-TARGETING contract delivered by
+// apra-fleet-dnri.3 -- a repair dispatch's `resume` value must be the
+// EXPLICIT session id string reported by the attempt that just failed, never
+// the boolean `true` (which execute_prompt resolves to the member's last
+// stored session, shared across every role with no task scoping). Deliberately
+// out of scope here: the reattachment of the original prompt/schema into the
+// repair prompt body, which is owned by apra-fleet-dnri.2's describe block
+// above. Every session id below is an invented fixture string.
+describe('apra-fleet-dnri.4: repair dispatch resume targets the failed attempt\'s own session', () => {
+    test('1. happy path targeting: repair resume is exactly the failed attempt\'s reported session id string', async () => {
+        const capturedPayloads = [];
+        let calls = 0;
+        const wf = new FleetWorkflow(createMockFleetApi(async (payload) => {
+            calls++;
+            capturedPayloads.push({ ...payload });
+            if (calls === 1) {
+                return {
+                    content: [{ text: 'not json at all {{{' }],
+                    structuredContent: { sessionId: 'sess-alpha-1' },
+                    usage: { total_tokens: 5 }
+                };
+            }
+            return { content: [{ text: JSON.stringify({ value: 'fixed' }) }], usage: { total_tokens: 5 } };
+        }));
+
+        await wf.agent('give me json', { member_name: KNOWN_MEMBER, schema: SCHEMA });
+
+        assert.strictEqual(capturedPayloads.length, 2);
+        assert.strictEqual(
+            capturedPayloads[1].resume,
+            'sess-alpha-1',
+            `expected the repair dispatch to target session 'sess-alpha-1' (the failed attempt's own session), got ${JSON.stringify(capturedPayloads[1].resume)}`
+        );
+    });
+
+    test('2. per-round re-capture: each repair round targets the DIFFERENT session id reported by the round that just failed', async () => {
+        const capturedPayloads = [];
+        let calls = 0;
+        const wf = new FleetWorkflow(createMockFleetApi(async (payload) => {
+            calls++;
+            capturedPayloads.push({ ...payload });
+            if (calls === 1) {
+                return {
+                    content: [{ text: 'garbage {{{' }],
+                    structuredContent: { sessionId: 'sess-alpha-1' },
+                    usage: { total_tokens: 5 }
+                };
+            }
+            if (calls === 2) {
+                return {
+                    content: [{ text: 'still garbage {{{' }],
+                    structuredContent: { sessionId: 'sess-beta-2' },
+                    usage: { total_tokens: 5 }
+                };
+            }
+            return { content: [{ text: JSON.stringify({ value: 'fixed' }) }], usage: { total_tokens: 5 } };
+        }));
+
+        await wf.agent('give me json', { member_name: KNOWN_MEMBER, schema: SCHEMA });
+
+        assert.strictEqual(capturedPayloads.length, 3);
+        assert.strictEqual(
+            capturedPayloads[1].resume,
+            'sess-alpha-1',
+            `expected repair round 1 to target 'sess-alpha-1', got ${JSON.stringify(capturedPayloads[1].resume)}`
+        );
+        assert.strictEqual(
+            capturedPayloads[2].resume,
+            'sess-beta-2',
+            `expected repair round 2 to target 'sess-beta-2' (not a stale reuse of round 1's 'sess-alpha-1'), got ${JSON.stringify(capturedPayloads[2].resume)}`
+        );
+    });
+
+    test('3. no session id available: repair resume degrades LOUDLY to the strict boolean false, dispatch still proceeds', async () => {
+        const capturedPayloads = [];
+        let calls = 0;
+        const originalConsoleError = console.error;
+        const errorLogs = [];
+        console.error = (...args) => { errorLogs.push(args.join(' ')); };
+
+        try {
+            const wf = new FleetWorkflow(createMockFleetApi(async (payload) => {
+                calls++;
+                capturedPayloads.push({ ...payload });
+                if (calls === 1) {
+                    // No structuredContent.sessionId reported at all.
+                    return { content: [{ text: 'not json at all {{{' }], usage: { total_tokens: 5 } };
+                }
+                return { content: [{ text: JSON.stringify({ value: 'fixed' }) }], usage: { total_tokens: 5 } };
+            }));
+
+            const result = await wf.agent('give me json', { member_name: KNOWN_MEMBER, schema: SCHEMA });
+
+            assert.deepStrictEqual(result, { value: 'fixed' }, 'the dispatch must still proceed to a successful repair, not throw');
+            assert.strictEqual(capturedPayloads.length, 2);
+            assert.strictEqual(
+                capturedPayloads[1].resume,
+                false,
+                `expected repair resume to be STRICTLY the boolean false when no session id was reported, got ${JSON.stringify(capturedPayloads[1].resume)} (typeof ${typeof capturedPayloads[1].resume})`
+            );
+            assert.notStrictEqual(capturedPayloads[1].resume, undefined, 'resume must never be undefined: execute_prompt schema defaults an omitted resume to true, silently reinstating the wrong-session bug');
+            assert.ok(
+                errorLogs.some((line) => /DEGRADED/.test(line)),
+                'expected a loud DEGRADED console.error when no session id is available to target'
+            );
+        } finally {
+            console.error = originalConsoleError;
+        }
+    });
+
+    test('4. initial dispatch untouched: defaults to resume:false, and an explicit opts.resume is honoured verbatim on the first payload', async () => {
+        const capturedPayloads = [];
+        let calls = 0;
+        const wf = new FleetWorkflow(createMockFleetApi(async (payload) => {
+            calls++;
+            capturedPayloads.push({ ...payload });
+            return { content: [{ text: JSON.stringify({ value: 'first-try' }) }], usage: { total_tokens: 5 } };
+        }));
+
+        await wf.agent('give me json', { member_name: KNOWN_MEMBER, schema: SCHEMA });
+        assert.strictEqual(capturedPayloads[0].resume, false, 'the initial dispatch must default to resume:false when the caller passed no opts.resume');
+
+        capturedPayloads.length = 0;
+        const wf2 = new FleetWorkflow(createMockFleetApi(async (payload) => {
+            capturedPayloads.push({ ...payload });
+            return { content: [{ text: JSON.stringify({ value: 'first-try' }) }], usage: { total_tokens: 5 } };
+        }));
+
+        await wf2.agent('give me json', { member_name: KNOWN_MEMBER, schema: SCHEMA, resume: 'sess-explicit-caller' });
+        assert.strictEqual(
+            capturedPayloads[0].resume,
+            'sess-explicit-caller',
+            'an explicit opts.resume must be honoured verbatim on the initial (non-repair) dispatch'
+        );
+    });
+
+    test('5. session_not_found recovery: repair re-dispatches once in a fresh session (resume:false) without throwing or exceeding the maxRepairs budget', async () => {
+        const capturedPayloads = [];
+        let calls = 0;
+        const wf = new FleetWorkflow(createMockFleetApi(async (payload) => {
+            calls++;
+            capturedPayloads.push({ ...payload });
+            if (calls === 1) {
+                // Original dispatch: invalid JSON, reports a session id.
+                return {
+                    content: [{ text: 'garbage {{{' }],
+                    structuredContent: { sessionId: 'sess-gamma-3' },
+                    usage: { total_tokens: 5 }
+                };
+            }
+            if (calls === 2) {
+                // Repair dispatch targeting sess-gamma-3: the session is gone.
+                return {
+                    content: [{ text: '' }],
+                    structuredContent: { isError: true, reason: 'session_not_found' },
+                    usage: { total_tokens: 5 }
+                };
+            }
+            // Re-dispatch of the same repair prompt in a fresh session succeeds.
+            return { content: [{ text: JSON.stringify({ value: 'fixed' }) }], usage: { total_tokens: 5 } };
+        }));
+
+        const result = await wf.agent('give me json', { member_name: KNOWN_MEMBER, schema: SCHEMA });
+
+        assert.deepStrictEqual(result, { value: 'fixed' }, 'session_not_found on a repair dispatch must not throw -- it recovers into a fresh session');
+        assert.strictEqual(capturedPayloads.length, 3, 'expected 1 original + 1 repair (targeted) + 1 repair re-dispatch (fresh) = 3 total calls');
+        assert.strictEqual(
+            capturedPayloads[2].resume,
+            false,
+            `expected the session_not_found recovery re-dispatch to use STRICTLY the boolean false, got ${JSON.stringify(capturedPayloads[2].resume)}`
+        );
+        assert.ok(
+            /error/i.test(capturedPayloads[2].prompt),
+            'the recovery re-dispatch must still carry the repair prompt (with validation/parse error text), not a bare re-ask'
+        );
+        // 3 total dispatches stays within the default schemaRetries=2 budget
+        // (1 original + up to 2 repairs); it must not loop unbounded chasing
+        // session_not_found.
+        assert.ok(calls <= 3, `expected the session_not_found recovery to stay within the existing maxRepairs budget, but saw ${calls} total dispatches`);
+    });
+});
