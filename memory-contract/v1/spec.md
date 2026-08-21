@@ -94,10 +94,82 @@ each affected method entry's `tools[].repo_path_validation` field -- not
 flattened into one blanket statement here, because `list` and `capture` are
 each reached by tools on both sides of the split.
 
-## 3. Error model (RESERVED -- owner: T1.3.2)
+## 3. Error model
 
-Placeholder. T1.3.2 (error taxonomy with stable machine codes, `taxonomy.json`)
-appends this section. Do not fill it in or restructure it from this lane task.
+`taxonomy.json` in this directory is the source of truth: a CLOSED set of
+machine codes, each carrying a code string, a meaning, its raising methods and
+a `retryable` flag. This section explains the shape of that set and points at
+it; it deliberately does not restate any individual code's meaning, and it adds
+no code that is not in `taxonomy.json`.
+
+### 3.1 Groups
+
+Codes are partitioned into seven groups -- exactly one group per code:
+`validation`, `admission`, `authority`, `governance`, `conflict`, `not_found`,
+`provider_internal`. See `taxonomy.json`'s `_meta.group_definitions` for what
+each group admits. Two boundaries are worth naming because they are easy to get
+backwards:
+
+- `validation` vs `provider_internal`: a refusal decided from the caller's
+  input alone before any provider exists is validation, even when it is raised
+  by a tool that is about to talk to a provider. This is the recorded decision
+  for `E-REPO-PATH-INVALID` (see its `group_decision` field).
+- `authority` vs `governance`: authority refuses an attempt to write trust
+  above the INFERRED ceiling; governance refuses an attempt to retire,
+  override, or activate an entry regardless of tier.
+
+### 3.2 Not every documented outcome is an error
+
+`taxonomy.json`'s `non_error_outcomes` array lists paths that a throw-site scan
+or a naive reading of `INVENTORY.md` section 5 would mistake for errors and that
+deliberately get NO code, each with its reason. They fall into three kinds:
+
+- **The requested call succeeded with a documented adjustment** -- the
+  confidence clamp, the AUDN `none` (dedup) decision, and the AUDN `flagged`
+  (contradiction) decision. Each is reported in a named response field, so a
+  caller can already see exactly what happened.
+- **A read tolerated a missing anchor** -- the verbatim `repo_path`
+  passthrough. The writing branch of that same one policy does refuse, and that
+  branch is the one with a code.
+- **A failure was degraded into an answer** -- the `code_*` adapters' offline
+  and missing-index results, the swallowed bible read, the emptied
+  `related_claims`, the unknown author role, and a provider reporting stats as
+  unsupported.
+
+### 3.3 No code in v1 is retryable
+
+Every entry carries `retryable: false`. This is a finding, not a default: the
+transient-failure paths in this surface never propagate to the caller as errors
+-- they are converted into structured results at the provider boundary (third
+kind in 3.2) -- so v1 has no retry-with-backoff class at all. `retryable` means
+"retrying the identical request unchanged can succeed"; fixing a path or
+supplying a missing reason is a new request, not a retry.
+
+### 3.4 Silent refusals are named but not projectable
+
+Each code also carries `surfaced`: `thrown`, `response-field`, or `silent`. The
+`silent` ones are real refusals with no distinguishable signal today -- the
+requested effect did not happen and the response looks like an ordinary
+success. They are named in the taxonomy precisely because they are the easiest
+refusals in the surface to miss. Per `_meta.projection_rule`, a `silent` code
+must NOT be projected into a wire error enum: the server never emits it, so a
+consumer branching on it would branch on something unreachable.
+
+### 3.5 Directive activation is absent, not refused
+
+Activating a captured `user-directive` is CLI-only, and no server code path for
+it may exist. The quarantine is therefore expressed by ABSENCE: no consumer of
+this contract may emit a path, an operation, a code, or a schema shape for
+approving, rejecting or activating a directive -- not even one that always
+refuses, because a documented-but-forbidden route is still a route. The codes
+belonging to those CLI-only operations are held in `taxonomy.json`'s
+`excluded_from_closed_set` block, outside every group, with the reason.
+
+What IS published is the `governance` group's refusals of activation ATTEMPTS
+made through routes that genuinely exist (capture quarantine, promote,
+contradiction resolution). Those are answers this server really gives, and
+hiding them would misdescribe live behavior. The invariant rule text for the
+quarantine itself lives in "Directive quarantine" below (T2).
 
 ## 4. Invariants (T2, RESERVED)
 
