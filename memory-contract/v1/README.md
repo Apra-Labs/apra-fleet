@@ -34,7 +34,12 @@ Rationale: additive changes are backward compatible and allow consumers to upgra
 The `$id` URI used to anchor JSON Schema definitions is a deliberate, explicit repo-rooted decision:
 
 ```
-$id: https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/v1-<SCHEMA_NAME>.json#
+$id: https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/<SCHEMA_NAME>.json#
+```
+
+For example, the kb_capture request schema uses:
+```
+$id: https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_capture.request.json#
 ```
 
 The `$id` base is NOT left to generator defaults (which would typically be a tool name or an auto-generated relative path). By pinning it to the repo's canonical main-branch URL, we ensure:
