@@ -475,8 +475,8 @@ by `new FleetWorkflow(fleetApi)` exactly like an MCP-backed `ApraFleet`.
 | `model` | `string` | Yes | Model ID to dispatch on every request (e.g. `'gpt-4o'` or `'claude-3-5-sonnet-20241022'`). Since this transport has no member to resolve tier keywords against, `'cheap'`, `'standard'`, and `'premium'` keywords are ignored and this model is used for all tiers. |
 | `timeoutMs` | `number?` | No | Request deadline override (ms). If omitted, the transport respects the caller's `options.timeoutMs` or `options.timeout_s` if provided, then falls back to `DEFAULT_REQUEST_TIMEOUT_MS` (120 seconds). Every unconfigured endpoint dispatch is always bounded by this 120s default. |
 | `pricing` | `{promptPrice: number, completionPrice: number}?` | No | Per-token pricing in USD per 1M tokens. If omitted, `getMemberModelPricing()` signals unpriced to the workflow engine. Both must be present if the field is given; a partial object is rejected. |
-| `pattern` | `string?` | No | Passed to the OpenAI shape adapter; see its source for accepted patterns. |
-| `maxTokens` | `number?` | No | Max output tokens, forwarded to the shape adapter. |
+| `pattern` | `string?` | No | Passed to the OpenAI shape adapter; accepted values are `'message'` (`/chat/completions`) or `'completion'` (`/completions`). |
+| `maxTokens` | `number?` | No | Max output tokens, forwarded to the shape adapter. Required by the Anthropic shape, which defaults to `DEFAULT_ANTHROPIC_MAX_TOKENS` (4096) when omitted; the OpenAI shape omits the request field entirely when unset. |
 | `headers` | `object?` | No | Extra HTTP headers to merge into every request (e.g. custom auth, provider-specific options). |
 | `system` | `string?` | No | System prompt (Anthropic shape only; OpenAI shape ignores this). |
 | `anthropicVersion` | `string?` | No | API version header (Anthropic shape only; OpenAI shape ignores this). |
@@ -512,9 +512,12 @@ An object with three async methods:
   `substitutions` and all other fields. `timeoutMs` (ms) and `timeout_s`
   (seconds) control the request deadline; if neither is provided, the transport
   uses the config-level `timeoutMs`, and if that is also absent, falls back to
-  `DEFAULT_REQUEST_TIMEOUT_MS` (120 seconds). Returns a structured result
-  with `content` (message text), `structuredContent` (the parsed response),
-  and optional `usage` (token counts) if the provider reported them.
+  `DEFAULT_REQUEST_TIMEOUT_MS` (120 seconds). Returns the envelope
+  `{ content: [{ type: 'text', text }], structuredContent: { response, usage? } }`:
+  `content` is an array of typed blocks (not a bare message string), and
+  `usage` (token counts) is nested inside `structuredContent`, not a sibling
+  of it -- it is omitted entirely (never zero-filled) when the provider
+  reported no token counts.
 - **`executeCommand(options)`** -- always rejects with a `CommandError`.
 - **`getMemberModelPricing(options)`** -- returns pricing for the configured
   model if `config.pricing` was supplied, or an unpriced signal otherwise.
