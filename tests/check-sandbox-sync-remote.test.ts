@@ -42,18 +42,6 @@ import {
 const BD_CHILD_ENV: NodeJS.ProcessEnv = { ...process.env };
 delete BD_CHILD_ENV.BEADS_DIR;
 
-/** Wraps node:child_process's real execFileSync with BD_CHILD_ENV so a real
- *  'bd' child process spawned via execBdSync's execFileSyncImpl injection
- *  point never inherits the ambient BEADS_DIR -- still a REAL invocation
- *  (no canned/stubbed output), just with BEADS_DIR stripped from its env. */
-function execFileSyncWithoutBeadsDir(
-  file: string,
-  args: readonly string[],
-  options: Record<string, unknown> = {},
-): string | Buffer {
-  return execFileSync(file, args as string[], { ...options, env: BD_CHILD_ENV });
-}
-
 describe('defaultSandboxPath', () => {
   it('is the parent directory of the repo path (matches "$HOME/toy-repo" -> "$HOME")', () => {
     expect(defaultSandboxPath('/home/sandbox/toy-repo')).toBe(path.dirname('/home/sandbox/toy-repo'));
@@ -452,14 +440,25 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
       // Also create a minimal config.yaml so the repo looks initialized.
       fs.writeFileSync(path.join(beadsDir, 'config.yaml'), 'sync:\n  remote: file://sandbox-local\n');
 
-      // deps.execFileSync is injected here ONLY to strip the ambient BEADS_DIR
-      // (my-beads-db-27m.25) from the real 'bd' child process this spawns --
-      // execFileSyncWithoutBeadsDir still shells out to the real execFileSync,
-      // it never returns canned output, so this still exercises the real
-      // filesystem check against the embeddeddolt layout. The function should
-      // recognize the database and attempt to run bd, not short-circuit with
-      // "nothing wired yet".
-      const result = checkDoltRemoteAbsent(repoPath, tmpDir, { execFileSync: execFileSyncWithoutBeadsDir });
+      // my-beads-db-27m.25: strip the ambient BEADS_DIR from process.env for the
+      // duration of this call, rather than injecting deps.execFileSync.
+      // checkDoltRemoteAbsent's own filesystem quick-check (scripts/check-
+      // sandbox-sync-remote.mjs:427) is gated on `if (!deps.execFileSync)` --
+      // any deps injection here, even one that still shells out for real, would
+      // skip that quick-check branch entirely and make this test's key
+      // assertion below unfalsifiable. Passing no deps keeps that branch (the
+      // thing under test) running, while the real 'bd' child it spawns still
+      // does not inherit BEADS_DIR because it is deleted from process.env below.
+      const savedBeadsDir = process.env.BEADS_DIR;
+      delete process.env.BEADS_DIR;
+      let result;
+      try {
+        result = checkDoltRemoteAbsent(repoPath, tmpDir);
+      } finally {
+        if (savedBeadsDir !== undefined) {
+          process.env.BEADS_DIR = savedBeadsDir;
+        }
+      }
       expect(result.ok).toBe(true);
       // The key assertion: the message must NOT be the "no Dolt database initialized"
       // message that the old code would have returned when it failed to recognize
