@@ -447,6 +447,7 @@ third-party verticals.
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
 | MCP client SDK getting started | [packages/apra-fleet-client/docs/getting-started.md](packages/apra-fleet-client/docs/getting-started.md) |
+| Endpoint transport: memberless `FleetApi` over a plain HTTP model endpoint (no fleet server, no member, no SSH) | [docs/features/endpoint-transport.md](docs/features/endpoint-transport.md) |
 
 ## Community
 
@@ -729,6 +730,23 @@ Guards enforcing whichever mode is selected:
 2. **Topology precondition**: `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. In `legacy` mode it compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained); in `synced` mode HEADs are allowed to differ, but every member must share the same git remote origin and pass a live beads-Dolt-pull probe. Single-member sprints trivially pass either check.
 
 See `packages/apra-fleet-se/docs/architecture.md` for the full internals of both modes, including the escalation ladders and the always-on supervisor service that launches and tracks sprints.
+
+## Endpoint Transport (memberless FleetApi over HTTP)
+
+Alongside the MCP-server transport, `@apralabs/apra-fleet-client/endpoint`
+provides a second, parallel way to obtain a `FleetApi`: one that talks
+directly to an OpenAI-compatible or Anthropic-native HTTP endpoint with no
+fleet server, no registered member and no SSH. It exists for callers that
+structurally cannot use the member/SSH dispatch path at all (e.g. a
+serverless function with no writable work folder), and is built as a sibling
+implementation of the same three-method `FleetApi` surface
+(`executePrompt`/`executeCommand`/`getMemberModelPricing`) the workflow
+engine already depends on -- not as a new `ProviderAdapter`, and the MCP
+server itself is untouched by it. See
+[docs/features/endpoint-transport.md](features/endpoint-transport.md) for
+the full design: the shared envelope/error-classification core both call
+shapes converge on, the deadline-enforcement rationale, and the documented
+trade-offs it deliberately deferred.
 
 ## Workflow Subsystem (SEA-embedded workflow runner)
 

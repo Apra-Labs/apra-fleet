@@ -340,6 +340,75 @@ describe('apra-fleet-unw2.12: command() must not double-emit activity:end for ty
     });
 });
 
+describe('apra-fleet-5se.14: a WorkflowError raised directly by fleetApi (not via an internal throw site) still gets exactly one activity:end', () => {
+    // A FleetApi can reject executePrompt()/executeCommand() directly with
+    // one of the engine's OWN typed errors (the endpoint transport does
+    // this: FleetTransportError on a network drop, CommandError on a
+    // command-execution refusal) instead of going through one of the
+    // internal throw sites inside _agentDispatch()/_commandDispatch() that
+    // already emit their own activity:end. Before the fix, the catch's
+    // `instanceof WorkflowError` branch assumed activity:end had always
+    // already been emitted and re-threw untouched, leaving that dispatch's
+    // activity:start with no matching end (reproduced live: events were
+    // exactly [start], never [start, end]).
+
+    test('agent(): executePrompt rejecting with a fleetApi-raised FleetTransportError still emits exactly one matching activity:end', async () => {
+        const transportFailure = new FleetTransportError('[Endpoint Transport] simulated network drop', { details: {} });
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executePromptImpl: async () => { throw transportFailure; }
+        }));
+        const starts = [];
+        const ends = [];
+        wf.on('activity:start', (meta) => starts.push(meta));
+        wf.on('activity:end', (meta) => ends.push(meta));
+
+        await assert.rejects(
+            () => wf.agent('hello', { member_name: KNOWN_MEMBER }),
+            (err) => err === transportFailure
+        );
+
+        assert.strictEqual(starts.length, 1, 'expected exactly one activity:start record');
+        assert.strictEqual(ends.length, 1, 'expected exactly one activity:end record');
+        assert.strictEqual(ends[0].id, starts[0].id, 'activity:end must match the same activity id as activity:start');
+        assert.strictEqual(ends[0].success, false);
+    });
+
+    test('command(): executeCommand rejecting with a fleetApi-raised CommandError still emits exactly one matching activity:end', async () => {
+        const commandFailure = new CommandError('[Endpoint Transport] this transport cannot execute commands', { details: {} });
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executeCommandImpl: async () => { throw commandFailure; }
+        }));
+        const starts = [];
+        const ends = [];
+        wf.on('activity:start', (meta) => starts.push(meta));
+        wf.on('activity:end', (meta) => ends.push(meta));
+
+        await assert.rejects(
+            () => wf.command('echo hi', { member_name: KNOWN_MEMBER }),
+            (err) => err === commandFailure
+        );
+
+        assert.strictEqual(starts.length, 1, 'expected exactly one activity:start record');
+        assert.strictEqual(ends.length, 1, 'expected exactly one activity:end record');
+        assert.strictEqual(ends[0].id, starts[0].id, 'activity:end must match the same activity id as activity:start');
+        assert.strictEqual(ends[0].success, false);
+    });
+
+    test('command() failSoft: a fleetApi-raised CommandError still emits activity:end exactly once', async () => {
+        const commandFailure = new CommandError('[Endpoint Transport] this transport cannot execute commands', { details: {} });
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executeCommandImpl: async () => { throw commandFailure; }
+        }));
+        const ends = [];
+        wf.on('activity:end', (meta) => ends.push(meta));
+
+        const result = await wf.command('echo hi', { member_name: KNOWN_MEMBER, failSoft: true });
+
+        assert.strictEqual(result.ok, false);
+        assert.strictEqual(ends.length, 1, 'expected exactly one activity:end record');
+    });
+});
+
 describe('F10: resume defaulting at the workflow layer', () => {
     test('agent() defaults resume:false in the payload sent to executePrompt', async () => {
         let capturedPayload;

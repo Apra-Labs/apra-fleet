@@ -2,24 +2,30 @@
 
 ## What this package is
 
-`@apralabs/apra-fleet-client` is the MCP client SDK for Apra Fleet. It is a
-small, dependency-free (aside from Node built-ins) Node.js library that
-knows how to:
+`@apralabs/apra-fleet-client` is a small, dependency-free (aside from Node
+built-ins) Node.js library that provides two ways to obtain a `FleetApi`
+object for programmatic fleet automation:
 
-1. Open a connection to a running `apra-fleet` MCP server, either as a
-   spawned child process (stdio) or over HTTP+SSE.
-2. Speak the JSON-RPC 2.0 request/response protocol MCP uses, including
-   request IDs, timeouts, and cancellation.
-3. Expose the fleet server's tool surface (`execute_prompt`,
-   `execute_command`, `list_members`, `fleet_status`, `member_detail`,
-   `get_member_model_pricing`, `send_files`, `receive_files`,
-   `register_member`, `update_member`, `remove_member`, `provision_llm_auth`,
-   `compose_permissions`, `setup_ssh_key`, `shutdown_server`) as a typed,
-   promise-based JavaScript API instead of raw `tools/call` payloads.
+**MCP Server Transport** (the traditional approach):
+
+Open a connection to a running `apra-fleet` MCP server, either as a spawned
+child process (stdio) or over HTTP+SSE, and speak the JSON-RPC 2.0 protocol
+to access the full fleet server's tool surface (`execute_prompt`,
+`execute_command`, `list_members`, `fleet_status`, `member_detail`,
+`get_member_model_pricing`, `send_files`, `receive_files`, `register_member`,
+`update_member`, `remove_member`, `provision_llm_auth`, `compose_permissions`,
+`setup_ssh_key`, `shutdown_server`).
+
+**Endpoint Transport** (for direct model access):
+
+Call `makeEndpointApi(config)` with credentials for a direct LLM endpoint
+(OpenAI or Anthropic), and obtain a memberless `FleetApi` that supports
+`executePrompt` and `getMemberModelPricing`, but refuses `executeCommand` since
+there is no shell or work folder to run commands on.
 
 It is a **transport and protocol** layer. It does not implement any
 scheduling, retry, workflow, or orchestration logic of its own -- it hands
-callers a clean way to issue one MCP request and get one MCP response (or a
+callers a clean way to issue one request and get one response (or a
 timeout/abort error). Anything stateful or multi-step (sprints, phases,
 budgets, dashboards) lives one layer up, in `@apralabs/apra-fleet-workflow`.
 
@@ -92,7 +98,9 @@ Declared in `package.json#exports`:
 | `@apralabs/apra-fleet-client/client` | `src/client/client.mjs` | `McpClient` class, `DEFAULT_REQUEST_TIMEOUT_MS` |
 | `@apralabs/apra-fleet-client/factory` | `src/client/factory.mjs` | `createWorkflowEngine()` |
 | `@apralabs/apra-fleet-client/transport` | `src/client/transport.mjs` | `StdioTransport`, `StreamableHttpTransport` |
+| `@apralabs/apra-fleet-client/errors` | `src/errors/workflow-errors.mjs` | `WorkflowError`, `MemberNotFoundError`, `AgentOutputError`, `AgentDispatchError`, `CommandError`, `FleetTransportError`, `BudgetExceededError`, `CancelledError` |
 | `@apralabs/apra-fleet-client/server-resolution` | `src/client/server-resolution.mjs` | `connectFleet()`, `checkRunningInstance()`, `resolveFleetServerConnection()`, `resolveFleetServerCommand()`, `getFleetDataDir()`, `getServerInfoPath()` |
+| `@apralabs/apra-fleet-client/endpoint` | `src/endpoint/factory.mjs` | `makeEndpointApi()` |
 
 `src/client/errors.mjs` (`ClientError`, `TimeoutError`, `AbortError`) is not
 listed in `exports` but its instances are the error/rejection values

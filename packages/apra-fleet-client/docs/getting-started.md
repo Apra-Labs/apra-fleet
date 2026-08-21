@@ -1,10 +1,14 @@
 # apra-fleet-client -- Getting Started
 
-This package talks to an already-running `apra-fleet` MCP server -- either
-one you spawn yourself (stdio transport) or one already listening on a
-port (HTTP+SSE transport, the fleet server's default at
-`http://localhost:7523/mcp`). It does not start or manage the server's
-lifecycle for you.
+This package provides two ways to obtain a `FleetApi` object for programmatic
+fleet automation:
+
+1. **MCP Server Transport** -- talk to an already-running `apra-fleet` MCP
+   server, either spawned yourself (stdio transport) or already listening on a
+   port (HTTP+SSE transport, the fleet server's default at
+   `http://localhost:7523/mcp`).
+2. **Endpoint Transport** -- call an LLM endpoint directly (OpenAI or
+   Anthropic) without requiring a running server.
 
 ## Install
 
@@ -49,7 +53,44 @@ internally -- reach for it directly only if you need to force a particular
 transport without using the env-var overrides, or want finer control over
 transport `options` (e.g. custom HTTP headers).
 
-## Connecting over stdio (spawns the server as a child process)
+## Endpoint Transport (direct LLM access)
+
+For calling an LLM endpoint directly without a running fleet server:
+
+```js
+import { makeEndpointApi } from '@apralabs/apra-fleet-client/endpoint';
+
+const fleetApi = makeEndpointApi({
+  provider: 'openai',        // or 'anthropic'
+  baseUrl: 'https://api.openai.com/v1',
+  apiKey: 'sk-...',
+  model: 'gpt-4o',
+  pricing: {                 // optional
+    promptPrice: 2.5,        // USD per 1M prompt tokens
+    completionPrice: 10.0    // USD per 1M completion tokens
+  }
+});
+
+const result = await fleetApi.executePrompt({
+  prompt: 'Summarize the open issues in this repo.',
+  model: 'standard'          // endpoint transport ignores tier keywords
+});
+
+console.log(result.content);
+```
+
+`config` is passed in as-is and never read from `process.env` -- all values
+(baseUrl, apiKey, model, pricing) must be supplied explicitly by the caller.
+
+**Note:** The endpoint transport does not support `executeCommand` (there is
+no shell or work folder to run commands on). Calling it will reject with a
+`CommandError`. It also lacks the full MCP server's tool surface
+(`list_members`, `register_member`, `fleet_status`, etc.) -- use the
+MCP Server Transport below if you need those capabilities.
+
+## MCP Server Transport
+
+### Connecting over stdio (spawns the server as a child process)
 
 ```js
 import { StdioTransport } from '@apralabs/apra-fleet-client/transport';
@@ -81,7 +122,7 @@ console.log(status);
 transport.stop();
 ```
 
-## Connecting over HTTP+SSE (attaches to a running server)
+### Connecting over HTTP+SSE (attaches to a running server)
 
 ```js
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
