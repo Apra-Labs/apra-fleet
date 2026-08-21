@@ -1,11 +1,24 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "c236fee7eb934e0044895c74bac4b025280b2feb",
+    "commit": "18323f31b2abf1686db6598821546850e6409290",
     "branch": "u1_contract_v1_skeleton",
-    "entry_count": 45
+    "entry_count": 60
   },
   "entries": [
+    {
+      "id": "05e4e9c4-a001-4e65-ad7d-ae8909ea7908",
+      "type": "learning",
+      "title": "Test no-injection branches by stripping process.env, never by injecting a real-passthrough deps function",
+      "summary": "checkDoltRemoteAbsent's filesystem quick-check is gated on if (!deps.execFileSync), so any deps injection -- even a wrapper that still shells out for real with no canned output -- skips that branch entirely and makes assertions about it unfalsifiable.",
+      "symbols": [],
+      "source_files": [
+        "tests/check-sandbox-sync-remote.test.ts",
+        "scripts/check-sandbox-sync-remote.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T03:45:34.279Z"
+    },
     {
       "id": "0633ac36-3d13-49cc-a268-46425bbf8bf9",
       "type": "knowledge",
@@ -23,6 +36,39 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-19T21:44:40.221Z"
+    },
+    {
+      "id": "08b5205d-84ce-44ba-bfb4-250ae0156e89",
+      "type": "knowledge",
+      "title": "OS-assigned ephemeral ports can collide with undici's fetch blocked-port list, especially on hosts with a low dynamic port range",
+      "summary": "A server using listen(0) can still get a port on undici's WHATWG-fetch blocked-port list; fix is to detect a blocked bound port in listenOnPort and close-and-relisten, not to read the port earlier.",
+      "symbols": [
+        "listenOnPort"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "tests/http-transport.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T08:01:49.596Z"
+    },
+    {
+      "id": "09cf8172-cd04-40f1-b9c9-d927baf22902",
+      "type": "knowledge",
+      "title": "zod-to-json-schema's jsonSchema2020-12 target is worse than its jsonSchema7 target",
+      "summary": "In zod-to-json-schema@3.25.1, target 'jsonSchema2020-12' differs from 'jsonSchema7' in exactly two ways and both are wrong for a real 2020-12 consumer: it emits no $schema at all, and it rewrites exclusive numeric bounds into the draft-04 boolean form that the 2020-12 metaschema rejects.",
+      "symbols": [
+        "codeMapSchema",
+        "postprocessTo2020_12"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/GENERATOR-DECISION.md",
+        "memory-contract/v1/tests/postprocess-2020-12.mjs",
+        "memory-contract/v1/tests/probe-generator-2020-12.mjs",
+        "src/tools/code-intelligence.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T03:45:34.282Z"
     },
     {
       "id": "0e4160e6-175d-4591-b40a-1be3f648da47",
@@ -65,6 +111,25 @@
       "updated_at": "2026-08-19T21:44:40.551Z"
     },
     {
+      "id": "12c0efd1-c7b6-4249-811a-2284a0278eea",
+      "type": "knowledge",
+      "title": "check-sandbox-sync-remote.test.ts fails only when ambient BEADS_DIR is set",
+      "summary": "The embeddeddolt-layout case at tests/check-sandbox-sync-remote.test.ts:435 fails on any host with BEADS_DIR exported, because the bd child inherits it and resolves it before cwd; clearing BEADS_DIR makes all 55 tests pass.",
+      "symbols": [
+        "checkDoltRemoteAbsent",
+        "BD_CHILD_ENV",
+        "execBdSync"
+      ],
+      "source_files": [
+        "tests/check-sandbox-sync-remote.test.ts",
+        "tests/2cc-win-bd-invocation-integ.test.ts",
+        "scripts/check-sandbox-sync-remote.mjs",
+        "scripts/lib/exec-bd.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T02:34:03.953Z"
+    },
+    {
       "id": "130bc73b-fade-4d3a-8254-2ad3b2e1bfef",
       "type": "knowledge",
       "title": "KB provider cache is now keyed by (slug, repoPath), not slug alone",
@@ -95,6 +160,22 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-20T09:08:16.759Z"
+    },
+    {
+      "id": "1a5d562f-8cee-4abe-a11e-b93d6d62c653",
+      "type": "knowledge",
+      "title": "Guard automated beads-export commits by comparing id sets, not file size or line count",
+      "summary": "A divergent local Dolt DB export can grow in total lines while dropping most previously-committed ids; the export-shrink-guard.mjs guard compares id sets to catch this, mirroring kb_export's shrink precedent.",
+      "symbols": [
+        "buildExportShrinkGuardCmd"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
+        "packages/apra-fleet-se/apra-pm/lib/export-shrink-guard.mjs",
+        "src/tools/kb-export.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T08:01:49.565Z"
     },
     {
       "id": "1ae4ce00-ce11-4bc4-becb-7e6355809f6b",
@@ -194,6 +275,24 @@
       "updated_at": "2026-08-19T21:44:42.723Z"
     },
     {
+      "id": "3236c857-6fc2-4968-82e3-3f0f1dda3afc",
+      "type": "knowledge",
+      "title": "kb_capture.role is an open string on purpose; the Author enum is handler-enforced",
+      "summary": "Any generated schema or binding will show kb_capture.role as a bare {\"type\":\"string\"} with no enum. That is deliberate: AUTHOR_VALUES/validateAuthor in the handler stamps 'unknown' for anything outside the Author list, so an invalid role hint degrades instead of rejecting the whole capture call.",
+      "symbols": [
+        "AUTHOR_VALUES",
+        "validateAuthor",
+        "kbCaptureSchema"
+      ],
+      "source_files": [
+        "src/tools/kb-capture.ts",
+        "memory-contract/v1/tests/GENERATOR-DECISION.md",
+        "memory-contract/v1/tests/probe-generator-2020-12.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T03:45:34.329Z"
+    },
+    {
       "id": "3ab805a0-765c-441c-aa74-27b711e7875e",
       "type": "knowledge",
       "title": "repo_remote_url is defined once in kbScopeFields but only 3 of ~16 kb_* tools spread it",
@@ -280,6 +379,22 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-20T02:42:55.738Z"
+    },
+    {
+      "id": "58ecdbd4-89e0-4f8f-95b6-23dfd7645674",
+      "type": "knowledge",
+      "title": "x-invariant annotations are T1.2.2's job, not the postprocess module's",
+      "summary": "GENERATOR-DECISION.md's INV-01..INV-09 table is a mapping deliverable only; no committed code stamps x-invariant onto emitted schemas, and postprocessTo2020_12 deliberately does not.",
+      "symbols": [
+        "postprocessTo2020_12",
+        "DIALECT_2020_12"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/GENERATOR-DECISION.md",
+        "memory-contract/v1/tests/postprocess-2020-12.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:32:04.946Z"
     },
     {
       "id": "62a26c94-e079-4158-b83b-5702e317b54c",
@@ -490,6 +605,43 @@
       "updated_at": "2026-08-19T21:44:48.001Z"
     },
     {
+      "id": "8f47086f-5fb0-477c-9a74-1062e7df80b6",
+      "type": "learning",
+      "title": "LocalStrategy's rolling inactivity timer never resets for a command that emits no stdout/stderr, so timeoutMs becomes a total wall-clock ceiling, not an idle-detection window",
+      "summary": "resetInactivityTimer only fires from stdout/stderr 'data' handlers, so any silent command (mkdir, a file write, a cat/Get-Content against a missing file) gets no resets at all -- for those callers timeoutMs is effectively a hard ceiling on spawn+run, not real inactivity detection, and must be sized for host-contention scheduling delay, not command runtime.",
+      "symbols": [
+        "resetInactivityTimer",
+        "LocalStrategy.execCommand",
+        "deliverConfigFile"
+      ],
+      "source_files": [
+        "src/services/strategy.ts",
+        "src/tools/compose-permissions.ts",
+        "tests/register-member.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T03:45:34.336Z"
+    },
+    {
+      "id": "9676e715-e2a2-447a-b0d0-54077c4a5903",
+      "type": "knowledge",
+      "title": "Published response schemas are narrower than the real wrapTool envelope",
+      "summary": "The emitted *.response.json files pin content to exactly one un-annotated block with a closed root, but wrapTool can return three blocks, annotations, and structuredContent.",
+      "symbols": [
+        "toolTextEnvelope",
+        "responseSchema",
+        "wrapTool",
+        "KB_RESPONSE_BODIES"
+      ],
+      "source_files": [
+        "memory-contract/v1/response-schemas.mjs",
+        "src/services/tool-registry.ts",
+        "memory-contract/v1/INVENTORY.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T08:01:49.538Z"
+    },
+    {
       "id": "a2ef8270-c41d-4cbf-afd3-08704a030a19",
       "type": "knowledge",
       "title": "The embeddeddolt test now branches on bd availability instead of a loose regex",
@@ -503,6 +655,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-19T21:44:49.727Z"
+    },
+    {
+      "id": "a3e956a1-d5ff-4f85-9dd7-6a2b34faf6b2",
+      "type": "knowledge",
+      "title": "zod's native toJSONSchema cannot read this repo's v3-authored tool schemas",
+      "summary": "zod 3.25.76 ships the v4 API at the zod/v4 subpath including z.toJSONSchema, but that emitter only walks v4 internals, so it throws TypeError reading 'def' on any schema authored with the v3 import - which is every schema in src/tools/.",
+      "symbols": [
+        "kbCaptureSchema",
+        "kbScopeFields"
+      ],
+      "source_files": [
+        "src/tools/kb-capture.ts",
+        "src/services/knowledge/kb-scope-input.ts",
+        "memory-contract/v1/tests/probe-generator-2020-12.mjs",
+        "memory-contract/v1/tests/GENERATOR-DECISION.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T03:45:34.296Z"
     },
     {
       "id": "a96e64d8-e304-4a46-baeb-d36fe1371a94",
@@ -577,6 +747,25 @@
       "updated_at": "2026-08-19T21:44:47.400Z"
     },
     {
+      "id": "b1b0785b-a158-4d7d-98d3-2fc368ab575c",
+      "type": "knowledge",
+      "title": "contract:generate reads dist, not src, and is byte-idempotent",
+      "summary": "memory-contract/v1/generate-contract.mjs imports the compiled dist/tools/*.js schemas, so npm run build must precede npm run contract:generate; re-running it leaves git status empty.",
+      "symbols": [
+        "buildDoc",
+        "postprocessTo2020_12",
+        "EXPECTED_TOOL_COUNT",
+        "validateOrThrow"
+      ],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "memory-contract/v1/tests/postprocess-2020-12.mjs",
+        "package.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T08:01:49.549Z"
+    },
+    {
       "id": "b368ad28-9c4a-47fd-9acf-5f25a8a29bca",
       "type": "knowledge",
       "title": "git check-ignore silently skips tracked paths unless --no-index",
@@ -588,6 +777,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-19T21:44:47.706Z"
+    },
+    {
+      "id": "be148968-9b99-4155-93ad-933c28468cec",
+      "type": "knowledge",
+      "title": "postprocess definitions rename is container-aware via a JSON-Pointer state machine",
+      "summary": "normaliseSchemaMap keeps map KEYS untouched and rewriteDefinitionsPointer walks pointer segments in schema/mapName states, so a user field or $defs entry literally named definitions survives.",
+      "symbols": [
+        "normaliseSchemaMap",
+        "rewriteDefinitionsPointer",
+        "SCHEMA_MAP_KEYWORDS",
+        "normaliseNode"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/postprocess-2020-12.mjs",
+        "tests/memory-contract-postprocess-2020-12.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T08:01:49.580Z"
     },
     {
       "id": "beb4faf7-40fa-4484-9cf5-b287df8f47d2",
@@ -623,6 +830,20 @@
       "updated_at": "2026-08-19T21:44:48.736Z"
     },
     {
+      "id": "c3c5933c-7da0-47d2-b589-a3cca4deee8d",
+      "type": "knowledge",
+      "title": "apra-pm test suite is deliberately not an npm workspace, so local npm test must invoke it via explicit --prefix",
+      "summary": "packages/apra-fleet-se/apra-pm is excluded from the root npm workspaces array on purpose (to avoid lockfile churn), so its suite is only reachable via an explicit --prefix invocation -- both CI and the local run-all-tests.mjs must include that invocation or local runs give false green signals.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        ".github/workflows/ci.yml",
+        "packages/apra-fleet-se/apra-pm"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T01:59:12.397Z"
+    },
+    {
       "id": "c7122837-d7fe-4cf6-a74b-4537c1b51cb5",
       "type": "knowledge",
       "title": "The kb_/code_ MCP surface is 23 tools, and none of them declares a response schema",
@@ -643,6 +864,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-20T04:28:10.224Z"
+    },
+    {
+      "id": "c7d59394-00b6-4721-a247-0145fb32d713",
+      "type": "knowledge",
+      "title": "A low TCP dynamic port range makes listen(0) hand back fetch-blocked ports",
+      "summary": "On a host whose TCP dynamic port range starts at 1024, server.listen(0) can bind one of the WHATWG fetch blocked ports, so any Node fetch()-based client fails with 'bad port' -- looking exactly like a load-dependent test flake.",
+      "symbols": [
+        "listenOnPort",
+        "listenOncePort",
+        "isFetchBlockedPort",
+        "createHttpTransport",
+        "FETCH_BLOCKED_PORTS"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "tests/http-transport.test.ts",
+        "tests/workspace-isolation.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T08:01:49.613Z"
     },
     {
       "id": "c818dafb-5e88-4d3e-a0fe-7fe1ffa63675",
@@ -725,6 +966,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-19T21:44:50.368Z"
+    },
+    {
+      "id": "ea9fea1f-930b-414d-87ee-f99a8b67bf87",
+      "type": "knowledge",
+      "title": "Injecting deps.execFileSync into checkDoltRemoteAbsent silently disables its filesystem probe",
+      "summary": "checkDoltRemoteAbsent guards its whole .beads layout quick-check with if (!deps.execFileSync), so any test that injects deps to control the child env stops testing layout recognition and its no-short-circuit assertion becomes unfalsifiable.",
+      "symbols": [
+        "checkDoltRemoteAbsent",
+        "BEADS_DATABASE_DIRS",
+        "execFileSyncWithoutBeadsDir"
+      ],
+      "source_files": [
+        "scripts/check-sandbox-sync-remote.mjs",
+        "tests/check-sandbox-sync-remote.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T03:45:34.275Z"
     },
     {
       "id": "eb1611af-81c9-4331-b9f4-65d6427ae818",
