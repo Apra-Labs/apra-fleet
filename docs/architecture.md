@@ -180,6 +180,23 @@ Guards enforcing whichever mode is selected:
 
 See `packages/apra-fleet-se/docs/architecture.md` for the full internals of both modes, including the escalation ladders and the always-on supervisor service that launches and tracks sprints.
 
+## Endpoint Transport (memberless FleetApi over HTTP)
+
+Alongside the MCP-server transport, `@apralabs/apra-fleet-client/endpoint`
+provides a second, parallel way to obtain a `FleetApi`: one that talks
+directly to an OpenAI-compatible or Anthropic-native HTTP endpoint with no
+fleet server, no registered member and no SSH. It exists for callers that
+structurally cannot use the member/SSH dispatch path at all (e.g. a
+serverless function with no writable work folder), and is built as a sibling
+implementation of the same three-method `FleetApi` surface
+(`executePrompt`/`executeCommand`/`getMemberModelPricing`) the workflow
+engine already depends on -- not as a new `ProviderAdapter`, and the MCP
+server itself is untouched by it. See
+[docs/features/endpoint-transport.md](features/endpoint-transport.md) for
+the full design: the shared envelope/error-classification core both call
+shapes converge on, the deadline-enforcement rationale, and the documented
+trade-offs it deliberately deferred.
+
 ## Workflow Subsystem (SEA-embedded workflow runner)
 
 `apra-fleet workflow <name>` runs a self-contained script (an ESM entry point
