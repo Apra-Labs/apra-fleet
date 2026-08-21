@@ -928,6 +928,41 @@ function longestBacktickRun(content) {
 }
 
 /**
+ * The pattern src/tools/execute-prompt.ts matches to reject a dispatch
+ * outright. Duplicated here as a literal rather than imported: this module
+ * deliberately has no dependency on the fleet server sources.
+ */
+const SECURE_TOKEN_RE_G = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
+
+const SECURE_REDACTION_NOTE = 'NOTE: secure-token braces were redacted from the block above '
+    + '(secure.NAME is shown without its surrounding double braces). Write the braced form when '
+    + 'you actually use the token in an execute_command call.';
+
+/**
+ * Strips the surrounding double braces from any secure-token reference in
+ * untrusted content, keeping the token NAME so the text still reads.
+ *
+ * Why this must happen before the content reaches a prompt: execute_prompt
+ * rejects the ENTIRE dispatch -- no LLM call, an error string returned in
+ * place of a reply -- if the prompt matches that token pattern anywhere.
+ * The guard is right for caller-authored prompts, but injected content is
+ * not caller-authored: a knowledge-bank entry or an acceptance criterion
+ * that merely NAMES the token carries no secret, yet would silently fail
+ * every dispatch in a sprint. Redaction, not removal: the name is the part
+ * that makes the entry useful.
+ * @param {string} content
+ * @returns {{text: string, redacted: boolean}}
+ */
+function redactSecureTokens(content) {
+    let redacted = false;
+    const text = content.replace(SECURE_TOKEN_RE_G, (_match, name) => {
+        redacted = true;
+        return `secure.${name}`;
+    });
+    return { text, redacted };
+}
+
+/**
  * Wraps `content` in a clearly delimited fenced block labeled as untrusted
  * inter-agent output, per feedback.md finding A7. Pure function: no I/O,
  * no side effects, safe to unit test directly.
@@ -952,14 +987,16 @@ export function wrapUntrustedBlock(sourceLabel, content) {
     if (typeof content !== 'string') {
         throw new TypeError('[contracts] wrapUntrustedBlock requires content to be a string');
     }
-    const fenceLength = Math.max(MIN_FENCE_LENGTH, longestBacktickRun(content) + 1);
+    const { text: safeContent, redacted } = redactSecureTokens(content);
+    const fenceLength = Math.max(MIN_FENCE_LENGTH, longestBacktickRun(safeContent) + 1);
     const fence = '`'.repeat(fenceLength);
     return [
         UNTRUSTED_BLOCK_PREAMBLE,
         `Source: ${sourceLabel}`,
         `${fence}${UNTRUSTED_BLOCK_FENCE_LABEL}`,
-        content,
+        safeContent,
         fence,
+        ...(redacted ? [SECURE_REDACTION_NOTE] : []),
     ].join('\n');
 }
 

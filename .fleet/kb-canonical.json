@@ -58,8 +58,8 @@
     {
       "id": "16ba5328-63a9-4f98-8614-fa3137afe2f3",
       "type": "knowledge",
-      "title": "{{secure.NAME}} values arrive already shell-escaped, and the escaping is OS-branched",
-      "summary": "execute_command replaces each {{secure.NAME}} token with a value that has ALREADY been quoted for the target member's shell -- escapePowerShellArg for windows members, escapeShellArg otherwise, chosen from agentOs. Reference the token bare in a command string; wrapping it in your own quotes double-escapes the value and surfaces as a false 401 or invalid-token error.",
+      "title": "secure.NAME token values arrive already shell-escaped, and the escaping is OS-branched",
+      "summary": "execute_command replaces each secure.NAME token with a value that has ALREADY been quoted for the target member's shell -- escapePowerShellArg for windows members, escapeShellArg otherwise, chosen from agentOs. Reference the token bare in a command string; wrapping it in your own quotes double-escapes the value and surfaces as a false 401 or invalid-token error. This entry deliberately writes the token without its surrounding double braces: kb_session_prime injects KB entries verbatim into every agent dispatch prompt, and execute_prompt rejects any prompt matching the braced secure-token pattern, so spelling it in full here makes every dispatch in a sprint fail.",
       "symbols": [
         "escapeShellArg",
         "escapePowerShellArg",
