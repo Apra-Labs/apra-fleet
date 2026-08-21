@@ -954,11 +954,20 @@ const SECURE_REDACTION_NOTE = 'NOTE: secure-token braces were redacted from the 
  * @returns {{text: string, redacted: boolean}}
  */
 function redactSecureTokens(content) {
+    let text = content;
     let redacted = false;
-    const text = content.replace(SECURE_TOKEN_RE_G, (_match, name) => {
+    // Run to a fixed point rather than a single pass: replacing the inner
+    // token in `{{{{secure.A}}}}` leaves `{{secure.A}}`, so the surrounding
+    // braces close over the redacted name and rebuild exactly the pattern
+    // being removed. Untrusted content is attacker-influenced free-text, so
+    // one pass is not enough. Guaranteed to terminate -- every replacement
+    // removes four brace characters, so `text` strictly shrinks.
+    for (;;) {
+        const next = text.replace(SECURE_TOKEN_RE_G, (_match, name) => `secure.${name}`);
+        if (next === text) break;
+        text = next;
         redacted = true;
-        return `secure.${name}`;
-    });
+    }
     return { text, redacted };
 }
 

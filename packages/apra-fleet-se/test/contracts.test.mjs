@@ -260,6 +260,15 @@ describe('wrapUntrustedBlock', () => {
         assert.match(wrapped, /secure\.github_pat/);
     });
 
+    test('redacts to a fixed point, so surrounding braces cannot re-form a token', () => {
+        // A single replace pass turns {{{{secure.A}}}} into {{secure.A}} --
+        // the outer braces close over the redacted name and rebuild exactly
+        // the pattern execute_prompt rejects. Untrusted agent free-text is
+        // attacker-influenced, so one pass is not enough.
+        const wrapped = wrapUntrustedBlock('reviewer.notes', 'x {{{{secure.github_pat}}}} y');
+        assert.doesNotMatch(wrapped, SECURE_TOKEN_RE);
+    });
+
     test('leaves ordinary braces and non-secure templating untouched', () => {
         const wrapped = wrapUntrustedBlock('doer', 'use {{branch}} and {"json": true}');
         assert.match(wrapped, /\{\{branch\}\}/);
