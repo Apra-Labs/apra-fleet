@@ -446,6 +446,8 @@ third-party verticals.
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
 | MCP client SDK getting started | [packages/apra-fleet-client/docs/getting-started.md](packages/apra-fleet-client/docs/getting-started.md) |
+| Memory contract v1 inventory findings and invariants (`kb_*`/`code_*` tool surface) | [docs/memory-contract-v1-inventory-notes.md](docs/memory-contract-v1-inventory-notes.md) |
+| Memory contract v1 schema generation design (zod -> JSON Schema 2020-12) | [docs/memory-contract-v1-generator-design.md](docs/memory-contract-v1-generator-design.md) |
 
 ## Community
 

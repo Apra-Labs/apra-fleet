@@ -2,6 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- memory-contract/v1 schema generation, postprocess hardening, and test stabilization
+
+Sprint goal: turn the existing MCP knowledge-tool surface into the
+memory-contract/v1 skeleton (JSON Schemas, method contract, error taxonomy,
+round-trip validation against the live sqlite provider), as a single sprint /
+single PR. **Sprint verdict: FAIL**, judged against the epic's own acceptance
+criteria rather than closed-task count: no round-trip validator exists yet
+(the epic's own stated exit criterion), no CI drift guard was wired, the
+fixture corpus directory is still empty, and the `bindings/mcp/`/`bindings/openapi/`
+layers remain unowned empty stubs. See `docs/memory-contract-v1-generator-design.md`
+for the full design of what did land and `docs/learnings.md` for the review
+approach that reached this verdict.
+
+What landed: the zod-to-JSON-Schema generation path was selected, proven
+against every hard construct in the surface (discriminated unions, closed
+enums, optional/nullable/nullish, recursive references, tuples), and wired
+into a `contract:generate` script that emits metaschema-validated draft
+2020-12 request and response schemas for all 23 inventoried tools, with a
+demonstrated byte-identical re-run guarantee. The deterministic postprocess
+step that normalizes the generator's raw output to 2020-12 (dialect
+declaration, `definitions`-to-`$defs` renaming, exclusive-bound numeric
+form, tuple encoding) was hardened to be container-aware when repointing
+`$ref` pointers, so a data field that happens to be named "definitions" is
+no longer mistaken for a schema container and incorrectly rewritten. A real,
+previously-undetected contract defect was found and recorded: the published
+response schemas model a single fixed text block, but the real MCP response
+wrapper can emit up to three content blocks with optional annotations plus
+a top-level `structuredContent` field, so a real response carrying a display
+preamble would fail its own published schema -- this is exactly the gap the
+still-missing round-trip validator is meant to catch. Also fixed: a real
+port-selection bug where an OS-assigned ephemeral port could land in a
+client fetch implementation's blocked-port list, and the beads-export commit
+guard's argument-passing bug in its inline copy. The `apra-pm` test suite
+now also runs from the root local test command, and several subprocess-
+spawning tests had their timeouts raised to real subprocess cost to stop
+flaking under a loaded full-suite run.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $26.8852.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0473 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 31 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward (still open, core to the memory-contract/v1 deliverable): the
+MemoryProvider method contract (`methods.json`), the error taxonomy with
+stable machine codes and its projection into MCP error payloads and the
+OpenAPI stub, MCP binding definitions for every inventoried tool, the
+round-trip fixture corpus and its provider-parameterized validator (the
+sprint's stated exit criterion), the CI drift guard, and the final
+self-review/sign-off checklist. None of these were reached this sprint.
+
 ## [Unreleased] -- memory-contract/v1 inventory and test-suite stabilization
 
 Sprint goal: turn the existing MCP knowledge-tool surface into the
