@@ -200,7 +200,7 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 4. **Appends the resume flag** if `resume` is truthy (`true`, or an explicit session-id string) and the member has a matching stored session. Each provider uses its own resume flag.
 5. **Executes via strategy** -- `strategy.execCommand(cmd, timeout_s * 1000)`.
 6. **Parses the response** -- via `provider.parseResponse()`. Handles Codex NDJSON transparently; extracts text and session info from all providers.
-7. **Handles stale sessions** -- if the command fails and a resume was attempted, retries with a fresh minted session ID.
+7. **Handles stale sessions** -- when resuming via `resume=true` (the member's own stored session), a command failure after a resume attempt is retried transparently with a fresh minted session ID. This transparent fallback does **not** apply when `resume` was an explicit session-id string: an unresolvable explicit id is rejected outright as `session_not_found` with no LLM call made, since silently switching to a different session would defeat the caller's reason for naming one. The caller must explicitly re-dispatch (typically with `resume=false`) to recover.
 8. **Updates registry** -- stores the new `sessionId` (Claude) and `lastUsed` timestamp.
 
 **Output:** `structuredContent.response` carries the agent's reply text; `structuredContent.usage` carries token counts when available; `structuredContent.sessionId` carries the session ID if one was returned.
@@ -218,7 +218,7 @@ After each successful prompt response, the server automatically accumulates `inp
 - First prompt on a member: no session exists, agent starts fresh.
 - Subsequent prompts with `resume=true`: agent continues the conversation with full context of prior exchanges.
 - Fleet mints and stores the session ID for Claude, which passes it via `--session-id` on the first run and `--resume <id>` on later runs. Codex and Copilot resume the most recent local session via a generic flag.
-- If a session becomes stale, the tool automatically retries without resume.
+- If the member's own stored session (`resume=true`) becomes stale, the tool automatically retries without resume. An explicit session-id resume that turns out to be stale/unknown is terminal instead (`session_not_found`, no automatic retry) -- see "Handles stale sessions" above.
 
 ### `execute_command`
 
