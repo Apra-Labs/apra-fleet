@@ -2,18 +2,18 @@
 
 ## Overview
 
-This directory contains the canonical v1 contract definitions for the memory-bank (kb_*) and code-intelligence (code_*) tool surface. The structure follows a four-layer model:
+This directory contains the canonical v1 contract definitions for the memory-bank (kb_*) and code-intelligence (code_*) tool surface. The structure has six items:
 
 1. **INVENTORY.md** - Authoritative inventory of the tool surface (tool count, request/response shapes, provider methods)
-2. **schemas/** - Zod schema definitions (source of truth)
-3. **bindings/mcp/** - MCP binding stubs generated from schemas
-4. **bindings/openapi/** - OpenAPI binding stubs generated from schemas
-5. **fixtures/** - Round-trip test corpus for schema validation
+2. **schemas/** - GENERATED JSON Schema documents, derived from the Zod source of truth in `src/tools/*.ts`
+3. **bindings/mcp/** - Generated MCP tool-definition bindings (owning task: T1.2.3)
+4. **bindings/openapi/** - OpenAPI binding, emitted by `contract:generate` (owning task: T1.3.3; directory-only stub until that task lands)
+5. **fixtures/** - Round-trip test corpus for schema validation (owning task: T1.4.1; directory-only stub until that task lands)
 6. **tests/** - Generator, validation, and drift test suite
 
 ## Source of Truth
 
-**Zod is the source of truth.** All schema definitions originate from Zod schemas in `schemas/`. Generated artifacts (JSON Schema, OpenAPI, type bindings) are derived from and committed as versioned snapshots. Generated schemas are COMMITTED ARTIFACTS and versioned together with their source Zod definitions.
+**Zod is the source of truth.** All schema definitions originate from Zod schemas in `src/tools/*.ts`, and `generate-contract.mjs` imports them from `dist/tools/` to emit the JSON Schema documents committed under `schemas/`. Generated artifacts (JSON Schema, OpenAPI, type bindings) are derived from and committed as versioned snapshots. Generated schemas are COMMITTED ARTIFACTS and versioned together with their source Zod definitions.
 
 When a source schema changes:
 1. Regenerate all bindings and schemas via `contract:generate`
