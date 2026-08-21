@@ -1,8 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import url, { fileURLToPath } from 'node:url';
 
 // apra-fleet-ot2z.20.2 -- pins the freshness-first precedence between
 // resolveSchemasDir()'s two bundled/local candidates delivered by
@@ -19,6 +19,8 @@ import path from 'node:path';
 // resolveSchemasDir() with injected deps for their own precedence cases.
 // This file adds the specific freshness-comparison + real max-mtime-over-
 // .json-files cases that neither of those existing suites carries.
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const { resolveSchemasDir, DIST_BUNDLED_SCHEMAS_DIR, PACKAGE_LOCAL_SCHEMAS_DIR } =
     await import('../fleet-sprint/contracts.mjs');
@@ -114,63 +116,73 @@ describe('resolveSchemasDir: freshness-first precedence between existing candida
 
 describe('resolveSchemasDir: on-disk case against real temp directories (default freshness algorithm)', () => {
     test('7. an in-place edit to an existing .json file (no add/delete/rename) flips resolution to that directory', async () => {
-        // Two genuinely independent real directories on disk, standing in
-        // for dist/agents/schemas and the package-local apra-pm schemas dir.
-        // We deliberately do NOT touch the real DIST_BUNDLED_SCHEMAS_DIR or
-        // PACKAGE_LOCAL_SCHEMAS_DIR paths -- those are read by sibling
-        // suites (contracts-schema-packaging.test.mjs,
-        // contracts-schema-dist-staleness-guard.test.mjs) and must not be
-        // mutated by this task.
-        const tmpDist = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-se-dirtest-dist-'));
-        const tmpLocal = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-se-dirtest-local-'));
+        // This case must exercise contracts.mjs's own PRIVATE default
+        // newestJsonMtimeMs() implementation -- not a spy/adapter injected
+        // through deps -- against a real, controlled filesystem. Because
+        // that helper is module-private and DIST_BUNDLED_SCHEMAS_DIR /
+        // PACKAGE_LOCAL_SCHEMAS_DIR are hardcoded constants derived from
+        // contracts.mjs's own file location (REPO_ROOT/PACKAGE_ROOT, see
+        // ../fleet-sprint/contracts.mjs lines ~128-134), we cannot redirect
+        // the real module at the real DIST_BUNDLED_SCHEMAS_DIR /
+        // PACKAGE_LOCAL_SCHEMAS_DIR paths without touching those real
+        // directories (forbidden -- they are read by sibling suites
+        // contracts-schema-packaging.test.mjs and
+        // contracts-schema-dist-staleness-guard.test.mjs).
+        //
+        // Instead: copy contracts.mjs BYTE-FOR-BYTE (no production source
+        // modified) into a fresh temp package tree that mirrors its real
+        // relative layout (<tmpRoot>/packages/apra-fleet-se/fleet-sprint/
+        // contracts.mjs, <tmpRoot>/dist/agents/schemas/,
+        // <tmpRoot>/packages/apra-fleet-se/apra-pm/agents/schemas/), then
+        // dynamic-import that copy. Its __dirname-derived
+        // DIST_BUNDLED_SCHEMAS_DIR/PACKAGE_LOCAL_SCHEMAS_DIR constants then
+        // point at our controlled fixtures, and calling its exported
+        // resolveSchemasDir() with no deps.newestJsonMtimeMs override runs
+        // the REAL default freshness algorithm (recursive max mtime over
+        // .json files) against real fs.statSync mtimes on those fixtures.
+        //
+        // The temp tree is rooted inside this package's own test/ directory
+        // (not os.tmpdir()) so Node's ESM bare-specifier resolution
+        // (`import Ajv from 'ajv'`) walks up through the real
+        // packages/apra-fleet-se and repo-root node_modules, exactly as it
+        // does for the production file.
+        const tmpRoot = fs.mkdtempSync(path.join(__dirname, '.tmp-contracts-copy-'));
         try {
-            const distFile = path.join(tmpDist, 'doer-input.json');
-            const localFile = path.join(tmpLocal, 'doer-input.json');
+            const copyFleetSprintDir = path.join(tmpRoot, 'packages', 'apra-fleet-se', 'fleet-sprint');
+            const copyDistSchemasDir = path.join(tmpRoot, 'dist', 'agents', 'schemas');
+            const copyLocalSchemasDir = path.join(tmpRoot, 'packages', 'apra-fleet-se', 'apra-pm', 'agents', 'schemas');
+            fs.mkdirSync(copyFleetSprintDir, { recursive: true });
+            fs.mkdirSync(copyDistSchemasDir, { recursive: true });
+            fs.mkdirSync(copyLocalSchemasDir, { recursive: true });
+
+            const productionContractsPath = path.join(__dirname, '..', 'fleet-sprint', 'contracts.mjs');
+            const copiedContractsPath = path.join(copyFleetSprintDir, 'contracts.mjs');
+            fs.copyFileSync(productionContractsPath, copiedContractsPath);
+
+            const distFile = path.join(copyDistSchemasDir, 'sample.json');
+            const localFile = path.join(copyLocalSchemasDir, 'sample.json');
             fs.writeFileSync(distFile, JSON.stringify({ v: 1 }));
             fs.writeFileSync(localFile, JSON.stringify({ v: 1 }));
+            // Pin both fixture files to one identical mtime before the
+            // "fresh tie" precondition below -- writeFileSync calls made
+            // sequentially can land strictly different mtimes on a
+            // fine-resolution filesystem (NTFS), making the tie flaky.
+            const tieTime = new Date();
+            fs.utimesSync(distFile, tieTime, tieTime);
+            fs.utimesSync(localFile, tieTime, tieTime);
 
-            // newestJsonMtimeMs() is NOT exported by contracts.mjs (private
-            // module-local helper -- see the `function newestJsonMtimeMs`
-            // definition, only reachable through resolveSchemasDir()'s
-            // deps.newestJsonMtimeMs default). This adapter is a path
-            // translator over the REAL filesystem -- a genuine recursive
-            // max-mtime-over-.json-files walk against real temp
-            // directories, not a canned-value spy -- so the in-place-edit
-            // flip below is exercised against real fs.statSync mtimes, only
-            // redirected to point at our controlled fixtures instead of the
-            // hardcoded DIST_BUNDLED_SCHEMAS_DIR/PACKAGE_LOCAL_SCHEMAS_DIR
-            // constants (which resolveSchemasDir always calls freshnessOf
-            // with, regardless of the real on-disk paths under test).
-            const realNewestJsonMtimeMs = (dir) => {
-                let newest = 0;
-                let entries;
-                try {
-                    entries = fs.readdirSync(dir, { withFileTypes: true });
-                } catch {
-                    return 0;
-                }
-                for (const entry of entries) {
-                    const entryPath = path.join(dir, entry.name);
-                    if (entry.isDirectory()) {
-                        newest = Math.max(newest, realNewestJsonMtimeMs(entryPath));
-                    } else if (entry.isFile() && entry.name.endsWith('.json')) {
-                        try {
-                            newest = Math.max(newest, fs.statSync(entryPath).mtimeMs);
-                        } catch {
-                            // Unreadable file between readdir and stat -- ignore it.
-                        }
-                    }
-                }
-                return newest;
-            };
-            const adapter = (dir) => {
-                if (dir === DIST_BUNDLED_SCHEMAS_DIR) return realNewestJsonMtimeMs(tmpDist);
-                if (dir === PACKAGE_LOCAL_SCHEMAS_DIR) return realNewestJsonMtimeMs(tmpLocal);
-                throw new Error(`unexpected freshness lookup for ${dir}`);
-            };
+            const copiedModuleUrl = url.pathToFileURL(copiedContractsPath).href;
+            const {
+                resolveSchemasDir: copiedResolveSchemasDir,
+                DIST_BUNDLED_SCHEMAS_DIR: copiedDist,
+                PACKAGE_LOCAL_SCHEMAS_DIR: copiedLocal,
+            } = await import(copiedModuleUrl);
 
-            const before = resolveSchemasDir({ env: {}, exists: () => true, newestJsonMtimeMs: adapter });
-            assert.strictEqual(before, DIST_BUNDLED_SCHEMAS_DIR, `expected a fresh tie to resolve to DIST_BUNDLED_SCHEMAS_DIR before the edit, got ${before}`);
+            assert.strictEqual(copiedDist, copyDistSchemasDir, 'sanity check: the copied module must resolve its DIST_BUNDLED_SCHEMAS_DIR from its own on-disk location');
+            assert.strictEqual(copiedLocal, copyLocalSchemasDir, 'sanity check: the copied module must resolve its PACKAGE_LOCAL_SCHEMAS_DIR from its own on-disk location');
+
+            const before = copiedResolveSchemasDir({ env: {}, exists: () => true });
+            assert.strictEqual(before, copiedDist, `expected a fresh tie to resolve to DIST_BUNDLED_SCHEMAS_DIR (${copiedDist}) before the edit, got ${before}`);
 
             // Record the directory's own mtime before the edit: it must NOT
             // move on an in-place content edit (only create/delete/rename
@@ -178,7 +190,7 @@ describe('resolveSchemasDir: on-disk case against real temp directories (default
             // dir mtime instead of the max mtime over .json files, this
             // in-place edit would never be observed and the assertion below
             // would fail -- that is the point of this whole case.
-            const localDirMtimeBefore = fs.statSync(tmpLocal).mtimeMs;
+            const localDirMtimeBefore = fs.statSync(copyLocalSchemasDir).mtimeMs;
 
             // Edit the EXISTING file's content (no add/delete/rename of any
             // entry in the directory) with a distinctly different byte
@@ -190,22 +202,21 @@ describe('resolveSchemasDir: on-disk case against real temp directories (default
             const future = new Date(Date.now() + 5000);
             fs.utimesSync(localFile, future, future);
 
-            const localDirMtimeAfter = fs.statSync(tmpLocal).mtimeMs;
+            const localDirMtimeAfter = fs.statSync(copyLocalSchemasDir).mtimeMs;
             assert.strictEqual(
                 localDirMtimeAfter,
                 localDirMtimeBefore,
                 'sanity check: an in-place edit to an existing file must NOT move its parent directory\'s own mtime (or this case is not exercising the regression it exists to catch)'
             );
 
-            const after = resolveSchemasDir({ env: {}, exists: () => true, newestJsonMtimeMs: adapter });
+            const after = copiedResolveSchemasDir({ env: {}, exists: () => true });
             assert.strictEqual(
                 after,
-                PACKAGE_LOCAL_SCHEMAS_DIR,
-                `expected the in-place-edited package-local stand-in to be resolved as fresher after the edit, got ${after} (a dir-mtime-based implementation would still return dist here since the directory's own mtime never moved)`
+                copiedLocal,
+                `expected the in-place-edited package-local stand-in (${copiedLocal}) to be resolved as fresher after the edit, got ${after} (a dir-mtime-based implementation would still return dist here since the directory's own mtime never moved)`
             );
         } finally {
-            fs.rmSync(tmpDist, { recursive: true, force: true });
-            fs.rmSync(tmpLocal, { recursive: true, force: true });
+            fs.rmSync(tmpRoot, { recursive: true, force: true });
         }
     });
 
