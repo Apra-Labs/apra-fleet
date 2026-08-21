@@ -20,11 +20,17 @@
 // because vitest.config.ts only discovers tests/**/*.test.ts and
 // packages/*/tests/**/*.test.ts -- already the established reason for every
 // other memory-contract test at this path.
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 
 import { registerAllTools } from '../src/services/tool-registry.js';
-import { KB_MODULES, CODE_EXPORTS, SCHEMAS_DIR } from '../memory-contract/v1/generate-contract.mjs';
+import {
+  KB_MODULES,
+  CODE_EXPORTS,
+  SCHEMAS_DIR,
+  BINDINGS_MCP_DIR,
+} from '../memory-contract/v1/generate-contract.mjs';
 
 type ToolHandler = (input: unknown, extra?: unknown) => Promise<unknown>;
 
@@ -44,6 +50,27 @@ async function registeredToolNames(): Promise<Set<string>> {
   };
   await registerAllTools(fakeServer as never);
   return names;
+}
+
+/**
+ * Same fake-McpServer technique as registeredToolNames(), but records the
+ * description argument each server.tool() call actually receives (my-beads-
+ * db-27m.41) -- the byte-exact text the DESCRIPTIONS map in generate-
+ * contract.mjs claims to have copied, and every bindings/mcp/<tool>.json
+ * embeds. Nothing else re-checks that the copy stays in sync when a
+ * registration description is edited in tool-registry.ts, so this reads the
+ * REAL description passed at registration time, not a hand-copied string.
+ */
+async function registeredToolDescriptions(): Promise<Map<string, string>> {
+  const descriptions = new Map<string, string>();
+  const fakeServer = {
+    tool: (name: string, description: string, _schema: Record<string, unknown>, _handler: ToolHandler) => {
+      descriptions.set(name, description);
+    },
+    server: { sendLoggingMessage: async () => {} },
+  };
+  await registerAllTools(fakeServer as never);
+  return descriptions;
 }
 
 function kbAndCodeToolNames(allNames: Set<string>): Set<string> {
@@ -105,5 +132,23 @@ describe('generator roster matches the registered kb_*/code_* tool surface (my-b
 
     const emittedFiles = readdirSync(SCHEMAS_DIR).filter((f) => f.endsWith('.json'));
     expect(emittedFiles.length).toBe(46);
+  });
+});
+
+describe('bindings/mcp descriptions match the live registerAllTools() descriptions (my-beads-db-27m.41)', () => {
+  it('every kb_*/code_* bindings/mcp/<tool>.json description equals the description registerAllTools() passes to server.tool()', async () => {
+    const registered = kbAndCodeToolNames(await registeredToolNames());
+    const liveDescriptions = await registeredToolDescriptions();
+
+    for (const tool of [...registered].sort()) {
+      const bindingPath = path.join(BINDINGS_MCP_DIR, `${tool}.json`);
+      const binding = JSON.parse(readFileSync(bindingPath, 'utf8')) as { description: string };
+      const live = liveDescriptions.get(tool);
+
+      expect(live, `${tool}: registerAllTools() never called server.tool() with this name`).toBeDefined();
+      expect(binding.description, `${tool}: bindings/mcp/${tool}.json description is stale vs the live registration`).toBe(
+        live,
+      );
+    }
   });
 });
