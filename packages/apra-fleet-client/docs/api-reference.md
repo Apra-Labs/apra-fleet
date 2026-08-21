@@ -473,6 +473,7 @@ by `new FleetWorkflow(fleetApi)` exactly like an MCP-backed `ApraFleet`.
 | `baseUrl` | `string` | Yes | Base URL of the LLM endpoint (e.g. `'https://api.openai.com/v1'` or `'https://api.anthropic.com'`). |
 | `apiKey` | `string` | Yes | API key for the endpoint (e.g. `'sk-...'` for OpenAI, `'sk-ant-...'` for Anthropic). |
 | `model` | `string` | Yes | Model ID to dispatch on every request (e.g. `'gpt-4o'` or `'claude-3-5-sonnet-20241022'`). Since this transport has no member to resolve tier keywords against, `'cheap'`, `'standard'`, and `'premium'` keywords are ignored and this model is used for all tiers. |
+| `timeoutMs` | `number?` | No | Request deadline override (ms). If omitted, the transport respects the caller's `options.timeoutMs` or `options.timeout_s` if provided, then falls back to `DEFAULT_REQUEST_TIMEOUT_MS` (120 seconds). Every unconfigured endpoint dispatch is always bounded by this 120s default. |
 | `pricing` | `{promptPrice: number, completionPrice: number}?` | No | Per-token pricing in USD per 1M tokens. If omitted, `getMemberModelPricing()` signals unpriced to the workflow engine. Both must be present if the field is given; a partial object is rejected. |
 | `pattern` | `string?` | No | Passed to the OpenAI shape adapter; see its source for accepted patterns. |
 | `maxTokens` | `number?` | No | Max output tokens, forwarded to the shape adapter. |
@@ -505,10 +506,13 @@ An object with three async methods:
 
 - **`executePrompt(options)`** -- dispatches a prompt to the configured LLM
   endpoint. Accepts the full `ExecutePromptOptions` shape (see
-  `src/client/api.mjs` in api-reference.md above), but reads only `prompt`
-  and `signal`; silently ignores `agent`, `max_total_s`, `max_turns`,
-  `member_id`, `member_name`, `model`, `resume`, `session_id`, `substitutions`,
-  `timeout_s`, `timeoutMs` and all other fields. Returns a structured result
+  `src/client/api.mjs` in api-reference.md above), but reads only `prompt`,
+  `signal`, `timeoutMs`, and `timeout_s`; silently ignores `agent`, `max_total_s`,
+  `max_turns`, `member_id`, `member_name`, `model`, `resume`, `session_id`,
+  `substitutions` and all other fields. `timeoutMs` (ms) and `timeout_s`
+  (seconds) control the request deadline; if neither is provided, the transport
+  uses the config-level `timeoutMs`, and if that is also absent, falls back to
+  `DEFAULT_REQUEST_TIMEOUT_MS` (120 seconds). Returns a structured result
   with `content` (message text), `structuredContent` (the parsed response),
   and optional `usage` (token counts) if the provider reported them.
 - **`executeCommand(options)`** -- always rejects with a `CommandError`.

@@ -98,7 +98,7 @@ Declared in `package.json#exports`:
 | `@apralabs/apra-fleet-client/client` | `src/client/client.mjs` | `McpClient` class, `DEFAULT_REQUEST_TIMEOUT_MS` |
 | `@apralabs/apra-fleet-client/factory` | `src/client/factory.mjs` | `createWorkflowEngine()` |
 | `@apralabs/apra-fleet-client/transport` | `src/client/transport.mjs` | `StdioTransport`, `StreamableHttpTransport` |
-| `@apralabs/apra-fleet-client/errors` | `src/errors/workflow-errors.mjs` | `WorkflowError`, `CommandError`, `FleetTransportError` |
+| `@apralabs/apra-fleet-client/errors` | `src/errors/workflow-errors.mjs` | `WorkflowError`, `MemberNotFoundError`, `AgentOutputError`, `AgentDispatchError`, `CommandError`, `FleetTransportError`, `BudgetExceededError`, `CancelledError` |
 | `@apralabs/apra-fleet-client/server-resolution` | `src/client/server-resolution.mjs` | `connectFleet()`, `checkRunningInstance()`, `resolveFleetServerConnection()`, `resolveFleetServerCommand()`, `getFleetDataDir()`, `getServerInfoPath()` |
 | `@apralabs/apra-fleet-client/endpoint` | `src/endpoint/factory.mjs` | `makeEndpointApi()` |
 
