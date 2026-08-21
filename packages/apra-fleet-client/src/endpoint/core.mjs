@@ -39,7 +39,7 @@
  * so it is testable with hand-written payloads and no network or API key.
  */
 
-import { AgentDispatchError, AgentOutputError, FleetTransportError } from '../errors/workflow-errors.mjs';
+import { AgentDispatchError, AgentOutputError, CancelledError, FleetTransportError } from '../errors/workflow-errors.mjs';
 
 /** Longest provider-supplied text quoted back inside an error message. */
 const BODY_EXCERPT_LIMIT = 500;
@@ -198,20 +198,33 @@ export function httpFailureReason(status) {
  *
  * One constructor per failure class, so a caller can tell them apart by type
  * and not by message substring:
+ *   - 'aborted'   -> CancelledError       (the request was cancelled via the
+ *                    caller's AbortSignal, i.e. FleetWorkflow.requestStop() --
+ *                    NOT a network failure, see the http.mjs abort detection
+ *                    this feeds)
  *   - 'network'   -> FleetTransportError  (request never got a response:
- *                    DNS/socket failure, abort, TLS error)
+ *                    DNS/socket failure, TLS error -- genuine connectivity
+ *                    failures only, now that abort has its own kind)
  *   - 'malformed' -> AgentOutputError     (a response arrived but this
  *                    transport could not read a reply out of it)
  *   - 'http'      -> AgentDispatchError   (a well-formed non-2xx: the
  *                    dispatch failed before any LLM content existed)
  *
- * @param {{kind: 'network'|'malformed'|'http', status?: number, statusText?: string,
+ * @param {{kind: 'aborted'|'network'|'malformed'|'http', status?: number, statusText?: string,
  *   body?: unknown, detail?: string, url?: string, cause?: unknown}} failure
- * @returns {FleetTransportError|AgentOutputError|AgentDispatchError}
+ * @returns {CancelledError|FleetTransportError|AgentOutputError|AgentDispatchError}
  */
 export function classifyEndpointFailure(failure) {
     const { kind, status, statusText, body, detail, url, cause } = failure ?? {};
     const where = url ? ` to ${url}` : '';
+
+    if (kind === 'aborted') {
+        const why = detail || (cause && cause.message) || 'the request was cancelled';
+        return new CancelledError(
+            `[Endpoint Transport] the provider request${where} was cancelled: ${why}`,
+            { details: { reason: 'cancelled', url }, cause }
+        );
+    }
 
     if (kind === 'malformed') {
         const why = detail || excerpt(body) || 'unreadable provider response';

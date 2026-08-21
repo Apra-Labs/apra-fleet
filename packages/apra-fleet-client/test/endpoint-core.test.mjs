@@ -10,6 +10,7 @@ import {
 import {
     AgentDispatchError,
     AgentOutputError,
+    CancelledError,
     FleetTransportError
 } from '../src/errors/workflow-errors.mjs';
 
@@ -107,6 +108,26 @@ test('classifyEndpointFailure - the three failure kinds are distinct constructor
     assert.notStrictEqual(malformed.constructor, http.constructor);
     assert.notStrictEqual(http.constructor, network.constructor);
     assert.notStrictEqual(malformed.constructor, network.constructor);
+});
+
+test('classifyEndpointFailure - an aborted request classifies to CancelledError, not FleetTransportError (apra-fleet-5se.13)', () => {
+    const cause = Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
+    const err = classifyEndpointFailure({ kind: 'aborted', cause });
+    assert.ok(err instanceof CancelledError);
+    assert.strictEqual(err.code, 'CANCELLED');
+    assert.strictEqual(err.cause, cause);
+    assert.strictEqual(err instanceof FleetTransportError, false);
+});
+
+test('classifyEndpointFailure - aborted is a distinct constructor from the other three kinds', () => {
+    const aborted = classifyEndpointFailure({ kind: 'aborted', detail: 'cancelled' });
+    const malformed = classifyEndpointFailure({ kind: 'malformed', detail: 'bad body' });
+    const http = classifyEndpointFailure({ kind: 'http', status: 500 });
+    const network = classifyEndpointFailure({ kind: 'network', detail: 'connection reset' });
+
+    assert.notStrictEqual(aborted.constructor, malformed.constructor);
+    assert.notStrictEqual(aborted.constructor, http.constructor);
+    assert.notStrictEqual(aborted.constructor, network.constructor);
 });
 
 test('dispatchFailureFromHttp - a non-2xx becomes a classified isError envelope, not a thrown error', () => {

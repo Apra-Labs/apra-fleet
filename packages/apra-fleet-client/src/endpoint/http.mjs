@@ -20,6 +20,20 @@
 import { classifyEndpointFailure } from './core.mjs';
 
 /**
+ * Recognize an aborted fetch rejection so it can be classified as a
+ * cancellation rather than a network failure. Covers the two spellings seen
+ * in practice: the spec `AbortError` name (browsers, Node's `fetch`), and
+ * undici's `ABORT_ERR` code (Node's global fetch implementation).
+ *
+ * @param {unknown} cause
+ * @returns {boolean}
+ */
+function isAbortError(cause) {
+    if (!cause || typeof cause !== 'object') return false;
+    return cause.name === 'AbortError' || cause.code === 'ABORT_ERR' || cause.code === 'ABORTED';
+}
+
+/**
  * @param {unknown} value
  * @param {string} what - the config field name, used verbatim in the error.
  * @returns {string}
@@ -75,8 +89,9 @@ export function joinUrl(baseUrl, path) {
  * parsed, otherwise the raw text (kept, not discarded, so a provider's HTML
  * error page still shows up in the classified error's excerpt).
  *
- * Throws only for the two failures that are not about the provider's answer:
- *   - the request never got a response -> FleetTransportError
+ * Throws only for the failures that are not about the provider's answer:
+ *   - the caller's signal was already, or became, aborted -> CancelledError
+ *   - the request never got a response for any other reason -> FleetTransportError
  *   - a response arrived whose body could not even be read -> AgentOutputError
  * A non-2xx is NOT thrown: it comes back as `ok: false` for the adapter to
  * report on the engine's isError channel via dispatchFailureFromHttp().
@@ -87,6 +102,14 @@ export function joinUrl(baseUrl, path) {
  *   body: unknown, isJson: boolean}>}
  */
 export async function postJson({ fetchImpl, url, headers = {}, body, signal } = {}) {
+    // A signal that fired before fetch was even called (requestStop() raced
+    // ahead of dispatch) must be honoured the same way as an abort that
+    // happens mid-flight -- some fetch implementations only surface this via
+    // the AbortError rejection below, but not all are guaranteed to.
+    if (signal && signal.aborted) {
+        throw classifyEndpointFailure({ kind: 'aborted', url, cause: signal.reason });
+    }
+
     let response;
     try {
         response = await fetchImpl(url, {
@@ -96,6 +119,9 @@ export async function postJson({ fetchImpl, url, headers = {}, body, signal } = 
             ...(signal ? { signal } : {})
         });
     } catch (cause) {
+        if (isAbortError(cause)) {
+            throw classifyEndpointFailure({ kind: 'aborted', url, cause });
+        }
         throw classifyEndpointFailure({ kind: 'network', url, cause });
     }
 
