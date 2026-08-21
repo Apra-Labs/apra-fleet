@@ -2,6 +2,83 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Endpoint transport: a memberless FleetApi over a plain HTTP model endpoint
+
+Sprint goal: give `apra-fleet-workflow` a second, parallel way to obtain a
+`FleetApi` for callers that structurally cannot use the existing MCP-server
++ member + SSH dispatch path at all (the motivating case: a serverless
+function with no SSH, no member and no writable work folder). Built as a
+sibling implementation of the same three-method surface the workflow engine
+already depends on (`executePrompt`/`executeCommand`/
+`getMemberModelPricing`), not as a new provider adapter, and the fleet MCP
+server itself is untouched.
+
+What shipped:
+
+- **`makeEndpointApi(config)`**, exported from
+  `@apralabs/apra-fleet-client/endpoint`: assembles a complete, memberless
+  `FleetApi` from injected config alone (no `process.env` reads anywhere in
+  the module), ready to hand straight to `new FleetWorkflow(fleetApi)`.
+- **Both LLM call shapes**, as siblings over a shared transport-neutral
+  core: OpenAI-compatible (`/chat/completions` message pattern and legacy
+  `/completions` completion pattern, base-URL configurable so it also covers
+  gateways like openrouter.ai) and Anthropic native (`/v1/messages`, with
+  its required `max_tokens` and `x-api-key`/`anthropic-version` auth). Which
+  OpenAI-compatible pattern is used is explicit configuration, never sniffed
+  from the model name.
+- **Strict engine envelope and typed failure classification**, owned by one
+  shared core module with no HTTP client code in it: every successful reply
+  converges on the exact `{content, structuredContent}` shape the engine's
+  dispatch path requires, token usage is never zero-filled when a provider
+  reports none, and every distinguishable failure (cooperative cancellation,
+  request-deadline expiry, connectivity failure, unreadable body, invalid
+  caller input, well-formed non-2xx) classifies onto the engine's own
+  existing typed error taxonomy rather than a parallel one -- classified by
+  the request's own abort-signal state, not by pattern-matching a
+  rejection's name.
+- **An always-enforced request deadline** composed with the caller's own
+  cancellation signal, deliberately implemented with a ref'd timer rather
+  than `AbortSignal.timeout()` so the deadline is guaranteed to fire even
+  when a dispatch has no other live handle keeping the process open.
+- **Honest answers for the two non-`executePrompt` methods**: `executeCommand`
+  always refuses with the engine's own typed `CommandError` (there is no
+  shell to run one on), and `getMemberModelPricing` reports real prices only
+  when pricing config was supplied, otherwise returns the same explicit
+  "unpriced" signal the engine's own pricing fallback already understands --
+  never a fabricated price.
+- **Packaging and a real end-to-end proof**: the package gains an
+  `./endpoint` (and `./errors`) export so a consumer imports by package name
+  with no relative-path reaching, and an end-to-end test drives a real
+  `FleetWorkflow` through `runWithContext()` -- schema enforcement, the
+  repair loop, and the pricing path -- against the endpoint transport with no
+  network access and no API key present. The workflow engine's typed error
+  classes now live in `@apralabs/apra-fleet-client`, with the workflow
+  package re-exporting them, so `instanceof WorkflowError` checks keep
+  working across that package boundary.
+- See [docs/features/endpoint-transport.md](docs/features/endpoint-transport.md)
+  for the full design writeup, including the deliberately deferred
+  trade-offs below.
+
+Carried forward: an HTTP 429 currently hard-fails a workflow step rather
+than being retried or routed through the engine's own busy-wait/poll
+mechanism; a caller-declared long-running budget expressed only via
+`max_total_s` is not honored as a request-deadline source (only per-call
+timeout options and transport config are); pricing is opt-in per config
+field rather than automatically enforced, so a consumer that configures a
+budget but not pricing gets a silently unenforced budget; and this sprint's
+own deploy could not complete because the runbook's active-sprints gate
+correctly refused to restart the shared MCP server out from under the very
+sprint requesting the deploy (a structural runbook gap, not a code defect,
+filed as follow-up).
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $33.1285.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 48 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Windows/PowerShell shell portability and schema-repair retry correctness
 
 Sprint goal: close out the remaining holistic-audit acceptance criteria for

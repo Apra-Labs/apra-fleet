@@ -444,6 +444,7 @@ third-party verticals.
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
 | MCP client SDK getting started | [packages/apra-fleet-client/docs/getting-started.md](packages/apra-fleet-client/docs/getting-started.md) |
+| Endpoint transport: memberless `FleetApi` over a plain HTTP model endpoint (no fleet server, no member, no SSH) | [docs/features/endpoint-transport.md](docs/features/endpoint-transport.md) |
 
 ## Community
 
