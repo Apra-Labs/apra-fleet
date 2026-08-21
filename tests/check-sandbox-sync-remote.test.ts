@@ -29,6 +29,30 @@ import {
 // Sandbox-only: this suite never contacts the real fleet-e2e-toy Dolt
 // remote. Git repos used here are local-only (no network), created fresh
 // under os.tmpdir() and removed afterward.
+//
+// my-beads-db-27m.25: on a dev host running this suite from inside a real
+// beads workspace (e.g. via the bd-managed sprint tooling), BEADS_DIR is set
+// in the ambient environment and points at THAT workspace's own database --
+// not this file's scratch '.beads/embeddeddolt' fixture below. Every 'bd'
+// child process this file spawns must NOT inherit it: bd resolves BEADS_DIR
+// before it looks at cwd, so an inherited BEADS_DIR makes the real bd child
+// query the unrelated ambient database instead of the fixture, producing a
+// false result.ok===false. Mirrors the BD_CHILD_ENV pattern already proven in
+// tests/2cc-win-bd-invocation-integ.test.ts (apra-fleet-2cc.3 / my-beads-db-27m.14).
+const BD_CHILD_ENV: NodeJS.ProcessEnv = { ...process.env };
+delete BD_CHILD_ENV.BEADS_DIR;
+
+/** Wraps node:child_process's real execFileSync with BD_CHILD_ENV so a real
+ *  'bd' child process spawned via execBdSync's execFileSyncImpl injection
+ *  point never inherits the ambient BEADS_DIR -- still a REAL invocation
+ *  (no canned/stubbed output), just with BEADS_DIR stripped from its env. */
+function execFileSyncWithoutBeadsDir(
+  file: string,
+  args: readonly string[],
+  options: Record<string, unknown> = {},
+): string | Buffer {
+  return execFileSync(file, args as string[], { ...options, env: BD_CHILD_ENV });
+}
 
 describe('defaultSandboxPath', () => {
   it('is the parent directory of the repo path (matches "$HOME/toy-repo" -> "$HOME")', () => {
@@ -428,10 +452,14 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
       // Also create a minimal config.yaml so the repo looks initialized.
       fs.writeFileSync(path.join(beadsDir, 'config.yaml'), 'sync:\n  remote: file://sandbox-local\n');
 
-      // NO deps.execFileSync injected -- this exercises the real filesystem check
-      // against the embeddeddolt layout. The function should recognize the database
-      // and attempt to run bd, not short-circuit with "nothing wired yet".
-      const result = checkDoltRemoteAbsent(repoPath, tmpDir);
+      // deps.execFileSync is injected here ONLY to strip the ambient BEADS_DIR
+      // (my-beads-db-27m.25) from the real 'bd' child process this spawns --
+      // execFileSyncWithoutBeadsDir still shells out to the real execFileSync,
+      // it never returns canned output, so this still exercises the real
+      // filesystem check against the embeddeddolt layout. The function should
+      // recognize the database and attempt to run bd, not short-circuit with
+      // "nothing wired yet".
+      const result = checkDoltRemoteAbsent(repoPath, tmpDir, { execFileSync: execFileSyncWithoutBeadsDir });
       expect(result.ok).toBe(true);
       // The key assertion: the message must NOT be the "no Dolt database initialized"
       // message that the old code would have returned when it failed to recognize
@@ -453,7 +481,7 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
       // execBdSync is also the injection-safe path -- see scripts/lib/exec-bd.mjs.
       let bdAvailable = true;
       try {
-        execBdSync(['--version'], { stdio: 'ignore' });
+        execBdSync(['--version'], { stdio: 'ignore', env: BD_CHILD_ENV });
       } catch {
         bdAvailable = false;
       }
