@@ -174,7 +174,7 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 |------|------|----------|-------------|
 | `member_id` | string | yes | UUID of the target member |
 | `prompt` | string | yes | The prompt text to send to the LLM agent |
-| `resume` | boolean | no | Default: `true`. Continue the previous session if one exists |
+| `resume` | boolean \| string | no | Default: `true`. `true` continues the member's most recently stored session if one exists. A string value is an explicit session id to resume instead -- used when a caller must target one specific prior session rather than "whatever the member last used" (e.g. a retry that must reattach to the exact session that produced a prior failed attempt). An explicit-id resume that the provider reports as not found is terminal for that dispatch, not silently retried as a fresh session -- callers needing a fallback must re-dispatch with `resume: false` themselves. |
 | `timeout_s` | number | no | Default: 300 (5 min). **Inactivity timeout** -- resets on every output chunk; kills the session only when silent for this many seconds |
 | `max_total_s` | number | no | Default: none. **Hard ceiling** -- kills the session after this total elapsed time in seconds regardless of activity |
 | `model` | string | no | Model to use. Pass a tier name (`premium`, `standard`, `cheap`) or a provider-specific model ID. Defaults to `standard` tier when omitted. |
@@ -197,7 +197,7 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 1. Looks up the member by ID and resolves its LLM provider (`getProvider(agent.llmProvider)`). On the first dispatch to a remote member since the server started, it also checks that member's role-agent files (planner, doer, reviewer, etc.) are current and re-provisions any missing or stale ones before proceeding -- this is what carries an already-registered member's agent files forward after an orchestrator upgrade, without requiring a `register_member`/`update_member` call first. A provisioning failure never blocks the prompt dispatch; it is retried on the next `execute_prompt` call to that member. Skipped for local members and for providers with no agents directory (codex, copilot).
 2. **Base64-encodes the prompt** -- this avoids shell escaping issues when the prompt contains quotes, newlines, or special characters. The encoding is decoded on the target side before being passed to the CLI.
 3. **Builds the provider command** -- via `provider.buildPromptCommand()`, which produces the correct CLI call for the member's provider and OS. Max-turns flag is only appended for Claude (the only provider that supports it).
-4. **Appends the resume flag** if `resume=true` and the member has a stored session. Each provider uses its own resume flag.
+4. **Appends the resume flag** if `resume` is truthy (`true`, or an explicit session-id string) and the member has a matching stored session. Each provider uses its own resume flag.
 5. **Executes via strategy** -- `strategy.execCommand(cmd, timeout_s * 1000)`.
 6. **Parses the response** -- via `provider.parseResponse()`. Handles Codex NDJSON transparently; extracts text and session info from all providers.
 7. **Handles stale sessions** -- if the command fails and a resume was attempted, retries with a fresh minted session ID.
