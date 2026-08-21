@@ -477,7 +477,7 @@ by `new FleetWorkflow(fleetApi)` exactly like an MCP-backed `ApraFleet`.
 | `pattern` | `string?` | No | Passed to the OpenAI shape adapter; see its source for accepted patterns. |
 | `maxTokens` | `number?` | No | Max output tokens, forwarded to the shape adapter. |
 | `headers` | `object?` | No | Extra HTTP headers to merge into every request (e.g. custom auth, provider-specific options). |
-| `system` | `string?` | No | System prompt (OpenAI shape only; Anthropic shape ignores this). |
+| `system` | `string?` | No | System prompt (Anthropic shape only; OpenAI shape ignores this). |
 | `anthropicVersion` | `string?` | No | API version header (Anthropic shape only; OpenAI shape ignores this). |
 | `fetch` | `function?` | No | Custom fetch implementation (defaults to Node's built-in `fetch`). |
 
@@ -505,9 +505,12 @@ An object with three async methods:
 
 - **`executePrompt(options)`** -- dispatches a prompt to the configured LLM
   endpoint. Accepts the full `ExecutePromptOptions` shape (see
-  `src/client/api.mjs` in api-reference.md above), but ignores the `model`
-  tier keyword and always sends the configured model. Returns the same
-  structured result as an MCP-backed prompt (content, usage, stop_reason, etc.).
+  `src/client/api.mjs` in api-reference.md above), but reads only `prompt`
+  and `signal`; silently ignores `agent`, `max_total_s`, `max_turns`,
+  `member_id`, `member_name`, `model`, `resume`, `session_id`, `substitutions`,
+  `timeout_s`, `timeoutMs` and all other fields. Returns a structured result
+  with `content` (message text), `structuredContent` (the parsed response),
+  and optional `usage` (token counts) if the provider reported them.
 - **`executeCommand(options)`** -- always rejects with a `CommandError`.
 - **`getMemberModelPricing(options)`** -- returns pricing for the configured
   model if `config.pricing` was supplied, or an unpriced signal otherwise.
@@ -535,6 +538,9 @@ const fleetApi = makeEndpointApi({
 });
 
 const workflow = new FleetWorkflow(fleetApi);
-const result = await workflow.agent('Write a summary', { timeoutMs: 60_000 });
-console.log(result.output);
+const result = await workflow.agent('Write a summary', {
+  member_name: 'endpoint',
+  timeoutMs: 60_000
+});
+console.log(result);
 ```
