@@ -397,7 +397,18 @@ async function main() {
   );
 }
 
-main().catch((err) => {
-  console.error('contract:generate failed:', err);
-  process.exitCode = 1;
-});
+// Export the roster for test consumption (my-beads-db-27m.39: a roster-drift
+// test needs to read the SAME KB_MODULES/CODE_EXPORTS this script generates
+// from, not a fourth hand-copied list). Guarded below so importing this
+// module for its exports does not also run main() as a side effect.
+export { KB_MODULES, CODE_EXPORTS, SCHEMAS_DIR, BINDINGS_MCP_DIR };
+
+// Only run when invoked directly (`node generate-contract.mjs[.--check]`),
+// not when imported as a module (e.g. by a test reading the exports above).
+const isMainModule = process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (isMainModule) {
+  main().catch((err) => {
+    console.error('contract:generate failed:', err);
+    process.exitCode = 1;
+  });
+}
