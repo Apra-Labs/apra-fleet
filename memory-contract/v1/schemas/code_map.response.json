@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/code_map.response.json#",
+  "x-invariant": [
+    "INV-09"
+  ],
+  "$ref": "#/$defs/v1-code_map-response",
+  "$defs": {
+    "v1-code_map-response": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "parsed": {}
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

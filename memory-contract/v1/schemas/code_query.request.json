@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/code_query.request.json#",
+  "$ref": "#/$defs/v1-code_query-request",
+  "$defs": {
+    "v1-code_query-request": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Code search query (symbol, pattern, or concept)"
+        },
+        "repo": {
+          "type": "string",
+          "description": "Absolute path to the repository root. Required when multiple repositories are indexed."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
