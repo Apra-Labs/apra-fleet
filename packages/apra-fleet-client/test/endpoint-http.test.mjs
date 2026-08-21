@@ -60,6 +60,29 @@ test('postJson - a signal that is already aborted before fetch is called raises 
     assert.strictEqual(fetchCalled, false, 'fetch must not be invoked once the signal is already aborted');
 });
 
+test('postJson - a mid-flight abort with a CancelledError-shaped reason (real requestStop() shape) raises CancelledError, not FleetTransportError', async () => {
+    // Regression coverage for apra-fleet-5se.17: FleetWorkflow.requestStop()
+    // aborts with controller.abort(new CancelledError(...)), and real fetch
+    // rejects with that reason object verbatim -- whose name is
+    // 'CancelledError', not 'AbortError'/ABORT_ERR/ABORTED. isAbortError()
+    // never matches that shape, so postJson must classify by the signal's
+    // own aborted state instead of sniffing the rejection's name/code.
+    const controller = new AbortController();
+    const fetchImpl = (url, init) => new Promise((resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+    });
+
+    const pending = postJson({ fetchImpl, url: 'https://example.test/v1/chat/completions', body: {}, signal: controller.signal });
+    controller.abort(new CancelledError('run stopped'));
+
+    await assert.rejects(pending, (err) => {
+        assert.ok(err instanceof CancelledError, `expected CancelledError, got ${err.constructor.name}`);
+        assert.strictEqual(err.code, 'CANCELLED');
+        assert.strictEqual(err instanceof FleetTransportError, false);
+        return true;
+    });
+});
+
 test('postJson - a genuine socket failure (no abort involved) still raises FleetTransportError', async () => {
     const controller = new AbortController();
     const socketFailure = new Error('socket hang up');

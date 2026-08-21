@@ -211,6 +211,19 @@ export async function postJson({ fetchImpl, url, headers = {}, body, signal, tim
                 ...(requestSignal ? { signal: requestSignal } : {})
             });
         } catch (cause) {
+            // Classify by the signal's own state first, not by sniffing the
+            // rejection's name/code: FleetWorkflow.requestStop() aborts with
+            // a CancelledError whose name is 'CancelledError' (WorkflowError
+            // sets this.name = this.constructor.name), which isAbortError()
+            // does not recognize. If the composed signal actually fired,
+            // this WAS an abort (or its own deadline expiry) regardless of
+            // what the rejection reason looks like; only fall through to the
+            // name/code sniffing -- and then 'network' -- when the signal
+            // never fired at all.
+            if (requestSignal && requestSignal.aborted) {
+                const kind = isTimeoutError(requestSignal.reason) ? 'timeout' : 'aborted';
+                throw classifyEndpointFailure({ kind, url, cause: requestSignal.reason });
+            }
             if (isTimeoutError(cause)) {
                 throw classifyEndpointFailure({ kind: 'timeout', url, cause });
             }
