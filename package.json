@@ -54,6 +54,7 @@
     "build": "npm run build:contract && tsc",
     "build:contract": "npm run build --workspace=@apralabs/fleet-api-contract",
     "contract:generate": "node memory-contract/v1/generate-contract.mjs",
+    "contract:check": "node memory-contract/v1/generate-contract.mjs --check",
     "gen:openapi": "npm run gen:openapi --workspace=@apralabs/fleet-api-contract",
     "dist-pm": "node scripts/dist-pm.mjs",
     "build:sea": "node scripts/build-sea.mjs",
