@@ -18,9 +18,19 @@ describe('LocalStrategy', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    // maxRetries/retryDelay let Node's own rmSync retry through the Windows
+    // EBUSY window (antivirus/child-process handle not yet released) instead
+    // of throwing and cascading into the next case's beforeEach hook --
+    // same pattern fe336c09 used for kb-bible-v2.test.ts.
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   });
 
+  // These four cases spawn a real PowerShell/shell child process via
+  // strategy.execCommand(). Observed real cost is 3981ms-5044ms under
+  // full-suite Windows host contention (my-beads-db-27m.28/.34) -- right at
+  // or over vitest's 5000ms default test timeout, which vitest.config.ts
+  // does not override globally. 15000ms gives >3x margin over measured cost
+  // without raising the global testTimeout.
   it('execCommand() runs command locally and returns stdout/code', async () => {
     const member = makeLocalAgent({ workFolder: tmpDir });
     const strategy = getStrategy(member);
@@ -28,7 +38,7 @@ describe('LocalStrategy', () => {
     const result = await strategy.execCommand('echo hello-fleet');
     expect(result.stdout.trim()).toBe('hello-fleet');
     expect(result.code).toBe(0);
-  });
+  }, 15000);
 
   it('execCommand() does not leak CLAUDECODE to child process', async () => {
     process.env.CLAUDECODE = 'test-leak-marker';
@@ -43,7 +53,7 @@ describe('LocalStrategy', () => {
     } finally {
       delete process.env.CLAUDECODE;
     }
-  });
+  }, 15000);
 
   // apra-fleet-eft.65.3: pins apra-fleet-eft.65.1's fix -- a coding agent
   // dispatched via LocalStrategy's clean-env exec must receive a
@@ -78,7 +88,7 @@ describe('LocalStrategy', () => {
     expect(stdoutNormalized).toContain('--permission-mode acceptEdits');
     // ...via the surgical flag, never the broad permission-bypass escape hatch.
     expect(stdoutNormalized).not.toContain('--dangerously-skip-permissions');
-  });
+  }, 15000);
 
   it('execCommand() returns non-zero code for failed commands', async () => {
     const member = makeLocalAgent({ workFolder: tmpDir });
@@ -86,7 +96,7 @@ describe('LocalStrategy', () => {
 
     const result = await strategy.execCommand('exit 42');
     expect(result.code).not.toBe(0);
-  });
+  }, 15000);
 
   it('transferFiles() copies files to target folder', async () => {
     const member = makeLocalAgent({ workFolder: tmpDir });
