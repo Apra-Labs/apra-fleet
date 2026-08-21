@@ -197,12 +197,7 @@ killed mid-work. Instead:
 
 ## Step 3 -- VERIFY checkpoint
 
-**STOP RULE:** the instant `bd close` returns for your last assigned bead id (or your
-last remaining id is disposed of via an explicit skip exception), your ONLY next action
-is emitting the VERIFY JSON below. No extra sanity check, advisor/reviewer call,
-re-read, re-run of build or tests, unrelated investigation, or tidying -- the last
-close IS the end of your work. Burning turns past it risks exhausting your budget
-before VERIFY and having a genuine success recorded as a FAILURE.
+**STOP RULE:** the instant `bd close` returns for your last assigned bead id (or your last remaining id is disposed of via an explicit skip exception), your ONLY next action is emitting the VERIFY JSON below. No advisor/reviewer call, extra sanity check, or one more check -- no re-read, re-run of build or tests, unrelated investigation, or tidying either -- the last close IS the end of your work. Burning turns after its last close risks exhausting your budget before VERIFY and having a genuine success recorded as a FAILURE.
 
 When every assigned bead id has been closed (or explicitly skipped per Step 1's
 has-open-children case, Step 2.2's ambiguous-wrap-up case, the scope/criteria-defect
