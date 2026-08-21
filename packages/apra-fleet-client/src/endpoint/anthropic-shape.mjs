@@ -135,7 +135,10 @@ export function createAnthropicTransport(config = {}) {
 
 function requirePrompt(prompt) {
     if (typeof prompt !== 'string' || prompt === '') {
-        throw new TypeError(`[Endpoint Transport] executePrompt requires a non-empty prompt string, got ${prompt === null ? 'null' : typeof prompt}.`);
+        throw classifyEndpointFailure({
+            kind: 'invalid_input',
+            detail: `executePrompt requires a non-empty prompt string, got ${prompt === null ? 'null' : typeof prompt}.`
+        });
     }
     return prompt;
 }

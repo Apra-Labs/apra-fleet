@@ -215,10 +215,16 @@ export function httpFailureReason(status) {
  *                    kinds)
  *   - 'malformed' -> AgentOutputError     (a response arrived but this
  *                    transport could not read a reply out of it)
+ *   - 'invalid_input' -> AgentOutputError (the CALLER's options.prompt itself
+ *                    is missing/empty/non-string; no request is ever issued.
+ *                    Kept distinct from 'malformed' -- whose message describes
+ *                    an unreadable PROVIDER response -- because at this point
+ *                    no provider response exists yet: this is a caller wiring
+ *                    bug, not a transport or provider problem.)
  *   - 'http'      -> AgentDispatchError   (a well-formed non-2xx: the
  *                    dispatch failed before any LLM content existed)
  *
- * @param {{kind: 'aborted'|'timeout'|'network'|'malformed'|'http', status?: number, statusText?: string,
+ * @param {{kind: 'aborted'|'timeout'|'network'|'malformed'|'invalid_input'|'http', status?: number, statusText?: string,
  *   body?: unknown, detail?: string, url?: string, cause?: unknown}} failure
  * @returns {CancelledError|FleetTransportError|AgentOutputError|AgentDispatchError}
  */
@@ -247,6 +253,14 @@ export function classifyEndpointFailure(failure) {
         return new AgentOutputError(
             `[Endpoint Transport] the provider response${where} could not be read as a reply: ${why}`,
             { details: { reason: 'malformed_response', body: excerpt(body), url }, cause }
+        );
+    }
+
+    if (kind === 'invalid_input') {
+        const why = detail || 'executePrompt requires a non-empty prompt string';
+        return new AgentOutputError(
+            `[Endpoint Transport] ${why}`,
+            { details: { reason: 'invalid_prompt' }, cause }
         );
     }
 

@@ -217,6 +217,22 @@ for (const shape of SHAPES) {
             );
         });
 
+        test('an invalid prompt (empty string) surfaces as AgentOutputError, not a transport failure, and issues no request', async () => {
+            const fetchImpl = recordingFetch(() => httpResponse({ body: shape.reply('unreachable') }));
+            const wf = new FleetWorkflow(apiFor(shape, fetchImpl));
+
+            await assert.rejects(
+                wf.runWithContext({}, (context) => context.agent('', { member_name: 'endpoint' })),
+                (err) => {
+                    assert.ok(err instanceof AgentOutputError, `expected AgentOutputError, got ${err.constructor.name}: ${err.message}`);
+                    assert.strictEqual(err.details.reason, 'invalid_prompt');
+                    assert.notStrictEqual(err.message, '[Workflow Error] Transport failure while executing agent prompt', 'the pass-through at index.mjs:1457 must actually be pinned, not just the throw site');
+                    return true;
+                }
+            );
+            assert.strictEqual(fetchImpl.calls.length, 0, 'an invalid prompt must never reach the HTTP layer');
+        });
+
         test('a non-2xx status surfaces as AgentDispatchError classified by status', async () => {
             const fetchImpl = recordingFetch(() => httpResponse({
                 status: 429,
