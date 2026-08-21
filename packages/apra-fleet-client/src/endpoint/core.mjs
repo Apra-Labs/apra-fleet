@@ -132,8 +132,8 @@ export function normalizeUsage(raw) {
  *   a malformed body surfaces as a typed error instead of an envelope whose
  *   missing `text` crashes inside the engine.
  */
-export function buildEnvelope(reply = {}) {
-    const { text, usage } = reply;
+export function buildEnvelope(reply) {
+    const { text, usage } = reply ?? {};
     if (typeof text !== 'string') {
         throw classifyEndpointFailure({
             kind: 'malformed',
@@ -161,8 +161,8 @@ export function buildEnvelope(reply = {}) {
  * @param {{reason: string, message: string, usage?: unknown}} failure
  * @returns {EngineEnvelope}
  */
-export function buildDispatchFailureEnvelope(failure = {}) {
-    const { reason, message, usage } = failure;
+export function buildDispatchFailureEnvelope(failure) {
+    const { reason, message, usage } = failure ?? {};
     const text = typeof message === 'string' && message !== '' ? message : 'endpoint dispatch failed';
     const normalizedUsage = normalizeUsage(usage);
     return {
@@ -209,8 +209,8 @@ export function httpFailureReason(status) {
  *   body?: unknown, detail?: string, url?: string, cause?: unknown}} failure
  * @returns {FleetTransportError|AgentOutputError|AgentDispatchError}
  */
-export function classifyEndpointFailure(failure = {}) {
-    const { kind, status, statusText, body, detail, url, cause } = failure;
+export function classifyEndpointFailure(failure) {
+    const { kind, status, statusText, body, detail, url, cause } = failure ?? {};
     const where = url ? ` to ${url}` : '';
 
     if (kind === 'malformed') {
@@ -253,11 +253,12 @@ export function classifyEndpointFailure(failure = {}) {
  * @param {{status?: number, statusText?: string, body?: unknown, url?: string, usage?: unknown}} failure
  * @returns {EngineEnvelope}
  */
-export function dispatchFailureFromHttp(failure = {}) {
-    const classified = classifyEndpointFailure({ ...failure, kind: 'http' });
+export function dispatchFailureFromHttp(failure) {
+    const f = failure ?? {};
+    const classified = classifyEndpointFailure({ ...f, kind: 'http' });
     return buildDispatchFailureEnvelope({
         reason: classified.details.reason,
         message: classified.message,
-        usage: failure.usage
+        usage: f.usage
     });
 }

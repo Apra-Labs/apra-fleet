@@ -136,6 +136,23 @@ test('dispatchFailureFromHttp - keeps any usage the provider still reported on t
     assert.strictEqual(envelope.structuredContent.reason, 'provider_error');
 });
 
+test('buildEnvelope/buildDispatchFailureEnvelope/classifyEndpointFailure/dispatchFailureFromHttp - an explicit null argument is classified, not a raw TypeError', () => {
+    assert.throws(() => buildEnvelope(null), AgentOutputError);
+
+    const dispatchEnvelope = buildDispatchFailureEnvelope(null);
+    assert.deepStrictEqual(dispatchEnvelope, {
+        content: [{ type: 'text', text: 'endpoint dispatch failed' }],
+        structuredContent: { isError: true, reason: 'endpoint_error' }
+    });
+
+    const classified = classifyEndpointFailure(null);
+    assert.ok(classified instanceof FleetTransportError);
+
+    const httpEnvelope = dispatchFailureFromHttp(null);
+    assert.strictEqual(httpEnvelope.structuredContent.isError, true);
+    assert.strictEqual(httpEnvelope.structuredContent.reason, 'http_error');
+});
+
 test('buildDispatchFailureEnvelope - structuredContent.isError/reason carries a pre-content dispatch failure', () => {
     const envelope = buildDispatchFailureEnvelope({ reason: 'busy', message: 'member is busy' });
 
