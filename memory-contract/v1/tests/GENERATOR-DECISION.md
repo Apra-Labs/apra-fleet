@@ -100,10 +100,19 @@ recorded as INV-07 below. The probe asserts both halves (role stays open, and
 
 ## 4. x-invariant list (input to T7, complete as-is)
 
-Rules JSON Schema cannot express for this surface. Each is annotated on the
-emitted schema as `x-invariant` and points at a `spec.md` **section name** as a
-forward reference. `spec.md` does not exist yet -- T1.3.1 creates it and
+Rules JSON Schema cannot express for this surface. Each is to be annotated on
+the emitted schema as `x-invariant` and points at a `spec.md` **section name** as
+a forward reference. `spec.md` does not exist yet -- T1.3.1 creates it and
 T1.3.1/T1.3.2 are its only writers. Nothing here creates, stubs or edits it.
+
+**Who applies the annotation:** not this task and not
+`postprocess-2020-12.mjs`. The postprocess module applies exactly the four
+dialect fixes listed in section 5 and writes no `x-invariant` key. This table IS
+the deliverable -- the authoritative id -> invariant -> spec.md-section mapping,
+complete enough to hand to T7 as-is. Stamping each `x-invariant` onto the
+emitted document belongs to T1.2.2's `contract:generate` wiring, which is the
+only code that knows which tool a given document came from; the mapping it must
+apply is the `Id` / `Applies to` columns below.
 
 | Id | Applies to | Invariant | Source anchor | spec.md section |
 |---|---|---|---|---|
