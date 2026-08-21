@@ -30,6 +30,7 @@ import {
     AgentDispatchError,
     AgentOutputError,
     CancelledError,
+    FleetTransportError,
     FleetWorkflow
 } from '@apralabs/apra-fleet-workflow';
 
@@ -269,6 +270,46 @@ for (const shape of SHAPES) {
                 return true;
             });
             assert.ok(seenSignal && seenSignal.aborted, 'the run\'s cooperative-cancellation signal must reach fetch, and must have fired');
+        });
+
+        test('a request deadline expiry surfaces as FleetTransportError (reason: timeout), not CancelledError', async () => {
+            // Same stub style as the requestStop() case above -- settles only
+            // when its signal fires -- so this cannot hang even though nothing
+            // ever calls requestStop(): the deadline timer (config.timeoutMs)
+            // is what fires the signal here instead.
+            const fetchImpl = (url, init) => new Promise((resolve, reject) => {
+                const fail = () => reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }));
+                if (init.signal.aborted) {
+                    fail();
+                    return;
+                }
+                init.signal.addEventListener('abort', fail, { once: true });
+            });
+            const wf = new FleetWorkflow(apiFor(shape, fetchImpl, { timeoutMs: 30 }));
+
+            await assert.rejects(
+                wf.runWithContext({}, (context) => context.agent('anything', { member_name: 'endpoint' })),
+                (err) => {
+                    assert.ok(err instanceof FleetTransportError, `expected FleetTransportError, got ${err.constructor.name}: ${err.message}`);
+                    assert.strictEqual(err.details.reason, 'timeout');
+                    assert.strictEqual(err instanceof CancelledError, false, 'a deadline expiry must not be classified as a cancellation');
+                    return true;
+                }
+            );
+        });
+
+        test('a dead socket with no signal ever firing surfaces as FleetTransportError (reason: network_error)', async () => {
+            const fetchImpl = () => Promise.reject(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }));
+            const wf = new FleetWorkflow(apiFor(shape, fetchImpl));
+
+            await assert.rejects(
+                wf.runWithContext({}, (context) => context.agent('anything', { member_name: 'endpoint' })),
+                (err) => {
+                    assert.ok(err instanceof FleetTransportError, `expected FleetTransportError, got ${err.constructor.name}: ${err.message}`);
+                    assert.strictEqual(err.details.reason, 'network_error');
+                    return true;
+                }
+            );
         });
     });
 }
