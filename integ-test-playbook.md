@@ -5,18 +5,13 @@ Test group. Its job is to close out this cycle's new feature work: for each
 feature the orchestrator hands the runner, verify its acceptance criteria
 against the sprint branch working tree and close it, or file a bug.
 
-This playbook does NOT do:
-- No sandbox lifecycle (`## Setup` / `## Reset` / `## Teardown`).
-- No toy-sprint smoke test.
-- No full real-`bd` functional suite.
-
-Those all live in `regression-test-playbook.md`, run ONCE PER SPRINT by
-`regression-test-runner` in the Finalization group. If a step here would
-need a throwaway install/server/toy-repo sandbox, it belongs there, not
-here.
-
-(The `deployer` agent is a different role: it follows `deploy.md` to
-deploy the software onto the target; it does not run this file.)
+This playbook does NOT do sandbox lifecycle (`## Setup` / `## Reset` /
+`## Teardown`), the toy-sprint smoke test, or the full real-`bd`
+functional suite -- those live in `regression-test-playbook.md`, run ONCE
+PER SPRINT by `regression-test-runner` in the Finalization group. If a
+step here would need a throwaway install/server/toy-repo sandbox, it
+belongs there, not here. (`deployer` deploys via `deploy.md`; it does not
+run this file.)
 
 ## Permissions
 
@@ -57,8 +52,8 @@ For each feature id handed to the runner:
 1. `bd show <feature-id>` -- read the feature description and acceptance
    criteria.
 2. `bd dep list <feature-id>` -- find its `[test]` task(s): filter the
-   output for items with `[test]` in the title. These were written and
-   closed by the doer after writing the test code.
+   output for items with `[test]` in the title (written and closed by the
+   doer).
 3. Run exactly the tests those `[test]` tasks describe, repo-local,
    against the sprint branch working tree -- e.g. `npm test`, a targeted
    vitest file, or a documented script. Do not invent additional checks
@@ -97,9 +92,10 @@ For each feature id handed to the runner:
      If an existing bug (either tag) covers the same failure, update its
      description rather than creating a new one.
    - **Inconclusive** (test infrastructure failure, flaky, environment
-     error): leave the feature open and note why:
+     error): leave the feature open and append a note (`--append-notes`,
+     never `--notes`, which overwrites existing notes):
      ```bash
-     bd update <feature-id> --notes="integ-test-runner: inconclusive -- <reason>"
+     bd update <feature-id> --append-notes="integ-test-runner: inconclusive -- <reason>"
      ```
 
 ## Waiting on a long-running test run
@@ -118,12 +114,24 @@ mid-work. Instead:
 - Do not end your turn or report final results while a run is still in
   progress.
 
+## Output fields
+
+The generic `integ-test-runner` output schema is fully generic except
+`deployedSha` (optional). For this repo's dispatches: when the dispatch
+prompt names a deployed SHA, report the sprint-branch commit the tests
+actually ran against (`git rev-parse HEAD` in the working tree) -- an
+orchestrator that supplied a SHA treats a missing or mismatching value as
+INCONCLUSIVE evidence, never a pass. Omit it when no SHA was supplied.
+
 ## Rules
 
 - NEVER close a feature unless ALL its tests pass.
 - NEVER write or modify test code.
 - NEVER fix application bugs -- report them as beads issues.
-- NEVER close type=task issues.
+- NEVER close type=task issues via this per-feature procedure. Verify-set
+  beads explicitly named in the dispatch prompt follow the runner
+  contract's own verify-set duty (integ-test-runner Step 1b), not this
+  playbook.
 - Tag every new issue title with `[integ]` so they are searchable and
   distinguishable from planned work.
 

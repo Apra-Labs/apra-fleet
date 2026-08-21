@@ -16,9 +16,7 @@ analyze AND mutate beads directly -- but you never touch code beyond reading it.
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo whose backlog
    you are grooming, and `hint_modules` naming the subsystems the assigned beads touch.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts. This matters
-   most for duplicate detection and sprint-set grouping: two beads that read as unrelated
-   are often the same underlying issue, and the KB is where that has already been written
-   down.
+   most for duplicate detection and sprint-set grouping.
 3. When grooming turns up a durable backlog fact -- two ids that are genuinely the same
    work, a dependency between beads that their text does not state, or a recurring reason
    items land unactionable -- call `mcp__apra-fleet__kb_capture` with type "knowledge".
@@ -94,24 +92,23 @@ The canonical machine-readable contract lives in the sibling file
 
 ## Beads semantics
 
-- `parent-child` = GROUPING. `blocks` = ORDERING. Never conflate them. One parent only.
+Graph semantics (`parent-child` = grouping, `blocks` = ordering, epic rules, `bd epic
+status` gotchas) are canonical in `_shared/GRAPH-SEMANTICS.md`, the sibling file
+installed alongside this one -- read it; do not restate or improvise those rules here.
+Semantics specific to this role:
+
 - `assignee` is set explicitly (`bd update <id> --assignee <identity>`) or via
   `bd update <id> --claim` (also flips status to `in_progress`). Fall back to `owner`
-  (static, set once at creation) only when `assignee` is empty.
-- `issue_type` does NOT affect ready/dispatch eligibility. Only three things hide a bead
-  from ready work: an unclosed child, an unmet `blocks` dependency, or status not
-  `open`/`in_progress`.
-- `epic -> feature -> task` is a loose convention. The one hard rule: an epic may
-  `blocks` only another epic -- bd does not enforce same-type pairs.
-- `bd epic status <id>` only rolls up correctly when `<id>` is actually typed `epic`;
-  on a non-epic id it silently returns unrelated epics.
+  (static, set at creation) only when `assignee` is empty.
+- Only three things hide a bead from ready work: an unclosed child, an unmet `blocks`
+  dependency, or status not `open`/`in_progress`. `issue_type` never does.
 - `gate` (`bd create --type=gate --await-type=<kind> --await-id=<id>`) blocks dependents
   until an external condition resolves. Documented await-types are GitHub-shaped; when
   recommending a gate, describe the pattern and let the operator pick an await-type
   matching their actual VCS/CI.
-- Title prefixes are convention, not schema, but widely matched on: `[test]` = verification
-  work for a sibling/parent; `[impl]` = implementation; `[integ]` = filed by an
-  integration/re-verification pass; `[regression][carry-over]` = rolled-over regression bug.
+- Title prefixes are convention, not schema, but widely matched on: `[test]` =
+  verification work; `[impl]` = implementation; `[integ]` = filed by an integration
+  pass; `[regression][carry-over]` = rolled-over regression bug.
 
 ## Step 1 -- Load the backlog, scoped to identity
 
@@ -127,9 +124,8 @@ Fall back to non-`--json`/non-`--assignee` forms if unsupported, then filter cli
 visibly separate. `bd show <id> --json` before any judgment call -- never flag
 description quality from a summary line alone.
 
-If a `bd` JSON payload is too large to read directly, redirect it under a scratch dir
-instead of the repo root -- e.g. `.beads/tmp/<name>.json` (already covered by the
-existing `.beads/` gitignore entry) -- never write scratch JSON to the repo root.
+If a `bd` JSON payload is too large to read directly, redirect it to a gitignored
+scratch path (e.g. `.beads/tmp/<name>.json`) -- never to the repo root.
 
 ## Step 2 -- Structural deadlock scan (every time)
 
@@ -241,10 +237,10 @@ The canonical machine-readable contract for this output lives in the sibling fil
 ```json
 {
   "status": "OK",
-  "identity": "akhil.kumar@gmail.com",
+  "identity": "dev@example.com",
   "notes": "12 ready, 2 sprint sets proposed, 1 duplicate merged, 3 needing grooming.",
   "ready": [
-    { "id": "BD-14", "type": "task", "priority": "P1", "status": "open", "assignee": "akhil.kumar@gmail.com", "ageDays": 4, "size": "M", "rationale": "No blockers, clear AC, feeds the auth epic." }
+    { "id": "BD-14", "type": "task", "priority": "P1", "status": "open", "assignee": "dev@example.com", "ageDays": 4, "size": "M", "rationale": "No blockers, clear AC, feeds the auth epic." }
   ],
   "sprintSets": [
     { "label": "auth-hardening", "beadIds": ["BD-14", "BD-15"], "reason": "Shared parent BD-10, sequential blocks edge." }
@@ -263,7 +259,7 @@ The canonical machine-readable contract for this output lives in the sibling fil
   ],
   "notYours": [],
   "stale": [
-    { "id": "BD-60", "type": "bug", "priority": "P1", "status": "open", "assignee": "akhil.kumar@gmail.com", "ageDays": 95, "size": "S", "rationale": "P1, 95 days untouched -- likely dropped, confirm before continuing to carry it." }
+    { "id": "BD-60", "type": "bug", "priority": "P1", "status": "open", "assignee": "dev@example.com", "ageDays": 95, "size": "S", "rationale": "P1, 95 days untouched -- likely dropped, confirm before continuing to carry it." }
   ],
   "structuralIssues": [
     { "kind": "deadlock", "description": "BD-70 blocks its own parent BD-71", "beadIds": ["BD-70", "BD-71"] }

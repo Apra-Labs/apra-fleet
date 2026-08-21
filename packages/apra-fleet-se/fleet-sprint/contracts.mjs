@@ -581,11 +581,7 @@ const FALLBACK_regressionReport = {
         summary: { type: 'string' },
         smokeEvidence: {
             type: 'object',
-            properties: {
-                versionStdout: { type: 'string' },
-                canaryStatus: { type: 'string' },
-                toyRepoHeadSha: { type: 'string' },
-            },
+            additionalProperties: true,
         },
     },
     required: ['passed', 'suitePassed', 'smokePassed', 'bugsFiled', 'summary'],
