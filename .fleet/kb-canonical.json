@@ -1,111 +1,33 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "aef342816f5c232202c0679e98dc814f11e0076f",
-    "branch": "chore/persistent-memory-disambiguation-rule",
-    "entry_count": 36
+    "commit": "08ad5f1554e1a401d77320bf63f7f579c527387a",
+    "branch": "chore/kb-bible-reconcile",
+    "entry_count": 24
   },
   "entries": [
     {
-      "id": "0633ac36-3d13-49cc-a268-46425bbf8bf9",
+      "id": "0e10e4ea-5c23-4fc9-bd7a-baf1af522a3e",
       "type": "knowledge",
-      "title": "kb_export and kb_import validate repo_path on the real filesystem before getKbProviders",
-      "summary": "In the table-driven forwarding test, kb_export and kb_import cannot use an arbitrary fake repo_path string like the other kb tools -- both resolve and validate the path against the real filesystem before the mocked getKbProviders is reached, so their table entries must anchor on real tmpdir fixtures.",
+      "title": "Provider abstraction: six adapters, never assume Claude",
+      "summary": "src/providers/index.ts registers exactly six LlmProvider adapters -- claude, codex, copilot, agy, opencode, none -- matching the LlmProvider union at src/types.ts:4. There is no gemini adapter. Any auth, credential or dispatch change must route through the ProviderAdapter interface rather than assuming Claude-specific fields, and getProvider() defaults to claude only when the argument is null/undefined.",
       "symbols": [
-        "kbExport",
-        "kbImport",
-        "resolveRepoPath"
-      ],
-      "source_files": [
-        "tests/knowledge/kb-remote-url-forwarding.test.ts",
-        "src/tools/kb-export.ts",
-        "src/tools/kb-import.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.242Z"
-    },
-    {
-      "id": "10e15056-ffd7-4f2a-9441-0847c0f382a2",
-      "type": "knowledge",
-      "title": "Provider abstraction: never assume Claude",
-      "summary": "apra-fleet supports seven LLM providers (claude, agy, opencode, codex, copilot, gemini, none), not just Claude. Any auth/credential/dispatch-related change must go through the generic ProviderAdapter interface rather than assuming Claude-specific fields or behavior.",
-      "symbols": [
+        "LlmProvider",
         "ProviderAdapter",
-        "authEnvVar",
-        "authEnvVarForToken",
-        "oauthCredentialFiles"
+        "getProvider",
+        "ClaudeProvider",
+        "NoneProvider"
       ],
       "source_files": [
+        "src/providers/index.ts",
         "src/providers/provider.ts",
-        "src/providers/opencode.ts"
+        "src/types.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T21:51:20.998Z"
+      "updated_at": "2026-08-21T05:31:31.679Z"
     },
     {
-      "id": "130bc73b-fade-4d3a-8254-2ad3b2e1bfef",
-      "type": "knowledge",
-      "title": "KB provider cache is now keyed by (slug, repoPath), not slug alone",
-      "summary": "getKbProviders/_providers Map keys on providerKey(slug, repoPath) via a NUL join, so two callers resolving to the same project slug but different repoPath values get distinct provider instances, each anchored at its own caller's repoPath.",
-      "symbols": [],
-      "source_files": [
-        "src/services/knowledge/kb-providers.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.323Z"
-    },
-    {
-      "id": "138565bf-b3ed-4901-8aab-d6adffb232ec",
-      "type": "knowledge",
-      "title": "One anchor policy, three branches: verbatim for read tools, hard-fail for kb_export",
-      "summary": "kb_session_prime and kb_stats pass a supplied repo_path to getKbProviders verbatim so an unreachable remote anchor stays honestly missing; kb_export deliberately keeps throwing instead, because it writes into repo_path -- and it throws before getKbProviders, so it never anchors at the server cwd either.",
-      "symbols": [
-        "kbStats",
-        "kbExport",
-        "kbSessionPrime",
-        "getKbProviders",
-        "resolveRepoPath"
-      ],
-      "source_files": [
-        "src/tools/kb-stats.ts",
-        "src/tools/kb-export.ts",
-        "src/tools/kb-session-prime.ts",
-        "src/services/knowledge/kb-providers.ts",
-        "tests/knowledge/kb-anchor-never-cwd.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.882Z"
-    },
-    {
-      "id": "1ae4ce00-ce11-4bc4-becb-7e6355809f6b",
-      "type": "knowledge",
-      "title": "A directory-level gitignore rule shadows everything inside it, un-ignore patterns included",
-      "summary": "The blanket '/sprint-logs/' rule made every file under sprint-logs unstageable regardless of narrower rules elsewhere; only removing the directory rule and keeping the scoped '**/sprint-logs/sprint_*.json' rule restored the durable-vs-scratch split the sprint workflow documents.",
-      "symbols": [],
-      "source_files": [
-        ".gitignore",
-        "packages/apra-fleet-se/bin/cli.mjs",
-        "packages/apra-fleet-se/apra-pm/skills/pm/cost.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.375Z"
-    },
-    {
-      "id": "202cd324-f6d9-42d0-b0a2-a4aa8e1741ef",
-      "type": "knowledge",
-      "title": "Local members use host OAuth; provision_llm_auth skips them",
-      "summary": "Local fleet members share the orchestrator's own machine, so they use whatever OAuth session is already active on that host. provision_llm_auth explicitly skips local members rather than attempting to provision credentials for them.",
-      "symbols": [
-        "provisionAuth"
-      ],
-      "source_files": [
-        "src/tools/provision-auth.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T21:51:01.387Z"
-    },
-    {
-      "id": "2198295a-c0a8-4598-a612-17742024970b",
+      "id": "0f432ed4-a1fa-4185-8a5f-d7d62fe8cc5d",
       "type": "knowledge",
       "title": "Same-slug callers now open two SqliteProvider handles on one kb.sqlite",
       "summary": "Keying the KB provider cache by (slug, repoPath) means two local clones of the same remote get two separate SqliteProvider instances pointed at the same kb.sqlite file; this is safe by design because init sets WAL plus busy_timeout=5000.",
@@ -119,43 +41,196 @@
         "src/services/knowledge/sqlite-provider.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.266Z"
+      "updated_at": "2026-08-21T05:24:37.838Z"
     },
     {
-      "id": "254b18e2-8f53-4a3b-bebd-3ab08609aec7",
+      "id": "130bc73b-fade-4d3a-8254-2ad3b2e1bfef",
       "type": "knowledge",
-      "title": "The nonexistent-path + NO-url slug assertion passes on both pre-fix and post-fix trees",
-      "summary": "resolveProjectSlug(<nonexistent windows path>) returning 'default' is NOT a pre-fix failure and cannot be used as a regression pin for the remote-URL work; the assertions that actually go red on the pre-fix tree are the URL-bearing ones.",
-      "symbols": [
-        "resolveProjectSlug"
-      ],
+      "title": "KB provider cache is now keyed by (slug, repoPath), not slug alone",
+      "summary": "getKbProviders/_providers Map keys on providerKey(slug, repoPath) via a NUL join, so two callers resolving to the same project slug but different repoPath values get distinct provider instances, each anchored at its own caller's repoPath.",
+      "symbols": [],
       "source_files": [
-        "tests/knowledge/kb-remote-scope.test.ts",
-        "src/services/knowledge/project-slug.ts"
+        "src/services/knowledge/kb-providers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.445Z"
+      "updated_at": "2026-08-17T20:10:22.938Z"
     },
     {
-      "id": "2ff14a5c-f502-4212-bc1d-89c5955cd364",
+      "id": "16ba5328-63a9-4f98-8614-fa3137afe2f3",
       "type": "knowledge",
-      "title": "kb-remote-scope.test.ts pins handler forwarding, not the zod schema spread",
-      "summary": "The b4g.1.5 end-to-end test calls kbCapture/kbList with raw objects cast 'as any', so it bypasses zod parse entirely and cannot detect a dropped ...kbScopeFields spread; that layer is pinned only by kb-remote-url-forwarding.test.ts.",
+      "title": "secure.NAME token values arrive already shell-escaped, and the escaping is OS-branched",
+      "summary": "execute_command replaces each secure.NAME token with a value that has ALREADY been quoted for the target member's shell -- escapePowerShellArg for windows members, escapeShellArg otherwise, chosen from agentOs. Reference the token bare in a command string; wrapping it in your own quotes double-escapes the value and surfaces as a false 401 or invalid-token error. This entry deliberately writes the token without its surrounding double braces: kb_session_prime injects KB entries verbatim into every agent dispatch prompt, and execute_prompt rejects any prompt matching the braced secure-token pattern, so spelling it in full here makes every dispatch in a sprint fail.",
       "symbols": [
-        "kbList",
-        "kbListSchema",
-        "kbScopeFields"
+        "escapeShellArg",
+        "escapePowerShellArg",
+        "executeCommand"
       ],
       "source_files": [
-        "tests/knowledge/kb-remote-scope.test.ts",
-        "tests/knowledge/kb-remote-url-forwarding.test.ts",
-        "src/tools/kb-list.ts"
+        "src/tools/execute-command.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.501Z"
+      "updated_at": "2026-08-21T05:32:34.285Z"
     },
     {
-      "id": "34887ffc-e128-46b6-962e-23b1c62eb9b7",
+      "id": "1be49eaa-30f9-4ae0-917e-5b98d3d37eeb",
+      "type": "knowledge",
+      "title": "bd prints literal JSON null, not [], for an empty dolt remote list",
+      "summary": "`bd dolt remote list --json` emits the JSON literal null when no Dolt remotes are configured. parseDoltRemoteList maps that to [] before its non-array guard, so an unwired repo reads as \"no remotes\" rather than a parse error; every other non-array shape still throws. Without the null branch, checkDoltRemoteAbsent returns ok:false (\"could not parse\") for a repo that is simply not wired to a Dolt remote.",
+      "symbols": [
+        "parseDoltRemoteList",
+        "checkDoltRemoteAbsent"
+      ],
+      "source_files": [
+        "scripts/check-sandbox-sync-remote.mjs",
+        "tests/check-sandbox-sync-remote.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:32:37.012Z"
+    },
+    {
+      "id": "202cd324-f6d9-42d0-b0a2-a4aa8e1741ef",
+      "type": "knowledge",
+      "title": "Local members use host OAuth; provision_llm_auth skips them",
+      "summary": "Local fleet members share the orchestrator's own machine, so they use whatever OAuth session is already active on that host. provision_llm_auth explicitly skips local members rather than attempting to provision credentials for them.",
+      "symbols": [
+        "provisionAuth"
+      ],
+      "source_files": [
+        "src/tools/provision-auth.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.822Z"
+    },
+    {
+      "id": "22e52be3-d44c-4c71-ae51-9f25a498af40",
+      "type": "knowledge",
+      "title": "sprint-logs/ must never carry a blanket directory ignore -- .gitignore says so inline",
+      "summary": "A directory-level rule such as '/sprint-logs/' shadows everything beneath it, un-ignore patterns included, and silently breaks the sprint cost ledger because auto-sprint.js stages it with an unguarded `git add sprint-logs/`. Merged main keeps only scoped rules and records the prohibition as a comment in .gitignore itself, so the lesson survives without depending on the KB.",
+      "symbols": [
+        "redactHomeFromTranscriptDir"
+      ],
+      "source_files": [
+        ".gitignore",
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:35:33.037Z"
+    },
+    {
+      "id": "256b2dc0-4d08-40e9-b3c6-0f79dd824b8e",
+      "type": "knowledge",
+      "title": "kb-setup is the one kb tool that takes repo_path but resolves no KB",
+      "summary": "Fifteen of the sixteen src/tools/kb-*.ts tools spread kbScopeFields and forward repo_remote_url to getKbProviders; kb-setup is excluded by design because its repo_path only locates a .git dir for hook installation and it writes a single global config, never selecting a project KB.",
+      "symbols": [
+        "kbSetup",
+        "kbSetupSchema",
+        "kbScopeFields",
+        "getKbProviders"
+      ],
+      "source_files": [
+        "src/tools/kb-setup.ts",
+        "src/services/knowledge/kb-scope-input.ts",
+        "src/tools/kb-list.ts",
+        "src/tools/kb-stats.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.901Z"
+    },
+    {
+      "id": "4406ee08-d77d-44a5-a5d2-83c9d02ba092",
+      "type": "knowledge",
+      "title": "A fallback message sharing the assertion's alternate keyword makes a test vacuous",
+      "summary": "checkDoltRemoteAbsent's bd-unavailable fallback messages all contain the word \"unavailable\", so the old combined assertion /Dolt-level remotes|unavailable/ was satisfied on any machine without bd without ever reaching the parser under test. Merged main closes this by probing bd --version first and asserting the two cases separately. The reusable trap: never OR an assertion's success keyword with its own fallback keyword.",
+      "symbols": [
+        "checkDoltRemoteAbsent",
+        "parseDoltRemoteList"
+      ],
+      "source_files": [
+        "tests/check-sandbox-sync-remote.test.ts",
+        "scripts/check-sandbox-sync-remote.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:31:45.629Z"
+    },
+    {
+      "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
+      "type": "knowledge",
+      "title": "hasOppositePolarity matches on word-boundary regexes, not substrings",
+      "summary": "audn.ts hasOppositePolarity tests NEGATIVE_PATTERNS/POSITIVE_PATTERNS with precompiled word-boundary regexes, so \"prefixed\" no longer collides with \"fixed\".",
+      "symbols": [
+        "hasOppositePolarity"
+      ],
+      "source_files": [
+        "src/services/knowledge/audn.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-04T04:04:51.757Z"
+    },
+    {
+      "id": "4844d64a-deee-4b5d-87d2-6fcd8c596f64",
+      "type": "knowledge",
+      "title": "apra-fleet-se's plain npm test never sets APRA_FLEET_TEST_CONCURRENCY",
+      "summary": "packages/apra-fleet-se's \"test\" script runs node --test directly with --test-concurrency=8, but does NOT set the APRA_FLEET_TEST_CONCURRENCY env var -- only the separate test:unit/test:integration/test:record scripts (which route through scripts/run-tests.mjs) set it. A scaledTimeout()/waitFor() call that relies on the env var being set will silently use an unscaled timeout under plain npm test.",
+      "symbols": [
+        "scaledTimeout",
+        "waitFor"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/test/helpers/scaled-timeout.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.879Z"
+    },
+    {
+      "id": "6241ee4c-ceb3-4b58-b1b4-015a0d8d8ec1",
+      "type": "knowledge",
+      "title": "The .trim() guard in resolveProjectSlug is provably redundant and cannot be pinned by any test",
+      "summary": "project-slug.ts guards its remote-URL short-circuit twice, but the outer remoteUrl.trim() check is unreachable-by-effect given slugify, so no input can distinguish its removal and no regression test can pin it.",
+      "symbols": [
+        "resolveProjectSlug",
+        "slugify"
+      ],
+      "source_files": [
+        "src/services/knowledge/project-slug.ts",
+        "tests/knowledge/kb-remote-scope.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.888Z"
+    },
+    {
+      "id": "7cc58351-c7f9-4f14-99b0-cdd04cf83d7c",
+      "type": "knowledge",
+      "title": "Member OS resolution: always via agent.os",
+      "summary": "The orchestrator and each fleet member can independently run Windows/Mac/Linux -- local members share the orchestrator's own OS, but remote members can be any OS regardless of the orchestrator's. Never assume a target member's shell/OS matches the orchestrator's.",
+      "symbols": [
+        "getAgentOS",
+        "getOsCommands"
+      ],
+      "source_files": [
+        "src/os/index.ts",
+        "src/utils/agent-helpers.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.927Z"
+    },
+    {
+      "id": "8997f326-d6e7-485f-ad84-782650030314",
+      "type": "knowledge",
+      "title": "Local vs remote member dispatch paths",
+      "summary": "Local members share the orchestrator's own machine and credentials, so no SSH or file probe is needed -- check agent.agentType === 'local' and short-circuit. Remote members require actual SSH connectivity and credential probes.",
+      "symbols": [
+        "preflightCheck"
+      ],
+      "source_files": [
+        "src/services/preflight-check.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.934Z"
+    },
+    {
+      "id": "91cb711b-9ca0-4994-b73b-2d93cb8e47d8",
       "type": "knowledge",
       "title": "Four resolveRepoPath helpers exist in src/tools, but only prime and stats ever had the null-to-cwd shape",
       "summary": "kb-session-prime.ts and kb-stats.ts returned string|null and degraded to process.cwd(); kb-export.ts and kb-import.ts have always returned string and thrown, so they were never part of the b4g.7 anchor defect despite the bead naming kb-export as a third instance.",
@@ -173,223 +248,25 @@
         "docs/knowledge-layer.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.946Z"
+      "updated_at": "2026-08-21T05:24:37.855Z"
     },
     {
-      "id": "40295d4d-390f-466a-87c9-2df0a94cf3a6",
+      "id": "96a63862-eb7a-43f3-8352-4cd686412d43",
       "type": "knowledge",
-      "title": "The embeddeddolt sandbox test can pass vacuously when bd is unavailable",
-      "summary": "checkDoltRemoteAbsent's bd-unavailable fallback message contains the word 'unavailable', which the embeddeddolt test's own /Dolt-level remotes|unavailable/ assertion accepts -- so on a machine without bd the test is green without ever reaching the parser it is meant to exercise.",
+      "title": "gitRepos is an access list; only a single URL-shaped entry is a usable origin",
+      "summary": "agent.gitRepos is declared string[] and holds bare \"Owner/Repo\" access identifiers, not clone URLs. knownRepoRemoteUrl (now in src/services/member-remote-url.ts, re-exported from execute-prompt.ts) returns a URL only when gitRepos has EXACTLY one entry AND that entry is scheme-qualified; anything else yields undefined rather than a guessed URL.",
       "symbols": [
-        "checkDoltRemoteAbsent",
-        "parseDoltRemoteList"
-      ],
-      "source_files": [
-        "tests/check-sandbox-sync-remote.test.ts",
-        "scripts/check-sandbox-sync-remote.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.515Z"
-    },
-    {
-      "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
-      "type": "knowledge",
-      "title": "hasOppositePolarity matches on word-boundary regexes, not substrings",
-      "summary": "audn.ts hasOppositePolarity tests NEGATIVE_PATTERNS/POSITIVE_PATTERNS with precompiled word-boundary regexes, so \"prefixed\" no longer collides with \"fixed\".",
-      "symbols": [
-        "hasOppositePolarity"
-      ],
-      "source_files": [
-        "src/services/knowledge/audn.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.598Z"
-    },
-    {
-      "id": "4844d64a-deee-4b5d-87d2-6fcd8c596f64",
-      "type": "knowledge",
-      "title": "apra-fleet-se's plain npm test never sets APRA_FLEET_TEST_CONCURRENCY",
-      "summary": "packages/apra-fleet-se's \"test\" script runs node --test directly with --test-concurrency=8, but does NOT set the APRA_FLEET_TEST_CONCURRENCY env var -- only the separate test:unit/test:integration/test:record scripts (which route through scripts/run-tests.mjs) set it. A scaledTimeout()/waitFor() call that relies on the env var being set will silently use an unscaled timeout under plain npm test.",
-      "symbols": [
-        "scaledTimeout",
-        "waitFor"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/package.json",
-        "packages/apra-fleet-se/scripts/run-tests.mjs",
-        "packages/apra-fleet-se/test/helpers/scaled-timeout.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T21:50:58.094Z"
-    },
-    {
-      "id": "4f84e1c5-733d-40c3-84e2-8eb1b45d3e22",
-      "type": "knowledge",
-      "title": "The .trim() guard in resolveProjectSlug is provably redundant and cannot be pinned by any test",
-      "summary": "project-slug.ts guards its remote-URL short-circuit twice, but the outer remoteUrl.trim() check is unreachable-by-effect given slugify, so no input can distinguish its removal and no regression test can pin it.",
-      "symbols": [
-        "resolveProjectSlug",
-        "slugify"
-      ],
-      "source_files": [
-        "src/services/knowledge/project-slug.ts",
-        "tests/knowledge/kb-remote-scope.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.862Z"
-    },
-    {
-      "id": "56d8e8d0-f704-467b-b2a3-2611ccf6e0df",
-      "type": "knowledge",
-      "title": "kb-setup is the one kb tool that takes repo_path but resolves no KB",
-      "summary": "Fifteen of the sixteen src/tools/kb-*.ts tools spread kbScopeFields and forward repo_remote_url to getKbProviders; kb-setup is excluded by design because its repo_path only locates a .git dir for hook installation and it writes a single global config, never selecting a project KB.",
-      "symbols": [
-        "kbSetup",
-        "kbSetupSchema",
-        "kbScopeFields",
-        "getKbProviders"
-      ],
-      "source_files": [
-        "src/tools/kb-setup.ts",
-        "src/services/knowledge/kb-scope-input.ts",
-        "src/tools/kb-list.ts",
-        "src/tools/kb-stats.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.627Z"
-    },
-    {
-      "id": "5d7d0886-e403-482a-83c9-709efc6b0d56",
-      "type": "knowledge",
-      "title": "repo_remote_url is defined once in kbScopeFields but only 3 of ~16 kb_* tools spread it",
-      "summary": "src/services/knowledge/kb-scope-input.ts holds the single zod definition; only kb_session_prime, kb_capture and kb_harvest spread it, so kb_list and the other read tools silently drop the field and resolve to the path-derived KB.",
-      "symbols": [
-        "kbScopeFields",
-        "kbListSchema",
-        "kbCaptureSchema",
-        "kbHarvestSchema",
-        "kbSessionPrimeSchema"
-      ],
-      "source_files": [
-        "src/services/knowledge/kb-scope-input.ts",
-        "src/tools/kb-list.ts",
-        "src/tools/kb-capture.ts",
-        "src/tools/kb-harvest.ts",
-        "src/tools/kb-session-prime.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:09.001Z"
-    },
-    {
-      "id": "62a26c94-e079-4158-b83b-5702e317b54c",
-      "type": "knowledge",
-      "title": "auto-sprint workflow VM has no fs/os/process.env, so path redaction must be pure string work",
-      "summary": "redactHomeFromTranscriptDir anchors on the literal '/.claude/projects/' substring instead of comparing against $HOME because the auto-sprint workflow VM cannot read env or fs; the anchor is safe only because Setup Step 7 constructs transcriptDir as $HOME/.claude/projects/<slug>.",
-      "symbols": [
-        "redactHomeFromTranscriptDir"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
-        "packages/apra-fleet-se/apra-pm/test/sprint-meta.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.705Z"
-    },
-    {
-      "id": "66075242-ab8e-40f1-a1b4-c2ecb01a007c",
-      "type": "knowledge",
-      "title": "git add <dir>/ errors on a directory-level ignore but silently no-ops on an inner file glob",
-      "summary": "The failure mode of an ignored sprint-logs/ is not uniform: a directory rule like '/sprint-logs/' makes `git add sprint-logs/` exit 1 with an explicit advice message, while a file-glob rule like '**/sprint-logs/*.jsonl' makes the same command exit 0 and stage nothing.",
-      "symbols": [],
-      "source_files": [
-        ".gitignore",
-        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
-        "packages/apra-fleet-se/apra-pm/test/sprint-log-flush.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.763Z"
-    },
-    {
-      "id": "696d42bc-615c-4156-b43a-b67210fc2dea",
-      "type": "knowledge",
-      "title": "agent.gitRepos is a bare owner/repo access-list, never a full git remote URL, in live fleet data",
-      "summary": "Empirically verified against this fleet's own ~/.apra-fleet/data/registry.json: every populated gitRepos entry across all registered members (local and remote) is a short 'Owner/Repo' GitHub identifier, never a scheme-qualified clone URL -- confirming src/services/vcs/github.ts's own https://github.com/${repo}.git construction (used only for connectivity testing) is the correct mental model for what this field actually contains.",
-      "symbols": [
-        "Agent",
         "knownRepoRemoteUrl",
-        "enrichMember"
+        "Agent",
+        "gitRepos"
       ],
       "source_files": [
+        "src/services/member-remote-url.ts",
         "src/types.ts",
-        "src/tools/register-member.ts",
-        "src/services/vcs/github.ts",
-        "src/services/watch/project-resolver.ts",
-        "src/tools/execute-prompt.ts",
-        "tests/execute-prompt-kb-harvest-remote-url.test.ts"
+        "src/tools/execute-prompt.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.824Z"
-    },
-    {
-      "id": "735f21d3-01da-4913-9ebe-d31320b9bef4",
-      "type": "knowledge",
-      "title": "{{secure.NAME}} substitution is pre-escaped and launch-time bound",
-      "summary": "execute_command resolves {{secure.NAME}} fleet-secret placeholders with single-quote escaping already applied. Reference the token bare in a command string, not wrapped in your own quotes -- double-escaping produces a corrupted value and a false 401/invalid-token error.",
-      "symbols": [
-        "resolveSecurePlaceholders"
-      ],
-      "source_files": [
-        "src/tools/execute-command.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T21:51:09.005Z"
-    },
-    {
-      "id": "7cc58351-c7f9-4f14-99b0-cdd04cf83d7c",
-      "type": "knowledge",
-      "title": "Member OS resolution: always via agent.os",
-      "summary": "The orchestrator and each fleet member can independently run Windows/Mac/Linux -- local members share the orchestrator's own OS, but remote members can be any OS regardless of the orchestrator's. Never assume a target member's shell/OS matches the orchestrator's.",
-      "symbols": [
-        "getAgentOS",
-        "getOsCommands"
-      ],
-      "source_files": [
-        "src/os/index.ts",
-        "src/utils/agent-helpers.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T21:51:13.164Z"
-    },
-    {
-      "id": "8997f326-d6e7-485f-ad84-782650030314",
-      "type": "knowledge",
-      "title": "Local vs remote member dispatch paths",
-      "summary": "Local members share the orchestrator's own machine and credentials, so no SSH or file probe is needed -- check agent.agentType === 'local' and short-circuit. Remote members require actual SSH connectivity and credential probes.",
-      "symbols": [
-        "preflightCheck"
-      ],
-      "source_files": [
-        "src/services/preflight-check.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T21:51:16.901Z"
-    },
-    {
-      "id": "a2bed3b4-6a18-4ee6-b736-333981d804ba",
-      "type": "learning",
-      "title": "Provider cache key mutation test confirms b4g.2.2 pins the b4g.2.1 fix, not a vacuous test",
-      "summary": "Reverting getKbProviders' cache key from providerKey(slug, repoPath) to slug-only makes tests/knowledge/kb-provider-cache-key.test.ts fail on cases 1 and 3 (2 of 4), confirming the new regression test in apra-fleet-b4g.2.2 actually detects the bug apra-fleet-b4g.2.1 fixed rather than passing regardless.",
-      "symbols": [
-        "getKbProviders",
-        "providerKey",
-        "resetKbProviders"
-      ],
-      "source_files": [
-        "tests/knowledge/kb-provider-cache-key.test.ts",
-        "src/services/knowledge/kb-providers.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:07.650Z"
+      "updated_at": "2026-08-21T05:35:02.929Z"
     },
     {
       "id": "a96e64d8-e304-4a46-baeb-d36fe1371a94",
@@ -403,7 +280,7 @@
         "packages/apra-fleet-se/fleet-sprint/runner.js"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T21:51:04.975Z"
+      "updated_at": "2026-08-21T05:24:37.949Z"
     },
     {
       "id": "b0f6be79-738c-491b-9ba5-7c7e5d69b805",
@@ -424,38 +301,7 @@
         "src/tools/code-intelligence-kb-enrich.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.007Z"
-    },
-    {
-      "id": "b368ad28-9c4a-47fd-9acf-5f25a8a29bca",
-      "type": "knowledge",
-      "title": "git check-ignore silently skips tracked paths unless --no-index",
-      "summary": "An acceptance criterion of the form 'git check-ignore -v <path> returns no match' does not prove the path is unignored -- check-ignore ignores index entries by default, so any tracked path reports no match even when a .gitignore rule matches it.",
-      "symbols": [],
-      "source_files": [
-        ".gitignore",
-        ".claude/settings.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.060Z"
-    },
-    {
-      "id": "b86607c4-ff63-427e-bf6a-01ae5870e51e",
-      "type": "knowledge",
-      "title": "A missing-anchor freshness regression surfaces first as kb_list dropping entries, not as a stale-flag assertion",
-      "summary": "In tests/knowledge/kb-remote-member-e2e.test.ts the four remote-member assertions live in one it(), so removing SqliteProvider's anchorIsMissing guard fails at the SAME DATABASE read-back (line 165) and never reaches the raw stale-row check (line 181).",
-      "symbols": [
-        "anchorIsMissing",
-        "checkFreshness",
-        "kbStats"
-      ],
-      "source_files": [
-        "tests/knowledge/kb-remote-member-e2e.test.ts",
-        "src/services/knowledge/sqlite-provider.ts",
-        "src/tools/kb-stats.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.929Z"
+      "updated_at": "2026-08-17T21:58:44.645Z"
     },
     {
       "id": "beb4faf7-40fa-4484-9cf5-b287df8f47d2",
@@ -468,7 +314,7 @@
         "src/services/knowledge/kb-scope-input.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.112Z"
+      "updated_at": "2026-08-17T20:10:22.943Z"
     },
     {
       "id": "c2899616-0cb1-41e8-b229-76e291a0cd81",
@@ -488,54 +334,10 @@
         "tests/knowledge/kb-remote-anchor-freshness.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.160Z"
+      "updated_at": "2026-08-17T20:10:22.934Z"
     },
     {
-      "id": "c9047868-445d-41a8-b951-ccb2f195d21b",
-      "type": "knowledge",
-      "title": "bd dolt remote list --json prints null, not [], when no remotes are configured",
-      "summary": "parseDoltRemoteList must map the JSON literal null to an empty array; treating null as an unexpected shape makes checkDoltRemoteAbsent return ok:false ('could not parse') for a repo that is simply not wired to any Dolt remote.",
-      "symbols": [
-        "parseDoltRemoteList",
-        "checkDoltRemoteAbsent"
-      ],
-      "source_files": [
-        "scripts/check-sandbox-sync-remote.mjs",
-        "tests/check-sandbox-sync-remote.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.353Z"
-    },
-    {
-      "id": "c996a17a-24af-4009-8472-0f1c5b868ca7",
-      "type": "knowledge",
-      "title": "deploy.md's Permissions section is the source of truth for .claude/settings.json allow-list",
-      "summary": "The deploy phase's runnable command set is defined by deploy.md lines 6-18, and .claude/settings.json permissions.allow must mirror exactly that list -- bead descriptions quoting an older list are stale and must not be followed.",
-      "symbols": [],
-      "source_files": [
-        "deploy.md",
-        ".claude/settings.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.404Z"
-    },
-    {
-      "id": "c9ec410a-37d6-4434-b1af-f87e45f90eef",
-      "type": "knowledge",
-      "title": "The embeddeddolt test now branches on bd availability instead of a loose regex",
-      "summary": "tests/check-sandbox-sync-remote.test.ts probes `bd --version` and asserts /Dolt-level remotes/ when bd is reachable, /unavailable/ when it is not, closing the vacuous-pass hole the old combined regex left open.",
-      "symbols": [
-        "checkDoltRemoteAbsent"
-      ],
-      "source_files": [
-        "tests/check-sandbox-sync-remote.test.ts",
-        "scripts/check-sandbox-sync-remote.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.456Z"
-    },
-    {
-      "id": "d2c1e093-0c14-40e7-8798-4deb8c931435",
+      "id": "c2d3fa00-5f7f-408e-9bdd-0f49101173fc",
       "type": "knowledge",
       "title": "kb_session_prime must pass an explicit repo_path to getKbProviders verbatim, never through resolveRepoPath",
       "summary": "Validating repo_path before handing it to getKbProviders converts a remote member's unreachable path into the fleet server's own cwd, silently staling healthy entries in the shared project KB; the anchor must stay honestly missing.",
@@ -552,50 +354,66 @@
         "tests/knowledge/kb-remote-anchor-freshness.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.212Z"
+      "updated_at": "2026-08-17T21:02:37.675Z"
     },
     {
-      "id": "daf6fb22-307e-45b4-87ce-0dbcedca9064",
-      "type": "knowledge",
-      "title": "The auto-sprint cost ledger is staged by an unconditional plain git add sprint-logs/",
-      "summary": "beads-export-cleanup stages sprint logs with a plain, unguarded `git add sprint-logs/` before `bd export` and the export commit, pinned by sprint-log-flush.test.mjs -- so any gitignore rule covering that directory silently drops the ledger rather than erroring.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
-        "packages/apra-fleet-se/apra-pm/test/sprint-log-flush.test.mjs",
-        ".gitignore"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.567Z"
-    },
-    {
-      "id": "eb1611af-81c9-4331-b9f4-65d6427ae818",
-      "type": "knowledge",
-      "title": "bd prints literal 'null' for an empty dolt remote list, not an empty array",
-      "summary": "Code parsing bd's dolt-remote-list output must treat a parsed result of null (or whitespace-padded 'null\\n') as 'no remotes configured' rather than a parse error; any other non-array non-null shape is still a genuine error.",
-      "symbols": [],
-      "source_files": [
-        "scripts/check-sandbox-sync-remote.mjs",
-        "tests/check-sandbox-sync-remote.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.685Z"
-    },
-    {
-      "id": "ec8b983b-88f0-4830-bd56-0068aa91cd0b",
+      "id": "f4bbc2aa-3e45-4112-860c-aab263e2736a",
       "type": "learning",
-      "title": "gitRepos is single-entry-safe, multi-entry-ambiguous for deriving an origin URL",
-      "summary": "knownRepoRemoteUrl(agent) in src/tools/execute-prompt.ts only treats agent.gitRepos[0] as a genuine origin URL when gitRepos has exactly one entry; a multi-entry gitRepos (an access list, not an origin field) is left unforwarded even if its first element already looks like a URL, since it could belong to an unrelated repo.",
+      "title": "Wrap getKbProviders with a delegating vi.mock to assert real provider anchoring",
+      "summary": "To assert which dbPath/repoPath a kb tool actually anchored at, vi.mock kb-providers.js with importOriginal, spread the actual module and replace only getKbProviders with a spy that delegates to the real one and records (cwd, remoteUrl, providers).",
       "symbols": [
-        "knownRepoRemoteUrl"
+        "getKbProviders",
+        "resetKbProviders",
+        "SqliteProvider"
       ],
       "source_files": [
-        "src/tools/execute-prompt.ts",
-        "tests/execute-prompt-kb-harvest-remote-url.test.ts",
-        "src/tools/register-member.ts"
+        "tests/knowledge/kb-anchor-never-cwd.test.ts",
+        "tests/knowledge/kb-remote-url-forwarding.test.ts",
+        "tests/knowledge/kb-import.test.ts",
+        "src/services/knowledge/kb-providers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-18T20:35:08.741Z"
+      "updated_at": "2026-08-17T21:02:37.669Z"
+    },
+    {
+      "id": "f92f896f-cc6d-4c1f-8144-f42ce2a3707f",
+      "type": "knowledge",
+      "title": "A missing-anchor freshness regression surfaces first as kb_list dropping entries, not as a stale-flag assertion",
+      "summary": "In tests/knowledge/kb-remote-member-e2e.test.ts the four remote-member assertions live in one it(), so removing SqliteProvider's anchorIsMissing guard fails at the SAME DATABASE read-back (line 165) and never reaches the raw stale-row check (line 181).",
+      "symbols": [
+        "anchorIsMissing",
+        "checkFreshness",
+        "kbStats"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-remote-member-e2e.test.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-stats.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-17T22:08:25.572Z"
+    },
+    {
+      "id": "ff6f9eff-1532-4e9a-85fb-f3b4778e4733",
+      "type": "knowledge",
+      "title": "One anchor policy, three branches: verbatim for read tools, hard-fail for kb_export",
+      "summary": "kb_session_prime and kb_stats pass a supplied repo_path to getKbProviders verbatim so an unreachable remote anchor stays honestly missing; kb_export deliberately keeps throwing instead, because it writes into repo_path -- and it throws before getKbProviders, so it never anchors at the server cwd either.",
+      "symbols": [
+        "kbStats",
+        "kbExport",
+        "kbSessionPrime",
+        "getKbProviders",
+        "resolveRepoPath"
+      ],
+      "source_files": [
+        "src/tools/kb-stats.ts",
+        "src/tools/kb-export.ts",
+        "src/tools/kb-session-prime.ts",
+        "src/services/knowledge/kb-providers.ts",
+        "tests/knowledge/kb-anchor-never-cwd.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.794Z"
     }
   ]
 }

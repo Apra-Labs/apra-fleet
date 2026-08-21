@@ -192,5 +192,7 @@ describe('remote-member KB scoping end-to-end (apra-fleet-b4g.11)', () => {
       hint_symbols: [`remoteE2eChanged${tok}`],
     } as any);
     expect(await rawStale(localClone, changedTitle)).toBe(1);
-  });
+  }, 20000); // generous explicit timeout: this test shells out to real git
+  // clone/init work (makeClone) which can exceed vitest's 5000ms default
+  // under a full parallel run of 300+ files (apra-fleet-ot2z.21).
 });

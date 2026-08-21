@@ -177,12 +177,44 @@ describe('apra-fleet-9ta.7: end-to-end routing via the mock sprint harness', () 
     // ---- (1) abort record: a typed abort writes a terminal verdict:'ABORTED' record ----
     test('a typed abort (SprintPlanRejectedError, an unapproved plan) writes a terminal verdict:ABORTED record', { timeout: 180000 }, async () => {
         await withScenarioMarkers('routingabortrecord', async () => {
+            // A GENUINE rejection every round: schema-valid JSON with
+            // verdict:'CHANGES_NEEDED', so the plan-reviewer dispatch itself
+            // always succeeds and this scenario exercises the typed-abort
+            // (SprintPlanRejectedError) path this test is named for.
+            //
+            // apra-fleet-ot2z.19: this used to hand back non-JSON free text
+            // (the same shape as the shared 'always-reject-free-text' mock
+            // mode) to represent "rejected". That accidentally still produced
+            // SprintPlanRejectedError before apra-fleet-ot2z.16's sibling fix
+            // to buildRepairPrompt (71960822): the LEAN pre-fix repair re-ask
+            // didn't mention "scope"/the epic id, so this mock's own
+            // `promptHasScope` sniff (mock-sprint-harness.mjs) missed on every
+            // repair attempt and silently swapped in its built-in
+            // schema-valid "missing scope" CHANGES_NEEDED verdict instead of
+            // re-invoking this handler. Once 71960822 made the repair re-ask
+            // reattach the full original prompt (a real bug fix, see
+            // apra-fleet-dnri), `promptHasScope` matched on every repair
+            // attempt too, so this handler's free text was actually used on
+            // every attempt -- correctly exhausting the schema-repair loop
+            // every round and producing PlanReviewDispatchFailedError
+            // (apra-fleet-9ta.4's already-existing, intentional distinction
+            // between "the reviewer genuinely rejected" and "the review
+            // channel never produced a usable verdict"), not
+            // SprintPlanRejectedError. This test's own name and its
+            // isTypedAbortError() assertion below want the genuine-rejection
+            // path, so the handler is fixed here to actually return one.
             const scenario = await runDevelopLoopScenario('routingabortrecord', {
                 members: ['local'],
                 taskSpecs: [{ title: 'Task: 9ta.7 abort-record routing scenario work' }],
                 maxCycles: 1,
                 planReviewerHandler: async () => ({
-                    content: [{ text: 'This can NOT be APPROVED: the DAG is still missing a documentation task.' }],
+                    content: [{
+                        text: JSON.stringify({
+                            verdict: 'CHANGES_NEEDED',
+                            notes: 'This can NOT be APPROVED: the DAG is still missing a documentation task.',
+                            taskAssignments: [],
+                        }),
+                    }],
                 }),
             });
 

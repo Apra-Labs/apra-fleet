@@ -210,7 +210,7 @@ export class WindowsCommands implements OsCommands {
     const psScript = `
 $p = '${escapedPath}';
 $new = '${newJson}' | ConvertFrom-Json;
-$current = @{};
+$current = $null;
 if (Test-Path $p) {
   try { $current = Get-Content -Path $p -Raw | ConvertFrom-Json -ErrorAction Stop } catch {}
 }
@@ -218,11 +218,20 @@ $merged = @{};
 if ($current) {
   $current.psobject.properties | ForEach-Object { $merged[$_.Name] = $_.Value }
 }
+function ConvertTo-HashtableDeep($obj) {
+    if ($obj -is [System.Management.Automation.PSCustomObject]) {
+        $h = @{};
+        $obj.psobject.properties | ForEach-Object { $h[$_.Name] = $_.Value };
+        return $h;
+    }
+    return $obj;
+}
 function Merge-Objects($target, $source) {
     $source.psobject.properties | ForEach-Object {
         $key = $_.Name;
         $value = $_.Value;
         if ($target.Contains($key) -and $target[$key] -is [System.Management.Automation.PSCustomObject] -and $value -is [System.Management.Automation.PSCustomObject]) {
+            $target[$key] = ConvertTo-HashtableDeep $target[$key];
             Merge-Objects $target[$key] $value;
         } else {
             $target[$key] = $value;
@@ -381,7 +390,19 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
 
   hashFilesRecursive(dir: string): string {
     const winDir = dir.replace(/\//g, '\\').replace(/'/g, "''");
-    const psScript = `$b = Join-Path $HOME '${winDir}'; if (Test-Path $b) { Get-ChildItem -Path $b -Recurse -File | ForEach-Object { $h = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower(); $r = $_.FullName.Substring($b.Length + 1).Replace('\\', '/'); "$h  ./$r" } }`;
+    // Hash via .NET's SHA256 directly rather than the Get-FileHash cmdlet:
+    // on a host where PSModulePath lists a PowerShell-7 Microsoft.PowerShell.Utility
+    // module ahead of the Windows PowerShell 5.1 one (common on windows-latest
+    // images, and on dev boxes with both editions installed), 5.1's cmdlet
+    // auto-loader resolves the name to the incompatible pwsh module manifest
+    // and never finds Get-FileHash, failing with "term not recognized" even
+    // though $HOME/the target files are fine. Module-qualifying the call
+    // (Microsoft.PowerShell.Utility\Get-FileHash) does not help -- module
+    // *name* resolution still prefers the PSModulePath-earlier pwsh module.
+    // [System.Security.Cryptography.SHA256] is a BCL type available
+    // identically in both editions, so it sidesteps the module lookup
+    // entirely.
+    const psScript = `$b = Join-Path $HOME '${winDir}'; if (Test-Path $b) { Get-ChildItem -Path $b -Recurse -File | ForEach-Object { $sha = [System.Security.Cryptography.SHA256]::Create(); try { $bytes = $sha.ComputeHash([System.IO.File]::ReadAllBytes($_.FullName)) } finally { $sha.Dispose() }; $h = ([System.BitConverter]::ToString($bytes)).Replace('-', '').ToLower(); $r = $_.FullName.Substring($b.Length + 1).Replace('\\', '/'); "$h  ./$r" } }`;
     return wrapPowerShellEncoded(psScript);
   }
 }

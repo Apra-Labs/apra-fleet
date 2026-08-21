@@ -18,6 +18,20 @@ const __dirname = path.dirname(__filename);
 // Set MOCK_SPRINT_DELAY_MS to simulate LLM latency locally; defaults to 0 for CI.
 export const DELAY_MS = Number(process.env.MOCK_SPRINT_DELAY_MS || 0);
 
+// apra-fleet-ot2z.22: buildMockFleetApi's executePrompt wrapper reports a
+// session id (MOCK_SESSION_ID) on every reply by default, filling in
+// whichever key a scenario's handler didn't set on its own
+// `structuredContent`. That means a handler can no longer simulate "no
+// resume capability was reported" simply by OMITTING sessionId (the natural
+// way before that default existed) -- omission is always filled in now. A
+// scenario that wants to exercise the workflow's DEGRADED fresh-session
+// fallback (see packages/apra-fleet-workflow/src/workflow/index.mjs's
+// "no session id was reported" log) must set `sessionId: NO_SESSION_ID_MARKER`
+// EXPLICITLY on its returned structuredContent -- a present key beats the
+// wrapper's fill-in-the-gap merge, so this reaches the workflow as a
+// genuine `sessionId: null`.
+export const NO_SESSION_ID_MARKER = null;
+
 // apra-fleet-1cb.1 AUDIT NOTE: grepped runner.js for every read of
 // `result.isError` / `.isError` on an execute_command (bd/git/node shell)
 // response. The ONLY hit is createMemberReservationClient()'s `callFor()`
@@ -490,16 +504,23 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
     let planRound = 0;
     let reviewRound = 0;
     let extraTaskAdded = false;
-    // apra-fleet-02s.3: a schema-repair re-ask now FORCES resume:true and
-    // sends a lean reminder prompt (no longer a self-contained echo of the
-    // original prompt) -- so opts.prompt.startsWith('Final review for sprint
-    // scope issue id(s):') can no longer distinguish a Final Review repair
-    // round from a regular dev-loop Reviewer repair round; both share
-    // agentType 'reviewer' and neither's repair prompt carries that prefix
-    // anymore. Track the last FRESH (non-repair) 'reviewer' dispatch's
+    // apra-fleet-02s.3: a schema-repair re-ask RESUMES the session that just
+    // failed and sends a lean reminder prompt (no longer a self-contained
+    // echo of the original prompt) -- so opts.prompt.startsWith('Final review
+    // for sprint scope issue id(s):') can no longer distinguish a Final
+    // Review repair round from a regular dev-loop Reviewer repair round; both
+    // share agentType 'reviewer' and neither's repair prompt carries that
+    // prefix anymore. Track the last FRESH (non-repair) 'reviewer' dispatch's
     // classification and reuse it for any resumed continuation, mirroring
     // what a real resumed session actually is: the same logical exchange.
     let lastFreshReviewerWasFinalReview = false;
+    // apra-fleet-dnri: the session id this mock reports for every dispatch
+    // (see the executePrompt wrapper at the bottom of this factory). A repair
+    // round no longer arrives as `resume: true` -- it resumes the failed
+    // attempt's own session BY ID, so every place that used to ask "is this a
+    // resumed dispatch?" by comparing resume to true must accept that id too.
+    const MOCK_SESSION_ID = 'mock-sprint-session-0001';
+    const isResumedDispatch = (resume) => resume === true || resume === MOCK_SESSION_ID;
 
     const defaultDoerHandler = async ({ opts }) => {
         const match = opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
@@ -556,7 +577,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         };
     };
 
-    return {
+    const api = {
         executeCommand: async (opts) => {
             commandLog.push(opts.command);
 
@@ -623,7 +644,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             if (/^\$HOME\/\.fleet-git-credential-/.test(opts.command)) {
                 return mockCmdResult(0, 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n', '');
             }
-            if (/^curl -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
+            if (/^curl(?:\.exe)? -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
                 if (prCurlResponseQueueLocal && prCurlResponseQueueLocal.length > 0) {
                     const next = prCurlResponseQueueLocal.length > 1 ? prCurlResponseQueueLocal.shift() : prCurlResponseQueueLocal[0];
                     const resolved = typeof next === 'function' ? next() : next;
@@ -737,18 +758,19 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // prompt text instead -- apra-fleet-unw.17's buildFinalVerdictPrompt()
             // always starts with this exact prefix.
             //
-            // apra-fleet-02s.3: that prefix is only present on a FRESH
-            // dispatch (opts.resume === false). A schema-repair round now
-            // forces resume:true with a lean reminder prompt that carries no
-            // such prefix, so a resumed 'reviewer' call falls back to
-            // whichever classification the last fresh dispatch had --
+            // apra-fleet-02s.3 / apra-fleet-dnri: that prefix is only present
+            // on a FRESH dispatch (opts.resume === false). A schema-repair
+            // round resumes the failed attempt's own session -- by session-id
+            // string, not by boolean true -- with a lean reminder prompt that
+            // carries no such prefix, so a resumed 'reviewer' call falls back
+            // to whichever classification the last fresh dispatch had --
             // see lastFreshReviewerWasFinalReview above.
             const isFinalReview = opts.agent === 'reviewer' && (
-                opts.resume === true
+                isResumedDispatch(opts.resume)
                     ? lastFreshReviewerWasFinalReview
                     : opts.prompt.startsWith('Final review for sprint scope issue id(s):')
             );
-            if (opts.agent === 'reviewer' && opts.resume !== true) {
+            if (opts.agent === 'reviewer' && !isResumedDispatch(opts.resume)) {
                 lastFreshReviewerWasFinalReview = isFinalReview;
             }
             // No longer gated on opts.agent === 'planner': this dispatch has
@@ -910,13 +932,16 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // worked/closed and the sprint fails, tripping this
                 // regression.
                 //
-                // Skipped on a RESUMED dispatch (opts.resume === true): the
-                // max_turns-exhaustion resume path sends a short
-                // "continue where you left off" nudge, not a fresh prompt --
-                // the branch was already established in the session being
-                // resumed, so this gate would otherwise misfire on every
-                // resume attempt regardless of what the real prompt said.
-                if (opts.resume !== true && !/Sprint track branch to work on:\s*\S+/.test(opts.prompt)) {
+                // Skipped on a RESUMED dispatch (apra-fleet-dnri: resume is
+                // boolean true OR this mock's session id, since a
+                // schema-repair round now resumes the failed attempt's own
+                // session by id): the max_turns-exhaustion resume path sends
+                // a short "continue where you left off" nudge, not a fresh
+                // prompt -- the branch was already established in the session
+                // being resumed, so this gate would otherwise misfire on
+                // every resume attempt regardless of what the real prompt
+                // said.
+                if (!isResumedDispatch(opts.resume) && !/Sprint track branch to work on:\s*\S+/.test(opts.prompt)) {
                     return {
                         content: [{
                             text: JSON.stringify({
@@ -1091,6 +1116,45 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             throw new Error(`advanced-mock-runner-test: unhandled agentType '${opts.agent}' (label=${opts.label})`);
         }
     };
+
+    // apra-fleet-dnri: report a session id on EVERY executePrompt reply, the
+    // way a resume-capable provider's execute_prompt does. A schema-repair
+    // re-ask no longer passes a bare boolean `true` (which execute_prompt
+    // resolves to the member's single globally-stored LAST session, shared
+    // across every role); it names the failed attempt's own session id
+    // EXPLICITLY, as a string. With no id ever reported, every repair round
+    // here would take the workflow's loud DEGRADED fallback and dispatch with
+    // `resume: false` -- indistinguishable from a fresh dispatch, which is
+    // exactly what the resume-keyed classifications above rely on being able
+    // to tell apart. Merged into (never replacing) whatever structuredContent
+    // a handler already returned, so the dispatch-failure simulations
+    // (structuredContent: { isError: true, reason: ... }) keep working.
+    //
+    // apra-fleet-ot2z.22: a handler that reports its OWN sessionId (the
+    // round-resume scenarios mint a distinct id per dispatch to assert
+    // runner.js's registry wiring) always wins over MOCK_SESSION_ID -- but
+    // only an OMITTED sessionId key falls through to the default below.
+    // Before this default existed, a handler could simulate "no resume
+    // capability" simply by never setting sessionId on its returned
+    // structuredContent; now that omission always inherits MOCK_SESSION_ID,
+    // the ONLY way left to express the no-resume-capability / DEGRADED
+    // fresh-session path is for the handler to set `sessionId: null`
+    // EXPLICITLY (a present-but-falsy key beats hasOwnProperty, so the
+    // object-spread merge below keeps it instead of filling in the
+    // default) -- see NO_SESSION_ID_MARKER, exported so scenario code
+    // doesn't have to spell out the literal `null` inline.
+    const rawExecutePrompt = api.executePrompt;
+    api.executePrompt = async (opts) => {
+        const result = await rawExecutePrompt(opts);
+        if (!result || typeof result !== 'object') return result;
+        const handlerStructured = result.structuredContent || {};
+        return {
+            ...result,
+            structuredContent: { sessionId: MOCK_SESSION_ID, ...handlerStructured },
+        };
+    };
+
+    return api;
 }
 
 export async function teardown(tempDir) {
@@ -1193,9 +1257,13 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
  * apra-fleet-unw.15 scenario: the plan-reviewer never approves (always
  * returns non-JSON free text containing "APPROVED" inside a rejection
  * sentence, exhausting the schema-repair loop every round). Expects
- * engine.executeFile() to REJECT with a SprintPlanRejectedError, and
- * expects zero doer dispatches -- the sprint must never reach Develop with
- * an unapproved plan.
+ * engine.executeFile() to REJECT -- with a PlanReviewDispatchFailedError
+ * (apra-fleet-9ta.4: persistent non-JSON output never yields a usable
+ * verdict, so the review channel never came back, which is distinct from a
+ * genuine SprintPlanRejectedError rejection; apra-fleet-ot2z.19 corrected
+ * this docstring and its callers' assertions, which had gone stale for
+ * SprintPlanRejectedError) -- and expects zero doer dispatches -- the sprint
+ * must never reach Develop with an unapproved plan.
  */
 export async function runRejectedPlanScenario(tag) {
     const { tempDir, epicBead } = await setup(tag);
@@ -1225,9 +1293,10 @@ export async function runRejectedPlanScenario(tag) {
         }
 
         // apra-fleet-x8r.5: this scenario's own documented contract (see the
-        // docstring above) is that engine.executeFile() REJECTS with a
-        // SprintPlanRejectedError -- that IS the success case, not merely
-        // "the harness didn't crash". Previously `passed` was set
+        // docstring above) is that engine.executeFile() REJECTS (as of
+        // apra-fleet-ot2z.19, with a PlanReviewDispatchFailedError) -- that
+        // IS the success case, not merely "the harness didn't crash".
+        // Previously `passed` was set
         // unconditionally here, so the marker printed PASS even on a run
         // where the plan was (incorrectly) never rejected, silencing the one
         // signal that would have flagged it.

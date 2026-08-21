@@ -92,6 +92,39 @@ clear, actionable error (including the manual command to finish the job) and
 exit non-zero, rather than either asserting success or silently proceeding
 into a copy attempt that's guaranteed to fail.
 
+## A schema-repair retry must reattach the original request, not trust session memory
+
+When a dispatched agent's output fails schema validation and the caller
+re-asks for a corrected response, the repair prompt cannot rely on the
+agent's own conversation memory to still contain the original request --
+it must explicitly reattach the original prompt and schema as clearly
+delimited reference text (e.g. bracketed by an explicit
+begin/end-original-request marker) alongside the validation errors. Two
+follow-on invariants keep this from degrading over multiple repair rounds:
+
+- The reattached prompt/schema must always be re-derived from the one true
+  original on every round, not built by appending onto the previous round's
+  repair prompt. Without this, each additional repair round compounds the
+  prompt (the original request text grows a duplicate copy every round)
+  instead of staying constant in size and content.
+- The retry must resume the *exact session* that produced the failed
+  attempt, addressed by that session's own id, rather than a bare
+  "continue the most recent session" flag -- the two are not equivalent
+  once more than one session might be in flight for the same member, and a
+  bare "resume most recent" can silently target the wrong conversation.
+  When no session id was actually captured from the failed attempt, the
+  retry must degrade to an explicit "start fresh" disposition with a loud,
+  visible log line -- an unlogged silent fallback hides exactly the
+  condition an operator would want to know about.
+
+Because resuming a named session by explicit id is a terminal operation
+(the dispatch layer does not silently reinterpret an unresolvable explicit
+id as "start fresh"), the repair loop needs its own one-shot recovery: if
+the explicit-id resume comes back as session-not-found, re-dispatch once
+more as a fresh (non-resumed) attempt, still inside the same overall repair
+budget, rather than treating a stale/missing session id as a hard failure
+of the whole repair flow.
+
 ## Toolchain compatibility is a tracked invariant, not an incidental detail
 
 A transitive dependency version can silently break child-process-spawn

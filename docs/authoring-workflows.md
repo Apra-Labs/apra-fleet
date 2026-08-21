@@ -226,10 +226,26 @@ loads), follow the same resolution pattern documented in
    through the launcher, so the env var was never set.
 
 This is exactly the belt-and-braces pattern `fleet-sprint`'s installed
-workflow directory uses: `contracts.mjs` is not modified at all --
-`APRA_FLEET_SE_SCHEMAS_DIR` is already its tier-1 override -- and the
-`vendor/schemas/` copy inside `workflows/fleet-sprint/` is the tier-3 hit
-for a direct `node bin/cli.mjs` invocation.
+workflow directory uses: the explicit env-var override
+(`APRA_FLEET_SE_SCHEMAS_DIR`) is always checked first with no further
+fallback, and the `vendor/schemas/` copy inside `workflows/fleet-sprint/` is
+the fallback hit for a direct `node bin/cli.mjs` invocation.
+
+When neither of those applies (no env override, no direct-node fallback in
+play), `contracts.mjs`'s own resolution between its two built-in candidate
+directories is **freshness-first, not fixed-order**: if both a bundled
+(`dist/`) schemas directory and a package-local one exist on disk, it picks
+whichever one was more recently edited, rather than always preferring one
+location by convention. Freshness there is defined as the newest modification
+time among the `.json` files *inside* the directory (recursively), not the
+directory's own timestamp -- a directory's own mtime only moves on
+create/delete/rename of an entry and does not update when an existing file
+inside it is edited in place. This matters because a stale bundled copy left
+over from an old build can otherwise silently shadow a schema someone just
+edited in the package-local source tree, handing a dispatched agent an old
+schema with no error at all. When exactly one of the two candidates exists,
+that one is used with no freshness comparison; when neither exists, schema
+loading gracefully falls back to hand-written literal schemas.
 
 ## 8. Escape hatch: running a workflow with a system Node directly
 

@@ -30,27 +30,19 @@ not improvise deploy steps that are not written down in the runbook.
 
 ## Step 0a -- Check permissions before running anything
 
-Read `deploy.md`. Look for a `## Permissions` section. If found, verify each
-listed command prefix is covered by the MERGED effective permission set --
-on Claude Code that means SOME entry in `permissions.allow` of EITHER
-`.claude/settings.json` (the team-committed, shared baseline) OR
-`.claude/settings.local.json` (the per-checkout, individual/gitignored file;
-this is the ONLY file the fleet's `compose_permissions` tool ever writes to
-for Claude Code members -- see `skills/fleet/permissions.md`). Claude Code
-merges `permissions.allow` from both files, so a grant in EITHER one counts
-as coverage; checking only `settings.json` misses every grant
-`compose_permissions` delivered. A broader prefix entry counts as coverage
-too -- e.g. `Bash(docker:*)` covers `docker compose`. Other providers keep
-the equivalent allowlist in their own native config file (see
-`src/providers/*.ts`).
+Read `deploy.md`. If it has a `## Permissions` section, verify each listed
+command prefix is covered by the MERGED effective permission set -- on
+Claude Code, the union of `permissions.allow` from BOTH
+`.claude/settings.json` (team-committed baseline) AND
+`.claude/settings.local.json` (per-checkout, gitignored -- the only file the
+fleet's `compose_permissions` tool writes to; see
+`skills/fleet/permissions.md`). A grant in either file counts; a broader
+prefix counts too (e.g. `Bash(docker:*)` covers `docker compose`). Other
+providers keep the equivalent allowlist in their own native config file.
 
-Run the merge MECHANICALLY, in one command, rather than reading each file
-separately and merging by eye -- two sequential `cat`s invite stopping at the
-first (often-empty) file and never getting to the second, which silently
-reports a real grant as missing (observed live, apra-fleet: `settings.json`
-legitimately carries no `permissions.allow` in this repo's convention -- every
-grant lives in `settings.local.json` -- so a by-eye read that stops at the
-first empty file always concludes "nothing is granted" even when it is):
+Compute the union MECHANICALLY, in one command -- reading the files
+separately and merging by eye reliably misses grants when the first file is
+empty:
 
 ```bash
 node -e '
@@ -67,29 +59,15 @@ console.log(JSON.stringify([...allow], null, 2));
     # use your provider's native config file(s) otherwise
 ```
 
-Check every required command prefix against this one merged list. If any
-required command prefix has no covering entry in it, STOP immediately and
-return `deployed: false` with notes listing every missing entry, e.g.:
-
-  Missing permissions in the merged CLI permission settings (.claude/settings.json
-  + .claude/settings.local.json on Claude Code -- neither file covers these):
-    Bash(docker *)
-    Bash(docker-compose *)
-  Ask the orchestrator/operator to run compose_permissions with the missing
-  grant(s), then re-trigger the sprint.
-
-Do NOT attempt to add the permissions yourself, by editing any file directly:
-- `.claude/settings.json` is the team-committed baseline -- changes there
-  require the team/a PR, never a self-edit.
-- `.claude/settings.local.json` is the correct target for an individual/local
-  grant, but it must be provisioned via the `compose_permissions` MCP tool
-  (grant mode), NOT hand-edited either -- that tool is the provider-agnostic
-  delivery mechanism (this repo supports non-Claude providers too: AGY,
-  OpenCode, Codex -- each has its own native config path via the same
-  tool).
-The correct escalation when a required permission is missing from the merged
-effective set is: ask the orchestrator/operator to run `compose_permissions`
-with the missing grant. Do NOT proceed past Step 0a if any permissions are missing.
+Check every required prefix against this one merged list. If any prefix has
+no covering entry, STOP immediately and return `deployed: false`, listing
+every missing entry in `notes` and asking the orchestrator/operator to run
+`compose_permissions` with the missing grant(s), then re-trigger the sprint.
+NEVER add permissions yourself: `.claude/settings.json` changes require a
+team PR, and `.claude/settings.local.json` must be provisioned via the
+`compose_permissions` MCP tool (the provider-agnostic delivery mechanism
+across all supported providers), never hand-edited. Do NOT proceed past
+Step 0a while any permission is missing.
 
 ## Step 0b -- Knowledge Bank (required -- do this BEFORE any deploy.md operation)
 

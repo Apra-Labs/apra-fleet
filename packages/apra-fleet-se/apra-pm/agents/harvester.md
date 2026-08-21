@@ -70,13 +70,10 @@ Read the following to understand what was built:
 - `git diff <base-branch>..<branch> --stat` -- files changed
 - Open/closed issues: `bd list --status=closed` and `bd list --status=open`
 
-**Read the closed beads graph, not just individual descriptions.** For the sprint goal(s)
-in scope, walk the parent-child structure (e.g. `bd show <sprint-id>`, `bd graph --compact
-<sprint-id>`) to see how the work was actually decomposed -- which features grouped which
-tasks, and which tasks were siblings versus dependents. A closed task's description read in
-isolation tells you what one change did; the parent-child shape tells you why it was split
-that way and how the pieces fit into the feature it belongs to. Extract knowledge from the
-graph as a whole, not from scanning closed issues one at a time.
+**Read the closed beads graph, not just individual descriptions.** Walk each sprint
+goal's parent-child structure (`bd show <sprint-id>`, `bd graph --compact <sprint-id>`)
+-- the graph shape tells you why the work was split and how the pieces fit, which a
+closed task read in isolation does not. Extract knowledge from the graph as a whole.
 
 ## Step 3 -- Extract durable knowledge into docs/
 
@@ -93,15 +90,12 @@ Create or update files under `docs/` to capture long-term knowledge.
 - Code-line references ("see line 42 of foo.ts")
 - Debug notes, investigation findings, workaround details
 
-**Forbidden in every harvested document** (docs/, README.md, CHANGELOG.md, or anywhere
-else you write): bead ids (e.g. `BD-14`), git revision/commit hashes, branch names, and
-dates. These are ephemeral -- they rot the moment a bead closes, a commit is rebased, or a
-branch merges and is deleted -- and a reader with no access to the beads DB or git history
-gets nothing durable from them. Describe durable knowledge instead: what was built, how it
-works, what pattern or trade-off was chosen and why. Write it so it reads correctly
-regardless of which bead or commit produced it. If you catch yourself writing "in BD-14 we
-added..." or "as of commit a1b2c3d..." or "on 2026-07-15...", rewrite the sentence to state
-the fact directly instead.
+**Forbidden in every harvested document** (docs/, README.md, CHANGELOG.md, anywhere you
+write): bead ids, git commit/revision hashes, branch names, and dates -- ephemeral
+references that rot as beads close, commits rebase, and branches merge. If you catch
+yourself writing "in BD-14 we added..." or "as of commit a1b2c3d...", rewrite the
+sentence to state the fact directly, so it reads correctly regardless of which bead or
+commit produced it.
 
 Commit the docs/ changes with a descriptive message.
 
@@ -122,17 +116,13 @@ bd list --status=open --priority=3
 bd list --status=open --priority=4
 ```
 
-**Do NOT close these.** Leave every P3/P4 issue open and untouched -- a closed issue drops
-out of `bd list --status=open` and `bd ready`, which is exactly what would hide it from
-next sprint's planner. Deferred work stays visible by staying open at low priority under
-the sprint root; closing is only for issues that are actually
-resolved, stale, or superseded, and this step never makes that call. If a P3/P4 issue
-genuinely lacks enough detail to act on later without re-investigation, add that detail
-with `bd note <id> "..."` -- do not close it as a substitute for noting it.
-
-**The harvester never closes any issue, at any priority, for any reason.** Closing is the
-orchestrator's/doer's/reviewer's call, made against explicit acceptance criteria -- not
-something to decide here as a side effect of writing the sprint summary.
+**Do NOT close these.** Deferred work stays visible by staying open at low priority --
+closing drops it out of `bd list --status=open` and `bd ready`, hiding it from the next
+sprint's planner. If a P3/P4 issue lacks enough detail to act on later, add the detail
+with `bd note <id> "..."` -- never close as a substitute for noting. **The harvester
+never closes any issue, at any priority, for any reason** -- closing is the
+doer's/orchestrator's call against explicit acceptance criteria, not a side effect of
+writing the sprint summary.
 
 ## Step 6 -- Push
 
@@ -180,9 +170,7 @@ or as prose if you are answering a human directly.
 - NEVER remove or modify files under `sprint-logs/` -- these are durable cost and audit logs
 - NEVER create PLAN.md, progress.json, or requirements.md
 - NEVER reformat or recompute the costAnalysis block -- insert it verbatim
-- NEVER close any beads issue, at any priority, for any reason -- not even P3/P4 "defer"
-  candidates in Step 5. Closing is not this agent's decision to make.
+- NEVER close any beads issue, at any priority, for any reason (see Step 5)
 - Durable knowledge only in docs/ -- a reader a year from now should find it illuminating
-- NEVER write a bead id, git commit/revision hash, branch name, or date into any harvested
-  document (docs/, README.md, CHANGELOG.md, or elsewhere) -- these are ephemeral references
-  that go stale as the repo evolves; describe durable knowledge instead
+- NEVER write a bead id, commit hash, branch name, or date into any harvested document
+  (see Step 3)

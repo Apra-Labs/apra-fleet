@@ -124,7 +124,7 @@ function buildMockWindowsCommand({ commitCount, pushShouldFail = false, prOutcom
             }
             return ok(`protocol=https\nhost=github.com\nusername=x-access-token\npassword=${token}\n`);
         }
-        if (/^curl -sS -X POST\b/.test(cmd) && /\/pulls\b/.test(cmd)) {
+        if (/^curl.exe -sS -X POST\b/.test(cmd) && /\/pulls\b/.test(cmd)) {
             if (prOutcome === 'already-exists') {
                 const body = JSON.stringify({
                     message: 'Validation Failed',
@@ -183,7 +183,7 @@ test('finalizeAbort (Windows member): builds a valid PowerShell credential-read 
     check(!log.some((c) => /^\$HOME\/\.fleet-git-credential-/.test(c)), 'Expected NO POSIX-shaped credential-read command for a Windows member');
     check(!log.some((c) => hasBareHomeExpansion(c)), `Expected no dispatched command to carry a bare $HOME/~ expansion, command log: ${JSON.stringify(log)}`);
 
-    const prCmd = log.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+    const prCmd = log.find((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls'));
     check(!!prCmd, `Expected a create-pull-request command to be dispatched, command log: ${JSON.stringify(log)}`);
     check(prCmd.includes('Authorization: Bearer mock-windows-vcs-token'), `Expected the PR-creation command to carry the token extracted from the Windows credential read, got: ${prCmd}`);
 });
@@ -218,7 +218,7 @@ test('finalizeAbort (Windows member): a failing credential read still throws the
         `Expected the Windows credential-read command to still have been attempted, command log: ${JSON.stringify(log)}`
     );
     // No PR was ever raised -- the failure happened before the create-pull-request dispatch.
-    check(!log.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')), 'Expected NO create-pull-request dispatch when the credential read failed');
+    check(!log.some((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls')), 'Expected NO create-pull-request dispatch when the credential read failed');
 });
 
 // -----------------------------------------------------------------------
@@ -250,7 +250,7 @@ function wrapExecuteCommandForWindowsVcs(baseApi, commandLog, { credQueue, pulls
                 credIdx += 1;
                 return mockCmdResult(0, queue[idx], '');
             }
-            if (pullsQueue && /^curl -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
+            if (pullsQueue && /^curl.exe -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
                 commandLog.push(opts.command);
                 const idx = Math.min(pullsIdx, pullsQueue.length - 1);
                 pullsIdx += 1;
@@ -336,7 +336,7 @@ test('mock sprint (Windows member): Publish PR step reads the Windows credential
         check(!!credCmd, `Expected a Windows-shaped credential-read command to be dispatched, commandLog: ${JSON.stringify(scenario.commandLog)}`);
         check(!scenario.commandLog.some((c) => hasBareHomeExpansion(c)), `Expected no dispatched command to carry a bare $HOME/~ expansion, commandLog: ${JSON.stringify(scenario.commandLog)}`);
 
-        const prCmd = scenario.commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+        const prCmd = scenario.commandLog.find((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls'));
         check(!!prCmd, `Expected the Publish PR step to actually dispatch a create-pull-request command, commandLog: ${JSON.stringify(scenario.commandLog)}`);
         check(prCmd.includes('Authorization: Bearer mock-windows-vcs-token'), `Expected the create-pull-request dispatch to carry the token read back from the Windows credential command, got: ${prCmd}`);
     });
@@ -361,7 +361,7 @@ test('mock sprint (Windows member): Publish PR auth-retry loop re-reads the Wind
         const credCalls = scenario.commandLog.filter((c) => /^powershell -EncodedCommand\b/.test(c));
         check(credCalls.length >= 2, `Expected the Windows credential to be re-read after the 401 (at least 2 credential-read dispatches), commandLog: ${JSON.stringify(scenario.commandLog)}`);
 
-        const prCalls = scenario.commandLog.filter((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+        const prCalls = scenario.commandLog.filter((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls'));
         check(prCalls.length === 2, `Expected exactly one bounded retry (2 total create-pull-request attempts), commandLog: ${JSON.stringify(scenario.commandLog)}`);
         check(
             scenario.logs.some((m) => m.includes('auth-classified failure') && m.includes('HTTP 401')),
