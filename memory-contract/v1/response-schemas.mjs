@@ -24,15 +24,51 @@
 // 2.1 and the provider method table in section 4.1; nested/complex payloads
 // (KB entries, query hits) are typed z.unknown() rather than guessed, since
 // no zod schema for them exists anywhere in this repo to cite as evidence.
+//
+// ENVELOPE WIDTH (my-beads-db-27m.33): the envelope below was originally
+// pinned to exactly one un-annotated content block, but the real wrapTool
+// (src/services/tool-registry.ts, ~lines 94-115) builds up to THREE content
+// blocks -- an onboarding preamble, the payload, and a nudge suffix -- stamps
+// `annotations: {audience, priority}` on the preamble/suffix blocks, and
+// returns `structuredContent` as a sibling of `content` whenever the handler
+// produced it. A real captured envelope with onboarding active therefore
+// fails the old schema on three independent counts (too many items, an
+// unexpected `annotations` key inside a closed item, an unexpected
+// `structuredContent` key at a closed root). Fixed here on the SCHEMA side
+// only, per this task's acceptance criteria -- no harness/validator was
+// loosened. `parsed` (added by responseSchema() below) is untouched, per
+// INVENTORY.md section 3.
 
 import { z } from 'zod';
 
-/** The shared MCP text-content envelope every one of the 23 handlers uses. */
+/**
+ * A single MCP text content block. `annotations` is optional and, when
+ * present, carries the `{audience, priority}` shape wrapTool actually stamps
+ * on its preamble/nudge blocks (never on the payload block itself, but the
+ * schema does not need to distinguish which block carries it -- any block MAY
+ * carry it).
+ */
+const toolTextContentItem = z.object({
+  type: z.literal('text'),
+  text: z.string(),
+  annotations: z
+    .object({
+      audience: z.array(z.enum(['user', 'assistant'])).optional(),
+      priority: z.number().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * The shared MCP text-content envelope every one of the 23 handlers uses.
+ * 1..3 content items (onboarding preamble + payload + nudge suffix, in that
+ * order, preamble/suffix optional), plus an optional `structuredContent`
+ * sibling (wrapTool returns it whenever the handler's raw return value was
+ * `{text, structuredContent}` rather than a bare string).
+ */
 export const toolTextEnvelope = z.object({
-  content: z
-    .array(z.object({ type: z.literal('text'), text: z.string() }))
-    .min(1)
-    .max(1),
+  content: z.array(toolTextContentItem).min(1).max(3),
+  structuredContent: z.record(z.string(), z.unknown()).optional(),
 });
 
 // --- kb_* observed response bodies (INVENTORY.md 2.1) -----------------------

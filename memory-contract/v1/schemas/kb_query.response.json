@@ -21,6 +21,25 @@
               },
               "text": {
                 "type": "string"
+              },
+              "annotations": {
+                "type": "object",
+                "properties": {
+                  "audience": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "assistant"
+                      ]
+                    }
+                  },
+                  "priority": {
+                    "type": "number"
+                  }
+                },
+                "additionalProperties": false
               }
             },
             "required": [
@@ -30,7 +49,11 @@
             "additionalProperties": false
           },
           "minItems": 1,
-          "maxItems": 1
+          "maxItems": 3
+        },
+        "structuredContent": {
+          "type": "object",
+          "additionalProperties": {}
         },
         "parsed": {
           "anyOf": [
