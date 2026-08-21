@@ -13,7 +13,8 @@
     "./factory": "./src/client/factory.mjs",
     "./transport": "./src/client/transport.mjs",
     "./errors": "./src/errors/workflow-errors.mjs",
-    "./server-resolution": "./src/client/server-resolution.mjs"
+    "./server-resolution": "./src/client/server-resolution.mjs",
+    "./endpoint": "./src/endpoint/factory.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
