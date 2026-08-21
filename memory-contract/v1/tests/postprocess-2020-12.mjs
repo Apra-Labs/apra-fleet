@@ -44,12 +44,16 @@ export const DIALECT_2020_12 = 'https://json-schema.org/draft/2020-12/schema';
  * Fixes applied, in this order:
  *   1. Root $schema is set to DIALECT_2020_12 (replacing a draft-07 or any
  *      other declaration, or injecting it when absent).
- *   2. `definitions` is renamed to `$defs`, and any `#/definitions/...` $ref
- *      pointer is repointed at `#/$defs/...`.
+ *   2. `definitions` is renamed to `$defs` (merged in, never clobbering a
+ *      `$defs` the node already carries), and every `/definitions/` segment
+ *      of a `$ref` pointer is repointed at `/$defs/`, including nested ones.
  *   3. Draft-04 boolean exclusive bounds are converted to the numeric 2020-12
  *      form: {minimum: N, exclusiveMinimum: true} -> {exclusiveMinimum: N}
  *      (same for the maximum pair). A bound that is already numeric is left
- *      alone.
+ *      alone. An explicit draft-04 `exclusiveMinimum/Maximum: false` (the
+ *      inclusive form) is dropped rather than left as an invalid 2020-12
+ *      boolean, since the plain minimum/maximum keyword already means
+ *      inclusive on its own.
  *   4. Draft-07 array-form `items` (a tuple) is converted to `prefixItems`,
  *      with a redundant `maxItems` equal to the tuple length dropped in favour
  *      of `items: false`.
@@ -74,12 +78,24 @@ function normaliseNode(node) {
   const out = {};
   for (const [key, value] of Object.entries(node)) {
     if (key === 'definitions') {
-      // Fix 2: draft-07 `definitions` -> 2020-12 `$defs`.
-      out.$defs = normaliseNode(value);
+      // Fix 2: draft-07 `definitions` -> 2020-12 `$defs`. Merge rather than
+      // overwrite: a node can carry BOTH keys (e.g. a native $defs plus a
+      // stray definitions container), and a plain assignment here would
+      // silently drop whichever one is processed first. A native $defs entry
+      // wins on key collision, since it is already in the target dialect.
+      out.$defs = { ...normaliseNode(value), ...out.$defs };
+      continue;
+    }
+    if (key === '$defs') {
+      out.$defs = { ...out.$defs, ...normaliseNode(value) };
       continue;
     }
     if (key === '$ref' && typeof value === 'string') {
-      out.$ref = value.replace('#/definitions/', '#/$defs/');
+      // Global replace: a pointer can repoint through more than one
+      // `definitions` segment (e.g. '#/definitions/a/definitions/b'), and
+      // every such segment is renamed by the branch above, so every segment
+      // of the pointer must be repointed too, not just the first.
+      out.$ref = value.replace(/\/definitions\//g, '/$defs/');
       continue;
     }
     out[key] = normaliseNode(value);
@@ -94,7 +110,15 @@ function normaliseNode(node) {
 // Fix 3. The draft-04 form spells an exclusive bound as an inclusive bound plus
 // a boolean flag; 2020-12 requires the keyword itself to carry the number.
 function convertExclusiveBound(node, inclusiveKey, exclusiveKey) {
-  if (node[exclusiveKey] !== true) return;
+  if (typeof node[exclusiveKey] !== 'boolean') return;
+  if (node[exclusiveKey] === false) {
+    // Draft-04's explicit inclusive form. 2020-12 has no boolean flag at all:
+    // the plain minimum/maximum keyword already means "inclusive" on its own,
+    // so the flag carries no information and must be dropped rather than
+    // left as a boolean (which the 2020-12 metaschema rejects outright).
+    delete node[exclusiveKey];
+    return;
+  }
   if (typeof node[inclusiveKey] !== 'number') {
     // A boolean flag with no companion bound carries no threshold at all, so
     // there is nothing to preserve. Dropping it is the only lossless-in-intent
