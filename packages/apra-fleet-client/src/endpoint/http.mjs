@@ -161,6 +161,26 @@ export function joinUrl(baseUrl, path) {
 }
 
 /**
+ * Classify a failure by the request signal's own fired state, so the reason a
+ * fetch rejected or a body read failed while the caller was cancelling (or
+ * the deadline expired) is the cancellation/timeout, not whatever the
+ * underlying rejection happens to look like. Shared by postJson's
+ * fetch-rejection catch and its body-read catch so the two call sites cannot
+ * drift (see apra-fleet-5se.17/5se.18).
+ *
+ * @param {AbortSignal | undefined} requestSignal
+ * @param {string} url
+ * @returns {Error | null} the classified error to throw, or `null` when the
+ *   signal never fired -- the caller should fall through to its own
+ *   classification in that case.
+ */
+function classifyBySignalState(requestSignal, url) {
+    if (!requestSignal || !requestSignal.aborted) return null;
+    const kind = isTimeoutError(requestSignal.reason) ? 'timeout' : 'aborted';
+    return classifyEndpointFailure({ kind, url, cause: requestSignal.reason });
+}
+
+/**
  * POST a JSON body and hand the adapter back a flat, already-read result.
  *
  * Never returns a Response: the body is consumed here so that both the
@@ -197,10 +217,8 @@ export async function postJson({ fetchImpl, url, headers = {}, body, signal, tim
         // honoured the same way as an abort that happens mid-flight -- some fetch
         // implementations only surface this via the AbortError rejection below,
         // but not all are guaranteed to.
-        if (requestSignal && requestSignal.aborted) {
-            const kind = isTimeoutError(requestSignal.reason) ? 'timeout' : 'aborted';
-            throw classifyEndpointFailure({ kind, url, cause: requestSignal.reason });
-        }
+        const preFlightSignalFailure = classifyBySignalState(requestSignal, url);
+        if (preFlightSignalFailure) throw preFlightSignalFailure;
 
         let response;
         try {
@@ -220,10 +238,8 @@ export async function postJson({ fetchImpl, url, headers = {}, body, signal, tim
             // what the rejection reason looks like; only fall through to the
             // name/code sniffing -- and then 'network' -- when the signal
             // never fired at all.
-            if (requestSignal && requestSignal.aborted) {
-                const kind = isTimeoutError(requestSignal.reason) ? 'timeout' : 'aborted';
-                throw classifyEndpointFailure({ kind, url, cause: requestSignal.reason });
-            }
+            const fetchSignalFailure = classifyBySignalState(requestSignal, url);
+            if (fetchSignalFailure) throw fetchSignalFailure;
             if (isTimeoutError(cause)) {
                 throw classifyEndpointFailure({ kind: 'timeout', url, cause });
             }
@@ -237,6 +253,14 @@ export async function postJson({ fetchImpl, url, headers = {}, body, signal, tim
         try {
             text = await response.text();
         } catch (cause) {
+            // Same guard as the fetch-rejection catch above: once headers have
+            // arrived, a cooperative cancellation or a deadline expiry can
+            // surface as a body-read failure rather than a fetch rejection
+            // (undici resolves the fetch promise as soon as headers arrive).
+            // Classify by the signal's own state first so that case is
+            // reported as its real kind, not folded into 'malformed'.
+            const bodyReadSignalFailure = classifyBySignalState(requestSignal, url);
+            if (bodyReadSignalFailure) throw bodyReadSignalFailure;
             throw classifyEndpointFailure({
                 kind: 'malformed',
                 url,

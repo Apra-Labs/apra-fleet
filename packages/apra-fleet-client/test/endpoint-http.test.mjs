@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import { postJson, resolveRequestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS } from '../src/endpoint/http.mjs';
-import { CancelledError, FleetTransportError } from '../src/errors/workflow-errors.mjs';
+import { AgentOutputError, CancelledError, FleetTransportError } from '../src/errors/workflow-errors.mjs';
 
 // Regression coverage for apra-fleet-5se.13: postJson() used to funnel EVERY
 // fetch rejection -- including an aborted request -- into
@@ -197,6 +197,81 @@ test('postJson - a caller signal that is already aborted with a TimeoutError rea
         }
     );
     assert.strictEqual(fetchCalled, false, 'fetch must not be invoked once the signal is already aborted');
+});
+
+// Regression coverage for apra-fleet-5se.18: once a response's headers have
+// arrived, undici resolves the fetch promise -- so a cooperative cancellation
+// or a deadline expiry that happens WHILE the body is still being read
+// surfaces as a rejection from response.text(), not from fetch itself. The
+// body-read catch used to classify every such failure as kind 'malformed'
+// (AgentOutputError), losing the cancellation/timeout taxonomy. It must now
+// apply the same signal-state guard as the fetch-rejection catch above.
+
+/** A fetch stub whose response resolves immediately, but response.text() rejects with `reason` once the given signal aborts. */
+function respondsThenStallsBodyFetch() {
+    return (url, init) => Promise.resolve({
+        status: 200,
+        statusText: 'OK',
+        text: () => new Promise((resolve, reject) => {
+            const signal = init && init.signal;
+            if (!signal) return; // would hang forever; tests always pass a signal
+            if (signal.aborted) {
+                reject(signal.reason);
+                return;
+            }
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        })
+    });
+}
+
+test('postJson - a deadline expiry during the body read raises FleetTransportError (reason: timeout), not AgentOutputError', async () => {
+    const fetchImpl = respondsThenStallsBodyFetch();
+
+    await assert.rejects(
+        postJson({ fetchImpl, url: 'https://example.test/v1/chat/completions', body: {}, timeoutMs: 20 }),
+        (err) => {
+            assert.ok(err instanceof FleetTransportError, `expected FleetTransportError, got ${err.constructor.name}: ${err.message}`);
+            assert.strictEqual(err.details.reason, 'timeout');
+            assert.strictEqual(err instanceof CancelledError, false);
+            return true;
+        }
+    );
+});
+
+test('postJson - a requestStop abort during the body read raises CancelledError (reason: cancelled), not AgentOutputError', async () => {
+    const controller = new AbortController();
+    const fetchImpl = respondsThenStallsBodyFetch();
+
+    const pending = postJson({ fetchImpl, url: 'https://example.test/v1/chat/completions', body: {}, signal: controller.signal });
+    controller.abort(new CancelledError('run stopped'));
+
+    await assert.rejects(pending, (err) => {
+        assert.ok(err instanceof CancelledError, `expected CancelledError, got ${err.constructor.name}`);
+        assert.strictEqual(err.details.reason, 'cancelled');
+        assert.strictEqual(err instanceof FleetTransportError, false);
+        return true;
+    });
+});
+
+test('postJson - a body-read failure with no aborted signal still raises AgentOutputError (reason: malformed_response)', async () => {
+    const readFailure = new Error('premature close');
+    const fetchImpl = () => Promise.resolve({
+        status: 200,
+        statusText: 'OK',
+        text: () => Promise.reject(readFailure)
+    });
+
+    await assert.rejects(
+        postJson({ fetchImpl, url: 'https://example.test/v1/chat/completions', body: {} }),
+        (err) => {
+            assert.ok(err instanceof AgentOutputError, `expected AgentOutputError, got ${err.constructor.name}`);
+            assert.strictEqual(err.details.reason, 'malformed_response');
+            assert.strictEqual(err.cause, readFailure);
+            assert.strictEqual(err instanceof CancelledError, false);
+            assert.strictEqual(err instanceof FleetTransportError, false);
+            return true;
+        }
+    );
 });
 
 test('resolveRequestTimeoutMs - prefers options.timeoutMs, then options.timeout_s, then config.timeoutMs, then the default', () => {
