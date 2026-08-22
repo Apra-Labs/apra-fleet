@@ -840,9 +840,14 @@ export function createBacklog(deps = {}) {
             .filter((b) => b && typeof b.id === 'string' && b.id.length > 0);
         const normalized = rows.map(normalizeBead);
         const partialClaimById = computePartialClaimByBead(normalized, claimedBy);
+        // apra-fleet: stamp `parent` (the parent-child grouping edge,
+        // per parentIdOf's doc comment above) onto every row -- without it,
+        // renderBeadsHtml()'s Backlog branch has no containment info to nest
+        // by and every parent-child-only bead (no `blocks` edge) renders as
+        // a flat root sibling of its own epic, however deep its real nesting.
         const free = rows
             .filter((b) => !claimedBy.has(b.id))
-            .map((b) => ({ ...b, partialClaim: partialClaimById.get(b.id) ?? null }));
+            .map((b) => ({ ...b, parent: parentIdOf(b), partialClaim: partialClaimById.get(b.id) ?? null }));
         return applyBeadFilters(free, filters);
     }
 

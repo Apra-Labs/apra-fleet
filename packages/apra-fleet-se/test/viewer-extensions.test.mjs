@@ -696,6 +696,50 @@ describe('renderBeadsHtml: collapsible/expandable tree nodes and sections (apra-
         assert.ok(expandedHtml.includes(childPrefix + '#BL-2</td>'), 'BL-2 renders normally when nothing is collapsed');
     });
 
+    // apra-fleet: a bead reachable ONLY via a parent-child dependency edge
+    // (no `blocks` edge to anything) used to render as a flat root sibling
+    // of its own epic in the Backlog section -- the tree builder nested
+    // Backlog exclusively by `blocks` edges, never by `parent` containment,
+    // even though Sprint's tree (built from `map`/`childrenOf`) always has.
+    // Regression coverage for the dashboard-side half of the fix (the other
+    // half stamps `parent` onto each row in backlog.mjs's buildBacklogTasks).
+    test('a Backlog bead reachable only via a parent-child edge (no blocks edge) nests under its parent, not as a flat root', () => {
+        const backlogTasks = [
+            { id: 'EPIC-1', title: '[epic] the epic', status: 'open' },
+            { id: 'CHILD-1', title: '[impl] a plain parent-child child', status: 'open', parent: 'EPIC-1', dependencies: [{ depends_on_id: 'EPIC-1', type: 'parent-child' }] },
+        ];
+        const html = renderBeadsHtml([], backlogTasks);
+        assert.ok(html.includes(childPrefix + '#CHILD-1</td>'), 'CHILD-1 must nest under EPIC-1 via the parent-child edge, not render as a flat root');
+    });
+
+    test('a Backlog bead with BOTH a parent-child edge and a blocks edge nests by containment (parent wins over the blocks-edge fallback)', () => {
+        const backlogTasks = [
+            { id: 'EPIC-1', title: '[epic] the epic', status: 'open' },
+            { id: 'OTHER-1', title: '[impl] an unrelated blocker', status: 'open' },
+            {
+                id: 'CHILD-1', title: '[impl] child of the epic, also blocked by OTHER-1', status: 'open', parent: 'EPIC-1',
+                dependencies: [{ depends_on_id: 'EPIC-1', type: 'parent-child' }, { depends_on_id: 'OTHER-1', type: 'blocks' }],
+            },
+        ];
+        const html = renderBeadsHtml([], backlogTasks);
+        const epicIdx = html.indexOf('>#EPIC-1</td>');
+        const childIdx = html.indexOf(childPrefix + '#CHILD-1</td>');
+        assert.ok(epicIdx !== -1 && childIdx !== -1 && childIdx > epicIdx, 'CHILD-1 must nest directly under EPIC-1, not under OTHER-1');
+        assert.ok(html.includes('blocked by: #OTHER-1'), 'the blocks edge is still surfaced as an inline annotation even though it did not decide nesting');
+    });
+
+    test('a Backlog bead with a parent OUTSIDE the dataset falls back to its blocks edge for nesting', () => {
+        const backlogTasks = [
+            { id: 'BLOCKER-1', title: '[impl] the blocker', status: 'open' },
+            {
+                id: 'CHILD-1', title: '[impl] child of an epic not in this dataset', status: 'open', parent: 'EPIC-NOT-HERE',
+                dependencies: [{ depends_on_id: 'EPIC-NOT-HERE', type: 'parent-child' }, { depends_on_id: 'BLOCKER-1', type: 'blocks' }],
+            },
+        ];
+        const html = renderBeadsHtml([], backlogTasks);
+        assert.ok(html.includes(childPrefix + '#CHILD-1</td>'), 'CHILD-1 must still nest under its in-dataset blocker when its parent is out of scope');
+    });
+
     test('the Sprint and Backlog section headers each carry their own toggle, collapsible via synthetic ids', () => {
         const html = renderBeadsHtml([{ id: 'S1', title: 'a sprint task', status: 'open' }], [{ id: 'B1', title: 'a backlog task', status: 'open' }]);
         assert.ok(html.includes('data-toggle-id="section:sprint"'));
