@@ -25,7 +25,7 @@ command construction for a Windows member must branch on `shell` (via the
 `os === 'windows'` with `shell === 'gitbash'` is a POSIX command-construction
 target, byte-identical in shape to a Linux/macOS member. This is the key
 delta from the general cross-shell guidance in
-[docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md),
+[docs/cross-shell-command-construction.md](cross-shell-command-construction.md),
 which predates this feature and still frames every branch point as an
 `agent.os` check -- that guidance remains correct as a POSIX-vs-PowerShell
 framing, but any Windows-specific call site should now resolve through the
@@ -64,8 +64,7 @@ MINGW/MSYS environment, not the Linux subsystem) before it is trusted as
 as Git-for-Windows Bash, reintroducing the exact ambiguity the probe exists
 to eliminate.
 
-## Invariant: the probe's candidate list and the command-builder's candidate
-list for Git-for-Windows Bash must be the same list
+## Invariant: probe and command-builder must share one git-bash candidate list
 
 The shell probe's Git-Bash discovery step checks the two Program Files
 roots, `Program Files\Git\usr\bin`, `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`
@@ -85,8 +84,7 @@ protect. Keeping both candidate lists in one shared source, or otherwise
 enforcing they can't drift apart, is a correctness requirement, not
 stylistic tidiness.
 
-## Design decision: apra-fleet core and fleet-sprint get independent
-implementations of the same pattern, not a shared package
+## Design decision: core and fleet-sprint implement this pattern independently
 
 Both apra-fleet core (compiled TypeScript binary) and fleet-sprint plus its
 supervisor (open, user-copyable `.mjs` source) need the same underlying
