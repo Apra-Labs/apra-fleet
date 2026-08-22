@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
 import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
@@ -379,7 +378,7 @@ export class ClaudeProvider implements ProviderAdapter {
     };
   }
 
-  async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux'): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux', shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40: Claude gates project-scoped permissions.allow entries on
     // projects[<key>].hasTrustDialogAccepted in the member-side ~/.claude.json -- an
     // untrusted workspace silently DROPS them (not merely a cosmetic warning), degrading
@@ -393,7 +392,16 @@ export class ClaudeProvider implements ProviderAdapter {
     // entry -- that is also what makes re-running this idempotent.
     const key = workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
 
-    const isWindows = agentOs === 'windows';
+    // A Windows member registered as Git-for-Windows bash speaks POSIX: the
+    // PowerShell strings below are handed verbatim to bash.exe and fail with
+    // "Get-Content: command not found" -- and because this method never
+    // inspects the write's exit code, that failure surfaces as a FALSE
+    // "seeded trust" while nothing lands on disk (apra-fleet-7dir.2.8).
+    // Selecting the POSIX branch for a gitbash member is what fixes that;
+    // every other Windows member (pwsh7/powershell5/unrecorded) keeps the
+    // byte-identical PowerShell strings it got before.
+    const usePosix = agentOs !== 'windows' || shell === 'gitbash';
+    const isWindows = !usePosix;
     const homeFile = isWindows ? '$env:USERPROFILE\\.claude.json' : '$HOME/.claude.json';
     const tmpFile = isWindows ? '$env:USERPROFILE\\.claude.json.fleet-trust-tmp' : '$HOME/.claude.json.fleet-trust-tmp';
 

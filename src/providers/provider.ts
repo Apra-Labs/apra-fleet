@@ -298,8 +298,11 @@ export interface ProviderAdapter {
    *  `execCommand` is the delivery channel (same one compose_permissions' deliverConfigFile
    *  uses), so this works uniformly for local and remote (SSH) members. Non-Claude
    *  providers no-op -- see each implementation's rationale comment (apra-fleet-eft.40
-   *  provider trust matrix). Callers should log distinctly on `seeded: true` vs `false`. */
-  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult>;
+   *  provider trust matrix). Callers should log distinctly on `seeded: true` vs `false`.
+   *  `shell` is the member's REGISTERED shell and is only meaningful when `agentOs` is
+   *  'windows': a member registered as Git-for-Windows bash needs POSIX command strings,
+   *  because the PowerShell ones are handed straight to bash.exe and fail (apra-fleet-7dir.2.8). */
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 
