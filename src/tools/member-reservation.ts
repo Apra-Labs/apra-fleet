@@ -33,6 +33,10 @@ export async function memberReservation(input: MemberReservationInput): Promise<
   if (typeof existingOrError === 'string') return existingOrError;
   const existing = existingOrError as Agent;
 
+  if (existing.unreservable) {
+    return `[OK] Member "${existing.friendlyName}" is shared/unreservable -- nothing to reserve or release.`;
+  }
+
   const currentOwner = existing.reservedBy ?? null;
 
   if (input.action === 'reserve') {

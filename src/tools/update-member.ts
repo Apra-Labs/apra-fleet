@@ -67,6 +67,7 @@ export const updateMemberSchema = z.object({
     .optional()
     .describe('Free-form labels for this member (max 10 tags, each max 64 chars). Empty array clears all tags; non-empty array replaces existing tags.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Change the code-intelligence provider for this member.'),
+  unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -92,6 +93,18 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   // -- missing it here would silently reopen exactly the bug this closes.
   if (existing.agentType !== 'local' && input.work_folder !== undefined && !isFullyQualifiedPath(input.work_folder)) {
     return workFolderNotAbsoluteError(input.work_folder, 'Member was NOT updated.');
+  }
+
+  // Same constraint as register_member: unreservable is reserved for
+  // llm_provider: 'none' members. Evaluate the RESULTING state (this update's
+  // values where given, else the existing row's), not just this call's inputs
+  // in isolation -- either "set unreservable while already claude/codex/etc."
+  // or "switch llm_provider away from none while already unreservable" must
+  // both be rejected.
+  const resultingUnreservable = input.unreservable ?? existing.unreservable ?? false;
+  const resultingLlmProvider = input.llm_provider ?? existing.llmProvider ?? 'claude';
+  if (resultingUnreservable && resultingLlmProvider !== 'none') {
+    return '❌ "unreservable" requires llm_provider: "none" -- it is reserved for plain command-executor members that never receive an agent dispatch. Member was NOT updated.';
   }
 
   const needsUniquenessCheck = existing.agentType === 'remote'
@@ -188,6 +201,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.category !== undefined) updates.category = input.category.trim() || undefined;
   if (input.tags !== undefined) updates.tags = input.tags.length === 0 ? undefined : input.tags;
   if (input.code_intel_provider !== undefined) updates.codeIntelProvider = input.code_intel_provider;
+  if (input.unreservable !== undefined) updates.unreservable = input.unreservable;
   if (input.model_cheap !== undefined) updates.modelCheap = input.model_cheap;
   if (input.model_standard !== undefined) updates.modelStandard = input.model_standard;
   if (input.model_premium !== undefined) updates.modelPremium = input.model_premium;

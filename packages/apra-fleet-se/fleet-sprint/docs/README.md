@@ -97,6 +97,17 @@ Watch progress there rather than tailing raw stdout.
 Unrecognized flags fail loudly rather than being silently ignored, so a typo
 like `--max-cycle` aborts instead of quietly applying the default.
 
+**A shared/`unreservable` orchestrator member goes in `--role-map` ONLY, never
+in `--members`.** `--members` (and `--role-map` values for git-having roles
+like doer/reviewer/harvester) still get git-identity/topology-checked and, on
+resume, git-resynced. A member registered `unreservable: true` (e.g. a
+beads-only orchestrator shared across concurrent sprints) is exempted from
+those checks only when it appears exclusively via `roleMap.orchestrator` --
+listing it in `--members` too is redundant and not required, and defeats the
+exemption for anything outside the topology precondition (e.g. a paused/
+resumed sprint's resync step still runs real git commands against every
+`--members` entry, unreservable or not).
+
 ## Preconditions worth checking first
 
 - The target issue (e.g. `apra-fleet-7pm`) must exist and be open:
