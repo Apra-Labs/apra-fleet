@@ -3,6 +3,7 @@
  */
 import type { Agent } from '../types.js';
 import type { RemoteOS } from './platform.js';
+import type { MemberShell } from '../os/os-commands.js';
 import { getAgent, findAgentByName, updateAgent } from '../services/registry.js';
 
 /**
@@ -23,6 +24,15 @@ export function getAgentOrFail(id: string): Agent | string {
  */
 export function getAgentOS(agent: Agent): RemoteOS {
   return (agent.os ?? 'linux') as RemoteOS;
+}
+
+/**
+ * Get the registered shell for an agent (undefined if none recorded/detected).
+ * Pass alongside getAgentOS() to getOsCommands() so a gitbash Windows member
+ * resolves to bash command strings instead of the PowerShell default.
+ */
+export function getAgentShell(agent: Agent): MemberShell | undefined {
+  return agent.shell;
 }
 
 /**

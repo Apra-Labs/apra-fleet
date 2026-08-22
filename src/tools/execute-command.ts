@@ -2,7 +2,7 @@ import os from 'node:os';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
@@ -180,7 +180,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     const scope = new LogScope('execute_command', truncateForLog(maskSecrets(input.command), getLogPreviewChars()), agent);
     const onPidCaptured = (pid: number) => scope.info(`pid=${pid}`);
 
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const agentOs = getAgentOS(agent);
     const abortHandler = () => {
       scope.abort('cancelled by MCP client');

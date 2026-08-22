@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -73,7 +73,7 @@ export async function cloudControl(input: CloudControlInput): Promise<string> {
         if (details.state === 'running') {
           try {
             const strategy = getStrategy(agent);
-            const cmds = getOsCommands(getAgentOS(agent));
+            const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
             const gpuResult = await strategy.execCommand(cmds.gpuUtilization(), 10000);
             const gpuUtil = parseGpuUtilization(gpuResult.stdout);
             if (gpuUtil !== undefined) {
