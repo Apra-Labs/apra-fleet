@@ -36,6 +36,16 @@ export function getAgentShell(agent: Agent): MemberShell | undefined {
 }
 
 /**
+ * True when `os`/`shell` resolve to a POSIX-speaking shell -- any non-Windows
+ * OS, or a Windows member registered as Git-for-Windows bash
+ * (apra-fleet-7dir.2.4/2.5). A Windows member with no shell recorded, or
+ * pwsh7/powershell5, still resolves to PowerShell exactly as before.
+ */
+export function isPosixShell(os: RemoteOS, shell?: MemberShell): boolean {
+  return os !== 'windows' || shell === 'gitbash';
+}
+
+/**
  * Format a host label for display.
  * Local agents show "(local)", relay agents show "(relay)", remote agents
  * show "host:port".
