@@ -168,6 +168,20 @@ const SERVER_RETRY_DELAY_MS = 5000;
 // but shares the same underlying single-exec-command-line hazard).
 const REMOTE_PROMPT_CHUNK_CHARS = 4000;
 
+/**
+ * True when this member's remote commands are spoken by a POSIX shell -- any
+ * non-Windows OS, or a Windows member registered as Git-for-Windows bash
+ * (apra-fleet-7dir.5.4). A Windows member with no shell recorded, or with
+ * pwsh7/powershell5, still resolves to PowerShell exactly as before.
+ *
+ * Deliberately a local copy: `isPosixShell` is NOT a shared export -- it is a
+ * private helper duplicated (with differing signatures) in member-home.ts,
+ * orphan-recovery.ts and compose-permissions.ts.
+ */
+function isPosixShellMember(agent: Agent): boolean {
+  return getAgentOS(agent) !== 'windows' || getAgentShell(agent) === 'gitbash';
+}
+
 function chunkContent(content: string): string[] {
   const chunks: string[] = [];
   for (let i = 0; i < content.length; i += REMOTE_PROMPT_CHUNK_CHARS) {
@@ -181,12 +195,21 @@ async function writePromptFile(agent: Agent, strategy: AgentStrategy, promptFile
     fs.writeFileSync(promptFilePath, content, 'utf-8');
     return;
   }
-  const agentOs = getAgentOS(agent);
   const promptFileName = path.basename(promptFilePath);
   const remoteDir = path.dirname(promptFilePath);
   const chunks = chunkContent(content);
 
-  if (agentOs === 'windows') {
+  // apra-fleet-7dir.5.4: the PowerShell branch below is shell-INDEPENDENT as a
+  // string (a single base64 `powershell -EncodedCommand` invocation, safe to
+  // run from bash too), so a gitbash member would survive it. It is routed to
+  // the POSIX branch anyway, so that one member class speaks exactly one shell
+  // end to end: the sibling deletePromptFile's PowerShell branch cannot clean
+  // up the durable stdout mirror (a POSIX /tmp path only bash resolves), and
+  // splitting write/delete across two shells for one member would be the
+  // harder invariant to keep true. The `cd "<folder>"` this branch emits is
+  // the same POSIX form LinuxCommands.buildAgentPromptCommand already uses for
+  // every gitbash dispatch, so it adds no new path-quoting exposure.
+  if (!isPosixShellMember(agent)) {
     const escapedFolder = escapeWindowsArg(remoteDir);
     for (let i = 0; i < chunks.length; i++) {
       const setup = i === 0 ? `New-Item -Path '${escapedFolder}' -ItemType Directory -Force | Out-Null; ` : '';
@@ -216,11 +239,14 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
     }
     return;
   }
-  const agentOs = getAgentOS(agent);
   const promptFileName = path.basename(promptFilePath);
   const remoteDir = path.dirname(promptFilePath);
 
-  if (agentOs === 'windows') {
+  // apra-fleet-7dir.5.4: gitbash members take the POSIX branch, matching
+  // writePromptFile above -- and only that branch deletes `extraPaths` (the
+  // durable stdout mirror), which lives at a POSIX /tmp path PowerShell would
+  // resolve to a different directory entirely.
+  if (!isPosixShellMember(agent)) {
     const escapedFolder = escapeWindowsArg(remoteDir);
     const psScript = `Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue`;
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
@@ -934,9 +960,29 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
 
   // apra-fleet-6z8.1: the per-invocation durable stdout mirror the unix prompt
-  // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). Windows
-  // members have no such companion tee, so recovery is skipped for them.
-  const durablePath = getAgentOS(agent) === 'windows' ? undefined : durableOutputPath(scope.getInv());
+  // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). A
+  // PowerShell Windows member has no such companion tee, so recovery is
+  // skipped for it.
+  //
+  // apra-fleet-7dir.5.4: a Windows member registered as gitbash runs
+  // WindowsGitBashCommands, which INHERITS LinuxCommands.buildAgentPromptCommand
+  // -- so it has already been teeing its stdout to /tmp/.fleet-out-<inv>.json
+  // on every dispatch, with nothing reading it and (because extraPaths was
+  // empty) nothing deleting it. Enabling the mirror for gitbash both turns
+  // recovery on for that member class and makes the file get cleaned up.
+  // This gate and the `unsupported` flag passed to recoverOrphanedDispatch
+  // below are ONE decision: recoverOrphanedDispatch short-circuits on
+  // `unsupported || !durablePath`, so they must always agree -- hence the
+  // single shared predicate.
+  //
+  // LOCAL agents are deliberately excluded from the flip: orphan recovery
+  // exists for a torn-down SSH channel, which a local spawn does not have, and
+  // deletePromptFile's local branch would fs.unlinkSync('/tmp/...') through
+  // Node on Windows (resolving to C:\tmp), not the MSYS /tmp bash teed to.
+  // Non-Windows members (local or remote) keep today's behaviour verbatim.
+  const durableMirrorSupported = getAgentOS(agent) !== 'windows'
+    || (getAgentShell(agent) === 'gitbash' && agent.agentType !== 'local');
+  const durablePath = durableMirrorSupported ? durableOutputPath(scope.getInv()) : undefined;
   const dispatchStartedAt = Date.now();
 
   const timeoutMs = (input.timeout_s ?? 300) * 1000;
@@ -1285,11 +1331,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         cmds,
         pid: capturedPid,
         durablePath,
-        unsupported: getAgentOS(agent) === 'windows',
+        // apra-fleet-7dir.5.4: the SAME predicate that decides `durablePath`
+        // above -- the mirror and recovery are one decision, and enabling
+        // either alone is inert (no file to read / a file nothing reads).
+        unsupported: !durableMirrorSupported,
         os: getAgentOS(agent),
-        // Inert today (the `unsupported` line above short-circuits every
-        // Windows member before any probe is built) but passed for
-        // consistency with the live site above (apra-fleet-7dir.2.4).
+        // Live for gitbash members now that `unsupported` no longer
+        // short-circuits every Windows member: it selects the POSIX
+        // `kill -0` / `cat` probes over the PowerShell ones (apra-fleet-7dir.2.4).
         shell: getAgentShell(agent),
         maxWaitMs: maxTotalMs !== undefined ? Math.max(maxTotalMs - (Date.now() - dispatchStartedAt), 0) : undefined,
         scope,
