@@ -910,7 +910,7 @@ export async function syncMemberBefore(member, opts = {}) {
 export async function syncMemberAfter(member, opts = {}) {
     const {
         command, pushCode = true, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch,
-        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider,
+        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider, setUpstream = false,
     } = opts;
     if (typeof command !== 'function') {
         throw new Error("syncMemberAfter requires an injected command() in opts");
@@ -921,7 +921,15 @@ export async function syncMemberAfter(member, opts = {}) {
     }
     const provider = await resolveGitProviderForClassification(resolveMemberProvider, member, log);
 
-    const pushCmd = branch ? `git push ${remote} ${branch}` : 'git push';
+    // apra-fleet: `setUpstream` (opt-in, default false -- every existing
+    // caller's command text is byte-for-byte unchanged) is for Publish PR's
+    // push specifically: it needs `-u` to set the tracking branch on a brand
+    // new sprint branch's first push, AND that distinct spelling is what lets
+    // mock-sprint-publish-push-failure.test.mjs's `gitGhFailurePattern` (and
+    // any real-world log grep) target Publish's push in isolation from every
+    // OTHER per-dispatch G-push in the same sprint, which all share the plain
+    // `git push <remote> <branch>` spelling below.
+    const pushCmd = branch ? `git push${setUpstream ? ' -u' : ''} ${remote} ${branch}` : 'git push';
 
     let push = await runGitStep({
         command, member, cmd: pushCmd,
@@ -5998,13 +6006,34 @@ async function runSprintCycle(context) {
     // variable -- transparently goes through the wrapped version.
     //
     // The snapshot MUST be invalidated the instant the underlying data can
-    // have changed, so invalidation fires on BOTH:
+    // have changed, so invalidation fires on ALL of:
     //   1. every `phase()` call -- a new step must never inherit a stale view
-    //      from the step before it, and
+    //      from the step before it,
     //   2. every bd command that is not a known read (list/show/ready/config).
     //      Update/create/close/note/dep/dolt-pull are all mutations, and an
     //      unrecognized bd subcommand is conservatively assumed to mutate: the
-    //      failure mode is a redundant full fetch, never silently stale data.
+    //      failure mode is a redundant full fetch, never silently stale data,
+    //      and
+    //   3. every PLANNER dispatch that returns successfully (see the explicit
+    //      invalidateAllBeadsCache() calls right after dispatchPlanner()
+    //      below, in both the main Planning Loop and the in-cycle scoped
+    //      replan). The planner mutates beads on ITS OWN clone via its own
+    //      `bd create` tool calls, never through this orchestrator-side
+    //      `command()` wrapper -- so (2) alone cannot see it, and Execution
+    //      Prep runs later in the SAME "Plan C{cycle} R{round}" phase (no
+    //      intervening phase() call), so (1) cannot see it either. Without
+    //      (3), a planner that creates its task DAG inside one dispatch
+    //      leaves the very next Execution Prep step looking at the pre-plan
+    //      snapshot, which filters those tasks' still-unseen parent features
+    //      out as non-target features and finds nothing ready -- silently
+    //      skipping Develop for that whole cycle (apra-fleet-zmqm).
+    //      Deliberately scoped to the planner only, NOT every dispatch: an
+    //      unconditional per-dispatch invalidation was tried and reverted --
+    //      it defeats the "one full-DB fetch per phase" cost control
+    //      full-db-fetch-tripwire.test.mjs pins, for every OTHER role
+    //      (doer/reviewer/deployer/...) that has no same-phase reader
+    //      depending on its bead mutations the way Execution Prep depends on
+    //      the planner's.
     //      Non-bd commands (git, node probes) never touch beads state.
     let allBeadsSnapshot = null; // { beads } -- cleared by invalidateAllBeadsCache()
     function invalidateAllBeadsCache() { allBeadsSnapshot = null; }
@@ -7820,6 +7849,13 @@ async function runSprintCycle(context) {
                     const skipPreDispatchDoltPull =
                         i === 0 && cycle === 1 && planningRounds === 1 && plannerSharesOrchestratorClone;
                     await dispatchPlanner({ skipPreDispatchSync: skipPreDispatchSyncNext, skipPreDispatchDoltPull });
+                    // apra-fleet-zmqm: the planner just created/mutated beads on
+                    // its own clone via its own bd tool calls -- invisible to
+                    // this orchestrator's command()-wrapper invalidation (see
+                    // fetchAllBeadsShared()'s doc comment, point 3). Execution
+                    // Prep runs later in this SAME phase, so without this the
+                    // cache built before Plan silently survives into it.
+                    invalidateAllBeadsCache();
                     plannerErr = null;
                     break;
                 } catch (err) {
@@ -8273,6 +8309,14 @@ async function runSprintCycle(context) {
                         { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: 'Scoped Replan Plan (interactive)', log }
                     ), { pushBeads: true });
                     log(`Scoped Replan Planner: ${scopedPlannerRes}`);
+                    // apra-fleet-zmqm: same reasoning as the main Planning
+                    // Loop's invalidateAllBeadsCache() call -- this dispatch
+                    // mutated beads on its own clone, and everything after it
+                    // in this same "Replan C{cycle} R{devRounds}" phase (the
+                    // scoped plan-reviewer, the resumed develop round) must
+                    // see those mutations, not the pre-replan snapshot taken
+                    // when this phase() started.
+                    invalidateAllBeadsCache();
                 } catch (err) {
                     scopedPlannerOk = false;
                     // Self-heal an LLM-auth failure so the next cycle's planner
@@ -10652,30 +10696,33 @@ async function runSprintCycle(context) {
     const publishGitMember = getMemberForRole('harvester');
     let pushed = false;
     let lastPushError = '';
-    for (let attempt = 0; attempt < POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length; attempt++) {
-        if (POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt] > 0) {
-            log(`Publish PR: pushing sprint branch '${validated.branch}' failed; retrying in ${POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt] / 1000}s (attempt ${attempt + 1}/${POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length}): ${lastPushError}`);
-            if (!mockInstantRetryBackoff()) {
-                await new Promise((resolve) => setTimeout(resolve, POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt]));
-            }
-        }
-        const pushRes = await command(
-            `git push -u origin ${validated.branch}`,
-            {
-                member_name: publishGitMember,
-                silent: true,
-                failSoft: true,
-                label: `Push sprint branch '${validated.branch}'`,
-            }
-        );
-        if (pushRes.ok) {
-            pushed = true;
-            break;
-        }
-        lastPushError = pushRes.error;
+    // apra-fleet-9wdh-adjacent (Publish-PR push self-heal): this used to retry
+    // the byte-identical `git push` up to 3 times with no fetch/rebase step in
+    // between -- fine for a transient/busy-remote failure, but a genuine
+    // non-fast-forward rejection ("fetch first") is deterministic, so all 3
+    // attempts failed identically and the branch's work was stranded local-
+    // only. syncMemberAfter() (this file, above) already implements the
+    // correct self-heal for exactly this failure shape -- bounded transient
+    // retry, then one pull-rebase-then-re-push on a genuine non-fast-forward
+    // divergence, never a blind force-push -- and every OTHER post-dispatch
+    // G-push in this file already routes through it. Publish PR is the one
+    // push site that bypassed it. Route through it here too instead of the
+    // raw retry loop. NOTE: no `agent` is passed here, so a real content
+    // conflict during the rebase (not just a plain non-FF race) throws
+    // GitDivergedError directly rather than getting syncMemberAfter's
+    // optional Tier 2 conflict-resolution-agent dispatch -- same as the old
+    // loop, which had no Tier 2 either; not a regression.
+    try {
+        await syncMemberAfter(publishGitMember, {
+            command, log, branch: validated.branch, remote: 'origin', setUpstream: true,
+            onAuthFailure, resolveMemberProvider: resolveMemberVcsProvider,
+        });
+        pushed = true;
+    } catch (pushErr) {
+        lastPushError = pushErr.message;
     }
     if (!pushed) {
-        log(`[Publish Push Failed] Could not push sprint branch '${validated.branch}' to origin after ${POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length} attempts -- the sprint's work is COMMITTED LOCALLY ONLY and is NOT on the remote. Skipping PR creation and target-issue closure (neither is meaningful for an unpushed branch); the sprint's own computed verdict (${finalVerdictResult.verdict}) is preserved and returned with pushed:false. Push the branch by hand and raise the PR, or re-run finalization once the remote is reachable. Last error: ${lastPushError}`);
+        log(`[Publish Push Failed] Could not push sprint branch '${validated.branch}' to origin (bounded transient retry, and a rebase-then-re-push if diverged, both exhausted) -- the sprint's work is COMMITTED LOCALLY ONLY and is NOT on the remote. Skipping PR creation and target-issue closure (neither is meaningful for an unpushed branch); the sprint's own computed verdict (${finalVerdictResult.verdict}) is preserved and returned with pushed:false. Push the branch by hand and raise the PR, or re-run finalization once the remote is reachable. Last error: ${lastPushError}`);
         endGroup();
         return {
             status: finalVerdictResult.verdict === 'PASS' ? 'success' : 'failed',

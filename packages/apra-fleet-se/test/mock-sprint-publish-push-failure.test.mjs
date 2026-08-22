@@ -14,18 +14,23 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // step of a sprint that had already done all of its work -- turning a computed
 // PASS into `verdict: 'ABORTED'` over a network hiccup.
 //
-// The minimal hardening (the full pluggable-publish restructure is
-// apra-fleet-647.2, which supersedes this): failSoft + a bounded retry on the
-// existing POST_DISPATCH_SYNC_RETRY_DELAYS_MS backoff; on persistent failure,
-// log loudly, skip everything that is meaningless for an unpushed branch (PR
-// creation, target-issue closure), and return the COMPUTED verdict with
-// `pushed: false`.
-//
-// `gitGhFailurePattern` targets `git push -u origin` specifically -- that exact
-// command shape is used ONLY by the Publish/abort-publish steps; the
-// per-dispatch G-push uses `git push <remote> <branch>` (see syncMemberAfter),
-// so this injection cannot accidentally fail the sprint's ordinary sync
-// brackets.
+// apra-fleet (Publish-PR push self-heal, superseding the original minimal
+// hardening described below): Publish PR no longer issues its own bespoke
+// 3x-identical-retry loop -- it now routes through the SAME syncMemberAfter()
+// every other per-dispatch G-push already uses, via a new opt-in
+// `setUpstream: true` that keeps the `-u origin` spelling (so this scenario's
+// `gitGhFailurePattern` still targets ONLY Publish's push, not every other
+// G-push in the sprint, which stay on the plain `git push <remote> <branch>`
+// syncMemberAfter always used). Publish now gets the exact same bounded
+// transient-retry (maxTransientRetries, inside runGitStep) + one-shot
+// pull-rebase-then-re-push on a genuine non-fast-forward divergence, rather
+// than blindly repeating an identical push 3 times (which could never
+// self-heal a real "fetch first" rejection). A non-diverged failure (this
+// scenario's simulated "Could not resolve host", classified 'transient')
+// still fails after its bounded retry -- there is nothing to rebase against
+// for a transient/unknown failure -- so the original hardening goal
+// (failSoft, loud log, computed verdict preserved, `pushed: false`, PR
+// creation skipped) is unchanged; only the retry COUNT/shape changed.
 // =============================================================================
 
 test('mock sprint: a persistently failing Publish push keeps the computed verdict (pushed:false), skips gh pr create, and never reports ABORTED', { timeout: 180000 }, async () => {
@@ -60,12 +65,15 @@ test('mock sprint: a persistently failing Publish push keeps the computed verdic
             `expected no ABORTED terminal state for a publish-push failure, got: ${JSON.stringify(abortedStates)}`,
         );
 
-        // Bounded retry, not a single shot and not an unbounded loop: the push
-        // is attempted once per POST_DISPATCH_SYNC_RETRY_DELAYS_MS entry (3).
+        // Bounded retry, not a single shot and not an unbounded loop: a
+        // 'transient'-classified failure (this scenario's simulated DNS
+        // failure) gets syncMemberAfter's own bounded retry -- the initial
+        // attempt plus maxTransientRetries (default 1) -- then fails for
+        // good; there is no rebase to attempt against a non-diverged error.
         const publishPushes = scenario.commandLog.filter((c) => /^git push -u origin/.test(c));
         check(
-            publishPushes.length === 3,
-            `expected exactly 3 bounded publish-push attempts, got ${publishPushes.length}: ${JSON.stringify(publishPushes)}`,
+            publishPushes.length === 2,
+            `expected exactly 2 bounded publish-push attempts (1 initial + 1 transient retry), got ${publishPushes.length}: ${JSON.stringify(publishPushes)}`,
         );
 
         // Loud, not silent.

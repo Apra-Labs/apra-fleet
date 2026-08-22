@@ -217,6 +217,24 @@ describe('backlog -- createBacklog production default computes claimed scope in-
         await backlog.buildBacklogTasks();
         assert.equal(listAllBeadsCalls, 1, 'buildBacklogTasks() must call listAllBeads() exactly once');
     });
+
+    // apra-fleet: buildBacklogTasks()'s returned rows used to carry no
+    // `parent` field at all (only the raw `dependencies` array), so
+    // renderBeadsHtml()'s Backlog tree had nothing to nest a parent-child-only
+    // bead by and it rendered as a flat root alongside its own epic. Pins the
+    // `parent: parentIdOf(b)` stamp added to close that gap.
+    test('buildBacklogTasks() stamps `parent` (via parentIdOf) onto every free row', async () => {
+        const backlog = createBacklog({
+            ledger: fakeLedger([]),
+            listAllBeads: () => allBeads,
+        });
+        const { tasks } = await backlog.buildBacklogTasks();
+        const c1 = tasks.find((t) => t.id === 'c1');
+        const epic = tasks.find((t) => t.id === 'E');
+        assert.ok(c1, 'expected c1 to be present in the free backlog set');
+        assert.equal(c1.parent, 'E', "c1's stamped parent must match its parent-child dependency edge");
+        assert.equal(epic.parent, null, 'a root bead with no parent-child edge stamps parent: null, not undefined');
+    });
 });
 
 describe('backlog -- formatPartialClaim', () => {
