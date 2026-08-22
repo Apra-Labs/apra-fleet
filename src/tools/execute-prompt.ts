@@ -365,7 +365,7 @@ async function findDeadLockPid(agent: Agent, workspaceId: string): Promise<numbe
   if (subprocessPid !== undefined) {
     const alive = agent.agentType === 'local'
       ? isPidAlive(subprocessPid)
-      : await isRemoteProcessAlive(getStrategy(agent), subprocessPid, getAgentOS(agent));
+      : await isRemoteProcessAlive(getStrategy(agent), subprocessPid, getAgentOS(agent), getAgentShell(agent));
     if (!alive) return subprocessPid;
   }
 
@@ -1287,6 +1287,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         durablePath,
         unsupported: getAgentOS(agent) === 'windows',
         os: getAgentOS(agent),
+        // Inert today (the `unsupported` line above short-circuits every
+        // Windows member before any probe is built) but passed for
+        // consistency with the live site above (apra-fleet-7dir.2.4).
+        shell: getAgentShell(agent),
         maxWaitMs: maxTotalMs !== undefined ? Math.max(maxTotalMs - (Date.now() - dispatchStartedAt), 0) : undefined,
         scope,
       });
