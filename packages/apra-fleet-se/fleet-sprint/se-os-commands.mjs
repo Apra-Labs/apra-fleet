@@ -44,12 +44,15 @@
 
 import { SePosixCommands } from './se-posix.mjs';
 import { SeWindowsCommands } from './se-windows.mjs';
+import { SeWindowsGitbashCommands } from './se-windows-gitbash.mjs';
 
 export { SePosixCommands } from './se-posix.mjs';
 export { SeWindowsCommands } from './se-windows.mjs';
+export { SeWindowsGitbashCommands } from './se-windows-gitbash.mjs';
 
 const posix = new SePosixCommands();
 const windowsPowerShell = new SeWindowsCommands();
+const windowsGitbash = new SeWindowsGitbashCommands();
 
 /** Normalize whatever a caller has to hand into { os, shell }. */
 function normalizeTarget(target) {
@@ -75,11 +78,13 @@ function normalizeTarget(target) {
  * @returns {SePosixCommands|SeWindowsCommands}
  */
 export function getSeCommands(target) {
-  const { os } = normalizeTarget(target);
+  const { os, shell } = normalizeTarget(target);
   if (os === 'windows' || os === 'win32') {
-    // A Windows member with no recorded shell is a PowerShell member: that is
-    // what every Windows member was assumed to be before shells were
-    // recorded, so it must stay byte-identical.
+    if (shell === 'gitbash') return windowsGitbash;
+    // A Windows member with no recorded shell (or any shell other than
+    // gitbash) is a PowerShell member: that is what every Windows member was
+    // assumed to be before shells were recorded, so it must stay
+    // byte-identical.
     return windowsPowerShell;
   }
   return posix;
