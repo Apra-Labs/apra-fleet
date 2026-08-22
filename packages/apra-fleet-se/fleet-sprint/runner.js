@@ -10702,12 +10702,16 @@ async function runSprintCycle(context) {
     // non-fast-forward rejection ("fetch first") is deterministic, so all 3
     // attempts failed identically and the branch's work was stranded local-
     // only. syncMemberAfter() (this file, above) already implements the
-    // correct self-heal for exactly this failure shape -- one bounded
-    // pull-rebase retry, then Tier 2 conflict-resolution-agent dispatch when
-    // rebase hits a real content conflict, never a blind force-push -- and
-    // every OTHER post-dispatch G-push in this file already routes through
-    // it. Publish PR is the one push site that bypassed it. Route through it
-    // here too instead of the raw retry loop.
+    // correct self-heal for exactly this failure shape -- bounded transient
+    // retry, then one pull-rebase-then-re-push on a genuine non-fast-forward
+    // divergence, never a blind force-push -- and every OTHER post-dispatch
+    // G-push in this file already routes through it. Publish PR is the one
+    // push site that bypassed it. Route through it here too instead of the
+    // raw retry loop. NOTE: no `agent` is passed here, so a real content
+    // conflict during the rebase (not just a plain non-FF race) throws
+    // GitDivergedError directly rather than getting syncMemberAfter's
+    // optional Tier 2 conflict-resolution-agent dispatch -- same as the old
+    // loop, which had no Tier 2 either; not a regression.
     try {
         await syncMemberAfter(publishGitMember, {
             command, log, branch: validated.branch, remote: 'origin', setUpstream: true,
@@ -10718,7 +10722,7 @@ async function runSprintCycle(context) {
         lastPushError = pushErr.message;
     }
     if (!pushed) {
-        log(`[Publish Push Failed] Could not push sprint branch '${validated.branch}' to origin after ${POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length} attempts -- the sprint's work is COMMITTED LOCALLY ONLY and is NOT on the remote. Skipping PR creation and target-issue closure (neither is meaningful for an unpushed branch); the sprint's own computed verdict (${finalVerdictResult.verdict}) is preserved and returned with pushed:false. Push the branch by hand and raise the PR, or re-run finalization once the remote is reachable. Last error: ${lastPushError}`);
+        log(`[Publish Push Failed] Could not push sprint branch '${validated.branch}' to origin (bounded transient retry, and a rebase-then-re-push if diverged, both exhausted) -- the sprint's work is COMMITTED LOCALLY ONLY and is NOT on the remote. Skipping PR creation and target-issue closure (neither is meaningful for an unpushed branch); the sprint's own computed verdict (${finalVerdictResult.verdict}) is preserved and returned with pushed:false. Push the branch by hand and raise the PR, or re-run finalization once the remote is reachable. Last error: ${lastPushError}`);
         endGroup();
         return {
             status: finalVerdictResult.verdict === 'PASS' ? 'success' : 'failed',
