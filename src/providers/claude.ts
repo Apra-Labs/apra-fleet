@@ -7,6 +7,8 @@ import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -48,8 +50,16 @@ export class ClaudeProvider implements ProviderAdapter {
     return 'claude --version 2>&1';
   }
 
-  installCommand(os: 'linux' | 'macos' | 'windows'): string {
+  installCommand(os: 'linux' | 'macos' | 'windows', shell?: MemberShell): string {
     if (os === 'windows') {
+      // The raw `irm ... | iex` form is PowerShell-only syntax -- it only
+      // works when the executing shell IS PowerShell. A gitbash member's
+      // command strings run in bash directly (apra-fleet-7dir.2.4/2.7), so
+      // route through the same base64 -EncodedCommand envelope every other
+      // Windows-targeting PowerShell invocation in this codebase uses.
+      if (shell === 'gitbash') {
+        return wrapPowerShellEncoded('irm https://claude.ai/install.ps1 | iex');
+      }
       return 'irm https://claude.ai/install.ps1 | iex';
     }
     return 'curl -fsSL https://claude.ai/install.sh | bash';
