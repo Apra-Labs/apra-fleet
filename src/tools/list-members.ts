@@ -118,6 +118,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         category: a.category ?? null,
         tags: a.tags ?? null,
         reservedBy: a.reservedBy ?? null,
+        unreservable: a.unreservable ?? false,
       })),
     });
   }
@@ -155,6 +156,9 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
       }
       if (a.reservedBy) {
         t += ` | reserved-by=${a.reservedBy}`;
+      }
+      if (a.unreservable) {
+        t += ` | unreservable`;
       }
       t += '\n';
     }

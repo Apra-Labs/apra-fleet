@@ -2765,12 +2765,16 @@ export function createUnattendedAutoProvisioner(opts = {}) {
  * greps deploy.md by hand and runs compose_permissions manually -- exactly
  * the failure mode this closes the loop on.
  *
- * Reads deploy.md via `command()` against the ORCHESTRATOR member (its own
- * checkout is the source of truth for what is about to be dispatched) and
- * caches the parsed prefix list for the lifetime of the returned function --
- * one read per sprint run, since deploy.md does not change mid-run on a
- * healthy pipeline. Also caches per TARGET member, like
- * createUnattendedAutoProvisioner above, so repeat cycles don't re-grant.
+ * Reads deploy.md via `command()` against the FIRST target member it is asked
+ * to provision (that member is about to be dispatched as deployer/
+ * integ-test-runner/regression-test-runner, so its own checkout is the source
+ * of truth for what it is about to run) and caches the parsed prefix list for
+ * the lifetime of the returned function -- one read per sprint run, since
+ * deploy.md does not change mid-run on a healthy pipeline. Also caches per
+ * TARGET member, like createUnattendedAutoProvisioner above, so repeat cycles
+ * don't re-grant. Deliberately does NOT read via a separate orchestrator
+ * member: the orchestrator role may be shared/unreservable across concurrent
+ * sprints and carries no git checkout of its own to read from.
  *
  * Failure at any step (probe fails, deploy.md missing/unparseable,
  * compose_permissions unreachable, a listed prefix hitting the
@@ -2778,23 +2782,23 @@ export function createUnattendedAutoProvisioner(opts = {}) {
  * best-effort acceleration -- the deployer's own Step 0a check remains the
  * authoritative, fail-closed backstop regardless of whether this succeeds.
  *
- * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, orchestratorMember: string, log?: Function }} opts
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function }} opts
  * @returns {(member: string) => Promise<void>}
  */
 export function createDeployPermissionsProvisioner(opts = {}) {
-    const { callTool, command, orchestratorMember, log = () => {} } = opts;
+    const { callTool, command, log = () => {} } = opts;
     const fleetApi = new ApraFleet({ callTool });
     /** @type {Set<string>} members already granted deploy.md's permissions this run. */
     const provisioned = new Set();
     /** @type {string[] | null | undefined} undefined = not yet attempted. */
     let cachedPrefixes;
 
-    async function loadRequiredPrefixes() {
+    async function loadRequiredPrefixes(targetMember) {
         if (cachedPrefixes !== undefined) return cachedPrefixes;
         try {
             const res = await command(
                 `node -e "const fs=require('fs'); if(fs.existsSync('deploy.md')) process.stdout.write(fs.readFileSync('deploy.md','utf8'))"`,
-                { member_name: orchestratorMember, silent: true, label: `Read deploy.md permissions`, failSoft: true },
+                { member_name: targetMember, silent: true, label: `Read deploy.md permissions`, failSoft: true },
             );
             if (!res.ok || !res.output) {
                 cachedPrefixes = null;
@@ -2812,7 +2816,7 @@ export function createDeployPermissionsProvisioner(opts = {}) {
 
     return async function ensureDeployPermissions(member) {
         if (!member || provisioned.has(member)) return;
-        const prefixes = await loadRequiredPrefixes();
+        const prefixes = await loadRequiredPrefixes(member);
         if (!prefixes) return;
         try {
             const result = await fleetApi.composePermissions({
@@ -6351,6 +6355,17 @@ async function runSprintCycle(context) {
     // Uses the canonical ROLE_ORCHESTRATOR constant, not a literal -- see its
     // doc comment for why 'orchestrator' is an application-level pseudo-role
     // deliberately outside contracts.ROLES.
+    //
+    // apra-fleet-TODO(orchestrator-hard-fail): an unmapped orchestrator
+    // silently falling back to unmappedRoleFallbackPool[0] is a known defect
+    // (docs/design-orchestrator-worktree-model-v2.md section 1/6.4) -- it has
+    // repeatedly caused the orchestrator to run against a stale/wrong-scope bd
+    // clone. Making this a hard launch-time failure is the intended fix, but
+    // it cannot land in isolation: it requires the supervisor to
+    // auto-inject roleMap.orchestrator on every launch first (section 6.2,
+    // not yet implemented) -- otherwise every existing caller that relies on
+    // the implicit fallback (including this file's own test harness) breaks.
+    // Land 6.2, update callers, THEN make this throw.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
 
     // Self-heals deploy.md's declared Permissions onto the deployer /
@@ -6362,7 +6377,7 @@ async function runSprintCycle(context) {
     // from `args.callTool`, else a no-op when neither is available.
     const ensureDeployPermissions = context.ensureDeployPermissions ?? (
         (args && typeof args.callTool === 'function')
-            ? createDeployPermissionsProvisioner({ callTool: args.callTool, command, orchestratorMember, log })
+            ? createDeployPermissionsProvisioner({ callTool: args.callTool, command, log })
             : async () => {}
     );
 
@@ -7012,8 +7027,14 @@ async function runSprintCycle(context) {
     // sprint starts; this ensure-everywhere is the git half of the same "every
     // member starts from the same state" guarantee. See docs/architecture.md
     // "Multi-member topology (fleet-sprint)".
+    // apra-fleet: orchestratorMember is deliberately NOT included here -- the
+    // orchestrator role issues only bd/Dolt commands (never git), and a
+    // shared/unreservable orchestrator member used across concurrent sprints
+    // cannot be checked out onto N different branches at once. If an operator
+    // explicitly role-maps a dispatch member (doer/reviewer/planner/etc.) as
+    // orchestrator too, that member is still included below via its dispatch
+    // role, so the ensure-everywhere guarantee is unaffected for that case.
     const branchEnsureMembers = [...new Set([
-        orchestratorMember,
         ...getMembersForRole(ROLE_DOER),
         ...getMembersForRole(ROLE_REVIEWER),
         ...getMembersForRole('planner'),
@@ -7338,10 +7359,13 @@ async function runSprintCycle(context) {
     // single-quoted JS literals inside a double-quoted shell argument (no
     // escaped-quote-inside-quote traps). failSoft, so a probe failure can never
     // throw and kill the sprint -- it just means "skip the dependent phase".
-    async function probeFileExists(filename) {
+    // Runs on `member` -- the role member about to consume the probed file --
+    // never on orchestratorMember: a shared/unreservable orchestrator member
+    // carries no git checkout to probe.
+    async function probeFileExists(filename, member) {
         const res = await command(
             `node -e "console.log(require('fs').existsSync('${filename}') ? 'found' : 'not found')"`,
-            { member_name: orchestratorMember, silent: true, label: `Probe for '${filename}'`, failSoft: true }
+            { member_name: member, silent: true, label: `Probe for '${filename}'`, failSoft: true }
         );
         if (!res.ok) {
             log(`Probe for '${filename}' failed (treating as not-found, skipping the dependent phase): ${res.error}`);
@@ -9281,8 +9305,8 @@ async function runSprintCycle(context) {
         // error, portability quirk on a given member, etc.) SKIPS the dependent
         // phase with a logged warning -- it must never throw and kill the
         // sprint.
-        const hasDeploy = await probeFileExists('deploy.md');
-        const hasPlaybook = await probeFileExists('integ-test-playbook.md');
+        const hasDeploy = await probeFileExists('deploy.md', getMemberForRole('deployer'));
+        const hasPlaybook = await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner'));
 
         let deployedThisCycle = false;
 
@@ -10318,7 +10342,7 @@ async function runSprintCycle(context) {
     // part 2 provisions its own fresh sandbox install, so neither depends on
     // the per-cycle Deploy target.
     let regressionResult = null;
-    const hasRegressionPlaybook = await probeFileExists('regression-test-playbook.md');
+    const hasRegressionPlaybook = await probeFileExists('regression-test-playbook.md', getMemberForRole('regression-test-runner'));
     if (hasRegressionPlaybook) {
         phase(`Regression Test C${finalCycleLabel}`);
         await ensureUnattendedAuto(getMemberForRole('regression-test-runner'));
@@ -10996,9 +11020,25 @@ export async function main(context) {
         // the watchdog needs a reason either way.
         if (isTypedAbortError(err)) {
             try {
-                const member = (validatedForLock.roleMap && validatedForLock.roleMap[ROLE_ORCHESTRATOR] && validatedForLock.roleMap[ROLE_ORCHESTRATOR].length > 0)
-                    ? validatedForLock.roleMap[ROLE_ORCHESTRATOR][0]
-                    : validatedForLock.members[0];
+                // apra-fleet: finalizeAbort() runs `git fetch`/`git push` against
+                // this member's LOCAL checkout, which the orchestrator role no
+                // longer has (it may be a shared/unreservable, git-less member --
+                // see docs/design-orchestrator-worktree-model-v2.md section 4.5).
+                // Resolve a git-capable DISPATCH member instead: the harvester's
+                // member (the last code-writing role, so its clone pushed most
+                // recently), falling back to the first doer, never
+                // roleMap.orchestrator and never a bare validatedForLock.members[0]
+                // pick (that silent pick is the original bug this closes).
+                const roleMap = validatedForLock.roleMap;
+                const harvesterMembers = (roleMap && Array.isArray(roleMap['harvester'])) ? roleMap['harvester'] : [];
+                const doerMembers = (roleMap && Array.isArray(roleMap[ROLE_DOER])) ? roleMap[ROLE_DOER] : [];
+                const member = harvesterMembers[0]
+                    ?? doerMembers[0]
+                    ?? validatedForLock.members.find((m) => !roleMap || !roleMap[ROLE_ORCHESTRATOR] || !roleMap[ROLE_ORCHESTRATOR].includes(m));
+                if (!member) {
+                    log('[Terminal History] finalizeAbort() skipped: no harvester/doer/dispatch member could be resolved to push the aborted branch.');
+                    throw new Error('no git-capable member resolved for finalizeAbort');
+                }
                 abortResult = await finalizeAbort({
                     error: err,
                     branch,

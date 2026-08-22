@@ -49,6 +49,11 @@ export interface Agent {
    *  service-local supervisor ledger. Set/enforced by later eft.10.x tasks;
    *  this field only introduces and persists the value. */
   reservedBy?: string | null;
+  /** This member fills a role (e.g. fleet-sprint's `orchestrator`) that is
+   *  designed to be shared by more than one sprint at once, so it can never
+   *  be exclusively reserved: reserve/release/force_release are no-op
+   *  successes and overlap guards skip it. Defaults to false/absent. */
+  unreservable?: boolean;
 }
 
 export interface GitHubAppConfig {

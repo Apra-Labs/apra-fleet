@@ -104,6 +104,7 @@
  * @property {string} [category] - Optional group label
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
+ * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "orchestrator" role)
  */
 
 /**
@@ -122,6 +123,7 @@
  * @property {string} [category] - Group label
  * @property {string[]} [tags] - Free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode
+ * @property {boolean} [unreservable] - Mark/unmark this member as shared/never exclusively reservable
  */
 
 /**

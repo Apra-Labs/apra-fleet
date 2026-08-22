@@ -100,12 +100,21 @@ function normalizeMembers(value) {
     return out;
 }
 
-/** The full member set a reservation covers: the union of --members and every roleMap value. */
-function memberUnion(members, roleMap) {
+/**
+ * The full member set a reservation covers: the union of --members and every
+ * roleMap value. `exclude` (unreservable member names -- see
+ * unreservableMemberNames() below) is subtracted from the union: a shared
+ * orchestrator member is never part of a sprint's exclusive reservation, so it
+ * never reaches `beforeLaunch` or `ledger.claim`.
+ */
+function memberUnion(members, roleMap, exclude) {
     const seen = new Set();
     const out = [];
     const add = (m) => {
-        if (typeof m === 'string' && m.length > 0 && !seen.has(m)) { seen.add(m); out.push(m); }
+        if (typeof m === 'string' && m.length > 0 && !seen.has(m) && !(exclude && exclude.has(m))) {
+            seen.add(m);
+            out.push(m);
+        }
     };
     for (const m of members) add(m);
     if (roleMap && typeof roleMap === 'object') {
@@ -114,6 +123,30 @@ function memberUnion(members, roleMap) {
         }
     }
     return out;
+}
+
+/**
+ * Best-effort set of member names currently flagged `unreservable: true` by
+ * the fleet server's own member list (e.g. a member filling fleet-sprint's
+ * shared `orchestrator` role across many concurrent sprints). A `listMembers`
+ * failure yields an empty set -- this is defense in depth on top of the
+ * server-side no-op in member-reservation.ts, not the sole enforcement point.
+ * @param {() => Promise<object|object[]>|object|object[]} [listMembers]
+ * @returns {Promise<Set<string>>}
+ */
+async function unreservableMemberNames(listMembers) {
+    if (typeof listMembers !== 'function') return new Set();
+    try {
+        const raw = await listMembers();
+        const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
+        const out = new Set();
+        for (const m of list) {
+            if (m && typeof m === 'object' && m.name && m.unreservable) out.add(m.name);
+        }
+        return out;
+    } catch {
+        return new Set();
+    }
 }
 
 /**
@@ -188,6 +221,7 @@ export function defaultMemberOverlapGuard(ledger, listMembers) {
                 const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
                 for (const m of list) {
                     if (!m || typeof m !== 'object') continue;
+                    if (m.unreservable) continue;
                     if (m.name && m.reservedBy && requestSet.has(m.name)) {
                         addConflict(m.reservedBy, m.name);
                     }
@@ -439,7 +473,8 @@ export function createSprintController(deps = {}) {
             ? undefined
             : (typeof body.roleMap === 'string' ? body.roleMap : JSON.stringify(body.roleMap));
         const roleMap = await roleMapResolver(rawRoleMap);
-        const union = memberUnion(members, roleMap);
+        const unreservable = await unreservableMemberNames(listMembers);
+        const union = memberUnion(members, roleMap, unreservable);
         // apra-fleet-ymf.1: issueRoots is the SPLIT array of individual ids
         // (never the raw comma-joined string) -- the same shape the CLI path
         // already feeds runner.js's targetIssues, and what the ledger schema,
