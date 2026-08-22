@@ -4,6 +4,7 @@ import type { LlmProvider } from '../types.js';
 import type { SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
 
 export type { LlmProvider };
 
@@ -159,7 +160,12 @@ export interface ProviderAdapter {
   // CLI command building
   cliCommand(args: string): string;
   versionCommand(): string;
-  installCommand(os: 'linux' | 'macos' | 'windows'): string;
+  /** `shell` is the member's registered shell (only meaningful for
+   *  `os === 'windows'`). A gitbash Windows member gets a bash-invokable
+   *  install string; every other combination -- including a Windows member
+   *  with no shell recorded, or pwsh7/powershell5 -- resolves exactly as it
+   *  did before the shell parameter existed (apra-fleet-7dir.2.7). */
+  installCommand(os: 'linux' | 'macos' | 'windows', shell?: MemberShell): string;
   updateCommand(): string;
 
   // Prompt building

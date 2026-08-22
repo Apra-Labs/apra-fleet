@@ -128,8 +128,8 @@ export class WindowsGitBashCommands extends LinuxCommands {
   // --- Generic agent CLI ---
 
   override installAgent(provider: ProviderAdapter): string {
-    // The member is a Windows host; only the shell differs.
-    return provider.installCommand('windows');
+    // The member is a Windows host; only the shell differs (apra-fleet-7dir.2.7).
+    return provider.installCommand('windows', 'gitbash');
   }
 
   // --- Auth ---
