@@ -10618,6 +10618,15 @@ async function runSprintCycle(context) {
     // closing the sprint's target issue would advertise a completion nobody can
     // see. This is the deliberately MINIMAL hardening -- the pluggable-publish
     // restructure is apra-fleet-647.2, which supersedes it.
+    // apra-fleet: this push and the origin-remote read just below it run on
+    // publishGitMember -- a real dispatch member with an actual git checkout
+    // (harvester, falling back to the fallback pool like every other role
+    // resolution in this file) -- NEVER orchestratorMember, which may be a
+    // shared/unreservable, git-less member (docs/design-orchestrator-
+    // worktree-model-v2.md section 4.3/4.5). raiseVcsPrForMember() below
+    // stays on orchestratorMember: it is a credential-file read + REST call,
+    // not git, and is explicitly designed to stay there (section 4.6).
+    const publishGitMember = getMemberForRole('harvester');
     let pushed = false;
     let lastPushError = '';
     for (let attempt = 0; attempt < POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length; attempt++) {
@@ -10630,7 +10639,7 @@ async function runSprintCycle(context) {
         const pushRes = await command(
             `git push -u origin ${validated.branch}`,
             {
-                member_name: orchestratorMember,
+                member_name: publishGitMember,
                 silent: true,
                 failSoft: true,
                 label: `Push sprint branch '${validated.branch}'`,
@@ -10674,7 +10683,7 @@ async function runSprintCycle(context) {
     // capabilities()'s own contract -- so a probe hiccup here can never kill
     // the sprint.
     const originUrlRes = await command('git remote get-url origin', {
-        member_name: orchestratorMember,
+        member_name: publishGitMember,
         silent: true,
         failSoft: true,
         label: 'Resolve origin remote URL',
