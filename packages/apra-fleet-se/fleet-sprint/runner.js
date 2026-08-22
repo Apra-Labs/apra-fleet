@@ -7495,8 +7495,8 @@ async function runSprintCycle(context) {
                         `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
                         `are not visible to the orchestrator member ('${orchestratorMember}')'s bd clone at all: ` +
                         `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
-                        `means they were created/updated on a different clone that was never pushed to the shared Dolt remote ` +
-                        `(run 'bd dolt push' there first) or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`
+                        `means they were created/updated on a different clone that was never synced to the shared Dolt remote ` +
+                        `(dolt-push it there first) or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`
                     );
                 }
                 throw new Error(`Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`);
