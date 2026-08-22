@@ -76,6 +76,22 @@ function settingsCommands(): string[] {
     .filter(cmd => cmd.includes('settings.local.json'));
 }
 
+/**
+ * Command strings touching the member's `<workFolder>/.claude` delivery
+ * directory or file -- includes the mkdir/New-Item call, which
+ * settingsCommands() above misses (its dir path has no "settings.local.json"
+ * substring). Filtered on the literal workFolder-derived prefix, not a bare
+ * ".claude" substring, so it does NOT also catch ensureWorkspaceTrusted's
+ * unrelated `$env:USERPROFILE\.claude.json` / `$HOME/.claude.json` calls
+ * (apra-fleet-eft.40), which share the ".claude" substring but never the
+ * member's workFolder path.
+ */
+function claudeDeliveryCommands(workFolderPrefix: string): string[] {
+  return mockExecCommand.mock.calls
+    .map(c => c[0] as string)
+    .filter(cmd => cmd.includes(workFolderPrefix));
+}
+
 const POWERSHELL_CMDLET_PATTERN = /New-Item|Get-Content|WriteAllText|Set-Content|-ErrorAction/;
 
 beforeEach(() => {
@@ -136,16 +152,28 @@ describe('compose-permissions -- gitbash branch of config delivery (apra-fleet-7
     }
 
     // mkdir uses the POSIX form, not New-Item.
-    const mkdirCmds = mockExecCommand.mock.calls
-      .map(c => c[0] as string)
-      .filter(cmd => cmd.includes('.claude"') && (cmd.startsWith('mkdir') || cmd.startsWith('New-Item')));
+    const mkdirCmds = claudeDeliveryCommands('C:/Users/gitbash-member/project/.claude')
+      .filter(cmd => cmd.startsWith('mkdir') || cmd.startsWith('New-Item'));
     expect(mkdirCmds.length).toBeGreaterThan(0);
-    for (const cmd of mkdirCmds) {
-      expect(cmd).toMatch(/^mkdir -p /);
-    }
+    expect(mkdirCmds).toEqual(['mkdir -p "C:/Users/gitbash-member/project/.claude"']);
   });
 
-  it('windows members with shell powershell5, pwsh7 or unset all get byte-identical PowerShell command strings (golden compare)', async () => {
+  // Literal expected command strings for a windows member on a non-gitbash
+  // shell, built the same way src/tools/compose-permissions.ts's
+  // resolveRemotePath/deliverConfigFile derive them for workFolder
+  // 'C:\Users\win-member\project'. Exact-string (not substring) assertions,
+  // per acceptance criteria "golden-compared and fail if any existing
+  // PowerShell string changes" -- a rename of FLEET_PERMS_EOF's Windows
+  // counterpart, a switch to Set-Content, or a dropped -ErrorAction flag must
+  // all fail this test, not just a change to the gitbash branch.
+  const WIN_DIR = 'C:\\Users\\win-member\\project\\.claude';
+  const WIN_SETTINGS_PATH = 'C:\\Users\\win-member\\project\\.claude\\settings.local.json';
+  const EXPECTED_MKDIR = `New-Item -ItemType Directory -Force "${WIN_DIR}"`;
+  const EXPECTED_READ = `Get-Content -Raw "${WIN_SETTINGS_PATH}" -ErrorAction SilentlyContinue`;
+  const EXPECTED_WRITE_PREFIX = `[System.IO.File]::WriteAllText("${WIN_SETTINGS_PATH}", '`;
+  const EXPECTED_WRITE_SUFFIX = `', (New-Object System.Text.UTF8Encoding($false)))`;
+
+  it('windows members with shell powershell5, pwsh7 or unset all get byte-identical, golden-pinned PowerShell command strings', async () => {
     const shells: Array<MemberShell | undefined> = ['powershell5', 'pwsh7', undefined];
     const perShellCmds: string[][] = [];
 
@@ -170,7 +198,7 @@ describe('compose-permissions -- gitbash branch of config delivery (apra-fleet-7
       });
       expect(result).toContain('Granted');
 
-      perShellCmds.push(settingsCommands());
+      perShellCmds.push(claudeDeliveryCommands(WIN_DIR));
     }
 
     expect(perShellCmds[0].length).toBeGreaterThan(0);
@@ -180,17 +208,32 @@ describe('compose-permissions -- gitbash branch of config delivery (apra-fleet-7
     expect(perShellCmds[1]).toEqual(perShellCmds[0]);
     expect(perShellCmds[2]).toEqual(perShellCmds[0]);
 
+    // mkdir: exactly one New-Item call, matching the golden string exactly.
+    const mkdirCmds = perShellCmds[0].filter(cmd => cmd.startsWith('New-Item') || cmd.startsWith('mkdir'));
+    expect(mkdirCmds).toEqual([EXPECTED_MKDIR]);
+
+    // reads (the grant-mode merge pre-read at compose-permissions.ts:536-538,
+    // deliverConfigFile's own merge-read, and its post-write read-back) are
+    // all the same golden Get-Content string.
+    const readCmds = perShellCmds[0].filter(cmd => cmd.startsWith('Get-Content'));
+    expect(readCmds.length).toBeGreaterThan(0);
+    for (const cmd of readCmds) {
+      expect(cmd).toBe(EXPECTED_READ);
+    }
+
+    // write: exact prefix/suffix golden-pinned; only the merged JSON content
+    // between them is allowed to vary (that content is covered elsewhere,
+    // e.g. compose-permissions-persist.test.ts and compose-permissions.test.ts).
+    const writeCmds = perShellCmds[0].filter(cmd => cmd.startsWith('[System.IO.File]::WriteAllText'));
+    expect(writeCmds.length).toBe(1);
+    expect(writeCmds[0].startsWith(EXPECTED_WRITE_PREFIX)).toBe(true);
+    expect(writeCmds[0].endsWith(EXPECTED_WRITE_SUFFIX)).toBe(true);
+
+    // No POSIX form anywhere in these commands.
     for (const cmd of perShellCmds[0]) {
       expect(cmd).not.toContain('cat >');
       expect(cmd).not.toContain('mkdir -p');
-    }
-    const writeCmd = perShellCmds[0].find(cmd => cmd.includes('WriteAllText'));
-    expect(writeCmd).toBeDefined();
-    expect(writeCmd).toContain('UTF8Encoding($false)');
-    const readCmds = perShellCmds[0].filter(cmd => cmd.includes('Get-Content -Raw'));
-    expect(readCmds.length).toBeGreaterThan(0);
-    for (const cmd of readCmds) {
-      expect(cmd).toContain('-ErrorAction SilentlyContinue');
+      expect(cmd).not.toContain('2>/dev/null');
     }
   });
 });
