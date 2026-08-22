@@ -138,6 +138,79 @@ Tracked spend (priced dispatches only): $8.4210.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.1315 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
 Pricing source: all 18 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
+## [Unreleased] -- Windows shell selection: probe and register the real shell, not just the OS
+
+Sprint goal: stop assuming every Windows member runs PowerShell. Add a
+registered `shell` field (`gitbash | pwsh7 | powershell5`) alongside the
+existing `os` field, probe for it at registration time, and route
+Windows-bound command construction through the registered shell instead of
+a fixed PowerShell assumption. Final verdict is a FAIL: the probe/register
+path and the core command-construction routing landed and are verified
+real and passing, but the epic as a whole is materially incomplete against
+its own acceptance criteria (see "Carried forward" below).
+
+What shipped:
+
+- **Shell probe and registration**: registration now probes, in order,
+  Git-for-Windows Bash, PowerShell 7, then PowerShell 5.1, trusting a
+  candidate only when a real smoke command returns both exit code 0 and an
+  expected stdout marker -- never on path/presence alone. A PATH-resolved
+  `bash.exe` is rejected as a Git-for-Windows Bash candidate unless it is
+  both outside known WSL/System32/WindowsApps launcher locations AND its
+  own `uname` output confirms a real MINGW/MSYS environment, closing the
+  WSL-launcher-impersonation gap. If every probe fails, registration still
+  succeeds and degrades to `powershell5` with a surfaced warning rather than
+  failing outright.
+- **Shell-aware command construction (core)**: a new `WindowsGitBashCommands`
+  implementation (extends the POSIX command builder, overriding only the
+  Windows-native surface) is now selected for any member registered with
+  `shell: 'gitbash'`. Command-construction call sites across member-home
+  resolution, provider install commands, workspace-trust seeding, the
+  local-execution strategy's process-kill and clean-env paths, credential
+  escaping, and prompt-transfer/durable-mirror/orphan-recovery now branch on
+  the registered shell (`isPosixShell(os, shell)`) rather than on `os`
+  alone.
+- **Docs**: see
+  [docs/windows-shell-selection.md](docs/windows-shell-selection.md) for the
+  probe design, the shell-vs-os distinction, the git-bash candidate-list
+  invariant, and the design decision to keep the core and fleet-sprint
+  implementations of this pattern independent rather than sharing a
+  package.
+
+Carried forward (epic left open; none of the following were closed this
+sprint):
+
+- Mirroring the new `shell` field into the MCP client wrapper's type
+  definitions and API-reference documentation (the client already forwards
+  the field correctly at runtime, so this is a docs/typedef gap, not a
+  functional break).
+- Wiring the fleet-sprint-side shell-command modules into their intended
+  call site (the runner's encoded-PowerShell-command wrapper) -- the module
+  set exists as source but nothing outside itself imports it yet, so it has
+  no effect on fleet-sprint's actual behavior today.
+- Aligning the Windows-Git-Bash command builder's candidate-path list with
+  the probe's candidate list, so a user-scope (non-admin) Git for Windows
+  install resolves consistently between probing and command construction
+  instead of falling back to an unqualified, PATH-resolved `bash.exe`.
+- Closing out the remaining Windows-equals-PowerShell survey sites (a
+  shell-aware-string test-assertion gap remains against otherwise-verified
+  production code).
+- Consolidating the several current copies of the POSIX-shell-branch
+  predicate behind one shared helper (currently deliberate, intentional
+  duplication, not a defect).
+- A deploy step that did not complete: `npm ci` failed reproducibly on
+  attempting to unlink a native build addon file, before the build/binary
+  and install steps could run; a working-tree hygiene follow-up (a few
+  scratch files at repo root not yet covered by ignore rules); and a
+  regression pass carry-over unrelated to this sprint's own changes.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $41.1657.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2004 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 55 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- Windows/PowerShell shell portability and schema-repair retry correctness
