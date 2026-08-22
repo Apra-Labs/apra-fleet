@@ -1,8 +1,16 @@
 ﻿import { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId } from '../utils/shell-escape.js';
 import type { ProviderAdapter, PromptOptions } from '../providers/provider.js';
+import type { Agent } from '../types.js';
 
 export { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId };
 export type { ProviderAdapter, PromptOptions };
+
+/**
+ * The shell a member's OS commands target. Derived from the Agent schema so
+ * there is exactly one source of truth for the allowed values (src/types.ts);
+ * only meaningful for Windows members today.
+ */
+export type MemberShell = NonNullable<Agent['shell']>;
 
 /**
  * Platform-specific command builders.
