@@ -70,6 +70,7 @@ export const registerMemberSchema = z.object({
   }).optional().describe('Per-member model tier map. Keys: cheap, standard, premium. Values: model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model recommended for opencode members.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Code-intelligence provider for this member (default: fleet-wide config).'),
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it. Default: false.'),
+  shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
@@ -293,6 +294,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     tags: input.tags,
     codeIntelProvider: input.code_intel_provider,
     unreservable: input.unreservable ?? false,
+    shell: input.shell,
   };
 
   // --- SSH-dependent steps (skipped for stopped cloud instances) ---

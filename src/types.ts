@@ -23,6 +23,11 @@ export interface Agent {
   workFolder: string;
   sessionId?: string;
   os?: 'windows' | 'macos' | 'linux';
+  /** Windows shell this member's OS commands should target. Only meaningful
+   *  when os is 'windows' -- non-windows members leave this unset. Set by
+   *  the Windows shell probe (apra-fleet-7dir.1.3) or an explicit operator
+   *  override on register_member/update_member. */
+  shell?: 'gitbash' | 'pwsh7' | 'powershell5';
   createdAt: string;
   lastUsed?: string;
   icon?: string;

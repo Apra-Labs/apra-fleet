@@ -200,6 +200,33 @@ describe('updateMember', () => {
     expect(updated?.category).toBeUndefined();
   });
 
+  it('stores a valid shell value', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, shell: 'pwsh7' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.shell).toBe('pwsh7');
+  });
+
+  it('rejects an invalid shell value with a schema validation error', async () => {
+    const { updateMemberSchema } = await import('../src/tools/update-member.js');
+    const parsed = updateMemberSchema.safeParse({ member_id: 'x', shell: 'cmd' });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(JSON.stringify(parsed.error.issues)).toContain('shell');
+    }
+  });
+
+  it('leaves shell unset for a member updated without a shell value', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.shell).toBeUndefined();
+  });
+
   it('adds tags to a member', async () => {
     const member = makeTestLocalAgent();
     addAgent(member);
