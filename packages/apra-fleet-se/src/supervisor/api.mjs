@@ -103,7 +103,7 @@ function normalizeMembers(value) {
 /**
  * The full member set a reservation covers: the union of --members and every
  * roleMap value. `exclude` (unreservable member names -- see
- * unreservableMemberNames() below) is subtracted from the union: a shared
+ * unreservableMemberNamesFromList() below) is subtracted from the union: a shared
  * orchestrator member is never part of a sprint's exclusive reservation, so it
  * never reaches `beforeLaunch` or `ledger.claim`.
  */
@@ -126,36 +126,23 @@ function memberUnion(members, roleMap, exclude) {
 }
 
 /**
- * Best-effort set of member names currently flagged `unreservable: true` by
- * the fleet server's own member list (e.g. a member filling fleet-sprint's
- * shared `orchestrator` role across many concurrent sprints). A `listMembers`
- * failure yields an empty set -- this is defense in depth on top of the
- * server-side no-op in member-reservation.ts, not the sole enforcement point.
- * @param {() => Promise<object|object[]>|object|object[]} [listMembers]
- * @returns {Promise<Set<string>>}
+ * Pure extractor: the set of member names flagged `unreservable: true` in an
+ * ALREADY-FETCHED `listMembers()`-shaped result (raw array or `{members}`).
+ * No I/O, so callers that already hold a fetched list (e.g. `launch()` below,
+ * which needs exactly one listMembers() read shared with the overlap guard)
+ * never trigger a second fetch just to compute this.
+ * @param {object|object[]} raw
+ * @returns {Set<string>}
  */
-async function unreservableMemberNames(listMembers, log = (...a) => console.error(...a)) {
-    if (typeof listMembers !== 'function') return new Set();
-    try {
-        const raw = await listMembers();
-        const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
-        const out = new Set();
-        for (const m of list) {
-            if (m && typeof m === 'object' && m.name && m.unreservable) out.add(m.name);
-        }
-        return out;
-    } catch (err) {
-        // A transient listMembers() failure here silently reinstates the
-        // original member-overlap 409 for a genuinely unreservable member,
-        // with nothing in the log to explain why -- log loudly rather than
-        // swallow it, even though the launch still proceeds treating no
-        // member as unreservable (best-effort, not the sole enforcement
-        // point -- member-reservation.ts's server-side no-op still protects
-        // a flagged member even if this check can't see it this launch).
-        log(`[unreservable] listMembers() failed while computing the unreservable-member exclude set (treating as none this launch): ${err.message}`);
-        return new Set();
+function unreservableMemberNamesFromList(raw) {
+    const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
+    const out = new Set();
+    for (const m of list) {
+        if (m && typeof m === 'object' && m.name && m.unreservable) out.add(m.name);
     }
+    return out;
 }
+
 
 /**
  * Human-readable rejection message naming every conflicting sprint and the
@@ -198,12 +185,19 @@ export function formatMemberConflict(conflicts) {
  * `listMembers` is optional (backward compatible: omitting it checks only the
  * local ledger, exactly as before eft.26.2).
  *
+ * apra-fleet: the caller MAY pass `ctx.membersList` -- an already-fetched
+ * `listMembers()` result -- to skip this guard's own fetch entirely. `launch()`
+ * already needs one `listMembers()` read to compute the unreservable-exclude
+ * set for `memberUnion()`; without this, that same read was repeated here,
+ * opening a second short-lived MCP transport for what is logically one
+ * request-scoped read.
+ *
  * @param {{ list: () => Array<{ sprintId: string, members?: string[] }> }} ledger
  * @param {() => Promise<object|object[]>|object|object[]} [listMembers]
- * @returns {(ctx: { members: string[], issueRoots: string[] }) => Promise<void>}
+ * @returns {(ctx: { members: string[], issueRoots: string[], membersList?: object|object[] }) => Promise<void>}
  */
 export function defaultMemberOverlapGuard(ledger, listMembers) {
-    return async ({ members: requestMembers }) => {
+    return async ({ members: requestMembers, membersList }) => {
         const requestSet = new Set(requestMembers ?? []);
         // sprintId -> Set<member>, merged across both sources so a member
         // conflicting via both the local ledger AND the server record is
@@ -225,9 +219,9 @@ export function defaultMemberOverlapGuard(ledger, listMembers) {
         // a server-side reservation made by other means (not this ledger) is
         // still caught. Best-effort: a failure to reach listMembers must not
         // block the local-ledger check above from still protecting the launch.
-        if (typeof listMembers === 'function') {
+        if (membersList !== undefined || typeof listMembers === 'function') {
             try {
-                const raw = await listMembers();
+                const raw = membersList !== undefined ? membersList : await listMembers();
                 const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
                 for (const m of list) {
                     if (!m || typeof m !== 'object') continue;
@@ -371,27 +365,7 @@ export function createSprintController(deps = {}) {
         throw new TypeError('createSprintController requires a spawner with spawnSprint()');
     }
     const history = deps.history ?? { latestFor: () => undefined, forSprint: () => [], latestForIssueRoot: () => undefined };
-    // apra-fleet: single-flight wrap -- launch() calls listMembers() once
-    // itself (unreservableMemberNames) and beforeLaunch's default
-    // (defaultMemberOverlapGuard) calls it again internally; without this,
-    // every launch opened and tore down two separate short-lived MCP
-    // transports (listFleetMembers) for what is logically one read. Two
-    // calls issued back-to-back share the same in-flight fetch; the cache is
-    // cleared as soon as it resolves, so unrelated callers (e.g. GET
-    // /api/members on its own) still see a fresh read on their own request.
-    const rawListMembers = deps.listMembers ?? (() => ({ members: [] }));
-    let listMembersInFlight = null;
-    const listMembers = () => {
-        if (listMembersInFlight) return listMembersInFlight;
-        listMembersInFlight = (async () => {
-            try {
-                return await rawListMembers();
-            } finally {
-                listMembersInFlight = null;
-            }
-        })();
-        return listMembersInFlight;
-    };
+    const listMembers = deps.listMembers ?? (() => ({ members: [] }));
     const getBacklog = deps.getBacklog ?? (() => ({ tasks: [] }));
     const proxyState = deps.proxyState ?? proxyChildState;
     const proxyStop = deps.proxyStop ?? proxyChildStop;
@@ -503,7 +477,24 @@ export function createSprintController(deps = {}) {
             ? undefined
             : (typeof body.roleMap === 'string' ? body.roleMap : JSON.stringify(body.roleMap));
         const roleMap = await roleMapResolver(rawRoleMap);
-        const unreservable = await unreservableMemberNames(listMembers);
+        // apra-fleet: ONE listMembers() read, shared with beforeLaunch below
+        // (via ctx.membersList) -- both need to know which members are
+        // currently flagged unreservable, and issuing two separate fetches
+        // per launch opened two separate short-lived MCP transports for what
+        // is logically one request-scoped read. A fetch failure here degrades
+        // to "no member known unreservable" (best-effort, not the sole
+        // enforcement point -- member-reservation.ts's server-side no-op
+        // still protects a flagged member even if this can't see it) and
+        // leaves membersListRaw undefined so beforeLaunch falls back to its
+        // own (equally best-effort) fetch attempt.
+        let membersListRaw;
+        try {
+            membersListRaw = await listMembers();
+        } catch (err) {
+            console.error(`[unreservable] listMembers() failed while computing the unreservable-member exclude set (treating as none this launch): ${err.message}`);
+            membersListRaw = undefined;
+        }
+        const unreservable = membersListRaw !== undefined ? unreservableMemberNamesFromList(membersListRaw) : new Set();
         const union = memberUnion(members, roleMap, unreservable);
         // apra-fleet-ymf.1: issueRoots is the SPLIT array of individual ids
         // (never the raw comma-joined string) -- the same shape the CLI path
@@ -549,7 +540,7 @@ export function createSprintController(deps = {}) {
         }
 
         // eft.5.2 seam: reject overlapping launches (409) BEFORE spawning a child.
-        await beforeLaunch({ members: union, issueRoots });
+        await beforeLaunch({ members: union, issueRoots, membersList: membersListRaw });
 
         // apra-fleet-k7b.1: generate the sprintId BEFORE spawning (not after,
         // as before) so it can be forwarded into the child's own argv as
