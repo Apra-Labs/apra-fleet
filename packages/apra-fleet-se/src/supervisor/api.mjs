@@ -134,7 +134,7 @@ function memberUnion(members, roleMap, exclude) {
  * @param {() => Promise<object|object[]>|object|object[]} [listMembers]
  * @returns {Promise<Set<string>>}
  */
-async function unreservableMemberNames(listMembers) {
+async function unreservableMemberNames(listMembers, log = (...a) => console.error(...a)) {
     if (typeof listMembers !== 'function') return new Set();
     try {
         const raw = await listMembers();
@@ -144,7 +144,15 @@ async function unreservableMemberNames(listMembers) {
             if (m && typeof m === 'object' && m.name && m.unreservable) out.add(m.name);
         }
         return out;
-    } catch {
+    } catch (err) {
+        // A transient listMembers() failure here silently reinstates the
+        // original member-overlap 409 for a genuinely unreservable member,
+        // with nothing in the log to explain why -- log loudly rather than
+        // swallow it, even though the launch still proceeds treating no
+        // member as unreservable (best-effort, not the sole enforcement
+        // point -- member-reservation.ts's server-side no-op still protects
+        // a flagged member even if this check can't see it this launch).
+        log(`[unreservable] listMembers() failed while computing the unreservable-member exclude set (treating as none this launch): ${err.message}`);
         return new Set();
     }
 }
@@ -166,8 +174,10 @@ export function formatMemberConflict(conflicts) {
  * apra-fleet-eft.5.2 (extended by eft.26.2, Hole 2): the DEFAULT member-axis
  * overlap guard used as `beforeLaunch` when the caller does not inject its
  * own. All-or-nothing: ANY member in the incoming union (members + every
- * roleMap value, INCLUDING the orchestrator role -- memberUnion() already
- * folds that in) that is also held by any OTHER active reservation rejects
+ * roleMap value, INCLUDING the orchestrator role UNLESS that member is
+ * flagged `unreservable` -- memberUnion() already folds roleMap values in and
+ * subtracts unreservable names) that is also held by any OTHER active
+ * reservation rejects
  * the ENTIRE launch with a 409, naming the conflicting sprint id(s) and the
  * specific overlapping member names. This throws BEFORE ledger.claim() is
  * ever called, so a rejected launch leaves the ledger byte-identical -- no
@@ -361,7 +371,27 @@ export function createSprintController(deps = {}) {
         throw new TypeError('createSprintController requires a spawner with spawnSprint()');
     }
     const history = deps.history ?? { latestFor: () => undefined, forSprint: () => [], latestForIssueRoot: () => undefined };
-    const listMembers = deps.listMembers ?? (() => ({ members: [] }));
+    // apra-fleet: single-flight wrap -- launch() calls listMembers() once
+    // itself (unreservableMemberNames) and beforeLaunch's default
+    // (defaultMemberOverlapGuard) calls it again internally; without this,
+    // every launch opened and tore down two separate short-lived MCP
+    // transports (listFleetMembers) for what is logically one read. Two
+    // calls issued back-to-back share the same in-flight fetch; the cache is
+    // cleared as soon as it resolves, so unrelated callers (e.g. GET
+    // /api/members on its own) still see a fresh read on their own request.
+    const rawListMembers = deps.listMembers ?? (() => ({ members: [] }));
+    let listMembersInFlight = null;
+    const listMembers = () => {
+        if (listMembersInFlight) return listMembersInFlight;
+        listMembersInFlight = (async () => {
+            try {
+                return await rawListMembers();
+            } finally {
+                listMembersInFlight = null;
+            }
+        })();
+        return listMembersInFlight;
+    };
     const getBacklog = deps.getBacklog ?? (() => ({ tasks: [] }));
     const proxyState = deps.proxyState ?? proxyChildState;
     const proxyStop = deps.proxyStop ?? proxyChildStop;

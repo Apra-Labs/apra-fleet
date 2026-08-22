@@ -158,4 +158,51 @@ describe('memberReservation', () => {
     const result = await memberReservation({ member_name: 'does-not-exist', action: 'reserve', sprint_id: 'sprint-1' });
     expect(result).toMatch(/not found|Error/i);
   });
+
+  // apra-fleet: a member flagged unreservable (a role designed to be shared
+  // by more than one sprint at once, e.g. fleet-sprint's orchestrator) must
+  // never actually acquire a reservedBy value -- reserve/release/
+  // force_release all become no-op successes, regardless of sprint_id or
+  // current state, so the member can never become the "already reserved by
+  // X" target of a normal exclusive-reservation conflict.
+  describe('unreservable member', () => {
+    it('reserve is a no-op success and never sets reservedBy', async () => {
+      const member = makeTestAgent({ unreservable: true });
+      addAgent(member);
+
+      const result = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
+
+      expect(result).toContain('shared/unreservable');
+      expect(getAgent(member.id)?.reservedBy ?? null).toBeNull();
+    });
+
+    it('release is a no-op success even without a sprint_id (bypasses the normal sprint_id-required check)', async () => {
+      const member = makeTestAgent({ unreservable: true });
+      addAgent(member);
+
+      const result = await memberReservation({ member_id: member.id, action: 'release' });
+
+      expect(result).toContain('shared/unreservable');
+    });
+
+    it('force_release is a no-op success', async () => {
+      const member = makeTestAgent({ unreservable: true });
+      addAgent(member);
+
+      const result = await memberReservation({ member_id: member.id, action: 'force_release' });
+
+      expect(result).toContain('shared/unreservable');
+    });
+
+    it('a pre-existing reservedBy (e.g. set before the member was flagged unreservable) is left untouched by any action', async () => {
+      const member = makeTestAgent({ unreservable: true, reservedBy: 'stale-sprint' });
+      addAgent(member);
+
+      await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
+      await memberReservation({ member_id: member.id, action: 'release', sprint_id: 'sprint-1' });
+      await memberReservation({ member_id: member.id, action: 'force_release' });
+
+      expect(getAgent(member.id)?.reservedBy).toBe('stale-sprint');
+    });
+  });
 });

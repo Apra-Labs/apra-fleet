@@ -6327,9 +6327,32 @@ async function runSprintCycle(context) {
             if (Array.isArray(list)) for (const m of list) roleMapSpecialists.add(m);
         }
     }
+    // apra-fleet: roleMap.orchestrator members are excluded from BOTH the
+    // generalist pool and its degenerate physicalMembers fallback -- not just
+    // from the generalist filter -- because the orchestrator role may be a
+    // shared/unreservable, git-less member (docs/design-orchestrator-
+    // worktree-model-v2.md). Without this, the "every member is a specialist"
+    // degradation re-selects the orchestrator for OTHER unmapped roles
+    // (harvester/planner/deployer/etc.), silently undoing the branchEnsureMembers
+    // removal and every probeFileExists/publishGitMember fix elsewhere in this
+    // file: those call getMemberForRole()/getMembersForRole() for roles that
+    // still expect a real git checkout.
+    const orchestratorRoleMapMembers = new Set(
+        (validated.roleMap && Array.isArray(validated.roleMap[ROLE_ORCHESTRATOR]))
+            ? validated.roleMap[ROLE_ORCHESTRATOR]
+            : []
+    );
     const unmappedRoleFallbackPool = (() => {
-        const generalists = physicalMembers.filter((m) => !roleMapSpecialists.has(m));
-        return generalists.length > 0 ? generalists : physicalMembers;
+        const eligible = physicalMembers.filter((m) => !orchestratorRoleMapMembers.has(m));
+        const generalists = eligible.filter((m) => !roleMapSpecialists.has(m));
+        if (generalists.length > 0) return generalists;
+        if (eligible.length > 0) return eligible;
+        // Every physical member IS the mapped orchestrator (e.g. a single-member
+        // launch that role-maps the same member as both a dispatch role and
+        // orchestrator): there is no other member to fall back to, so this
+        // degrades to the original physicalMembers behavior rather than
+        // resolving to an empty pool.
+        return physicalMembers;
     })();
 
     const getMemberForRole = (role) => {

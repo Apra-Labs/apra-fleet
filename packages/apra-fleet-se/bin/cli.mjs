@@ -670,8 +670,27 @@ async function main() {
         }
         return res && res.content && res.content[0] ? res.content[0].text : '';
     };
+    // apra-fleet: exclude any member ALSO named in roleMap.orchestrator from
+    // this git-identity/git-remote probe -- a shared/unreservable orchestrator
+    // member (docs/design-orchestrator-worktree-model-v2.md) may have no real
+    // checkout at all, and `git rev-parse HEAD` on one hard-fails the launch
+    // (process.exit(1) just below) even though the orchestrator role itself
+    // never needs to pass this check. This only matters when an operator also
+    // lists that member in --members (redundant with roleMap.orchestrator,
+    // and not required); a normal launch that passes the shared orchestrator
+    // ONLY via roleMap.orchestrator was never affected.
+    const orchestratorRoleMapMembersForTopology = new Set(
+        (roleMap && Array.isArray(roleMap.orchestrator)) ? roleMap.orchestrator : []
+    );
+    // Degrade back to the unfiltered list if excluding the orchestrator would
+    // empty it out entirely (e.g. a single-member sprint that role-maps its
+    // one dispatch member as orchestrator too) -- checkMemberTopology refuses
+    // to start on an empty member list, and that degenerate case is exactly
+    // the topology a real (non-shared) dispatch member should still pass.
+    const topologyMembersFiltered = validMembers.filter((m) => !orchestratorRoleMapMembersForTopology.has(m));
+    const topologyMembers = topologyMembersFiltered.length > 0 ? topologyMembersFiltered : validMembers;
     const topology = await checkMemberTopology({
-        members: validMembers,
+        members: topologyMembers,
         mode: syncedMode ? 'synced' : 'legacy',
         getIdentity: (member) => runCommand('git rev-parse HEAD', member),
         getOriginUrl: (member) => runCommand('git remote get-url origin', member),

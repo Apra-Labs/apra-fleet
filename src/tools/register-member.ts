@@ -134,6 +134,17 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (!input.auth_type) return '❌ "auth_type" is required for remote members. Member was NOT registered.';
   }
 
+  // unreservable is reserved for members that never receive a real agent
+  // dispatch (e.g. a beads-only fleet-sprint orchestrator shared across
+  // concurrent sprints). Without this constraint, an ordinary dispatch
+  // member flagged unreservable would let two sprints dispatch to it
+  // concurrently -- interleaving prompts into one working tree -- and any
+  // member with update_member access could self-escalate past the
+  // exclusivity guard entirely.
+  if (input.unreservable && (input.llm_provider ?? 'claude') !== 'none') {
+    return '❌ "unreservable" requires llm_provider: "none" -- it is reserved for plain command-executor members that never receive an agent dispatch. Member was NOT registered.';
+  }
+
   // SF-17: a remote member's work_folder is used verbatim on the MEMBER's
   // machine -- `~` and relative paths are never resolved for it (by design; see
   // work-folder-validation.ts). Reject them here so the caller supplies a

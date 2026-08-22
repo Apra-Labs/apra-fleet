@@ -95,6 +95,18 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     return workFolderNotAbsoluteError(input.work_folder, 'Member was NOT updated.');
   }
 
+  // Same constraint as register_member: unreservable is reserved for
+  // llm_provider: 'none' members. Evaluate the RESULTING state (this update's
+  // values where given, else the existing row's), not just this call's inputs
+  // in isolation -- either "set unreservable while already claude/codex/etc."
+  // or "switch llm_provider away from none while already unreservable" must
+  // both be rejected.
+  const resultingUnreservable = input.unreservable ?? existing.unreservable ?? false;
+  const resultingLlmProvider = input.llm_provider ?? existing.llmProvider ?? 'claude';
+  if (resultingUnreservable && resultingLlmProvider !== 'none') {
+    return '❌ "unreservable" requires llm_provider: "none" -- it is reserved for plain command-executor members that never receive an agent dispatch. Member was NOT updated.';
+  }
+
   const needsUniquenessCheck = existing.agentType === 'remote'
     ? (hostChanged || portChanged || folderChanged)
     : folderChanged;
