@@ -45,6 +45,10 @@ vi.mock('../src/utils/log-helpers.js', () => ({
 vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: mockGetAgentOS,
   getAgentShell: mockGetAgentShell,
+  // apra-fleet-7dir.2.5: stall-poller.ts's command builders now also derive
+  // a posix/PowerShell decision through isPosixShell -- mirror the real
+  // implementation here rather than re-mocking every call site's behavior.
+  isPosixShell: (os: string, shell?: string) => os !== 'windows' || shell === 'gitbash',
 }));
 
 import { pollLogFile, pollDirectoryActivity } from '../src/services/stall/stall-poller.js';

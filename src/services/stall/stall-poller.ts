@@ -1,6 +1,6 @@
 import { getAgent } from '../registry.js';
 import { getStrategy, type AgentStrategy } from '../strategy.js';
-import { getAgentOS } from '../../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShell } from '../../utils/agent-helpers.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
 import { getProvider } from '../../providers/index.js';
 import { getMemberPathContext } from '../member-home.js';
@@ -74,7 +74,15 @@ export async function pollDirectoryActivity(memberId: string): Promise<Directory
 
   const provider = agent.llmProvider ?? 'claude';
   const adapter = getProvider(provider);
-  const isWindows = getAgentOS(agent) === 'windows';
+  const os = getAgentOS(agent);
+  const shell = getAgentShell(agent);
+  // apra-fleet-7dir.2.5: `posix` decides which SHELL command string this
+  // function builds below (bash for a gitbash Windows member); it is
+  // deliberately independent of the `targetOs` passed to
+  // resolveSessionLogDir, which decides remote PATH-JOIN format and is out
+  // of scope for this task.
+  const posix = isPosixShell(os, shell);
+  const isWindows = os === 'windows';
 
   // Capability check FIRST, with a sentinel home dir: does this provider have a
   // pollable log directory at all? codex/copilot/none return null for any home
@@ -129,9 +137,9 @@ export async function pollDirectoryActivity(memberId: string): Promise<Directory
   // since this polls the log dir before a session's first turn creates it.
   // `Get-Date -Format o` as the terminal stage (rather than a constructor
   // call) means a zero-object pipeline just produces no output, no error.
-  const cmd = isWindows
-    ? `powershell -c "if (Test-Path -Path '${escapedWinDir}') { Get-ChildItem -Path '${escapedWinDir}' -Depth 5 -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1 -ExpandProperty LastWriteTimeUtc | Get-Date -Format o }"`
-    : `find "${escapedPosixDir}" -maxdepth 5 -type f -exec stat -c %Y {} + 2>/dev/null | sort -nr | head -n1`;
+  const cmd = posix
+    ? `find "${escapedPosixDir}" -maxdepth 5 -type f -exec stat -c %Y {} + 2>/dev/null | sort -nr | head -n1`
+    : `powershell -c "if (Test-Path -Path '${escapedWinDir}') { Get-ChildItem -Path '${escapedWinDir}' -Depth 5 -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1 -ExpandProperty LastWriteTimeUtc | Get-Date -Format o }"`;
 
   try {
     const result = await strategy.execCommand(cmd, 5000);
@@ -139,7 +147,7 @@ export async function pollDirectoryActivity(memberId: string): Promise<Directory
     if (!trimmed) return { mtimeMs: null, signalAvailable: authoritative };
     // Windows emits an ISO-8601 timestamp (`Get-Date -Format o`); POSIX
     // emits whole seconds since epoch.
-    const ms = isWindows ? Date.parse(trimmed) : Number(trimmed) * 1000;
+    const ms = posix ? Number(trimmed) * 1000 : Date.parse(trimmed);
     if (!Number.isFinite(ms) || ms <= 0) return { mtimeMs: null, signalAvailable: authoritative };
     // A guessed directory that actually produced an mtime IS verified: real
     // files were found there, so from here on it is a genuine signal source.
@@ -159,14 +167,14 @@ export async function pollDirectoryActivity(memberId: string): Promise<Directory
 async function fetchMtimeMs(
   strategy: AgentStrategy,
   logFilePath: string,
-  isWindows: boolean
+  posix: boolean
 ): Promise<number | null> {
   // See the matching note in pollDirectoryActivity above: no intermediate
   // `$variable` here either, for the same reason.
-  const cmd = isWindows
-    ? `powershell -c "[DateTimeOffset]::new((Get-Item -LiteralPath '${logFilePath}' -ErrorAction SilentlyContinue).LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds()"`
+  const cmd = posix
     // GNU stat (`-c %Y`) first; BSD/macOS stat (`-f %m`) as a fallback -- both report whole seconds.
-    : `stat -c %Y "${logFilePath}" 2>/dev/null || stat -f %m "${logFilePath}" 2>/dev/null`;
+    ? `stat -c %Y "${logFilePath}" 2>/dev/null || stat -f %m "${logFilePath}" 2>/dev/null`
+    : `powershell -c "[DateTimeOffset]::new((Get-Item -LiteralPath '${logFilePath}' -ErrorAction SilentlyContinue).LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds()"`;
 
   try {
     const result = await strategy.execCommand(cmd, 5000);
@@ -174,7 +182,7 @@ async function fetchMtimeMs(
     if (!trimmed) return null;
     const n = Number(trimmed);
     if (!Number.isFinite(n) || n <= 0) return null;
-    return isWindows ? n : n * 1000;
+    return posix ? n * 1000 : n;
   } catch {
     return null;
   }
@@ -206,7 +214,7 @@ export async function pollLogFile(memberId: string, logFilePath: string): Promis
     return { lastTimestamp: null, error: `Agent ${memberId} not found` };
   }
 
-  const isWindows = getAgentOS(agent) === 'windows';
+  const posix = isPosixShell(getAgentOS(agent), getAgentShell(agent));
   const provider = agent.llmProvider ?? 'claude';
 
   // apra-fleet-6z8.2: the tail window must be wide enough that a parseable
@@ -217,9 +225,9 @@ export async function pollLogFile(memberId: string, logFilePath: string): Promis
   // stream megabytes over SSH every poll (the byte cap is applied from the END,
   // so the final line stays complete; only the leading fragment is lost, and
   // the parser already skips that).
-  const cmd = isWindows
-    ? `powershell -c "Get-Content -Tail ${TAIL_LINES} -Path '${logFilePath}'"`
-    : `tail -n ${TAIL_LINES} "${logFilePath}" | tail -c ${TAIL_BYTES}`;
+  const cmd = posix
+    ? `tail -n ${TAIL_LINES} "${logFilePath}" | tail -c ${TAIL_BYTES}`
+    : `powershell -c "Get-Content -Tail ${TAIL_LINES} -Path '${logFilePath}'"`;
 
   try {
     const strategy = getStrategy(agent);
@@ -227,7 +235,7 @@ export async function pollLogFile(memberId: string, logFilePath: string): Promis
     // content-based read below. Never throws and never affects the
     // content-read's own error handling -- it is purely additive signal that
     // stall-detector.ts cross-checks against the content timestamp.
-    const mtimeMs = await fetchMtimeMs(strategy, logFilePath, isWindows);
+    const mtimeMs = await fetchMtimeMs(strategy, logFilePath, posix);
     const result = await strategy.execCommand(cmd, 5000);
 
     if (result.code !== 0) {
