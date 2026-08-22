@@ -60,6 +60,23 @@ class RemoteStrategy implements AgentStrategy {
     const agentOs = getAgentOS(this.agent);
     const folder = this.agent.workFolder;
     try {
+      // Confirmed shell-agnostic this pass (apra-fleet-7dir.5.2 audit): stays
+      // on agentOs alone, deliberately NOT branching on isPosixShell. The
+      // Windows branch is buildWindowsDeleteFilesScript, which is
+      // wrapPowerShellEncoded-wrapped -- a single base64 `powershell
+      // -EncodedCommand <blob>` string that is shell-agnostic AS A STRING, the
+      // same reasoning execute-command.ts's long_running Windows launch and
+      // monitor-task.ts's status/pid/log commands document -- so a gitbash
+      // member's bash.exe exec shell runs it exactly as correctly as a
+      // powershell5/pwsh7/unset member's default shell does; no re-tokenizing
+      // risk exists here to fix. Deliberately did NOT reroute gitbash to the
+      // POSIX `rm -f` branch below despite it being three lines away: that
+      // branch does `cd "<folder>"` assuming a POSIX-formatted path, and
+      // nothing here guarantees agent.workFolder for a Windows member is
+      // stored in POSIX form (`/c/Users/...`) rather than native Windows form
+      // (`C:\Users\...`) -- switching branches would trade a proven-safe path
+      // for an unverified one. Keep this comment if a future survey asks the
+      // same question again.
       if (agentOs === 'windows') {
         await this.execCommand(buildWindowsDeleteFilesScript(folder, relativePaths), 10000);
       } else {
