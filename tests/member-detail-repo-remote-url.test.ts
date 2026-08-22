@@ -90,3 +90,29 @@ describe('member_detail reports the member repo origin URL for KB scoping', () =
     expect(result.folder).toBe('/home/testuser/project');
   });
 });
+
+describe('member_detail surfaces the shell field (apra-fleet-7dir.1.1)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    setupDefaultMock();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('reports shell when set on the member', async () => {
+    const member = makeTestAgent({ friendlyName: 'shell-member', shell: 'gitbash' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.shell).toBe('gitbash');
+  });
+
+  it('omits shell when unset on the member', async () => {
+    const member = makeTestAgent({ friendlyName: 'no-shell-member' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.shell).toBeUndefined();
+  });
+});
