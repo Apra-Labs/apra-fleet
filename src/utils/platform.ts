@@ -46,6 +46,17 @@ export function resolveRemotePath(workFolder: string, subPath: string): string {
   }
 }
 
+/**
+ * True when `uname -s` output identifies a POSIX-emulation layer running on
+ * Windows (Git-for-Windows / MSYS2 / Cygwin). This is the ONLY reliable way to
+ * tell a Git-for-Windows bash.exe apart from the WSL launcher of the same name
+ * under System32: the WSL one also exits 0 but reports "Linux".
+ */
+export function isWindowsPosixUname(unameOutput: string): boolean {
+  const uname = unameOutput.trim().toLowerCase();
+  return uname.startsWith('mingw') || uname.startsWith('msys') || uname.startsWith('cygwin');
+}
+
 export function detectOS(unameOutput: string, verOutput: string): RemoteOS {
   if (verOutput.toLowerCase().includes('windows') || verOutput.toLowerCase().includes('microsoft')) {
     return 'windows';
@@ -53,7 +64,7 @@ export function detectOS(unameOutput: string, verOutput: string): RemoteOS {
   const uname = unameOutput.trim().toLowerCase();
   if (uname === 'darwin') return 'macos';
   // Git Bash / MSYS2 / Cygwin on Windows report MINGW*, MSYS*, or CYGWIN*
-  if (uname.startsWith('mingw') || uname.startsWith('msys') || uname.startsWith('cygwin')) {
+  if (isWindowsPosixUname(unameOutput)) {
     return 'windows';
   }
   return 'linux';
