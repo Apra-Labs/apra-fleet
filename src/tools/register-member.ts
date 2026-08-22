@@ -6,6 +6,7 @@ import type { CloudConfig } from '../services/cloud/types.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { detectOS } from '../utils/platform.js';
 import { getOsCommands } from '../os/index.js';
+import { shouldProbeShell, probeWindowsShell } from '../services/shell-probe.js';
 import { getProvider } from '../providers/index.js';
 import { addAgent, getAllAgents, hasDuplicateFolder } from '../services/registry.js';
 import { credentialResolve, credentialSet } from '../services/credential-store.js';
@@ -327,7 +328,21 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     }
     tempAgent.os = detectedOS;
 
-    const cmds = getOsCommands(detectedOS);
+    // Step 2b: probe which Windows shell this member actually has (gitbash /
+    // pwsh7 / powershell5). Windows-only, and skipped entirely when the
+    // operator supplied `shell` explicitly -- an explicit value always wins
+    // (apra-fleet-7dir.1.3). Never fails registration: probeWindowsShell
+    // degrades to powershell5 with a warning.
+    if (shouldProbeShell(detectedOS, tempAgent.shell)) {
+      const probe = await probeWindowsShell((command, timeoutMs) => strategy.execCommand(command, timeoutMs));
+      tempAgent.shell = probe.shell;
+      if (probe.warning) warnings.push(probe.warning);
+    }
+
+    // The registration-time probes below must speak the SAME shell the member
+    // was just registered with, so pass it -- a gitbash member gets bash
+    // strings, every other value resolves exactly as before.
+    const cmds = getOsCommands(detectedOS, tempAgent.shell);
     const provider = getProvider(input.llm_provider ?? 'claude');
     const providerName = provider.name;
     // No-LLM members (apra-fleet-us9.14) have no CLI to verify or authenticate --
