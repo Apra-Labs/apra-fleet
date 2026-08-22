@@ -7,6 +7,7 @@ const {
   mockLogLine,
   mockLogWarn,
   mockGetAgentOS,
+  mockGetAgentShell,
   mockReaddirSync,
   mockStatSync,
   mockReadFileSync,
@@ -16,6 +17,11 @@ const {
   mockLogLine: vi.fn(),
   mockLogWarn: vi.fn(),
   mockGetAgentOS: vi.fn<(agent: Agent) => string>(),
+  // apra-fleet-7dir.2.5: find-log-file.ts's remote command builders now also
+  // read the member's registered shell; default to undefined (no registered
+  // shell) so every existing test here keeps its pre-shell-awareness
+  // (PowerShell-for-Windows) behavior.
+  mockGetAgentShell: vi.fn<(agent: Agent) => string | undefined>(),
   mockReaddirSync: vi.fn(),
   mockStatSync: vi.fn(),
   mockReadFileSync: vi.fn(),
@@ -36,6 +42,8 @@ vi.mock('../src/utils/log-helpers.js', () => ({
 
 vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: mockGetAgentOS,
+  getAgentShell: mockGetAgentShell,
+  isPosixShell: (os: string, shell?: string) => os !== 'windows' || shell === 'gitbash',
 }));
 
 vi.mock('node:fs', () => ({
