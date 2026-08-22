@@ -67,6 +67,7 @@ export const updateMemberSchema = z.object({
     .optional()
     .describe('Free-form labels for this member (max 10 tags, each max 64 chars). Empty array clears all tags; non-empty array replaces existing tags.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Change the code-intelligence provider for this member.'),
+  shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -188,6 +189,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.category !== undefined) updates.category = input.category.trim() || undefined;
   if (input.tags !== undefined) updates.tags = input.tags.length === 0 ? undefined : input.tags;
   if (input.code_intel_provider !== undefined) updates.codeIntelProvider = input.code_intel_provider;
+  if (input.shell !== undefined) updates.shell = input.shell;
   if (input.model_cheap !== undefined) updates.modelCheap = input.model_cheap;
   if (input.model_standard !== undefined) updates.modelStandard = input.model_standard;
   if (input.model_premium !== undefined) updates.modelPremium = input.model_premium;

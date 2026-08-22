@@ -69,6 +69,7 @@ export const registerMemberSchema = z.object({
     premium: z.string().optional(),
   }).optional().describe('Per-member model tier map. Keys: cheap, standard, premium. Values: model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model recommended for opencode members.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Code-intelligence provider for this member (default: fleet-wide config).'),
+  shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
@@ -280,6 +281,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     category: input.category,
     tags: input.tags,
     codeIntelProvider: input.code_intel_provider,
+    shell: input.shell,
   };
 
   // --- SSH-dependent steps (skipped for stopped cloud instances) ---
