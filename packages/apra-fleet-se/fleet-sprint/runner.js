@@ -6269,7 +6269,27 @@ async function runSprintCycle(context) {
     const roundSessions = createRoundSessionRegistry({ log });
 
     const targetIssues = validated.targetIssues;
-    const sprintFilter = targetIssues.length > 0 ? `--parent ${targetIssues.join(',')}` : '';
+    // Display-only label for error/diagnostic text -- NEVER fed to an actual
+    // `bd` invocation (bdListScoped below builds scope structurally, via an
+    // in-memory BFS over `bd list --all`, not via a `bd list --parent` call).
+    // `--parent` is only an accurate description of that BFS for the
+    // single-target case (one root + all its descendants); for 2+ target
+    // ids with no shared parent -- e.g. a flat batch of independent leaf
+    // beads -- comma-joining them after a single `--parent` flag misdescribes
+    // the scope as "all these ids are children of one parent" (they are not)
+    // and, worse, LOOKS like a real, directly-runnable `bd` invocation that a
+    // human debugging a "Nothing to do" failure will paste verbatim -- `bd
+    // list --parent <id1>,<id2>,...` does not do a multi-root union; `bd`
+    // treats a comma-joined value as one (nonexistent) parent id and returns
+    // `[]`, which reads as "confirms the sprint's own finding" and sends
+    // debugging in exactly the wrong direction (this shape was mistaken for
+    // the root cause of a real "Nothing to do" incident before this comment
+    // was added -- see the multi-id flat-leaf-scope bug writeup).
+    const sprintFilter = targetIssues.length === 0
+        ? ''
+        : targetIssues.length === 1
+            ? `--parent ${targetIssues[0]}`
+            : `sprint targets (each root + its descendants): ${targetIssues.join(', ')}`;
 
     // Member mapping resolution
     const physicalMembers = validated.members;
@@ -7407,6 +7427,31 @@ async function runSprintCycle(context) {
 
         if (initialBeads.length === 0) {
             if (notDoneBeads.length === 0) {
+                // Distinguish "every target issue is genuinely done" from "one
+                // or more target ids are not visible to this orchestrator
+                // member's own bd clone AT ALL" -- the latter reads
+                // identically as "Nothing to do" without this check (an empty
+                // `notDoneBeads` either way), but is a completely different
+                // problem: those beads are not closed, they are invisible
+                // here, most commonly because they were created/mutated on a
+                // different clone that was never `bd dolt push`ed to the
+                // shared remote before this sprint launched, or because a
+                // members-persistent-across-sprints orchestrator (see
+                // DoltSync.syncBefore's fatal:true D-pull above) still hasn't
+                // synced them for some other reason. Reusing the already-
+                // fetched project-wide snapshot -- no extra bd call.
+                const allBeadsForVisibilityCheck = await fetchAllBeadsShared();
+                const knownIds = new Set(allBeadsForVisibilityCheck.map((b) => b.id));
+                const invisibleTargets = targetIssues.filter((id) => !knownIds.has(id));
+                if (invisibleTargets.length > 0) {
+                    throw new Error(
+                        `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
+                        `are not visible to the orchestrator member ('${orchestratorMember}')'s bd clone at all: ` +
+                        `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
+                        `means they were created/updated on a different clone that was never pushed to the shared Dolt remote ` +
+                        `(run 'bd dolt push' there first) or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`
+                    );
+                }
                 throw new Error(`Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`);
             }
 
