@@ -6,7 +6,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 
@@ -84,7 +84,7 @@ class LocalStrategy implements AgentStrategy {
   async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult> {
     let pidExtracted = false;
     const result = await new Promise<SSHExecResult>((resolve, reject) => {
-      const cmds = getOsCommands(getAgentOS(this.agent));
+      const cmds = getOsCommands(getAgentOS(this.agent), getAgentShell(this.agent));
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
       const child = spawn(wrapped, { shell: shell ?? true, cwd: this.agent.workFolder, env, windowsHide: true });
 

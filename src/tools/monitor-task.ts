@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { awsProvider } from '../services/cloud/aws.js';
@@ -32,7 +32,7 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
   }
 
   const strategy = getStrategy(agent);
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const isWindows = getAgentOS(agent) === 'windows';
 
   // POSIX (linux/darwin) task dir/commands are byte-identical to before this
