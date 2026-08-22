@@ -15,12 +15,17 @@ const {
   mockLogLine,
   mockLogWarn,
   mockGetAgentOS,
+  mockGetAgentShell,
 } = vi.hoisted(() => ({
   mockGetAgent: vi.fn<(id: string) => Agent | undefined>(),
   mockExecCommand: vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>(),
   mockLogLine: vi.fn(),
   mockLogWarn: vi.fn(),
   mockGetAgentOS: vi.fn<(agent: Agent) => string>(),
+  // apra-fleet-7dir.2.2: member-home.ts now also imports getAgentShell from
+  // this module; default to undefined (no registered shell) so every
+  // existing test here keeps its pre-shell-awareness behavior.
+  mockGetAgentShell: vi.fn<(agent: Agent) => string | undefined>(),
 }));
 
 vi.mock('../src/services/registry.js', () => ({
@@ -39,6 +44,7 @@ vi.mock('../src/utils/log-helpers.js', () => ({
 
 vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: mockGetAgentOS,
+  getAgentShell: mockGetAgentShell,
 }));
 
 import { pollLogFile, pollDirectoryActivity } from '../src/services/stall/stall-poller.js';

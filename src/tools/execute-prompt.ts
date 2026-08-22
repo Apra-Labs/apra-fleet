@@ -7,7 +7,7 @@ import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS, touchAgent, getStoredPid } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, touchAgent, getStoredPid } from '../utils/agent-helpers.js';
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -814,7 +814,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     : `${resolvedWorkFolder}/${promptFileName}`;
 
   const strategy = getStrategy(agent);
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider(agent.llmProvider);
 
   const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
@@ -1003,7 +1003,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         // via this repo's own getOsCommands() abstraction (src/os/*.ts,
         // already used the same way by list-members.ts/member-detail.ts for
         // credential-file checks) instead of a single hardcoded shell dialect.
-        const cmds = getOsCommands(getAgentOS(agent));
+        const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
         const projPath = `${resolvedWorkFolder}/${dirs.project}`;
         const userPath = `~/${dirs.home}`;
         const [projResult, userResult] = await Promise.all([

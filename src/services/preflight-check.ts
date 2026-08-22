@@ -27,7 +27,7 @@ import type { ProviderAdapter } from '../providers/index.js';
 import { getStrategy } from './strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { validateCredentials, type CredentialStatus } from '../utils/credential-validation.js';
 import { logLine } from '../utils/log-helpers.js';
 
@@ -171,7 +171,7 @@ export async function preflightCheck(
     return { ok: true, connectivity: true, authValid: true, latencyMs };
   }
 
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   let oauthFilePresent = false;
   let apiKeyPresent = false;
   let credentialStatus: CredentialStatus | undefined;

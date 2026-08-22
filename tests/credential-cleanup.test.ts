@@ -30,6 +30,7 @@ vi.mock('../src/os/index.js', () => ({
 
 vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: () => 'linux',
+  getAgentShell: () => undefined,
   touchAgent: vi.fn(),
   setIdleTouchHook: vi.fn(),
   getAgentOrFail: vi.fn(),

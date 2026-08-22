@@ -1,7 +1,7 @@
 import { getAllAgents } from './registry.js';
 import { getStrategy } from './strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { githubProvider } from './vcs/github.js';
 import { bitbucketProvider } from './vcs/bitbucket.js';
 import { azureDevOpsProvider } from './vcs/azure-devops.js';
@@ -42,7 +42,7 @@ export function scheduleCredentialCleanup(agentId: string, expiresAt?: string): 
       const conn = await strategy.testConnection();
       if (!conn.ok) return;
 
-      const cmds = getOsCommands(getAgentOS(agent));
+      const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
       const exec = async (cmd: string) => {
         const result = await strategy.execCommand(cmd, 15000);
         return result.stdout;

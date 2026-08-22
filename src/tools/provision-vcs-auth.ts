@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import { credentialResolve } from '../services/credential-store.js';
@@ -142,7 +142,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   const conn = await strategy.testConnection();
   if (!conn.ok) return `❌ Member "${agent.friendlyName}" is offline: ${conn.error}`;
 
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const exec = async (cmd: string): Promise<string> => {
     const result = await strategy.execCommand(cmd, 15000);
     if (result.code !== 0 && result.stderr) throw new Error(result.stderr);
