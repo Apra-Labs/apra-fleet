@@ -1,5 +1,16 @@
 # Cross-shell command construction for member-bound commands
 
+> **Note on granularity**: this document frames every branch point as
+> `agent.os` (POSIX vs PowerShell), which was accurate when it was written.
+> A member now also carries a registered `shell` (`gitbash | pwsh7 |
+> powershell5` on Windows), which is finer-grained than `os` -- a Windows
+> member whose registered shell is `gitbash` is a POSIX command-construction
+> target, not a PowerShell one. New or updated call sites should branch on
+> the registered shell (via `isPosixShell(os, shell)`) rather than on `os`
+> alone. See
+> [docs/windows-shell-selection.md](windows-shell-selection.md) for the
+> probe design and the shell-vs-os distinction in full.
+
 ## The invariant
 
 Any command string sent to a fleet member over the exec transport
