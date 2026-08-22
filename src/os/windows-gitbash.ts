@@ -191,12 +191,23 @@ export class WindowsGitBashCommands extends LinuxCommands {
   // --- Local exec ---
 
   override cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string } {
-    // Deliberately no `env` here: LinuxCommands rebuilds a pristine env with
-    // `env -i ... bash -l -c 'env -0'` through execSync, which on Windows runs
-    // under cmd.exe and throws. Inheriting the parent process env is the
-    // correct behaviour for a local Git bash member anyway -- its PATH already
-    // resolves the provider CLI.
-    return { command, shell: resolveGitBashPath() };
+    // Not LinuxCommands.getCleanEnv(): that rebuilds a pristine env with
+    // `env -i ... bash -l -c 'env -0'` through execSync, which on Windows
+    // runs under cmd.exe (no `shell` option passed) and throws -- so a local
+    // gitbash dispatch used to inherit the fleet server's env wholesale
+    // instead (apra-fleet-7dir.4). Inheriting the parent env is still correct
+    // here (its PATH already resolves the provider CLI); only the
+    // *_SOURCE_METADATA vars need stripping, same as WindowsCommands and
+    // LinuxCommands do for their own members, so filter them out of a copy
+    // rather than rebuilding the whole env from scratch.
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v === undefined) continue;
+      if (k === 'ANTIGRAVITY_SOURCE_METADATA' || k === 'CLAUDE_SOURCE_METADATA'
+        || k === 'COPILOT_SOURCE_METADATA' || k === 'CODEX_SOURCE_METADATA') continue;
+      env[k] = v;
+    }
+    return { command, env, shell: resolveGitBashPath() };
   }
 
   // --- Process management ---

@@ -105,7 +105,13 @@ class LocalStrategy implements AgentStrategy {
         // already terminated the wrapper, and taskkill can't traverse from
         // an already-dead PID, silently leaving descendants running.
         try {
-          execSync(cmds.killPid(child.pid), { stdio: 'ignore' });
+          // Must run through the same shell cleanExec resolved (e.g. Git
+          // Bash's bash.exe for a gitbash member) -- execSync with no
+          // `shell` option falls back to cmd.exe on Windows, which cannot
+          // parse a gitbash-flavoured kill string like
+          // `taskkill //F //T //PID <n> >/dev/null 2>&1; true`
+          // (apra-fleet-7dir.4).
+          execSync(cmds.killPid(child.pid), shell ? { stdio: 'ignore', shell } : { stdio: 'ignore' });
         } catch { /* best-effort; process may already be dead */ }
       }
 
