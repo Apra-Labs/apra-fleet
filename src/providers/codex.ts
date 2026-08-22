@@ -232,7 +232,7 @@ export class CodexProvider implements ProviderAdapter {
     return `exec "${promptLiteral}"`;
   }
 
-  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40 was scoped to the Claude workspace-trust gate (see the
     // provider-trust-matrix note on the parent bug); Codex was not part of that
     // investigation and no equivalent per-project trust gate is known. No-op until a

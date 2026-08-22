@@ -427,7 +427,7 @@ export class AgyProvider implements ProviderAdapter {
     };
   }
 
-  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40 provider trust matrix: AGY has NO per-project trust concept -- its
     // config is machine-global (live-verified, docs/member-onboarding-journey.md section
     // 3a). No-op.

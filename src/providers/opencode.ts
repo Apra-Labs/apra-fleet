@@ -306,7 +306,7 @@ export class OpenCodeProvider implements ProviderAdapter {
     };
   }
 
-  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40 provider trust matrix: OpenCode has a first-run trust/onboarding
     // gate too (docs/opencode-exploration.md:92-97), but it is ALREADY handled via the
     // validated --dangerously-skip-permissions flag on `opencode run` (same doc, checklist
