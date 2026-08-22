@@ -2,7 +2,7 @@ import os from 'node:os';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS, getAgentShell, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShell, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
@@ -70,6 +70,7 @@ async function resolveSecureTokens(
   command: string,
   agentOs: 'windows' | 'macos' | 'linux',
   callingMember: string,
+  agentShell: ReturnType<typeof getAgentShell>,
 ): Promise<{ resolved: string; credentials: ResolvedCredential[] } | { error: string }> {
   // Refuse if raw sec:// handles appear (these should not be passed to commands)
   if (/sec:\/\/[a-zA-Z0-9_]+/.test(command)) {
@@ -97,14 +98,19 @@ async function resolveSecureTokens(
     credentials.push({ name, plaintext: entry.plaintext, network_policy: entry.meta.network_policy });
   }
 
-  // Substitute tokens with shell-escaped values.
-  // Windows members run under PowerShell (confirmed by WindowsCommands.cleanExec),
-  // so use single-quote escaping — internal single quotes are doubled ('').
-  // This is safer than cmd.exe double-quote + ^ escaping which is unreliable in PS.
+  // Substitute tokens with shell-escaped values, chosen by the member's actual
+  // shell rather than its OS alone. A Windows member with no shell recorded
+  // (or pwsh7/powershell5) still runs under PowerShell, so single-quote
+  // escaping applies (internal single quotes doubled ''), which is safer than
+  // cmd.exe double-quote + ^ escaping that PowerShell handles unreliably. But
+  // after the shell probe, a Windows member with Git for Windows records
+  // shell=gitbash and cleanExec routes the command through bash.exe — a
+  // PowerShell-quoted credential handed to bash arrives corrupt, so that case
+  // must use POSIX escaping instead (apra-fleet-7dir.5.1).
   for (const cred of credentials) {
-    const escaped = agentOs === 'windows'
-      ? escapePowerShellArg(cred.plaintext)
-      : escapeShellArg(cred.plaintext);
+    const escaped = isPosixShell(agentOs, agentShell)
+      ? escapeShellArg(cred.plaintext)
+      : escapePowerShellArg(cred.plaintext);
     resolved = resolved.replaceAll(`{{secure.${cred.name}}}`, escaped);
   }
 
@@ -182,6 +188,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
 
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const agentOs = getAgentOS(agent);
+  const agentShell = getAgentShell(agent);
     const abortHandler = () => {
       scope.abort('cancelled by MCP client');
       tryKillPid(agent, strategy, cmds).catch(() => {});
@@ -199,7 +206,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   }
 
   // -- Resolve {{secure.NAME}} tokens --
-  const tokenResult = await resolveSecureTokens(input.command, agentOs, agent.friendlyName);
+  const tokenResult = await resolveSecureTokens(input.command, agentOs, agent.friendlyName, agentShell);
   if ('error' in tokenResult) return `❌ ${tokenResult.error}`;
 
   const { resolved: resolvedCommand, credentials } = tokenResult;
@@ -207,7 +214,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   // Also resolve tokens in restart_command (H1)
   let resolvedRestartCommand: string | undefined;
   if (input.restart_command) {
-    const restartTokenResult = await resolveSecureTokens(input.restart_command, agentOs, agent.friendlyName);
+    const restartTokenResult = await resolveSecureTokens(input.restart_command, agentOs, agent.friendlyName, agentShell);
     if ('error' in restartTokenResult) return `❌ ${restartTokenResult.error}`;
     resolvedRestartCommand = restartTokenResult.resolved;
     // Merge any additional credentials from restart_command (de-dup by name)
@@ -258,6 +265,16 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       // (session 0), independent of the SSH session's job object -- a plain
       // background launch dies with the SSH channel on Windows (verified
       // live), so `nohup ... &`'s POSIX equivalent does not exist here.
+      //
+      // Intentionally PowerShell regardless of the member's registered shell
+      // (gitbash included): wrapPowerShellEncoded base64-encodes the whole
+      // script and returns a literal `powershell -EncodedCommand <blob>`
+      // invocation string, so it is shell-agnostic AS A STRING -- whatever
+      // outer shell runs it (bash.exe or powershell.exe) just execs the
+      // powershell.exe binary with an opaque argument, with nothing left for
+      // that outer shell to re-tokenize or corrupt. Win32_Process.Create has
+      // no bash equivalent, so this site stays PowerShell by design; do not
+      // branch it on isPosixShell (apra-fleet-7dir.5.1).
       const wrapperScript = generateTaskWrapperWindows({
         taskId,
         command: resolvedCommand,
