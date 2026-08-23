@@ -636,6 +636,8 @@ describe('backlog -- index page places the Backlog ALWAYS LAST', () => {
             ledger: fakeLedger([{ sprintId: 's1', members: ['alice'], issueRoots: ['r1'], childPid: 1 }]),
             watchdog: { classifySprint: async () => ({ status: WATCHDOG_STATUS.RUNNING_HEALTHY }) },
             expandScope: async () => new Set(['r1']),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
             backlog,
         });
         const html = await dashboard.renderIndexPage();
@@ -650,6 +652,8 @@ describe('backlog -- index page places the Backlog ALWAYS LAST', () => {
             ledger: fakeLedger([]),
             watchdog: { classifySprint: async () => ({ status: WATCHDOG_STATUS.RUNNING_HEALTHY }) },
             backlog: { renderHtml: async () => { throw new Error('boom'); } },
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
             logger: { log() {}, error() {} },
         });
         const html = await dashboard.renderIndexPage();
