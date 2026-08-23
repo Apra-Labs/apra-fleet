@@ -344,7 +344,7 @@ describe('backlog -- renderBacklogPanelHtml: Sprint section is gone, Backlog + f
         assert.ok(html.includes('#B2'));
     });
 
-    test('the injected filter header (6-column header row) is still swapped in on top of the shared table markup', () => {
+    test('the injected filter header (now a 7-column header row, apra-fleet-qoxd.2 added the Created-at sort cell) is still swapped in on top of the shared table markup', () => {
         const html = renderBacklogPanelHtml(tasks, filterOptions);
 
         // injectFilterHeader() + injectRowCheckboxes() still ran: the plain-
@@ -357,10 +357,18 @@ describe('backlog -- renderBacklogPanelHtml: Sprint section is gone, Backlog + f
         assert.ok(html.includes('data-filter-field="status"'));
         assert.ok(html.includes('data-filter-field="priority"'));
         assert.ok(html.includes('data-filter-field="model"'));
-        // The header row itself still has exactly 6 <th> cells (ID/Title/
-        // Type/Status/Pri/Model), same shape as the plain header it replaced.
-        const headerRowMatch = html.match(/<tr[^>]*>\s*(?:<th[^>]*>[\s\S]*?<\/th>\s*){6}<\/tr>/);
-        assert.ok(headerRowMatch, 'the swapped-in header row must still have exactly 6 <th> cells');
+        // apra-fleet-qoxd.2: a 7th cell carries the Created-at sort control,
+        // with distinguishable asc/desc options (assertable by string match).
+        assert.ok(html.includes('data-sort-field="created_at"'), 'the Created-at sort control must be present');
+        assert.ok(html.includes('Created (newest)'));
+        assert.ok(html.includes('Created (oldest)'));
+        // The header row itself now has exactly 7 <th> cells (ID/Title/Type/
+        // Status/Pri/Model/Sort) -- one more than the plain header it
+        // replaced, since injectFilterHeader() only needs its OWN 6-cell
+        // match to find the original static header; the replacement it
+        // splices in is free to carry a different cell count.
+        const headerRowMatch = html.match(/<tr[^>]*>\s*(?:<th[^>]*>[\s\S]*?<\/th>\s*){7}<\/tr>/);
+        assert.ok(headerRowMatch, 'the swapped-in header row must have exactly 7 <th> cells');
         assert.ok(html.includes('bead-select-checkbox'), 'row checkboxes must still be injected');
         // The outer <table> wrapper renderBeadsHtml() always emits is unchanged.
         assert.ok(html.includes('<table'));

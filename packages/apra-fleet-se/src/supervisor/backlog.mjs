@@ -494,8 +494,18 @@ function sortByCreatedAt(tasks, dir) {
  * table re-render (collapse toggle, a fresh filtered fetch) never resets what
  * the operator had chosen -- this function is called fresh on every
  * `renderTable()` pass client-side, not just once at page load.
+ *
+ * A 7th header cell (apra-fleet-qoxd.2) carries the Created-at sort control:
+ * a single `<select data-sort-field="created_at">` offering a neutral
+ * 'Unsorted' option plus 'Created (newest)' (value `desc`) / 'Created
+ * (oldest)' (value `asc`), pre-selected from `currentFilters.sort`/
+ * `currentFilters.dir` so a client re-render preserves the chosen sort --
+ * same pattern the Type/Status/Pri/Model `<select>`s already follow. It is a
+ * distinct `data-sort-field` attribute (not `data-filter-field`) because this
+ * one control drives TWO `currentFilters` keys (`sort` and `dir`) at once;
+ * wiring lives in `backlogPanelClientScript()`'s `wireHeaderControls()`.
  * @param {{ type: string[], status: string[], priority: number[], model: string[] }} filterOptions
- * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string }} [currentFilters]
+ * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string, sort?: string, dir?: string }} [currentFilters]
  * @returns {string}
  */
 function buildFilterHeaderRowHtml(filterOptions, currentFilters) {
@@ -515,6 +525,17 @@ function buildFilterHeaderRowHtml(filterOptions, currentFilters) {
         return '<select data-filter-field="' + field + '" style="' + CTRL_STYLE + '">' + optionsHtml.join('') + '</select>';
     }
 
+    function sortSelectHtml(currentSort, currentDir) {
+        const isCreatedAtSort = currentSort === 'created_at';
+        const dir = isCreatedAtSort ? (currentDir === 'asc' ? 'asc' : 'desc') : '';
+        const optionsHtml = [
+            '<option value=""' + (dir === '' ? ' selected' : '') + '>Unsorted</option>',
+            '<option value="desc"' + (dir === 'desc' ? ' selected' : '') + '>Created (newest)</option>',
+            '<option value="asc"' + (dir === 'asc' ? ' selected' : '') + '>Created (oldest)</option>',
+        ];
+        return '<select data-sort-field="created_at" style="' + CTRL_STYLE + '">' + optionsHtml.join('') + '</select>';
+    }
+
     const qVal = escapeHtml(f.q || '');
     return '<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">' +
         '<th style="padding: 8px; width: 110px;">ID</th>' +
@@ -523,6 +544,7 @@ function buildFilterHeaderRowHtml(filterOptions, currentFilters) {
         '<th style="padding: 8px; width: 100px;">' + selectHtml('status', 'Status', opts.status, f.status) + '</th>' +
         '<th style="padding: 8px; width: 50px;">' + selectHtml('priority', 'Pri', opts.priority, f.priority, (p) => 'P' + p) + '</th>' +
         '<th style="padding: 8px; width: 80px;">' + selectHtml('model', 'Model', opts.model, f.model) + '</th>' +
+        '<th style="padding: 8px; width: 130px;">' + sortSelectHtml(f.sort, f.dir) + '</th>' +
         '</tr>';
 }
 
@@ -604,6 +626,24 @@ function backlogPanelClientScript() {
             var evt = el.tagName === 'SELECT' ? 'change' : 'change';
             el.addEventListener(evt, function () {
                 currentFilters[field] = el.value;
+                applyFilters();
+            });
+        });
+        // apra-fleet-qoxd.2: the Created-at sort control drives TWO
+        // currentFilters keys (sort/dir) off one <select>'s single value, so
+        // it cannot use the generic data-filter-field wiring above (which
+        // only ever sets one key). An empty value ('Unsorted') clears both
+        // keys back out of currentFilters entirely, matching the neutral
+        // (no sort param sent) state applyBeadFilters() expects.
+        container.querySelectorAll('[data-sort-field]').forEach(function (el) {
+            el.addEventListener('change', function () {
+                if (el.value) {
+                    currentFilters.sort = el.getAttribute('data-sort-field');
+                    currentFilters.dir = el.value;
+                } else {
+                    delete currentFilters.sort;
+                    delete currentFilters.dir;
+                }
                 applyFilters();
             });
         });
