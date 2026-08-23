@@ -11,6 +11,7 @@ import {
     formatPartialClaim,
     parentIdOf,
     normalizeBead,
+    applyBeadFilters,
 } from '../src/supervisor/backlog.mjs';
 import { createScopeGuard, expandScope } from '../src/supervisor/scope-overlap.mjs';
 import { createDashboard, renderIndexPageHtml } from '../src/supervisor/dashboard.mjs';
@@ -234,6 +235,65 @@ describe('backlog -- createBacklog production default computes claimed scope in-
         assert.ok(c1, 'expected c1 to be present in the free backlog set');
         assert.equal(c1.parent, 'E', "c1's stamped parent must match its parent-child dependency edge");
         assert.equal(epic.parent, null, 'a root bead with no parent-child edge stamps parent: null, not undefined');
+    });
+});
+
+// apra-fleet-qoxd.3 (verifying apra-fleet-qoxd.1): applyBeadFilters()'s
+// created_at sort -- ascending/descending ordering off distinct timestamps,
+// missing/invalid values always sorting last regardless of direction without
+// throwing, and omitting `sort` leaving row order (and the { tasks, total,
+// filterOptions } contract) exactly as the type/status/priority/model/q
+// narrowing already produced it.
+describe('backlog -- applyBeadFilters created_at sort (apra-fleet-qoxd.1)', () => {
+    const rows = [
+        { id: 'r1', title: 'Row one', issue_type: 'task', status: 'open', created_at: '2026-01-02T00:00:00Z' },
+        { id: 'r2', title: 'Row two', issue_type: 'task', status: 'open', created_at: '2026-01-05T00:00:00Z' },
+        { id: 'r3', title: 'Row three', issue_type: 'task', status: 'open', created_at: '2026-01-01T00:00:00Z' },
+    ];
+
+    test('sort: created_at, dir: asc returns rows in ascending created_at order', () => {
+        const { tasks } = applyBeadFilters(rows, { sort: 'created_at', dir: 'asc' });
+        assert.deepEqual(tasks.map((r) => r.id), ['r3', 'r1', 'r2']);
+    });
+
+    test('sort: created_at, dir: desc returns rows in descending created_at order', () => {
+        const { tasks } = applyBeadFilters(rows, { sort: 'created_at', dir: 'desc' });
+        assert.deepEqual(tasks.map((r) => r.id), ['r2', 'r1', 'r3']);
+    });
+
+    test('rows with missing/invalid created_at sort last for BOTH directions, and no call throws', () => {
+        const mixed = [
+            { id: 'valid1', title: 'Valid one', issue_type: 'task', status: 'open', created_at: '2026-01-02T00:00:00Z' },
+            { id: 'missing', title: 'Missing created_at', issue_type: 'task', status: 'open' },
+            { id: 'valid2', title: 'Valid two', issue_type: 'task', status: 'open', created_at: '2026-01-01T00:00:00Z' },
+            { id: 'invalid', title: 'Invalid created_at', issue_type: 'task', status: 'open', created_at: 'not-a-date' },
+        ];
+
+        let asc;
+        assert.doesNotThrow(() => {
+            asc = applyBeadFilters(mixed, { sort: 'created_at', dir: 'asc' }).tasks;
+        });
+        assert.deepEqual(asc.map((r) => r.id).slice(-2).sort(), ['invalid', 'missing']);
+        assert.deepEqual(asc.map((r) => r.id).slice(0, 2), ['valid2', 'valid1']);
+
+        let desc;
+        assert.doesNotThrow(() => {
+            desc = applyBeadFilters(mixed, { sort: 'created_at', dir: 'desc' }).tasks;
+        });
+        assert.deepEqual(desc.map((r) => r.id).slice(-2).sort(), ['invalid', 'missing']);
+        assert.deepEqual(desc.map((r) => r.id).slice(0, 2), ['valid1', 'valid2']);
+    });
+
+    test('omitting sort preserves prior behaviour: order unchanged, and the { tasks, total, filterOptions } contract is intact', () => {
+        const result = applyBeadFilters(rows, { type: 'task' });
+        assert.deepEqual(result.tasks.map((r) => r.id), ['r1', 'r2', 'r3']);
+        assert.equal(result.total, rows.length);
+        assert.ok(result.filterOptions);
+        assert.deepEqual(Object.keys(result).sort(), ['filterOptions', 'tasks', 'total']);
+
+        // No filters object at all behaves the same way.
+        const noFilters = applyBeadFilters(rows);
+        assert.deepEqual(noFilters.tasks.map((r) => r.id), ['r1', 'r2', 'r3']);
     });
 });
 
@@ -522,6 +582,35 @@ describe('backlog -- createBacklog', () => {
 
     test('createBacklog requires a ledger', () => {
         assert.throws(() => createBacklog({}), TypeError);
+    });
+
+    // apra-fleet-qoxd.3 (verifying apra-fleet-qoxd.1): proves the full
+    // route -> buildBacklogTasks -> applyBeadFilters wiring -- a
+    // { sort: 'created_at', dir } filter passed into buildBacklogTasks()
+    // actually reorders the free rows it returns, off an injected
+    // listAllBeads() fixture carrying distinct created_at timestamps.
+    test('buildBacklogTasks() honours a { sort: "created_at", dir } filter (route -> buildBacklogTasks -> applyBeadFilters wiring)', async () => {
+        const beadsWithTimestamps = [
+            { ...trackerBead('E', 'Epic', null, 'epic'), created_at: '2026-01-01T00:00:00Z' },
+            { ...trackerBead('c1', 'C1', 'E'), created_at: '2026-01-03T00:00:00Z' },
+            { ...trackerBead('c2', 'C2', 'E'), created_at: '2026-01-02T00:00:00Z' },
+            { ...trackerBead('c3', 'C3', 'E'), created_at: '2026-01-05T00:00:00Z' },
+            { ...trackerBead('f0', 'Free', null), created_at: '2026-01-04T00:00:00Z' },
+        ];
+        const backlog = createBacklog({
+            ledger: fakeLedger([]),
+            listAllBeads: () => beadsWithTimestamps,
+        });
+
+        const asc = await backlog.buildBacklogTasks({ sort: 'created_at', dir: 'asc' });
+        assert.deepEqual(asc.tasks.map((t) => t.id), ['E', 'c2', 'c1', 'f0', 'c3']);
+
+        const desc = await backlog.buildBacklogTasks({ sort: 'created_at', dir: 'desc' });
+        assert.deepEqual(desc.tasks.map((t) => t.id), ['c3', 'f0', 'c1', 'c2', 'E']);
+
+        // No sort filter -- unsorted (whatever order the free-row build produced).
+        const unsorted = await backlog.buildBacklogTasks();
+        assert.equal(unsorted.tasks.length, 5);
     });
 });
 
