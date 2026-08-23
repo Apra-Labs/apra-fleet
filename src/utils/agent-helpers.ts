@@ -40,9 +40,36 @@ export function getAgentShell(agent: Agent): MemberShell | undefined {
  * OS, or a Windows member registered as Git-for-Windows bash
  * (apra-fleet-7dir.2.4/2.5). A Windows member with no shell recorded, or
  * pwsh7/powershell5, still resolves to PowerShell exactly as before.
+ *
+ * THE single definition of this predicate (apra-fleet-7dir.11) -- every
+ * former private copy (member-home.ts, orphan-recovery.ts,
+ * compose-permissions.ts, execute-prompt.ts's isPosixShellMember) now calls
+ * through here so a future shell enum value (WSL, cmd) is added in exactly
+ * one place.
+ *
+ * The first parameter also accepts a plain `isWindows` boolean, for the one
+ * call site (compose-permissions.ts) that only ever had a boolean on hand --
+ * behaviourally identical to passing 'windows' / a non-windows RemoteOS,
+ * kept as an overload rather than forcing that caller to synthesize a
+ * RemoteOS value it doesn't otherwise need. `os: RemoteOS` also accepts a
+ * `TargetOS` (src/providers/provider.ts) value as-is: the two are the same
+ * three-value string union, just declared independently.
  */
-export function isPosixShell(os: RemoteOS, shell?: MemberShell): boolean {
-  return os !== 'windows' || shell === 'gitbash';
+export function isPosixShell(os: RemoteOS, shell?: MemberShell): boolean;
+export function isPosixShell(isWindows: boolean, shell?: MemberShell): boolean;
+export function isPosixShell(osOrIsWindows: RemoteOS | boolean, shell?: MemberShell): boolean {
+  const isWindows = typeof osOrIsWindows === 'boolean' ? osOrIsWindows : osOrIsWindows === 'windows';
+  return !isWindows || shell === 'gitbash';
+}
+
+/**
+ * Agent-taking convenience wrapper around isPosixShell -- reads the member's
+ * os/shell off the Agent itself instead of requiring the caller to unpack
+ * getAgentOS(agent)/getAgentShell(agent) first (apra-fleet-7dir.11; formerly
+ * execute-prompt.ts's private isPosixShellMember).
+ */
+export function isPosixShellMember(agent: Agent): boolean {
+  return isPosixShell(getAgentOS(agent), getAgentShell(agent));
 }
 
 /**

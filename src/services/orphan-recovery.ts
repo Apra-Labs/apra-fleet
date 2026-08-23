@@ -3,14 +3,7 @@ import type { OsCommands, MemberShell } from '../os/os-commands.js';
 import type { LogScope } from '../utils/log-helpers.js';
 import type { RemoteOS } from '../utils/platform.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
-
-/** True when `os`/`shell` resolve to a POSIX-speaking shell -- any non-Windows
- *  OS, or a Windows member registered as Git-for-Windows bash
- *  (apra-fleet-7dir.2.4). A Windows member with no shell recorded, or
- *  pwsh7/powershell5, still resolves to PowerShell exactly as before. */
-function isPosixShell(os: RemoteOS, shell?: MemberShell): boolean {
-  return os !== 'windows' || shell === 'gitbash';
-}
+import { isPosixShell } from '../utils/agent-helpers.js';
 
 /**
  * Lease-of-life recovery for a false-alarm "exit 0 / empty output" dispatch

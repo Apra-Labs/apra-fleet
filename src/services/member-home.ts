@@ -27,18 +27,10 @@ import os from 'node:os';
 import type { Agent } from '../types.js';
 import type { TargetOS } from '../providers/provider.js';
 import { getStrategy } from './strategy.js';
-import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { getProvider } from '../providers/index.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
-
-/** True when the member's shell speaks POSIX (any non-Windows OS, or a
- *  Windows member registered as Git-for-Windows bash -- apra-fleet-7dir.2.4).
- *  A Windows member with no shell recorded, or pwsh7/powershell5, still
- *  resolves to PowerShell exactly as before. */
-function isPosixShell(targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>): boolean {
-  return targetOs !== 'windows' || shell === 'gitbash';
-}
 
 /** memberId -> resolved home directory. Successful probes only. */
 const homeDirCache = new Map<string, string>();

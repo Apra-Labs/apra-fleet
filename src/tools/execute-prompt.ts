@@ -7,7 +7,7 @@ import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS, getAgentShell, touchAgent, getStoredPid } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, touchAgent, getStoredPid, isPosixShellMember } from '../utils/agent-helpers.js';
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -167,20 +167,6 @@ const SERVER_RETRY_DELAY_MS = 5000;
 // prompt size, on both OS paths (POSIX has a much higher real-world ceiling
 // but shares the same underlying single-exec-command-line hazard).
 const REMOTE_PROMPT_CHUNK_CHARS = 4000;
-
-/**
- * True when this member's remote commands are spoken by a POSIX shell -- any
- * non-Windows OS, or a Windows member registered as Git-for-Windows bash
- * (apra-fleet-7dir.5.4). A Windows member with no shell recorded, or with
- * pwsh7/powershell5, still resolves to PowerShell exactly as before.
- *
- * Deliberately a local copy: `isPosixShell` is NOT a shared export -- it is a
- * private helper duplicated (with differing signatures) in member-home.ts,
- * orphan-recovery.ts and compose-permissions.ts.
- */
-function isPosixShellMember(agent: Agent): boolean {
-  return getAgentOS(agent) !== 'windows' || getAgentShell(agent) === 'gitbash';
-}
 
 function chunkContent(content: string): string[] {
   const chunks: string[] = [];
