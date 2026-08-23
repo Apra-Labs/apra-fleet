@@ -149,6 +149,30 @@ prompt for a streak only includes feedback for the bead(s) that streak
 actually owns -- never a blanket broadcast of the whole verdict to every
 doer.
 
+### Batched bead claiming is a dormant contract, not yet live behavior
+
+`claimBeadsBatched()` exists to replace a per-id claim loop with one `bd
+update <ids...> --claim --json` call issued by the orchestrator member before
+a streak is dispatched, but it only activates when a streak carries an
+`assignee` -- which no current caller sets (`validated.assignee` is always
+unset), so today it is dead code exercised only by its own unit tests, not a
+behavior change. Its claim/skip classification is intentionally naive: an id
+counts as claimed only if it comes back in the parsed JSON array from `bd`;
+every other id in the batch -- whether genuinely claimed by a different
+sprint, or already claimed by this same orchestrator from a prior round -- is
+classified identically as "skipped" and dropped from the streak's working set.
+The two cases are behaviorally indistinguishable to the caller today. A
+command-level failure (member unreachable, transient dispatch fault) degrades
+the whole batch to all-skipped rather than throwing, but a malformed-JSON
+response from `bd` itself stays fatal -- the failure modes are deliberately
+asymmetric because a parse failure means the claim state is truly unknown,
+while a thrown `command()` has a well-understood "nothing happened" meaning.
+**Before wiring any caller to set `assignee` and make this path live**, the
+same-assignee re-claim case must be pinned down first: if `bd`'s `--claim`
+JSON array omits ids already owned by the same assignee (an idempotent
+re-claim), this classifier would wrongly treat the orchestrator's own beads as
+"skipped by another sprint" and prune them from the streak.
+
 ### newTask validation (injection defense)
 
 Reviewer-proposed `newTasks` are LLM output that will be interpolated into a
@@ -611,6 +635,21 @@ open verification gap: a green end-to-end smoke run (a real sandboxed
 fleet-sprint driving a canary to closure with zero pushes reaching the real
 remote) is the only evidence that actually closes it, not passing mocked/unit
 coverage of the classifier and the bd-level check in isolation.
+
+### The pre-gate sync.remote probe is cached once per D-push attempt, not re-queried on failure
+
+The bd-level `sync.remote` check described above runs once, as a pre-gate,
+before a D-push attempt begins; its result is cached (as
+`syncRemoteConfiguredAtPreGate`) and reused on the failure path rather than
+re-invoking `checkSyncRemoteConfigured`/`isMemberSyncRemoteConfigured` a
+second time. This is deliberately an at-most-once probe per attempt: the
+member's `sync.remote` setting is not expected to change mid-attempt, and
+re-probing on the failure path would double the bd-level round-trips for no
+behavioral gain. The pre-gate's own skip branch (short-circuiting the whole
+push when the probe reports "unconfigured") is retained as defense-in-depth
+even though it is now logically redundant with the cached value being reused
+later -- removing it would require re-proving the whole fail-closed
+invariant above, for a saving that doesn't matter at this call frequency.
 
 **Push failures are classified before they are retried, not folded together.**
 A D-push rejection reaching this layer is first sorted into a distinct
@@ -1147,3 +1186,34 @@ convergence, not an incidental refactor: two independently-maintained copies
 of the same resolution order are guaranteed to drift as the resolution rules
 evolve, silently reintroducing the exact "doubled servers, split state"
 failure mode a single shared helper exists to prevent.
+
+## Testing convention: proving a mocked fixture spawns no live subprocess
+
+Fixtures for supervisor-facing modules (dashboard, backlog, and similar) take
+seams like `listAllBeads`/`driftCheck` specifically so tests can avoid
+shelling out to a real `bd`/`git` against the developer's own live DB and
+repo. Those seams default to the real subprocess-calling implementation when
+omitted, so an incomplete fixture silently falls through to a live spawn
+instead of failing loudly -- the failure mode is invisible unless a test
+actively checks for it.
+
+**In-process mocking of `node:child_process` (`execFile`/`execFileSync`) does
+not reliably catch this.** A helper module that captures its own
+`execFile`/`execFileSync` reference via a named import at module-evaluation
+time keeps that binding even if a sibling module later mutates
+`child_process.execFile` -- the mutation does not redirect the
+already-resolved reference. The only technique that reliably intercepts every
+invocation shape (`execFile` vs `execFileSync`, with or without `{ shell:
+true }`) regardless of which internal helper or call style is used is an
+OS-level PATH shim: run the module under test as a real child process with a
+directory of fake `bd`/`git` executables prepended to `PATH`, each of which
+appends its own invocation to a marker file and exits 0. An empty marker file
+after the run proves no live subprocess was spawned; this is POSIX-only
+(the shim scripts are bash), gated behind `process.platform !== 'win32'`.
+
+A regression guard built this way should also validate that the child
+process it spawned actually exercised meaningful test coverage, not just that
+it exited 0 -- a child that spawned zero subtests, or crashed before running
+anything, would still report a clean marker file and a zero exit code,
+silently passing a vacuous check. Parse the child's own TAP summary line
+(`# tests`, `# pass`) and assert it clears a known floor.
