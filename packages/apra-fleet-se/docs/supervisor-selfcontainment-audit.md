@@ -113,10 +113,11 @@ present in the installed/packaged tree (not under an excluded dir).
 
 ## Regression guard
 
-`test/qqof-supervisor-selfcontained-audit.test.mjs` builds a REAL installed tree
-(the same `buildDevManifest()` / `extractWorkflowSubsystemAssets()` path
-`apra-fleet install` uses) and walks the full static import graph from the
-installed `bin/serve.mjs`, asserting every resolved module stays inside the
-installed tree. Unlike `n4lu2-packaged-supervisor-boot.test.mjs` (which pins the
-two n4lu files and boots serve.mjs), this guard covers the ENTIRE reachable
-graph, so a future out-of-tree import from ANY supervisor module fails the test.
+`test/installed-supervisor.test.mjs` (merged from the original qqof/n4lu2/qqof2
+files, apra-fleet-7h6n.4) builds a REAL installed tree (the same
+`buildDevManifest()` / `extractWorkflowSubsystemAssets()` path `apra-fleet
+install` uses) and walks the full static import graph from the installed
+`bin/serve.mjs`, asserting every resolved module stays inside the installed
+tree. Unlike its packaged-tree self-containment check (which pins the two
+n4lu files and boots serve.mjs), this guard covers the ENTIRE reachable graph,
+so a future out-of-tree import from ANY supervisor module fails the test.

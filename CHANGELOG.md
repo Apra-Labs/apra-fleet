@@ -38,6 +38,57 @@ Tracked spend (priced dispatches only): $5.1721.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.3360 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
 Pricing source: all 12 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
+## [Unreleased] -- Fable test-suite audit: hidden subprocess spawns, duplicate tests, redundant bd calls
+
+Sprint goal: work the low-risk/high-confidence subset of a test-suite and
+bd-call-volume audit -- items rated safe to fix without an open design
+question -- while leaving the higher-risk call-volume items for a separate
+human design decision.
+
+What shipped:
+
+- **Hidden live subprocess spawns eliminated**: mocked supervisor
+  dashboard/backlog test fixtures now supply the `listAllBeads`/`driftCheck`
+  seams those modules default to a real subprocess call when omitted, so the
+  fixtures no longer silently shell out to the developer's own live beads DB
+  and git repo on every run. A regression guard runs the fixed fixtures as
+  real child processes under an OS-level PATH shim (fake `bd`/`git`
+  executables) and additionally parses the child's own test-summary output
+  to rule out a vacuous pass (an empty spawn marker file from a child that
+  ran zero subtests).
+- **A real dolt-push bug fixed**: the pre-gate `sync.remote` probe result is
+  now cached and reused on the retry/failure path instead of being
+  re-queried, while keeping the original skip branch as defense-in-depth.
+- **Batched bead claiming investigated and pinned down**: `bd update
+  --claim` was confirmed to support a multi-id batch call; a `bd`-call-volume
+  reduction was implemented and unit-tested, but is intentionally left
+  dormant (no caller sets `assignee` yet) pending a follow-up that resolves a
+  same-assignee re-claim edge case before the path goes live.
+- **Duplicate test files consolidated**: several near-duplicate test files
+  covering the installed-supervisor self-containment check and the watchdog
+  reservation-release path were merged into single, parameterized files, and
+  an exact-duplicate file was deleted outright.
+- See
+  [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md)
+  for the durable patterns behind these fixes (probe caching, the dormant
+  batched-claim contract, and the no-live-spawn test technique).
+
+Carried forward: a follow-up to verify (or rebase away) unrelated
+in-flight orchestrator/member-reservation work that rode along on the same
+branch as this audit but lies outside its scope, and a follow-up to confirm
+`claimBeadsBatched` handles a same-assignee re-claim correctly before the
+batched-claim path is activated. Both remain open as backlog. A same-sprint
+regression pass could not run (see the sprint analysis artifact for the
+permissions gap that blocked it) and is informational only -- it did not
+gate this sprint's verdict.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $8.4210.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1315 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 18 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- Windows/PowerShell shell portability and schema-repair retry correctness

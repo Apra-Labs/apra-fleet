@@ -297,27 +297,90 @@ test('doltPushAfter: PRE-GATE (stabilization Issue 31) -- with bd-level sync.rem
     );
 });
 
-test('doltPushAfter: failure-path downgrade (eft.30.2 defense-in-depth) still covered -- pre-gate passes, push fails, then sync.remote reads absent', async () => {
-    // Stateful stub: the pre-gate read reports CONFIGURED (so the push is
-    // attempted, preserving eft.16.1 semantics for real clones), the push
-    // fails with an unclassifiable credentials error, and the failure-path
-    // re-check reports absent -- the downgrade branch must then turn the
-    // failure into the same benign no-remote skip instead of DoltSyncError.
+test('doltPushAfter: failure-path downgrade (eft.30.2 defense-in-depth) still covered -- pre-gate passes, push fails, sync.remote reads absent BEFORE the pre-gate runs', async () => {
+    // Pre-gate reports ABSENT up front -- so the failure-path downgrade
+    // branch is reached via the SAME early-return pre-gate skip, not a
+    // second, differently-answered probe (apra-fleet-7h6n.5 retired the
+    // failure path's own re-probe: it now reuses the pre-gate's cached
+    // boolean instead of calling checkSyncRemoteConfigured again, so a
+    // stateful check that changes its answer BETWEEN the pre-gate and the
+    // failure path -- the previous version of this test -- can no longer be
+    // observed; see the two tests immediately below for that new contract).
     const logs = [];
     const log = (msg) => logs.push(msg);
     const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
-    const answers = [true, false];
-    const checkSyncRemoteConfigured = async () => (answers.length > 1 ? answers.shift() : answers[0]);
+    const checkSyncRemoteConfigured = async () => false;
 
     const res = await doltPushAfter('memberA', { command, log, checkSyncRemoteConfigured });
 
     assert.deepEqual(res, { ok: true, member: 'memberA', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' });
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push WAS attempted (pre-gate saw configured)');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 0, 'the push was never attempted -- the pre-gate itself skipped it');
     assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'no reconcile pull is issued for this benign skip');
     assert.ok(
-        logs.some((l) => l.includes("[Dolt] D-push for member 'memberA' skipped: no dolt remote configured")),
-        `expected a 'skipped: no dolt remote configured' log line, got: ${JSON.stringify(logs)}`,
+        logs.some((l) => l.includes('skipped pre-attempt') && l.includes('no push command issued')),
+        `expected a 'skipped pre-attempt ... no push command issued' log line, got: ${JSON.stringify(logs)}`,
     );
+});
+
+// apra-fleet-7h6n.5: the failure-path downgrade branch at dolt-sync.mjs's
+// doltPushGuarded() now reuses the pre-gate's cached
+// isMemberSyncRemoteConfigured()/checkSyncRemoteConfigured() result instead
+// of re-invoking it a second time in the same doltPushAfter() call. Since the
+// pre-gate already returned `true` by the time the failure path is
+// reachable (a `false` result exits before any push is attempted), the
+// cached value is always `true` there -- the failure-path skip branch stays
+// in the code (defense-in-depth against a future caller wiring) but can no
+// longer independently observe a DIFFERENT (stale/changed) answer than the
+// pre-gate did; see the retired stateful-race scenario the previous version
+// of the test above covered.
+test('doltPushAfter (apra-fleet-7h6n.5): checkSyncRemoteConfigured is invoked at MOST ONCE per call -- the failure-path downgrade reuses the pre-gate result rather than re-probing', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    let checkCalls = 0;
+    const checkSyncRemoteConfigured = async () => { checkCalls += 1; return true; };
+
+    await assert.rejects(() => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), DoltSyncError);
+
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push WAS attempted (pre-gate saw configured)');
+    assert.equal(checkCalls, 1, 'checkSyncRemoteConfigured must be invoked exactly once per doltPushAfter call -- the failure path must reuse the cached pre-gate result, not re-probe');
+});
+
+test('doltPushAfter (apra-fleet-7h6n.5): a stale/changed answer between pre-gate and failure path is no longer observable -- the cached pre-gate value (configured) wins even if a later probe would have reported absent', async () => {
+    // Same stateful-answer shape the retired test above used (pre-gate sees
+    // `true`, a hypothetical second probe would see `false`) -- proves the
+    // SECOND answer is never consulted at all: checkSyncRemoteConfigured is
+    // called once, so the failure surfaces as DoltSyncError (the cached
+    // `true` from the pre-gate), not the benign no-remote skip the old
+    // double-probe behavior produced.
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    const answers = [true, false];
+    let checkCalls = 0;
+    const checkSyncRemoteConfigured = async () => {
+        checkCalls += 1;
+        return answers.length > 1 ? answers.shift() : answers[0];
+    };
+
+    await assert.rejects(() => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), DoltSyncError);
+
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push WAS attempted (pre-gate saw configured)');
+    assert.equal(checkCalls, 1, 'the second (would-be `false`) answer is never consulted -- only one probe happens per call');
+});
+
+// apra-fleet-7h6n.9 (verifying apra-fleet-7h6n.5): the two 7h6n.5 tests above
+// only drive the FAILURE path with a checkSyncRemoteConfigured spy. This one
+// drives the SUCCESS path (push succeeds outright, doltPushGuarded() never
+// reaches its failure-path downgrade branch at all) with the same kind of
+// spy, so "at most once per call" is verified across both branches
+// doltPushAfter can take, not just the one the .5 fix actually touched.
+test('doltPushAfter (apra-fleet-7h6n.9): checkSyncRemoteConfigured is invoked at most once per call on the SUCCESS path too (push succeeds, failure-path downgrade never runs)', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [OK] });
+    let checkCalls = 0;
+    const checkSyncRemoteConfigured = async () => { checkCalls += 1; return true; };
+
+    const res = await doltPushAfter('memberA', { command, checkSyncRemoteConfigured });
+
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push succeeded on the first attempt');
+    assert.equal(checkCalls, 1, 'checkSyncRemoteConfigured must be invoked exactly once on the success path -- only the pre-gate ever calls it');
 });
 
 test('doltPushAfter: negative control -- with an active configured sync.remote, the same non-diverged failure still throws DoltSyncError (eft.16.1 semantics preserved)', async () => {
@@ -731,134 +794,98 @@ function withGitSyncCallTexts(src) {
 // -----------------------------------------------------------------------------
 const CREDENTIALS_ERROR_2 = "fatal: could not read Username for 'https://github.com': Device not configured";
 
-test('doltPushAfter: self-heal success -- an auth-classified D-push heals once via onAuthFailure and the single bounded retry succeeds', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(CREDENTIALS_ERROR_2), OK],
-    });
-    let healCalls = 0;
-    const onAuthFailure = async (info) => {
-        healCalls += 1;
-        assert.equal(info.member, 'memberA');
-        assert.match(info.error, /could not read Username/);
-    };
-    const checkSyncRemoteConfigured = async () => true;
-    const res = await doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
-    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
-    assert.equal(healCalls, 1, 'expected exactly one self-heal call');
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push retried exactly once after self-heal');
-});
-
-test('doltPushAfter: self-heal called but the retry STILL fails -- the existing typed DoltSyncError still surfaces, no hang / infinite loop', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(CREDENTIALS_ERROR_2)], // single-entry queue -> same failure every call
-    });
-    let healCalls = 0;
-    const onAuthFailure = async () => { healCalls += 1; };
-    const checkSyncRemoteConfigured = async () => true;
-    await assert.rejects(
-        () => doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured }),
-        DoltSyncError,
-    );
-    assert.equal(healCalls, 1, 'self-heal must be invoked EXACTLY ONCE (bounded, never a loop)');
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'exactly one bounded retry after self-heal');
-});
-
-test('doltPushAfter: omitting onAuthFailure preserves BYTE-IDENTICAL pre-existing behavior on an auth-classified failure', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(CREDENTIALS_ERROR_2)],
-    });
-    const checkSyncRemoteConfigured = async () => true;
-    await assert.rejects(
-        () => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), // no onAuthFailure injected
-        DoltSyncError,
-    );
-    assert.equal(
-        calls.filter((c) => c.cmd.includes('bd dolt push')).length,
-        1,
-        'no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt',
-    );
-});
-
-test('doltPullBefore: an auth-classified D-pull heals once via onAuthFailure and the retry succeeds', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt pull': [fail(CREDENTIALS_ERROR_2), OK],
-    });
-    let healCalls = 0;
-    const onAuthFailure = async () => { healCalls += 1; };
-    const checkSyncRemoteConfigured = async () => true;
-    const res = await doltPullBefore('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
-    assert.deepEqual(res, { ok: true, member: 'memberA' });
-    assert.equal(healCalls, 1);
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 2, 'pull retried exactly once after self-heal');
-});
-
 // -----------------------------------------------------------------------------
 // apra-fleet-647.1.3.3: an 'unknown'-classified `bd dolt` failure gets the
 // SAME bounded one-shot self-heal + single retry as 'auth', rather than
-// failing immediately. 'diverged' remains excluded -- never retried.
+// failing immediately. 'diverged' remains excluded -- never retried (see the
+// standalone negative-control test below, which is NOT parameterizable here
+// since diverged behaves differently by design).
+//
+// apra-fleet-7h6n.3: the auth-kind and unknown-kind self-heal tests above
+// used to be EIGHT separate top-level test() calls (four shapes x two
+// classification kinds) differing only by which error string/classification
+// drove them (the bead's audit estimated seven; re-counting them here found
+// eight -- four shapes symmetric across both kinds, noted for the record).
+// Loop-ified into one parameterized test with a subtest per (shape, kind)
+// pair -- same assertions, same per-case pass/fail granularity via node:test
+// subtests, one shared body per shape.
 // -----------------------------------------------------------------------------
 const NOVEL_DOLT_ERROR = 'some totally novel bd dolt failure the classifier has never seen before';
 
-test('doltPushAfter: self-heal success -- an UNKNOWN-classified D-push heals once via onAuthFailure and the single bounded retry succeeds', async () => {
-    assert.equal(classifyDoltFailure(NOVEL_DOLT_ERROR), 'unknown', 'precondition: injected error must classify as unknown');
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(NOVEL_DOLT_ERROR), OK],
-    });
-    let healCalls = 0;
-    const onAuthFailure = async (info) => {
-        healCalls += 1;
-        assert.equal(info.member, 'memberA');
-        assert.equal(info.error, NOVEL_DOLT_ERROR);
-    };
-    const checkSyncRemoteConfigured = async () => true;
-    const res = await doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
-    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
-    assert.equal(healCalls, 1, 'expected exactly one self-heal call');
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push retried exactly once after self-heal');
-});
+const SELF_HEAL_KINDS = [
+    {
+        kind: 'auth', article: 'an',
+        error: CREDENTIALS_ERROR_2,
+        assertHealInfoError: (info) => assert.match(info.error, /could not read Username/),
+        pushRetryRejection: DoltSyncError,
+    },
+    {
+        kind: 'unknown', article: 'an',
+        error: NOVEL_DOLT_ERROR,
+        assertHealInfoError: (info) => assert.equal(info.error, NOVEL_DOLT_ERROR),
+        pushRetryRejection: (err) => err instanceof DoltSyncError && !(err instanceof DoltDivergedError),
+    },
+];
 
-test('doltPushAfter: self-heal called but the retry STILL fails on an UNKNOWN failure -- typed DoltSyncError still surfaces, self-heal called exactly once, no unbounded loop', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(NOVEL_DOLT_ERROR)], // single-entry queue -> same failure every call
-    });
-    let healCalls = 0;
-    const onAuthFailure = async () => { healCalls += 1; };
-    const checkSyncRemoteConfigured = async () => true;
-    await assert.rejects(
-        () => doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured }),
-        (err) => err instanceof DoltSyncError && !(err instanceof DoltDivergedError),
-    );
-    assert.equal(healCalls, 1, 'self-heal must be invoked EXACTLY ONCE (bounded, never a loop)');
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'exactly one bounded retry after self-heal');
-});
+test('doltPushAfter/doltPullBefore: bounded one-shot onAuthFailure self-heal on auth- and unknown-classified failures (apra-fleet-7h6n.3, parameterized)', async (t) => {
+    for (const { kind, article, error, assertHealInfoError, pushRetryRejection } of SELF_HEAL_KINDS) {
+        if (kind === 'unknown') {
+            assert.equal(classifyDoltFailure(error), 'unknown', 'precondition: injected error must classify as unknown');
+        }
 
-test('doltPushAfter: omitting onAuthFailure preserves pre-existing behavior on an unknown-classified failure -- no retry, single attempt', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(NOVEL_DOLT_ERROR)],
-    });
-    const checkSyncRemoteConfigured = async () => true;
-    await assert.rejects(
-        () => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), // no onAuthFailure injected
-        DoltSyncError,
-    );
-    assert.equal(
-        calls.filter((c) => c.cmd.includes('bd dolt push')).length,
-        1,
-        'no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt',
-    );
-});
+        await t.test(`doltPushAfter: self-heal success -- ${article} ${kind}-classified D-push heals once via onAuthFailure and the single bounded retry succeeds`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(error), OK] });
+            let healCalls = 0;
+            const onAuthFailure = async (info) => {
+                healCalls += 1;
+                assert.equal(info.member, 'memberA');
+                assertHealInfoError(info);
+            };
+            const checkSyncRemoteConfigured = async () => true;
+            const res = await doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
+            assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
+            assert.equal(healCalls, 1, 'expected exactly one self-heal call');
+            assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push retried exactly once after self-heal');
+        });
 
-test('doltPullBefore: an unknown-classified D-pull heals once via onAuthFailure and the retry succeeds', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt pull': [fail(NOVEL_DOLT_ERROR), OK],
-    });
-    let healCalls = 0;
-    const onAuthFailure = async () => { healCalls += 1; };
-    const checkSyncRemoteConfigured = async () => true;
-    const res = await doltPullBefore('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
-    assert.deepEqual(res, { ok: true, member: 'memberA' });
-    assert.equal(healCalls, 1);
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 2, 'pull retried exactly once after self-heal');
+        await t.test(`doltPushAfter: self-heal called but the retry STILL fails on ${article} ${kind}-classified failure -- typed DoltSyncError still surfaces, self-heal called exactly once, no unbounded loop`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(error)] }); // single-entry queue -> same failure every call
+            let healCalls = 0;
+            const onAuthFailure = async () => { healCalls += 1; };
+            const checkSyncRemoteConfigured = async () => true;
+            await assert.rejects(
+                () => doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured }),
+                pushRetryRejection,
+            );
+            assert.equal(healCalls, 1, 'self-heal must be invoked EXACTLY ONCE (bounded, never a loop)');
+            assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'exactly one bounded retry after self-heal');
+        });
+
+        await t.test(`doltPushAfter: omitting onAuthFailure preserves pre-existing behavior on ${article} ${kind}-classified failure -- no retry, single attempt`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(error)] });
+            const checkSyncRemoteConfigured = async () => true;
+            await assert.rejects(
+                () => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), // no onAuthFailure injected
+                DoltSyncError,
+            );
+            assert.equal(
+                calls.filter((c) => c.cmd.includes('bd dolt push')).length,
+                1,
+                'no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt',
+            );
+        });
+
+        await t.test(`doltPullBefore: ${article} ${kind}-classified D-pull heals once via onAuthFailure and the retry succeeds`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt pull': [fail(error), OK] });
+            let healCalls = 0;
+            const onAuthFailure = async () => { healCalls += 1; };
+            const checkSyncRemoteConfigured = async () => true;
+            const res = await doltPullBefore('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
+            assert.deepEqual(res, { ok: true, member: 'memberA' });
+            assert.equal(healCalls, 1);
+            assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 2, 'pull retried exactly once after self-heal');
+        });
+    }
 });
 
 test('doltPullBefore: a DIVERGED D-pull is still never retried/self-healed even when onAuthFailure is provided', async () => {

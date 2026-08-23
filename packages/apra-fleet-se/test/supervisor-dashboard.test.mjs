@@ -349,6 +349,8 @@ describe('dashboard -- createDashboard', () => {
             ]),
             watchdog: fakeWatchdog({ 'live-1': WATCHDOG_STATUS.RUNNING_HEALTHY, 'done-1': WATCHDOG_STATUS.FINISHED }),
             expandScope: async () => new Set(),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
         });
         const views = await dashboard.buildSprintViews();
         assert.deepEqual(views.map((v) => v.sprintId), ['live-1']);
@@ -365,6 +367,8 @@ describe('dashboard -- createDashboard', () => {
                 'hung-1': WATCHDOG_STATUS.RUNNING_UNRESPONSIVE,
             }),
             expandScope: async () => new Set(),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
         });
         const views = await dashboard.buildSprintViews();
         assert.deepEqual(views.map((v) => v.sprintId).sort(), ['crashed-1', 'hung-1']);
@@ -378,6 +382,8 @@ describe('dashboard -- createDashboard', () => {
                 assert.deepEqual(roots, ['root']);
                 return new Set(['root', 'child1', 'child2']);
             },
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
         });
         const [view] = await dashboard.buildSprintViews();
         assert.equal(view.beadCount, 3);
@@ -394,6 +400,7 @@ describe('dashboard -- createDashboard', () => {
                 { id: 'child2', status: 'open' },
                 { id: 'out-of-scope', status: 'open' },
             ]),
+            driftCheck: async () => null,
         });
         const [view] = await dashboard.buildSprintViews();
         assert.deepEqual(view.progress, { closed: 2, required: 3, fraction: 2 / 3 });
@@ -413,6 +420,7 @@ describe('dashboard -- createDashboard', () => {
                 { id: 'decomposed-parent', status: 'open', priority: 1, parentId: null },
                 { id: 'decomposed-child', status: 'closed', priority: 1, parentId: 'decomposed-parent' },
             ]),
+            driftCheck: async () => null,
         });
         const [view] = await dashboard.buildSprintViews();
         // Eligible set: root, decomposed-child -- both closed -> N/N, even
@@ -426,6 +434,7 @@ describe('dashboard -- createDashboard', () => {
             watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
             expandScope: async () => new Set(['root']),
             listAllBeads: async () => { throw new Error('bd unavailable'); },
+            driftCheck: async () => null,
             logger: { log() {}, error() {} },
         });
         const views = await dashboard.buildSprintViews();
@@ -441,6 +450,8 @@ describe('dashboard -- createDashboard', () => {
             getSprintMeta: async (id) => (id === 's1'
                 ? { branch: 'feat/x', goal: 'P1', roles: { alice: 'orchestrator' } }
                 : {}),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
         });
         const [view] = await withMeta.buildSprintViews();
         assert.equal(view.branch, 'feat/x');
@@ -452,6 +463,8 @@ describe('dashboard -- createDashboard', () => {
             ledger: fakeLedger([{ sprintId: 's2', members: ['carol'], issueRoots: [], childPid: 1 }]),
             watchdog: fakeWatchdog({ s2: WATCHDOG_STATUS.RUNNING_HEALTHY }),
             expandScope: async () => new Set(),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
         });
         const [view2] = await withoutMeta.buildSprintViews();
         assert.equal(view2.branch, null);
@@ -468,6 +481,8 @@ describe('dashboard -- createDashboard', () => {
             ledger: ledgerWithMeta,
             watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
             expandScope: async () => new Set(),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
         });
         const [view] = await dashboard.buildSprintViews();
         assert.equal(view.branch, 'feat/persisted');
@@ -479,6 +494,8 @@ describe('dashboard -- createDashboard', () => {
             ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: [], childPid: 1 }]),
             watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
             expandScope: async () => new Set(),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
         });
         const [view] = await dashboard.buildSprintViews();
         assert.equal(view.branch, null);
@@ -491,6 +508,8 @@ describe('dashboard -- createDashboard', () => {
             watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
             expandScope: async () => { throw new Error('boom'); },
             getSprintMeta: async () => { throw new Error('boom'); },
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
             logger: { log() {}, error() {} },
         });
         const views = await dashboard.buildSprintViews();
@@ -508,6 +527,8 @@ describe('dashboard -- createDashboard', () => {
         const dashboard = createDashboard({
             ledger: fakeLedger([]),
             watchdog: fakeWatchdog({}),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
         });
         const html = await dashboard.renderIndexPage();
         assert.ok(html.startsWith('<!DOCTYPE html>'));
@@ -528,6 +549,7 @@ describe('dashboard -- createDashboard', () => {
                 expandScope: async () => new Set(),
                 getSprintMeta: async () => ({ branch: 'feat/x' }),
                 driftCheck: async (branch, base) => { calledWith = { branch, base }; return 7; },
+                listAllBeads: async () => [],
             });
             const [view] = await dashboard.buildSprintViews();
             assert.deepEqual(calledWith, { branch: 'feat/x', base: 'main' });
@@ -536,10 +558,16 @@ describe('dashboard -- createDashboard', () => {
         });
 
         test('base defaults to null when the ledger entry carries none; baseDrift defaults to null when driftCheck is not injected (falls back to the real computeBaseDrift, which fails closed with no such branch)', async () => {
+            // driftCheck intentionally NOT injected here -- this test exercises
+            // the real default computeBaseDrift()'s fail-closed guard. It never
+            // actually shells out to git: with no branch/base on the ledger
+            // entry, computeBaseDrift's own typeof guard short-circuits before
+            // the `git rev-list` spawn.
             const dashboard = createDashboard({
                 ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: [], childPid: 1 }]),
                 watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
                 expandScope: async () => new Set(),
+                listAllBeads: async () => [],
             });
             const [view] = await dashboard.buildSprintViews();
             assert.equal(view.base, null);
@@ -555,6 +583,7 @@ describe('dashboard -- createDashboard', () => {
                 expandScope: async () => new Set(),
                 getSprintMeta: async () => ({ branch: 'feat/x' }),
                 driftCheck: async () => { throw new Error('git boom'); },
+                listAllBeads: async () => [],
                 logger: { log() {}, error() {} },
             });
             const views = await dashboard.buildSprintViews();
@@ -598,6 +627,8 @@ describe('dashboard -- registerDashboardRoutes / GET /', () => {
             ledger: fakeLedger([{ sprintId: 'sprint-1', members: ['alice'], issueRoots: ['r1'], childPid: 1 }]),
             watchdog: fakeWatchdog({ 'sprint-1': WATCHDOG_STATUS.RUNNING_HEALTHY }),
             expandScope: async () => new Set(['r1']),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
         });
         const supervisor = createSupervisor({ logger: { log() {}, error() {} } });
         registerDashboardRoutes(supervisor, dashboard);

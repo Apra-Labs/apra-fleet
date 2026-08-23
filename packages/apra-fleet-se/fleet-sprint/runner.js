@@ -3186,6 +3186,71 @@ export async function verifyDoerStreakClosed({ command, orchestratorMember, bead
 }
 
 /**
+ * Batched per-streak work-claiming (apra-fleet-7h6n.7, audit R6): claims
+ * every id in `beadIds` with ONE `bd update <id...> --claim --json`
+ * invocation instead of one `bd update <id> --claim` call per bead.
+ *
+ * RESEARCH FINDING this batching relies on (verified against real `bd`
+ * 1.1.0, both by reading `bd update --help`'s `Usage: bd update [id...]`
+ * and by exercising a scratch sandbox DB): `bd update` DOES accept a
+ * variadic id list, and `--claim --json` on a MULTI-id invocation returns a
+ * JSON array containing ONLY the issues that were successfully claimed --
+ * an id that fails to resolve, or is already claimed by a DIFFERENT
+ * assignee, is silently dropped from the array (its error goes to stderr,
+ * not stdout) rather than aborting the whole call. Two non-obvious
+ * consequences, both load-bearing for this function's design:
+ *   1. This is NOT atomic in the transactional sense -- ids before a
+ *      failing one are still committed, there is no all-or-nothing
+ *      rollback. It IS enough to cut the streak's claim step from N
+ *      subprocess spawns to 1, which is this bead's actual goal.
+ *   2. The process exit code stays 0 even when SOME ids in the batch
+ *      failed to claim (verified: a lone failing id exits 1, but the exact
+ *      same failure mixed into a multi-id batch with a succeeding id exits
+ *      0) -- so, unlike the old single-id-per-call loop, success can NEVER
+ *      be inferred from "command() did not throw". The returned JSON array
+ *      is the only reliable signal, which is why this function always
+ *      diffs `beadIds` against the parsed array rather than relying on a
+ *      catch block.
+ *
+ * A total call failure (command() itself throws -- e.g. a transient
+ * dispatch/network fault reaching the member) is treated the same way the
+ * old loop treated "every id failed": every id is reported skipped, never
+ * thrown, so one bad batch degrades the streak (all its beads stay
+ * unclaimed, caller decides whether to skip the streak) rather than
+ * crashing the sprint.
+ *
+ * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function }} opts
+ * @returns {Promise<{ claimedBeadIds: string[], skippedBeadIds: string[] }>}
+ */
+export async function claimBeadsBatched({ command, orchestratorMember, beadIds, log = () => {} }) {
+    if (!Array.isArray(beadIds) || beadIds.length === 0) {
+        return { claimedBeadIds: [], skippedBeadIds: [] };
+    }
+    const label = `bd update ${beadIds.join(' ')} --claim --json`;
+    let raw;
+    try {
+        raw = await command(label, { member_name: orchestratorMember, silent: true });
+    } catch (err) {
+        // A dispatch/exec-level failure (member unreachable, transient
+        // network fault) degrades gracefully -- every id in this batch
+        // stays unclaimed, same as the old per-id loop's catch-and-skip.
+        // This is DISTINCT from a malformed-JSON parse failure below, which
+        // stays fatal (per parseBdJson's own doc comment: a parse failure
+        // must be LOUD, never silently swallowed as "everything skipped").
+        log(`Batched claim failed for [${beadIds.join(', ')}]: ${err.message}`);
+        return { claimedBeadIds: [], skippedBeadIds: [...beadIds] };
+    }
+    const claimed = parseBdJson(raw, label);
+    const claimedIds = new Set((Array.isArray(claimed) ? claimed : []).map((b) => b && b.id).filter(Boolean));
+    const claimedBeadIds = beadIds.filter((id) => claimedIds.has(id));
+    const skippedBeadIds = beadIds.filter((id) => !claimedIds.has(id));
+    if (skippedBeadIds.length > 0) {
+        log(`Batched claim: claimed ${claimedBeadIds.length} bead(s) [${claimedBeadIds.join(', ')}]; skipped ${skippedBeadIds.length} already-claimed/unresolvable bead(s) [${skippedBeadIds.join(', ')}].`);
+    }
+    return { claimedBeadIds, skippedBeadIds };
+}
+
+/**
  * Validates and normalizes the args object passed into main(context).
  * Rejects unknown keys and missing/malformed required keys loudly.
  *
@@ -8685,24 +8750,18 @@ async function runSprintCycle(context) {
                 // FIRST attempt passes nothing and keeps plain ff-only
                 // pre-dispatch sync.
                 const dispatchDoer = (syncOpts = {}) => withGitSync(doerMember, true, async () => {
-                    // Claim once per streak turn, after the D-pull.
+                    // Claim once per streak turn, after the D-pull. Batched into ONE
+                    // bd update id-list --claim --json call (apra-fleet-7h6n.7)
+                    // instead of one bd update id --claim call per bead -- see the
+                    // claimBeadsBatched doc comment above for the verified
+                    // multi-id --claim contract (non-atomic, JSON-array-only
+                    // success signal) this relies on.
                     if (!hasClaimedBeads) {
                         hasClaimedBeads = true;
                         if (validated.assignee) {
-                            const claimedBeadIds = [];
-                            const skippedBeadIds = [];
-                            for (const beadId of actualBeadIds) {
-                                try {
-                                    const claimLabel = `bd update ${beadId} --claim`;
-                                    await command(claimLabel, { member_name: orchestratorMember, silent: true });
-                                    claimedBeadIds.push(beadId);
-                                } catch (claimErr) {
-                                    // A claim can fail if the bead is already claimed by another
-                                    // sprint/assignee. Skip this bead instead of crashing.
-                                    skippedBeadIds.push(beadId);
-                                    log(`Doer streak: bead ${beadId} already claimed (skipping): ${claimErr.message}`);
-                                }
-                            }
+                            const { claimedBeadIds, skippedBeadIds } = await claimBeadsBatched({
+                                command, orchestratorMember, beadIds: actualBeadIds, log,
+                            });
                             if (claimedBeadIds.length === 0) {
                                 // All beads in this streak are already claimed by other sprints.
                                 // Skip this streak entirely.
@@ -8713,7 +8772,6 @@ async function runSprintCycle(context) {
                                 );
                             }
                             if (skippedBeadIds.length > 0) {
-                                log(`Doer streak: claimed ${claimedBeadIds.length} bead(s) [${claimedBeadIds.join(', ')}]; skipped ${skippedBeadIds.length} already-claimed bead(s) [${skippedBeadIds.join(', ')}].`);
                                 actualBeadIds = claimedBeadIds; // Update to only the successfully claimed ones
                             }
                         }
