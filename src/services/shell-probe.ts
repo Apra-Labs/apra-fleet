@@ -26,7 +26,7 @@ import type { MemberShell } from '../os/os-commands.js';
 import type { RemoteOS } from '../utils/platform.js';
 import { isWindowsPosixUname } from '../utils/platform.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
-import { GIT_BASH_MACHINE_CANDIDATES } from '../os/git-bash-candidates.js';
+import { GIT_BASH_MACHINE_CANDIDATES, GIT_BASH_USER_SUFFIX } from '../os/git-bash-candidates.js';
 
 /** Result shape of a single probe command execution. */
 export interface ProbeExecResult {
@@ -92,7 +92,7 @@ export function buildGitBashDiscoveryCommand(): string {
     .join(',');
   const ps = [
     `$c = @(${machineCandidates})`,
-    `if ($env:LOCALAPPDATA) { $c += (Join-Path $env:LOCALAPPDATA 'Programs\\Git\\bin\\bash.exe') }`,
+    `if ($env:LOCALAPPDATA) { $c += (Join-Path $env:LOCALAPPDATA '${GIT_BASH_USER_SUFFIX.replace(/'/g, "''")}') }`,
     `$c += @(Get-Command bash.exe -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })`,
     `$c | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique | ForEach-Object { Write-Output ('${BASH_CANDIDATE_MARKER}' + $_) }`,
   ].join('; ');

@@ -17,6 +17,16 @@ export const GIT_BASH_MACHINE_CANDIDATES: readonly string[] = [
 ];
 
 /**
+ * The path suffix appended to a LOCALAPPDATA value to form the user-scope
+ * Git-bash candidate. Shared verbatim between gitBashUserCandidate below (JS
+ * string concatenation for a local member) and shell-probe.ts's
+ * buildGitBashDiscoveryCommand (interpolated into a PowerShell Join-Path
+ * expression for a remote member), so editing one cannot silently diverge
+ * from the other (apra-fleet-7dir.14).
+ */
+export const GIT_BASH_USER_SUFFIX = 'Programs\\Git\\bin\\bash.exe';
+
+/**
  * The user-scope candidate path, built from a LOCALAPPDATA value. Returns
  * undefined when localAppData is not set -- mirrors the registration probe's
  * own `if ($env:LOCALAPPDATA)` guard, which likewise skips this candidate
@@ -24,7 +34,7 @@ export const GIT_BASH_MACHINE_CANDIDATES: readonly string[] = [
  */
 export function gitBashUserCandidate(localAppData: string | undefined): string | undefined {
   if (!localAppData) return undefined;
-  return `${localAppData.replace(/[\\/]+$/, '')}\\Programs\\Git\\bin\\bash.exe`;
+  return `${localAppData.replace(/[\\/]+$/, '')}\\${GIT_BASH_USER_SUFFIX}`;
 }
 
 /**

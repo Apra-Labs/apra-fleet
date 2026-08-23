@@ -19,7 +19,7 @@ import os from 'node:os';
 import { getStrategy } from '../src/services/strategy.js';
 import { makeTestLocalAgent } from './test-helpers.js';
 import { resolveGitBashPath } from '../src/os/windows-gitbash.js';
-import { GIT_BASH_MACHINE_CANDIDATES, gitBashUserCandidate } from '../src/os/git-bash-candidates.js';
+import { GIT_BASH_MACHINE_CANDIDATES, GIT_BASH_USER_SUFFIX, gitBashUserCandidate } from '../src/os/git-bash-candidates.js';
 import { buildGitBashDiscoveryCommand } from '../src/services/shell-probe.js';
 import { decodePowerShellEncodedCommand } from './test-helpers.js';
 
@@ -113,6 +113,11 @@ describe('resolveGitBashPath candidate list (apra-fleet-7dir.7)', () => {
       expect(script).toContain(candidate);
     }
     expect(script).toContain('LOCALAPPDATA');
+    // apra-fleet-7dir.14: the user-scope suffix itself must come from the
+    // shared GIT_BASH_USER_SUFFIX export, not a second hand-rolled literal --
+    // checking for the literal string 'LOCALAPPDATA' alone can't catch that
+    // divergence since the env var name never changes even if the suffix does.
+    expect(script).toContain(GIT_BASH_USER_SUFFIX);
   });
 
   it('the shared list includes the user-scope LOCALAPPDATA Programs\\Git\\bin\\bash.exe path', () => {
