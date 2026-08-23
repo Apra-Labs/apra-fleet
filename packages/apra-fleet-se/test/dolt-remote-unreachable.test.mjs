@@ -30,12 +30,13 @@ describe('classifyDoltFailure: remote-unreachable (run-24 abort regression pin)'
         assert.strictEqual(classifyDoltFailure(RUN24_PULL_STDERR), 'remote-unreachable');
     });
 
-    test('existing classes are unaffected', () => {
-        // Samples drawn from the existing pattern lists in runner.js.
-        assert.strictEqual(classifyDoltFailure('hint: updates were rejected'), 'diverged');
-        assert.strictEqual(classifyDoltFailure('connection refused'), 'transient');
-        assert.strictEqual(classifyDoltFailure('some entirely unrelated failure text'), 'unknown');
-    });
+    // apra-fleet-7h6n.3: the "existing classes are unaffected" sanity check
+    // that used to live here (diverged/transient/unknown samples) duplicated
+    // dolt-sync-brackets.test.mjs's own classifyDoltFailure coverage
+    // ("classifyDoltFailure: conflict / non-fast-forward outputs classify as
+    // diverged" / "... network / lock outputs classify as transient" / "...
+    // unclassifiable output is unknown") -- removed here, still covered
+    // there.
 });
 
 describe('extractDoltRemoteUrl', () => {

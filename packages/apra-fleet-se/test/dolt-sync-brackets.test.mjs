@@ -776,134 +776,98 @@ function withGitSyncCallTexts(src) {
 // -----------------------------------------------------------------------------
 const CREDENTIALS_ERROR_2 = "fatal: could not read Username for 'https://github.com': Device not configured";
 
-test('doltPushAfter: self-heal success -- an auth-classified D-push heals once via onAuthFailure and the single bounded retry succeeds', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(CREDENTIALS_ERROR_2), OK],
-    });
-    let healCalls = 0;
-    const onAuthFailure = async (info) => {
-        healCalls += 1;
-        assert.equal(info.member, 'memberA');
-        assert.match(info.error, /could not read Username/);
-    };
-    const checkSyncRemoteConfigured = async () => true;
-    const res = await doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
-    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
-    assert.equal(healCalls, 1, 'expected exactly one self-heal call');
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push retried exactly once after self-heal');
-});
-
-test('doltPushAfter: self-heal called but the retry STILL fails -- the existing typed DoltSyncError still surfaces, no hang / infinite loop', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(CREDENTIALS_ERROR_2)], // single-entry queue -> same failure every call
-    });
-    let healCalls = 0;
-    const onAuthFailure = async () => { healCalls += 1; };
-    const checkSyncRemoteConfigured = async () => true;
-    await assert.rejects(
-        () => doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured }),
-        DoltSyncError,
-    );
-    assert.equal(healCalls, 1, 'self-heal must be invoked EXACTLY ONCE (bounded, never a loop)');
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'exactly one bounded retry after self-heal');
-});
-
-test('doltPushAfter: omitting onAuthFailure preserves BYTE-IDENTICAL pre-existing behavior on an auth-classified failure', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(CREDENTIALS_ERROR_2)],
-    });
-    const checkSyncRemoteConfigured = async () => true;
-    await assert.rejects(
-        () => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), // no onAuthFailure injected
-        DoltSyncError,
-    );
-    assert.equal(
-        calls.filter((c) => c.cmd.includes('bd dolt push')).length,
-        1,
-        'no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt',
-    );
-});
-
-test('doltPullBefore: an auth-classified D-pull heals once via onAuthFailure and the retry succeeds', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt pull': [fail(CREDENTIALS_ERROR_2), OK],
-    });
-    let healCalls = 0;
-    const onAuthFailure = async () => { healCalls += 1; };
-    const checkSyncRemoteConfigured = async () => true;
-    const res = await doltPullBefore('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
-    assert.deepEqual(res, { ok: true, member: 'memberA' });
-    assert.equal(healCalls, 1);
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 2, 'pull retried exactly once after self-heal');
-});
-
 // -----------------------------------------------------------------------------
 // apra-fleet-647.1.3.3: an 'unknown'-classified `bd dolt` failure gets the
 // SAME bounded one-shot self-heal + single retry as 'auth', rather than
-// failing immediately. 'diverged' remains excluded -- never retried.
+// failing immediately. 'diverged' remains excluded -- never retried (see the
+// standalone negative-control test below, which is NOT parameterizable here
+// since diverged behaves differently by design).
+//
+// apra-fleet-7h6n.3: the auth-kind and unknown-kind self-heal tests above
+// used to be EIGHT separate top-level test() calls (four shapes x two
+// classification kinds) differing only by which error string/classification
+// drove them (the bead's audit estimated seven; re-counting them here found
+// eight -- four shapes symmetric across both kinds, noted for the record).
+// Loop-ified into one parameterized test with a subtest per (shape, kind)
+// pair -- same assertions, same per-case pass/fail granularity via node:test
+// subtests, one shared body per shape.
 // -----------------------------------------------------------------------------
 const NOVEL_DOLT_ERROR = 'some totally novel bd dolt failure the classifier has never seen before';
 
-test('doltPushAfter: self-heal success -- an UNKNOWN-classified D-push heals once via onAuthFailure and the single bounded retry succeeds', async () => {
-    assert.equal(classifyDoltFailure(NOVEL_DOLT_ERROR), 'unknown', 'precondition: injected error must classify as unknown');
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(NOVEL_DOLT_ERROR), OK],
-    });
-    let healCalls = 0;
-    const onAuthFailure = async (info) => {
-        healCalls += 1;
-        assert.equal(info.member, 'memberA');
-        assert.equal(info.error, NOVEL_DOLT_ERROR);
-    };
-    const checkSyncRemoteConfigured = async () => true;
-    const res = await doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
-    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
-    assert.equal(healCalls, 1, 'expected exactly one self-heal call');
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push retried exactly once after self-heal');
-});
+const SELF_HEAL_KINDS = [
+    {
+        kind: 'auth', article: 'an',
+        error: CREDENTIALS_ERROR_2,
+        assertHealInfoError: (info) => assert.match(info.error, /could not read Username/),
+        pushRetryRejection: DoltSyncError,
+    },
+    {
+        kind: 'unknown', article: 'an',
+        error: NOVEL_DOLT_ERROR,
+        assertHealInfoError: (info) => assert.equal(info.error, NOVEL_DOLT_ERROR),
+        pushRetryRejection: (err) => err instanceof DoltSyncError && !(err instanceof DoltDivergedError),
+    },
+];
 
-test('doltPushAfter: self-heal called but the retry STILL fails on an UNKNOWN failure -- typed DoltSyncError still surfaces, self-heal called exactly once, no unbounded loop', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(NOVEL_DOLT_ERROR)], // single-entry queue -> same failure every call
-    });
-    let healCalls = 0;
-    const onAuthFailure = async () => { healCalls += 1; };
-    const checkSyncRemoteConfigured = async () => true;
-    await assert.rejects(
-        () => doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured }),
-        (err) => err instanceof DoltSyncError && !(err instanceof DoltDivergedError),
-    );
-    assert.equal(healCalls, 1, 'self-heal must be invoked EXACTLY ONCE (bounded, never a loop)');
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'exactly one bounded retry after self-heal');
-});
+test('doltPushAfter/doltPullBefore: bounded one-shot onAuthFailure self-heal on auth- and unknown-classified failures (apra-fleet-7h6n.3, parameterized)', async (t) => {
+    for (const { kind, article, error, assertHealInfoError, pushRetryRejection } of SELF_HEAL_KINDS) {
+        if (kind === 'unknown') {
+            assert.equal(classifyDoltFailure(error), 'unknown', 'precondition: injected error must classify as unknown');
+        }
 
-test('doltPushAfter: omitting onAuthFailure preserves pre-existing behavior on an unknown-classified failure -- no retry, single attempt', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt push': [fail(NOVEL_DOLT_ERROR)],
-    });
-    const checkSyncRemoteConfigured = async () => true;
-    await assert.rejects(
-        () => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), // no onAuthFailure injected
-        DoltSyncError,
-    );
-    assert.equal(
-        calls.filter((c) => c.cmd.includes('bd dolt push')).length,
-        1,
-        'no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt',
-    );
-});
+        await t.test(`doltPushAfter: self-heal success -- ${article} ${kind}-classified D-push heals once via onAuthFailure and the single bounded retry succeeds`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(error), OK] });
+            let healCalls = 0;
+            const onAuthFailure = async (info) => {
+                healCalls += 1;
+                assert.equal(info.member, 'memberA');
+                assertHealInfoError(info);
+            };
+            const checkSyncRemoteConfigured = async () => true;
+            const res = await doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
+            assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
+            assert.equal(healCalls, 1, 'expected exactly one self-heal call');
+            assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push retried exactly once after self-heal');
+        });
 
-test('doltPullBefore: an unknown-classified D-pull heals once via onAuthFailure and the retry succeeds', async () => {
-    const { command, calls } = makeCommandMock({
-        'bd dolt pull': [fail(NOVEL_DOLT_ERROR), OK],
-    });
-    let healCalls = 0;
-    const onAuthFailure = async () => { healCalls += 1; };
-    const checkSyncRemoteConfigured = async () => true;
-    const res = await doltPullBefore('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
-    assert.deepEqual(res, { ok: true, member: 'memberA' });
-    assert.equal(healCalls, 1);
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 2, 'pull retried exactly once after self-heal');
+        await t.test(`doltPushAfter: self-heal called but the retry STILL fails on ${article} ${kind}-classified failure -- typed DoltSyncError still surfaces, self-heal called exactly once, no unbounded loop`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(error)] }); // single-entry queue -> same failure every call
+            let healCalls = 0;
+            const onAuthFailure = async () => { healCalls += 1; };
+            const checkSyncRemoteConfigured = async () => true;
+            await assert.rejects(
+                () => doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured }),
+                pushRetryRejection,
+            );
+            assert.equal(healCalls, 1, 'self-heal must be invoked EXACTLY ONCE (bounded, never a loop)');
+            assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'exactly one bounded retry after self-heal');
+        });
+
+        await t.test(`doltPushAfter: omitting onAuthFailure preserves pre-existing behavior on ${article} ${kind}-classified failure -- no retry, single attempt`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(error)] });
+            const checkSyncRemoteConfigured = async () => true;
+            await assert.rejects(
+                () => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), // no onAuthFailure injected
+                DoltSyncError,
+            );
+            assert.equal(
+                calls.filter((c) => c.cmd.includes('bd dolt push')).length,
+                1,
+                'no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt',
+            );
+        });
+
+        await t.test(`doltPullBefore: ${article} ${kind}-classified D-pull heals once via onAuthFailure and the retry succeeds`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt pull': [fail(error), OK] });
+            let healCalls = 0;
+            const onAuthFailure = async () => { healCalls += 1; };
+            const checkSyncRemoteConfigured = async () => true;
+            const res = await doltPullBefore('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
+            assert.deepEqual(res, { ok: true, member: 'memberA' });
+            assert.equal(healCalls, 1);
+            assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 2, 'pull retried exactly once after self-heal');
+        });
+    }
 });
 
 test('doltPullBefore: a DIVERGED D-pull is still never retried/self-healed even when onAuthFailure is provided', async () => {

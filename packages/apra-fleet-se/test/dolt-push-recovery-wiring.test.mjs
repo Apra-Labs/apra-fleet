@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { doltPushAfter, doltPullBefore, preflightBeadsHealthGate, repair } from '../fleet-sprint/dolt-sync.mjs';
-import { buildSettleCallback } from '../fleet-sprint/dolt-settle.mjs';
-import { DoltDivergedError } from '../fleet-sprint/errors.mjs';
+import { buildSettleCallback, detectMemberPlatform } from '../fleet-sprint/dolt-settle.mjs';
+import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
 
 // =============================================================================
 // settleDoltConflicts() is WIRED at BOTH divergence terminals (docs/dolt-sync-
@@ -173,41 +173,73 @@ test('repair() reports an operational settle failure without throwing, and refus
 });
 
 // =============================================================================
-// The EXACT production wiring shape runner.js uses: buildSettleCallback(member,
-// { command, log }) with no platform supplied, threaded into the D-push
-// bracket. Proves the member's platform is PROBED (never assumed to be the
-// orchestrator's) and that the real settle path is entered.
+// apra-fleet-7h6n.3: the EXACT production wiring shape runner.js uses --
+// buildSettleCallback(member, { command, log }) with no platform supplied,
+// threaded into the D-push bracket -- used to be proven here by re-deriving
+// dolt-settle.test.mjs's own full happy-path fixture (version probe,
+// freeport, POSIX/WMI spawn, SQL queries, teardown, republish) a second
+// time. That whole internal protocol (including the platform-gated spawn
+// choice and the no-`--user`/`--password` invariant) is already covered
+// exhaustively by dolt-settle.test.mjs; duplicating it here just to prove
+// "wiring" was a maintenance-doubling fixture, not a distinct assertion.
+//
+// Split into two much smaller, targeted pieces instead:
+//   1. detectMemberPlatform() (buildSettleCallback's own platform-probe
+//      seam) is unit-tested directly below -- no dolt-settle protocol
+//      involved at all.
+//   2. This wiring test keeps the REAL buildSettleCallback + doltPushAfter
+//      call (so it still proves runner.js's actual construction pattern
+//      integrates correctly), but stubs settle's own internal protocol to
+//      fail fast right after the platform probe -- enough to prove the
+//      platform WAS probed and that whatever settle() decides (recovered or
+//      not) is genuinely threaded through doltPushAfter, without re-scripting
+//      the full happy-path recovery (already proven via fakeSettle() above
+//      and via dolt-settle.test.mjs's own settleDoltConflicts tests).
 // =============================================================================
 
-test('runner.js production wiring: buildSettleCallback probes the MEMBER platform and drives the real settle', async () => {
+test('detectMemberPlatform: probes process.platform/arch via command(), never assumes the orchestrator platform', async () => {
+    const calls = [];
+    const command = async (cmd, opts = {}) => {
+        calls.push({ cmd, opts });
+        return { ok: true, output: 'darwin arm64\n', error: null };
+    };
+    const result = await detectMemberPlatform({ command, member: 'fleet-mac' });
+    assert.deepEqual(result, { platform: 'darwin', arch: 'arm64' });
+    assert.ok(calls.some((c) => /process\.platform/.test(c.cmd)), 'must issue a process.platform probe command');
+    assert.ok(calls.every((c) => c.opts.member_name === 'fleet-mac'), 'the probe must carry explicit member_name');
+});
+
+test('detectMemberPlatform: an unparsable probe output throws rather than silently assuming a platform', async () => {
+    const command = async () => ({ ok: false, output: '', error: 'permission denied' });
+    await assert.rejects(() => detectMemberPlatform({ command, member: 'fleet-mac' }), DoltSyncError);
+});
+
+test('runner.js production wiring: settle is built via buildSettleCallback(member, {command, log}) with platform probed (not assumed), and its outcome is genuinely threaded through doltPushAfter', async () => {
     const seen = [];
-    let insideSettle = false;
-    let serverUp = false;
     const command = async (cmd) => {
         seen.push(cmd);
         // Every D-push bracket attempt is rejected (a divergence outliving the
-        // bounded reconcile); settle's OWN republish push succeeds.
-        if (cmd.includes('bd dolt push')) return insideSettle ? OK : fail(DIVERGENCE_STDERR);
+        // bounded reconcile) -- the bracket's own bounded reconcile pull must
+        // still succeed so the SECOND push attempt is reached and settle is
+        // actually invoked, exactly like the real bracket's shape.
+        if (cmd.includes('bd dolt push')) return fail(DIVERGENCE_STDERR);
+        if (cmd.includes('bd dolt pull')) return OK;
         if (cmd.includes('process.platform')) return { ok: true, output: 'linux x64\n', error: null };
-        if (cmd === 'bd dolt status') { insideSettle = true; return { ok: true, output: 'Dolt engine: embedded (in-process, no server)\n  Data: /home/u/.beads/embeddeddolt\n', error: null }; }
-        if (/version"?$/.test(cmd.trim())) return { ok: true, output: 'dolt version 2.2.0\n', error: null };
-        if (/FREEPORT/.test(cmd)) return { ok: true, output: 'FREEPORT:13300', error: null };
-        if (/PROBE:True/.test(cmd)) return { ok: true, output: serverUp ? 'PROBE:True' : 'PROBE:False', error: null };
-        if (/nohup .* sql-server/.test(cmd)) { serverUp = true; return { ok: true, output: 'PID:1234', error: null }; }
-        if (/^kill 1234/.test(cmd)) { serverUp = false; return OK; }
-        if (/--no-tls --host=/.test(cmd)) {
-            if (/SELECT `table` FROM dolt_conflicts/.test(cmd)) return { ok: true, output: JSON.stringify([]), error: null };
-            if (/SELECT COUNT/.test(cmd)) return { ok: true, output: JSON.stringify([{ n: 0 }]), error: null };
-            return OK;
-        }
-        return OK;
+        // Everything settle needs BEYOND the platform probe (freeport, spawn,
+        // SQL dance, teardown, republish) is deliberately left unscripted --
+        // that whole protocol is dolt-settle.test.mjs's job, not this wiring
+        // test's. settle will fail operationally here, which is fine: this
+        // test only needs to prove settle was REACHED (via the real
+        // buildSettleCallback) and that its outcome propagates.
+        return { ok: false, output: '', error: 'unscripted command (intentionally out of scope for this wiring test)' };
     };
 
     const settle = buildSettleCallback('fleet-lin-dev1', { command, log: () => {} });
-    const outcome = await doltPushAfter('fleet-lin-dev1', { command, checkSyncRemoteConfigured: remoteConfigured, settle });
-
-    assert.equal(outcome.recovered, true, 'the real settle callback must resolve this divergence');
-    assert.ok(seen.some((c) => c.includes('process.platform')), 'the member platform must be probed, never assumed from the orchestrator');
-    assert.ok(seen.some((c) => /nohup .* sql-server/.test(c)), 'the POSIX detached spawn must be used for a linux member, proving the probed platform is what drives settle');
-    assert.ok(!seen.some((c) => /--user|--password/.test(c)), 'settle must never pass --user/--password (the ga61 credential-prompt landmine)');
+    await assert.rejects(
+        () => doltPushAfter('fleet-lin-dev1', { command, checkSyncRemoteConfigured: remoteConfigured, settle }),
+        (err) => err instanceof DoltDivergedError,
+        'a settle that cannot complete its protocol must still surface the original DoltDivergedError, never swallowed',
+    );
+    assert.ok(seen.some((c) => c.includes('process.platform')), 'the member platform must be probed via buildSettleCallback, never assumed from the orchestrator');
+    assert.ok(!seen.some((c) => /--user|--password/.test(c)), 'settle must never pass --user/--password (the ga61 credential-prompt landmine), even on this early-failing path');
 });

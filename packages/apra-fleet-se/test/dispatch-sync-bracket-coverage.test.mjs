@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { balancedCallRange } from './helpers/balanced-call-scanner.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -102,38 +103,9 @@ function isInsideSameLineString(lineText, col) {
     return quote !== null;
 }
 
-/** Returns the index of the closing quote char matching the one at `start`. */
-function skipStringLiteral(src, start, quoteChar) {
-    let i = start + 1;
-    for (; i < src.length; i++) {
-        const ch = src[i];
-        if (ch === '\\') { i++; continue; }
-        if (ch === quoteChar) return i;
-    }
-    return i;
-}
-
-/**
- * Given the index of an opening '(' in `src`, returns [start, end] -- the
- * index of that '(' and the index of its matching ')' -- tracking paren
- * depth and skipping over string/template-literal contents.
- */
-function balancedCallRange(src, openParenIdx) {
-    let depth = 0;
-    let i = openParenIdx;
-    for (; i < src.length; i++) {
-        const ch = src[i];
-        if (ch === '(') {
-            depth++;
-        } else if (ch === ')') {
-            depth--;
-            if (depth === 0) return [openParenIdx, i];
-        } else if (ch === '"' || ch === "'" || ch === '`') {
-            i = skipStringLiteral(src, i, ch);
-        }
-    }
-    return [openParenIdx, i]; // unbalanced -- should never happen on valid source
-}
+// skipStringLiteral/balancedCallRange are shared with git-sync-brackets.
+// test.mjs via ./helpers/balanced-call-scanner.mjs (apra-fleet-7h6n.3) --
+// both files used to hand-roll their own near-identical copy.
 
 /**
  * Finds every real (non-comment, non-string-literal) call site of `fnName(`

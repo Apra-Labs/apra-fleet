@@ -14,6 +14,7 @@ import {
 import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 import { runCmd, sleep, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { balancedCallRange } from './helpers/balanced-call-scanner.mjs';
 
 // =============================================================================
 // apra-fleet-eft.8.7 -- Orchestrator-bracketed git sync: consolidated
@@ -70,37 +71,10 @@ function makeCommandMock(script) {
     return { command, calls };
 }
 
-// ---------------------------------------------------------------------------
-// Balanced-paren scanner (same technique as
-// dispatch-sync-bracket-coverage.test.mjs): given the index of an opening
-// '(' return [start, end] of its matching ')', skipping string/template
-// contents so a multi-line call with nested parens is never mis-parsed.
-// ---------------------------------------------------------------------------
-function skipStringLiteral(src, start, quoteChar) {
-    let i = start + 1;
-    for (; i < src.length; i++) {
-        const ch = src[i];
-        if (ch === '\\') { i++; continue; }
-        if (ch === quoteChar) return i;
-    }
-    return i;
-}
-
-function balancedCallRange(src, openParenIdx) {
-    let depth = 0;
-    for (let i = openParenIdx; i < src.length; i++) {
-        const ch = src[i];
-        if (ch === '(') {
-            depth++;
-        } else if (ch === ')') {
-            depth--;
-            if (depth === 0) return [openParenIdx, i];
-        } else if (ch === '"' || ch === "'" || ch === '`') {
-            i = skipStringLiteral(src, i, ch);
-        }
-    }
-    return [openParenIdx, src.length - 1];
-}
+// Balanced-paren scanner primitives (skipStringLiteral/balancedCallRange) are
+// shared with dispatch-sync-bracket-coverage.test.mjs via
+// ./helpers/balanced-call-scanner.mjs (apra-fleet-7h6n.3) -- both files used
+// to hand-roll their own near-identical copy.
 
 // Return every withGitSync(...) call's balanced [start, end] range (skipping
 // the `async function withGitSync(...)` declaration itself).
