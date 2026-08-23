@@ -613,7 +613,14 @@ export async function doltPushAfter(member, opts = {}) {
     // suppress a push that was already declared must not happen. The
     // failure-path downgrade below stays as defense in depth.
     const preGateCheckFn = checkSyncRemoteConfigured || isMemberSyncRemoteConfigured;
-    if (!(await preGateCheckFn(member, { command, log }))) {
+    // apra-fleet-7h6n.5: cache the pre-gate's boolean result so the
+    // failure-path downgrade below (which used to re-invoke the same probe a
+    // second time in this call) can reuse it instead of re-probing. By the
+    // time the failure path runs, this pre-gate has already returned `true`
+    // (a `false` result exits right here), so reusing it there is
+    // behavior-preserving, not a new assumption.
+    const syncRemoteConfiguredAtPreGate = await preGateCheckFn(member, { command, log });
+    if (!syncRemoteConfiguredAtPreGate) {
         log(`[Dolt] D-push for member '${member}' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued`);
         return { ok: true, member, pushed: false, reconciled: false, skipped: true, reason: 'no-remote' };
     }
@@ -702,8 +709,11 @@ export async function doltPushAfter(member, opts = {}) {
         // misclassify a neutralized-sandbox failure as 'unknown'). An
         // absent sync.remote means nothing is supposed to be pushed from this
         // clone, so the failure is the same benign no-remote skip.
-        const checkFn = checkSyncRemoteConfigured || isMemberSyncRemoteConfigured;
-        const syncRemoteConfigured = await checkFn(member, { command, log });
+        // apra-fleet-7h6n.5: reuse the pre-gate's cached probe result instead
+        // of re-invoking checkSyncRemoteConfigured/isMemberSyncRemoteConfigured
+        // a second time -- see the pre-gate's comment above for why this is
+        // always `true` by the time this failure path is reachable.
+        const syncRemoteConfigured = syncRemoteConfiguredAtPreGate;
         if (!syncRemoteConfigured) {
             log(`[Dolt] D-push for member '${member}' skipped: no dolt remote configured (bd-level sync.remote neutralized/absent; push failure treated as benign: ${push.error})`);
             return { ok: true, member, pushed: false, reconciled: false, skipped: true, reason: 'no-remote' };

@@ -297,27 +297,72 @@ test('doltPushAfter: PRE-GATE (stabilization Issue 31) -- with bd-level sync.rem
     );
 });
 
-test('doltPushAfter: failure-path downgrade (eft.30.2 defense-in-depth) still covered -- pre-gate passes, push fails, then sync.remote reads absent', async () => {
-    // Stateful stub: the pre-gate read reports CONFIGURED (so the push is
-    // attempted, preserving eft.16.1 semantics for real clones), the push
-    // fails with an unclassifiable credentials error, and the failure-path
-    // re-check reports absent -- the downgrade branch must then turn the
-    // failure into the same benign no-remote skip instead of DoltSyncError.
+test('doltPushAfter: failure-path downgrade (eft.30.2 defense-in-depth) still covered -- pre-gate passes, push fails, sync.remote reads absent BEFORE the pre-gate runs', async () => {
+    // Pre-gate reports ABSENT up front -- so the failure-path downgrade
+    // branch is reached via the SAME early-return pre-gate skip, not a
+    // second, differently-answered probe (apra-fleet-7h6n.5 retired the
+    // failure path's own re-probe: it now reuses the pre-gate's cached
+    // boolean instead of calling checkSyncRemoteConfigured again, so a
+    // stateful check that changes its answer BETWEEN the pre-gate and the
+    // failure path -- the previous version of this test -- can no longer be
+    // observed; see the two tests immediately below for that new contract).
     const logs = [];
     const log = (msg) => logs.push(msg);
     const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
-    const answers = [true, false];
-    const checkSyncRemoteConfigured = async () => (answers.length > 1 ? answers.shift() : answers[0]);
+    const checkSyncRemoteConfigured = async () => false;
 
     const res = await doltPushAfter('memberA', { command, log, checkSyncRemoteConfigured });
 
     assert.deepEqual(res, { ok: true, member: 'memberA', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' });
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push WAS attempted (pre-gate saw configured)');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 0, 'the push was never attempted -- the pre-gate itself skipped it');
     assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'no reconcile pull is issued for this benign skip');
     assert.ok(
-        logs.some((l) => l.includes("[Dolt] D-push for member 'memberA' skipped: no dolt remote configured")),
-        `expected a 'skipped: no dolt remote configured' log line, got: ${JSON.stringify(logs)}`,
+        logs.some((l) => l.includes('skipped pre-attempt') && l.includes('no push command issued')),
+        `expected a 'skipped pre-attempt ... no push command issued' log line, got: ${JSON.stringify(logs)}`,
     );
+});
+
+// apra-fleet-7h6n.5: the failure-path downgrade branch at dolt-sync.mjs's
+// doltPushGuarded() now reuses the pre-gate's cached
+// isMemberSyncRemoteConfigured()/checkSyncRemoteConfigured() result instead
+// of re-invoking it a second time in the same doltPushAfter() call. Since the
+// pre-gate already returned `true` by the time the failure path is
+// reachable (a `false` result exits before any push is attempted), the
+// cached value is always `true` there -- the failure-path skip branch stays
+// in the code (defense-in-depth against a future caller wiring) but can no
+// longer independently observe a DIFFERENT (stale/changed) answer than the
+// pre-gate did; see the retired stateful-race scenario the previous version
+// of the test above covered.
+test('doltPushAfter (apra-fleet-7h6n.5): checkSyncRemoteConfigured is invoked at MOST ONCE per call -- the failure-path downgrade reuses the pre-gate result rather than re-probing', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    let checkCalls = 0;
+    const checkSyncRemoteConfigured = async () => { checkCalls += 1; return true; };
+
+    await assert.rejects(() => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), DoltSyncError);
+
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push WAS attempted (pre-gate saw configured)');
+    assert.equal(checkCalls, 1, 'checkSyncRemoteConfigured must be invoked exactly once per doltPushAfter call -- the failure path must reuse the cached pre-gate result, not re-probe');
+});
+
+test('doltPushAfter (apra-fleet-7h6n.5): a stale/changed answer between pre-gate and failure path is no longer observable -- the cached pre-gate value (configured) wins even if a later probe would have reported absent', async () => {
+    // Same stateful-answer shape the retired test above used (pre-gate sees
+    // `true`, a hypothetical second probe would see `false`) -- proves the
+    // SECOND answer is never consulted at all: checkSyncRemoteConfigured is
+    // called once, so the failure surfaces as DoltSyncError (the cached
+    // `true` from the pre-gate), not the benign no-remote skip the old
+    // double-probe behavior produced.
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    const answers = [true, false];
+    let checkCalls = 0;
+    const checkSyncRemoteConfigured = async () => {
+        checkCalls += 1;
+        return answers.length > 1 ? answers.shift() : answers[0];
+    };
+
+    await assert.rejects(() => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), DoltSyncError);
+
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push WAS attempted (pre-gate saw configured)');
+    assert.equal(checkCalls, 1, 'the second (would-be `false`) answer is never consulted -- only one probe happens per call');
 });
 
 test('doltPushAfter: negative control -- with an active configured sync.remote, the same non-diverged failure still throws DoltSyncError (eft.16.1 semantics preserved)', async () => {
