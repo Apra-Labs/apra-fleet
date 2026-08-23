@@ -142,6 +142,35 @@ describe('apra-fleet-7h6n.8: supervisor-dashboard/backlog mocked fixtures spawn 
                 `expected combined runtime well under the pre-fix live-spawn baseline, got ${elapsedMs.toFixed(0)}ms`,
             );
 
+            // Belt-and-suspenders: exit 0 + an empty marker file + a fast
+            // runtime are ALSO exactly what a vacuous nested run (zero tests
+            // actually executed) would produce -- today that's prevented
+            // solely by stripping NODE_TEST_CONTEXT above. Parse the child's
+            // TAP summary directly so a regression that reintroduces the
+            // vacuous-run condition fails loudly here instead of silently
+            // passing.
+            const testsMatch = stdout.match(/^# tests (\d+)$/m);
+            const passMatch = stdout.match(/^# pass (\d+)$/m);
+            assert.ok(
+                testsMatch && passMatch,
+                `expected the child's TAP summary to include "# tests N" and "# pass N" lines\nstdout:\n${stdout}`,
+            );
+            const testsRun = Number(testsMatch[1]);
+            const testsPassed = Number(passMatch[1]);
+            // Combined current count (2026-08-23) is 86 (49 dashboard + 37
+            // backlog); 40 leaves generous headroom for tests removed/merged
+            // over time while still failing hard on a vacuous zero-test run.
+            const KNOWN_MINIMUM_TESTS = 40;
+            assert.ok(
+                testsRun >= KNOWN_MINIMUM_TESTS,
+                `expected the nested run to actually execute at least ${KNOWN_MINIMUM_TESTS} tests across both files (got ${testsRun}) -- a low/zero count means the child silently no-op'd instead of running\nstdout:\n${stdout}`,
+            );
+            assert.equal(
+                testsPassed,
+                testsRun,
+                `expected every executed test to pass (${testsPassed}/${testsRun})\nstdout:\n${stdout}`,
+            );
+
             t.diagnostic(`combined wall-clock time for both files under the bd/git spawn spy: ${elapsedMs.toFixed(0)}ms`);
         },
     );
