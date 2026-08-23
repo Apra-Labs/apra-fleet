@@ -245,13 +245,13 @@ Calls `fleet_status` -- status of all fleet members.
 
 Calls `member_detail` -- detailed status for one member: connectivity,
 session (`session.id`, the current session ID or `null`), work folder
-(`folder`), and provider (`llmProvider`).
+(`folder`), shell (Windows members only), and LLM provider.
 
 | Field | Type | Notes |
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `format` | `"compact" \| "json"?` | Output format. |
+| `format` | `"compact" \| "json"?` | Output format (default: `"compact"`). |
 
 #### `sendFiles(options: SendFilesOptions)`
 
