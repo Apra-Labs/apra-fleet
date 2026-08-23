@@ -26,6 +26,7 @@ import type { MemberShell } from '../os/os-commands.js';
 import type { RemoteOS } from '../utils/platform.js';
 import { isWindowsPosixUname } from '../utils/platform.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
+import { GIT_BASH_MACHINE_CANDIDATES } from '../os/git-bash-candidates.js';
 
 /** Result shape of a single probe command execution. */
 export interface ProbeExecResult {
@@ -75,10 +76,22 @@ export function isWslLauncherPath(candidatePath: string): boolean {
 /** One round trip that lists every plausible Git-bash path that actually exists
  *  on the member: well-known install locations plus anything named bash.exe on
  *  PATH. Each line is prefixed so echoed-back input can never be mistaken for a
- *  result. */
+ *  result.
+ *
+ *  The machine-wide well-known locations come from GIT_BASH_MACHINE_CANDIDATES
+ *  (src/os/git-bash-candidates.ts), the SAME list windows-gitbash.ts's
+ *  resolveGitBashPath consults for a local member -- one literal, two
+ *  consumers, so the two can never drift apart again (apra-fleet-7dir.7). The
+ *  LOCALAPPDATA (user-scope) candidate is still built with a PowerShell
+ *  `Join-Path $env:LOCALAPPDATA ...` expression rather than a JS-side value,
+ *  because it must resolve against the REMOTE member's LOCALAPPDATA, not this
+ *  process's own. */
 export function buildGitBashDiscoveryCommand(): string {
+  const machineCandidates = GIT_BASH_MACHINE_CANDIDATES
+    .map((p) => `'${p.replace(/'/g, "''")}'`)
+    .join(',');
   const ps = [
-    `$c = @('C:\\Program Files\\Git\\bin\\bash.exe','C:\\Program Files\\Git\\usr\\bin\\bash.exe','C:\\Program Files (x86)\\Git\\bin\\bash.exe')`,
+    `$c = @(${machineCandidates})`,
     `if ($env:LOCALAPPDATA) { $c += (Join-Path $env:LOCALAPPDATA 'Programs\\Git\\bin\\bash.exe') }`,
     `$c += @(Get-Command bash.exe -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })`,
     `$c | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique | ForEach-Object { Write-Output ('${BASH_CANDIDATE_MARKER}' + $_) }`,

@@ -1,27 +1,74 @@
 import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { LinuxCommands } from './linux.js';
 import { wrapPowerShellEncoded } from './windows.js';
 import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars, sanitizeSessionId } from '../utils/shell-escape.js';
+import { isWindowsPosixUname } from '../utils/platform.js';
+import { gitBashCandidates } from './git-bash-candidates.js';
 import type { ProviderAdapter } from './os-commands.js';
 
 /**
- * Candidate install locations for the Git-for-Windows bash executable, in the
- * order Git for Windows itself installs them. Used only by cleanExec (local
- * spawn); remote members reach bash through their own sshd default shell.
+ * Dependencies resolveGitBashPath needs, injectable so its logic is testable
+ * on any platform without a real Git-for-Windows install or a real WSL
+ * bash.exe on PATH (apra-fleet-7dir.7). Defaults to the real filesystem/env/
+ * child_process when omitted -- production callers pass nothing.
  */
-const GIT_BASH_CANDIDATES = [
-  'C:\\Program Files\\Git\\bin\\bash.exe',
-  'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
-  'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
-];
+export interface ResolveGitBashPathDeps {
+  /** Defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
+  /** Defaults to fs.existsSync. */
+  exists?: (candidatePath: string) => boolean;
+  /**
+   * Runs `uname -s` through the PATH-resolved bash.exe (if any) and returns
+   * its stdout, or undefined if no bash.exe is on PATH / it could not be
+   * run. Defaults to a real execFileSync('bash.exe', ['-lc', 'uname -s']).
+   */
+  probeUname?: () => string | undefined;
+}
 
-function resolveGitBashPath(): string {
-  for (const candidate of GIT_BASH_CANDIDATES) {
-    if (existsSync(candidate)) return candidate;
+function defaultProbeUname(): string | undefined {
+  try {
+    return execFileSync('bash.exe', ['-lc', 'uname -s'], { encoding: 'utf-8', timeout: 5000, windowsHide: true }).toString();
+  } catch {
+    return undefined;
   }
-  // Last resort: let the OS resolve it from PATH (Git for Windows puts
-  // bash.exe on PATH for "Git from the command line" installs).
-  return 'bash.exe';
+}
+
+/**
+ * Resolve the absolute path to the member's Git-for-Windows bash.exe for a
+ * local spawn (LocalStrategy.execCommand -> cleanExec). Candidates come from
+ * the SAME list src/services/shell-probe.ts's registration probe uses
+ * (src/os/git-bash-candidates.ts), including the user-scope LOCALAPPDATA
+ * install location, so the two can never drift apart.
+ *
+ * If none of the known-location candidates exist on disk, this does NOT
+ * silently trust a bare `bash.exe` resolved off PATH -- Windows also ships
+ * the WSL launcher under System32/Sysnative/WindowsApps with the identical
+ * binary name (the same ambiguity isWslLauncherPath/isWindowsPosixUname
+ * exist to eliminate for the registration probe). Instead it runs `uname -s`
+ * through whatever bash.exe PATH resolves and only trusts it if that output
+ * proves a real MSYS/MinGW/Cygwin bash; otherwise it throws, naming every
+ * candidate path it tried.
+ */
+export function resolveGitBashPath(deps: ResolveGitBashPathDeps = {}): string {
+  const env = deps.env ?? process.env;
+  const exists = deps.exists ?? existsSync;
+  const candidates = gitBashCandidates(env.LOCALAPPDATA);
+
+  for (const candidate of candidates) {
+    if (exists(candidate)) return candidate;
+  }
+
+  const probeUname = deps.probeUname ?? defaultProbeUname;
+  const unameOutput = probeUname();
+  if (unameOutput !== undefined && isWindowsPosixUname(unameOutput)) return 'bash.exe';
+
+  throw new Error(
+    `No Git-for-Windows bash.exe found. Tried: ${candidates.join(', ')}` +
+      (unameOutput === undefined
+        ? ', and no bash.exe on PATH could be run.'
+        : `, and the PATH-resolved bash.exe reported "${unameOutput.trim()}" for uname -s (not MSYS/MinGW/Cygwin).`),
+  );
 }
 
 /**

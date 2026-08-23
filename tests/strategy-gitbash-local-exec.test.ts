@@ -18,6 +18,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { getStrategy } from '../src/services/strategy.js';
 import { makeTestLocalAgent } from './test-helpers.js';
+import { resolveGitBashPath } from '../src/os/windows-gitbash.js';
+import { GIT_BASH_MACHINE_CANDIDATES, gitBashUserCandidate } from '../src/os/git-bash-candidates.js';
+import { buildGitBashDiscoveryCommand } from '../src/services/shell-probe.js';
+import { decodePowerShellEncodedCommand } from './test-helpers.js';
 
 describe.skipIf(process.platform !== 'win32')('LocalStrategy + gitbash shell (apra-fleet-7dir.4)', () => {
   let tmpDir: string;
@@ -81,4 +85,109 @@ describe.skipIf(process.platform !== 'win32')('LocalStrategy + gitbash shell (ap
       delete process.env.CLAUDE_SOURCE_METADATA;
     }
   }, 15000);
+});
+
+/**
+ * apra-fleet-7dir.7: resolveGitBashPath's candidate list must be the SAME
+ * list the registration probe (buildGitBashDiscoveryCommand) uses, must
+ * include the user-scope LOCALAPPDATA install location, and must never
+ * silently fall back to the bare string 'bash.exe' when no known candidate
+ * exists on disk -- that string is exactly what Windows' own WSL launcher
+ * (System32\bash.exe) can shadow on PATH.
+ *
+ * Deliberately NOT gated by describe.skipIf(win32): resolveGitBashPath takes
+ * injectable deps (env/exists/probeUname) precisely so this logic is
+ * testable on any host with no real Git-for-Windows install and no real
+ * bash.exe on PATH.
+ */
+describe('resolveGitBashPath candidate list (apra-fleet-7dir.7)', () => {
+  it('shares one candidate list with the registration probe -- no second literal list', () => {
+    // The probe's discovery script embeds every GIT_BASH_MACHINE_CANDIDATES
+    // entry verbatim; if windows-gitbash.ts ever hand-rolled its own literal
+    // list again, only THIS assertion (not a grep) would catch a diverging
+    // entry, since grep can't tell "same list" from "two lists that happen to
+    // overlap". A literal-string check per entry is the strongest test-level
+    // proxy for "one shared list, two consumers" without inspecting imports.
+    const script = decodePowerShellEncodedCommand(buildGitBashDiscoveryCommand());
+    for (const candidate of GIT_BASH_MACHINE_CANDIDATES) {
+      expect(script).toContain(candidate);
+    }
+    expect(script).toContain('LOCALAPPDATA');
+  });
+
+  it('the shared list includes the user-scope LOCALAPPDATA Programs\\Git\\bin\\bash.exe path', () => {
+    const userCandidate = gitBashUserCandidate('C:\\Users\\bella\\AppData\\Local');
+    expect(userCandidate).toBe('C:\\Users\\bella\\AppData\\Local\\Programs\\Git\\bin\\bash.exe');
+  });
+
+  it('with only the user-scope LOCALAPPDATA candidate present, resolution returns that absolute path -- never the bare string bash.exe', () => {
+    const localAppData = 'C:\\Users\\bella\\AppData\\Local';
+    const userCandidate = gitBashUserCandidate(localAppData)!;
+    const result = resolveGitBashPath({
+      env: { LOCALAPPDATA: localAppData },
+      exists: (p) => p === userCandidate,
+      probeUname: () => { throw new Error('must not be reached: a candidate was found on disk'); },
+    });
+    expect(result).toBe(userCandidate);
+    expect(result).not.toBe('bash.exe');
+  });
+
+  it('with no candidate present and a real MSYS bash.exe on PATH, resolution verifies the uname and returns bash.exe', () => {
+    const result = resolveGitBashPath({
+      env: {},
+      exists: () => false,
+      probeUname: () => 'MINGW64_NT-10.0-19045\n',
+    });
+    expect(result).toBe('bash.exe');
+  });
+
+  it('with no candidate present and PATH bash.exe proving to be the WSL launcher (uname reports Linux), resolution throws naming the candidates tried -- it never silently returns bash.exe', () => {
+    expect(() =>
+      resolveGitBashPath({
+        env: { LOCALAPPDATA: 'C:\\Users\\bella\\AppData\\Local' },
+        exists: () => false,
+        probeUname: () => 'Linux\n',
+      }),
+    ).toThrow(/No Git-for-Windows bash\.exe found/);
+
+    try {
+      resolveGitBashPath({
+        env: { LOCALAPPDATA: 'C:\\Users\\bella\\AppData\\Local' },
+        exists: () => false,
+        probeUname: () => 'Linux\n',
+      });
+    } catch (err: any) {
+      // Names every candidate it tried, including the machine-wide ones and
+      // the user-scope LOCALAPPDATA one.
+      for (const candidate of GIT_BASH_MACHINE_CANDIDATES) {
+        expect(err.message).toContain(candidate);
+      }
+      expect(err.message).toContain('Programs\\Git\\bin\\bash.exe');
+    }
+  });
+
+  it('with no candidate present and no bash.exe resolvable on PATH at all, resolution throws naming the candidates tried', () => {
+    expect(() =>
+      resolveGitBashPath({
+        env: {},
+        exists: () => false,
+        probeUname: () => undefined,
+      }),
+    ).toThrow(/No Git-for-Windows bash\.exe found/);
+  });
+
+  it('reverting the fix (bare OS-PATH fallback with no MSYS verification) would return the ambiguous bare string -- this pins the fix', () => {
+    // Simulates the pre-fix behavior this bead replaces: "last resort: let
+    // the OS resolve it from PATH" with no uname check at all. If
+    // resolveGitBashPath were reverted to that shape, this assertion (which
+    // demands a thrown error naming candidates instead of a bare 'bash.exe')
+    // would fail.
+    let threw = false;
+    try {
+      resolveGitBashPath({ env: {}, exists: () => false, probeUname: () => 'Linux\n' });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+  });
 });
