@@ -13,8 +13,9 @@ compose_permissions tool delivers); a broader prefix entry counts as coverage:
   caveat there), but `start` is still a real, separately-invoked command
   (e.g. OS-level auto-start registration, manual fallback) and a member
   missing this grant fails Step 0a the moment anything tries it.
-- `Bash(node scripts/preflight-clear-build-locks.mjs)` -- pre-`npm ci` stale
-  build-tool lock cleanup, see Deploy below
+- `Bash(node scripts/preflight-clear-build-locks.mjs*)` -- pre-`npm ci` stale
+  build-tool lock cleanup, see Deploy below. Trailing `*` so the diagnostic
+  `--dry-run` form is covered by the same grant.
 - `Bash(npm ci)`
 - `Bash(npm run build)`
 - `Bash(npm run build:binary)`
@@ -38,14 +39,35 @@ either wait for them to finish or be ready to force-release their stale
 reservations and relaunch afterward.
 
 ```bash
-# Ownership-scoped pre-flight: kills any process still holding a lock on a
-# file under THIS repo's node_modules (e.g. an orphaned esbuild.exe from a
-# prior crashed/killed build) so `npm ci` doesn't fail with EPERM/unlink.
-# Never name-based -- only kills processes whose own executable path/cmdline
-# points inside this exact checkout's node_modules, so it cannot collide
-# with an unrelated project's same-named process.
+# Path-scoped pre-flight: clears any process still holding a lock on a file
+# under THIS repo's node_modules so `npm ci` doesn't fail with EPERM /
+# errno -4048 unlink. It finds two holder classes, both scoped to this exact
+# checkout by absolute path (never by process name):
+#   1. a process whose OWN image lives in this node_modules (stale esbuild.exe);
+#   2. a process living ANYWHERE that has LOADED a native addon from this
+#      node_modules as a mapped module (a system node.exe, an editor language
+#      server, a leftover vitest worker). This class is the one that made
+#      earlier runs report success while `npm ci` died anyway on
+#      @rollup/*/rollup.win32-x64-msvc.node.
+# A process that loaded a same-named addon from a DIFFERENT checkout is never
+# reported and never killed; neither is this script or any of its ancestors.
+#
+# Exit 0 = nothing was locked, or every lock was cleared (verified by
+# re-probing the files, not by assuming the kill worked).
+# Exit NON-ZERO = something is still locked; the output names the blocking
+# PID, its image path and the locked file, plus how many processes it could
+# NOT inspect (access denied / protected / cross-bitness) -- rerun elevated
+# if the holder was not attributable. Do NOT proceed to `npm ci` on a
+# non-zero exit; fix the named holder first.
+#
+# Add --dry-run to report holders without killing anything.
 node scripts/preflight-clear-build-locks.mjs
 
+# `npm ci` DELETES node_modules and reinstalls from scratch. A run that fails
+# partway (EPERM on a locked file included) therefore leaves node_modules
+# PARTIALLY INSTALLED, not merely stale: the following steps must not assume
+# a usable tree. Clear the lock the pre-flight named and rerun `npm ci` to
+# completion before running `npm run build` or anything else.
 npm ci
 npm run build
 npm run build:binary
