@@ -1032,6 +1032,35 @@ role assignment, goal selector, branch naming) submits through the exact same
 validated launch endpoint the CLI path uses, so it can never diverge from
 server-side validation.
 
+The Backlog's flat task list (`GET /api/backlog/tasks`, distinct from the
+tree endpoint above) accepts an optional `sort`/`dir` query-param pair,
+applied after the existing type/status/priority/model/q narrowing rather than
+before it -- sorting narrows-then-orders the same set the filters already
+produced, so `total` (the free/unclaimed count before filtering) is
+unaffected by which sort is chosen. Only `created_at` is a supported sort
+key today; `dir` is `asc` or `desc` (default `desc`). Rows come straight from
+`bd list --json`, where `created_at` is an ISO string -- a missing or
+unparseable value must never throw and must always sort last regardless of
+direction, since bad/absent timestamps are expected input, not an error
+condition. The sort itself is a decorate-sort-undecorate over each row's
+original index (not a bare comparator handed to `Array#sort`), because
+stability for equal or equally-invalid timestamps is a correctness
+requirement, not an incidental nicety, and `Array#sort`'s stability is not
+something this codebase wants to depend on across every JS engine it might
+run under. Omitting `sort` entirely leaves row order exactly as the
+type/status/priority/model/q narrowing produced it -- the sort path is
+strictly additive, never a hidden default ordering.
+
+On the client, the sort control is a single `<select>` that must drive two
+`currentFilters` keys (`sort` and `dir`) at once, which is why it carries its
+own `data-sort-field` attribute rather than reusing the generic
+`data-filter-field` wiring the other header selects use (that wiring only
+ever sets one `currentFilters` key per control). Choosing the neutral
+"Unsorted" option deletes both keys from `currentFilters` rather than setting
+them to empty strings, so the resulting query string omits `sort`/`dir`
+entirely and the server sees the same "no sort requested" state as an
+initial page load.
+
 Each running sprint's live detail view is reached through a path prefixed by
 the supervisor's own port (`/sprints/:id/live`, reverse-proxied to that
 sprint's own per-sprint viewer) rather than linking a bare child port
