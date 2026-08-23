@@ -84,7 +84,11 @@ COPILOT-INSTRUCTIONS.md
 
 # Fleet orchestrator review and plan scaffold outputs -- per-round reviewer/planner scratch, never commit
 .fleet-review*.json
-.fleet-plan-review-output.json
+.fleet-plan*.json
+
+# Planner and beads scratch files left in repo root
+/tasks.json
+/.scratch-dolt-settle/
 
 # Ad-hoc `bd show --json` / `bd list --json` scratch dumps left at repo root
 /all.json
