@@ -387,8 +387,18 @@ export function renderBacklogTreeHtml(tree) {
  * guessed enum). Pure/synchronous -- narrows the SET before it is ever handed
  * to a renderer, not a client-side hide/show pass over an already-fetched
  * full set (that distinction is the acceptance criterion this mirrors).
+ * After the type/status/priority/model/q narrowing, `filters.sort` (only
+ * `'created_at'` is supported today) orders the resulting rows by each row's
+ * `created_at` timestamp; `filters.dir` picks `'asc'` or `'desc'` (default
+ * `'desc'`). `created_at` is parsed defensively -- rows come straight from
+ * `bd list --json`, where it is an ISO string like `'2026-08-21T04:36:29Z'` --
+ * so a missing/unparseable value NEVER throws and always sorts last,
+ * regardless of direction. The sort is stable relative to incoming order for
+ * equal (or equally-invalid) timestamps. Omitting `filters.sort` leaves row
+ * order exactly as `bd`/the type/status/priority/model/q narrowing produced
+ * it -- no reordering is imposed.
  * @param {Array<object>} rows
- * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string }} [filters]
+ * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string, sort?: string, dir?: string }} [filters]
  * @returns {{ tasks: object[], total: number, filterOptions: { type: string[], status: string[], priority: number[], model: string[] } }}
  */
 export function applyBeadFilters(rows, filters) {
@@ -426,7 +436,50 @@ export function applyBeadFilters(rows, filters) {
         return true;
     });
 
+    const sortField = norm(f.sort);
+    if (sortField === 'created_at') {
+        const dir = norm(f.dir) === 'asc' ? 'asc' : 'desc';
+        return { tasks: sortByCreatedAt(tasks, dir), total: list.length, filterOptions };
+    }
+
     return { tasks, total: list.length, filterOptions };
+}
+
+/**
+ * Parse a `bd list --json` row's `created_at` into epoch millis, or `null`
+ * when the field is missing/unparseable. Never throws.
+ * @param {object} r
+ * @returns {number|null}
+ */
+function parseCreatedAt(r) {
+    const raw = r && r.created_at;
+    if (typeof raw !== 'string' || raw.length === 0) return null;
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Stable sort of `tasks` by `created_at`, direction `'asc'|'desc'`. Rows with
+ * a missing/unparseable `created_at` always sort last regardless of
+ * direction, and this never throws on malformed input. Stable relative to
+ * incoming order for equal (or equally-invalid) timestamps -- achieved via a
+ * decorate-sort-undecorate over the original index, since `Array#sort` is not
+ * guaranteed stable across every engine this code may run on.
+ * @param {object[]} tasks
+ * @param {'asc'|'desc'} dir
+ * @returns {object[]}
+ */
+function sortByCreatedAt(tasks, dir) {
+    const decorated = tasks.map((r, i) => ({ r, i, ms: parseCreatedAt(r) }));
+    decorated.sort((a, b) => {
+        if (a.ms === null && b.ms === null) return a.i - b.i;
+        if (a.ms === null) return 1;
+        if (b.ms === null) return -1;
+        if (a.ms === b.ms) return a.i - b.i;
+        const cmp = a.ms - b.ms;
+        return dir === 'asc' ? cmp : -cmp;
+    });
+    return decorated.map((d) => d.r);
 }
 
 /**
@@ -689,6 +742,8 @@ export function registerBacklogRoutes(supervisor, backlog) {
                 priority: url.searchParams.get('priority') || undefined,
                 model: url.searchParams.get('model') || undefined,
                 q: url.searchParams.get('q') || undefined,
+                sort: url.searchParams.get('sort') || undefined,
+                dir: url.searchParams.get('dir') || undefined,
             };
             const result = await backlog.buildBacklogTasks(filters);
             sendJson(res, 200, result);
