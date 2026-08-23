@@ -161,10 +161,17 @@ export interface VcsProviderService {
     scopeUrl?: string,
   ): Promise<VcsDeployResult>;
 
-  /** Lightweight connectivity check (API call or git ls-remote). */
+  /**
+   * Lightweight connectivity check (API call or git ls-remote).
+   * `scopeUrl` (apra-fleet-5co8.5.2) is the same credential-scope URL passed to
+   * deploy/revoke -- optional because most providers derive what they need
+   * from `agent` alone; Azure DevOps uses it as a repo-derivation fallback
+   * when `agent.gitRepos` does not already carry a usable clone URL.
+   */
   testConnectivity(
     agent: Agent,
     exec: (cmd: string) => Promise<string>,
+    scopeUrl?: string,
   ): Promise<VcsDeployResult>;
 }
 

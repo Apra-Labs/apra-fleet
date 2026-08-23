@@ -169,7 +169,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   // Best-effort connectivity test
   let connectivity;
   try {
-    connectivity = await service.testConnectivity(agent, exec);
+    connectivity = await service.testConnectivity(agent, exec, scopeUrl);
   } catch {
     connectivity = { success: false, message: 'connectivity test threw' };
   }

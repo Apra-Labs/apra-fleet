@@ -301,16 +301,49 @@ describe('Azure DevOps provider', () => {
     expect(execCalls[0]).toContain('credential.https://dev.azure.com.helper');
   });
 
-  it('testConnectivity: succeeds when curl works', async () => {
-    const exec = async () => '';
-    const result = await azureDevOpsProvider.testConnectivity(makeAgent(), exec);
+  it('testConnectivity: succeeds when git ls-remote works against a known gitRepos URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['https://dev.azure.com/myorg/myproject/_git/myrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(member, exec);
     expect(result.success).toBe(true);
+    expect(result.message).toContain('myrepo');
+    expect(execCalls[0]).toBe('git ls-remote https://dev.azure.com/myorg/myproject/_git/myrepo HEAD');
+    // The credential comes from the git credential helper deploy() already
+    // configured -- never appears in the executed command string.
+    expect(execCalls[0]).not.toMatch(/az-pat|pat=|token=/);
   });
 
-  it('testConnectivity: fails when curl throws', async () => {
+  it('testConnectivity: falls back to a repo-scoped scope_url when gitRepos has no usable URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['myorg/myproject/myrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg/myproject/_git/myrepo',
+    );
+    expect(result.success).toBe(true);
+    expect(execCalls[0]).toContain('_git/myrepo');
+  });
+
+  it('testConnectivity: fails when git ls-remote throws', async () => {
     const exec = async () => { throw new Error('connection refused'); };
-    const result = await azureDevOpsProvider.testConnectivity(makeAgent(), exec);
+    const member = makeAgent({ gitRepos: ['https://dev.azure.com/myorg/myproject/_git/myrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(member, exec);
     expect(result.success).toBe(false);
+  });
+
+  it('testConnectivity: skips with a documented message when no repo is known', async () => {
+    const exec = async () => '';
+    // No gitRepos entry and scope_url is only the org-level default -- there
+    // is no concrete repo to ls-remote against.
+    const result = await azureDevOpsProvider.testConnectivity(
+      makeAgent(), exec, 'https://dev.azure.com/myorg',
+    );
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('Skipped');
   });
 
   // apra-fleet-5co8.5.1: the expiry is caller-supplied (Azure DevOps exposes

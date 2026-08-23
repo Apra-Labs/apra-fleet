@@ -4,6 +4,7 @@
  */
 
 import type { VcsProviderService, VcsDeployResult, AzureDevOpsCredentials } from './types.js';
+import { knownRepoRemoteUrl } from '../member-remote-url.js';
 
 const HOST = 'dev.azure.com';
 
@@ -11,6 +12,16 @@ function extractOrg(orgUrl: string): string {
   // org_url is e.g. "https://dev.azure.com/myorg" — extract "myorg"
   const match = orgUrl.match(/dev\.azure\.com\/([^/]+)/);
   return match?.[1] ?? orgUrl;
+}
+
+// apra-fleet-5co8.5.2: a bare org/project scope (the provision default,
+// "https://dev.azure.com/<org>") is not a clonable repo -- `git ls-remote`
+// needs the full "<org>/<project>/_git/<repo>" path. Only treat scopeUrl as a
+// usable repo when it already carries that "_git/" segment (i.e. the caller
+// explicitly passed a repo-scoped `scope_url`); otherwise there is nothing to
+// derive and the caller must fall back to the documented skip.
+function repoUrlFromScopeUrl(scopeUrl?: string): string | undefined {
+  return scopeUrl && scopeUrl.includes('_git/') ? scopeUrl : undefined;
 }
 
 export const azureDevOpsProvider: VcsProviderService = {
@@ -68,15 +79,26 @@ export const azureDevOpsProvider: VcsProviderService = {
     return { success: true, message: 'Azure DevOps credentials revoked' };
   },
 
-  async testConnectivity(_agent, exec) {
-    // Use the Projects API as a lightweight connectivity check.
-    // The credential helper provides auth automatically for git operations,
-    // but for curl we rely on the deployed git credential being available.
+  // apra-fleet-5co8.5.2: replaces the unauthenticated curl-the-org-root stub
+  // (it verified nothing -- an unreachable/misconfigured host would 200 just
+  // the same as a valid one) with `git ls-remote` against a concrete repo,
+  // matching src/services/vcs/github.ts's pattern. `git ls-remote` goes
+  // through the git credential helper deploy() already wrote, so the PAT is
+  // read from the credential store at exec time and never appears in the
+  // command string or any log line. When no concrete repo is known (the
+  // common case: gitRepos is an access list of bare identifiers, not a repo
+  // URL -- see member-remote-url.ts), skip with a documented message instead
+  // of reporting a false success.
+  async testConnectivity(agent, exec, scopeUrl?) {
+    const repoUrl = knownRepoRemoteUrl(agent) ?? repoUrlFromScopeUrl(scopeUrl);
+    if (!repoUrl) {
+      return { success: true, message: 'Skipped (no specific Azure DevOps repo known to test)' };
+    }
     try {
-      await exec(`curl -sf https://${HOST}/ -o /dev/null`);
-      return { success: true, message: 'Azure DevOps connectivity verified' };
+      await exec(`git ls-remote ${repoUrl} HEAD`);
+      return { success: true, message: `git ls-remote ${repoUrl} succeeded` };
     } catch {
-      return { success: false, message: 'Azure DevOps connectivity check failed' };
+      return { success: false, message: `git ls-remote ${repoUrl} failed` };
     }
   },
 };
