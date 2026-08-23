@@ -33,6 +33,7 @@ import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResol
 import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
 import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict } from './vcs-module.mjs';
+import { getSeCommands } from './se-os-commands.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -2341,11 +2342,12 @@ const GITHUB_VCS_CREDENTIAL_LABEL = 'github';
 // this exact reason string. See apra-fleet-tfx.8.1.
 const PR_SKIPPED_NO_MCP_CLIENT = 'pr-skipped-no-mcp-client';
 
-// memberName -> resolved target OS ('windows' | 'linux' | 'darwin' | ...),
-// cached for the lifetime of the runner process: a member's OS never changes
-// mid-sprint, and member_detail performs a live connectivity check, so this
-// must not be re-dispatched per credential read (raiseVcsPrForMember can call
-// it twice on the auth-retry path alone).
+// memberName -> resolved { os, shell } ('windows' | 'linux' | 'darwin' | ...
+// and '' | 'gitbash' | ... respectively), cached for the lifetime of the
+// runner process: a member's OS/shell never changes mid-sprint, and
+// member_detail performs a live connectivity check, so this must not be
+// re-dispatched per credential read (raiseVcsPrForMember can call it twice
+// on the auth-retry path alone).
 const memberOsCache = new Map();
 
 // Test seam: the OS cache is process-lifetime state, so a test exercising two
@@ -2354,20 +2356,24 @@ export function clearMemberOsCache() {
     memberOsCache.clear();
 }
 
-// Resolves `member`'s OS from the fleet member registry via
+// Resolves `member`'s { os, shell } from the fleet member registry via
 // fleetApi.memberDetail() ('member_detail' is the only MCP surface exposing
-// Agent.os -- src/tools/member-detail.ts:40; it does NOT expose a homeDir).
-// Mirrors VCSModule.resolveProvider()'s member_detail JSON-parsing shape.
+// Agent.os/Agent's registered shell -- src/tools/member-detail.ts; it does
+// NOT expose a homeDir). Mirrors VCSModule.resolveProvider()'s member_detail
+// JSON-parsing shape.
 //
 // Unlike resolveProvider, an unresolvable OS is NOT a hard error here: the
 // ONLY behavioral difference it drives is which shell string the credential
 // read is built as, and the historical (POSIX) string must stay byte-identical
 // for every non-Windows member and for any caller that has no memberDetail
 // wired. So a missing/unparseable/absent-`os` response degrades to 'linux'
-// (the pre-existing behavior) and is logged, never thrown.
+// (the pre-existing behavior) and is logged, never thrown. A windows member
+// whose record carries no `shell` (or an unrecognized one) resolves to '' --
+// getSeCommands() treats that as the PowerShell implementation, matching what
+// every Windows member was assumed to be before shells were recorded.
 // @param {{ fleetApi?: object, member: string, log?: Function }} opts
-// @returns {Promise<string>}
-export async function resolveMemberOs({ fleetApi, member, log = () => {} }) {
+// @returns {Promise<{ os: string, shell: string }>}
+async function resolveMemberTarget({ fleetApi, member, log = () => {} }) {
     if (memberOsCache.has(member)) return memberOsCache.get(member);
     try {
         if (!fleetApi || typeof fleetApi.memberDetail !== 'function') {
@@ -2382,39 +2388,34 @@ export async function resolveMemberOs({ fleetApi, member, log = () => {} }) {
         const parsed = JSON.parse(text);
         if (parsed && typeof parsed.os === 'string' && parsed.os.trim()) {
             const os = parsed.os.trim().toLowerCase();
-            // Only a genuine member_detail-derived OS is cached. Caching the
-            // 'linux' fallback below would permanently pin a member that hit a
-            // transient failure (asleep, flaky SSH, MCP hiccup) to POSIX
-            // command construction for the rest of the runner process --
-            // including the auth-retry credential read at raiseVcsPrForMember,
-            // whose entire purpose is to recover from exactly this kind of
-            // transient failure. See apra-fleet-ot2z.13.
-            memberOsCache.set(member, os);
-            return os;
+            const shell = (parsed && typeof parsed.shell === 'string') ? parsed.shell.trim().toLowerCase() : '';
+            const target = { os, shell };
+            // Only a genuine member_detail-derived OS/shell is cached. Caching
+            // the 'linux' fallback below would permanently pin a member that
+            // hit a transient failure (asleep, flaky SSH, MCP hiccup) to
+            // POSIX command construction for the rest of the runner process
+            // -- including the auth-retry credential read at
+            // raiseVcsPrForMember, whose entire purpose is to recover from
+            // exactly this kind of transient failure. See apra-fleet-ot2z.13.
+            memberOsCache.set(member, target);
+            return target;
         }
         throw new Error('member_detail response carried no "os" field');
     } catch (err) {
         log(`Could not resolve OS for member '${member}' from member_detail (${err && err.message ? err.message : err}); assuming POSIX ('linux') for member-bound command construction.`);
-        return 'linux';
+        return { os: 'linux', shell: '' };
     }
 }
 
-// Wraps a PowerShell script the same way src/os/windows.ts
-// wrapPowerShellEncoded() does: the guard clause makes a non-terminating
-// PowerShell failure surface as a non-zero exit (apra-fleet-ot2z.9's fix),
-// -EncodedCommand (base64 UTF-16LE) removes every quoting question about
-// which shell the transport hands the string to, and the $LASTEXITCODE check
-// before the trailing `exit 0` preserves a native command's exit code (e.g.
-// this file's own credential-read `& "<helper>.bat"` invocation below) that
-// would otherwise be masked -- without it, a broken credential-helper .bat
-// silently reports success with no `password=` line. runner.js is a separate
-// package and cannot import src/os/windows.ts, so the shape is mirrored
-// here, not reused.
-// @param {string} psScript
-// @returns {string}
-function wrapPowerShellEncodedForMember(psScript) {
-    const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`;
-    return `powershell -EncodedCommand ${Buffer.from(guarded, 'utf16le').toString('base64')}`;
+// Back-compat wrapper: existing callers (and tests) that only need the OS
+// string keep working unchanged. Resolves and caches both os and shell (see
+// resolveMemberTarget above); callers that also need the shell (e.g. the VCS
+// credential-read path) should call resolveMemberTarget directly.
+// @param {{ fleetApi?: object, member: string, log?: Function }} opts
+// @returns {Promise<string>}
+export async function resolveMemberOs(opts) {
+    const { os } = await resolveMemberTarget(opts);
+    return os;
 }
 
 // Builds the member-bound command that RUNS the deployed git-credential-helper
@@ -2461,38 +2462,29 @@ function wrapPowerShellEncodedForMember(psScript) {
 // occurrences in this file are all justified in place --
 //   - NOT_DONE_STATUSES (~line 278): quoting note about PowerShell's $OFS, a
 //     comment, not an expansion in the dispatched string;
-//   - wrapPowerShellEncodedForMember (~line 1761) and the Windows branch
-//     below: deliberately PowerShell, base64-encoded so no host shell ever
-//     re-parses them;
+//   - the Windows branch below: deliberately PowerShell, base64-encoded (via
+//     se-os-commands.mjs's SeWindowsCommands#wrapForMember) so no host shell
+//     ever re-parses it;
 //   - the POSIX branch below: `$HOME` expanded by the POSIX member's own
 //     shell, matching what src/os/linux.ts wrote.
 // Everything else dispatched to a member is plain `git`/`bd`/`node -e`
 // argv-shaped text (see stageCommandBodyMemberSide ~line 2195 and the
 // two-sequential-calls note at ~line 5685, which already document why they
 // avoid `&&` and `$`), inert across POSIX, PowerShell and cmd.exe.
-// @param {string} os
+//
+// `target` is whatever se-os-commands.mjs's getSeCommands() accepts: a bare
+// OS string (back-compat -- resolves to the PowerShell implementation for
+// 'windows', matching pre-shell-aware behavior) or a { os, shell } record
+// (resolveMemberTarget's shape), so a Windows member whose shell is
+// Git-for-Windows bash gets the bash-flavored credential-read command instead
+// of a PowerShell one. Label validation and byte-identical string shapes are
+// now owned by the SePosixCommands/SeWindowsCommands/SeWindowsGitbashCommands
+// classes themselves -- see se-os-commands.mjs.
+// @param {{ os?: string, shell?: string }|string} target
 // @param {string} label
 // @returns {{ command: string, descriptor: string }}
-export function buildCredentialReadCommand(os, label) {
-    if (os === 'windows') {
-        // The label is interpolated into a PowerShell double-quoted string and
-        // a filename; the POSIX branch below is unvalidated for byte-identical
-        // back-compat, but there is no reason to admit shell metacharacters on
-        // the branch being introduced here.
-        if (!/^[A-Za-z0-9._-]+$/.test(String(label))) {
-            throw new Error(`Refusing to build a Windows credential-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
-        }
-        const descriptor = `$env:USERPROFILE\\.fleet-git-credential-${label}.bat`;
-        // `& "<path>"` -- the call operator, so PowerShell EXECUTES the batch
-        // file (and its "password=<token>" line reaches stdout) instead of
-        // echoing the path as a string.
-        return { command: wrapPowerShellEncodedForMember(`& "$env:USERPROFILE\\.fleet-git-credential-${label}.bat"`), descriptor };
-    }
-    // POSIX (linux/darwin): byte-identical to the pre-apra-fleet-ot2z.1
-    // string. $HOME (not `~`) matches what src/os/linux.ts
-    // gitCredentialHelperWrite() wrote and chmod +x'd.
-    const credFile = `$HOME/.fleet-git-credential-${label}`;
-    return { command: credFile, descriptor: credFile };
+export function buildCredentialReadCommand(target, label) {
+    return getSeCommands(target).readCredentialHelper(label);
 }
 
 // Reads the raw token back out of the git-credential-helper script
@@ -2516,8 +2508,8 @@ export function buildCredentialReadCommand(os, label) {
 // @param {{ command: Function, member: string, label?: string, fleetApi?: object, log?: Function }} opts
 // @returns {Promise<string>}
 async function readMemberVcsCredentialToken({ command, member, label = GITHUB_VCS_CREDENTIAL_LABEL, fleetApi, log = () => {} }) {
-    const os = await resolveMemberOs({ fleetApi, member, log });
-    const { command: credCommand, descriptor: credFile } = buildCredentialReadCommand(os, label);
+    const target = await resolveMemberTarget({ fleetApi, member, log });
+    const { command: credCommand, descriptor: credFile } = buildCredentialReadCommand(target, label);
     const res = await command(credCommand, {
         member_name: member,
         silent: true,
