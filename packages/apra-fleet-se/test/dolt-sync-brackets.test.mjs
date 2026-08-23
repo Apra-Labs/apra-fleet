@@ -365,6 +365,24 @@ test('doltPushAfter (apra-fleet-7h6n.5): a stale/changed answer between pre-gate
     assert.equal(checkCalls, 1, 'the second (would-be `false`) answer is never consulted -- only one probe happens per call');
 });
 
+// apra-fleet-7h6n.9 (verifying apra-fleet-7h6n.5): the two 7h6n.5 tests above
+// only drive the FAILURE path with a checkSyncRemoteConfigured spy. This one
+// drives the SUCCESS path (push succeeds outright, doltPushGuarded() never
+// reaches its failure-path downgrade branch at all) with the same kind of
+// spy, so "at most once per call" is verified across both branches
+// doltPushAfter can take, not just the one the .5 fix actually touched.
+test('doltPushAfter (apra-fleet-7h6n.9): checkSyncRemoteConfigured is invoked at most once per call on the SUCCESS path too (push succeeds, failure-path downgrade never runs)', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [OK] });
+    let checkCalls = 0;
+    const checkSyncRemoteConfigured = async () => { checkCalls += 1; return true; };
+
+    const res = await doltPushAfter('memberA', { command, checkSyncRemoteConfigured });
+
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push succeeded on the first attempt');
+    assert.equal(checkCalls, 1, 'checkSyncRemoteConfigured must be invoked exactly once on the success path -- only the pre-gate ever calls it');
+});
+
 test('doltPushAfter: negative control -- with an active configured sync.remote, the same non-diverged failure still throws DoltSyncError (eft.16.1 semantics preserved)', async () => {
     const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
     const checkSyncRemoteConfigured = async () => true; // simulates an actively configured bd-level sync.remote
