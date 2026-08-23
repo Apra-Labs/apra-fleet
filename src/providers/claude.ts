@@ -8,6 +8,7 @@ import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
+import { isPosixShell } from '../utils/agent-helpers.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -400,7 +401,7 @@ export class ClaudeProvider implements ProviderAdapter {
     // Selecting the POSIX branch for a gitbash member is what fixes that;
     // every other Windows member (pwsh7/powershell5/unrecorded) keeps the
     // byte-identical PowerShell strings it got before.
-    const usePosix = agentOs !== 'windows' || shell === 'gitbash';
+    const usePosix = isPosixShell(agentOs, shell);
     const isWindows = !usePosix;
     const homeFile = isWindows ? '$env:USERPROFILE\\.claude.json' : '$HOME/.claude.json';
     const tmpFile = isWindows ? '$env:USERPROFILE\\.claude.json.fleet-trust-tmp' : '$HOME/.claude.json.fleet-trust-tmp';
