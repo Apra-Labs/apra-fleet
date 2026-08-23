@@ -12,7 +12,7 @@ import { getProvider } from '../providers/index.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import type { Agent } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
-import { getAgentShell } from '../utils/agent-helpers.js';
+import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
@@ -379,16 +379,6 @@ function resolveRemotePath(
   }
   const base = workFolder.replace(/\/+$/, '');
   return `${base}/${relPath}`;
-}
-
-/** True when the member's shell speaks POSIX: any non-Windows member, or a
- *  Windows member registered as Git-for-Windows bash (apra-fleet-7dir.1.3).
- *  A Windows member with no shell recorded, or pwsh7/powershell5, still gets
- *  the PowerShell command strings exactly as before. Mirrors the helper of
- *  the same name in src/services/member-home.ts -- kept local so this file
- *  stays the single bead's scope. */
-function isPosixShell(isWindows: boolean, shell: MemberShell | undefined): boolean {
-  return !isWindows || shell === 'gitbash';
 }
 
 async function deliverConfigFile(
