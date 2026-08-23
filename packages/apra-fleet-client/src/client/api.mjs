@@ -105,6 +105,7 @@
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "orchestrator" role)
+ * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  */
 
 /**
@@ -124,6 +125,35 @@
  * @property {string[]} [tags] - Free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode
  * @property {boolean} [unreservable] - Mark/unmark this member as shared/never exclusively reservable
+ * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
+ */
+
+/**
+ * Structured result returned by memberDetail() when called with format: 'json'
+ * (src/tools/member-detail.ts). When format is 'compact' (the default), memberDetail()
+ * instead returns a plain multi-line text summary, not this shape.
+ * @typedef {Object} MemberDetailResult
+ * @property {string} server_version - Fleet server version string
+ * @property {string} name - Friendly name of the member
+ * @property {string} icon - Emoji icon for this member
+ * @property {string} id - UUID of the member
+ * @property {"local" | "remote"} type - Member type
+ * @property {string} host - "(local)" for local members, or "host:port" for remote members
+ * @property {string} [username] - SSH username (remote members)
+ * @property {string} os - Detected/registered operating system
+ * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Registered Windows shell for this member (Windows members only)
+ * @property {string} folder - Working directory on the target machine
+ * @property {string} [repo_remote_url] - Origin URL of the git repo in `folder`, when known
+ * @property {string} [vcsProvider] - VCS provider configured for this member
+ * @property {Object} connectivity - Connectivity check result (status, latencyMs, auth, keyPath, or error)
+ * @property {boolean} [offline] - Set when the member could not be reached
+ * @property {string} llmProvider - LLM provider for this member (default: "claude")
+ * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
+ * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
+ * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
+ * @property {Object} [resources] - System resource snapshot: { cpu, memory, disk, gpu }
+ * @property {string} [branch] - Current git branch in `folder`, when it is a git repo
+ * @property {Object} [cloud] - Cloud instance details, for cloud-backed members only
  */
 
 /**
@@ -321,8 +351,10 @@ export class ApraFleet {
     }
 
     /**
-     * Get detailed status for one member: connectivity, session, work folder, provider.
+     * Get detailed status for one member: connectivity, session, work folder, provider, registered shell (Windows).
      * @param {{ member_id?: string, member_name?: string, format?: 'compact'|'json' }} options
+     * @returns {Promise<string|MemberDetailResult>} A compact text summary when format is
+     *   "compact" (default), or the structured MemberDetailResult object when format is "json".
      */
     async memberDetail(options) {
         return this.mcpClient.callTool('member_detail', options);
