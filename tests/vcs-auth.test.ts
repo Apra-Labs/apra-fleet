@@ -327,6 +327,59 @@ describe('Azure DevOps provider', () => {
     expect(execCalls[0]).toContain('_git/myrepo');
   });
 
+  // apra-fleet-5co8.5.2 (review round 2): a cross-host gitRepos URL must
+  // never be reported as an Azure DevOps connectivity result. knownRepoRemoteUrl
+  // is host-agnostic (see member-remote-url.ts), so without an Azure-DevOps-
+  // shaped URL check, this repro would ls-remote github.com and report success
+  // as if it verified the Azure DevOps credential.
+  it('testConnectivity: skips rather than testing a cross-host gitRepos URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['https://github.com/foo/bar.git'] });
+
+    // No repo-scoped scope_url supplied -- only the org-level default, which
+    // is not itself a usable repo -- so the only candidate is the cross-host
+    // gitRepos entry, which must be rejected rather than tested.
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg',
+    );
+    expect(execCalls).toHaveLength(0);
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('Skipped');
+  });
+
+  // A repo-scoped scope_url is what deploy() actually scoped the credential
+  // to (gitCredentialHelperWrite writes credential.<scopeUrl>.helper -- see
+  // src/os/linux.ts), so it must win over a same-request gitRepos URL rather
+  // than being shadowed by it.
+  it('testConnectivity: prefers a repo-scoped scope_url over a gitRepos URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['https://dev.azure.com/otherorg/otherproj/_git/otherrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg/myproject/_git/myrepo',
+    );
+    expect(result.success).toBe(true);
+    expect(execCalls[0]).toBe('git ls-remote https://dev.azure.com/myorg/myproject/_git/myrepo HEAD');
+  });
+
+  // A derived URL is interpolated into a command string executed on the
+  // member (`git ls-remote ${repoUrl} HEAD`); before this bead's validation,
+  // shell metacharacters in scope_url would inject an extra command.
+  it('testConnectivity: rejects a scope_url carrying shell metacharacters instead of executing it', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
+    const member = makeAgent();
+
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg/proj/_git/x; echo pwned',
+    );
+    expect(execCalls).toHaveLength(0);
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('Skipped');
+  });
+
   it('testConnectivity: fails when git ls-remote throws', async () => {
     const exec = async () => { throw new Error('connection refused'); };
     const member = makeAgent({ gitRepos: ['https://dev.azure.com/myorg/myproject/_git/myrepo'] });

@@ -14,14 +14,22 @@ function extractOrg(orgUrl: string): string {
   return match?.[1] ?? orgUrl;
 }
 
-// apra-fleet-5co8.5.2: a bare org/project scope (the provision default,
-// "https://dev.azure.com/<org>") is not a clonable repo -- `git ls-remote`
-// needs the full "<org>/<project>/_git/<repo>" path. Only treat scopeUrl as a
-// usable repo when it already carries that "_git/" segment (i.e. the caller
-// explicitly passed a repo-scoped `scope_url`); otherwise there is nothing to
-// derive and the caller must fall back to the documented skip.
-function repoUrlFromScopeUrl(scopeUrl?: string): string | undefined {
-  return scopeUrl && scopeUrl.includes('_git/') ? scopeUrl : undefined;
+// apra-fleet-5co8.5.2 (review round 2): a candidate repo URL is only usable
+// when it is a well-formed Azure DevOps repo URL -- "https://dev.azure.com/
+// <org>/<project>/_git/<repo>" with each segment restricted to characters
+// that can never be interpreted as shell metacharacters. This single check
+// closes two review defects at once: (1) knownRepoRemoteUrl is host-agnostic
+// (see member-remote-url.ts), so without this a cross-host gitRepos entry
+// (e.g. a github.com URL) could be ls-remote'd and reported as an Azure
+// DevOps connectivity result -- a false success on the wrong host; (2) the
+// derived URL is interpolated into a command string executed on the member
+// (see below), so an unvalidated value is a command-injection vector. A bare
+// org/project scope (the provision default, "https://dev.azure.com/<org>")
+// deliberately fails this check -- it is not a clonable repo.
+const AZURE_REPO_URL_RE = /^https:\/\/dev\.azure\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/_git\/[A-Za-z0-9._-]+$/;
+
+function isValidAzureRepoUrl(url: string): boolean {
+  return AZURE_REPO_URL_RE.test(url);
 }
 
 export const azureDevOpsProvider: VcsProviderService = {
@@ -85,12 +93,22 @@ export const azureDevOpsProvider: VcsProviderService = {
   // matching src/services/vcs/github.ts's pattern. `git ls-remote` goes
   // through the git credential helper deploy() already wrote, so the PAT is
   // read from the credential store at exec time and never appears in the
-  // command string or any log line. When no concrete repo is known (the
-  // common case: gitRepos is an access list of bare identifiers, not a repo
-  // URL -- see member-remote-url.ts), skip with a documented message instead
-  // of reporting a false success.
+  // command string or any log line. When no concrete, validated repo is
+  // known (the common case: gitRepos is an access list of bare identifiers,
+  // not a repo URL -- see member-remote-url.ts), skip with a documented
+  // message instead of reporting a false success.
+  //
+  // (review round 2) `scope_url` is what deploy() actually scoped the
+  // credential to (gitCredentialHelperWrite writes credential.<scopeUrl>.helper
+  // -- see src/os/linux.ts) so a repo-scoped scope_url is preferred over the
+  // host-agnostic, access-list-derived gitRepos value; gitRepos is only
+  // consulted when scope_url isn't itself a usable repo URL. Both candidates
+  // are validated by isValidAzureRepoUrl before use -- see its comment for
+  // why an unvalidated candidate is unsafe here.
   async testConnectivity(agent, exec, scopeUrl?) {
-    const repoUrl = knownRepoRemoteUrl(agent) ?? repoUrlFromScopeUrl(scopeUrl);
+    const candidate =
+      scopeUrl && isValidAzureRepoUrl(scopeUrl) ? scopeUrl : knownRepoRemoteUrl(agent);
+    const repoUrl = candidate && isValidAzureRepoUrl(candidate) ? candidate : undefined;
     if (!repoUrl) {
       return { success: true, message: 'Skipped (no specific Azure DevOps repo known to test)' };
     }
