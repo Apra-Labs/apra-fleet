@@ -271,9 +271,10 @@ function parseRepoRef(remoteUrl) {
 
 /** The documented default credential-store entry holding an Azure DevOps PAT
  *  (skills/fleet/auth-azdevops.md, "Storing tokens for reuse":
- *  `credential_store_set name=azdevops_pat`). A per-sprint override is
- *  deliberately NOT read here -- that is its own task; until then this default
- *  is the single name both the runbook and this hook agree on. */
+ *  `credential_store_set name=azdevops_pat`).
+ *  A per-sprint override is passed via runner.js args and threaded
+ *  through buildProvisionArgs (apra-fleet-5co8.2.3); when unset, this
+ *  default is used. */
 const DEFAULT_PAT_SECRET = 'azdevops_pat';
 
 /** The canonical remote shape parseRepoRef() expects, quoted into every

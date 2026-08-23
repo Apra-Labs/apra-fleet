@@ -4,6 +4,7 @@ import { AgentOutputError, AgentDispatchError, FleetTransportError, CommandError
 import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
+    validateCredentialStoreName,
 } from './contracts.mjs';
 import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, MemberReservationResumeError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
@@ -356,6 +357,11 @@ const KNOWN_ARG_KEYS = new Set([
     // `import()`, never across a subprocess boundary). Absent for direct
     // runSprintCycle()/main() test calls, where the guard is a no-op.
     'callTool',
+    // Per-sprint override for the Azure DevOps PAT secret name. When provided, this
+    // credential store entry name is used instead of the documented default
+    // (azdevops_pat). No CLI flag sets this today; only test/programmatic callers
+    // pass it.
+    'azdevops_pat_secret_name',
 ]);
 
 /**
@@ -2307,12 +2313,12 @@ async function listCredentialStoreNames(fleetApi) {
  * @param {{ provider: string, base: object, repoRef: object|null, fleetApi: object }} ctx
  * @returns {Promise<object>} the arguments to send
  */
-async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi }) {
+async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi, secretName }) {
     const impl = getVcsProvider(provider);
     if (!impl || typeof impl.buildProvisionArgs !== 'function') return base;
 
     const availableSecrets = await listCredentialStoreNames(fleetApi);
-    const built = impl.buildProvisionArgs({ base, repoRef, availableSecrets });
+    const built = impl.buildProvisionArgs({ base, repoRef, availableSecrets, secretName });
     if (built && typeof built.error === 'string') throw new Error(built.error);
     if (!built || !built.args || typeof built.args !== 'object') {
         throw new Error(`ERROR: VCS provider '${provider}' returned no provision arguments for member '${base.member_name}'.`);
@@ -2354,7 +2360,7 @@ function selfHealResultText(result) {
 // give every member standing pull_requests:write for the whole sprint.
 // @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string }} opts
 // @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
-async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push' }) {
+async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName }) {
     let repos;
     let derivedRepo = null;
     let derivedRef = null;
@@ -2410,6 +2416,7 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         },
         repoRef: derivedRef,
         fleetApi,
+        secretName: azdevopsPatSecretName,
     });
     const provisionRes = await fleetApi.provisionVcsAuth(provisionArgs);
     const provisionText = selfHealResultText(provisionRes);
@@ -2968,13 +2975,13 @@ export function createDeployPermissionsProvisioner(opts = {}) {
  * @returns {(info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>}
  */
 export function createVcsAuthSelfHealCallback(opts = {}) {
-    const { callTool, command, log = () => {} } = opts;
+    const { callTool, command, log = () => {}, azdevopsPatSecretName } = opts;
     const fleetApi = new ApraFleet({ callTool });
 
     return async function onAuthFailure({ member, label, error }) {
         log(`[Sync] self-heal: auth failure detected for member '${member}' (${label}); calling provision_vcs_auth to re-provision credentials: ${error}`);
 
-        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal' });
+        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName });
 
         log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
     };
@@ -3013,7 +3020,7 @@ const VCS_AUTH_EXPIRY_PREFLIGHT_MS = 10 * 60 * 1000; // 10 minutes
  * @returns {(member: string) => Promise<void>}
  */
 export function createVcsAuthPreflightCallback(opts = {}) {
-    const { callTool, command, log = () => {}, now = () => Date.now() } = opts;
+    const { callTool, command, log = () => {}, now = () => Date.now(), azdevopsPatSecretName } = opts;
     const fleetApi = new ApraFleet({ callTool });
     /** @type {Map<string, Date|null>} member -> last-known expiresAt (null = no expiry tracked, e.g. PAT mode). */
     const knownGoodUntil = new Map();
@@ -3030,7 +3037,7 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
         log(`[Sync] preflight: ensuring member '${member}' has a fresh VCS credential before dispatch; calling provision_vcs_auth.`);
         try {
-            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight' });
+            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName });
             knownGoodUntil.set(member, expiresAt);
             log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}'${expiresAt ? ` (expires ${expiresAt.toISOString()})` : ''}.`);
         } catch (err) {
@@ -3478,6 +3485,15 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid worklist_effort_budget "${args.worklist_effort_budget}": must be a positive finite number (effort points).`);
     }
 
+    // --- azdevops_pat_secret_name (optional) --------------------------------
+    // Override for the default Azure DevOps PAT secret name. When provided, this
+    // credential store entry name is used instead of the documented default
+    // (azdevops_pat). Validated as a credential-store name at contract-validation
+    // time, not mid-sprint, so invalid values fail fast and clearly.
+    if (args.azdevops_pat_secret_name !== undefined) {
+        validateCredentialStoreName(args.azdevops_pat_secret_name, 'azdevops_pat_secret_name');
+    }
+
     return {
         targetIssues,
         members: args.members,
@@ -3491,6 +3507,7 @@ export function validateArgs(args) {
         serviceUrl: args.serviceUrl,
         assignee: args.assignee,
         dispatchTimeoutS,
+        azdevopsPatSecretName: args.azdevops_pat_secret_name,
         doerWorklistMode,
         resumeModelSwitch,
         worklistEffortBudget: args.worklist_effort_budget,
@@ -6295,7 +6312,7 @@ async function runSprintCycle(context) {
     //      'function'`.
     const onAuthFailure = context.onAuthFailure ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log })
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName })
             : undefined
     );
 
@@ -6347,7 +6364,7 @@ async function runSprintCycle(context) {
     //      auth-recovery path.
     const ensureVcsAuthFresh = context.ensureVcsAuthFresh ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthPreflightCallback({ callTool: args.callTool, command, log })
+            ? createVcsAuthPreflightCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName })
             : async () => {}
     );
 
@@ -11213,7 +11230,7 @@ export async function main(context) {
     //      through to finalizeAbort()'s existing throw-and-fall-back path.
     const abortOnAuthFailure = context.onAuthFailure ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log })
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName })
             : undefined
     );
 

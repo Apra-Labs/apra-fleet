@@ -91,9 +91,7 @@ describe('AzureDevOpsVCS.buildProvisionArgs (apra-fleet-5co8.2.1)', () => {
     });
 
     test('a per-sprint secret-name override is honoured when one is supplied', () => {
-        // The override is not WIRED yet (that is its own task) -- the hook
-        // simply must not hardcode the default so wiring it later is a
-        // caller-side change only.
+        // The override is now wired through runner.js validated args (apra-fleet-5co8.2.3).
         const built = AzureDevOpsVCS.buildProvisionArgs({
             base, repoRef: { org: 'apralabs' }, availableSecrets: ['fleet-e2e-ado'], secretName: 'fleet-e2e-ado',
         });
