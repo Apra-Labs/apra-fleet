@@ -387,8 +387,18 @@ export function renderBacklogTreeHtml(tree) {
  * guessed enum). Pure/synchronous -- narrows the SET before it is ever handed
  * to a renderer, not a client-side hide/show pass over an already-fetched
  * full set (that distinction is the acceptance criterion this mirrors).
+ * After the type/status/priority/model/q narrowing, `filters.sort` (only
+ * `'created_at'` is supported today) orders the resulting rows by each row's
+ * `created_at` timestamp; `filters.dir` picks `'asc'` or `'desc'` (default
+ * `'desc'`). `created_at` is parsed defensively -- rows come straight from
+ * `bd list --json`, where it is an ISO string like `'2026-08-21T04:36:29Z'` --
+ * so a missing/unparseable value NEVER throws and always sorts last,
+ * regardless of direction. The sort is stable relative to incoming order for
+ * equal (or equally-invalid) timestamps. Omitting `filters.sort` leaves row
+ * order exactly as `bd`/the type/status/priority/model/q narrowing produced
+ * it -- no reordering is imposed.
  * @param {Array<object>} rows
- * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string }} [filters]
+ * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string, sort?: string, dir?: string }} [filters]
  * @returns {{ tasks: object[], total: number, filterOptions: { type: string[], status: string[], priority: number[], model: string[] } }}
  */
 export function applyBeadFilters(rows, filters) {
@@ -426,7 +436,50 @@ export function applyBeadFilters(rows, filters) {
         return true;
     });
 
+    const sortField = norm(f.sort);
+    if (sortField === 'created_at') {
+        const dir = norm(f.dir) === 'asc' ? 'asc' : 'desc';
+        return { tasks: sortByCreatedAt(tasks, dir), total: list.length, filterOptions };
+    }
+
     return { tasks, total: list.length, filterOptions };
+}
+
+/**
+ * Parse a `bd list --json` row's `created_at` into epoch millis, or `null`
+ * when the field is missing/unparseable. Never throws.
+ * @param {object} r
+ * @returns {number|null}
+ */
+function parseCreatedAt(r) {
+    const raw = r && r.created_at;
+    if (typeof raw !== 'string' || raw.length === 0) return null;
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Stable sort of `tasks` by `created_at`, direction `'asc'|'desc'`. Rows with
+ * a missing/unparseable `created_at` always sort last regardless of
+ * direction, and this never throws on malformed input. Stable relative to
+ * incoming order for equal (or equally-invalid) timestamps -- achieved via a
+ * decorate-sort-undecorate over the original index, since `Array#sort` is not
+ * guaranteed stable across every engine this code may run on.
+ * @param {object[]} tasks
+ * @param {'asc'|'desc'} dir
+ * @returns {object[]}
+ */
+function sortByCreatedAt(tasks, dir) {
+    const decorated = tasks.map((r, i) => ({ r, i, ms: parseCreatedAt(r) }));
+    decorated.sort((a, b) => {
+        if (a.ms === null && b.ms === null) return a.i - b.i;
+        if (a.ms === null) return 1;
+        if (b.ms === null) return -1;
+        if (a.ms === b.ms) return a.i - b.i;
+        const cmp = a.ms - b.ms;
+        return dir === 'asc' ? cmp : -cmp;
+    });
+    return decorated.map((d) => d.r);
 }
 
 /**
@@ -441,8 +494,18 @@ export function applyBeadFilters(rows, filters) {
  * table re-render (collapse toggle, a fresh filtered fetch) never resets what
  * the operator had chosen -- this function is called fresh on every
  * `renderTable()` pass client-side, not just once at page load.
+ *
+ * A 7th header cell (apra-fleet-qoxd.2) carries the Created-at sort control:
+ * a single `<select data-sort-field="created_at">` offering a neutral
+ * 'Unsorted' option plus 'Created (newest)' (value `desc`) / 'Created
+ * (oldest)' (value `asc`), pre-selected from `currentFilters.sort`/
+ * `currentFilters.dir` so a client re-render preserves the chosen sort --
+ * same pattern the Type/Status/Pri/Model `<select>`s already follow. It is a
+ * distinct `data-sort-field` attribute (not `data-filter-field`) because this
+ * one control drives TWO `currentFilters` keys (`sort` and `dir`) at once;
+ * wiring lives in `backlogPanelClientScript()`'s `wireHeaderControls()`.
  * @param {{ type: string[], status: string[], priority: number[], model: string[] }} filterOptions
- * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string }} [currentFilters]
+ * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string, sort?: string, dir?: string }} [currentFilters]
  * @returns {string}
  */
 function buildFilterHeaderRowHtml(filterOptions, currentFilters) {
@@ -462,6 +525,17 @@ function buildFilterHeaderRowHtml(filterOptions, currentFilters) {
         return '<select data-filter-field="' + field + '" style="' + CTRL_STYLE + '">' + optionsHtml.join('') + '</select>';
     }
 
+    function sortSelectHtml(currentSort, currentDir) {
+        const isCreatedAtSort = currentSort === 'created_at';
+        const dir = isCreatedAtSort ? (currentDir === 'asc' ? 'asc' : 'desc') : '';
+        const optionsHtml = [
+            '<option value=""' + (dir === '' ? ' selected' : '') + '>Unsorted</option>',
+            '<option value="desc"' + (dir === 'desc' ? ' selected' : '') + '>Created (newest)</option>',
+            '<option value="asc"' + (dir === 'asc' ? ' selected' : '') + '>Created (oldest)</option>',
+        ];
+        return '<select data-sort-field="created_at" style="' + CTRL_STYLE + '">' + optionsHtml.join('') + '</select>';
+    }
+
     const qVal = escapeHtml(f.q || '');
     return '<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">' +
         '<th style="padding: 8px; width: 110px;">ID</th>' +
@@ -470,6 +544,7 @@ function buildFilterHeaderRowHtml(filterOptions, currentFilters) {
         '<th style="padding: 8px; width: 100px;">' + selectHtml('status', 'Status', opts.status, f.status) + '</th>' +
         '<th style="padding: 8px; width: 50px;">' + selectHtml('priority', 'Pri', opts.priority, f.priority, (p) => 'P' + p) + '</th>' +
         '<th style="padding: 8px; width: 80px;">' + selectHtml('model', 'Model', opts.model, f.model) + '</th>' +
+        '<th style="padding: 8px; width: 130px;">' + sortSelectHtml(f.sort, f.dir) + '</th>' +
         '</tr>';
 }
 
@@ -551,6 +626,24 @@ function backlogPanelClientScript() {
             var evt = el.tagName === 'SELECT' ? 'change' : 'change';
             el.addEventListener(evt, function () {
                 currentFilters[field] = el.value;
+                applyFilters();
+            });
+        });
+        // apra-fleet-qoxd.2: the Created-at sort control drives TWO
+        // currentFilters keys (sort/dir) off one <select>'s single value, so
+        // it cannot use the generic data-filter-field wiring above (which
+        // only ever sets one key). An empty value ('Unsorted') clears both
+        // keys back out of currentFilters entirely, matching the neutral
+        // (no sort param sent) state applyBeadFilters() expects.
+        container.querySelectorAll('[data-sort-field]').forEach(function (el) {
+            el.addEventListener('change', function () {
+                if (el.value) {
+                    currentFilters.sort = el.getAttribute('data-sort-field');
+                    currentFilters.dir = el.value;
+                } else {
+                    delete currentFilters.sort;
+                    delete currentFilters.dir;
+                }
                 applyFilters();
             });
         });
@@ -689,6 +782,8 @@ export function registerBacklogRoutes(supervisor, backlog) {
                 priority: url.searchParams.get('priority') || undefined,
                 model: url.searchParams.get('model') || undefined,
                 q: url.searchParams.get('q') || undefined,
+                sort: url.searchParams.get('sort') || undefined,
+                dir: url.searchParams.get('dir') || undefined,
             };
             const result = await backlog.buildBacklogTasks(filters);
             sendJson(res, 200, result);

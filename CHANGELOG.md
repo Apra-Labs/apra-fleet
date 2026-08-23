@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-supervisor Backlog: sort by creation timestamp
+
+Sprint goal: give the fleet-supervisor dashboard's Backlog view a way to
+order issues by creation timestamp, so an operator scanning the unclaimed
+task list can find the newest or oldest work without leaving the page.
+
+What shipped:
+
+- **Server-side `created_at` sort**: `GET /api/backlog/tasks` accepts
+  optional `sort=created_at` and `dir=asc|desc` (default `desc`) query
+  params, applied after the existing type/status/priority/model/q
+  narrowing. The sort is a stable decorate-sort-undecorate over each row's
+  original index, so ties never reorder relative to the incoming list.
+  Rows with a missing or unparseable `created_at` always sort last in
+  either direction and never cause an error. Omitting `sort` leaves task
+  order exactly as before -- the feature is strictly additive.
+- **Backlog header sort control**: the Backlog table header gained a
+  Created-at sort `<select>` (Unsorted / Created (newest) / Created
+  (oldest)), wired to re-fetch the task list with the chosen `sort`/`dir`
+  and to reset alongside the other filters when Clear Filters is used. The
+  existing header-injection mechanism still splices exactly once with the
+  extra column present.
+
+Carried forward (filed as backlog items, not blocking): a cosmetic column-
+alignment mismatch between the new sort header cell and the data rows below
+it, and a labeling issue where the "Filtering by ..." indicator can describe
+a chosen sort as if it were a narrowing filter. Both are open, low-priority
+follow-ups.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $5.1721.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3360 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 12 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Windows/PowerShell shell portability and schema-repair retry correctness
 
 Sprint goal: close out the remaining holistic-audit acceptance criteria for
