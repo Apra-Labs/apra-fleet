@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
-// Same tiny scripted command() mock as mock-sprint-git-sync-brackets.test.mjs:
+// Same tiny scripted command() mock as git-sync-brackets.test.mjs:
 // a map from cmd-substring -> a sequence of results (each { ok } or
 // { ok:false, error }), recording every call (with member_name) so tests can
 // assert on the exact emitted git command sequence and its ordering. No real

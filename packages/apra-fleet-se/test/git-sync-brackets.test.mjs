@@ -53,8 +53,7 @@ const fail = (error) => ({ ok: false, output: '', error });
 
 // A tiny scripted command() mock: pass a map from cmd-substring -> a sequence
 // of results (each { ok } or { ok:false, error }). Records every call with its
-// opts so tests can assert explicit member threading (Plan 3.2). Matches the
-// shim shape used in mock-sprint-git-sync-brackets.test.mjs.
+// opts so tests can assert explicit member threading (Plan 3.2).
 function makeCommandMock(script) {
     const calls = [];
     const queues = new Map(Object.entries(script).map(([k, v]) => [k, [...v]]));
@@ -394,9 +393,18 @@ test('(f) a rebase conflict is porcelain-detected, rebase --abort restores a cle
 test('(g) classifyGitFailure: divergence vs transient vs unknown', () => {
     check(classifyGitFailure('fatal: Not possible to fast-forward, aborting.') === 'diverged', 'non-FF is diverged');
     check(classifyGitFailure(' ! [rejected] main -> main (non-fast-forward)') === 'diverged', 'rejected push is diverged');
+    // Ported from the retired mock-sprint-git-sync-brackets.test.mjs
+    // (apra-fleet-7h6n.2): unmerged/conflict/behind-tip diverged variants and
+    // the ssh-timeout/lock-ref transient variants had no other coverage.
+    check(classifyGitFailure('error: Pulling is not possible because you have unmerged files.') === 'diverged', 'unmerged is diverged');
+    check(classifyGitFailure('CONFLICT (content): Merge conflict in a.txt') === 'diverged', 'conflict is diverged');
+    check(classifyGitFailure('hint: Updates were rejected because the tip of your current branch is behind') === 'diverged', 'behind-tip is diverged');
     check(classifyGitFailure('Could not resolve host: github.com') === 'transient', 'dns is transient');
     check(classifyGitFailure('fatal: Unable to create /repo/.git/index.lock: File exists.') === 'transient', 'index.lock is transient');
+    check(classifyGitFailure('ssh: connect to host ... Connection timed out') === 'transient', 'conn timeout is transient');
+    check(classifyGitFailure('error: cannot lock ref refs/heads/main') === 'transient', 'lock ref is transient');
     check(classifyGitFailure('some totally novel git failure') === 'unknown', 'novel is unknown (not silently transient)');
+    check(classifyGitFailure('') === 'unknown', 'empty is unknown');
 });
 
 test('(g) a TRANSIENT fetch failure is retried to success; a DIVERGENCE is never retried', async () => {
@@ -651,4 +659,140 @@ test('(h) the vendored agent markdown tree contains NO orchestrator-side sync co
         `Vendored agent markdown must not carry orchestrator-side sync-bracket commands (sync stays in runner.js per Plan 3.2). ` +
         `Offending file(s)/token(s): ${offenders.join(' | ')}`,
     );
+});
+
+// =============================================================================
+// (ported, apra-fleet-7h6n.2) -- mock-sprint-git-sync-brackets.test.mjs was a
+// near-total duplicate of this file's (a)-(h) coverage above and was deleted;
+// these eleven cases were the assertions it carried that had NO equivalent
+// here (happy paths, pushCode:false/pushBeads:false no-ops, the SUCCESSFUL
+// rebase-recovery and transient-retry-to-success variants, the clean-porcelain
+// no-abort case, and syncMemberAfterOrdered's non-failure branches) -- ported
+// verbatim rather than dropped, so deleting the duplicate file loses no
+// assertion coverage.
+// =============================================================================
+test('(ported) syncMemberBefore: happy path runs fetch then merge --ff-only, each with explicit member_name', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberBefore('m1', { command });
+    check(res.ok && res.member === 'm1', `expected ok result, got ${JSON.stringify(res)}`);
+    check(calls.length === 2, `expected exactly fetch + merge, got ${calls.map((c) => c.cmd).join(' | ')}`);
+    check(/git fetch/.test(calls[0].cmd), `first command must be a fetch, got ${calls[0].cmd}`);
+    check(/git merge --ff-only/.test(calls[1].cmd), `second command must be ff-only merge, got ${calls[1].cmd}`);
+    check(calls.every((c) => c.opts.member_name === 'm1'), 'every git command must carry an explicit member_name');
+});
+
+test('(ported) syncMemberAfter: clean push succeeds with no rebase, explicit member_name', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberAfter('m1', { command });
+    check(res.ok && res.pushed && !res.rebased, `expected clean push, got ${JSON.stringify(res)}`);
+    check(calls.length === 1 && /git push/.test(calls[0].cmd), 'single push expected');
+    check(calls[0].opts.member_name === 'm1', 'push must carry explicit member_name');
+});
+
+test('(ported) syncMemberAfter: pushCode:false is a no-op (nothing published)', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberAfter('m1', { command, pushCode: false });
+    check(res.ok && !res.pushed, 'pushCode:false must not push');
+    check(calls.length === 0, 'no git command should be issued when pushCode is false');
+});
+
+test('(ported) syncMemberAfter: non-FF push triggers EXACTLY ONE pull --rebase then a successful re-push', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(' ! [rejected] (non-fast-forward)'), OK], // first push rejected, second ok
+        'git pull --rebase': [OK],
+    });
+    const res = await syncMemberAfter('m1', { command });
+    check(res.ok && res.pushed && res.rebased, `expected rebased re-push success, got ${JSON.stringify(res)}`);
+    const rebaseCalls = calls.filter((c) => /git pull --rebase/.test(c.cmd));
+    const pushCalls = calls.filter((c) => /git push/.test(c.cmd));
+    check(rebaseCalls.length === 1, `exactly one rebase expected, saw ${rebaseCalls.length}`);
+    check(pushCalls.length === 2, `push should be retried exactly once after rebase, saw ${pushCalls.length}`);
+});
+
+test('(ported) syncMemberAfter: a transient push failure is retried (not treated as divergence), then succeeds', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail('fatal: unable to access ... Connection timed out'), OK],
+    });
+    const res = await syncMemberAfter('m1', { command });
+    check(res.ok && res.pushed && !res.rebased, 'transient push failure retried without a rebase');
+    const rebaseCalls = calls.filter((c) => /git pull --rebase/.test(c.cmd));
+    check(rebaseCalls.length === 0, 'transient failure must not trigger a pull --rebase');
+});
+
+test('(ported) parseUnmergedPaths: clean/empty porcelain yields no unmerged paths', () => {
+    check(parseUnmergedPaths('').length === 0, 'empty porcelain has no unmerged paths');
+    check(parseUnmergedPaths('M  some-file.txt\n?? new.txt').length === 0, 'no unmerged codes present');
+});
+
+test('(ported) syncMemberAfter: a pull --rebase failure with a CLEAN porcelain (no unmerged paths) does not run rebase --abort but still raises GitDivergedError when classified as diverged', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(' ! [rejected] (non-fast-forward)')],
+        'git pull --rebase': [fail('CONFLICT (content): Merge conflict in a.txt')],
+        'git status --porcelain': [{ ok: true, output: '', error: null }],
+    });
+    let err = null;
+    try { await syncMemberAfter('m1', { command }); } catch (e) { err = e; }
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+    check(Array.isArray(err.details.unmergedPaths) && err.details.unmergedPaths.length === 0, 'no unmerged paths were found');
+    const abortCalls = calls.filter((c) => /git rebase --abort/.test(c.cmd));
+    check(abortCalls.length === 0, 'rebase --abort must not run when porcelain reports nothing unmerged');
+});
+
+test('(ported) syncMemberAfterOrdered: clean G-push publishes, then D-push runs (both succeed)', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberAfterOrdered('m1', { command, pushCode: true, pushBeads: true });
+    check(res.ok === true, 'expected ok:true result');
+    check(res.gPush && res.gPush.pushed === true, 'G-push must have run and pushed');
+    check(res.dPush && res.dPush.pushed === true, 'D-push must have run and pushed');
+    const pushCalls = calls.filter((c) => /^git push/.test(c.cmd));
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(pushCalls.length === 1, `expected exactly one git push, saw ${pushCalls.length}`);
+    check(doltPushCalls.length === 1, `expected exactly one bd dolt push, saw ${doltPushCalls.length}`);
+    // Ordering: the git push call must precede the bd dolt push call.
+    const gIdx = calls.findIndex((c) => /^git push/.test(c.cmd));
+    const dIdx = calls.findIndex((c) => c.cmd.includes('bd dolt push'));
+    check(gIdx !== -1 && dIdx !== -1 && gIdx < dIdx, 'G-push must be issued before D-push');
+});
+
+test('(ported) syncMemberAfterOrdered: a transient-exhausted G-push failure (GitSyncError, not diverged) also skips D-push', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail('fatal: unable to access ... Connection timed out')], // never recovers
+    });
+    let err = null;
+    try {
+        await syncMemberAfterOrdered('m1', { command, pushCode: true, pushBeads: true, maxTransientRetries: 0 });
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitSyncError, `expected GitSyncError, got ${err && err.constructor.name}`);
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(doltPushCalls.length === 0, `D-push must never be invoked when G-push fails (transient-exhausted), saw ${doltPushCalls.length}`);
+});
+
+test('(ported) syncMemberAfterOrdered: non-code-writing roles (pushCode:false) are unaffected -- G-push is a documented no-op and D-push always still runs', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberAfterOrdered('m1', { command, pushCode: false, pushBeads: true });
+    check(res.ok === true, 'expected ok:true result');
+    check(res.gPush && res.gPush.pushed === false, 'G-push must be a no-op for pushCode:false');
+    const gitPushCalls = calls.filter((c) => /^git push/.test(c.cmd));
+    check(gitPushCalls.length === 0, 'no git push should be issued for pushCode:false');
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(doltPushCalls.length === 1, `D-push must still run for a non-code-writing role, saw ${doltPushCalls.length}`);
+});
+
+test('(ported) syncMemberAfterOrdered: pushBeads:false (read-only bracket) with a G-push failure still skips D-push (nothing to push anyway) and rethrows', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(' ! [rejected] (non-fast-forward)')],
+        'git pull --rebase': [fail(' ! [rejected] (non-fast-forward), still diverged')],
+        'git status --porcelain': [{ ok: true, output: '', error: null }],
+    });
+    let err = null;
+    try {
+        await syncMemberAfterOrdered('m1', { command, pushCode: true, pushBeads: false });
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(doltPushCalls.length === 0, `D-push must not be invoked, saw ${doltPushCalls.length}`);
 });
