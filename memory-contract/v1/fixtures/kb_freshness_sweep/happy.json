@@ -1,0 +1,17 @@
+{
+  "tool": "kb_freshness_sweep",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"checked\":2,\"staled\":0,\"unstaled\":0}"
+      }
+    ]
+  }
+}

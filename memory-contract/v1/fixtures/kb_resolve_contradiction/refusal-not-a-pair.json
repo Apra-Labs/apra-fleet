@@ -1,0 +1,17 @@
+{
+  "tool": "kb_resolve_contradiction",
+  "case": "refusal-not-a-pair",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "winnerId": "b113a2da-391b-49ce-8551-8d17dc95628b",
+    "loserId": "19a31e78-d477-497f-a8a3-d14a159a75d5",
+    "evidence": "These two entries were never linked as a contradiction pair."
+  },
+  "error": {
+    "message": "resolveContradiction: refused -- ids do not form a genuine contradiction pair (winner=b113a2da-391b-49ce-8551-8d17dc95628b, loser=19a31e78-d477-497f-a8a3-d14a159a75d5)",
+    "thrown": true
+  },
+  "expected_error_code": "E-RESOLVE-NOT-A-PAIR"
+}

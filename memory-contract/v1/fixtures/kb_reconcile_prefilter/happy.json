@@ -1,0 +1,17 @@
+{
+  "tool": "kb_reconcile_prefilter",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"pairs\":1,\"resolved\":[],\"left_for_agent\":[{\"originalId\":\"cc565ef0-1dea-486b-a260-a557dd7e465b\",\"challengerId\":\"88de2e7e-5ea6-4ecd-aa2f-3c768ee18276\"}],\"skipped_directive\":0}"
+      }
+    ]
+  }
+}

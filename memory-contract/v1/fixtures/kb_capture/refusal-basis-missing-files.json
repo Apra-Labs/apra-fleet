@@ -1,0 +1,21 @@
+{
+  "tool": "kb_capture",
+  "case": "refusal-basis-missing-files",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "type": "knowledge",
+    "title": "An entry citing a file that does not exist",
+    "summary": "This capture cites a source file absent from the worktree.",
+    "content": "src/does-not-exist.ts is not a real file in repoA.",
+    "source_files": [
+      "src/does-not-exist.ts"
+    ]
+  },
+  "error": {
+    "message": "kb capture rejected: source file(s) do not exist in <SCRATCH_REPO_A>: src/does-not-exist.ts. Entry: An entry citing a file that does not exist",
+    "thrown": true
+  },
+  "expected_error_code": "E-BASIS-MISSING-FILES"
+}

@@ -1,0 +1,19 @@
+{
+  "tool": "kb_list",
+  "case": "refusal-directive-quarantine",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "type": "user-directive"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"results\":[{\"id\":\"2701282d-7869-4931-936a-8170a7780f02\",\"type\":\"user-directive\",\"confidence\":\"UNVERIFIED\",\"title\":\"Always run the sanitation test before committing fixtures\",\"summary\":\"A standing instruction captured as a pending proposal, never active from this channel.\",\"symbols\":[],\"source_files\":[\"src/example.ts\"]}],\"total\":1}"
+      }
+    ]
+  },
+  "expected_error_code": "E-DIRECTIVE-QUARANTINE"
+}

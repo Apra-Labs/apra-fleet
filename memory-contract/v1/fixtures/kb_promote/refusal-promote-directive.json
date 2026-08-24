@@ -1,0 +1,16 @@
+{
+  "tool": "kb_promote",
+  "case": "refusal-promote-directive",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "2701282d-7869-4931-936a-8170a7780f02",
+    "reason": "Attempting to promote a user-directive proposal directly, bypassing CLI activation."
+  },
+  "error": {
+    "message": "Cannot promote a user-directive via kb_promote (F1/D1): directive activation is human-terminal only. Run `apra-fleet kb approve-directive 2701282d-7869-4931-936a-8170a7780f02` (or `reject-directive 2701282d-7869-4931-936a-8170a7780f02` to discard).",
+    "thrown": true
+  },
+  "expected_error_code": "E-PROMOTE-REFUSED-DIRECTIVE"
+}

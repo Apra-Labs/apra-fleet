@@ -1,0 +1,19 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-first-promote-for-basis-unresolved",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "19a31e78-d477-497f-a8a3-d14a159a75d5",
+    "reason": "First promotion (UNVERIFIED -> INFERRED) while the basis file still exists."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"19a31e78-d477-497f-a8a3-d14a159a75d5\",\"previous_confidence\":\"INFERRED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  }
+}
