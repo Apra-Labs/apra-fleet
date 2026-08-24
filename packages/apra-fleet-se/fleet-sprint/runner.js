@@ -2360,7 +2360,7 @@ function selfHealResultText(result) {
 // give every member standing pull_requests:write for the whole sprint.
 // @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string }} opts
 // @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
-async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName }) {
+async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName, remoteUrlOverride }) {
     let repos;
     let derivedRepo = null;
     let derivedRef = null;
@@ -2371,12 +2371,23 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // outside the try. See parseRepoScopeFromRemoteUrl (apra-fleet-5co8.1.2).
     let remoteUrl = '';
     let remoteReadFailed = false;
-    try {
-        const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
-        remoteUrl = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
-    } catch (remoteErr) {
-        remoteReadFailed = true;
-        log(`${logPrefix}: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
+    // apra-fleet-8zr3-adjacent: a caller that already resolved the sprint's
+    // origin remote via a real git-capable member (e.g. Publish PR's
+    // publishGitMember) passes it here instead of making THIS function shell
+    // out its own 'git remote get-url origin' to `member` -- which matters
+    // when `member` is orchestratorMember and may be a git-less/shared member
+    // with no checkout to read a remote from at all. Skips the read entirely,
+    // never the parse below.
+    if (remoteUrlOverride) {
+        remoteUrl = String(remoteUrlOverride).trim();
+    } else {
+        try {
+            const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
+            remoteUrl = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
+        } catch (remoteErr) {
+            remoteReadFailed = true;
+            log(`${logPrefix}: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
+        }
     }
     if (!remoteReadFailed) {
         const scope = parseRepoScopeFromRemoteUrl(remoteUrl);
@@ -2446,8 +2457,8 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
 // learn the repo VCSModule needs to build the PR-creation command.
 // @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string }} opts
 // @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
-async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix }) {
-    return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr' });
+async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, remoteUrlOverride }) {
+    return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr', remoteUrlOverride });
 }
 
 // Default credential label provision_vcs_auth deploys under when no explicit
@@ -2713,8 +2724,8 @@ function isPrAuthFailure(status, errorText) {
 // token is never logged, only `built.logSafeCommand`.
 // @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string }} opts
 // @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean }>}
-async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix }) {
-    let { repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix });
+async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride }) {
+    let { repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
     if (!repo) {
         throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
     }
@@ -2762,7 +2773,7 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
             authHealAttempted = true;
             log(`${logPrefix}: PR creation returned an auth-classified failure (HTTP ${status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${built.logSafeCommand}): ${errorText}`);
             try {
-                const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix });
+                const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
                 if (reprov.repo) repo = reprov.repo;
                 token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
             } catch (healErr) {
@@ -5758,6 +5769,11 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         body: prBody,
         log,
         logPrefix: '[Publish Abort PR]',
+        // Already resolved just above (the origin-remote PR-capability gate)
+        // via a real git-capable member -- skip re-deriving it a second time
+        // by shelling out to `member`, which may be orchestratorMember and
+        // have no git checkout of its own to read a remote from.
+        remoteUrlOverride: originUrl,
     });
 
     if (!prResult.ok) {
@@ -11023,6 +11039,14 @@ async function runSprintCycle(context) {
                 body: prBody,
                 log,
                 logPrefix: '[Publish PR]',
+                // Already resolved above via publishGitMember (a real
+                // git-capable member) for the PR-capability gate -- skip
+                // re-deriving it a second time by shelling out to
+                // orchestratorMember, which may have no git checkout of its
+                // own to read a remote from (docs/design-orchestrator-
+                // worktree-model-v2.md section 4.6: this call stays workspace-
+                // independent by design, credential-file-read + REST only).
+                remoteUrlOverride: originUrl,
             });
             if (!prResult.ok) {
                 throw new CommandError(
