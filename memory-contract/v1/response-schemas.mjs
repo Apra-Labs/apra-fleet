@@ -27,17 +27,30 @@
 //
 // ENVELOPE WIDTH (my-beads-db-27m.33): the envelope below was originally
 // pinned to exactly one un-annotated content block, but the real wrapTool
-// (src/services/tool-registry.ts, ~lines 94-115) builds up to THREE content
+// (src/services/tool-registry.ts lines 94-115) builds up to THREE content
 // blocks -- an onboarding preamble, the payload, and a nudge suffix -- stamps
 // `annotations: {audience, priority}` on the preamble/suffix blocks, and
 // returns `structuredContent` as a sibling of `content` whenever the handler
-// produced it. A real captured envelope with onboarding active therefore
-// fails the old schema on three independent counts (too many items, an
-// unexpected `annotations` key inside a closed item, an unexpected
-// `structuredContent` key at a closed root). Fixed here on the SCHEMA side
-// only, per this task's acceptance criteria -- no harness/validator was
-// loosened. `parsed` (added by responseSchema() below) is untouched, per
-// INVENTORY.md section 3.
+// produced it.
+//
+// CORRECTED CLAIM (the first version of this comment got this wrong): none of
+// that -- extra blocks, annotations, or structuredContent -- is reachable by
+// any of the 23 kb_*/code_* tools this contract inventories. tool-registry.ts
+// :99-101 computes `isJson = isJsonResponse(result)`; every inventoried
+// handler returns `JSON.stringify(...)`, so isJson is always true, which
+// nulls both the preamble (`getOnboardingPreamble` returns null when isJson)
+// and the suffix (`isJson ? null : getOnboardingNudge(...)`).
+// `structuredContent` is only produced for handlers returning
+// `{text, structuredContent}`, which in this tree is `execute_command`/
+// `execute_prompt` only, neither inventoried. So a genuine captured envelope
+// from an inventoried tool never actually failed the old narrow schema on
+// these grounds -- the widening below documents wrapTool's GENERAL contract
+// (the shape ANY wrapTool-registered tool may emit), not a bug the
+// inventoried 23 trip over today. Fixed here on the SCHEMA side only, per
+// this task's acceptance criteria -- no harness/validator was loosened, and
+// the width is not justified against the inventoried tool set. `parsed`
+// (added by responseSchema() below) is untouched, per INVENTORY.md
+// section 3.
 
 import { z } from 'zod';
 
