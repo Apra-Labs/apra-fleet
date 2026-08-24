@@ -347,7 +347,13 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     // (apra-fleet-7dir.1.3). Never fails registration: probeWindowsShell
     // degrades to powershell5 with a warning.
     if (shouldProbeShell(detectedOS, tempAgent.shell)) {
-      const probe = await probeWindowsShell((command, timeoutMs) => strategy.execCommand(command, timeoutMs));
+      // A remote member's raw command strings are handed straight to its own
+      // sshd DefaultShell (see shell-probe.ts's isProvenRemoteBashChannel doc
+      // comment) -- a Git-bash binary being installed there proves nothing
+      // about that, unlike a local member where LocalStrategy spawns the
+      // resolved bash.exe path directly.
+      const probeTransport = tempAgent.agentType === 'local' ? 'local' : 'ssh';
+      const probe = await probeWindowsShell((command, timeoutMs) => strategy.execCommand(command, timeoutMs), probeTransport);
       tempAgent.shell = probe.shell;
       if (probe.warning) warnings.push(probe.warning);
     }

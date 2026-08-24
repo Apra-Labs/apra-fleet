@@ -5,7 +5,7 @@ import { serverVersion } from '../version.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS, groupByCategory, formatAgentHost } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, groupByCategory, formatAgentHost } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 import { syncCloudCache } from '../services/cloud-sync.js';
 
@@ -23,7 +23,7 @@ async function getAuthStatus(agent: Agent): Promise<string> {
   if (agent.agentType === 'local' || agent.agentType === 'relay') return 'N/A';
 
   const os = getAgentOS(agent);
-  const cmds = getOsCommands(os);
+  const cmds = getOsCommands(os, getAgentShell(agent));
   const strategy = getStrategy(agent);
   const provider = getProvider(agent.llmProvider);
 

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import type { Agent } from '../types.js';
@@ -26,7 +26,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const agent = agentOrError as Agent;
 
   const os = getAgentOS(agent);
-  const cmds = getOsCommands(os);
+  const cmds = getOsCommands(os, getAgentShell(agent));
   const isLocal = agent.agentType === 'local';
   const strategy = getStrategy(agent);
 

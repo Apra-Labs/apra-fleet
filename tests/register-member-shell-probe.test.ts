@@ -14,6 +14,7 @@ import { backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { registerMember } from '../src/tools/register-member.js';
 import { getAllAgents } from '../src/services/registry.js';
 import { WindowsCommands, LinuxCommands } from '../src/os/index.js';
+import { buildRemoteBashChannelProbeCommand } from '../src/services/shell-probe.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -46,6 +47,16 @@ function decodeIfEncoded(command: string): string {
 function useFakeMember(opts: { os: 'windows' | 'linux'; bash?: 'gitbash' | 'wsl-only' | 'none' }) {
   mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
   mockExecCommand.mockImplementation(async (cmd: string) => {
+    // The remote bash-channel confirmation probe is deliberately unwrapped
+    // (not -EncodedCommand) -- it stands in for these registrations' member
+    // being remote, where a real SSH connection's own DefaultShell is what
+    // actually interprets it. Only a genuine gitbash box answers correctly;
+    // wsl-only/none never get far enough to send this (no binary was proven).
+    if (cmd === buildRemoteBashChannelProbeCommand()) {
+      return opts.bash === 'gitbash'
+        ? { stdout: 'FLEET_BASH_CHANNEL_MARKER\r\nMINGW64_NT-10.0-19045\r\n', stderr: '', code: 0 }
+        : { stdout: '', stderr: 'ParserError', code: 1 };
+    }
     const script = decodeIfEncoded(cmd);
     if (cmd === 'uname -s') return { stdout: opts.os === 'linux' ? 'Linux' : '', stderr: '', code: 0 };
     if (cmd === 'ver') return { stdout: opts.os === 'windows' ? 'Microsoft Windows [Version 10.0.19045]' : '', stderr: '', code: 0 };

@@ -21,10 +21,12 @@ import {
   isProvenGitBash,
   isProvenPwsh7,
   isProvenPowerShell5,
+  isProvenRemoteBashChannel,
   buildGitBashProbeCommand,
   buildGitBashDiscoveryCommand,
   buildPwsh7ProbeCommand,
   buildPowerShell5ProbeCommand,
+  buildRemoteBashChannelProbeCommand,
   SHELL_PROBE_TIMEOUT_MS,
   type ProbeExecResult,
 } from '../src/services/shell-probe.js';
@@ -49,12 +51,19 @@ function fakeExec(world: {
   pwsh?: ProbeExecResult;
   ps5?: ProbeExecResult;
   discovery?: ProbeExecResult;
+  bashChannel?: ProbeExecResult;
   throwOnAll?: boolean;
 }) {
   const calls: { command: string; timeoutMs: number }[] = [];
   const exec = async (command: string, timeoutMs: number): Promise<ProbeExecResult> => {
     calls.push({ command, timeoutMs });
     if (world.throwOnAll) throw new Error('connection reset');
+    // The remote bash-channel probe is deliberately UNWRAPPED (not
+    // -EncodedCommand), so it must be recognized before decode() runs --
+    // decode() throws on anything that isn't a wrapped PowerShell string.
+    if (command === buildRemoteBashChannelProbeCommand()) {
+      return world.bashChannel ?? fail();
+    }
     const script = decode(command);
     if (script.includes('BASHCAND:')) {
       return world.discovery
@@ -223,5 +232,87 @@ describe('probe ordering and outcomes (AC1-AC3, AC8)', () => {
     const { exec } = fakeExec({ throwOnAll: true });
     const { warning } = await probeWindowsShell(exec);
     expect(warning).not.toMatch(/apra-fleet-[a-z0-9]/i);
+  });
+});
+
+describe('remote-transport bash-channel confirmation (apra-fleet-8rnw/28fc)', () => {
+  const MARKER_LINE = 'FLEET_BASH_CHANNEL_MARKER';
+
+  function channelOk(unameOutput: string): ProbeExecResult {
+    return ok(`${MARKER_LINE}\r\n${unameOutput}\r\n`);
+  }
+
+  it('command construction: unwrapped (not -EncodedCommand), uses a heredoc PowerShell/cmd both reject', () => {
+    const script = buildRemoteBashChannelProbeCommand();
+    expect(script).not.toContain('-EncodedCommand');
+    expect(script).toContain('<<');
+    expect(script).toContain('uname -s');
+  });
+
+  it('predicate: proven only when the marker line is followed by a genuine MINGW/MSYS/CYGWIN uname line', () => {
+    expect(isProvenRemoteBashChannel(channelOk('MINGW64_NT-10.0-19045'))).toBe(true);
+    // WSL's bash.exe answers the heredoc fine (it IS a real bash) but its
+    // uname says Linux -- must still be rejected, same disambiguation as the
+    // local/binary-existence path.
+    expect(isProvenRemoteBashChannel(channelOk('Linux'))).toBe(false);
+    // PowerShell/cmd reject the heredoc outright: no marker, usually a
+    // nonzero exit or a parser-error stderr with empty/irrelevant stdout.
+    expect(isProvenRemoteBashChannel(fail('ParserError'))).toBe(false);
+    expect(isProvenRemoteBashChannel(ok('some unrelated banner'))).toBe(false);
+    // Marker present but nothing after it (channel died mid-response).
+    expect(isProvenRemoteBashChannel(ok(`${MARKER_LINE}\r\n`))).toBe(false);
+  });
+
+  it("ssh transport: registers gitbash only when the binary exists AND the raw channel proves itself", async () => {
+    const { exec, calls } = fakeExec({
+      bashPaths: [GIT_BASH],
+      unameFor: { 'Git\\bin': ok('MINGW64_NT-10.0-19045\n') },
+      bashChannel: channelOk('MINGW64_NT-10.0-19045'),
+      pwsh: ok('PSEDITION:Core\r\n'),
+      ps5: ok('PSMAJOR:5\r\n'),
+    });
+    expect(await probeWindowsShell(exec, 'ssh')).toEqual({ shell: 'gitbash' });
+    expect(calls.some((c) => c.command === buildRemoteBashChannelProbeCommand())).toBe(true);
+  });
+
+  it('ssh transport: a Git-bash binary that exists but is not the connection default shell falls through to PowerShell, with a distinguishing warning', async () => {
+    const { exec } = fakeExec({
+      bashPaths: [GIT_BASH],
+      unameFor: { 'Git\\bin': ok('MINGW64_NT-10.0-19045\n') },
+      // Binary proven, but the raw unwrapped probe fails -- PowerShell is
+      // this connection's actual DefaultShell and rejects the heredoc.
+      bashChannel: fail('ParserError: unexpected token'),
+      ps5: ok('PSMAJOR:5\r\n'),
+    });
+    const result = await probeWindowsShell(exec, 'ssh');
+    expect(result.shell).toBe('powershell5');
+    expect(result.warning).toMatch(/not this connection's default shell/);
+  });
+
+  it('ssh transport: a WSL bash.exe as the connection default shell is rejected via the uname check, not just the local candidate-path filter', async () => {
+    const { exec } = fakeExec({
+      bashPaths: [GIT_BASH],
+      unameFor: { 'Git\\bin': ok('MINGW64_NT-10.0-19045\n') }, // a real Git bash binary IS installed
+      bashChannel: channelOk('Linux'), // but the connection's actual default shell is WSL bash
+      ps5: ok('PSMAJOR:5\r\n'),
+    });
+    const result = await probeWindowsShell(exec, 'ssh');
+    expect(result.shell).toBe('powershell5');
+  });
+
+  it("local transport (default, and explicit): never issues the channel probe -- binary existence alone is sufficient, matching pre-existing behaviour", async () => {
+    const world = {
+      bashPaths: [GIT_BASH],
+      unameFor: { 'Git\\bin': ok('MINGW64_NT-10.0-19045\n') },
+      pwsh: ok('PSEDITION:Core\r\n'),
+      ps5: ok('PSMAJOR:5\r\n'),
+    };
+    const defaultRun = fakeExec(world);
+    expect(await probeWindowsShell(defaultRun.exec)).toEqual({ shell: 'gitbash' });
+    expect(defaultRun.calls.some((c) => c.command === buildRemoteBashChannelProbeCommand())).toBe(false);
+
+    const explicitRun = fakeExec(world);
+    expect(await probeWindowsShell(explicitRun.exec, 'local')).toEqual({ shell: 'gitbash' });
+    expect(explicitRun.calls.some((c) => c.command === buildRemoteBashChannelProbeCommand())).toBe(false);
   });
 });

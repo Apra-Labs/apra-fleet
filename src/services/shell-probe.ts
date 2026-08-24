@@ -51,6 +51,8 @@ export const SHELL_PROBE_TIMEOUT_MS = 15000;
 const BASH_CANDIDATE_MARKER = 'BASHCAND:';
 const PS_EDITION_MARKER = 'PSEDITION:';
 const PS_MAJOR_MARKER = 'PSMAJOR:';
+const BASH_CHANNEL_MARKER_LINE = 'FLEET_BASH_CHANNEL_MARKER';
+const BASH_CHANNEL_HEREDOC_DELIM = 'FLEET_BASH_CHANNEL_EOF';
 
 /**
  * Whether registration should probe for a shell at all.
@@ -148,6 +150,42 @@ export function isProvenGitBash(result: ProbeExecResult): boolean {
   return result.code === 0 && isWindowsPosixUname(result.stdout);
 }
 
+/**
+ * Proves the RAW (unwrapped) exec channel itself is interpreted by a genuine
+ * Git-for-Windows/MSYS bash -- not merely that a bash.exe binary exists
+ * somewhere on the machine. This distinction only matters for a REMOTE (SSH)
+ * member: `ssh.ts`'s execCommand hands the command string straight to the
+ * member's sshd, which runs it through whatever ITS OWN DefaultShell is
+ * configured to be -- a Git-bash binary being installed proves nothing about
+ * that, since every other probe above (isProvenGitBash included) is
+ * deliberately wrapped in `powershell -EncodedCommand ...` so it survives
+ * regardless of the connection's real default shell. A local member has no
+ * such gap (LocalStrategy spawns the resolved bash.exe path directly, see
+ * strategy.ts), so this check is remote-transport-only.
+ *
+ * Deliberately NOT wrapPowerShellEncoded -- wrapping would defeat the whole
+ * point of testing what interprets an unwrapped string. Heredoc syntax
+ * (`<<`) is rejected outright by both cmd.exe and PowerShell, making it a
+ * clean interpreter discriminator; chaining `&& uname -s` onto it in the
+ * SAME round trip reuses the existing MINGW/MSYS/CYGWIN-vs-WSL uname check
+ * (isWindowsPosixUname) to rule out a WSL bash.exe DefaultShell the same way
+ * the binary-existence path above already does for local members.
+ */
+export function buildRemoteBashChannelProbeCommand(): string {
+  return `cat <<'${BASH_CHANNEL_HEREDOC_DELIM}' && uname -s\n${BASH_CHANNEL_MARKER_LINE}\n${BASH_CHANNEL_HEREDOC_DELIM}`;
+}
+
+/** Exit code, the literal marker line, AND a proven-POSIX uname line right
+ *  after it must all be present -- tolerates CRLF/blank-line noise a real
+ *  SSH round trip can introduce. */
+export function isProvenRemoteBashChannel(result: ProbeExecResult): boolean {
+  if (result.code !== 0) return false;
+  const lines = result.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const markerIdx = lines.indexOf(BASH_CHANNEL_MARKER_LINE);
+  if (markerIdx === -1 || markerIdx + 1 >= lines.length) return false;
+  return isWindowsPosixUname(lines[markerIdx + 1]);
+}
+
 export function isProvenPwsh7(result: ProbeExecResult): boolean {
   return result.code === 0 && /PSEDITION:\s*Core/i.test(result.stdout);
 }
@@ -172,32 +210,64 @@ async function safeExec(exec: ProbeExec, command: string): Promise<ProbeExecResu
  * then PowerShell 5.1. Returns the FIRST candidate proven working by a real
  * smoke command (exit code AND stdout both checked).
  *
+ * `transport` distinguishes a local member (LocalStrategy spawns the
+ * resolved bash.exe path directly -- binary existence is sufficient proof)
+ * from a remote/SSH member (raw command strings are handed straight to the
+ * member's own sshd DefaultShell -- binary existence proves nothing about
+ * what that connection actually executes; see isProvenRemoteBashChannel's
+ * doc comment). Defaults to 'local' so every existing local-member call site
+ * and test keeps its current behaviour unchanged.
+ *
  * Never throws and never fails registration: if nothing can be proven it
  * degrades to powershell5 -- the shell Windows always has and the value that
  * yields byte-identical command strings to the pre-probe behaviour -- with a
  * warning for the caller to surface.
  */
-export async function probeWindowsShell(exec: ProbeExec): Promise<ShellProbeResult> {
+export async function probeWindowsShell(exec: ProbeExec, transport: 'local' | 'ssh' = 'local'): Promise<ShellProbeResult> {
   const discovery = await safeExec(exec, buildGitBashDiscoveryCommand());
   const candidates = discovery.code === 0 ? parseGitBashCandidates(discovery.stdout) : [];
 
+  let gitBashBinaryProven = false;
   for (const candidate of candidates) {
     if (isProvenGitBash(await safeExec(exec, buildGitBashProbeCommand(candidate)))) {
-      return { shell: 'gitbash' };
+      gitBashBinaryProven = true;
+      break;
     }
   }
 
+  if (gitBashBinaryProven) {
+    const channelConfirmed = transport === 'local'
+      || isProvenRemoteBashChannel(await safeExec(exec, buildRemoteBashChannelProbeCommand()));
+    if (channelConfirmed) return { shell: 'gitbash' };
+  }
+
+  // Reached only when gitbash could not be confirmed for this transport --
+  // either no binary was proven at all, or (ssh only) one was proven but the
+  // connection's own default shell isn't actually bash. Fall through to
+  // PowerShell 7 / 5.1 below as before; if this specifically was the
+  // "binary exists but wrong default shell" case, attach a warning
+  // identifying that even when a shell IS successfully proven, since it is
+  // operator-actionable information the plain success path would otherwise
+  // swallow silently.
+  const gitBashUnreachableWarning = (transport === 'ssh' && gitBashBinaryProven)
+    ? 'Git bash is installed on this member but is not this connection\'s default shell '
+      + '(its SSH server\'s configured DefaultShell) -- using PowerShell dialect instead. To use '
+      + 'gitbash command strings, set the remote SSH DefaultShell to bash.exe, or set shell '
+      + 'explicitly with update_member.'
+    : undefined;
+
   if (isProvenPwsh7(await safeExec(exec, buildPwsh7ProbeCommand()))) {
-    return { shell: 'pwsh7' };
+    return gitBashUnreachableWarning ? { shell: 'pwsh7', warning: gitBashUnreachableWarning } : { shell: 'pwsh7' };
   }
 
   if (isProvenPowerShell5(await safeExec(exec, buildPowerShell5ProbeCommand()))) {
-    return { shell: 'powershell5' };
+    return gitBashUnreachableWarning ? { shell: 'powershell5', warning: gitBashUnreachableWarning } : { shell: 'powershell5' };
   }
 
   return {
     shell: 'powershell5',
-    warning: 'Could not verify which Windows shell this member uses -- assuming Windows PowerShell 5.1. '
-      + 'If this member should use Git bash or PowerShell 7, set it explicitly with update_member.',
+    warning: gitBashUnreachableWarning
+      ?? ('Could not verify which Windows shell this member uses -- assuming Windows PowerShell 5.1. '
+        + 'If this member should use Git bash or PowerShell 7, set it explicitly with update_member.'),
   };
 }
