@@ -5,7 +5,7 @@
   "request": {
     "repo_path": "<SCRATCH_REPO_A>",
     "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
-    "id": "b113a2da-391b-49ce-8551-8d17dc95628b",
+    "id": "e12c88e9-0a56-44dd-b1ee-c522b3559a3e",
     "reason": "On re-check, the summary overstated precision -- exampleFn is untyped-input tolerant, unlike the note implies.",
     "role": "reviewer"
   },
@@ -13,7 +13,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"id\":\"b113a2da-391b-49ce-8551-8d17dc95628b\",\"stale\":true,\"flagged_for_review\":true,\"confidence\":\"CONFIRMED\"}"
+        "text": "{\"id\":\"e12c88e9-0a56-44dd-b1ee-c522b3559a3e\",\"stale\":true,\"flagged_for_review\":true,\"confidence\":\"CONFIRMED\"}"
       }
     ]
   }

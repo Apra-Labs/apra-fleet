@@ -10,7 +10,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"pairs\":1,\"resolved\":[],\"left_for_agent\":[{\"originalId\":\"cc565ef0-1dea-486b-a260-a557dd7e465b\",\"challengerId\":\"88de2e7e-5ea6-4ecd-aa2f-3c768ee18276\"}],\"skipped_directive\":0}"
+        "text": "{\"pairs\":1,\"resolved\":[],\"left_for_agent\":[{\"originalId\":\"2697d23a-1bf9-4a95-b5a9-717cc8020600\",\"challengerId\":\"b047eace-fbc2-43bf-9cd3-1c8ce8081998\"}],\"skipped_directive\":0}"
       }
     ]
   }

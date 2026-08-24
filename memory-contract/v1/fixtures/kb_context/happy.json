@@ -14,7 +14,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"fresh\":[],\"stale\":[{\"file\":\"src/example.ts\",\"status\":\"stale\",\"reason\":\"file_missing\",\"entry_id\":\"b3baa30c-0892-4102-af65-7c90695d1db9\"}],\"missing\":[\"src/helper.ts\"]}"
+        "text": "{\"fresh\":[],\"stale\":[{\"file\":\"src/example.ts\",\"status\":\"stale\",\"reason\":\"file_missing\",\"entry_id\":\"87e80521-1da1-4a7c-b427-b26497ed598d\"}],\"missing\":[\"src/helper.ts\"]}"
       }
     ]
   }

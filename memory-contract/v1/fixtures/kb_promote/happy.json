@@ -5,14 +5,14 @@
   "request": {
     "repo_path": "<SCRATCH_REPO_A>",
     "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
-    "id": "b113a2da-391b-49ce-8551-8d17dc95628b",
+    "id": "e12c88e9-0a56-44dd-b1ee-c522b3559a3e",
     "reason": "Manually re-read src/example.ts and confirmed exampleFn(x) returns x + 1 exactly as captured."
   },
   "response": {
     "content": [
       {
         "type": "text",
-        "text": "{\"id\":\"b113a2da-391b-49ce-8551-8d17dc95628b\",\"previous_confidence\":\"INFERRED\",\"new_confidence\":\"CONFIRMED\"}"
+        "text": "{\"id\":\"e12c88e9-0a56-44dd-b1ee-c522b3559a3e\",\"previous_confidence\":\"INFERRED\",\"new_confidence\":\"CONFIRMED\"}"
       }
     ]
   }

@@ -61,7 +61,14 @@
 // T1.4.2's provider-parameterized round-trip validator):
 //   { tool, case, kind: 'happy' | 'refusal' | 'non_error_outcome',
 //     request, response?, error?: { message, thrown: true },
-//     expected_error_code?: '<taxonomy code>' }
+//     expected_error_code?: '<taxonomy code>',
+//     observed_via?: '<taxonomy code>', note?: string }
+// expected_error_code (kind:refusal only) asserts `tool` itself raises that
+// taxonomy code -- it is cross-checked against `tool`'s own raising_methods
+// and bindings/mcp errors array. observed_via (kind:non_error_outcome only)
+// is the opposite: it documents that this fixture's response is evidence of
+// a code raised by a DIFFERENT tool, so it is never cross-checked against
+// `tool`'s own bindings.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -261,6 +268,41 @@ async function recordNonErrorOutcome(tool, caseName, request, note) {
   }
   const response = await handler(request);
   writeFixture(tool, caseName, { tool, case: caseName, kind: 'non_error_outcome', request, response, note });
+  return response;
+}
+
+// A non-error-outcome fixture that observes, from a DIFFERENT tool's call,
+// the durable effect of a taxonomy code raised by some other tool -- never a
+// 'refusal' with expected_error_code, because that field means "the named
+// taxonomy code is one THIS fixture's own tool can raise" (per
+// raising_methods, cross-checked against that tool's bindings/mcp errors
+// array by T1.4.2). observedCode documents which code's effect this is
+// evidence of, without claiming `tool` raises it -- so a fixture-to-
+// projection cross-check never expects `tool`'s binding to carry that ref.
+// assertFn still fails the recording loudly if the observed effect stops
+// holding, same non-vacuous guarantee recordResponseFieldRefusal gives.
+async function recordObservedEffect(tool, caseName, request, observedCode, note, assertFn) {
+  const handler = registered.get(tool);
+  if (!handler) {
+    failures++;
+    console.log(`  [FAIL] ${tool} is not registered`);
+    return undefined;
+  }
+  const response = await handler(request);
+  const ok = assertFn(response);
+  if (!ok) {
+    failures++;
+    console.log(`  [FAIL] ${tool}/${caseName} response did not carry the expected observed effect of ${observedCode}`);
+  }
+  writeFixture(tool, caseName, {
+    tool,
+    case: caseName,
+    kind: 'non_error_outcome',
+    request,
+    response,
+    observed_via: observedCode,
+    note,
+  });
   return response;
 }
 
@@ -641,11 +683,26 @@ const captureDirective = await recordHappy('kb_capture', 'happy-user-directive-p
 });
 const idDirective = parseEnvelopeText(captureDirective)?.id;
 
-await recordResponseFieldRefusal(
+// NOT a refusal fixture: taxonomy.json's E-DIRECTIVE-QUARANTINE raising_methods
+// names kb_capture/kb_harvest/kb_import (the capture-time forcing), never
+// kb_list -- kb_list's own bindings/mcp errors array correctly carries no ref
+// to this code, so labelling this kb_list call kind:refusal with
+// expected_error_code would misattribute another tool's code to this one and
+// make T1.4.2's fixture-to-projection cross-check report a false mismatch.
+// kb_capture's own response ({id, audn_decision, confidence_clamped}) never
+// exposes the forced confidence/tag/scope, so the only way to OBSERVE the
+// effect at all is a follow-up read; recorded honestly as what it is -- a
+// kb_list call and its real response -- with observed_via naming the code
+// whose durable effect this demonstrates.
+await recordObservedEffect(
   'kb_list',
-  'refusal-directive-quarantine',
+  'observed-directive-quarantine',
   { repo_path: repoA, repo_remote_url: REMOTE_A, type: 'user-directive', symbol: undefined },
   'E-DIRECTIVE-QUARANTINE',
+  'kb_list observation of the pending directive proposal captured in kb_capture/happy-user-directive-proposal.json. ' +
+    'E-DIRECTIVE-QUARANTINE (governance group, surfaced: response-field) is raised at capture time by kb_capture, ' +
+    'kb_harvest and kb_import (taxonomy.json raising_methods) -- this kb_list call did not raise it and carries no ' +
+    'ref to it in its own bindings/mcp definition; it only reads back the forced-to-UNVERIFIED effect left behind.',
   (response) => {
     const payload = parseEnvelopeText(response);
     const entry = payload?.results?.find((r) => r.id === idDirective);
