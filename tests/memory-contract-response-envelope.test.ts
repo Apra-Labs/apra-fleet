@@ -181,6 +181,37 @@ describe('kb_capture.response.json accepts wrapTool\'s full envelope contract (m
     const root = schema.$defs['v1-kb_capture-response'];
 
     expect(root.properties.structuredContent).toBeDefined();
-    expect(root.required).toEqual(['content', 'parsed']);
+    // `parsed` is intentionally NOT required (my-beads-db-27m.47): no handler
+    // ever puts a literal `parsed` key on the wire, so a raw recorded
+    // envelope ({content} only) must validate as-is. The body stays fully
+    // typed under properties.parsed (checked below) -- only its presence on
+    // any single instance is optional.
+    expect(root.required).toEqual(['content']);
+  });
+
+  it('regression guard (my-beads-db-27m.47): parsed stays fully typed under properties even though it is optional', () => {
+    const schema = loadSchema();
+    const root = schema.$defs['v1-kb_capture-response'];
+
+    expect(root.properties.parsed).toEqual({
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        audn_decision: { type: 'string', enum: ['add', 'update', 'flagged', 'none'] },
+        confidence_clamped: { type: 'boolean' },
+      },
+      required: ['id', 'audn_decision', 'confidence_clamped'],
+      additionalProperties: false,
+    });
+  });
+
+  it('a raw recorded envelope with no parsed key validates (my-beads-db-27m.47: the wire never carries one)', () => {
+    const ajv = new Ajv2020({ strict: false });
+    const validate = ajv.compile(loadSchema());
+
+    const raw = { content: [{ type: 'text', text: JSON.stringify({ id: 'kb-1', audn_decision: 'add', confidence_clamped: false }) }] };
+
+    expect(validate(raw)).toBe(true);
+    expect(validate.errors ?? []).toEqual([]);
   });
 });

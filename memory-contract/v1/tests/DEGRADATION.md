@@ -81,16 +81,33 @@ cannot check, and why.
 - **Unverifiable behaviour:** every handler `JSON.stringify`s its body into a
   text content block. The envelope carries `content` (and, for non-inventoried
   tools, `structuredContent`) -- never a `parsed` key. `schemas/*.response.json`
-  models the envelope PLUS a `parsed` body (INVENTORY.md section 3), so the
-  RAW envelope does not validate against its own response schema until a
-  consumer decodes the payload block into `parsed`. The harness is that
-  consumer.
+  models the envelope PLUS a `parsed` body (INVENTORY.md section 3), but
+  `parsed` is declared OPTIONAL (my-beads-db-27m.47, `responseSchema()` in
+  `response-schemas.mjs`), precisely because no handler ever puts it on the
+  wire: a RAW envelope (`{content}` only, what every recorded fixture and
+  every live response actually is) validates as-is, and a consumer that
+  decodes the payload block into a `parsed` sibling (the harness's
+  `decodeEnvelope`) gets a schema that ALSO still validates that richer
+  object, `properties.parsed` staying fully typed either way. The schema
+  cannot verify the decode itself (see below); it can only accept both the
+  raw and the decoded shape without contradiction.
 - **Why schema validation cannot check it:** the schema cannot express "this
   string is JSON, and the object it decodes to is this shape." It also cannot
   express WHICH block is the payload: `wrapTool` may emit up to three blocks,
   distinguishable only by the `annotations` stamped on the preamble/suffix.
   Choosing the payload block, and failing loudly when its text does not parse,
   are both harness responsibilities.
+- **Verified statically too (my-beads-db-27m.47):** `tests/memory-contract-
+  fixture-response-schema.test.ts` validates all 32 committed fixtures that
+  carry a `response` two ways against `schemas/<tool>.response.json` -- (1)
+  RAW, exactly as recorded, and (2) decoded via `decodeEnvelope` (this file's
+  own function, already reused internally to read a recorded fixture's
+  `parsed.id`) -- 0 failures either way. Before this bead, (1) failed 25 of 32
+  fixtures with "must have required property 'parsed'"; `parsed` moving from
+  required to optional is what fixed it, not a fixture edit (no fixture ever
+  gained a `parsed` key) and not a widening of the `parsed` body's own shape
+  (still `additionalProperties: false` per tool, checked by a dedicated
+  regression test using a deliberately wrong-shaped `parsed` object).
 
 ## D-5 -- Cross-call ordering: ids must be minted by an earlier call
 

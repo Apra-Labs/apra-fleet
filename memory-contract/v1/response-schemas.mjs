@@ -49,8 +49,10 @@
 // inventoried 23 trip over today. Fixed here on the SCHEMA side only, per
 // this task's acceptance criteria -- no harness/validator was loosened, and
 // the width is not justified against the inventoried tool set. `parsed`
-// (added by responseSchema() below) is untouched, per INVENTORY.md
-// section 3.
+// (added by responseSchema() below) was untouched by THIS task; it was later
+// made optional-but-typed by my-beads-db-27m.47 (see that function's own
+// doc comment) for an unrelated reason -- the wire never carries it, so
+// requiring it made every recorded fixture fail its own schema.
 
 import { z } from 'zod';
 
@@ -231,15 +233,32 @@ const CODE_TOOLS = [
  * unconstrained) parsed body. See the decision rule in this file's header and
  * in INVENTORY.md section 3.
  *
+ * `parsed` IS OPTIONAL (my-beads-db-27m.47), never required: no handler
+ * (src/services/tool-registry.ts's wrapTool) ever puts a literal `parsed` key
+ * on the wire -- every response is JSON.stringify()'d into a single text
+ * content block -- so the RECORDED envelope genuinely never carries one. The
+ * shape stays fully typed under `properties.parsed` (INVENTORY.md section 3's
+ * "the generated response schema is the text envelope PLUS the documented
+ * parsed-body object" still holds -- the body is documented, just not
+ * mandated on every instance): a raw recorded envelope ({content} only)
+ * validates as-is, and a decoded one ({...envelope, parsed: JSON.parse(...)},
+ * the shape memory-contract/v1/tests/roundtrip-harness.mjs's decodeEnvelope()
+ * produces) validates too, because `additionalProperties: false` only forbids
+ * an UNDECLARED key, not an absent optional one. Before this change `parsed`
+ * was required, which made every one of the 32 recorded response fixtures
+ * fail its own schema when read as committed (ajv: "must have required
+ * property 'parsed'") -- see tests/memory-contract-fixture-response-schema.
+ * test.ts and memory-contract/v1/tests/DEGRADATION.md D-4.
+ *
  * @param {string} tool
  * @returns {import('zod').ZodTypeAny}
  */
 export function responseSchema(tool) {
   if (tool in KB_RESPONSE_BODIES) {
-    return toolTextEnvelope.extend({ parsed: KB_RESPONSE_BODIES[tool] });
+    return toolTextEnvelope.extend({ parsed: KB_RESPONSE_BODIES[tool].optional() });
   }
   if (CODE_TOOLS.includes(tool)) {
-    return toolTextEnvelope.extend({ parsed: z.unknown() });
+    return toolTextEnvelope.extend({ parsed: z.unknown().optional() });
   }
   throw new Error(`response-schemas.mjs: no response body registered for tool "${tool}"`);
 }

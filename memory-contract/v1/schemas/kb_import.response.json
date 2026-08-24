@@ -105,8 +105,7 @@
         }
       },
       "required": [
-        "content",
-        "parsed"
+        "content"
       ],
       "additionalProperties": false
     }
