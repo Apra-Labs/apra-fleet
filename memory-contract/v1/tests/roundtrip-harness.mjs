@@ -443,6 +443,84 @@ export function decodeEnvelope(envelope) {
 }
 
 // ---------------------------------------------------------------------------
+// Volatile-field normalisation (my-beads-db-27m.50)
+// ---------------------------------------------------------------------------
+// The recorded fixture corpus is NOT byte-reproducible across recordings of
+// the "same" scenario: entry ids are fresh UUIDs, `created_at` timestamps
+// are wall-clock, and at least one response's result ORDER is unstable
+// (kb_list/happy.json listed the context-cache entry before the knowledge
+// entry in commit f230c530, and the reverse in 8d6a5e00 -- same two entries,
+// same total). None of that is a defect in what got recorded; it is why NO
+// regenerate-and-diff drift guard is (or should ever be) pointed at
+// fixtures/ the way `contract:check` is pointed at schemas/ and bindings/mcp/
+// (see README.md's fixtures note and this file's own header).
+//
+// This harness does not need a general recorded-vs-live deep-equal today --
+// its one true equality assertion (`liveMessage === recordedMessage` for a
+// refusal) already normalises via `normalizeMessage` above, and every other
+// check either validates against a SCHEMA (order/id-agnostic by
+// construction) or reads one named field (`assertParsed`). This normaliser
+// exists so any FUTURE equality assertion added to this harness -- or to a
+// consumer that wants to diff two recordings of the same fixture -- has a
+// ready-made, already-proven way to do it instead of re-discovering the
+// UUID/timestamp/order trap. It is deliberately NOT wired into a blanket
+// live-vs-recorded comparison here: several tools' parsed bodies carry other
+// live-vs-recorded deltas that are NOT simply id/timestamp/order (e.g.
+// kb_export/kb_setup's `path`/`steps` embed a live scratch path where the
+// fixture has `<SCRATCH_REPO_A>`; kb_stats's `retrieval`/`promote_ratio` are
+// derived from telemetry accumulated over the whole run) -- normalising
+// those too is a different, larger task, not this one.
+//
+// Operates on the DECODED **parsed body** (`decodeEnvelope(envelope).parsed`,
+// or any plain object/array) -- NOT the raw envelope and NOT
+// `decodeEnvelope()`'s whole return value. The volatile values live inside
+// `content[].text` as a JSON STRING; a structural walk cannot see through
+// that string (it would need to be re-serialised to normalise, defeating the
+// point of a semantic comparison), so passing the whole envelope leaves
+// `content[].text` un-normalised and two genuinely-equivalent recordings
+// will still compare unequal. Always normalise `.parsed`, never `.content`.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+
+/** Canonical (sorted-key) JSON.stringify, so array-sort-for-comparison below does not depend on insertion order. */
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Deep-normalise a decoded fixture/response value for SEMANTIC (not byte)
+ * comparison: every UUID-shaped string becomes `<UUID>`, every ISO-8601
+ * timestamp string becomes `<TIMESTAMP>`, and every array is re-sorted by its
+ * own (already-normalised) canonical JSON string -- so two recordings whose
+ * only difference is fresh ids/timestamps and result ORDER normalise to
+ * deep-equal values.
+ *
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+export function normalizeVolatileFixtureFields(value) {
+  if (Array.isArray(value)) {
+    const normalizedItems = value.map(normalizeVolatileFixtureFields);
+    return [...normalizedItems].sort((a, b) => (stableStringify(a) < stableStringify(b) ? -1 : stableStringify(a) > stableStringify(b) ? 1 : 0));
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = normalizeVolatileFixtureFields(v);
+    return out;
+  }
+  if (typeof value === 'string') {
+    if (UUID_RE.test(value)) return '<UUID>';
+    if (ISO_TIMESTAMP_RE.test(value)) return '<TIMESTAMP>';
+  }
+  return value;
+}
+
+// ---------------------------------------------------------------------------
 // The round trip
 // ---------------------------------------------------------------------------
 function assertProviderShape(provider) {

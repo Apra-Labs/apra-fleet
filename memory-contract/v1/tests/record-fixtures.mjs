@@ -37,8 +37,10 @@
 //     `git add`/`git commit` anywhere (see kb-export.ts maybeAutoCommitBible).
 //   - repo_remote_url is set explicitly on every kb_* call (a synthetic
 //     example.test URL) rather than relying on git-derived slugs, so the
-//     recorded corpus is reproducible on any host regardless of whether the
-//     scratch tmpdir happens to sit inside a real git working tree.
+//     recorded corpus is HOST-INDEPENDENT -- reproducible on any host
+//     regardless of whether the scratch tmpdir happens to sit inside a real
+//     git working tree. This is NOT the same claim as byte-reproducible; see
+//     the dedicated note below.
 //   - code_* calls pass repo= a tmpdir with no .gitnexus/meta.json, so
 //     callGitNexus()'s pre-flight check (code-intelligence-gitnexus.ts)
 //     returns a structured "missing index" result WITHOUT ever spawning the
@@ -56,6 +58,33 @@
 // something this harness introduces; the write is additive-only (a few
 // bytes), never destructive, and swallows its own errors. Flagged here
 // rather than silently accepted.
+//
+// THE RECORDED CORPUS IS NOT BYTE-REPRODUCIBLE (my-beads-db-27m.50): running
+// this file twice never produces a byte-identical fixtures/ tree, even with
+// nothing about the 23 tools' behaviour changed. Three concrete axes,
+// verified against the real corpus history:
+//   - entry `id` fields are fresh UUIDs, minted per run (kb_capture's
+//     handler, not this harness).
+//   - `created_at` timestamps (kb_query/kb_session_prime entry payloads) are
+//     wall-clock.
+//   - at least one response's result ORDER is unstable: fixtures/kb_list/
+//     happy.json listed its two entries knowledge-then-context-cache in
+//     commit f230c530 and context-cache-then-knowledge in 8d6a5e00 -- same
+//     two entries, same `total`, different order.
+// Consequences, stated so a later task does not mistake this churn for
+// drift: (1) unlike schemas/ and bindings/mcp/ (see this contract's
+// README.md "Source of Truth"), NO regenerate-and-diff drift guard is, or
+// should ever be, pointed at fixtures/ -- `contract:check`'s byte-comparison
+// model does not apply here. (2) T1.4.2's round-trip validator
+// (roundtrip-harness.mjs) never byte-compares a recorded fixture against
+// anything; it validates each one against its JSON Schema (order/id-agnostic
+// by construction) and normalises before its one true string-equality
+// assertion (a refusal's error message, via its own `normalizeMessage`).
+// (3) Any future consumer that DOES want to diff two recordings of the same
+// fixture semantically has a ready-made helper:
+// `normalizeVolatileFixtureFields` in roundtrip-harness.mjs, proven against
+// the real f230c530/8d6a5e00 kb_list/happy.json pair in
+// tests/memory-contract-fixture-volatility.test.ts.
 //
 // Fixture shape (flat, provider-agnostic, self-describing -- consumed by
 // T1.4.2's provider-parameterized round-trip validator):
