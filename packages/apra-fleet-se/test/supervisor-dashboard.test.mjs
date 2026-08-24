@@ -1,4 +1,4 @@
-import { test, describe } from 'node:test';
+import { test, describe, mock } from 'node:test';
 import assert from 'node:assert';
 
 import {
@@ -590,6 +590,99 @@ describe('dashboard -- createDashboard', () => {
             assert.equal(views.length, 1);
             assert.equal(views[0].baseDrift, null);
             assert.equal(views[0].branch, 'feat/x', 'a driftCheck failure must not clobber the rest of the view');
+        });
+    });
+
+    // apra-fleet-c4s.2: verification for apra-fleet-c4s.1's fix -- every
+    // OTHER createDashboard() test above injects `expandScope` explicitly
+    // (the test seam), so none of them actually exercise the PRODUCTION
+    // default path (deps.expandScope left unset, as bin/serve.mjs does).
+    // This block fills that gap: it renders with `expandScope` deliberately
+    // NOT injected, so buildSprintViews() must take the in-memory
+    // expandScopeInMemory()/buildChildIndex() path (backlog.mjs) off the
+    // single injected `listAllBeads` bulk-fetch stub, never a per-node `bd`
+    // subprocess walker.
+    describe('apra-fleet-c4s.2: default (no expandScope injected) scope expansion spawns no per-node subprocess walker', () => {
+        // A known multi-level fixture tree: root -> {child1, child2}, and
+        // child2 -> grandchild1 -- deep enough that a correct beadCount/
+        // progress can only come from an actual multi-level in-memory walk,
+        // not a single-level shortcut. `decomposed-sibling`/`out-of-scope`
+        // beads are NOT reachable from 'root' and must be excluded from both
+        // beadCount and progress.
+        //
+        // Progress note: `root` and `child2` are themselves someone else's
+        // `.parent` (decomposedParentIdsAll, computed project-wide off the
+        // same bulk fetch) so, matching apra-fleet-x8r.4's completion-gate
+        // parity, both are excluded from the closed/required count even
+        // though they are IN the claimed scope -- only the two leaves
+        // (child1, grandchild1) are eligible: required=2, closed=1 (child1).
+        function buildFixture() {
+            return normalizedBeadFixtures([
+                { id: 'root', status: 'closed', priority: 1, parentId: null },
+                { id: 'child1', status: 'closed', priority: 1, parentId: 'root' },
+                { id: 'child2', status: 'open', priority: 1, parentId: 'root' },
+                { id: 'grandchild1', status: 'open', priority: 1, parentId: 'child2' },
+                { id: 'out-of-scope', status: 'open', priority: 1, parentId: null },
+            ]);
+        }
+
+        /**
+         * A `listChildren`-shaped spy standing in for the pre-apra-fleet-c4s.1
+         * per-node subprocess walker (scope-overlap.mjs's `bdListChildren` /
+         * `expandScope`). `createDashboard()`'s current deps signature no
+         * longer reads `deps.listChildren` at all (apra-fleet-c4s.1 dropped
+         * it) -- injecting it here is a regression tripwire: if a future
+         * change reintroduces the pre-fix `deps.listChildren ?? bdListChildren`
+         * wiring, this spy starts getting invoked and the assertion below
+         * catches it immediately. It throws if ever actually called, so a
+         * regression fails loudly rather than silently falling back to a
+         * real `bd` subprocess spawn.
+         */
+        function makeSubprocessWalkerSpy() {
+            return mock.fn(async () => {
+                throw new Error('apra-fleet-c4s.2: per-node subprocess scope walker must never be invoked');
+            });
+        }
+
+        test('buildSprintViews(): beadCount/progress match the in-memory expansion of the fixture tree, with zero subprocess-walker calls', async () => {
+            const listChildrenSpy = makeSubprocessWalkerSpy();
+            const listAllBeadsSpy = mock.fn(async () => buildFixture());
+            const dashboard = createDashboard({
+                ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
+                watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+                // expandScope: deliberately OMITTED -- production (bin/serve.mjs)
+                // injects nothing either, so buildSprintViews() must take the
+                // in-memory path under test.
+                listChildren: listChildrenSpy,
+                listAllBeads: listAllBeadsSpy,
+                driftCheck: async () => null,
+            });
+
+            const [view] = await dashboard.buildSprintViews();
+
+            assert.equal(listChildrenSpy.mock.calls.length, 0, 'the per-node subprocess scope walker must never be invoked');
+            // One bulk fetch for the whole render, not one call per discovered node.
+            assert.equal(listAllBeadsSpy.mock.calls.length, 1);
+
+            assert.equal(view.beadCount, 4, 'root + child1 + child2 + grandchild1 -- out-of-scope excluded');
+            assert.deepEqual(view.progress, { closed: 1, required: 2, fraction: 0.5 });
+        });
+
+        test('renderIndexPage(): the same in-memory scope expansion renders correctly into the HTML page, with zero subprocess-walker calls', async () => {
+            const listChildrenSpy = makeSubprocessWalkerSpy();
+            const dashboard = createDashboard({
+                ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
+                watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+                listChildren: listChildrenSpy,
+                listAllBeads: async () => buildFixture(),
+                driftCheck: async () => null,
+            });
+
+            const html = await dashboard.renderIndexPage();
+
+            assert.equal(listChildrenSpy.mock.calls.length, 0, 'the per-node subprocess scope walker must never be invoked');
+            assert.ok(html.includes('4 bead'), `expected the rendered claimed-scope count to be 4: ${html}`);
+            assert.ok(html.includes('1/2'), `expected the rendered progress bar text to be 1/2: ${html}`);
         });
     });
 });
