@@ -6541,7 +6541,19 @@ async function runSprintCycle(context) {
             // EXPLICITLY FATAL (apra-fleet-417.3.1): a pre-dispatch D-pull that
             // silently degraded would hand the agent a STALE beads clone and
             // let it act on it -- worse than not dispatching at all.
-            await DoltSync.syncBefore(member, { command, log, skipRefresh: skipPreDispatchDoltPull, onAuthFailure, fatal: true, settle: buildSettleCallback(member, { command, log }) });
+            //
+            // Thread this member's REGISTERED shell into dolt-settle
+            // (apra-fleet-7dir.16) so a settle triggered for a Windows member
+            // whose shell is Git-for-Windows bash gets bash-dialect dolt
+            // commands instead of being force-assumed PowerShell.
+            // resolveMemberTarget never throws (degrades to { os: 'linux',
+            // shell: '' } on any lookup failure), and is a no-op when no
+            // callTool is wired (e.g. a mock-sprint scenario with no MCP
+            // client), matching this call site's pre-existing behavior.
+            const settleTarget = (args && typeof args.callTool === 'function')
+                ? await resolveMemberTarget({ fleetApi: new ApraFleet({ callTool: args.callTool }), member, log })
+                : { os: 'linux', shell: '' };
+            await DoltSync.syncBefore(member, { command, log, skipRefresh: skipPreDispatchDoltPull, onAuthFailure, fatal: true, settle: buildSettleCallback(member, { command, log, shell: settleTarget.shell }) });
         }
         // The teardown is deliberately NOT a `finally`. A throw out of a
         // `finally` replaces the (successful) dispatch result and is
