@@ -383,10 +383,14 @@ export function formatStopError(status, errJson) {
  * The Sprint Stack's per-row Stop button behavior, as a source string ready
  * to inline into a `<script>` tag (same `.toString()`-embedding pattern as
  * launch-form.mjs's clientScriptSource(), so the exact code under test is the
- * exact code shipped to the browser). Event-delegated on `document` (no
- * client-side re-render of the Sprint Stack ever replaces these buttons, so a
- * single delegated listener wired once at page load is sufficient): a click
- * on any `.btn-stop-sprint` button confirms with the operator, then POSTs
+ * exact code shipped to the browser). Event-delegated on `document` -- as of
+ * apra-fleet-siqi.1.2, SPRINT_STACK_LIVE_SCRIPT below DOES periodically
+ * rebuild each `<section data-sprint-id>` row (a fresh /state poll may
+ * replace this exact button element), but delegation on `document` still
+ * catches every click regardless of which concrete button element it landed
+ * on, so a single listener wired once at page load remains sufficient -- no
+ * re-wiring needed after a live rebuild: a click on any `.btn-stop-sprint`
+ * button confirms with the operator, then POSTs
  * POST /api/reservations/:sprintId/force-release (extended by apra-fleet-3i3.1
  * to also kill the child), surfacing success/failure INLINE in that row's
  * `.stop-result` element (never a silent no-op, and every promise chain ends
@@ -588,9 +592,14 @@ const SPRINT_RESTART_SCRIPT = `
  * deferred by the engine (apra-fleet-p2to.1's requestPause()), so the button
  * is only disabled (to prevent a double-submit) and an inline status message
  * is shown -- the row's own Pause/Resume button + status badge only reflect
- * the ACTUAL new state on the next full page load, once the watchdog's own
- * `/state`-based pause probe (watchdog.mjs) has observed it. Every promise
- * chain ends in a `.catch()`, matching the other two scripts' discipline.
+ * the ACTUAL new state once the watchdog's own `/state`-based pause probe
+ * (watchdog.mjs) has observed it. Pre-apra-fleet-siqi.1.2 that meant "on the
+ * next full page load"; as of siqi.1.2, SPRINT_STACK_LIVE_SCRIPT's own
+ * periodic /state poll rebuilds this row too, so the correct button/badge
+ * typically appears within a poll cycle with no manual reload needed -- this
+ * script itself still does not attempt to predict or race that outcome, it
+ * only reports the request as submitted. Every promise chain ends in a
+ * `.catch()`, matching the other two scripts' discipline.
  */
 const SPRINT_PAUSE_SCRIPT = `
     ${formatStopError.toString()}
@@ -632,6 +641,127 @@ const SPRINT_PAUSE_SCRIPT = `
         var resumeBtn = ev.target.closest('.btn-resume-sprint');
         if (resumeBtn) { requestPauseResume(resumeBtn, 'resume'); return; }
     });
+`;
+
+/**
+ * (apra-fleet-siqi.1.2) The Sprint Stack's live-refresh client loop, as a
+ * source string ready to inline into a `<script>` tag (same
+ * `.toString()`-embedding pattern as the three button scripts above). Mirrors
+ * apra-fleet-workflow's per-sprint viewer client loop
+ * (packages/apra-fleet-workflow/src/viewer/index.mjs, ~lines 478-504) in
+ * shape exactly: a debounced `schedulePoll()` guard (`POLL_COALESCE_MS`), an
+ * `EventSource('/events')` whose `onmessage` calls `schedulePoll()` (this
+ * dashboard's own GET /events -- apra-fleet-siqi.1.1 -- emits a generic
+ * `{ type: 'update' }` signal on every message, so the payload itself is
+ * never inspected here, unlike the per-run viewer's namespaced
+ * `workflow:state:*` dispatch), and a `setInterval` heartbeat that ALSO calls
+ * `schedulePoll()` so a dropped/unavailable EventSource still polls (the
+ * SAME `apra-fleet-36l.1` fallback discipline) -- ONE polling mechanism
+ * (`schedulePoll()` -> `poll()`), never two independent pollers.
+ *
+ * `poll()` fetches GET /state (apra-fleet-siqi.1.1's `buildStatePayload()`
+ * shape: `{ generatedAt, runningCount, sprints }`) and re-renders the Sprint
+ * Stack rows FROM that payload -- never a one-shot server render, and never
+ * `location.reload()`. Row rendering itself reuses `renderSprintSection()`
+ * (and its own escapeHtml/statusBadge/renderSprintProgressHtml/memberChip/
+ * baseDriftIndicator/renderProgressBarHtml dependencies, all embedded
+ * verbatim via `.toString()` below, plus WATCHDOG_STATUS/STATUS_BADGE_COLORS
+ * as inline JSON) -- the EXACT SAME markup-building function GET / uses for
+ * the initial server render, so a live-refreshed row can never visually
+ * drift from a freshly-loaded one. Reconciliation against the current DOM is
+ * by `data-sprint-id`: an existing `<section>` is replaced in place (its
+ * Stop/Restart/Pause buttons come back correctly wired since those three
+ * scripts delegate their click handling on `document`, not on the button
+ * elements themselves -- see SPRINT_STOP_SCRIPT's doc comment), a newly
+ * appeared sprintId is appended, and a row whose sprintId is no longer in
+ * the payload (finished/force-released/restarted-away since the last poll)
+ * is removed -- falling back to the SAME empty-state message
+ * `renderSprintStackHtml()` renders server-side when the list goes to zero.
+ */
+const SPRINT_STACK_LIVE_SCRIPT = `
+    ${escapeHtml.toString()}
+    ${memberChip.toString()}
+    ${baseDriftIndicator.toString()}
+    var WATCHDOG_STATUS = ${JSON.stringify(WATCHDOG_STATUS)};
+    var STATUS_BADGE_COLORS = ${JSON.stringify(STATUS_BADGE_COLORS)};
+    ${statusBadge.toString()}
+    ${renderProgressBarHtml.toString()}
+    ${renderSprintProgressHtml.toString()}
+    ${renderSprintSection.toString()}
+
+    // Re-renders #sprint-stack's rows from a GET /state 'sprints' array,
+    // in place, by data-sprint-id -- see this const's doc comment above.
+    function renderSprintStackFromState(sprints) {
+        var container = document.getElementById('sprint-stack');
+        if (!container) return;
+        var list = Array.isArray(sprints) ? sprints : [];
+        var existingSections = {};
+        Array.prototype.forEach.call(container.querySelectorAll('section[data-sprint-id]'), function (s) {
+            existingSections[s.getAttribute('data-sprint-id')] = s;
+        });
+        if (list.length === 0) {
+            container.innerHTML = '<p style="color:#71717a; font-style: italic;">No sprints are currently running.</p>';
+            return;
+        }
+        var seenIds = {};
+        list.forEach(function (view) {
+            seenIds[view.sprintId] = true;
+            var existing = existingSections[view.sprintId];
+            var html = renderSprintSection(view);
+            if (existing) {
+                existing.outerHTML = html;
+            } else {
+                // First real row ever renders here (not the empty-state
+                // placeholder text) -- clear that placeholder, if present,
+                // before appending.
+                var placeholder = container.querySelector('p');
+                if (placeholder && container.querySelectorAll('section[data-sprint-id]').length === 0) {
+                    container.innerHTML = '';
+                }
+                container.insertAdjacentHTML('beforeend', html);
+            }
+        });
+        Object.keys(existingSections).forEach(function (id) {
+            if (!seenIds[id]) existingSections[id].remove();
+        });
+    }
+
+    // apra-fleet-workflow's viewer client loop (index.mjs ~478-504), same
+    // shape: debounced schedulePoll() -> poll(), driven by BOTH an
+    // EventSource('/events') message and a setInterval heartbeat fallback.
+    var POLL_COALESCE_MS = 400;
+    var pollTimer = null;
+    function schedulePoll() {
+        if (pollTimer) return;
+        pollTimer = setTimeout(function () { pollTimer = null; poll(); }, POLL_COALESCE_MS);
+    }
+
+    async function poll() {
+        try {
+            var res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
+            var data = await res.json();
+            renderSprintStackFromState(data.sprints);
+        } catch (e) {
+            console.error('Poll Error:', e);
+        }
+    }
+
+    if (typeof EventSource !== 'undefined') {
+        var source = new EventSource('/events');
+        // Every /events message is the same generic 'go poll /state' signal
+        // (apra-fleet-siqi.1.1) -- never inspected, just a trigger.
+        source.onmessage = function () { schedulePoll(); };
+    }
+
+    // apra-fleet-36l.1-style heartbeat fallback: independent of EventSource
+    // state (unavailable, never connected, or silently dropped without an
+    // onerror the browser surfaces), this keeps calling the SAME
+    // schedulePoll()/poll() path on a fixed cadence so the dashboard can
+    // never sit silently stale.
+    var HEARTBEAT_INTERVAL_MS = 7000;
+    setInterval(function () { schedulePoll(); }, HEARTBEAT_INTERVAL_MS);
+
+    poll();
 `;
 
 /**
@@ -699,6 +829,12 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
         '<script>' + SPRINT_STOP_SCRIPT + '</script>\n' +
         '<script>' + SPRINT_RESTART_SCRIPT + '</script>\n' +
         '<script>' + SPRINT_PAUSE_SCRIPT + '</script>\n' +
+        // (apra-fleet-siqi.1.2) Live-refresh loop -- registered LAST so the
+        // Stop/Restart/Pause scripts' own `document`-level delegated click
+        // listeners (which SPRINT_STACK_LIVE_SCRIPT's poll-driven rebuilds
+        // rely on) are already wired before this script's first poll() can
+        // possibly replace any row.
+        '<script>' + SPRINT_STACK_LIVE_SCRIPT + '</script>\n' +
         '</body>\n' +
         '</html>\n'
     );
