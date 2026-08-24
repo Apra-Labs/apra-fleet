@@ -9,7 +9,19 @@ import { computeSprintProgress } from './sprint-progress.mjs';
  * itself -- and renders a horizontal bar that fills left-to-right by
  * `fraction`, plus the numeric 'M/N' text. Styled with the viewer's existing
  * `--bg`/`--bg-glass`/`--accent` CSS variables. `required === 0` renders a
- * flat, empty bar and '0/0' text rather than dividing by zero or throwing.
+ * flat, empty bar and 'Required: 0/0' text rather than dividing by zero or
+ * throwing.
+ *
+ * apra-fleet-vk0a.1: the 'M/N' text carries an explicit `Required: ` label
+ * (closed/required, goal+decomposedParentIds-filtered per
+ * computeSprintProgress()) -- this widget is reused as-is by BOTH the
+ * fleet-sprint per-sprint viewer's Tasks tab (renderBeadsPanel() below,
+ * where it sits directly above renderBeadsHtml()'s OWN, differently-scoped
+ * 'All tasks (incl. backlog)' count -- see that widget's doc comment) AND
+ * the supervisor dashboard's Sprint Stack card (dashboard.mjs's
+ * renderSprintProgressHtml(), next to its OWN differently-scoped 'N total in
+ * scope' count -- apra-fleet-vk0a.3). Labeling it once, here, keeps both
+ * pairings unambiguous without a second implementation.
  *
  * @param {{ closed: number, required: number, fraction: number }} progress
  * @returns {string}
@@ -25,7 +37,7 @@ export function renderProgressBarHtml(progress) {
         '<div style="flex: 1; height: 8px; background: var(--bg); border: 1px solid var(--bg-glass); border-radius: 4px; overflow: hidden;">' +
         '<div style="width: ' + pct + '%; height: 100%; background: var(--accent);"></div>' +
         '</div>' +
-        '<div style="color: #a1a1aa; white-space: nowrap;">' + closed + '/' + required + '</div>' +
+        '<div style="color: #a1a1aa; white-space: nowrap;">Required: ' + closed + '/' + required + '</div>' +
         '</div>'
     );
 }
@@ -578,20 +590,30 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         return html;
     }
 
-    // apra-fleet-eft.90: a persistent 'M/N' item count at the top of the
-    // panel -- N = every rendered bead across BOTH sections (Sprint +
-    // Backlog), M = how many of those are not closed (open, in_progress,
-    // blocked, etc). Parent and child beads each count as their own item
-    // toward both numbers -- these are flat counts over the input arrays
-    // themselves, never deduped/collapsed by tree hierarchy (a bead present
-    // in `sprintTasks`/`backlogTasks` counts exactly once regardless of how
+    // apra-fleet-eft.90: a persistent item count at the top of the panel --
+    // N = every rendered bead across BOTH sections (Sprint + Backlog), M =
+    // how many of those are not closed (open, in_progress, blocked, etc).
+    // Parent and child beads each count as their own item toward both
+    // numbers -- these are flat counts over the input arrays themselves,
+    // never deduped/collapsed by tree hierarchy (a bead present in
+    // `sprintTasks`/`backlogTasks` counts exactly once regardless of how
     // many descendants it has). An empty panel (both lists empty) renders
-    // '0/0', never NaN/throwing.
+    // 'All tasks (incl. backlog): 0 open / 0 total', never NaN/throwing.
+    //
+    // apra-fleet-vk0a.1: labeled 'All tasks (incl. backlog)' -- explicitly
+    // distinct from the DIFFERENT scope/definition of renderProgressBarHtml()'s
+    // 'Required: M/N' widget (goal+decomposedParentIds-filtered, sprintTasks
+    // only) that renders directly above this one in the Tasks tab
+    // (renderBeadsPanel() below). Before this label, the two counts read as
+    // a bug (same-looking 'M/N' pair, different denominators AND inverted
+    // numerator polarity -- this one is open-count, that one is
+    // closed-count) rather than two intentionally different, both-useful
+    // numbers.
     const countedTasks = sprintTasks.concat(backlogTasks);
     const totalBeadCount = countedTasks.length;
     const openBeadCount = countedTasks.filter((t) => t && (t.status || '').toString().toLowerCase() !== 'closed').length;
     const countHtml = '<div class="beads-count" style="padding: 4px 8px; font-size: 12px; color: #a1a1aa;">' +
-        openBeadCount + '/' + totalBeadCount + '</div>';
+        'All tasks (incl. backlog): ' + openBeadCount + ' open / ' + totalBeadCount + ' total</div>';
 
     let html = countHtml + '<table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">';
     html += '<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">' +
