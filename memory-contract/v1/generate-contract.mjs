@@ -601,9 +601,12 @@ async function main() {
   if (CHECK_MODE) {
     // Three-way parity (acceptance criteria): registered tool <-> exactly one
     // bindings/mcp definition <-> one request/response schema pair. `entries`
-    // IS the registered-tool roster (same one EXPECTED_TOOL_COUNT already
-    // validated above), so "no extras, no gaps" against expectedSchemaFiles/
-    // expectedBindingFiles below is the whole check.
+    // is the hardcoded KB_MODULES/CODE_EXPORTS roster (validated against
+    // EXPECTED_TOOL_COUNT above), NOT the live tool-registry.ts -- so the
+    // check below is no extras, no gaps between that roster and the emitted
+    // schema/binding files (catches deletions and strays, NOT a newly
+    // registered tool). The registered-tool set-equality leg lives in
+    // tests/memory-contract-roster-guard.test.ts.
     checkNoExtraFiles(SCHEMAS_DIR, expectedSchemaFiles);
     checkNoExtraFiles(BINDINGS_MCP_DIR, expectedBindingFiles);
     checkNoExtraFiles(BINDINGS_OPENAPI_DIR, ['openapi.yaml']);
