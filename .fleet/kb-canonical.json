@@ -1,11 +1,32 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "18323f31b2abf1686db6598821546850e6409290",
+    "commit": "a90a2fb5b8dfaa5c009f1204eda62359f046638a",
     "branch": "u1_contract_v1_skeleton",
-    "entry_count": 60
+    "entry_count": 81
   },
   "entries": [
+    {
+      "id": "02543e23-58b6-40cf-945a-cd7ad3098a85",
+      "type": "knowledge",
+      "title": "code_* adapters convert connect failures into offline results; only getProvider still throws",
+      "summary": "Both code-intelligence adapters catch connect/dead-client errors at their single guarded entry point and return a structured offline result, so the only throwing site on the code_* side is getProvider's unconfigured-provider-key resolution.",
+      "symbols": [
+        "callGitNexus",
+        "callCodebaseMemory",
+        "offlineResult",
+        "missingIndexResult",
+        "getProvider"
+      ],
+      "source_files": [
+        "src/tools/code-intelligence-gitnexus.ts",
+        "src/tools/code-intelligence-codebase-memory.ts",
+        "src/tools/code-intelligence.ts",
+        "memory-contract/v1/taxonomy.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T13:06:53.327Z"
+    },
     {
       "id": "05e4e9c4-a001-4e65-ad7d-ae8909ea7908",
       "type": "learning",
@@ -142,6 +163,20 @@
       "updated_at": "2026-08-19T21:44:40.822Z"
     },
     {
+      "id": "168aac64-d799-4b10-8a3d-32da6fc9db6a",
+      "type": "knowledge",
+      "title": "contract:generate projects 21 of taxonomy.json's 23 codes and emits openapi.yaml as JSON",
+      "summary": "Silent-surfaced codes are filtered out of both wire projections per taxonomy _meta.projection_rule, and bindings/openapi/openapi.yaml is JSON text with a .yaml extension so it stays on the same deterministic emit path.",
+      "symbols": [],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "memory-contract/v1/taxonomy.json",
+        "memory-contract/v1/bindings/openapi/openapi.yaml"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T14:02:32.369Z"
+    },
+    {
       "id": "16f67a68-4a79-4cba-914f-d725618b29b9",
       "type": "knowledge",
       "title": "QueryOptions declares symbols, source_files and tags that no provider query() reads",
@@ -160,6 +195,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-20T09:08:16.759Z"
+    },
+    {
+      "id": "178f22f6-03e8-42ec-aad2-f3636a8b6c8d",
+      "type": "knowledge",
+      "title": "The round-trip harness asserts refusals by normalised message equality, not by taxonomy code",
+      "summary": "Taxonomy codes never appear on the wire, so the exit-criterion harness compares each refusal's live error message (after path/URL/id normalisation) byte-for-byte against the recorded message; any second provider adapter must reproduce those messages.",
+      "symbols": [
+        "runRoundTrip",
+        "normalizeMessage",
+        "taxonomyFailures"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "tests/memory-contract-roundtrip.test.ts",
+        "memory-contract/v1/tests/DEGRADATION.md",
+        "memory-contract/v1/fixtures/kb_promote/refusal-entry-not-found.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T19:56:12.900Z"
     },
     {
       "id": "1a5d562f-8cee-4abe-a11e-b93d6d62c653",
@@ -315,6 +369,21 @@
       "updated_at": "2026-08-19T21:44:44.765Z"
     },
     {
+      "id": "3ff898d2-7bd9-4aec-8e16-80d33a57cf85",
+      "type": "knowledge",
+      "title": "memory-contract error refs are positional JSON Pointers, so reordering taxonomy.json silently rewrites published identifiers",
+      "summary": "taxonomyCodeRef() builds taxonomy.json#/groups/<group>/codes/<index> refs that carry no code string, and contract:check cannot detect a reorder because all three ref sets come from one loadProjectableCodes() call.",
+      "symbols": [],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "memory-contract/v1/taxonomy.json",
+        "memory-contract/v1/bindings/openapi/openapi.yaml",
+        "memory-contract/v1/bindings/mcp/kb_capture.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T14:02:32.353Z"
+    },
+    {
       "id": "40295d4d-390f-466a-87c9-2df0a94cf3a6",
       "type": "knowledge",
       "title": "The embeddeddolt sandbox test can pass vacuously when bd is unavailable",
@@ -331,6 +400,38 @@
       "updated_at": "2026-08-19T21:44:43.290Z"
     },
     {
+      "id": "431a8c9b-2990-4131-a3d6-6bc7a9433c00",
+      "type": "knowledge",
+      "title": "Every kb_*/code_* tool response is a single un-annotated content block, never the 3-block wrapTool envelope",
+      "summary": "wrapTool can build up to three content blocks with annotations and structuredContent, but none of the 23 kb_*/code_* contract tools can reach that shape: the nudge fires only for register_member/execute_prompt, the preamble is suppressed for JSON payloads, and no kb_*/code_* handler returns structuredContent.",
+      "symbols": [],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "src/services/onboarding.ts",
+        "memory-contract/v1/response-schemas.mjs",
+        "memory-contract/v1/spec.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T20:56:46.528Z"
+    },
+    {
+      "id": "45a60a7b-a639-4121-b13b-e64b105f07a5",
+      "type": "learning",
+      "title": "methods.json now formally splits error_codes from taxonomy non_error_outcomes via a dedicated field",
+      "summary": "As of my-beads-db-27m.44, memory-contract/v1/methods.json's error_codes arrays no longer carry bare non-error names; affected methods (P-2, P-10, P-12, X-2, C-1..C-7) cite taxonomy.json non_error_outcomes names in a separate non_error_outcomes field instead, enforced by a new tests/memory-contract-taxonomy.test.ts assertion.",
+      "symbols": [
+        "non_error_outcomes_note",
+        "allMethods"
+      ],
+      "source_files": [
+        "memory-contract/v1/methods.json",
+        "memory-contract/v1/taxonomy.json",
+        "tests/memory-contract-taxonomy.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T14:02:32.384Z"
+    },
+    {
       "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
       "type": "knowledge",
       "title": "hasOppositePolarity matches on word-boundary regexes, not substrings",
@@ -343,6 +444,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-19T21:44:43.583Z"
+    },
+    {
+      "id": "46947fab-b939-4e49-b36e-0ad904a849a4",
+      "type": "learning",
+      "title": "memory-contract fixture corpus volatility is real and confirmed on three specific axes across two commits",
+      "summary": "memory-contract/v1/fixtures is not byte-reproducible: entry id (fresh UUID), created_at (wall-clock), and result order (kb_list/happy.json) all vary between recordings of the same scenario -- confirmed against real commits f230c530 and 8d6a5e00, and fixed for semantic comparison via normalizeVolatileFixtureFields in roundtrip-harness.mjs.",
+      "symbols": [
+        "normalizeVolatileFixtureFields",
+        "decodeEnvelope",
+        "stableStringify"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "memory-contract/v1/README.md",
+        "memory-contract/v1/fixtures/kb_list/happy.json",
+        "tests/memory-contract-fixture-volatility.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T18:09:37.184Z"
     },
     {
       "id": "4844d64a-deee-4b5d-87d2-6fcd8c596f64",
@@ -379,6 +500,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-20T02:42:55.738Z"
+    },
+    {
+      "id": "54af3b6a-e5a1-401a-a713-f2923f8dfcc9",
+      "type": "learning",
+      "title": "Tests that spawn real subprocesses need per-test timeouts sized to subprocess cost, not the framework default",
+      "summary": "Tests spawning git clone, PowerShell, or an external CLI reliably pass in isolation but flake under full-suite parallel load purely from host contention; the durable fix is a per-test timeout sized to real subprocess cost, never a global bump or a skip.",
+      "symbols": [],
+      "source_files": [
+        "tests/register-member.test.ts",
+        "tests/register-member-bootstrap-gate.test.ts",
+        "tests/task-wrapper.test.ts",
+        "tests/knowledge/kb-remote-member-e2e.test.ts",
+        "tests/2cc-win-bd-invocation-integ.test.ts",
+        "tests/eft-41-symlinked-entry.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T19:33:41.445Z"
     },
     {
       "id": "58ecdbd4-89e0-4f8f-95b6-23dfd7645674",
@@ -447,6 +585,26 @@
       "updated_at": "2026-08-19T21:44:45.640Z"
     },
     {
+      "id": "7156a8bc-5a6b-44af-9ad7-d4e4d2a83aa2",
+      "type": "knowledge",
+      "title": "APRA_FLEET_DATA_DIR overrides FLEET_DIR but not three hardcoded-homedir code-intelligence paths",
+      "summary": "Setting APRA_FLEET_DATA_DIR redirects src/paths.ts's FLEET_DIR (and everything built on it: KB sqlite files, onboarding.json, knowledge/config.json), but code-intelligence.ts's provider CONFIG_PATH, code-intelligence-telemetry.ts's USAGE_DIR, and code-intelligence-codebase-memory.ts's CACHE_DIR all build their path from os.homedir() directly, bypassing the override entirely.",
+      "symbols": [
+        "FLEET_DIR",
+        "CONFIG_PATH",
+        "USAGE_DIR",
+        "CACHE_DIR"
+      ],
+      "source_files": [
+        "src/paths.ts",
+        "src/tools/code-intelligence.ts",
+        "src/tools/code-intelligence-telemetry.ts",
+        "src/tools/code-intelligence-codebase-memory.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T19:56:12.843Z"
+    },
+    {
       "id": "735f21d3-01da-4913-9ebe-d31320b9bef4",
       "type": "knowledge",
       "title": "{{secure.NAME}} substitution is pre-escaped and launch-time bound",
@@ -480,6 +638,22 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-20T04:28:10.206Z"
+    },
+    {
+      "id": "75efedad-d45d-4f94-b322-3be64e989c36",
+      "type": "knowledge",
+      "title": "bindings/openapi/openapi.yaml is JSON text under a .yaml name, by design",
+      "summary": "contract:generate emits openapi.yaml through the same JSON.stringify emit() path as the schemas, relying on JSON being valid YAML 1.2 flow; there is no YAML serializer or parser anywhere in the repo.",
+      "symbols": [
+        "writeOpenApiDoc",
+        "emit"
+      ],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "memory-contract/v1/bindings/openapi/openapi.yaml"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T17:08:48.326Z"
     },
     {
       "id": "78dc0c4b-edaa-4d93-8134-1cd7cabc653d",
@@ -623,6 +797,39 @@
       "updated_at": "2026-08-21T03:45:34.336Z"
     },
     {
+      "id": "9014493c-363a-4345-bcf2-2dd61c30be90",
+      "type": "knowledge",
+      "title": "Recorded wrapTool envelopes omit parsed, so kb_* round-trip fixtures fail their own response schemas",
+      "summary": "memory-contract/v1/fixtures records the raw {content} envelope, but the published kb_* response schemas require parsed, so 25 of 32 recorded responses are invalid against the very schemas the corpus exists to validate.",
+      "symbols": [],
+      "source_files": [
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "memory-contract/v1/response-schemas.mjs",
+        "memory-contract/v1/schemas/kb_capture.response.json",
+        "memory-contract/v1/spec.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T15:09:23.241Z"
+    },
+    {
+      "id": "910f8ae9-ffde-4b79-bef2-fd6d5d556c27",
+      "type": "knowledge",
+      "title": "openapi.yaml is JSON-shaped YAML emitted through emit(), and tests rely on that",
+      "summary": "memory-contract/v1/bindings/openapi/openapi.yaml is written by the same JSON.stringify-based emit() helper, so it is valid JSON as well as YAML -- which is why the parity test JSON.parses a .yaml file.",
+      "symbols": [
+        "emit",
+        "buildOpenApiDoc"
+      ],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "memory-contract/v1/bindings/openapi/openapi.yaml",
+        "tests/memory-contract-parity.test.ts",
+        "tests/memory-contract-openapi-yaml-parse.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T19:12:18.115Z"
+    },
+    {
       "id": "9676e715-e2a2-447a-b0d0-54077c4a5903",
       "type": "knowledge",
       "title": "Published response schemas are narrower than the real wrapTool envelope",
@@ -673,6 +880,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-21T03:45:34.296Z"
+    },
+    {
+      "id": "a61a8450-eab3-4ae0-a1bc-1b7949104b55",
+      "type": "knowledge",
+      "title": "taxonomy.json quarantines directive activation by absence, not by a refusal code",
+      "summary": "The v1 error taxonomy holds the three CLI-only directive approve/reject error codes in excluded_from_closed_set outside every group, while still publishing the governance refusals of activation attempts made on routes that really exist.",
+      "symbols": [],
+      "source_files": [
+        "memory-contract/v1/taxonomy.json",
+        "memory-contract/v1/spec.md",
+        "tests/memory-contract-taxonomy.test.ts",
+        "memory-contract/v1/INVENTORY.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T20:56:46.545Z"
     },
     {
       "id": "a96e64d8-e304-4a46-baeb-d36fe1371a94",
@@ -810,6 +1032,25 @@
       "updated_at": "2026-08-19T21:44:48.408Z"
     },
     {
+      "id": "bede3dce-e2d1-4109-b41b-8ef017a31b62",
+      "type": "knowledge",
+      "title": "MemoryProvider implementations diverge outside the shared interface (teardown name, capture signature)",
+      "summary": "SqliteProvider and HttpKbProvider both implement MemoryProvider but differ in teardown method name and in capture's parameter list, breaking polymorphic binding generation.",
+      "symbols": [
+        "SqliteProvider.close",
+        "HttpKbProvider.dispose",
+        "SqliteProvider.capture",
+        "MemoryProvider"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/http-provider.ts",
+        "src/services/knowledge/types.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T19:56:12.868Z"
+    },
+    {
       "id": "c2899616-0cb1-41e8-b229-76e291a0cd81",
       "type": "learning",
       "title": "SqliteProvider freshness verdicts must be suppressed, not re-hashed, when the repo anchor is unreachable",
@@ -920,6 +1161,47 @@
       "updated_at": "2026-08-19T21:44:49.411Z"
     },
     {
+      "id": "cf3f793f-a36a-4356-83d8-ba1e2af69e6b",
+      "type": "knowledge",
+      "title": "contract:generate --check cannot see a newly registered tool, only a deleted one",
+      "summary": "The generator's roster is the hardcoded KB_MODULES/CODE_EXPORTS list with EXPECTED_TOOL_COUNT = 23 and no import of the live tool registry, so --check catches deletions and strays but never a tool newly registered in tool-registry.ts.",
+      "symbols": [
+        "KB_MODULES",
+        "CODE_EXPORTS",
+        "EXPECTED_TOOL_COUNT",
+        "checkNoExtraFiles",
+        "registerAllTools"
+      ],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "tests/memory-contract-roster-guard.test.ts",
+        "src/services/tool-registry.ts",
+        "memory-contract/v1/SIGNOFF.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T19:33:41.424Z"
+    },
+    {
+      "id": "d806ce21-ddb7-4eaf-9479-a344482b4e49",
+      "type": "knowledge",
+      "title": "Only fix 1 of postprocess-2020-12 fires on the real 23-tool surface",
+      "summary": "Emitting all 23 inventoried request schemas with the chosen jsonSchema7 + definitionPath $defs config produces no definitions key, no boolean exclusive bound and no array-form items, so only the dialect fix is reachable there.",
+      "symbols": [
+        "postprocessTo2020_12",
+        "convertExclusiveBound",
+        "convertTupleItems",
+        "normaliseNode"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/postprocess-2020-12.mjs",
+        "memory-contract/v1/tests/probe-generator-2020-12.mjs",
+        "memory-contract/v1/tests/GENERATOR-DECISION.md",
+        "src/tools/code-intelligence.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T19:56:12.885Z"
+    },
+    {
       "id": "d82ea45c-55fc-413a-84e1-002995f1a918",
       "type": "knowledge",
       "title": "HttpKbProvider falls back to local only on connection errors, not on HTTP 4xx/5xx or bad JSON",
@@ -968,6 +1250,23 @@
       "updated_at": "2026-08-19T21:44:50.368Z"
     },
     {
+      "id": "e2376f2c-9de4-421a-a090-f88a516fbe90",
+      "type": "knowledge",
+      "title": "The memory-contract drift guard needs both halves: CI git-diff cannot see untracked emitted files",
+      "summary": "The CI regenerate-and-diff step uses git diff --exit-code, which ignores untracked files, so a newly emitted uncommitted artifact passes that step; the vitest --check half is what reports MISSING/EXTRA.",
+      "symbols": [
+        "emit",
+        "checkNoExtraFiles"
+      ],
+      "source_files": [
+        ".github/workflows/ci.yml",
+        "memory-contract/v1/generate-contract.mjs",
+        "tests/memory-contract-drift-guard.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T19:12:18.119Z"
+    },
+    {
       "id": "ea9fea1f-930b-414d-87ee-f99a8b67bf87",
       "type": "knowledge",
       "title": "Injecting deps.execFileSync into checkDoltRemoteAbsent silently disables its filesystem probe",
@@ -1012,6 +1311,83 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-08-19T21:44:51.006Z"
+    },
+    {
+      "id": "f3654c5a-fd28-487a-b6cb-1bfbd9ff66e1",
+      "type": "knowledge",
+      "title": "Fixture expected_error_code and observed_via mean different things and only one is cross-checked",
+      "summary": "In the recorded corpus, expected_error_code asserts the fixture's own tool raises that taxonomy code; observed_via records that the response is downstream evidence of a code another tool raised, and must not be cross-checked against the tool's bindings.",
+      "symbols": [
+        "recordObservedEffect",
+        "recordResponseFieldRefusal"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "memory-contract/v1/fixtures/kb_list/observed-directive-quarantine.json",
+        "memory-contract/v1/taxonomy.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T18:09:37.193Z"
+    },
+    {
+      "id": "f4d39699-c6e7-413d-a0ed-630b274426df",
+      "type": "knowledge",
+      "title": "Six SqliteProvider methods are tool-reachable but absent from the MemoryProvider interface",
+      "summary": "MemoryProvider (types.ts:230) declares 12 methods, but registered kb_* tools additionally call list, feedback, freshnessSweep, resolveContradiction, reconcilePrefilter and hasEntry plus the repoPath property directly on SqliteProvider -- so code typed against the interface alone does not cover the real surface.",
+      "symbols": [
+        "MemoryProvider",
+        "SqliteProvider",
+        "hasEntry",
+        "freshnessSweep",
+        "reconcilePrefilter",
+        "resolveContradiction"
+      ],
+      "source_files": [
+        "src/services/knowledge/types.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-import.ts",
+        "src/tools/kb-freshness-sweep.ts",
+        "src/tools/kb-list.ts",
+        "memory-contract/v1/INVENTORY.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T19:56:12.853Z"
+    },
+    {
+      "id": "f6647f0e-4533-483f-a125-02b0eff829be",
+      "type": "learning",
+      "title": "memory-contract v1 response schemas now declare parsed optional, not required",
+      "summary": "response-schemas.mjs's responseSchema() used to require both content and parsed on every kb_*/code_* response schema, but no wrapTool handler ever puts a literal parsed key on the wire -- it was made optional (my-beads-db-27m.47) so raw recorded envelopes validate as-is while still fully typing the parsed body when a consumer decodes it.",
+      "symbols": [
+        "responseSchema",
+        "decodeEnvelope",
+        "KB_RESPONSE_BODIES"
+      ],
+      "source_files": [
+        "memory-contract/v1/response-schemas.mjs",
+        "memory-contract/v1/schemas/kb_capture.response.json",
+        "memory-contract/v1/generate-contract.mjs",
+        "tests/memory-contract-response-envelope.test.ts",
+        "tests/memory-contract-fixture-response-schema.test.ts",
+        "memory-contract/v1/tests/DEGRADATION.md",
+        "memory-contract/v1/tests/roundtrip-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-24T18:09:37.174Z"
+    },
+    {
+      "id": "fa75e607-4fa8-4c22-9fc4-42cf0747ffa4",
+      "type": "knowledge",
+      "title": "contract:generate --check does not enumerate registered tools; it trusts the hardcoded roster",
+      "summary": "The --check parity mode of memory-contract/v1/generate-contract.mjs compares generated documents against committed ones using KB_MODULES/CODE_EXPORTS resolved against dist/tools, so a tool registered in tool-registry.ts but missing from that roster still passes check.",
+      "symbols": [],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "tests/memory-contract-roster-guard.test.ts",
+        "src/services/tool-registry.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T20:56:46.542Z"
     },
     {
       "id": "fb101622-41fa-45b7-8e1b-c475323e4b7f",
