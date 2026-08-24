@@ -613,6 +613,13 @@ function backlogPanelClientScript() {
     var lastTasks = window.__backlogTasks || [];
     var filterOptions = window.__backlogFilterOptions || { type: [], status: [], priority: [], model: [] };
     var currentFilters = {};
+    // apra-fleet-siqi.2.1: the server-embedded window.__backlogTasks above
+    // counts as this tab's initial "fetch" (a real bd query, just already
+    // resolved server-side rather than over the network) -- seeded to page-
+    // load time so a Backlog-tab activation immediately after opening the
+    // page does not force a redundant re-fetch; see applyFilters() and
+    // window.__fleetSeBacklog.refreshIfStale() below.
+    var lastBacklogFetchAt = Date.now();
 
     ${escapeHtml.toString()}
     ${renderBeadsHtml.toString()}
@@ -680,6 +687,7 @@ function backlogPanelClientScript() {
     });
 
     function applyFilters() {
+        lastBacklogFetchAt = Date.now();
         var params = new URLSearchParams();
         Object.keys(currentFilters).forEach(function (k) {
             var v = currentFilters[k];
@@ -708,6 +716,17 @@ function backlogPanelClientScript() {
             applyFilters();
         });
     }
+
+    // apra-fleet-siqi.2.1: the Backlog-tab-activation refresh hook
+    // (dashboard.mjs's DASHBOARD_TAB_SCRIPT switchTab()) reaches this SAME
+    // applyFilters()/GET /api/backlog/tasks plumbing through here -- with
+    // whatever currentFilters are already active -- never a separate
+    // one-off fetch, and only when the last fetch is stale.
+    window.__fleetSeBacklog = {
+        refreshIfStale: function (maxAgeMs) {
+            if (Date.now() - lastBacklogFetchAt >= maxAgeMs) applyFilters();
+        },
+    };
 
     wireHeaderControls();
     updateTotalCount();

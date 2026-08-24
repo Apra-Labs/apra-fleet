@@ -348,12 +348,35 @@ const DASHBOARD_CSS = `
     table tr:hover { background: rgba(255,255,255,0.03); }
 `;
 
+// (apra-fleet-siqi.2.1) How old a tab's last fetch must be, in ms, before
+// activating that tab triggers a fresh one -- rather than just showing
+// whatever markup the last full-page load (or last poll/filter fetch)
+// already produced. Deliberately shorter than SPRINT_STACK_LIVE_SCRIPT's own
+// HEARTBEAT_INTERVAL_MS (7000, above) so a tab switch shortly after that
+// heartbeat's own poll does not double-fetch, but idling on one tab for even
+// a few seconds before switching still gets a genuinely fresh fetch on
+// activation rather than stale data.
+const TAB_ACTIVATION_STALE_MS = 3000;
+
 const DASHBOARD_TAB_SCRIPT = `
+    var TAB_ACTIVATION_STALE_MS = ${TAB_ACTIVATION_STALE_MS};
     function switchTab(id) {
         document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
         document.querySelectorAll('.tab-content').forEach(function (c) { c.classList.remove('active'); });
         event.currentTarget.classList.add('active');
         document.getElementById('tab-' + id).classList.add('active');
+        // apra-fleet-siqi.2.1: activating a tab triggers a fresh fetch of
+        // THAT tab's own data through the SAME fetch/poll plumbing each tab
+        // already uses elsewhere (SPRINT_STACK_LIVE_SCRIPT's schedulePoll()/
+        // poll() for Sprints, backlogPanelClientScript()'s applyFilters() for
+        // Backlog) -- never a separate one-off fetch call -- but only when
+        // the last such fetch is stale (see TAB_ACTIVATION_STALE_MS above);
+        // each tab tracks and refreshes independently of the other.
+        if (id === 'sprints' && window.__fleetSeSprintStack && typeof window.__fleetSeSprintStack.refreshIfStale === 'function') {
+            window.__fleetSeSprintStack.refreshIfStale(TAB_ACTIVATION_STALE_MS);
+        } else if (id === 'backlog' && window.__fleetSeBacklog && typeof window.__fleetSeBacklog.refreshIfStale === 'function') {
+            window.__fleetSeBacklog.refreshIfStale(TAB_ACTIVATION_STALE_MS);
+        }
     }
 `;
 
@@ -736,7 +759,13 @@ const SPRINT_STACK_LIVE_SCRIPT = `
         pollTimer = setTimeout(function () { pollTimer = null; poll(); }, POLL_COALESCE_MS);
     }
 
+    // apra-fleet-siqi.2.1: when this poll was last (attempted to be) run --
+    // set up front, not just on success, so a Sprints-tab activation right
+    // after a poll was already scheduled/kicked off never piles on a second,
+    // redundant one; see window.__fleetSeSprintStack.refreshIfStale() below.
+    var lastPollAt = 0;
     async function poll() {
+        lastPollAt = Date.now();
         try {
             var res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
             var data = await res.json();
@@ -744,6 +773,24 @@ const SPRINT_STACK_LIVE_SCRIPT = `
         } catch (e) {
             console.error('Poll Error:', e);
         }
+    }
+
+    // apra-fleet-siqi.2.1: the Sprints-tab-activation refresh hook
+    // (DASHBOARD_TAB_SCRIPT's switchTab()) reaches this SAME
+    // schedulePoll()/poll() plumbing through here -- never a separate
+    // one-off fetch -- and only when the last poll is stale. Guarded on
+    // 'typeof window' (rather than a bare reference) so this script stays
+    // runnable in a sandboxed Function-eval harness that never supplies a
+    // 'window' global (e.g. supervisor-dashboard-live-refresh.test.mjs's
+    // runLiveRefreshScript(), which only passes document/fetch/EventSource)
+    // -- a real browser <script> tag always has 'window' defined, so this
+    // guard is a no-op true branch there.
+    if (typeof window !== 'undefined') {
+        window.__fleetSeSprintStack = {
+            refreshIfStale: function (maxAgeMs) {
+                if (Date.now() - lastPollAt >= maxAgeMs) schedulePoll();
+            },
+        };
     }
 
     if (typeof EventSource !== 'undefined') {
