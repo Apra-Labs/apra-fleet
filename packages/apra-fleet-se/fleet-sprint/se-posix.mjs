@@ -113,6 +113,24 @@ export class SePosixCommands {
     const descriptor = this.credentialHelperPath(label);
     return { command: this.wrapForMember(this.invoke(descriptor)), descriptor };
   }
+
+  /**
+   * Escape a SQL string so it survives as ONE double-quoted argument in the
+   * member's shell. Backticks and `$` are the dangerous characters: bash
+   * treats a backtick inside double quotes as command substitution, so both
+   * backslash and backtick are backslash-escaped, along with `$` and `"`.
+   * Byte-identical to dolt-settle.mjs's escapeSqlForShell('linux', sql).
+   * @param {string} sql
+   * @returns {string}
+   */
+  escapeSqlArg(sql) {
+    const bq = String.fromCharCode(96);
+    return String(sql)
+      .replace(/\\/g, '\\\\')
+      .split(bq).join('\\' + bq)
+      .replace(/\$/g, '\\$')
+      .replace(/"/g, '\\"');
+  }
 }
 
 export default SePosixCommands;

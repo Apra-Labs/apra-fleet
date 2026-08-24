@@ -107,6 +107,23 @@ export class SeWindowsCommands {
     const descriptor = this.credentialHelperPath(label);
     return { command: this.wrapForMember(this.invoke(descriptor)), descriptor };
   }
+
+  /**
+   * Escape a SQL string so it survives as ONE double-quoted argument in
+   * PowerShell. A backtick is PowerShell's escape character: a literal
+   * backtick is a doubled backtick, a literal quote is `` `" ``, and a
+   * literal `$` is `` `$ `` (otherwise PowerShell expands it as a variable).
+   * Byte-identical to dolt-settle.mjs's escapeSqlForShell('win32', sql).
+   * @param {string} sql
+   * @returns {string}
+   */
+  escapeSqlArg(sql) {
+    const bq = String.fromCharCode(96);
+    return String(sql)
+      .split(bq).join(bq + bq)
+      .replace(/\$/g, `${bq}$`)
+      .replace(/"/g, `${bq}"`);
+  }
 }
 
 export default SeWindowsCommands;

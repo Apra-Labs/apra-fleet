@@ -23,6 +23,22 @@
 //                          "$HOME/.apra-fleet/bin/dolt").
 //   invoke                 dolt-settle.mjs's invokeBinary(): PowerShell needs
 //                          the call operator, POSIX must not have it.
+//   escapeSqlArg           dolt-settle.mjs's escapeSqlForShell(): quotes a SQL
+//                          string as one double-quoted shell argument. Added
+//                          (apra-fleet-7dir.20) as a narrow exception to the
+//                          "no argument quoting" exclusion below, because its
+//                          call site picked dialect off a bare `platform ===
+//                          'win32'` flag -- wrong for a Windows member whose
+//                          registered shell is gitbash, which needs bash
+//                          escaping, not PowerShell's. Unlike the excluded
+//                          GitHub-provider quoting, this call site is
+//                          genuinely shell-shaped (its two dialects differ
+//                          because bash and PowerShell disagree about `,
+//                          $ and \\ inside double quotes) and has exactly the
+//                          shape every other primitive in this module has:
+//                          one member-bound string, two dialects, resolved
+//                          through getSeCommands. General argument quoting
+//                          otherwise stays out for the reasons below.
 //
 // Deliberately NOT included, so this stays an interface rather than a
 // catalogue:
