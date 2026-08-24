@@ -2,6 +2,79 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- memory-contract/v1 skeleton complete: round-trip harness, CI drift guard, taxonomy, sign-off
+
+Sprint goal: turn the existing MCP knowledge-tool surface into the
+memory-contract/v1 skeleton (JSON Schemas, method contract, error taxonomy,
+round-trip validation against the live sqlite provider), as a single sprint /
+single PR. **Sprint verdict: PASS**, verified first-hand against the working
+tree rather than by closed-task count: all four contract layers (prose spec,
+JSON Schema 2020-12, MCP + OpenAPI bindings, conformance-suite hook) are
+present or explicitly stubbed with a named downstream owner; the
+provider-parameterized round-trip harness validates both request and
+response for every inventoried tool against the live handler and passes
+clean; the CI drift guard was proven live by a deliberate dry-run break
+(a hand-introduced diff was caught and reported, then the guard passed again
+once reverted); the degradation list (what JSON Schema structurally cannot
+verify) was handed off with named downstream ownership; and the pre-existing
+tool-surface-guard regression stayed green. Full generation is confirmed
+byte-identical on repeat runs with a clean working tree, and the full local
+test suite (unit plus workspace suites) passed with zero failures.
+
+What landed on top of the schema-generation work already described below:
+the error taxonomy with stable machine codes, and its projection into both
+the MCP-side error shape and an RFC 9457 Problem Details OpenAPI stub; a
+fixture corpus recorded from real, live tool calls (including ordered,
+stateful scenarios where a later call depends on an id minted by an earlier
+one); the round-trip validator that exercises every tool's real handler
+against its published request and response schema; a three-way roster guard
+that independently checks the real tool-registration surface, the
+generator's expected roster, and the schemas on disk agree, closing the gap
+where a generator's own hardcoded tool list can only notice a tool
+disappearing, never a new one going unrostered; response schemas widened to
+match the real multi-block response envelope (an optional onboarding
+preamble and nudge alongside the payload, each with optional annotations)
+while keeping the decoded payload shape itself just as strict as before; and
+a self-review sign-off recording the per-layer verdict and the explicit
+scope handed to each downstream owner. See
+`docs/memory-contract-v1-roundtrip-and-handoff.md` for the full design of
+the round-trip harness, the drift guard, the taxonomy-to-wire projection, and
+the handoff boundary, and `docs/memory-contract-v1-generator-design.md` /
+`docs/memory-contract-v1-inventory-notes.md` for the schema-generation and
+inventory-level notes referenced below.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $33.2868.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0813 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 45 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward as backlog (deliberately deferred, not blocking): the
+directive-activation absence scan currently runs only in the generator's
+strict check mode and is not wired into the plain write path; the two
+copies of the beads-export shrink guard (the standalone script and its
+inline copy invoked from the auto-sprint export step) have no equivalence
+test proving they stay in sync; several response-body fields that are typed
+as unconstrained JSON already have a known TypeScript shape available and
+could be tightened; the scratch dump writers used for ad-hoc beads listing
+still target the repo root instead of a temp directory; and the repo-path
+quoting in the auto-sprint export shrink guard command could be hardened
+further. A periodic sweep of this file's own carried-forward lists, to
+correct any item that has since landed, is itself tracked as backlog work.
+
+A full regression pass was also run this cycle as an informational,
+non-gating check and surfaced pre-existing, already-tracked breakage
+unrelated to this sprint's own changes: a set of integration-suite files
+failing for reasons predating this sprint, a single-file test-suite time
+budget exceeded by a number of files, one real-time watchdog test failing on
+replay-drift after the watchdog itself fired correctly, and a smoke-test run
+blocked before completion by a permission classifier declining to seed a
+credential during setup. None of these are new; each was already tracked
+from a prior pass and was reconfirmed rather than duplicated.
+
 ## [Unreleased] -- memory-contract/v1 schema generation, postprocess hardening, and test stabilization
 
 Sprint goal: turn the existing MCP knowledge-tool surface into the
@@ -67,6 +140,14 @@ same continuing sprint and are no longer open: the MemoryProvider method
 contract (`methods.json`, commit `c4161584`) and MCP binding definitions for
 every inventoried tool (`bindings/mcp/`, commit `fcccf19f`).
 
+**Correction (all four items above have since landed):** every item this
+paragraph lists as still open has since landed in a later cycle of this same
+continuing sprint -- see the newest entry at the top of this file for the
+error taxonomy and its wire/OpenAPI projection, the round-trip fixture
+corpus and its provider-parameterized validator, the live CI drift guard,
+and the completed self-review/sign-off checklist. None of the four remain
+open.
+
 ## [Unreleased] -- memory-contract/v1 inventory and test-suite stabilization
 
 Sprint goal: turn the existing MCP knowledge-tool surface into the
@@ -103,6 +184,9 @@ the error taxonomy with stable machine codes and its projection into MCP error
 payloads and the OpenAPI stub, the round-trip fixture corpus and its
 provider-parameterized validator (the sprint's stated exit criterion), the CI
 drift guard, and the final self-review/sign-off checklist.
+
+**Correction: all of the above have since landed** in a later cycle of this
+same continuing sprint -- see the newest entry at the top of this file.
 
 Deploy could not be completed during this sprint: repeated attempts were
 blocked either by the runbook's own active-sprint safety gate (deploying
