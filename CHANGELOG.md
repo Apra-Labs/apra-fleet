@@ -10,7 +10,9 @@ sites (previously present as source but unused), mirror the registered
 `shell` field into the MCP client's type definitions, align the
 Windows-Git-Bash candidate list between probe and command builder, and fix
 an unrelated, independently-discovered native-addon lock-detection gap in
-the pre-build lock-clearing script.
+the pre-build lock-clearing script. Final verdict is a PASS: all in-scope
+work items closed, with the two remaining follow-ups noted below carried
+forward as their own tracked items rather than blocking this sprint.
 
 What shipped:
 
