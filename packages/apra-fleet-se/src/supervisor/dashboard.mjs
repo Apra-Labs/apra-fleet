@@ -262,7 +262,14 @@ export function renderSprintSection(view) {
         '<div style="margin-top: 8px; font-size: 13px; color: #d4d4d8;">' +
         '<div><span style="color:#a1a1aa;">Branch:</span> ' + branch + '</div>' +
         '<div><span style="color:#a1a1aa;">Goal:</span> ' + goal + '</div>' +
-        '<div><span style="color:#a1a1aa;">Claimed scope:</span> ' + beadCount + ' bead(s) (roots: ' + scopeRoots + ')</div>' +
+        // apra-fleet-vk0a.3: explicitly labeled 'total in scope' -- distinct
+        // from the progress bar's OWN, differently-scoped 'Required: M/N'
+        // widget a few lines above (renderProgressBarHtml(), goal+
+        // decomposedParentIds-filtered). This raw count legitimately GROWS
+        // over a sprint's life (planners/reviewers add tasks under an
+        // already-claimed root); labeling it distinguishes that from a
+        // glitch and from the filtered 'Required' count staying flat.
+        '<div><span style="color:#a1a1aa;">Claimed scope:</span> ' + beadCount + ' bead(s) total in scope, unfiltered (roots: ' + scopeRoots + ')</div>' +
         // (apra-fleet-p2to.3.1) base-drift indicator -- see baseDriftIndicator()'s
         // doc comment for the "unknown" vs "0 drift" distinction.
         '<div>' + baseDriftIndicator(view.baseDrift ?? null, view.base ?? null) + '</div>' +
