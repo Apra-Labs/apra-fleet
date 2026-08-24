@@ -6064,6 +6064,11 @@ export async function resyncReacquiredMember(opts = {}) {
 async function runSprintCycle(context) {
     const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget, setPauseGuard } = context;
 
+    // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
+    // must result in zero fleet dispatches. This must happen early so the
+    // validated result is available to setup code that builds callbacks below.
+    const validated = validateArgs(args);
+
     // (apra-fleet-p2to.4.1) Clean-state pause guard: this is runner.js's OWN
     // pause-awareness -- the engine's cooperative pause primitive
     // (apra-fleet-p2to.1's requestPause()/setPauseGuard()) only ever engages
@@ -6396,10 +6401,6 @@ async function runSprintCycle(context) {
             ? createUnattendedAutoProvisioner({ callTool: args.callTool, log })
             : async () => {}
     );
-
-    // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
-    // must result in zero fleet dispatches.
-    const validated = validateArgs(args);
 
     // The per-dispatch time budget used for BOTH timeout_s and max_total_s:
     // silent-until-done CLIs make inactivity indistinguishable from total
@@ -11230,7 +11231,7 @@ export async function main(context) {
     //      through to finalizeAbort()'s existing throw-and-fall-back path.
     const abortOnAuthFailure = context.onAuthFailure ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName })
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validatedForLock.azdevopsPatSecretName })
             : undefined
     );
 
