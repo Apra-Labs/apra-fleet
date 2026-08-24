@@ -176,6 +176,40 @@ describe('runner.js buildCredentialReadCommand routes through getSeCommands (apr
     });
 });
 
+describe('wrapPowerShellScript: wraps a whole PowerShell script for invocation from a member-appropriate shell (apra-fleet-7dir.21)', () => {
+    test('windows with pwsh7/powershell5/no shell recorded returns the script UNCHANGED (no envelope)', () => {
+        const script = [
+            'New-Item -ItemType Directory -Force "$env:USERPROFILE\\.apra-fleet\\bin" | Out-Null',
+            'Invoke-WebRequest -Uri "https://example.invalid/dolt.zip" -OutFile "$env:TEMP\\dolt.zip"',
+        ].join('; ');
+        for (const shell of ['pwsh7', 'powershell5', '']) {
+            const cmds = getSeCommands({ os: 'windows', shell });
+            assert.equal(cmds.wrapPowerShellScript(script), script, `shell=${shell} must return the script byte-identical -- no envelope added`);
+        }
+    });
+
+    test('windows+gitbash returns a bash-invocable PowerShell invocation whose base64 payload decodes back to the exact original script', () => {
+        const script = 'Get-Process | Where-Object { $_.Path -eq "$env:USERPROFILE\\.apra-fleet\\bin\\dolt.exe" } | Stop-Process -Force -ErrorAction SilentlyContinue';
+        const cmds = getSeCommands({ os: 'windows', shell: 'gitbash' });
+        const wrapped = cmds.wrapPowerShellScript(script);
+
+        assert.match(wrapped, /^powershell(\.exe)? /i, 'must start with a PowerShell executable invocation');
+        assert.match(wrapped, /-EncodedCommand\s+([A-Za-z0-9+/=]+)$/i, 'must carry a base64 -EncodedCommand payload');
+        assert.ok(!/\$env:USERPROFILE|Get-Process|Stop-Process/.test(wrapped), 'no raw PowerShell script text may survive unescaped into the bash-invoked string -- it must be entirely inside the opaque base64 blob');
+
+        const b64 = wrapped.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)$/i)[1];
+        const decoded = Buffer.from(b64, 'base64').toString('utf16le');
+        assert.equal(decoded, script, 'decoding the base64 payload as UTF-16LE must reproduce the original script exactly');
+    });
+
+    test('linux and macos throw rather than returning the script -- a POSIX member has no PowerShell to hand it to', () => {
+        for (const os of ['linux', 'darwin']) {
+            const cmds = getSeCommands({ os, shell: '' });
+            assert.throws(() => cmds.wrapPowerShellScript('Write-Output "hi"'), /PowerShell/i, `os=${os} must throw a clear error, not silently return the script`);
+        }
+    });
+});
+
 describe('the whole interface is exercisable with neither gitbash nor PowerShell installed on the host (apra-fleet-7dir.3.4)', () => {
     test('no se-os-commands implementation spawns a process or shells out to build a command string', () => {
         // Every primitive below is pure string construction; none of them
