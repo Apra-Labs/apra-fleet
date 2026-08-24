@@ -1141,6 +1141,36 @@ describe('beadsExtension.js: embedded browser-side collapse/expand click handlin
         assert.doesNotThrow(() => listeners['click'][0]({ target: { closest: () => null } }));
         assert.strictEqual(containers['extension-beads'].innerHTML, before);
     });
+
+    // apra-fleet-vk0a.2: DOM-level assertion that the progress bar is pinned
+    // into the FIXED panel-header hook (#panel-header-beads-extra), a
+    // sibling of the scrollable #extension-beads container -- NOT rendered
+    // inline at the top of #extension-beads, where it would scroll out of
+    // view alongside a long task list.
+    test('the progress widget mounts into panel-header-beads-extra, not into the scrollable extension-beads container', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+
+        listeners['workflow:state:beads'][0]({
+            detail: {
+                sprintTasks: [
+                    { id: '1', title: 'one', status: 'closed' },
+                    { id: '2', title: 'two', status: 'open' },
+                ],
+                backlogTasks: []
+            }
+        });
+
+        const headerExtra = containers['panel-header-beads-extra'];
+        const beadsContainer = containers['extension-beads'];
+
+        assert.ok(headerExtra, 'panel-header-beads-extra hook must be looked up');
+        assert.ok(headerExtra.innerHTML.includes('sprint-progress'), 'the progress widget must render into panel-header-beads-extra');
+        assert.ok(headerExtra.innerHTML.includes('Required: 1/2'), 'panel-header-beads-extra must carry the closed/required text');
+
+        assert.ok(!beadsContainer.innerHTML.includes('sprint-progress'), 'the progress widget must NOT be duplicated inside the scrollable extension-beads container');
+        assert.ok(!beadsContainer.innerHTML.includes('Required:'), 'extension-beads must not carry the closed/required text once it is pinned in the header');
+    });
 });
 
 describe('beadsExtension.js: embedded browser script is syntactically valid and self-contained', () => {
