@@ -2,6 +2,55 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Supervisor dashboard: live-refresh parity with the per-run viewer
+
+Sprint goal: bring the multi-sprint supervisor's own dashboard up to the same
+live-refresh standard every individual sprint's per-run viewer already had --
+adopt that existing architecture rather than invent a second one.
+
+What shipped:
+
+- **Lean `GET /state` JSON endpoint + `GET /events` SSE stream**: the
+  supervisor dashboard now serves a lightweight JSON projection of the same
+  Sprint Stack view model its full HTML page renders, plus a
+  Server-Sent-Events stream that signals "state may have changed, go poll"
+  on a fixed cadence (the supervisor has no single internal event bus the
+  way one workflow run does, since its view model changes via many disjoint
+  HTTP mutation routes) plus once immediately on connect.
+- **Client-side live-refresh loop**: a debounced single poll pipeline fed by
+  both the SSE stream and a heartbeat-interval fallback, re-rendering Sprint
+  Stack rows in place (added/updated/removed by sprint id) using the exact
+  same row-rendering function the server uses for the initial page load --
+  no full-page reload anywhere in the refresh path.
+- **Tab-activation refresh**: switching to the Sprints or Backlog tab
+  triggers a fresh fetch through that tab's own existing fetch/poll
+  plumbing whenever its last fetch is stale, independent of the other tab.
+- **Per-node subprocess spawn removed from every dashboard render**: sprint
+  scope expansion (used for both the raw claimed-bead count and the
+  goal-filtered progress bar) now walks an in-memory index built off a
+  single bulk beads fetch per render, instead of issuing one subprocess call
+  per discovered graph node -- eliminating the dominant cost behind a
+  previously near-unusable page-load time as the number of concurrently
+  running sprints (and the size of their subtrees) grows.
+- **Progress-widget labeling**: the two per-sprint counters that can
+  legitimately disagree (raw claimed-scope bead count vs. the goal-filtered
+  "Required" progress-bar count) are now both explicitly labeled, so a
+  growing raw count no longer reads as a bug.
+
+Carried forward (filed as open, low-priority backlog items; not blocking):
+narrower unit coverage for the base-drift indicator's null/error paths, and
+a documentation/branch-hygiene follow-up on keeping a long-running sprint
+branch's review diffs scopeable against a moving base.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $14.2427.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.5702 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 35 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- fleet-supervisor Backlog: sort by creation timestamp
 
 Sprint goal: give the fleet-supervisor dashboard's Backlog view a way to

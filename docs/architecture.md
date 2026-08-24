@@ -295,6 +295,14 @@ for the full design and
 [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](../packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md)
 section 4.7 for the engine-level contract.
 
+**The multi-sprint supervisor dashboard's live-refresh** deliberately reuses
+the per-run viewer's own incremental-refresh architecture (a lean JSON state
+endpoint plus a change-signal stream driving a debounced client poll) instead
+of a second, divergent mechanism -- see
+[docs/features/supervisor-dashboard-live-refresh.md](features/supervisor-dashboard-live-refresh.md)
+for the full design, including the in-memory scope-expansion fix that removed
+a per-graph-node subprocess spawn from every dashboard render.
+
 **Dev-mode manifest bundling is a transitive-dependency, not a top-level-only,
 contract.** The dev-mode install path bundles `@apralabs/apra-fleet-client`'s
 own package tree so the workflow runtime can load it without a real npm

@@ -434,6 +434,7 @@ third-party verticals.
 | Shared hub/dashboard API contract package | [packages/fleet-api-contract/README.md](packages/fleet-api-contract/README.md) |
 | Workflow engine internals (`agent()`/`parallel()`/`pipeline()`, journal, budget, pause/resume) | [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md) |
 | Cooperative workflow pause/resume (engine, viewer, supervisor, fleet-sprint) | [docs/features/workflow-pause-resume.md](docs/features/workflow-pause-resume.md) |
+| Supervisor dashboard live-refresh (`/state` + `/events` SSE, tab-activation refresh, in-memory scope expansion) | [docs/features/supervisor-dashboard-live-refresh.md](docs/features/supervisor-dashboard-live-refresh.md) |
 | Writing and running workflow scripts | [packages/apra-fleet-workflow/docs/workflow-guide.md](packages/apra-fleet-workflow/docs/workflow-guide.md) |
 | Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
 | Workflow launcher fleet-server resolution order (HTTP singleton vs. stdio) | [docs/adr-workflow-server-resolution.md](docs/adr-workflow-server-resolution.md) |
@@ -844,6 +845,14 @@ resyncing git/beads state across a pause). See
 for the full design and
 [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](../packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md)
 section 4.7 for the engine-level contract.
+
+**The multi-sprint supervisor dashboard's live-refresh** deliberately reuses
+the per-run viewer's own incremental-refresh architecture (a lean JSON state
+endpoint plus a change-signal stream driving a debounced client poll) instead
+of a second, divergent mechanism -- see
+[docs/features/supervisor-dashboard-live-refresh.md](features/supervisor-dashboard-live-refresh.md)
+for the full design, including the in-memory scope-expansion fix that removed
+a per-graph-node subprocess spawn from every dashboard render.
 
 **Dev-mode manifest bundling is a transitive-dependency, not a top-level-only,
 contract.** The dev-mode install path bundles `@apralabs/apra-fleet-client`'s

@@ -474,7 +474,7 @@ describe('backlog -- persistent item counts (apra-fleet-eft.90)', () => {
         assert.ok(html.includes('0 bead(s)'));
     });
 
-    test('renderBeadsHtml (fleet-sprint viewer tree) shows M/N at the top -- N = every rendered bead (Sprint + Backlog, including children), M = how many are not closed', () => {
+    test('renderBeadsHtml (fleet-sprint viewer tree) shows an explicitly labeled M/N at the top -- N = every rendered bead (Sprint + Backlog, including children), M = how many are not closed', () => {
         const sprintTasks = [
             { id: 'EPIC', title: '[feature] epic', status: 'in_progress', dependencies: [] },
             { id: 'EPIC.1', parent: 'EPIC', title: '[impl] child one', status: 'closed', dependencies: [] },
@@ -486,20 +486,23 @@ describe('backlog -- persistent item counts (apra-fleet-eft.90)', () => {
         const html = renderBeadsHtml(sprintTasks, backlogTasks);
         // 4 total items (EPIC, EPIC.1, EPIC.2, BL1); 3 are not closed (EPIC,
         // EPIC.2, BL1) -- EPIC.1 is the only closed one.
-        assert.ok(html.includes('3/4'), `expected M/N to be 3/4, got: ${html.slice(0, 200)}`);
+        // apra-fleet-vk0a.1: explicitly labeled 'All tasks (incl. backlog)' --
+        // distinct from renderProgressBarHtml()'s OWN, differently-scoped
+        // 'Required: M/N' widget that sits directly above it.
+        assert.ok(html.includes('All tasks (incl. backlog): 3 open / 4 total'), `expected the labeled count 'All tasks (incl. backlog): 3 open / 4 total', got: ${html.slice(0, 200)}`);
     });
 
-    test('renderBeadsHtml with both lists empty renders "0/0", never throwing', () => {
+    test('renderBeadsHtml with both lists empty renders "All tasks (incl. backlog): 0 open / 0 total", never throwing', () => {
         assert.doesNotThrow(() => renderBeadsHtml([], []));
         const html = renderBeadsHtml([], []);
-        assert.ok(html.includes('0/0'));
+        assert.ok(html.includes('All tasks (incl. backlog): 0 open / 0 total'));
     });
 
     test('renderBeadsHtml count is removed/broken regression guard: a bead-count element must exist and be non-empty', () => {
         const html = renderBeadsHtml([{ id: 1, title: 'a', status: 'open', dependencies: [] }], []);
         const match = /class="beads-count"[^>]*>([^<]*)</.exec(html);
         assert.ok(match, 'a "beads-count" element must be present in renderBeadsHtml output');
-        assert.ok(/^\d+\/\d+$/.test(match[1].trim()), `expected an 'M/N' count, got: ${match[1]}`);
+        assert.ok(/^All tasks \(incl\. backlog\): \d+ open \/ \d+ total$/.test(match[1].trim()), `expected a labeled 'All tasks (incl. backlog): M open / N total' count, got: ${match[1]}`);
     });
 });
 

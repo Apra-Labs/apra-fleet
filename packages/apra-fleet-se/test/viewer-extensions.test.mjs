@@ -1141,6 +1141,76 @@ describe('beadsExtension.js: embedded browser-side collapse/expand click handlin
         assert.doesNotThrow(() => listeners['click'][0]({ target: { closest: () => null } }));
         assert.strictEqual(containers['extension-beads'].innerHTML, before);
     });
+
+    // apra-fleet-vk0a.2: DOM-level assertion that the progress bar is pinned
+    // into the FIXED panel-header hook (#panel-header-beads-extra), a
+    // sibling of the scrollable #extension-beads container -- NOT rendered
+    // inline at the top of #extension-beads, where it would scroll out of
+    // view alongside a long task list.
+    test('the progress widget mounts into panel-header-beads-extra, not into the scrollable extension-beads container', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+
+        listeners['workflow:state:beads'][0]({
+            detail: {
+                sprintTasks: [
+                    { id: '1', title: 'one', status: 'closed' },
+                    { id: '2', title: 'two', status: 'open' },
+                ],
+                backlogTasks: []
+            }
+        });
+
+        const headerExtra = containers['panel-header-beads-extra'];
+        const beadsContainer = containers['extension-beads'];
+
+        assert.ok(headerExtra, 'panel-header-beads-extra hook must be looked up');
+        assert.ok(headerExtra.innerHTML.includes('sprint-progress'), 'the progress widget must render into panel-header-beads-extra');
+        assert.ok(headerExtra.innerHTML.includes('Required: 1/2'), 'panel-header-beads-extra must carry the closed/required text');
+
+        assert.ok(!beadsContainer.innerHTML.includes('sprint-progress'), 'the progress widget must NOT be duplicated inside the scrollable extension-beads container');
+        assert.ok(!beadsContainer.innerHTML.includes('Required:'), 'extension-beads must not carry the closed/required text once it is pinned in the header');
+    });
+
+    // apra-fleet-vk0a.4: the fixed header's 'Required: M/N' progress bar
+    // (goal+decomposedParentIds-filtered, sprintTasks only) and the
+    // scrollable tree's OWN 'All tasks (incl. backlog)' item count
+    // (unfiltered, sprintTasks + backlogTasks combined) are two different
+    // definitions of "how many beads" rendered side by side on the same
+    // Tasks tab. Both must carry their own explicit label -- reconciled as
+    // two intentionally different, both-useful numbers rather than
+    // disagreeing duplicates of the same-looking 'M/N' shape.
+    test('apra-fleet-vk0a.4: the progress bar and the beads-tree item count each carry their own distinct label', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+
+        listeners['workflow:state:beads'][0]({
+            detail: {
+                sprintTasks: [
+                    { id: '1', title: 'one', status: 'closed' },
+                    { id: '2', title: 'two', status: 'open' },
+                ],
+                backlogTasks: [
+                    { id: '3', title: 'three', status: 'open' },
+                ],
+            }
+        });
+
+        const headerExtra = containers['panel-header-beads-extra'];
+        const beadsContainer = containers['extension-beads'];
+
+        // Progress bar: goal+decomposedParentIds-filtered closed/required
+        // count over sprintTasks only.
+        assert.ok(headerExtra.innerHTML.includes('Required: 1/2'), `expected the labeled progress-bar text in: ${headerExtra.innerHTML}`);
+        // Beads-tree count: unfiltered open/total across BOTH sprint AND
+        // backlog -- a DIFFERENT count (2 open of 3 total here, vs. the
+        // progress bar's 1/2), with its own explicit label distinguishing
+        // it from the progress bar's number.
+        assert.ok(
+            beadsContainer.innerHTML.includes('All tasks (incl. backlog): 2 open / 3 total'),
+            `expected the labeled beads-tree count text in: ${beadsContainer.innerHTML}`,
+        );
+    });
 });
 
 describe('beadsExtension.js: embedded browser script is syntactically valid and self-contained', () => {
