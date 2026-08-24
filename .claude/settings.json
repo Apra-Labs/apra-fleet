@@ -3,6 +3,13 @@
     "commit": "",
     "pr": ""
   },
+  "permissions": {
+    "allow": [
+      "Edit", "Write",
+      "Edit(skills/**)", "Write(skills/**)",
+      "Edit(packages/apra-fleet-se/fleet-sprint/**)", "Write(packages/apra-fleet-se/fleet-sprint/**)"
+    ]
+  },
   "hooks": {
     "PreCompact": [
       {

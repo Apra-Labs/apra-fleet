@@ -89,6 +89,12 @@ comments in each for why).
 npm run test:slow --workspace=@apralabs/apra-fleet-se
 ```
 
+To PROVE a before/after timing claim against a pre-fix commit (not just
+assert one from memory), see `packages/apra-fleet-se/test/INTEG-SUITE.md`'s
+"Reproducing on a pre-fix commit" section -- a `git worktree` at the old SHA
+does not work here (no workspace `node_modules` of its own), the documented
+recipe is a scratch clone plus its own `npm install`.
+
 ## Setup
 
 First of the three sandbox-lifecycle sections for the smoke test (part 2

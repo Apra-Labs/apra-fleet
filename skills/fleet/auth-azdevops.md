@@ -9,14 +9,35 @@ Personal Access Tokens (PATs) with configurable scopes and expiration. Auth: emp
 3. Set descriptive name (e.g., "fleet-{name}")
 4. Select required scopes (see below)
 5. Set expiration (recommend: 90 days)
-6. Copy token — shown only once
+6. Copy token - shown only once
 7. Provide token and org URL when prompted
+
+### Expiry Capture (Optional)
+
+When first registering a PAT, you can optionally capture its expiration date by responding to the out-of-band prompt with the expiry timestamp. The fleet stores this expiry date and uses it for day-scale preflight warnings: if a credential is within 10 minutes of expiry, the fleet will request a fresh provisioning before the sprint dispatch rather than failing mid-sprint when the credential becomes invalid.
+
+This step is optional; PATs function normally even without expiry tracking. However, recording expiry dates helps prevent surprise authentication failures and reduces retry cycles.
 
 ## Deploy
 
 ```
 provision_vcs_auth(member_id, provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: '...')
 ```
+
+## Secret-Name Convention
+
+The Azure DevOps PAT is stored in the fleet's credential store under a configurable name. **Default:** `azdevops_pat`
+
+The credential is entered via the out-of-band prompt during `provision_vcs_auth` and is stored as a secure placeholder. When used in `execute_command` calls, the fleet resolves the placeholder on the server side - the plaintext token never appears in logs, prompts, or LLM transcripts.
+
+**Store or reference the default credential:**
+
+```
+credential_store_set  name=azdevops_pat
+execute_command  command="curl -sf -u :{{secure.azdevops_pat}} 'https://dev.azure.com/{org}/_apis/projects?api-version=7.1'"
+```
+
+**Per-sprint override:** To use a different credential name for a specific sprint (for example, when working with a different Azure DevOps organization or test repo), the fleet supports a per-sprint override. Contact your fleet administrator to configure this option.
 
 ## Scopes
 
@@ -46,9 +67,21 @@ git ls-remote https://dev.azure.com/{org}/{project}/_git/{repo} HEAD
 | TF400813: Resource not available | Verify org URL matches `https://dev.azure.com/{org}` |
 | Clone prompts for password | Re-run `provision_vcs_auth` |
 
+## PAT Lifetime and Expiry
+
+A fleet provisioning Azure DevOps credentials **cannot self-extend or auto-renew a PAT**. The Azure DevOps PAT lifecycle management API requires an Entra (Azure AD) OAuth token with admin consent, which the fleet does not hold. This is a fundamental design constraint: the fleet stores only the PAT itself, never the credentials needed to mint a fresh PAT or extend an existing one.
+
+**Implications:**
+
+- PATs must be renewed manually before expiry by re-running `provision_vcs_auth` and providing a fresh token.
+- The optional expiry capture (see Setup section above) enables day-scale preflight warnings so the sprint can request a fresh provisioning before the credential becomes invalid.
+- If a PAT expires mid-sprint, the sprint will fail with auth errors until `provision_vcs_auth` is re-run with a valid token.
+
+To avoid disruption, set a calendar reminder to renew PATs well before their expiry date, or use the optional expiry-capture feature to let the fleet warn you in advance.
+
 ## Storing tokens for reuse
 
-After provisioning VCS auth, you can store the Azure DevOps PAT in the credential store for direct use in `execute_command` — for example, calling the Azure DevOps REST API or authenticating git operations manually.
+After provisioning VCS auth, you can store the Azure DevOps PAT in the credential store (see Secret-Name Convention section above) for direct use in `execute_command` - for example, calling the Azure DevOps REST API or authenticating git operations manually.
 
 **Store an Azure DevOps PAT for reuse:**
 
@@ -63,10 +96,11 @@ execute_command  command="curl -sf -u :{{secure.azdevops_pat}} 'https://dev.azur
 execute_command  command="git remote set-url origin https://token:{{secure.azdevops_pat}}@dev.azure.com/{org}/{project}/_git/{repo}"
 ```
 
-The token is resolved server-side and redacted in output (`[REDACTED:azdevops_pat]`) — it never appears in the LLM conversation or command logs.
+The token is resolved server-side and redacted in output (`[REDACTED:azdevops_pat]`) - it never appears in the LLM conversation or command logs.
 
 ## Notes
 
 - PAT expiration: default 30 days, max 1 year
-- Azure DevOps does not support app-based tokens — PATs are the standard
+- Azure DevOps does not support app-based tokens - PATs are the standard
 - Org URL must be base URL without trailing path
+- To learn what scopes are required for your role, see the Scopes table above

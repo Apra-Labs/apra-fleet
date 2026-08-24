@@ -220,6 +220,11 @@
  * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)
  * @property {string} [pat] - Azure DevOps personal access token. Supports {{secure.NAME}}
  *   token -- resolved from the credential store server-side before use.
+ * @property {string} [pat_expires_at] - ISO 8601 date/time the Azure DevOps PAT expires, as
+ *   chosen when creating the token. Propagated to the member registry so provisioning can
+ *   warn when the PAT is nearing expiry. Must be parseable by Date.parse -- the server
+ *   REJECTS an unparseable value rather than storing it, because a NaN expiry silences the
+ *   warning and makes the credential-cleanup timer fall back to its 55-minute default.
  */
 
 /**

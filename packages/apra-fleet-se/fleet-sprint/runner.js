@@ -4,6 +4,7 @@ import { AgentOutputError, AgentDispatchError, FleetTransportError, CommandError
 import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
+    validateCredentialStoreName,
 } from './contracts.mjs';
 import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, MemberReservationResumeError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
@@ -32,7 +33,7 @@ import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResol
 // hard-aborting the run at its readiness gate.
 import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict } from './vcs-module.mjs';
+import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
@@ -356,6 +357,11 @@ const KNOWN_ARG_KEYS = new Set([
     // `import()`, never across a subprocess boundary). Absent for direct
     // runSprintCycle()/main() test calls, where the guard is a no-op.
     'callTool',
+    // Per-sprint override for the Azure DevOps PAT secret name. When provided, this
+    // credential store entry name is used instead of the documented default
+    // (azdevops_pat). No CLI flag sets this today; only test/programmatic callers
+    // pass it.
+    'azdevops_pat_secret_name',
 ]);
 
 /**
@@ -2232,6 +2238,100 @@ export function parseOwnerRepoFromRemoteUrl(url) {
     return null;
 }
 
+/**
+ * Resolve the `repos` scope for a member's git remote (apra-fleet-5co8.1.2).
+ *
+ * The two-line-generic parse above cannot express every provider's repository
+ * identity: Azure DevOps' is org/project/repo behind a '_git' marker, which
+ * the owner/repo regexes score as "unrecognized" (null) and therefore silently
+ * drop the repos scope. So the URL is first offered to whichever registered
+ * provider CLAIMS its host, via VCSModule.parseProviderRepoRef() -> that
+ * provider's own parseRepoRef hook, and only falls back to the generic parse
+ * when no provider claims the host or the claiming one has no hook. Every
+ * provider-specific rule (legal URL shapes, coordinate names, remedy text)
+ * stays in the provider file: this function -- and runner.js as a whole --
+ * never names or branches on a provider.
+ *
+ * A host CLAIMED by a provider whose hook rejects the URL is a different
+ * failure from an unrecognized one: the remote is malformed, and proceeding
+ * with no scope would provision credentials against the wrong (or no) repo.
+ * That case returns a typed `error` naming the shape the provider expects, for
+ * the caller to raise as a PREFLIGHT failure -- not a stderr classification.
+ *
+ * `ref` carries the provider's full coordinate object when one was produced
+ * (null otherwise), so a caller can hand it back to that same provider's other
+ * hooks -- e.g. buildProvisionArgs, which derives an org URL from it
+ * (apra-fleet-5co8.2.1) -- without re-parsing or interpreting it here.
+ *
+ * @param {string|null|undefined} url
+ * @returns {{ repo: string|null, ref: object|null, error: string|null }}
+ */
+export function parseRepoScopeFromRemoteUrl(url) {
+    const text = String(url == null ? '' : url).trim();
+    if (!text) return { repo: null, ref: null, error: null };
+
+    const providerRef = parseProviderRepoRef(text);
+    if (providerRef && providerRef.error) return { repo: null, ref: null, error: providerRef.error };
+    if (providerRef && providerRef.canonical) return { repo: providerRef.canonical, ref: providerRef.ref, error: null };
+
+    return { repo: parseOwnerRepoFromRemoteUrl(text), ref: null, error: null };
+}
+
+/**
+ * Read the credential-store entry NAMES (never values) currently registered on
+ * the hub, for a provider hook that needs to fail fast when the secret it
+ * intends to reference as a {{secure.NAME}} placeholder does not exist
+ * (apra-fleet-5co8.2.1).
+ *
+ * Returns null -- not an empty list -- when the store cannot be read or its
+ * response cannot be parsed, so a hook can tell "the store definitely lacks
+ * this entry" apart from "unknown" and skip the check rather than emit a
+ * false, sprint-stopping ERROR. A genuinely missing secret still fails loudly
+ * hub-side when placeholder resolution runs.
+ *
+ * @param {object} fleetApi
+ * @returns {Promise<string[]|null>}
+ */
+async function listCredentialStoreNames(fleetApi) {
+    if (!fleetApi || typeof fleetApi.credentialStoreList !== 'function') return null;
+    try {
+        const parsed = JSON.parse(selfHealResultText(await fleetApi.credentialStoreList()));
+        if (!Array.isArray(parsed)) return null;
+        return parsed
+            .map((entry) => (entry && typeof entry.name === 'string' ? entry.name : null))
+            .filter((name) => name !== null);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Build the provision_vcs_auth arguments for a member, dispatched through the
+ * resolved provider's OPTIONAL buildProvisionArgs hook (apra-fleet-5co8.2.1).
+ *
+ * A provider with no hook gets `base` verbatim -- the GitHub-App-shaped
+ * `git_access`/`repos` arguments this function has always sent -- so nothing
+ * changes for GitHub or any other existing provider. A provider WITH a hook
+ * owns its own argument shape entirely, including which credential-store entry
+ * it references and what remedy text a missing one prints. No provider name,
+ * no auth-mode knowledge and no raw credential value appears here.
+ *
+ * @param {{ provider: string, base: object, repoRef: object|null, fleetApi: object }} ctx
+ * @returns {Promise<object>} the arguments to send
+ */
+async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi, secretName }) {
+    const impl = getVcsProvider(provider);
+    if (!impl || typeof impl.buildProvisionArgs !== 'function') return base;
+
+    const availableSecrets = await listCredentialStoreNames(fleetApi);
+    const built = impl.buildProvisionArgs({ base, repoRef, availableSecrets, secretName });
+    if (built && typeof built.error === 'string') throw new Error(built.error);
+    if (!built || !built.args || typeof built.args !== 'object') {
+        throw new Error(`ERROR: VCS provider '${provider}' returned no provision arguments for member '${base.member_name}'.`);
+    }
+    return built.args;
+}
+
 // Shared MCP tool-result-to-text extractor for the self-heal callbacks below.
 // The provision_* tools do not throw on failure: they return plain
 // human-readable text with a leading status emoji (check mark = success,
@@ -2266,21 +2366,47 @@ function selfHealResultText(result) {
 // give every member standing pull_requests:write for the whole sprint.
 // @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string }} opts
 // @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
-async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push' }) {
+async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName, remoteUrlOverride }) {
     let repos;
     let derivedRepo = null;
-    try {
-        const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
-        const url = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
-        const repo = parseOwnerRepoFromRemoteUrl(url);
-        if (repo) {
-            repos = [repo];
-            derivedRepo = repo;
-        } else {
-            log(`${logPrefix}: could not derive an owner/repo from member '${member}' git remote (raw: '${url}'); calling provision_vcs_auth without an explicit repos scope.`);
+    let derivedRef = null;
+    // Reading the remote is best-effort (a failure here just means no explicit
+    // repos scope), but PARSING it is not: a malformed remote on a host some
+    // provider claims is a preflight ERROR that must escape this function
+    // rather than be swallowed by the read's catch -- hence the parse sits
+    // outside the try. See parseRepoScopeFromRemoteUrl (apra-fleet-5co8.1.2).
+    let remoteUrl = '';
+    let remoteReadFailed = false;
+    // apra-fleet-8zr3-adjacent: a caller that already resolved the sprint's
+    // origin remote via a real git-capable member (e.g. Publish PR's
+    // publishGitMember) passes it here instead of making THIS function shell
+    // out its own 'git remote get-url origin' to `member` -- which matters
+    // when `member` is orchestratorMember and may be a git-less/shared member
+    // with no checkout to read a remote from at all. Skips the read entirely,
+    // never the parse below.
+    if (remoteUrlOverride) {
+        remoteUrl = String(remoteUrlOverride).trim();
+    } else {
+        try {
+            const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
+            remoteUrl = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
+        } catch (remoteErr) {
+            remoteReadFailed = true;
+            log(`${logPrefix}: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
         }
-    } catch (remoteErr) {
-        log(`${logPrefix}: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
+    }
+    if (!remoteReadFailed) {
+        const scope = parseRepoScopeFromRemoteUrl(remoteUrl);
+        if (scope.error) {
+            throw new Error(`${logPrefix}: cannot provision VCS auth for member '${member}': ${scope.error}`);
+        }
+        derivedRef = scope.ref;
+        if (scope.repo) {
+            repos = [scope.repo];
+            derivedRepo = scope.repo;
+        } else {
+            log(`${logPrefix}: could not derive an owner/repo from member '${member}' git remote (raw: '${remoteUrl}'); calling provision_vcs_auth without an explicit repos scope.`);
+        }
     }
 
     // apra-fleet-647.1.2.1: provider and auth-mode are resolved from the
@@ -2292,13 +2418,24 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // `<provider>_mode` when non-null, matching provision_vcs_auth's own
     // `github_mode` field name for the one provider that has one today.
     const { provider, authMode } = await resolveProvider(member, { fleetApi });
-    const provisionRes = await fleetApi.provisionVcsAuth({
-        member_name: member,
+    // apra-fleet-5co8.2.1: the argument shape itself is now provider-owned.
+    // What follows is the DEFAULT (GitHub-App) shape; a provider that declares
+    // a buildProvisionArgs hook replaces it wholesale -- see
+    // buildProvisionArgsForProvider above.
+    const provisionArgs = await buildProvisionArgsForProvider({
         provider,
-        ...(authMode ? { [`${provider}_mode`]: authMode } : {}),
-        git_access: gitAccess,
-        ...(repos ? { repos } : {}),
+        base: {
+            member_name: member,
+            provider,
+            ...(authMode ? { [`${provider}_mode`]: authMode } : {}),
+            git_access: gitAccess,
+            ...(repos ? { repos } : {}),
+        },
+        repoRef: derivedRef,
+        fleetApi,
+        secretName: azdevopsPatSecretName,
     });
+    const provisionRes = await fleetApi.provisionVcsAuth(provisionArgs);
     const provisionText = selfHealResultText(provisionRes);
     // provision_vcs_auth NEVER throws on failure -- it returns a string
     // starting with the failure emoji. A failed provision must never be
@@ -2326,8 +2463,8 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
 // learn the repo VCSModule needs to build the PR-creation command.
 // @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string }} opts
 // @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
-async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix }) {
-    return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr' });
+async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, remoteUrlOverride }) {
+    return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr', remoteUrlOverride });
 }
 
 // Default credential label provision_vcs_auth deploys under when no explicit
@@ -2611,8 +2748,8 @@ function isPrAuthFailure(status, errorText) {
 // token is never logged, only `built.logSafeCommand`.
 // @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string }} opts
 // @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean }>}
-async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix }) {
-    let { repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix });
+async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride }) {
+    let { repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
     if (!repo) {
         throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
     }
@@ -2660,7 +2797,7 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
             authHealAttempted = true;
             log(`${logPrefix}: PR creation returned an auth-classified failure (HTTP ${status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${built.logSafeCommand}): ${errorText}`);
             try {
-                const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix });
+                const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
                 if (reprov.repo) repo = reprov.repo;
                 token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
             } catch (healErr) {
@@ -2873,13 +3010,13 @@ export function createDeployPermissionsProvisioner(opts = {}) {
  * @returns {(info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>}
  */
 export function createVcsAuthSelfHealCallback(opts = {}) {
-    const { callTool, command, log = () => {} } = opts;
+    const { callTool, command, log = () => {}, azdevopsPatSecretName } = opts;
     const fleetApi = new ApraFleet({ callTool });
 
     return async function onAuthFailure({ member, label, error }) {
         log(`[Sync] self-heal: auth failure detected for member '${member}' (${label}); calling provision_vcs_auth to re-provision credentials: ${error}`);
 
-        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal' });
+        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName });
 
         log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
     };
@@ -2918,7 +3055,7 @@ const VCS_AUTH_EXPIRY_PREFLIGHT_MS = 10 * 60 * 1000; // 10 minutes
  * @returns {(member: string) => Promise<void>}
  */
 export function createVcsAuthPreflightCallback(opts = {}) {
-    const { callTool, command, log = () => {}, now = () => Date.now() } = opts;
+    const { callTool, command, log = () => {}, now = () => Date.now(), azdevopsPatSecretName } = opts;
     const fleetApi = new ApraFleet({ callTool });
     /** @type {Map<string, Date|null>} member -> last-known expiresAt (null = no expiry tracked, e.g. PAT mode). */
     const knownGoodUntil = new Map();
@@ -2935,7 +3072,7 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
         log(`[Sync] preflight: ensuring member '${member}' has a fresh VCS credential before dispatch; calling provision_vcs_auth.`);
         try {
-            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight' });
+            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName });
             knownGoodUntil.set(member, expiresAt);
             log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}'${expiresAt ? ` (expires ${expiresAt.toISOString()})` : ''}.`);
         } catch (err) {
@@ -3452,6 +3589,15 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid worklist_effort_budget "${args.worklist_effort_budget}": must be a positive finite number (effort points).`);
     }
 
+    // --- azdevops_pat_secret_name (optional) --------------------------------
+    // Override for the default Azure DevOps PAT secret name. When provided, this
+    // credential store entry name is used instead of the documented default
+    // (azdevops_pat). Validated as a credential-store name at contract-validation
+    // time, not mid-sprint, so invalid values fail fast and clearly.
+    if (args.azdevops_pat_secret_name !== undefined) {
+        validateCredentialStoreName(args.azdevops_pat_secret_name, 'azdevops_pat_secret_name');
+    }
+
     return {
         targetIssues,
         members: args.members,
@@ -3465,6 +3611,7 @@ export function validateArgs(args) {
         serviceUrl: args.serviceUrl,
         assignee: args.assignee,
         dispatchTimeoutS,
+        azdevopsPatSecretName: args.azdevops_pat_secret_name,
         doerWorklistMode,
         resumeModelSwitch,
         worklistEffortBudget: args.worklist_effort_budget,
@@ -5715,6 +5862,11 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         body: prBody,
         log,
         logPrefix: '[Publish Abort PR]',
+        // Already resolved just above (the origin-remote PR-capability gate)
+        // via a real git-capable member -- skip re-deriving it a second time
+        // by shelling out to `member`, which may be orchestratorMember and
+        // have no git checkout of its own to read a remote from.
+        remoteUrlOverride: originUrl,
     });
 
     if (!prResult.ok) {
@@ -6021,6 +6173,11 @@ export async function resyncReacquiredMember(opts = {}) {
 async function runSprintCycle(context) {
     const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget, setPauseGuard } = context;
 
+    // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
+    // must result in zero fleet dispatches. This must happen early so the
+    // validated result is available to setup code that builds callbacks below.
+    const validated = validateArgs(args);
+
     // (apra-fleet-p2to.4.1) Clean-state pause guard: this is runner.js's OWN
     // pause-awareness -- the engine's cooperative pause primitive
     // (apra-fleet-p2to.1's requestPause()/setPauseGuard()) only ever engages
@@ -6269,7 +6426,7 @@ async function runSprintCycle(context) {
     //      'function'`.
     const onAuthFailure = context.onAuthFailure ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log })
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName })
             : undefined
     );
 
@@ -6321,7 +6478,7 @@ async function runSprintCycle(context) {
     //      auth-recovery path.
     const ensureVcsAuthFresh = context.ensureVcsAuthFresh ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthPreflightCallback({ callTool: args.callTool, command, log })
+            ? createVcsAuthPreflightCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName })
             : async () => {}
     );
 
@@ -6353,10 +6510,6 @@ async function runSprintCycle(context) {
             ? createUnattendedAutoProvisioner({ callTool: args.callTool, log })
             : async () => {}
     );
-
-    // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
-    // must result in zero fleet dispatches.
-    const validated = validateArgs(args);
 
     // The per-dispatch time budget used for BOTH timeout_s and max_total_s:
     // silent-until-done CLIs make inactivity indistinguishable from total
@@ -11000,6 +11153,14 @@ async function runSprintCycle(context) {
                 body: prBody,
                 log,
                 logPrefix: '[Publish PR]',
+                // Already resolved above via publishGitMember (a real
+                // git-capable member) for the PR-capability gate -- skip
+                // re-deriving it a second time by shelling out to
+                // orchestratorMember, which may have no git checkout of its
+                // own to read a remote from (docs/design-orchestrator-
+                // worktree-model-v2.md section 4.6: this call stays workspace-
+                // independent by design, credential-file-read + REST only).
+                remoteUrlOverride: originUrl,
             });
             if (!prResult.ok) {
                 throw new CommandError(
@@ -11208,7 +11369,7 @@ export async function main(context) {
     //      through to finalizeAbort()'s existing throw-and-fall-back path.
     const abortOnAuthFailure = context.onAuthFailure ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log })
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validatedForLock.azdevopsPatSecretName })
             : undefined
     );
 

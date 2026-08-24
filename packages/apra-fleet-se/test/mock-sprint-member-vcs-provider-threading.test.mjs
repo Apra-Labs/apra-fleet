@@ -79,6 +79,15 @@ test('mock sprint: a member whose provider resolves to azure-devops (via args.ca
             callTool,
             gitGhFailurePattern: G_PUSH_PATTERN,
             gitGhFailureMessage: TF401019_BARE,
+            // apra-fleet-5co8.10: this scenario's member resolves to the
+            // 'azure-devops' provider (see callTool's member_detail stub
+            // above), so its git remote must be ADO-shaped
+            // (https://dev.azure.com/ORG/PROJECT/_git/REPO) for the
+            // provider's own buildProvisionArgs() to derive an org_url --
+            // a GitHub-shaped default origin (the harness's normal default)
+            // makes derivation fail before any provision_vcs_auth call is
+            // ever attempted, which is the regression this bead fixes.
+            originUrl: 'https://dev.azure.com/mock-org/mock-project/_git/mock-repo',
         });
 
         // The persistent (never-recovering) G-push failure surfaces as a
