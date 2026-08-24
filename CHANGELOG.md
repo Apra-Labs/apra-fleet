@@ -2,6 +2,104 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Windows shell selection: finish wiring fleet-sprint through the registered shell
+
+Sprint goal: close out the remaining scope of the Windows shell-selection
+epic -- wire the fleet-sprint-side command builders into their real call
+sites (previously present as source but unused), mirror the registered
+`shell` field into the MCP client's type definitions, align the
+Windows-Git-Bash candidate list between probe and command builder, and fix
+an unrelated, independently-discovered native-addon lock-detection gap in
+the pre-build lock-clearing script.
+
+What shipped:
+
+- **fleet-sprint dolt-settle now routes through the registered shell**:
+  installing, probing, killing, and spawning the pinned local dolt server,
+  plus the SQL/node-eval command strings sent around it, are built via the
+  shell-aware command-builder classes instead of a fixed PowerShell
+  assumption. A dedicated shell-aware SQL-escaping primitive and a
+  wrap-PowerShell primitive for gitbash members were added to the
+  fleet-sprint command-builder set to support this. Any command body that
+  is embedded in a WMI/`Win32_Process` script (used for the pinned-dolt
+  install/kill/spawn lifecycle) is now resolved in PowerShell dialect
+  specifically, separately from the member's own shell-dialect path, since
+  such script bodies are always interpreted by PowerShell regardless of
+  the target member's registered shell -- a distinction that was not
+  previously made and would otherwise silently break a gitbash member.
+- **Runner threads the registered shell everywhere it settles state**: the
+  remaining call sites that build a settle callback now resolve and pass
+  the member's registered shell, closing the last gap where fleet-sprint
+  fell back to a fixed PowerShell assumption regardless of what shell a
+  Windows member actually runs.
+- **MCP client typedefs mirror the server schema**: the client wrapper's
+  register/update-member option typedefs and its member-detail result
+  typedef now declare the `shell` field and the curated model-tier enums,
+  matching the real server-side zod schemas -- closing a docs/typedef gap
+  where the client already forwarded the field correctly at runtime but
+  did not declare it. A parity test now reads the real zod schemas on both
+  sides and asserts they agree, rather than relying on the two staying in
+  sync by convention.
+- **Git-bash candidate list unified**: the shell probe's remote discovery
+  script and the local command-builder's resolver now consume one shared
+  candidate-list literal (including the shared user-scope install-path
+  suffix), with the parity test-asserted. The local resolver no longer
+  falls back to a bare, PATH-resolved `bash.exe` when no known-good
+  candidate checks out -- it now throws, rather than silently
+  reintroducing the WSL/System32 Git-Bash-impersonation ambiguity the
+  probe exists to close.
+- **`isPosixShell` consolidated**: the several previously-deliberate
+  private copies of the POSIX-vs-PowerShell branch predicate are now
+  routed through one exported, overloaded helper (plus a convenience
+  wrapper that reads both fields off an agent), with semantics unchanged.
+- **Pre-build lock-clearing script hardened** (independently discovered,
+  not part of the shell-selection epic's original scope): the script now
+  also detects processes that hold a native build addon open as a mapped
+  module rather than only processes whose own image path or command line
+  lives inside the checkout -- closing a real gap where a native addon
+  loaded by an unrelated host process (a system interpreter, an editor
+  language server, a leftover test worker) was invisible to the previous
+  matcher. It now re-probes empirically before reporting failure, names
+  the blocking process when it cannot clear a lock instead of reporting a
+  false success, and supports a dry-run mode.
+- **Docs**: see
+  [docs/windows-shell-selection.md](docs/windows-shell-selection.md) and
+  [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md),
+  both updated this sprint to describe the now-completed fleet-sprint
+  wiring, the consolidated `isPosixShell` helper, and the PowerShell
+  error-guard requirement for any script-emitting wrapper -- including
+  ones serving gitbash members.
+
+Carried forward (not closed this sprint):
+
+- Adding the PowerShell error-guard envelope
+  (`$ErrorActionPreference = 'Stop'` + try/catch + explicit exit code) to
+  the gitbash-specific wrap-PowerShell primitive, which currently emits an
+  unguarded `-EncodedCommand` invocation unlike its sibling wrappers
+  elsewhere in the codebase. Each current call site is independently
+  protected by its own result-gating, so this is not believed to be
+  live-exploitable today, but the gap should be closed rather than relied
+  upon.
+- Test coverage for the pre-build lock-clearing script rewrite, which
+  shipped without its own test suite.
+- A same-sprint regression pass (informational, does not gate this
+  sprint's verdict) reconfirmed several pre-existing, parent-less
+  carry-over issues (a long-running integration test, a KB
+  remote-scope test, a publish-push-failure test, and the
+  test-suite-file-duration budget) and surfaced one new, low-confidence
+  candidate in the same family as a known bd-init-template-collision
+  class of intermittent failure; a known sandbox-smoke-test
+  credential-provisioning environment block (unrelated to this sprint's
+  changes) was also reconfirmed. None of this blocks the sprint verdict.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $12.7413.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3455 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 22 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Windows shell selection: probe and register the real shell, not just the OS
 
 Sprint goal: stop assuming every Windows member runs PowerShell. Add a
