@@ -350,6 +350,18 @@ function loadTaxonomyIndex() {
 }
 
 /**
+ * The names taxonomy.json disposes as non_error_outcomes -- documented results
+ * that deliberately carry NO error code. A fixture's `observed_via` may name one
+ * of these: it records what the call was observed to do, and a non-error outcome
+ * (a clamp, a dedup skip, a directive quarantine) is a legitimate thing to
+ * observe. `expected_error_code` may NOT name one -- that stays codes-only,
+ * because a fixture asserting a refusal must assert a real refusal.
+ */
+function loadNonErrorOutcomeNames() {
+  return new Set((readJson(TAXONOMY_PATH).non_error_outcomes ?? []).map((n) => n.name));
+}
+
+/**
  * The taxonomy codes a tool's MCP binding claims it can raise. bindings/mcp
  * stores them as `$ref` JSON pointers into taxonomy.json
  * (`#/groups/<group>/codes/<index>`), so they are resolved back to codes here.
@@ -588,8 +600,10 @@ function taxonomyFailures(fixture, taxonomyIndex) {
   const code = fixture.expected_error_code;
   const observed = fixture.observed_via;
 
-  if (observed && !taxonomyIndex.has(observed)) {
-    failures.push(`observed_via ${observed} is not in the closed taxonomy set`);
+  if (observed && !taxonomyIndex.has(observed) && !loadNonErrorOutcomeNames().has(observed)) {
+    failures.push(
+      `observed_via ${observed} is neither a closed-set taxonomy code nor a documented non_error_outcome`,
+    );
   }
   if (!code) return failures;
 

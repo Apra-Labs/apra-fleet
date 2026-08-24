@@ -23,8 +23,9 @@
       "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry"]
     },
     "not_in_scope": "approveDirective, rejectDirective, addDirective, flaggedPairs (INVENTORY.md section 4.2) are CLI-only and not reachable by any registered MCP tool, so they have no entry here.",
+    "kb_setup_absence_note": "kb_setup is intentionally absent from every `tools` array below, and its absence is not a gap. It is a pre-provider configuration tool: it installs the git post-commit hook, writes a single GLOBAL provider config, and stores remote credentials -- it never resolves a project KB and reaches no MemoryProvider member, so there is no P-*/X-* entry it could map to. It is also the one kb_* tool that does not spread kbScopeFields, so its repo_path carries no scope semantics (INVENTORY.md section 2, 'Scope-field note', and section 12 `kb_setup`). It still has a request schema, a response schema, an MCP binding and a fixture, because it is one of the 23 registered tools; only the provider-method mapping is empty, and its binding therefore carries an empty errors[] array.",
     "httpKbProvider_note": "HttpKbProvider is dead code in this tree (INVENTORY.md section 4.4, F-10): every MemoryProvider entry below describes SqliteProvider behavior, which is the only implementation any tool call can reach.",
-    "non_error_outcomes_note": "A method's `error_codes` field cites ONLY names taxonomy.json's groups[].codes disposes as real error codes. A method that can also reach one of taxonomy.json's `non_error_outcomes` (a documented success-path adjustment or degradation that deliberately gets no code, with its own reason_no_code there) cites that name in a separate `non_error_outcomes` field instead, never bare inside `error_codes` -- tests/memory-contract-taxonomy.test.ts enforces this split. Affected methods: P-2 capture (E-CLAMP, E-CONTRADICTION-FLAGGED, E-DEDUP-NONE), P-10 stats (E-STATS-UNSUPPORTED, E-BIBLE-READ-DEGRADED), P-12 relatedClaims (E-RELATED-CLAIMS-DEGRADED), X-2 feedback (E-ROLE-UNKNOWN-DEGRADED), C-1..C-7 (E-CODE-INTEL-DISABLED)."
+    "non_error_outcomes_note": "A method's `error_codes` field cites ONLY names taxonomy.json's groups[].codes disposes as real error codes. A method that can also reach one of taxonomy.json's `non_error_outcomes` (a documented success-path adjustment or degradation that deliberately gets no code, with its own reason_no_code there) cites that name in a separate `non_error_outcomes` field instead, never bare inside `error_codes` -- tests/memory-contract-taxonomy.test.ts enforces this split. Affected methods: P-2 capture (E-CLAMP, E-CONTRADICTION-FLAGGED, E-DEDUP-NONE, E-DIRECTIVE-QUARANTINE), P-10 stats (E-STATS-UNSUPPORTED, E-BIBLE-READ-DEGRADED), P-12 relatedClaims (E-RELATED-CLAIMS-DEGRADED), X-2 feedback (E-ROLE-UNKNOWN-DEGRADED), C-1..C-7 (E-CODE-INTEL-DISABLED)."
   },
   "methods": [
     {
@@ -57,8 +58,8 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "New row per call unless AUDN dedupes to E-DEDUP-NONE.",
-      "error_codes": ["E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-DIRECTIVE-QUARANTINE", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-PROVIDER-UNINITIALIZED"],
-      "non_error_outcomes": ["E-CLAMP", "E-CONTRADICTION-FLAGGED", "E-DEDUP-NONE"],
+      "error_codes": ["E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-PROVIDER-UNINITIALIZED"],
+      "non_error_outcomes": ["E-CLAMP", "E-CONTRADICTION-FLAGGED", "E-DEDUP-NONE", "E-DIRECTIVE-QUARANTINE"],
       "see_also": ["Capture provenance and confidence clamp", "Directive quarantine", "Superseding and AUDN matching", "Freshness and content hashing"]
     },
     {

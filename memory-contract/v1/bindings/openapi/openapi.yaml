@@ -98,16 +98,11 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/governance/codes/0",
-      "title": "A user-directive capture is forced to a PENDING PROPOSAL instead of being stored as requested: confidence to UNVERIFIED, flagged_for_review set, directive:pending tag added, scope forced to project. Activation is CLI-only and no server code path for it exists.",
-      "status": 403
-    },
-    {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/governance/codes/1",
       "title": "Promotion of a user-directive entry is refused outright; a directive can only become active through the CLI-only consent step.",
       "status": 403
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/governance/codes/2",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/governance/codes/1",
       "title": "The contradiction pair involves an ACTIVE user-directive; directives are never auto-resolved. Writes NOTHING.",
       "status": 403
     },

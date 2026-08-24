@@ -44,6 +44,10 @@ type Taxonomy = {
   excluded_from_closed_set: { codes: { code: string; where: string; reason_excluded: string }[] };
 };
 
+type ResponseSchemaDef = {
+  properties?: { parsed?: { properties?: Record<string, unknown> } };
+};
+
 type MethodEntry = {
   id: string;
   member: string;
@@ -156,6 +160,39 @@ describe('taxonomy.json structure', () => {
     for (const { entry } of silent) {
       const note = (entry as CodeEntry & { note?: string }).note ?? '';
       expect(note.trim(), `${entry.code} is silent but carries no note`).not.toBe('');
+    }
+  });
+
+  // Falsifiability guard for the one surfaced value that projects a refusal onto
+  // the wire WITHOUT the call having failed. A code misfiled as 'response-field'
+  // makes a consumer refuse an operation this kernel actually performs, and the
+  // drift/parity/taxonomy guards cannot see it: they check internal consistency,
+  // and a misclassification is internally consistent. So bite on the generated
+  // response schema instead -- the named field must really be there.
+  it('backs every response-field code with a field that exists in a raising tool\'s response schema', () => {
+    const responseField = codesWithGroup().filter(({ entry }) => entry.surfaced === 'response-field');
+    expect(responseField.length).toBeGreaterThan(0);
+
+    for (const { entry } of responseField) {
+      const field = (entry as CodeEntry & { response_field?: string }).response_field ?? '';
+      expect(
+        field.trim(),
+        `${entry.code} is surfaced: 'response-field' but names no response_field`,
+      ).not.toBe('');
+
+      const tools = [...new Set(entry.raising_methods.map((r) => r.tool))];
+      const carriers = tools.filter((tool) => {
+        const schema = readJson<{ $defs: Record<string, ResponseSchemaDef> }>(
+          `schemas/${tool}.response.json`,
+        );
+        const def = schema.$defs[`v1-${tool}-response`];
+        return Object.hasOwn(def?.properties?.parsed?.properties ?? {}, field);
+      });
+
+      expect(
+        carriers,
+        `${entry.code} names response_field '${field}', absent from the parsed body of every raising tool (${tools.join(', ')})`,
+      ).not.toHaveLength(0);
     }
   });
 });

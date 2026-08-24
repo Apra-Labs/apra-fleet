@@ -30,6 +30,20 @@ ToolTextResponse = { content: [ { type: "text", text: string } ] }
 - No tool in this surface returns `structuredContent`; that channel is unused
   here (`wrapTool` only forwards it when the handler returns
   `{text, structuredContent}`, and all 23 handlers return a bare `string`).
+- **The published schemas are deliberately WIDER than the reachable shape, and
+  that is not a contradiction of the two statements above.** Every
+  `schemas/*.response.json` permits `content` to hold 1-3 items, allows an
+  optional `annotations` object on each item, and allows an optional
+  `structuredContent` -- because the schema documents `wrapTool`'s general
+  contract, not the subset these 23 handlers happen to reach. The narrower
+  claims above are REACHABILITY findings about this surface: all 23 handlers
+  return a bare `string`, so `wrapTool` emits exactly one text item and never
+  populates `structuredContent`. A consumer MUST validate against the schema,
+  which accepts everything `wrapTool` can emit; a consumer that hard-codes the
+  single-element shape from this prose alone would be stricter than the
+  contract and would break if a handler later returned
+  `{text, structuredContent}`. If that ever happens it is an envelope
+  extension, not a schema change -- see section 5.
 - On top of the envelope, a response body is either:
   - **Body known** -- the text envelope plus a documented `parsed` object, for
     all 16 `kb_*` tools (`schemas/kb_*.response.json`).

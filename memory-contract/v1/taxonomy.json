@@ -21,6 +21,7 @@
       "response-field": "The call returns successfully; the refusal or rejection is reported in a named response field. The operation as REQUESTED did not happen.",
       "silent": "No distinguishable signal exists today. The requested effect did not happen and the response looks like an ordinary success. These are the most easily missed refusals in the surface, which is exactly why they are named here."
     },
+    "response_field_rule": "A code marked surfaced: 'response-field' MUST carry a `response_field` naming the response property that actually reports it, and that property must exist in the generated response schema of at least one of the code's raising tools. This is enforced by tests/memory-contract-taxonomy.test.ts. The rule exists because 'response-field' is the one surfaced value that makes a code projectable onto the wire WITHOUT the operation having failed -- so a code misfiled here projects a refusal that the kernel never performs, and no drift/parity guard can see it (they check internal consistency, and a misclassification is internally consistent). E-DIRECTIVE-QUARANTINE was filed this way in the T1 skeleton and is now a non_error_outcome; see its reason_no_code there.",
     "projection_rule": "Only 'thrown' and 'response-field' codes are projectable into a wire error payload. A 'silent' code MUST NOT be projected into a wire enum: the server never emits it, so a consumer branching on it would branch on something unreachable. Silent codes are documented-only until a task gives them a real signal.",
     "retryable_semantics": "true means retrying the IDENTICAL request unchanged can succeed. Changing the request (fixing a path, supplying a reason) is not a retry.",
     "retryable_finding": "No code in this closed set is retryable. Every transient failure in this surface is degraded to a non-error outcome rather than propagated as an error: the code_* adapters convert connect and dead-client failures into a structured offline result (see non_error_outcomes N-CODE-PROVIDER-OFFLINE), kb_stats swallows bible read failures, and kb_query swallows relatedClaims failures. There is therefore no retry-with-backoff class in v1.",
@@ -28,7 +29,7 @@
     "directive_activation_absence": {
       "constraint": "The quarantine of directive activation is expressed by ABSENCE, not by a refusal shape. Any consumer of this file MUST NOT emit a path, an operation, a code, or a schema shape for approving, rejecting or activating a user-directive -- not even one that always refuses. A documented-but-forbidden route is still a route.",
       "consequence_for_this_file": "The three CLI-only activation error codes named in INVENTORY.md 5.2 are in excluded_from_closed_set, not in any group. They are the error vocabulary OF the activation operations, so publishing them would document that those operations exist.",
-      "what_is_still_in_the_set": "The governance group DOES carry the server-side refusals of activation ATTEMPTS made through tool-reachable paths (E-DIRECTIVE-QUARANTINE, E-PROMOTE-REFUSED-DIRECTIVE, E-RESOLVE-DIRECTIVE-PAIR). Those are answers this server really gives to requests it really accepts, and hiding them would misdescribe live behavior. The line is: refusals of attempts on existing routes are published; the error codes of the forbidden route itself are not."
+      "what_is_still_in_the_set": "The governance group DOES carry the server-side refusals of activation ATTEMPTS made through tool-reachable paths (E-PROMOTE-REFUSED-DIRECTIVE, E-RESOLVE-DIRECTIVE-PAIR). Those are answers this server really gives to requests it really accepts, and hiding them would misdescribe live behavior. The line is: refusals of attempts on existing routes are published; the error codes of the forbidden route itself are not. The quarantine of a directive CAPTURE is deliberately NOT in this group: that path does not refuse anything, it succeeds and stores a transformed entry, so it lives in non_error_outcomes as E-DIRECTIVE-QUARANTINE."
     },
     "raising_methods_shape": "Each raising_methods element cites a methods.json method (method_id + member) plus the tool the path is reachable through, and a position: 'provider' (raised inside the provider member) or 'pre-provider' (raised at the tool boundary before that member is reached -- mirrors methods.json X-1's error_codes_note). Every code has at least one raising method: there are no orphan codes."
   },
@@ -139,6 +140,7 @@
           ],
           "source": "src/tools/kb-import.ts:222-234, surfaced as KbImportReport.rejected",
           "surfaced": "response-field",
+          "response_field": "rejected",
           "retryable": false,
           "note": "Distinct from the 'skipped' counter, which covers per-entry SHAPE failures (isValidBibleEntry, src/tools/kb-import.ts:98-109) and pre-existing ids (:193-196). Only basis rejections land here. No methods.json entry cites this code."
         }
@@ -187,19 +189,6 @@
       "definition_ref": "_meta.group_definitions.governance",
       "absence_constraint_ref": "_meta.directive_activation_absence",
       "codes": [
-        {
-          "code": "E-DIRECTIVE-QUARANTINE",
-          "meaning": "A user-directive capture is forced to a PENDING PROPOSAL instead of being stored as requested: confidence to UNVERIFIED, flagged_for_review set, directive:pending tag added, scope forced to project. Activation is CLI-only and no server code path for it exists.",
-          "raising_methods": [
-            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
-            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
-            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
-          ],
-          "source": "src/services/knowledge/sqlite-provider.ts:806-818",
-          "surfaced": "response-field",
-          "retryable": false,
-          "see_also": ["Directive quarantine"]
-        },
         {
           "code": "E-PROMOTE-REFUSED-DIRECTIVE",
           "meaning": "Promotion of a user-directive entry is refused outright; a directive can only become active through the CLI-only consent step.",
@@ -363,6 +352,12 @@
       "outcome": "An incoming CONFIRMED on a non-directive type is DOWNGRADED to INFERRED, with a bracketed note appended to content. Reported as confidence_clamped: true in the kb_capture response.",
       "where": "src/tools/kb-capture.ts:105-106 (UX copy), src/services/knowledge/sqlite-provider.ts:889-893 (enforcement)",
       "reason_no_code": "The capture SUCCEEDED; only the requested tier was lowered, and the lowering is reported in a documented success field. This is the silent branch of the one authority policy -- its refusing branches (the promote path) are the authority group's codes. Giving the clamp an error code would make the normal, expected path of every over-confident capture look like a failure."
+    },
+    {
+      "name": "E-DIRECTIVE-QUARANTINE",
+      "outcome": "A user-directive capture is FORCED to a PENDING PROPOSAL rather than stored as requested: confidence to UNVERIFIED, flagged_for_review set, a 'directive:pending' tag added, and scope forced to 'project'. The capture itself SUCCEEDS and returns an id; activation remains CLI-only and no server code path for it exists.",
+      "where": "src/services/knowledge/sqlite-provider.ts:806-818 (enforcement)",
+      "reason_no_code": "The capture SUCCEEDED and stored a transformed entry -- capture() mutates the input and continues, it never throws. This is structurally the same class as E-CLAMP: a successful write with a forced downward transformation, not a refusal. It was previously classified surfaced: 'response-field', which was wrong on the taxonomy's own definition -- no named response field reports it. kb_capture returns {id, audn_decision, confidence_clamped}, and confidence_clamped is set only by the CONFIRMED-to-INFERRED clamp in src/tools/kb-capture.ts:102-105, independently of the directive path; kb_import surfaces only imported/skipped/rejected. Because the transformation is observable only through a LATER read (tests/DEGRADATION.md D-8), it must not be projected onto the wire: an implementation built from a projection carrying it would REFUSE directive captures that this kernel ACCEPTS. Its refusing siblings on the same directive policy keep their codes in the governance group (E-PROMOTE-REFUSED-DIRECTIVE, E-RESOLVE-DIRECTIVE-PAIR)."
     },
     {
       "name": "E-DEDUP-NONE",

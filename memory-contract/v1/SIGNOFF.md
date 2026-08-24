@@ -10,9 +10,9 @@ remote) should copy it, not replace it -- some remotes never get a PR at all.
 | # | Layer | Verdict | Evidence |
 |---|---|---|---|
 | 1 | Prose spec (`memory-contract/v1/spec.md`) | **PASS for T1's scope; STUBBED for T2/T3 by design** | `spec.md` sections 1-3 (Envelope, Provider methods, Error model) are written and owned by T1.3.1/T1.3.2. Section 4 ("Invariants (T2, RESERVED)") holds six empty, titled subsections -- Scope resolution and repo aliasing, Capture provenance and confidence clamp, Directive quarantine, Superseding and AUDN matching, Freshness and content hashing, Query modes -- matching `tests/GENERATOR-DECISION.md` section 4's hand-off list verbatim (owner: T2). Section 5 ("Envelope extensions (T3, RESERVED)") is likewise an empty placeholder (owner: T3). Neither reserved section was filled in from this task, per `spec.md`'s own ownership note. |
-| 2 | JSON Schema 2020-12 (`memory-contract/v1/schemas/*.json`) | **PASS** | `npm run contract:check` -> `contract:generate --check: OK -- 23 tools, 46 schema files, 23 binding files, 1 openapi file, 21 projectable taxonomy codes, all match and cross-reference cleanly.` (run 2026-08-24). Metaschema conformance for all 23 request schemas plus the hard-construct probes (discriminated union, closed enums, optional/nullable/nullish, recursive `$defs` ref, tuple `prefixItems`) are recorded in `tests/GENERATOR-DECISION.md` section 2, reproducible via `node memory-contract/v1/tests/probe-generator-2020-12.mjs`. `x-invariant` annotations are stamped on the emitted schemas (verified: `grep -rl x-invariant memory-contract/v1/schemas/` -> 28 files), each pointing at one of the six `spec.md` section 4 subsections per the `tests/GENERATOR-DECISION.md` section 4 table. |
-| 3 | MCP + OpenAPI bindings | **PASS (MCP); PASS-AS-STUB (OpenAPI, by design)** | MCP: one `bindings/mcp/<tool>.json` per tool, 23 files, byte-identical-on-regenerate per `contract:check` above; `--check` asserts binding<->schema no-extras-no-gaps parity and the taxonomy-to-projection direction, but its roster is the hardcoded `KB_MODULES`/`CODE_EXPORTS` list (`generate-contract.mjs:142`, `EXPECTED_TOOL_COUNT = 23`), not an import of `src/services/tool-registry.ts` -- it can only notice a tool disappearing, not a newly-registered one going unrostered. The registered-tool <-> roster <-> emitted-schema-pair leg is asserted separately by `tests/memory-contract-roster-guard.test.ts` (my-beads-db-27m.39). Scheme documented in `tests/BINDING-SCHEME.md`. OpenAPI: `bindings/openapi/openapi.yaml` is the RFC 9457 Problem Details projection of `taxonomy.json`'s 21 projectable codes, declares zero paths (no route surface) -- this is the task's own stub scope, not a gap, per `tests/BINDING-SCHEME.md` section 1 ("out of this task's original scope... has since landed under T1.3.3" as a Problem-Details-only artifact). `--check` covers it byte-for-byte on the same "no extras, no gaps" basis as `schemas/` and `bindings/mcp/`. |
-| 4 | Conformance-suite hook (fixtures + provider-parameterized harness) | **PASS** | `npx vitest run` over the 11 `tests/memory-contract-*.test.ts` files -- `11 passed (11 files), 74 passed (74 tests)` (run 2026-08-24), covering drift guard, fixture/response-schema round-trip (raw + decoded envelope), fixture sanitation, fixture volatility normalisation, openapi.yaml parse, roster/parity, postprocess-2020-12 determinism, response envelope shape, roster guard, the provider-parameterized round-trip harness itself, and taxonomy group/code invariants. Fixture corpus is recorded under `fixtures/` (T1.4.1, commit `f230c530`) and is explicitly NOT byte-reproducible (`README.md` item 5, `tests/memory-contract-fixture-volatility.test.ts`) -- this is documented as expected, not treated as drift. |
+| 2 | JSON Schema 2020-12 (`memory-contract/v1/schemas/*.json`) | **PASS** | `npm run contract:check` -> `contract:generate --check: OK -- 23 tools, 46 schema files, 23 binding files, 1 openapi file, 20 projectable taxonomy codes, all match and cross-reference cleanly.` (run 2026-08-24). Metaschema conformance for all 23 request schemas plus the hard-construct probes (discriminated union, closed enums, optional/nullable/nullish, recursive `$defs` ref, tuple `prefixItems`) are recorded in `tests/GENERATOR-DECISION.md` section 2, reproducible via `node memory-contract/v1/tests/probe-generator-2020-12.mjs`. `x-invariant` annotations are stamped on the emitted schemas (verified: `grep -rl x-invariant memory-contract/v1/schemas/` -> 28 files), each pointing at one of the six `spec.md` section 4 subsections per the `tests/GENERATOR-DECISION.md` section 4 table. |
+| 3 | MCP + OpenAPI bindings | **PASS (MCP); PASS-AS-STUB (OpenAPI, by design)** | MCP: one `bindings/mcp/<tool>.json` per tool, 23 files, byte-identical-on-regenerate per `contract:check` above; `--check` asserts binding<->schema no-extras-no-gaps parity and the taxonomy-to-projection direction, but its roster is the hardcoded `KB_MODULES`/`CODE_EXPORTS` list (`generate-contract.mjs:142`, `EXPECTED_TOOL_COUNT = 23`), not an import of `src/services/tool-registry.ts` -- it can only notice a tool disappearing, not a newly-registered one going unrostered. The registered-tool <-> roster <-> emitted-schema-pair leg is asserted separately by `tests/memory-contract-roster-guard.test.ts` (my-beads-db-27m.39). Scheme documented in `tests/BINDING-SCHEME.md`. OpenAPI: `bindings/openapi/openapi.yaml` is the RFC 9457 Problem Details projection of `taxonomy.json`'s 20 projectable codes, declares zero paths (no route surface) -- this is the task's own stub scope, not a gap, per `tests/BINDING-SCHEME.md` section 1 ("out of this task's original scope... has since landed under T1.3.3" as a Problem-Details-only artifact). `--check` covers it byte-for-byte on the same "no extras, no gaps" basis as `schemas/` and `bindings/mcp/`. |
+| 4 | Conformance-suite hook (fixtures + provider-parameterized harness) | **PASS** | `npx vitest run` over the 11 `tests/memory-contract-*.test.ts` files -- `11 passed (11 files), 75 passed (75 tests)` (re-run 2026-08-24 after the F-1 correction below; 74 at first sign-off), covering drift guard, fixture/response-schema round-trip (raw + decoded envelope), fixture sanitation, fixture volatility normalisation, openapi.yaml parse, roster/parity, postprocess-2020-12 determinism, response envelope shape, roster guard, the provider-parameterized round-trip harness itself, and taxonomy group/code invariants. Fixture corpus is recorded under `fixtures/` (T1.4.1, commit `f230c530`) and is explicitly NOT byte-reproducible (`README.md` item 5, `tests/memory-contract-fixture-volatility.test.ts`) -- this is documented as expected, not treated as drift. |
 
 ## 2. T11 (Friday sync) agenda item -- drafted
 
@@ -121,3 +121,66 @@ decide whether it deserves its own line item.
 If a future sign-off (T2, T3, or T7's work) finds an extracted tool contract
 that DOES violate one of the nine invariants, it belongs on the T11 agenda,
 not silently resolved in the schema -- per this task's own instructions.
+
+## 5. Post-sign-off correction: E-DIRECTIVE-QUARANTINE reclassified (F-1)
+
+An independent code-level review of PR #1 (2026-08-24) found one genuine
+contract defect that every green check structurally could not catch, and it is
+corrected in this branch rather than deferred.
+
+**The defect.** `E-DIRECTIVE-QUARANTINE` was filed in `taxonomy.json` under
+`groups.governance` with `surfaced: "response-field"`, and was therefore
+projected onto the wire: into the `errors[]` of `bindings/mcp/kb_capture.json`,
+`kb_harvest.json` and `kb_import.json`, and into `bindings/openapi/openapi.yaml`
+with HTTP status 403. No response field reports it. `kb_capture` returns
+`{id, audn_decision, confidence_clamped}`, and `confidence_clamped` is set only
+by the CONFIRMED-to-INFERRED clamp at `src/tools/kb-capture.ts:102-105`,
+independently of the directive path at
+`src/services/knowledge/sqlite-provider.ts:806-818`, which mutates the input and
+continues without throwing. `kb_import` surfaces only
+`imported/skipped/linked/flagged/rejected/sweep`. The capture SUCCEEDS.
+
+**Why it mattered.** An implementation built from that projection would REFUSE a
+directive capture (403) that this kernel ACCEPTS and stores as a pending
+proposal -- a kernel-semantics fork, which is the exact class of divergence the
+conformance suite exists to prevent.
+
+**Why the guards missed it.** The drift, parity and taxonomy guards verify
+INTERNAL consistency, and the misclassification was internally consistent. It
+was visible only against source behaviour.
+
+**The correction.** `E-DIRECTIVE-QUARANTINE` moved out of `groups.governance`
+and into `non_error_outcomes`, alongside `E-CLAMP`, which it structurally
+matches: a successful write with a forced downward transformation, not a
+refusal. `silent` was considered and rejected -- the two existing `silent` codes
+describe requests with NO effect, whereas quarantine has a large effect (it
+stores a transformed entry), so "silent refusal" would have been a second
+misfiling. Consequences, all regenerated rather than hand-patched (the bindings
+address codes by positional JSON pointer, so a hand-edit would have silently
+renumbered `governance` refs in `kb_promote` and `kb_resolve_contradiction`):
+
+- closed set 23 -> 22 codes; `governance` 5 -> 4; `non_error_outcomes` 10 -> 11
+- projectable codes 21 -> 20; the code drops out of 3 bindings and the OpenAPI
+  catalog
+- `methods.json` P-2: moved from `error_codes` to `non_error_outcomes`, required
+  by the split that `tests/memory-contract-taxonomy.test.ts` already enforced
+
+**New falsifiability guard.** `surfaced: "response-field"` is the one value that
+projects a refusal onto the wire WITHOUT the call having failed, so it now
+carries an obligation: the code must name a `response_field`, and that property
+must exist in the generated response schema of at least one raising tool
+(`_meta.response_field_rule`, asserted by
+`tests/memory-contract-taxonomy.test.ts`). After this correction
+`E-IMPORT-ENTRY-REJECTED` is the only remaining `response-field` code and it
+satisfies the rule (`kb_import` really does return `rejected`) -- so the guard
+covers one subject today and exists to stop the next misclassification, not to
+fix present breakage. Test count 74 -> 75.
+
+Two consequential guards had to be widened, and both widenings are narrow:
+`tests/memory-contract-drift-guard.test.ts` now baselines the count of DISPOSED
+names (codes plus non-error outcomes, 33) so a name MOVING between the two
+dispositions does not read as a silent deletion, while a real deletion still
+trips it; and `tests/roundtrip-harness.mjs` now resolves a fixture's
+`observed_via` against codes OR non-error outcomes, since observing a non-error
+outcome is legitimate. `expected_error_code` remains codes-only: a fixture
+asserting a refusal must still assert a real refusal.

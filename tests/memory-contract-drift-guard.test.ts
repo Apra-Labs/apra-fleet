@@ -51,13 +51,21 @@ const GENERATE_SCRIPT = path.join(REPO_ROOT, 'memory-contract', 'v1', 'generate-
 const V1_DIR = path.join(REPO_ROOT, 'memory-contract', 'v1');
 
 // Baselines recorded when this guard was authored (my-beads-db-27m.10):
-// taxonomy.json currently has 23 codes across its 7 groups, methods.json
-// currently has 25 entries (18 methods + 7 code_intelligence_methods). Both
-// numbers only grow or hold steady from here -- a drop below the baseline
-// means an entry was silently deleted, which policy requires to be a
-// deliberate contract revision (tracked, version-bumped), not a change this
-// guard waves through unnoticed.
-const TAXONOMY_CODE_COUNT_BASELINE = 23;
+// taxonomy.json currently disposes 33 names (22 codes across its 7 groups plus
+// 11 non_error_outcomes), methods.json currently has 25 entries (18 methods + 7
+// code_intelligence_methods). Both numbers only grow or hold steady from here --
+// a drop below the baseline means an entry was silently deleted, which policy
+// requires to be a deliberate contract revision (tracked, version-bumped), not a
+// change this guard waves through unnoticed.
+//
+// The taxonomy baseline counts codes AND non_error_outcomes together, on
+// purpose. A name can legitimately MOVE between the two dispositions when its
+// classification is corrected -- E-DIRECTIVE-QUARANTINE did exactly that, out of
+// governance and into non_error_outcomes, once it was established that no
+// response field reports it and the capture succeeds. A move is not a deletion
+// and must not trip this guard; counting only the codes side would have made the
+// correction indistinguishable from silently dropping a code.
+const TAXONOMY_DISPOSED_NAME_COUNT_BASELINE = 33;
 const METHODS_ENTRY_COUNT_BASELINE = 25;
 
 describe('memory-contract drift guard (my-beads-db-27m.10)', () => {
@@ -78,10 +86,14 @@ describe('memory-contract drift guard (my-beads-db-27m.10)', () => {
     expect(output).toMatch(/contract:generate --check: OK --/);
   });
 
-  it('does not drop taxonomy.json below its last-known error-code count (structural regression guard)', () => {
-    const taxonomy = readJsonV1('taxonomy.json') as { groups: Record<string, { codes: unknown[] }> };
+  it('does not drop taxonomy.json below its last-known disposed-name count (structural regression guard)', () => {
+    const taxonomy = readJsonV1('taxonomy.json') as {
+      groups: Record<string, { codes: unknown[] }>;
+      non_error_outcomes: unknown[];
+    };
     const codeCount = Object.values(taxonomy.groups).reduce((n, g) => n + g.codes.length, 0);
-    expect(codeCount).toBeGreaterThanOrEqual(TAXONOMY_CODE_COUNT_BASELINE);
+    const disposedCount = codeCount + taxonomy.non_error_outcomes.length;
+    expect(disposedCount).toBeGreaterThanOrEqual(TAXONOMY_DISPOSED_NAME_COUNT_BASELINE);
   });
 
   it('does not drop methods.json below its last-known entry count (structural regression guard)', () => {
