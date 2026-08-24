@@ -248,7 +248,10 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       </div>
       ${dashboardExtensions.map(ext => `
         <div id="tab-${ext.id}" class="tab-content panel">
-          <div class="panel-header">${ext.title}</div>
+          <div class="panel-header" id="panel-header-${ext.id}" style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+            <span>${ext.title}</span>
+            <div id="panel-header-${ext.id}-extra" style="flex: 1; min-width: 0; max-width: 320px; text-transform: none; letter-spacing: normal;"></div>
+          </div>
           <div id="extension-${ext.id}" style="flex: 1; min-height: 0; padding: 12px; overflow-y: auto;"></div>
         </div>
       `).join('\\n')}

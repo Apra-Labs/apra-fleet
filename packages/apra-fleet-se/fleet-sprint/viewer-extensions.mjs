@@ -15,13 +15,16 @@ import { computeSprintProgress } from './sprint-progress.mjs';
  * apra-fleet-vk0a.1: the 'M/N' text carries an explicit `Required: ` label
  * (closed/required, goal+decomposedParentIds-filtered per
  * computeSprintProgress()) -- this widget is reused as-is by BOTH the
- * fleet-sprint per-sprint viewer's Tasks tab (renderBeadsPanel() below,
- * where it sits directly above renderBeadsHtml()'s OWN, differently-scoped
- * 'All tasks (incl. backlog)' count -- see that widget's doc comment) AND
- * the supervisor dashboard's Sprint Stack card (dashboard.mjs's
- * renderSprintProgressHtml(), next to its OWN differently-scoped 'N total in
- * scope' count -- apra-fleet-vk0a.3). Labeling it once, here, keeps both
- * pairings unambiguous without a second implementation.
+ * fleet-sprint per-sprint viewer's Tasks tab (renderBeadsPanel() below --
+ * apra-fleet-vk0a.2 pins it into the FIXED panel-header row, next to the
+ * 'Tasks' label, rather than the top of the scrollable tree below, so it
+ * never scrolls out of view alongside renderBeadsHtml()'s OWN,
+ * differently-scoped 'All tasks (incl. backlog)' count -- see that widget's
+ * doc comment) AND the supervisor dashboard's Sprint Stack card
+ * (dashboard.mjs's renderSprintProgressHtml(), next to its OWN
+ * differently-scoped 'N total in scope' count -- apra-fleet-vk0a.3).
+ * Labeling it once, here, keeps both pairings unambiguous without a second
+ * implementation.
  *
  * @param {{ closed: number, required: number, fraction: number }} progress
  * @returns {string}
@@ -603,12 +606,13 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
     // apra-fleet-vk0a.1: labeled 'All tasks (incl. backlog)' -- explicitly
     // distinct from the DIFFERENT scope/definition of renderProgressBarHtml()'s
     // 'Required: M/N' widget (goal+decomposedParentIds-filtered, sprintTasks
-    // only) that renders directly above this one in the Tasks tab
-    // (renderBeadsPanel() below). Before this label, the two counts read as
-    // a bug (same-looking 'M/N' pair, different denominators AND inverted
-    // numerator polarity -- this one is open-count, that one is
-    // closed-count) rather than two intentionally different, both-useful
-    // numbers.
+    // only), which apra-fleet-vk0a.2 pins into the Tasks tab's FIXED
+    // panel-header row (renderBeadsPanel() below) rather than rendering it
+    // here at the top of this scrollable panel. Before the vk0a.1 label, the
+    // two counts read as a bug (same-looking 'M/N' pair, different
+    // denominators AND inverted numerator polarity -- this one is
+    // open-count, that one is closed-count) rather than two intentionally
+    // different, both-useful numbers.
     const countedTasks = sprintTasks.concat(backlogTasks);
     const totalBeadCount = countedTasks.length;
     const openBeadCount = countedTasks.filter((t) => t && (t.status || '').toString().toLowerCase() !== 'closed').length;
@@ -935,8 +939,24 @@ export const beadsExtension = {
                 goalMax: lastBeadsData.goalMax,
                 decomposedParentIds: lastBeadsData.decomposedParentIds,
             });
-            container.innerHTML = renderProgressBarHtml(progress)
-                + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+            const progressHtml = renderProgressBarHtml(progress);
+            // apra-fleet-vk0a.2: pinned into the FIXED panel-header row (a
+            // sibling of the 'Tasks' label, core's generic per-extension
+            // header hook -- \`id="panel-header-\${ext.id}-extra"\`, see
+            // viewer/index.mjs) instead of re-rendered at the top of the
+            // SCROLLABLE #extension-beads container on every poll -- so it
+            // stays visible regardless of scroll position in a long task
+            // list. Falls back to the pre-vk0a.2 inline placement when the
+            // hook is absent (an older/mismatched core template), rather
+            // than silently dropping the widget.
+            const headerExtra = document.getElementById('panel-header-beads-extra');
+            if (headerExtra) {
+                headerExtra.innerHTML = progressHtml;
+                container.innerHTML = renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+            } else {
+                container.innerHTML = progressHtml
+                    + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+            }
         }
 
         // Single document-level click-delegation listener (same rationale
