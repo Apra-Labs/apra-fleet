@@ -131,6 +131,32 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         assert.ok(html.includes('2/3'));
     });
 
+    // apra-fleet-vk0a.4: the Sprint Stack card's progress-bar M/N
+    // (goal+decomposedParentIds-filtered, apra-fleet-vk0a.1's shared
+    // renderProgressBarHtml()) sits directly above the SAME card's raw
+    // 'Claimed scope' bead count (unfiltered live subtree size,
+    // apra-fleet-vk0a.3) -- two different definitions of "how many beads",
+    // adjacent in the same card. Both must carry their own explicit label so
+    // they read as two intentionally different, both-useful numbers rather
+    // than disagreeing duplicates.
+    test('apra-fleet-vk0a.4: the progress-bar M/N and the Claimed-scope count each carry their own distinct label', () => {
+        const html = renderSprintSection({
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: ['apra-fleet-eft.6'],
+            beadCount: 7,
+            progress: { closed: 2, required: 3, fraction: 2 / 3 },
+            members: [],
+        });
+        assert.ok(html.includes('Required: 2/3'), `expected the labeled progress-bar text 'Required: 2/3' in: ${html}`);
+        assert.ok(
+            html.includes('7 bead(s) total in scope, unfiltered'),
+            `expected the labeled claimed-scope text '7 bead(s) total in scope, unfiltered' in: ${html}`,
+        );
+    });
+
     test('apra-fleet-x8r.2: missing/unknown progress renders a neutral placeholder, never NaN or a throw', () => {
         const html = renderSprintSection({
             sprintId: 'sprint-1',

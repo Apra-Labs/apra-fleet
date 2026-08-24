@@ -107,4 +107,35 @@ describe('x8r: supervisor dashboard Sprint Stack render path -- one bar per row'
         const html = renderSprintStackHtml(views);
         assert.ok(html.includes(`>Required: ${progress.closed}/${progress.required}<`));
     });
+
+    // apra-fleet-vk0a.4: the SAME row stacks the progress bar's 'Required:
+    // M/N' (goal+decomposedParentIds-filtered) directly above the row's raw
+    // 'Claimed scope' bead count (unfiltered live subtree size,
+    // apra-fleet-vk0a.3) -- two different definitions of "how many beads"
+    // that legitimately diverge (the raw scope count grows over a sprint's
+    // life as planners/reviewers add tasks; the filtered Required count does
+    // not). Both must carry their own explicit label in the SAME rendered
+    // row so an operator reads them as two intentionally different numbers,
+    // not a disagreement/bug.
+    test('apra-fleet-vk0a.4: within one row, the progress-bar M/N and the Claimed-scope count are each labeled and can legitimately differ', () => {
+        const view = {
+            sprintId: 'sprint-e',
+            status: 'RUNNING_HEALTHY',
+            branch: 'feat/x',
+            goal: 'P1',
+            // Deliberately different from progress.required (3) -- the raw,
+            // unfiltered scope has grown past what the goal-filtered
+            // progress bar counts.
+            beadCount: 9,
+            issueRoots: ['root'],
+            members: [],
+            progress: { closed: 1, required: 3, fraction: 1 / 3 },
+        };
+        const html = renderSprintStackHtml([view]);
+        assert.ok(html.includes('>Required: 1/3<'), `expected the labeled progress-bar text in: ${html}`);
+        assert.ok(
+            html.includes('9 bead(s) total in scope, unfiltered'),
+            `expected the labeled claimed-scope text in: ${html}`,
+        );
+    });
 });
