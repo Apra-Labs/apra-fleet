@@ -40,6 +40,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { EventEmitter } from 'node:events';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
@@ -718,6 +719,58 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  */
 
 /**
+ * (apra-fleet-siqi.1.1) Lean JSON payload for GET /state -- the SAME
+ * sprint-stack view data `renderSprintStackHtml()`/`renderSprintSection()`
+ * render into HTML above (ids, statuses, claimed-scope/progress counts,
+ * members), but as plain JSON for the dashboard's poll('/state') client path
+ * -- never the full HTML shell `GET /` serves. Mirrors
+ * apra-fleet-workflow/src/viewer/lean-state.mjs's buildListStatePayload() in
+ * spirit (a lean, wire-shaped transform of the same view model a full page
+ * render already computes) without pulling in that module's string-dedup
+ * machinery, which targets a much larger per-activity payload than this
+ * small, per-sprint list ever grows to.
+ * @param {SprintView[]} [views]
+ * @returns {{ generatedAt: string, runningCount: number, sprints: Array<object> }}
+ */
+export function buildStatePayload(views) {
+    const list = Array.isArray(views) ? views : [];
+    return {
+        generatedAt: new Date().toISOString(),
+        runningCount: list.length,
+        sprints: list.map((v) => ({
+            sprintId: v.sprintId,
+            branch: v.branch ?? null,
+            goal: v.goal ?? null,
+            status: v.status,
+            issueRoots: v.issueRoots ?? [],
+            beadCount: v.beadCount ?? null,
+            progress: v.progress ?? null,
+            members: v.members ?? [],
+            base: v.base ?? null,
+            baseDrift: v.baseDrift ?? null,
+        })),
+    };
+}
+
+// (apra-fleet-siqi.1.1) Default interval, in ms, at which GET /events emits a
+// generic "state may have changed, go poll /state" signal to every connected
+// SSE client -- see createDashboard()'s changeEmitter below. The supervisor
+// has no single internal event stream the way one workflow run does
+// (apra-fleet-workflow's viewer broadcasts on its own workflow.on(...)
+// handlers); its RUNNING-sprint view model instead changes via many disjoint
+// HTTP routes (POST /api/sprints, force-release, a watchdog reclassification
+// on the NEXT renderIndexPage()/buildSprintViews() call, etc.). Rather than
+// threading a notify() call into every one of those call sites (out of scope
+// for this task -- see the bead's file list), GET /events emits this same
+// generic signal on a fixed cadence, mirroring the per-sprint viewer's own
+// client-side heartbeat fallback (apra-fleet-36l.1) -- just server-side,
+// since the supervisor has no per-mutation push events to relay yet. The
+// client (apra-fleet-siqi.1.2) treats every signal identically: refetch
+// /state and re-render, so a period-driven signal here is indistinguishable
+// from a real per-mutation push from the client's point of view.
+const DEFAULT_EVENTS_INTERVAL_MS = 5000;
+
+/**
  * Create the dashboard seam (see src/supervisor/server.mjs's seam docs).
  * Builds the list of RUNNING (non-finished) sprint view models from the
  * ledger + watchdog classifier, and renders the index page HTML.
@@ -735,6 +788,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  *   driftCheck?: (branch: string|null, base: string|null) => Promise<number|null>|number|null,
  *   backlog?: { renderHtml: () => Promise<string>|string },
  *   logger?: { log?: Function, error?: Function },
+ *   eventsIntervalMs?: number, // (apra-fleet-siqi.1.1) GET /events signal cadence; defaults to DEFAULT_EVENTS_INTERVAL_MS
  * }} [deps]
  * @returns {{
  *   name: string,
@@ -742,6 +796,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  *   stop(): Promise<void>,
  *   buildSprintViews(): Promise<SprintView[]>,
  *   renderIndexPage(): Promise<string>,
+ *   onChange(listener: () => void): () => void,
  * }}
  */
 export function createDashboard(deps = {}) {
@@ -791,6 +846,23 @@ export function createDashboard(deps = {}) {
     // final page section without owning its full-tracker/claim computation. When
     // absent, renderIndexPageHtml() falls back to an explicit empty state.
     const backlog = deps.backlog ?? null;
+
+    // (apra-fleet-siqi.1.1) GET /events plumbing -- see DEFAULT_EVENTS_INTERVAL_MS
+    // above for why this is a periodic signal rather than a per-mutation push.
+    // Lifecycle-owned by THIS seam's own start()/stop() (below), the same
+    // pattern every other supervisor seam already follows (server.mjs calls
+    // seam.start()/stop() for every entry in `seams`, dashboard included) --
+    // registerDashboardRoutes() never touches the timer directly, only
+    // subscribes/unsubscribes SSE clients via `onChange()`.
+    const changeEmitter = new EventEmitter();
+    // An SSE stream may stay open indefinitely (one per connected dashboard
+    // tab); the default 10-listener cap is not a "too many listeners" leak
+    // here, it's the expected steady state.
+    changeEmitter.setMaxListeners(0);
+    const eventsIntervalMs = Number.isInteger(deps.eventsIntervalMs) && deps.eventsIntervalMs > 0
+        ? deps.eventsIntervalMs
+        : DEFAULT_EVENTS_INTERVAL_MS;
+    let eventsTimer = null;
 
     /**
      * Builds every RUNNING sprint's view model. A sprint classified `finished`
@@ -903,9 +975,34 @@ export function createDashboard(deps = {}) {
 
     return {
         name: 'dashboard',
-        async start() {},
-        async stop() {},
+        async start() {
+            // Idempotent -- a second start() (e.g. a supervisor restart-in-
+            // place test) must not leak a second interval.
+            if (eventsTimer) return;
+            eventsTimer = setInterval(() => changeEmitter.emit('change'), eventsIntervalMs);
+        },
+        async stop() {
+            if (eventsTimer) {
+                clearInterval(eventsTimer);
+                eventsTimer = null;
+            }
+        },
         buildSprintViews,
+        /**
+         * (apra-fleet-siqi.1.1) Subscribe to the periodic "state may have
+         * changed, go poll /state" signal GET /events (registerDashboardRoutes
+         * below) relays to connected clients. Returns an unsubscribe function.
+         * Exposed here (rather than reaching into this closure's private
+         * `changeEmitter` from outside) so registerDashboardRoutes() only ever
+         * talks to the dashboard seam's own public surface, the same
+         * discipline `buildSprintViews`/`renderIndexPage` already follow.
+         * @param {() => void} listener
+         * @returns {() => void} unsubscribe
+         */
+        onChange(listener) {
+            changeEmitter.on('change', listener);
+            return () => changeEmitter.off('change', listener);
+        },
         async renderIndexPage() {
             // Render the sprint stack and the Backlog tab content concurrently
             // with the page shell; a Backlog render failure is isolated so it
@@ -954,5 +1051,57 @@ export function registerDashboardRoutes(supervisor, dashboard) {
             'content-length': body.length,
         });
         res.end(body);
+    });
+
+    // (apra-fleet-siqi.1.1) GET /state -- the lean JSON poll endpoint: the
+    // SAME sprint-stack view model GET / renders into HTML (acceptance
+    // criterion: ids, statuses, claimed-scope/progress counts), but as
+    // application/json and WITHOUT the page shell -- never the GET / HTML.
+    // Built via buildStatePayload() above off the SAME buildSprintViews()
+    // GET / already calls: there is exactly one "how do I compute the
+    // running sprint list" implementation; this route and GET / only format
+    // it differently, mirroring apra-fleet-workflow's own GET /state
+    // (src/viewer/index.mjs) being a lean transform of the same `state` its
+    // GET / embeds into HTML_TEMPLATE.
+    supervisor.route('GET', '/state', async (req, res) => {
+        const views = await dashboard.buildSprintViews();
+        const body = Buffer.from(JSON.stringify(buildStatePayload(views)), 'utf-8');
+        res.writeHead(200, {
+            'content-type': 'application/json; charset=utf-8',
+            'content-length': body.length,
+            'cache-control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        });
+        res.end(body);
+    });
+
+    // (apra-fleet-siqi.1.1) GET /events -- Server-Sent-Events change-signal
+    // stream, the SAME shape as apra-fleet-workflow's own GET /events
+    // (src/viewer/index.mjs): text/event-stream, one connection held open per
+    // client, each message a bare `data: <json>\n\n` line. Unlike that
+    // per-run viewer (which broadcasts on its own workflow.on(...) engine
+    // events), the supervisor has no single internal event stream to relay,
+    // so every message here is the SAME generic `{ type: 'update' }` signal
+    // -- see DEFAULT_EVENTS_INTERVAL_MS above for why a periodic cadence
+    // stands in for per-mutation push. Client (apra-fleet-siqi.1.2) reacts to
+    // ANY message identically: schedule a poll('/state'). This handler never
+    // calls res.end() itself -- the connection only ever closes via the
+    // client disconnecting (req 'close', which unsubscribes from further
+    // signals) or the supervisor process exiting.
+    supervisor.route('GET', '/events', async (req, res) => {
+        res.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'connection': 'keep-alive',
+            'cache-control': 'no-cache',
+        });
+        const send = () => {
+            res.write(`data: ${JSON.stringify({ type: 'update' })}\n\n`);
+        };
+        // Immediate signal on connect: a freshly-opened stream has no
+        // guarantee any prior /state fetch is still current, so the client
+        // should poll once right away rather than wait a full
+        // eventsIntervalMs for the first periodic signal.
+        send();
+        const unsubscribe = dashboard.onChange(send);
+        req.on('close', unsubscribe);
     });
 }

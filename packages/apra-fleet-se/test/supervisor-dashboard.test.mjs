@@ -10,6 +10,7 @@ import {
     statusBadge,
     formatStopError,
     computeBaseDrift,
+    buildStatePayload,
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
@@ -731,6 +732,161 @@ describe('dashboard -- registerDashboardRoutes / GET /', () => {
         assert.ok(res.headers['content-type'].includes('text/html'));
         assert.ok(res.body.includes('sprint-1'));
         assert.ok(res.body.includes('/sprints/sprint-1/live'));
+    });
+
+    // apra-fleet-siqi.1.1
+    test('GET /state serves the lean sprint-stack JSON payload, NOT the GET / HTML shell', async () => {
+        const dashboard = createDashboard({
+            ledger: fakeLedger([{ sprintId: 'sprint-1', members: ['alice'], issueRoots: ['r1'], childPid: 1 }]),
+            watchdog: fakeWatchdog({ 'sprint-1': WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            expandScope: async () => new Set(['r1', 'r2']),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
+        });
+        const supervisor = createSupervisor({ logger: { log() {}, error() {} } });
+        registerDashboardRoutes(supervisor, dashboard);
+
+        const res = await request(supervisor, 'GET', '/state');
+        assert.equal(res.statusCode, 200);
+        assert.ok(res.headers['content-type'].includes('application/json'));
+        assert.ok(!res.body.includes('<!DOCTYPE'), 'GET /state must never serve the GET / HTML shell');
+        assert.ok(!res.body.includes('<html'), 'GET /state must never serve the GET / HTML shell');
+
+        const payload = JSON.parse(res.body);
+        assert.equal(payload.runningCount, 1);
+        assert.equal(payload.sprints.length, 1);
+        const [sprint] = payload.sprints;
+        assert.equal(sprint.sprintId, 'sprint-1');
+        assert.equal(sprint.status, WATCHDOG_STATUS.RUNNING_HEALTHY);
+        assert.equal(sprint.beadCount, 2);
+        assert.ok(typeof payload.generatedAt === 'string' && payload.generatedAt.length > 0);
+    });
+
+    // apra-fleet-siqi.1.1
+    test('GET /events opens a text/event-stream and sends an immediate on-connect signal', async () => {
+        const dashboard = createDashboard({
+            ledger: fakeLedger([]),
+            watchdog: fakeWatchdog({}),
+        });
+        const supervisor = createSupervisor({ logger: { log() {}, error() {} } });
+        registerDashboardRoutes(supervisor, dashboard);
+
+        const closeListeners = [];
+        const req = {
+            method: 'GET',
+            url: '/events',
+            on(event, cb) { if (event === 'close') closeListeners.push(cb); },
+        };
+        const writes = [];
+        const res = {
+            headers: null,
+            statusCode: null,
+            headersSent: false,
+            writeHead(status, headers) { this.statusCode = status; this.headers = headers; this.headersSent = true; },
+            write(chunk) { writes.push(chunk); },
+            end() { throw new Error('GET /events must never call res.end() itself'); },
+        };
+
+        await supervisor.handleRequest(req, res);
+
+        assert.equal(res.statusCode, 200);
+        assert.ok(res.headers['content-type'].includes('text/event-stream'));
+        // The immediate on-connect signal (see dashboard.mjs's registerDashboardRoutes).
+        assert.equal(writes.length, 1, 'connecting must emit exactly one immediate signal');
+        assert.match(writes[0], /^data: /);
+        assert.doesNotThrow(() => JSON.parse(writes[0].slice('data: '.length).trim()));
+
+        assert.equal(closeListeners.length, 1, 'GET /events must register a close listener to unsubscribe');
+        assert.doesNotThrow(() => closeListeners[0]());
+    });
+
+    // apra-fleet-siqi.1.1
+    test('GET /events relays the dashboard seam\'s periodic change signal (started sprint-state changed proxy) to every connected client, and stops once the seam is stopped', async (t) => {
+        t.mock.timers.enable({ apis: ['setInterval'] });
+
+        const dashboard = createDashboard({
+            ledger: fakeLedger([]),
+            watchdog: fakeWatchdog({}),
+            eventsIntervalMs: 1000,
+        });
+        const supervisor = createSupervisor({ logger: { log() {}, error() {} } });
+        registerDashboardRoutes(supervisor, dashboard);
+
+        function connect() {
+            const req = { method: 'GET', url: '/events', on() {} };
+            const writes = [];
+            const res = {
+                writeHead() {},
+                write(chunk) { writes.push(chunk); },
+                end() { throw new Error('must not end'); },
+            };
+            return supervisor.handleRequest(req, res).then(() => writes);
+        }
+
+        const writesA = await connect();
+        const writesB = await connect();
+        assert.equal(writesA.length, 1, 'each client gets its own immediate on-connect signal');
+        assert.equal(writesB.length, 1);
+
+        // dashboard.start() is exactly what server.mjs's supervisor lifecycle
+        // calls for every seam, including this one -- see server.mjs's start().
+        await dashboard.start();
+        t.mock.timers.tick(1000);
+        assert.equal(writesA.length, 2, 'a periodic change signal is relayed to every already-connected client');
+        assert.equal(writesB.length, 2);
+
+        t.mock.timers.tick(2000);
+        assert.equal(writesA.length, 4, 'the signal keeps firing on the configured cadence while the seam is running');
+        assert.equal(writesB.length, 4);
+
+        await dashboard.stop();
+        t.mock.timers.tick(5000);
+        assert.equal(writesA.length, 4, 'no further signal is relayed once the seam has been stopped');
+        assert.equal(writesB.length, 4);
+    });
+});
+
+describe('dashboard -- buildStatePayload', () => {
+    test('never throws regardless of input shape', () => {
+        assert.doesNotThrow(() => buildStatePayload());
+        assert.doesNotThrow(() => buildStatePayload(null));
+        assert.doesNotThrow(() => buildStatePayload([]));
+    });
+
+    test('zero running sprints still returns a well-formed, empty payload', () => {
+        const payload = buildStatePayload([]);
+        assert.equal(payload.runningCount, 0);
+        assert.deepEqual(payload.sprints, []);
+        assert.ok(typeof payload.generatedAt === 'string' && payload.generatedAt.length > 0);
+    });
+
+    test('carries ids, statuses, claimed-scope/progress counts, and members through verbatim', () => {
+        const views = [{
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: ['apra-fleet-eft.6'],
+            beadCount: 7,
+            progress: { closed: 2, required: 3, fraction: 2 / 3 },
+            members: [{ name: 'alice', role: 'orchestrator' }],
+            base: 'main',
+            baseDrift: 0,
+        }];
+        const payload = buildStatePayload(views);
+        assert.equal(payload.runningCount, 1);
+        assert.deepEqual(payload.sprints, [{
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: ['apra-fleet-eft.6'],
+            beadCount: 7,
+            progress: { closed: 2, required: 3, fraction: 2 / 3 },
+            members: [{ name: 'alice', role: 'orchestrator' }],
+            base: 'main',
+            baseDrift: 0,
+        }]);
     });
 });
 
