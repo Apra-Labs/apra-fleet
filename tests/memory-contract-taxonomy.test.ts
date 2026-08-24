@@ -49,6 +49,7 @@ type MethodEntry = {
   member: string;
   tools: { name: string }[];
   error_codes?: string[];
+  non_error_outcomes?: string[];
 };
 
 function readJson<T>(name: string): T {
@@ -202,6 +203,36 @@ describe('taxonomy.json accounts for the whole inventory', () => {
           disposition(code),
           `${code} (cited by methods.json ${method.id}) has no disposition`,
         ).toBeDefined();
+      }
+    }
+  });
+
+  // my-beads-db-27m.44: a bare non-error-outcome name inside error_codes
+  // misdescribes it as a real code to a consumer reading methods.json alone,
+  // even though taxonomy.json's disposition (and the reason recorded there)
+  // says it deliberately gets none. methods.json instead cites these names
+  // through a separate per-method `non_error_outcomes` field (see the
+  // methods.json._meta note this bead adds), so `error_codes` stays a pure
+  // list of taxonomy.json groups[].codes citations.
+  it('never presents a non-error outcome name bare inside a methods.json error_codes array', () => {
+    for (const method of allMethods) {
+      for (const code of method.error_codes ?? []) {
+        expect(
+          nonErrorNames.has(code),
+          `${method.id} error_codes cites ${code}, which taxonomy.json disposes as a non-error outcome -- ` +
+            'move it to that method\'s non_error_outcomes field instead',
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('gives every methods.json non_error_outcomes citation a real taxonomy.json non-error disposition', () => {
+    for (const method of allMethods) {
+      for (const name of method.non_error_outcomes ?? []) {
+        expect(
+          nonErrorNames.has(name),
+          `${method.id} non_error_outcomes cites ${name}, which taxonomy.json does not list as a non-error outcome`,
+        ).toBe(true);
       }
     }
   });

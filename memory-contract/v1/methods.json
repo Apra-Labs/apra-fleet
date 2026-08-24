@@ -23,7 +23,8 @@
       "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry"]
     },
     "not_in_scope": "approveDirective, rejectDirective, addDirective, flaggedPairs (INVENTORY.md section 4.2) are CLI-only and not reachable by any registered MCP tool, so they have no entry here.",
-    "httpKbProvider_note": "HttpKbProvider is dead code in this tree (INVENTORY.md section 4.4, F-10): every MemoryProvider entry below describes SqliteProvider behavior, which is the only implementation any tool call can reach."
+    "httpKbProvider_note": "HttpKbProvider is dead code in this tree (INVENTORY.md section 4.4, F-10): every MemoryProvider entry below describes SqliteProvider behavior, which is the only implementation any tool call can reach.",
+    "non_error_outcomes_note": "my-beads-db-27m.44: a method's `error_codes` field cites ONLY names taxonomy.json's groups[].codes disposes as real error codes. A method that can also reach one of taxonomy.json's `non_error_outcomes` (a documented success-path adjustment or degradation that deliberately gets no code, with its own reason_no_code there) cites that name in a separate `non_error_outcomes` field instead, never bare inside `error_codes` -- tests/memory-contract-taxonomy.test.ts enforces this split. Affected methods: P-2 capture (E-CLAMP, E-CONTRADICTION-FLAGGED, E-DEDUP-NONE), P-10 stats (E-STATS-UNSUPPORTED, E-BIBLE-READ-DEGRADED), P-12 relatedClaims (E-RELATED-CLAIMS-DEGRADED), X-2 feedback (E-ROLE-UNKNOWN-DEGRADED), C-1..C-7 (E-CODE-INTEL-DISABLED)."
   },
   "methods": [
     {
@@ -56,7 +57,8 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "New row per call unless AUDN dedupes to E-DEDUP-NONE.",
-      "error_codes": ["E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-CLAMP", "E-DIRECTIVE-QUARANTINE", "E-CONTRADICTION-FLAGGED", "E-SUPERSEDE-CONSENT-MISSING", "E-DEDUP-NONE", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-DIRECTIVE-QUARANTINE", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-PROVIDER-UNINITIALIZED"],
+      "non_error_outcomes": ["E-CLAMP", "E-CONTRADICTION-FLAGGED", "E-DEDUP-NONE"],
       "see_also": ["Capture provenance and confidence clamp", "Directive quarantine", "Superseding and AUDN matching", "Freshness and content hashing"]
     },
     {
@@ -178,7 +180,8 @@
       "side_effect_class": "pure read",
       "idempotent": true,
       "idempotent_note": "Explicitly never bumps use_count/last_accessed.",
-      "error_codes": ["E-STATS-UNSUPPORTED", "E-BIBLE-READ-DEGRADED", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "non_error_outcomes": ["E-STATS-UNSUPPORTED", "E-BIBLE-READ-DEGRADED"],
       "see_also": ["Query modes"]
     },
     {
@@ -210,7 +213,8 @@
       "tools_note": "Only called from kb_query when expand_related is true.",
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-RELATED-CLAIMS-DEGRADED", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "non_error_outcomes": ["E-RELATED-CLAIMS-DEGRADED"],
       "see_also": ["Query modes"]
     },
     {
@@ -245,7 +249,8 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "Each call appends another note.",
-      "error_codes": ["E-ENTRY-NOT-FOUND", "E-ROLE-UNKNOWN-DEGRADED", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-ENTRY-NOT-FOUND", "E-PROVIDER-UNINITIALIZED"],
+      "non_error_outcomes": ["E-ROLE-UNKNOWN-DEGRADED"],
       "see_also": []
     },
     {
@@ -343,7 +348,8 @@
       "side_effect_class": "pure read",
       "idempotent": true,
       "idempotent_note": "Pure proxy to the active provider (codebase-memory, gitnexus, or none); effect and idempotency truly belong to that provider, not this repo.",
-      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED"],
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
       "see_also": []
     },
     {
@@ -358,7 +364,8 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED"],
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
       "see_also": []
     },
     {
@@ -373,7 +380,8 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED"],
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
       "see_also": []
     },
     {
@@ -389,7 +397,8 @@
       "tools_note": "Also used internally by kb_session_prime for neighbor-symbol expansion, and merged with KB data by enrichContextWithKb -- so its observed shape is provider-shape-plus-enrichment, not the raw provider payload.",
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED"],
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
       "see_also": []
     },
     {
@@ -404,7 +413,8 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED"],
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
       "see_also": []
     },
     {
@@ -419,7 +429,8 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED"],
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
       "see_also": []
     },
     {
@@ -434,7 +445,8 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED"],
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
       "see_also": []
     }
   ]
