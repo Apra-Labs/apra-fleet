@@ -61,6 +61,8 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const DIST_TOOLS_DIR = path.join(REPO_ROOT, 'dist', 'tools');
 const SCHEMAS_DIR = path.join(__dirname, 'schemas');
 const BINDINGS_MCP_DIR = path.join(__dirname, 'bindings', 'mcp');
+const BINDINGS_OPENAPI_DIR = path.join(__dirname, 'bindings', 'openapi');
+const TAXONOMY_PATH = path.join(__dirname, 'taxonomy.json');
 
 // --check: compute and compare, write nothing. See BINDING-SCHEME.md for the
 // full contract this mode enforces.
@@ -73,6 +75,38 @@ const ID_BASE = 'https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contra
 // Same decision, applied to the bindings/mcp layer this task adds (T1.2.3).
 // Recorded in memory-contract/v1/tests/BINDING-SCHEME.md.
 const BINDINGS_ID_BASE = 'https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/mcp';
+
+// $id base for taxonomy.json (T1.3.2, my-beads-db-27m.7) -- same "$id URI Base
+// Decision" convention as ID_BASE/BINDINGS_ID_BASE above, so a code reference
+// resolves straight off GitHub too.
+const TAXONOMY_ID_BASE = 'https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json';
+
+// RFC 9457 "status" per taxonomy group (T1.3.3, this task -- taxonomy.json
+// itself carries no HTTP status, only group semantics via
+// _meta.group_definitions, so this mapping is this task's own mechanical
+// projection decision, made once here rather than per code). One status per
+// group, not per code: taxonomy.json's own "one_code_one_group" partition
+// rule means every code inherits its group's HTTP posture.
+//   validation        -> 400 Bad Request           (bad caller input)
+//   admission         -> 422 Unprocessable Entity   (well-formed, not admissible)
+//   authority         -> 403 Forbidden              (trust-ceiling refusal)
+//   governance        -> 403 Forbidden              (retire/override/activate refusal)
+//   conflict          -> 409 Conflict               (contradiction-pair resolution refused)
+//   not_found         -> 404 Not Found              (named id has no row)
+//   provider_internal -> 500 Internal Server Error  (provider/config cannot serve the call)
+const GROUP_HTTP_STATUS = {
+  validation: 400,
+  admission: 422,
+  authority: 403,
+  governance: 403,
+  conflict: 409,
+  not_found: 404,
+  provider_internal: 500,
+};
+
+// Same $id URI base convention, applied to the openapi.yaml document this
+// task (T1.3.3) adds under bindings/openapi/.
+const OPENAPI_ID_BASE = 'https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/openapi';
 
 // Same 23-tool roster the probe in tests/probe-generator-2020-12.mjs reads,
 // reproduced here rather than imported so this script has no runtime
@@ -242,6 +276,46 @@ function writeDoc(tool, kind, doc) {
 }
 
 /**
+ * Load taxonomy.json (T1.3.2, sole source of truth for the error code set)
+ * and flatten it into the ordered list of PROJECTABLE codes -- this task
+ * (T1.3.3) does not decide the code set, only projects it. Per taxonomy.json's
+ * own `_meta.projection_rule`, a `surfaced: "silent"` code MUST NOT be
+ * projected into a wire error enum (no signal is ever emitted for it), so
+ * those are filtered out here rather than by either projection individually.
+ * `excluded_from_closed_set` codes are never in `groups`, so they are already
+ * absent from this list without any extra filtering (directive-activation
+ * absence, taxonomy.json `_meta.directive_activation_absence`).
+ *
+ * Order is the taxonomy file's own group/array order (JSON object key order
+ * is preserved by JSON.parse, and taxonomy.json is a static committed file),
+ * so this list -- and everything derived from it -- is deterministic across
+ * runs without any sort step of its own.
+ */
+function loadProjectableCodes() {
+  const taxonomy = JSON.parse(readFileSync(TAXONOMY_PATH, 'utf8'));
+  const codes = [];
+  for (const [group, body] of Object.entries(taxonomy.groups)) {
+    body.codes.forEach((entry, index) => {
+      if (entry.surfaced === 'silent') return;
+      const tools = [...new Set(entry.raising_methods.map((m) => m.tool))];
+      codes.push({ code: entry.code, group, index, meaning: entry.meaning, tools });
+    });
+  }
+  return codes;
+}
+
+/**
+ * The taxonomy.json reference URI for one projectable code -- a JSON Pointer
+ * (RFC 6901) fragment appended to TAXONOMY_ID_BASE. This is how both
+ * projections point AT taxonomy.json's own entry instead of inlining the code
+ * string a second time: the pointer identifies the entry structurally (by
+ * group + array index), so neither projection re-types `entry.code` anywhere.
+ */
+function taxonomyCodeRef(entry) {
+  return `${TAXONOMY_ID_BASE}#/groups/${entry.group}/codes/${entry.index}`;
+}
+
+/**
  * Build one MCP binding definition for a tool (T1.2.3). Naming and ref scheme
  * are hand-recorded in memory-contract/v1/tests/BINDING-SCHEME.md -- this
  * function is the implementation of that recorded decision, not a second
@@ -252,23 +326,115 @@ function writeDoc(tool, kind, doc) {
  * omitted): a binding definition does not validate instances, it is a
  * manifest that REFERENCES the two schema documents that do, so stamping a
  * dialect on it would misstate what it is (see BINDING-SCHEME.md).
+ *
+ * T1.3.3 addition: `errors`, a fixed-order array of bare `{ $ref }` pointers
+ * (same no-inlined-body convention as `request`/`response` above) at
+ * taxonomy.json entries for every PROJECTABLE code this tool's raising_methods
+ * name it under (see loadProjectableCodes/taxonomyCodeRef). A tool that raises
+ * no projectable code still gets the key, as an empty array -- so every
+ * binding document has the same key set and `--check`'s byte-diff stays
+ * meaningful. Order follows taxonomy.json's own group/array order, never the
+ * DESCRIPTIONS/roster order, so re-ordering KB_MODULES/CODE_EXPORTS can never
+ * change this array's content.
  */
-function buildBindingDoc(tool) {
+function buildBindingDoc(tool, projectableCodes) {
   const description = DESCRIPTIONS[tool];
   if (!description) {
     throw new Error(`${tool}: no registration description recorded in DESCRIPTIONS -- add it before generating`);
   }
+  const errors = projectableCodes
+    .filter((entry) => entry.tools.includes(tool))
+    .map((entry) => ({ $ref: taxonomyCodeRef(entry) }));
   return {
     $id: `${BINDINGS_ID_BASE}/${tool}.json#`,
     name: tool,
     description,
     request: { $ref: `${ID_BASE}/${tool}.request.json#` },
     response: { $ref: `${ID_BASE}/${tool}.response.json#` },
+    errors,
   };
 }
 
 function writeBindingDoc(tool, doc) {
   return emit(BINDINGS_MCP_DIR, `${tool}.json`, doc);
+}
+
+/**
+ * Build bindings/openapi/openapi.yaml (T1.3.3): the OpenAPI RFC 9457 Problem
+ * Details projection of taxonomy.json's closed error-code set. This is the
+ * file's ONLY producer -- T1.1.1 created bindings/openapi/ as an empty
+ * directory (see BINDING-SCHEME.md section 1), and this task fills it through
+ * contract:generate rather than hand-authoring it, so a second producer of the
+ * same path never exists (the exact two-producer hazard BINDING-SCHEME.md's
+ * header note names for openapi.yaml specifically).
+ *
+ * CRITICAL, carried verbatim from taxonomy.json's `_meta.directive_activation_
+ * absence`: this document names NO path, code or shape for directive
+ * activation. `paths` is the fixed empty object `{}` -- the quarantine is
+ * expressed by the absence of any path at all, not by a 403 on one.
+ *
+ * Content, not filename, decides the format here: the document below is
+ * emitted through the same `emit()` (JSON.stringify, sorted/fixed key order,
+ * trailing newline) as every other generated file in this script, for the
+ * same byte-stability/idempotency guarantee `contract:check` relies on. A
+ * JSON document is valid YAML 1.2 (YAML's flow-mapping grammar is a superset
+ * of JSON), so `openapi.yaml` parses correctly under any RFC 9457/OpenAPI YAML
+ * tooling while staying on the exact same deterministic emit path as
+ * `schemas/` and `bindings/mcp/` -- no second serializer, no YAML-specific
+ * dependency, no risk of the JSON and YAML copies drifting from each other.
+ *
+ * `x-error-catalog` carries the "one type URI, title and HTTP status per
+ * code" the acceptance criteria ask for, one entry per PROJECTABLE taxonomy
+ * code (see loadProjectableCodes): `type` is the taxonomy.json reference URI
+ * itself (RFC 9457 already requires `type` to be a URI identifying the
+ * problem; reusing taxonomyCodeRef for it is what "references taxonomy.json
+ * rather than restating code strings" means here -- the identifier is a
+ * structural pointer, not a hand-typed copy of the code string), `title` is
+ * the code's own `meaning` text (read from taxonomy.json, not re-authored),
+ * and `status` is this task's GROUP_HTTP_STATUS mapping.
+ *
+ * `components.schemas.ProblemDetails` is the reusable RFC 9457 shape every
+ * catalog entry conforms to; kept generic (no enum of code strings) so it
+ * stays valid regardless of which codes taxonomy.json adds or removes later.
+ */
+function buildOpenApiDoc(projectableCodes) {
+  return {
+    openapi: '3.1.0',
+    info: {
+      title: 'apra-fleet memory-contract v1 -- error catalog',
+      version: '1.0.0',
+      description:
+        'RFC 9457 Problem Details projection of memory-contract/v1/taxonomy.json (the closed error-code set; source of truth, not restated here). ' +
+        'Generated by memory-contract/v1/generate-contract.mjs (contract:generate) -- do not hand-edit. ' +
+        'This document intentionally declares zero paths: it exists to carry the error catalog, not a route surface, and per taxonomy.json ' +
+        '_meta.directive_activation_absence it names no path, code, or shape for directive activation (approve/reject/activate a user-directive is CLI-only).',
+    },
+    paths: {},
+    components: {
+      schemas: {
+        ProblemDetails: {
+          $id: `${OPENAPI_ID_BASE}/openapi.yaml#/components/schemas/ProblemDetails`,
+          type: 'object',
+          description: 'RFC 9457 (application/problem+json) Problem Details shape.',
+          properties: {
+            type: { type: 'string', format: 'uri-reference', description: 'A URI identifying the problem type -- for this catalog, a taxonomy.json reference (see x-error-catalog).' },
+            title: { type: 'string', description: "Short human-readable summary of the problem type, taken from the taxonomy.json code's meaning." },
+            status: { type: 'integer', description: 'The HTTP status code for this occurrence of the problem.' },
+          },
+          required: ['type', 'title', 'status'],
+        },
+      },
+    },
+    'x-error-catalog': projectableCodes.map((entry) => ({
+      type: taxonomyCodeRef(entry),
+      title: entry.meaning,
+      status: GROUP_HTTP_STATUS[entry.group],
+    })),
+  };
+}
+
+function writeOpenApiDoc(doc) {
+  return emit(BINDINGS_OPENAPI_DIR, 'openapi.yaml', doc);
 }
 
 // --- write-or-check primitive -----------------------------------------------
@@ -345,9 +511,16 @@ async function main() {
     );
   }
 
+  // T1.3.3: the ordered, PROJECTABLE (non-silent) slice of taxonomy.json's
+  // closed error-code set -- the single computation both projections below
+  // are built from, so they can never disagree with each other about which
+  // codes exist.
+  const projectableCodes = loadProjectableCodes();
+
   let written = 0;
   const expectedSchemaFiles = [];
   const expectedBindingFiles = [];
+  const bindingDocs = [];
   for (const [tool, zodRequestSchema] of entries) {
     if (!zodRequestSchema) {
       throw new Error(`${tool}: request schema export missing from dist/tools -- run "npm run build" first`);
@@ -362,12 +535,19 @@ async function main() {
     expectedSchemaFiles.push(`${tool}.response.json`);
     written += 1;
 
-    // T1.2.3: one MCP binding definition per tool, ref-ing the pair above.
-    const bindingDoc = buildBindingDoc(tool);
+    // T1.2.3/T1.3.3: one MCP binding definition per tool, ref-ing the schema
+    // pair above plus (T1.3.3) the taxonomy.json error codes it can raise.
+    const bindingDoc = buildBindingDoc(tool, projectableCodes);
     writeBindingDoc(tool, bindingDoc);
+    bindingDocs.push(bindingDoc);
     expectedBindingFiles.push(`${tool}.json`);
     written += 1;
   }
+
+  // T1.3.3: the OpenAPI RFC 9457 projection of the same closed code set.
+  const openApiDoc = buildOpenApiDoc(projectableCodes);
+  writeOpenApiDoc(openApiDoc);
+  written += 1;
 
   if (CHECK_MODE) {
     // Three-way parity (acceptance criteria): registered tool <-> exactly one
@@ -377,6 +557,34 @@ async function main() {
     // expectedBindingFiles below is the whole check.
     checkNoExtraFiles(SCHEMAS_DIR, expectedSchemaFiles);
     checkNoExtraFiles(BINDINGS_MCP_DIR, expectedBindingFiles);
+    checkNoExtraFiles(BINDINGS_OPENAPI_DIR, ['openapi.yaml']);
+
+    // T1.3.3 taxonomy-to-projection parity, in both directions (acceptance
+    // criteria: "no code without a projection, no projected code absent from
+    // taxonomy.json"), demonstrable by this same single `--check` command so
+    // T1.5.1 can wrap it as a CI assertion.
+    const expectedRefs = new Set(projectableCodes.map((entry) => taxonomyCodeRef(entry)));
+    const catalogRefs = new Set(openApiDoc['x-error-catalog'].map((entry) => entry.type));
+    const bindingRefs = new Set(bindingDocs.flatMap((doc) => doc.errors.map((e) => e.$ref)));
+
+    for (const ref of expectedRefs) {
+      if (!catalogRefs.has(ref)) {
+        MISMATCHES.push(`taxonomy-to-projection parity: ${ref} missing from bindings/openapi/openapi.yaml x-error-catalog`);
+      }
+      if (!bindingRefs.has(ref)) {
+        MISMATCHES.push(`taxonomy-to-projection parity: ${ref} missing from every bindings/mcp/*.json errors array`);
+      }
+    }
+    for (const ref of catalogRefs) {
+      if (!expectedRefs.has(ref)) {
+        MISMATCHES.push(`taxonomy-to-projection parity: bindings/openapi/openapi.yaml x-error-catalog cites ${ref}, absent from taxonomy.json's projectable codes`);
+      }
+    }
+    for (const ref of bindingRefs) {
+      if (!expectedRefs.has(ref)) {
+        MISMATCHES.push(`taxonomy-to-projection parity: a bindings/mcp/*.json errors array cites ${ref}, absent from taxonomy.json's projectable codes`);
+      }
+    }
 
     if (MISMATCHES.length > 0) {
       console.error(`contract:generate --check: ${MISMATCHES.length} mismatch(es):`);
@@ -386,14 +594,16 @@ async function main() {
     }
     console.log(
       `contract:generate --check: OK -- ${entries.length} tools, ${expectedSchemaFiles.length} schema files, ` +
-        `${expectedBindingFiles.length} binding files, all match.`,
+        `${expectedBindingFiles.length} binding files, 1 openapi file, ${projectableCodes.length} projectable ` +
+        'taxonomy codes, all match and cross-reference cleanly.',
     );
     return;
   }
 
   console.log(
-    `contract:generate: wrote ${written} files (${entries.length} tools x [request, response, binding]) -- ` +
-      `${expectedSchemaFiles.length} schema files to ${SCHEMAS_DIR}, ${expectedBindingFiles.length} binding files to ${BINDINGS_MCP_DIR}.`,
+    `contract:generate: wrote ${written} files (${entries.length} tools x [request, response, binding], plus 1 openapi.yaml) -- ` +
+      `${expectedSchemaFiles.length} schema files to ${SCHEMAS_DIR}, ${expectedBindingFiles.length} binding files to ${BINDINGS_MCP_DIR}, ` +
+      `1 openapi file to ${BINDINGS_OPENAPI_DIR} (${projectableCodes.length} projectable taxonomy codes).`,
   );
 }
 

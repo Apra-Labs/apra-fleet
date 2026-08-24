@@ -7,5 +7,6 @@
   },
   "response": {
     "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_setup.response.json#"
-  }
+  },
+  "errors": []
 }
