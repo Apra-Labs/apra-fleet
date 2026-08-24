@@ -277,11 +277,25 @@ function writeDoc(tool, kind, doc) {
 
 /**
  * Load taxonomy.json (T1.3.2, sole source of truth for the error code set)
- * and flatten it into the ordered list of PROJECTABLE codes -- this task
- * (T1.3.3) does not decide the code set, only projects it. Per taxonomy.json's
- * own `_meta.projection_rule`, a `surfaced: "silent"` code MUST NOT be
- * projected into a wire error enum (no signal is ever emitted for it), so
- * those are filtered out here rather than by either projection individually.
+ * itself, parsed once so both loadProjectableCodes() and the AC5(a) absence
+ * scan (checkDirectiveActivationAbsence) work from the exact same parse.
+ */
+function loadTaxonomy() {
+  return JSON.parse(readFileSync(TAXONOMY_PATH, 'utf8'));
+}
+
+/**
+ * Flatten a parsed taxonomy.json into the ordered list of PROJECTABLE codes
+ * -- this task (T1.3.3) does not decide the code set, only projects it.
+ *
+ * AC1's definition is an ALLOWLIST ("surfaced is thrown or response-field"),
+ * not the denylist ("surfaced is not silent") this used to test: those two
+ * are equivalent ONLY as long as taxonomy.json's `_meta.surfaced_enum` stays
+ * closed at exactly {thrown, response-field, silent}. Coding the allowlist
+ * directly, and throwing on any other value, means a future fourth enum
+ * value fails loudly here instead of being silently over-projected into both
+ * wire projections.
+ *
  * `excluded_from_closed_set` codes are never in `groups`, so they are already
  * absent from this list without any extra filtering (directive-activation
  * absence, taxonomy.json `_meta.directive_activation_absence`).
@@ -291,17 +305,51 @@ function writeDoc(tool, kind, doc) {
  * so this list -- and everything derived from it -- is deterministic across
  * runs without any sort step of its own.
  */
-function loadProjectableCodes() {
-  const taxonomy = JSON.parse(readFileSync(TAXONOMY_PATH, 'utf8'));
+function loadProjectableCodes(taxonomy) {
   const codes = [];
   for (const [group, body] of Object.entries(taxonomy.groups)) {
     body.codes.forEach((entry, index) => {
-      if (entry.surfaced === 'silent') return;
+      if (entry.surfaced !== 'thrown' && entry.surfaced !== 'response-field') {
+        if (entry.surfaced !== 'silent') {
+          throw new Error(
+            `${entry.code}: unrecognised surfaced value "${entry.surfaced}" -- taxonomy.json ` +
+              '_meta.surfaced_enum only defines thrown, response-field, silent; add support here before generating',
+          );
+        }
+        return;
+      }
       const tools = [...new Set(entry.raising_methods.map((m) => m.tool))];
       codes.push({ code: entry.code, group, index, meaning: entry.meaning, tools });
     });
   }
   return codes;
+}
+
+/**
+ * AC5(a) / AC7: a literal-string absence search over the generated bindings/
+ * documents for every taxonomy.json `excluded_from_closed_set` code (the
+ * three CLI-only directive-activation codes today). Driven off taxonomy.json
+ * itself rather than a hardcoded list, so a future addition/removal from
+ * excluded_from_closed_set is picked up automatically. Runs against the
+ * SAME in-memory documents `emit()` would write -- not whatever happens to
+ * already be on disk -- so this check reflects what this run of the
+ * generator actually produces, and (--check mode) is exercised by the same
+ * single `contract:check` command AC7 requires.
+ */
+function checkDirectiveActivationAbsence(taxonomy, bindingDocs, openApiDoc) {
+  const excludedCodes = (taxonomy.excluded_from_closed_set?.codes ?? []).map((entry) => entry.code);
+  const documents = [
+    ...bindingDocs.map((doc) => [`bindings/mcp/${doc.name}.json`, doc]),
+    ['bindings/openapi/openapi.yaml', openApiDoc],
+  ];
+  for (const [label, doc] of documents) {
+    const content = JSON.stringify(doc, null, 2);
+    for (const code of excludedCodes) {
+      if (content.includes(code)) {
+        MISMATCHES.push(`directive-activation absence: excluded code ${code} found in ${label}`);
+      }
+    }
+  }
 }
 
 /**
@@ -515,7 +563,8 @@ async function main() {
   // closed error-code set -- the single computation both projections below
   // are built from, so they can never disagree with each other about which
   // codes exist.
-  const projectableCodes = loadProjectableCodes();
+  const taxonomy = loadTaxonomy();
+  const projectableCodes = loadProjectableCodes(taxonomy);
 
   let written = 0;
   const expectedSchemaFiles = [];
@@ -585,6 +634,10 @@ async function main() {
         MISMATCHES.push(`taxonomy-to-projection parity: a bindings/mcp/*.json errors array cites ${ref}, absent from taxonomy.json's projectable codes`);
       }
     }
+
+    // AC5(a) / AC7: directive-activation absence search, part of the same
+    // single contract:check command.
+    checkDirectiveActivationAbsence(taxonomy, bindingDocs, openApiDoc);
 
     if (MISMATCHES.length > 0) {
       console.error(`contract:generate --check: ${MISMATCHES.length} mismatch(es):`);
