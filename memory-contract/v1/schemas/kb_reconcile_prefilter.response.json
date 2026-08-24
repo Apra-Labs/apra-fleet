@@ -69,7 +69,7 @@
               "items": {}
             },
             "skipped_directive": {
-              "type": "boolean"
+              "type": "number"
             }
           },
           "required": [

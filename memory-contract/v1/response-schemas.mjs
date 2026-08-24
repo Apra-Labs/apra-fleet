@@ -96,9 +96,18 @@ const KB_RESPONSE_BODIES = {
     invalidated: z.number(),
     files: z.array(z.string()),
   }),
+  // F-10 (my-beads-db-27m.9, caught by the live round-trip harness): `fresh`
+  // and `stale` are NOT string arrays. src/tools/kb-context.ts:32-33 filters
+  // the provider's result objects (`{file, status, reason, entry_id}`) and
+  // ships them whole; only `missing` is mapped down to file names
+  // (kb-context.ts:34). The committed fixture kb_context/happy.json shows the
+  // object form too, so the previous z.array(z.string()) contradicted both the
+  // implementation and the corpus. Element shape stays z.unknown() per this
+  // file's standing rule -- no zod schema for a context result exists anywhere
+  // in this repo to cite, and guessing one is what produced this defect.
   kb_context: z.object({
-    fresh: z.array(z.string()),
-    stale: z.array(z.string()),
+    fresh: z.array(z.unknown()),
+    stale: z.array(z.unknown()),
     missing: z.array(z.string()),
   }),
   kb_session_prime: z.object({
@@ -165,7 +174,12 @@ const KB_RESPONSE_BODIES = {
     pairs: z.number(),
     resolved: z.array(z.unknown()),
     left_for_agent: z.array(z.unknown()),
-    skipped_directive: z.boolean(),
+    // F-11 (my-beads-db-27m.9, caught by the live round-trip harness): a COUNT
+    // of directive pairs skipped, not a flag -- src/services/knowledge/
+    // sqlite-provider.ts:1635 declares `skipped_directive: number` and :1650
+    // increments it. kb_reconcile_prefilter/happy.json records 0, so the
+    // previous z.boolean() contradicted the implementation and the corpus.
+    skipped_directive: z.number(),
   }),
   kb_setup: z.object({
     success: z.boolean(),

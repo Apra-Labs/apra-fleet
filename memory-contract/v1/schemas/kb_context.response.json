@@ -59,15 +59,11 @@
           "properties": {
             "fresh": {
               "type": "array",
-              "items": {
-                "type": "string"
-              }
+              "items": {}
             },
             "stale": {
               "type": "array",
-              "items": {
-                "type": "string"
-              }
+              "items": {}
             },
             "missing": {
               "type": "array",
