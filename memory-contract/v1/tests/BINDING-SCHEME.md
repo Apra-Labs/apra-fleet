@@ -28,8 +28,13 @@ tool, no more and no fewer. `INVENTORY.md` remains the arbiter of the count;
 this scheme does not re-derive it.
 
 `bindings/openapi/` (the sibling directory named in `README.md`'s four-layer
-model) is a separate binding target and is out of this task's scope --
-untouched here.
+model) was out of this task's original scope. It has since landed under
+T1.3.3: `contract:generate` now also emits
+`bindings/openapi/openapi.yaml` (JSON text with a `.yaml` extension), the RFC
+9457 Problem Details projection of `taxonomy.json`'s closed error-code set. It
+declares zero paths (no route surface) and is a separate generated artifact
+from the per-tool `bindings/mcp/<tool>.json` documents this section describes;
+see `generate-contract.mjs`'s `openapi.yaml` builder for its shape.
 
 ## 2. Binding document shape
 
@@ -39,14 +44,30 @@ untouched here.
   "name": "<tool>",
   "description": "<registration description, byte-exact from src/services/tool-registry.ts, reproduced in INVENTORY.md Appendix A>",
   "request": { "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/<tool>.request.json#" },
-  "response": { "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/<tool>.response.json#" }
+  "response": { "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/<tool>.response.json#" },
+  "errors": [
+    { "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/<group>/codes/<index>" }
+  ]
 }
 ```
 
-Key order is fixed (`$id`, `name`, `description`, `request`, `response`) and
-`JSON.stringify(doc, null, 2)` with a trailing newline is the exact
-serialization -- this is what keeps two consecutive `contract:generate` runs
-byte-identical (the idempotency criterion this task's acceptance depends on).
+Key order is fixed (`$id`, `name`, `description`, `request`, `response`,
+`errors`) and `JSON.stringify(doc, null, 2)` with a trailing newline is the
+exact serialization -- this is what keeps two consecutive `contract:generate`
+runs byte-identical (the idempotency criterion this task's acceptance depends
+on).
+
+### 2.5 The `errors` key (T1.3.3 addition)
+
+`errors` is a fixed-order array of bare `{ "$ref" }` pointers (same
+no-inlined-body convention as `request`/`response`) at `taxonomy.json` entries
+for every PROJECTABLE code this tool's `raising_methods` name it under. A tool
+that raises no projectable code still gets the key, as an empty array, so
+every binding document shares the same key set and `--check`'s byte-diff
+stays meaningful. Order follows `taxonomy.json`'s own group/array order, never
+the `DESCRIPTIONS`/roster order, so re-ordering `KB_MODULES`/`CODE_EXPORTS`
+can never change this array's content. See `generate-contract.mjs`'s
+`buildBindingDoc`/`taxonomyCodeRef`.
 
 ### 2.1 No inlined schema bodies
 
@@ -127,6 +148,15 @@ and what is actually committed on disk.
 `tests/memory-contract-parity.test.ts` (T1.5.1) is expected to shell out to
 this `--check` mode (or invoke `main()` directly) rather than reimplement the
 comparison; it is not created by this task.
+
+T1.3.3 extended `--check` with a fourth parity direction, taxonomy-to-projection:
+every taxonomy.json PROJECTABLE code must appear in at least one
+`bindings/mcp/*.json` `errors` array, and every ref cited in an `errors` array
+must resolve to a real projectable code in `taxonomy.json` -- a mismatch either
+way is reported the same as a byte-diff. `--check` also compares the committed
+`bindings/openapi/openapi.yaml` byte-for-byte against what generation would
+produce now, on the same "no extras, no gaps" basis as `schemas/` and
+`bindings/mcp/`.
 
 ## 4. Determinism
 

@@ -7,8 +7,8 @@ This directory contains the canonical v1 contract definitions for the memory-ban
 1. **INVENTORY.md** - Authoritative inventory of the tool surface (tool count, request/response shapes, provider methods)
 2. **schemas/** - GENERATED JSON Schema documents, derived from the Zod source of truth in `src/tools/*.ts`
 3. **bindings/mcp/** - Generated MCP tool-definition bindings (owning task: T1.2.3)
-4. **bindings/openapi/** - OpenAPI binding, emitted by `contract:generate` (owning task: T1.3.3; directory-only stub until that task lands)
-5. **fixtures/** - Round-trip test corpus for schema validation (owning task: T1.4.1; directory-only stub until that task lands)
+4. **bindings/openapi/** - Generated OpenAPI binding (`openapi.yaml`, JSON text with a `.yaml` extension): the RFC 9457 Problem Details projection of `taxonomy.json`'s closed error-code set, emitted by `contract:generate` (landed under T1.3.3, commit d27eb0eb)
+5. **fixtures/** - Recorded round-trip request/response corpus for schema validation, one directory per tool with named scenario files (happy path, refusals, edge cases) (landed under T1.4.1, commit f230c530)
 6. **tests/** - Generator, validation, and drift test suite
 
 ## Source of Truth
