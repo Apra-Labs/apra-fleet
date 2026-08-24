@@ -80,9 +80,17 @@ concrete case) probes and registers successfully as `gitbash`, but then has
 every actual command sent to it built against a bare, PATH-resolved
 `bash.exe` fallback -- silently reintroducing the WSL/System32 ambiguity the
 probe was built to close, for exactly the member the probe is supposed to
-protect. Keeping both candidate lists in one shared source, or otherwise
-enforcing they can't drift apart, is a correctness requirement, not
-stylistic tidiness.
+protect. Both the probe's remote discovery script and the local resolver
+now consume one shared candidate-list literal (including the shared
+user-scope suffix), with the parity between the two test-asserted rather
+than left to be kept in sync by convention -- this is now a structurally
+enforced invariant, not just a documented expectation.
+
+Consistent with the "no silent degradation" theme above: the local
+resolver no longer falls back to a bare, PATH-resolved `bash.exe` when none
+of the known-good candidates check out -- it throws, surfacing the failure
+to its caller instead of quietly reintroducing the WSL/System32 ambiguity
+this section describes.
 
 ## Design decision: core and fleet-sprint implement this pattern independently
 
@@ -111,24 +119,42 @@ as listeners served directly by the core binary, unifying the two at that
 point is a mechanical merge of two structurally-identical implementations,
 not a redesign.
 
-**Current state**: the core-side implementation is wired into the real
-command-construction call sites. The fleet-sprint-side module set exists as
-source but is not yet imported by anything outside itself, and the runner's
-production PowerShell-encoding call site has not yet been switched over to
-it -- so on the fleet-sprint side, today, this is a structural design
-decision realized in file layout, not yet a behavior change. Treat the
-fleet-sprint module set as unwired until its call site is actually
-switched.
+**Current state**: both sides are wired into their real command-construction
+call sites, not just present as source. On the core side, the
+command-construction call sites listed above route through the registered
+shell. On the fleet-sprint side, dolt-settle's install/kill/spawn/teardown
+and node-eval command strings, and the runner's remaining
+`buildSettleCallback` call sites, now resolve and thread the member's
+registered shell through `se-os-commands` rather than building a fixed
+PowerShell string -- the module set is an active dependency, not dead
+source.
 
-## Known deliberate duplication: `isPosixShell`
+One import-path subtlety worth keeping in mind when extending this: any
+script body executed via WMI/`Win32_Process` (used to install, probe, and
+kill the pinned dolt server process) is *always* interpreted by PowerShell
+on the invoking host, regardless of which shell the target member is
+registered with. A helper that resolves "the member's shell-dialect path"
+for embedding into such a script body is a latent bug for a `gitbash`
+member -- a POSIX-dialect path (e.g. a `$HOME`-relative one) embedded
+directly into a PowerShell script string breaks silently. The fix pattern
+is to resolve two forms up front -- one in the member's own shell dialect
+for member-shell-executed commands, one always in PowerShell dialect for
+anything embedded in a WMI/PowerShell script body -- and pass the correct
+one to each consumer explicitly. "Shell-aware" means "one value per dialect
+of the string you are embedding it into," not "one value per member."
+
+## `isPosixShell`: one exported helper, not several private copies
 
 The `isPosixShell(os, shell)` predicate that decides whether a member's
-outbound commands should be built as POSIX or PowerShell currently exists as
-multiple separate copies across the call sites that need it (a shared
-exported helper plus several private copies with slightly different
-signatures), each carrying a comment that the duplication is intentional for
-now rather than accidental drift. This is a known, deliberate short-term
-state, not a defect -- but a future consolidation behind one exported helper
-with one signature is expected, since multiple independently-maintained
-copies of the same predicate is exactly the kind of thing that silently
-diverges over time even when each copy is correct today.
+outbound commands should be built as POSIX or PowerShell is now a single
+exported, overloaded helper (accepting either a raw OS value or a
+convenience `isWindows` boolean, plus the optional registered shell), with
+one call-site-facing wrapper (`isPosixShellMember(agent)`) that reads both
+fields off an `Agent` and delegates to it. Every call site that used to
+carry its own private copy of this predicate now imports the shared helper
+instead. The semantics are unchanged from before consolidation:
+`!isWindows || shell === 'gitbash'`. New call sites should import the
+shared helper rather than reintroducing a private copy -- multiple
+independently-maintained copies of the same predicate is exactly the kind
+of thing that silently diverges over time even when each copy starts out
+correct.

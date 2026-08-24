@@ -96,6 +96,20 @@ this helper rather than hand-rolling its own base64/`-EncodedCommand`
 wrapping, so the exit-code and quoting guarantees stay centralized in one
 place instead of drifting per call site.
 
+**This applies even to wrappers that exist to serve a `gitbash` member.** A
+member registered with `shell: 'gitbash'` still has some of its host-side
+work executed as a PowerShell script body -- for example, anything built on
+`Invoke-CimMethod`/`Win32_Process`, which is a Windows host-management
+mechanism with no POSIX equivalent, invoked in PowerShell regardless of
+which shell the target member itself runs. Any helper that emits such a
+script must still carry the full `$ErrorActionPreference = 'Stop'` +
+try/catch + `$LASTEXITCODE`/`exit 0` envelope described above. An unguarded
+`powershell -EncodedCommand <base64>` invocation runs under PowerShell's
+default `Continue` mode and can exit 0 on a non-terminating error --
+precisely the false-success class this pattern exists to eliminate,
+regardless of which member shell the surrounding feature is nominally
+"for."
+
 ## OS-detection caching pitfall
 
 Member OS detection results should only be cached on a successful,
