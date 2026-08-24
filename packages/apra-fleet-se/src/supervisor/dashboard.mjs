@@ -25,20 +25,25 @@
 // "unknown" fallback, never a blank/throw) even when nothing is injected and
 // the ledger entry itself predates these fields.
 //
-// Claimed scope's bead count reuses eft.5.3's live subtree expansion
-// (`expandScope()` in ./scope-overlap.mjs) rather than a fresh reimplementation,
-// since "how many beads does this sprint currently claim" is exactly the same
-// live-expanded-subtree question that module already answers for overlap
-// detection.
+// Claimed scope's bead count answers the SAME "how many beads does this
+// sprint currently claim" question eft.5.3's expandScope() (./scope-
+// overlap.mjs) answers for the launch-time overlap guard -- but, as of
+// apra-fleet-c4s.1, computed purely IN-MEMORY off the single bulk
+// `listAllBeads()` fetch this render already makes below, via
+// `expandScopeInMemory()`/`buildChildIndex()` (backlog.mjs), the SAME
+// migration backlog.mjs's own buildClaimedBy() already made for this same
+// "one `bd` subprocess per discovered node" bug. `deps.expandScope` remains
+// the injectable test seam (and, if a caller still supplies it, the actual
+// expansion path used verbatim) -- production wiring (bin/serve.mjs) injects
+// nothing, so it always takes the in-memory path.
 // =============================================================================
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
-import { expandScope, bdListChildren } from './scope-overlap.mjs';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
-import { renderBacklogPanelHtml, bdListAllBeads } from './backlog.mjs';
+import { renderBacklogPanelHtml, bdListAllBeads, expandScopeInMemory, buildChildIndex } from './backlog.mjs';
 // apra-fleet-x8r.2: the SAME closed/required helper apra-fleet-x8r.1 landed
 // for the fleet-sprint viewer's Sprint Stack widget (and its HTML renderer) --
 // deliberately reused here rather than a second count implementation, so
@@ -716,8 +721,8 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  *     get?: (sprintId: string) => { branch?: string|null, goal?: string|null }|undefined,
  *   },
  *   watchdog: { classifySprint: (entry: object) => Promise<{ status: string }> },
- *   listChildren?: (parentId: string) => Promise<string[]>,
- *   expandScope?: (roots: string[]) => Promise<Set<string>>,
+ *   expandScope?: (roots: string[]) => Promise<Set<string>>, // test seam only -- production leaves this unset and expands in-memory (apra-fleet-c4s.1)
+
  *   listAllBeads?: () => Promise<Array<{ id: string, status: string }>>,
  *   getSprintMeta?: (sprintId: string) => Promise<{ branch?: string, goal?: string, roles?: Record<string,string> }>|{ branch?: string, goal?: string, roles?: Record<string,string> },
  *   driftCheck?: (branch: string|null, base: string|null) => Promise<number|null>|number|null,
@@ -743,8 +748,13 @@ export function createDashboard(deps = {}) {
     }
     const logger = deps.logger ?? console;
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
-    const listChildren = deps.listChildren ?? bdListChildren;
-    const expand = deps.expandScope ?? ((roots) => expandScope(roots, listChildren));
+    // apra-fleet-c4s.1: `deps.expandScope`, when injected, is called verbatim
+    // (the pre-existing test seam -- see the module doc comment above). When
+    // absent (production default, bin/serve.mjs), buildSprintViews() below
+    // expands EVERY sprint's scope in-memory off the single listAllBeads()
+    // fetch it already makes for progress bars, via buildChildIndex() +
+    // expandScopeInMemory() -- never a subprocess walker.
+    const explicitExpand = deps.expandScope ?? null;
     // apra-fleet-x8r.2: one bulk `bd list --json` fetch per renderIndexPage()
     // call (reused across every sprint row below), not one per row -- same
     // "one query fewer" discipline bdListScoped('') documents in runner.js.
@@ -804,6 +814,13 @@ export function createDashboard(deps = {}) {
         const decomposedParentIdsAll = Array.isArray(allBeads)
             ? new Set(allBeads.filter((b) => b && b.parentId).map((b) => b.parentId))
             : null;
+        // apra-fleet-c4s.1: built ONCE off the same bulk fetch above (not one
+        // subprocess walk per sprint row) -- `null` when either a test injects
+        // its own `explicitExpand` (childIndex would be unused) or the bulk
+        // fetch itself failed this round (each row's own try/catch below then
+        // falls back to an empty Map, i.e. "scope is just the roots
+        // themselves" rather than a crash).
+        const childIndex = (!explicitExpand && Array.isArray(allBeads)) ? buildChildIndex(allBeads) : null;
         const built = await Promise.all(entries.map(async (entry) => {
             const classification = await watchdog.classifySprint(entry);
 
@@ -832,7 +849,14 @@ export function createDashboard(deps = {}) {
             let beadCount = null;
             let progress = null;
             try {
-                const scope = await expand(entry.issueRoots ?? []);
+                const roots = entry.issueRoots ?? [];
+                // apra-fleet-c4s.1: in-memory expansion off `childIndex`
+                // (built once above) is the production path -- zero `bd`
+                // subprocess spawns. `explicitExpand`, when a caller injects
+                // one, is used verbatim instead (test seam).
+                const scope = explicitExpand
+                    ? await explicitExpand(roots)
+                    : expandScopeInMemory(roots, childIndex ?? new Map());
                 beadCount = scope.size;
                 if (Array.isArray(allBeads)) {
                     const beadsInScope = allBeads.filter((b) => b && scope.has(b.id));
