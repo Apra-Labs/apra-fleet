@@ -227,8 +227,17 @@ async function probeDoltVersion({ command, member, doltPath, platform, shell = '
 }
 
 /** Step 1b: install the pinned binary via remote shell from the same pinned
- *  asset URL resolveDoltAsset() computes. Bounded, single-attempt. */
-async function installPinnedDolt({ command, member, platform, arch, doltPath, log }) {
+ *  asset URL resolveDoltAsset() computes. Bounded, single-attempt.
+ *  The PowerShell script body is kept byte-identical to today regardless of
+ *  the member's registered shell -- it is `doltPath` (already the
+ *  PowerShell-dialect `psDoltPath` form, resolved by the caller) that must
+ *  stay in `$env:USERPROFILE...` form even for a gitbash member, since the
+ *  dialect INSIDE the wrapped script is PowerShell, not the member's own
+ *  shell (apra-fleet-7dir.21's NON-OBVIOUS constraint). Only the OUTER
+ *  invocation is routed via getSeCommands(...).wrapPowerShellScript, which
+ *  returns the script unchanged for a powershell member and a bash-invocable
+ *  `-EncodedCommand` form for a gitbash member. */
+async function installPinnedDolt({ command, member, platform, arch, doltPath, shell = '', log }) {
     const asset = resolveDoltAsset(platform, arch);
     log(`[Dolt Settle] installing pinned dolt ${DOLT_VERSION} on member '${member}' from ${asset.url}`);
 
@@ -240,7 +249,8 @@ async function installPinnedDolt({ command, member, platform, arch, doltPath, lo
             `Get-ChildItem -Recurse -Filter "${asset.binaryName}" "$env:TEMP\\dolt-settle" | Select-Object -First 1 | Copy-Item -Force -Destination ${doltPath}`,
             'Remove-Item -Recurse -Force "$env:TEMP\\dolt-settle.zip","$env:TEMP\\dolt-settle" -ErrorAction SilentlyContinue',
         ].join('; ');
-        return command(script, { member_name: member, silent: true, failSoft: true, timeout_s: 320, label: `settle: install pinned dolt on '${member}'` });
+        const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle installPinnedDolt');
+        return command(wrapped, { member_name: member, silent: true, failSoft: true, timeout_s: 320, label: `settle: install pinned dolt on '${member}'` });
     }
 
     const script = [
@@ -269,10 +279,12 @@ function isBinaryLockedError(output) {
  *  path -- by construction the only thing that ever launches a binary there
  *  is settle/the installer, so this is always a legitimate self-heal, never
  *  collateral damage against an unrelated process. */
-async function killProcessAtPath({ command, member, platform, doltPath, log }) {
+async function killProcessAtPath({ command, member, platform, doltPath, shell = '', log }) {
     log(`[Dolt Settle] attempting to kill any process locking '${doltPath}' on member '${member}' before retrying the pinned install.`);
     if (platform === 'win32') {
-        return command(`Get-Process | Where-Object { $_.Path -eq ${doltPath} } | Stop-Process -Force -ErrorAction SilentlyContinue`, { member_name: member, silent: true, failSoft: true, label: `settle: kill locking dolt process on '${member}'` });
+        const script = `Get-Process | Where-Object { $_.Path -eq ${doltPath} } | Stop-Process -Force -ErrorAction SilentlyContinue`;
+        const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle killProcessAtPath');
+        return command(wrapped, { member_name: member, silent: true, failSoft: true, label: `settle: kill locking dolt process on '${member}'` });
     }
     return command('pkill -f "\\.apra-fleet/bin/dolt" || true', { member_name: member, silent: true, failSoft: true, label: `settle: kill locking dolt process on '${member}'` });
 }
@@ -296,13 +308,12 @@ export async function ensurePinnedDolt({ command, member, platform, arch = 'x64'
     // `psDoltPath` is ALWAYS the PowerShell-dialect form (shell forced to ''),
     // because installPinnedDolt/killProcessAtPath/spawnEphemeralServer embed
     // it inside a raw PowerShell SCRIPT body, not a member-shell-dispatched
-    // command -- those three are explicitly out of scope for
-    // apra-fleet-7dir.16 (their lane sibling apra-fleet-7dir.21 adds the
-    // wrap-PowerShell-for-bash primitive; a further lane sibling owns
-    // wiring dolt-settle.mjs's script call sites onto it). Until that lands,
-    // a gitbash member must still get the PowerShell-dialect path here, or a
-    // bare `$HOME/...` path would silently fail to expand inside those raw
-    // PowerShell script bodies (apra-fleet-7dir.16's INTERIM-STATE clause).
+    // command. The dialect INSIDE those wrapped scripts is always PowerShell
+    // even for a gitbash member -- only the OUTER invocation is now routed
+    // through getSeCommands(...).wrapPowerShellScript (apra-fleet-7dir.21/.22)
+    // -- so a gitbash member must still get the PowerShell-dialect path here,
+    // or a bare `$HOME/...` path would silently fail to expand inside those
+    // PowerShell script bodies.
     const psDoltPath = memberDoltPath({ os: platform, shell: '' });
     const warnings = [];
 
@@ -314,7 +325,7 @@ export async function ensurePinnedDolt({ command, member, platform, arch = 'x64'
     // Missing, broken, or wrong version -- attempt the pinned install.
     let install;
     try {
-        install = await installPinnedDolt({ command, member, platform, arch, doltPath: psDoltPath, log });
+        install = await installPinnedDolt({ command, member, platform, arch, doltPath: psDoltPath, shell, log });
     } catch (err) {
         throw new DoltBinaryUnavailableError(
             `[Dolt Settle] unsupported platform/arch for member '${member}' installing pinned dolt: ${err.message}`,
@@ -327,8 +338,8 @@ export async function ensurePinnedDolt({ command, member, platform, arch = 'x64'
 
     if (installFailed && isBinaryLockedError(installOutput)) {
         // Kill-first, then retry once (Part 5.6 step 2).
-        await killProcessAtPath({ command, member, platform, doltPath: psDoltPath, log });
-        const retry = await installPinnedDolt({ command, member, platform, arch, doltPath: psDoltPath, log });
+        await killProcessAtPath({ command, member, platform, doltPath: psDoltPath, shell, log });
+        const retry = await installPinnedDolt({ command, member, platform, arch, doltPath: psDoltPath, shell, log });
         if (!(retry && retry.ok === false)) {
             const reprobed = await probeDoltVersion({ command, member, doltPath, platform, shell });
             if (reprobed.ok) return { doltPath, psDoltPath, version: reprobed.version, pinned: true, warnings };
@@ -371,7 +382,7 @@ export async function ensurePinnedDolt({ command, member, platform, arch = 'x64'
 /** Genuinely-detached spawn -- WMI on Windows (Start-Process/schtasks both
  *  die with the launching SSH session, verified live), nohup+disown on
  *  POSIX. Returns the pid so teardown can target it precisely. */
-export async function spawnEphemeralServer({ command, member, platform, doltPath, dataDir, host, port, log = () => {} }) {
+export async function spawnEphemeralServer({ command, member, platform, doltPath, dataDir, host, port, shell = '', log = () => {} }) {
     log(`[Dolt Settle] starting ephemeral dolt sql-server for member '${member}' at ${host}:${port} --data-dir ${dataDir}`);
 
     if (platform === 'win32') {
@@ -388,7 +399,8 @@ export async function spawnEphemeralServer({ command, member, platform, doltPath
             'if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create failed with ReturnValue $($r.ReturnValue) for command line: $cl" }',
             'Write-Output "PID:$($r.ProcessId)"',
         ].join('; ');
-        const res = await command(script, { member_name: member, silent: true, failSoft: true, label: `settle: spawn ephemeral sql-server on '${member}'` });
+        const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle spawnEphemeralServer');
+        const res = await command(wrapped, { member_name: member, silent: true, failSoft: true, label: `settle: spawn ephemeral sql-server on '${member}'` });
         if (res && res.ok === false) {
             throw new DoltSyncError(`[Dolt Settle] failed to spawn ephemeral sql-server for member '${member}': ${res.error}`, { member, doltOutput: res.error });
         }
@@ -432,9 +444,9 @@ export async function spawnEphemeralServer({ command, member, platform, doltPath
 
 /** Bounded poll for the server to actually accept connections -- never
  *  sleep-and-hope. */
-export async function waitForServerReady({ command, member, platform, host, port, log = () => {}, attempts = 10, intervalMs = 500 }) {
+export async function waitForServerReady({ command, member, platform, shell = '', host, port, log = () => {}, attempts = 10, intervalMs = 500 }) {
     for (let i = 0; i < attempts; i += 1) {
-        const probe = platformAwareTcpProbe({ command, member, platform, host, port });
+        const probe = platformAwareTcpProbe({ command, member, platform, shell, host, port });
         // eslint-disable-next-line no-await-in-loop -- intentional bounded poll
         const res = await probe;
         if (res) return true;
@@ -464,26 +476,33 @@ export async function waitForServerReady({ command, member, platform, host, port
  * single-quoted string, so `require("net")` arrived at node as
  * `require(net)` and died with a SyntaxError (verified live on
  * fleet-win-dev1). Backslash-escaping them is the documented workaround --
- * and must NOT be applied on POSIX, where the backslashes would survive
- * literally into the JS.
+ * and must NOT be applied on POSIX (or on a Windows member whose registered
+ * shell is Git-for-Windows bash, which runs `node` directly rather than
+ * through PowerShell's native-argument passing): the backslashes would
+ * survive literally into the JS. Dialect is resolved off the member's
+ * REGISTERED shell (getSeCommands) rather than platform, so this only
+ * escapes for the true powershell dialect (apra-fleet-7dir.22/.23).
+ * @param {{ os?: string, shell?: string }|string} target
+ * @param {string} js
  */
-function nodeEval(platform, js) {
-    return `node -e '${platform === 'win32' ? js.replace(/"/g, '\\"') : js}'`;
+function nodeEval(target, js) {
+    const needsPowerShellEscaping = getSeCommands(target).shell === 'powershell';
+    return `node -e '${needsPowerShellEscaping ? js.replace(/"/g, '\\"') : js}'`;
 }
 
-function tcpProbeScript(platform, host, port, timeoutMs = 2000) {
-    return nodeEval(platform, `const net=require("net");const s=net.connect(${port},"${host}");const done=(v)=>{try{s.destroy()}catch(e){};console.log(v?"PROBE:True":"PROBE:False");process.exit(0)};s.on("connect",()=>done(true));s.on("error",()=>done(false));setTimeout(()=>done(false),${timeoutMs})`);
+function tcpProbeScript(target, host, port, timeoutMs = 2000) {
+    return nodeEval(target, `const net=require("net");const s=net.connect(${port},"${host}");const done=(v)=>{try{s.destroy()}catch(e){};console.log(v?"PROBE:True":"PROBE:False");process.exit(0)};s.on("connect",()=>done(true));s.on("error",()=>done(false));setTimeout(()=>done(false),${timeoutMs})`);
 }
 
-async function platformAwareTcpProbe({ command, member, platform, host, port }) {
-    const res = await command(tcpProbeScript(platform, host, port), { member_name: member, silent: true, failSoft: true, label: `settle: TCP probe for '${member}'` });
+async function platformAwareTcpProbe({ command, member, platform, shell = '', host, port }) {
+    const res = await command(tcpProbeScript({ os: platform, shell }, host, port), { member_name: member, silent: true, failSoft: true, label: `settle: TCP probe for '${member}'` });
     return /PROBE:True/i.test(String((res && res.output) || ''));
 }
 
 /** Kill the server + verify the port is actually closed. Best-effort by
  *  design (called from the happy path AND the unconditional `finally` --
  *  see settleDoltConflicts). */
-async function killServerAndVerify({ command, member, platform, pid, host, port, log = () => {} }) {
+async function killServerAndVerify({ command, member, platform, shell = '', pid, host, port, log = () => {} }) {
     // Kill the recorded pid AND, belt-and-braces, anything still bound to our
     // ephemeral port: the recorded pid is resolved by a pattern match at spawn
     // time, so a mis-resolved pid must not be able to leave the real server
@@ -491,8 +510,10 @@ async function killServerAndVerify({ command, member, platform, pid, host, port,
     // Both forms are scoped to settle's own port, never to dolt at large.
     const matcher = `sql-server --host ${host} --port ${port}`;
     if (platform === 'win32') {
+        const script = `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process -Filter "Name='dolt.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '--port ${port}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+        const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle killServerAndVerify');
         await command(
-            `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process -Filter "Name='dolt.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '--port ${port}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+            wrapped,
             { member_name: member, silent: true, failSoft: true, label: `settle: kill ephemeral sql-server pid ${pid} on '${member}'` },
         );
     } else {
@@ -500,7 +521,7 @@ async function killServerAndVerify({ command, member, platform, pid, host, port,
     }
     for (let i = 0; i < 6; i += 1) {
         // eslint-disable-next-line no-await-in-loop -- bounded teardown-verify poll
-        const stillUp = await platformAwareTcpProbe({ command, member, platform, host, port });
+        const stillUp = await platformAwareTcpProbe({ command, member, platform, shell, host, port });
         if (!stillUp) {
             log(`[Dolt Settle] torn down ephemeral sql-server (pid ${pid}) for member '${member}'; port ${port} confirmed closed.`);
             return;
@@ -822,7 +843,7 @@ export async function settleDoltConflicts(member, opts = {}) {
             log(`[Dolt Settle] member '${member}' already has a live server at ${status.host}:${status.port} -- targeting it instead of spawning a second one.`);
         } else {
             const dataDir = status.dataDir || DEFAULT_EMBEDDED_DATA_DIR;
-            port = await pickFreePort({ command, member, platform, portRangeStart, portRangeEnd });
+            port = await pickFreePort({ command, member, platform, shell, portRangeStart, portRangeEnd });
 
             // A busy candidate port is SKIPPED, not killed-and-reused: pickFreePort
             // only ever hands back a port nothing answers on (design doc Part 3.5,
@@ -834,15 +855,19 @@ export async function settleDoltConflicts(member, opts = {}) {
             // distinction wrong (killing a live settle) is worse than the
             // bounded wait on the sweep.
             // spawnEphemeralServer embeds doltPath inside a raw PowerShell/WMI
-            // script body on Windows (Section 4) -- out of scope for
-            // apra-fleet-7dir.16 -- so it must keep receiving the
-            // PowerShell-dialect path (psDoltPath) regardless of the member's
-            // actual registered shell until its lane sibling wires it through
-            // the wrap-PowerShell primitive (INTERIM-STATE clause).
-            const spawned = await spawnEphemeralServer({ command, member, platform, doltPath: doltInfo.psDoltPath, dataDir, host, port, log });
+            // script body on Windows (Section 4). The script body itself must
+            // keep receiving the PowerShell-dialect path (psDoltPath)
+            // regardless of the member's actual registered shell -- the
+            // dialect INSIDE the wrapped script is always PowerShell -- but
+            // the OUTER invocation is now routed through
+            // getSeCommands(...).wrapPowerShellScript via `shell`
+            // (apra-fleet-7dir.22), so a gitbash member gets it via
+            // `powershell -EncodedCommand` from bash instead of the raw
+            // PowerShell text being handed directly to bash.
+            const spawned = await spawnEphemeralServer({ command, member, platform, doltPath: doltInfo.psDoltPath, dataDir, host, port, shell, log });
             pid = spawned.pid;
             weSpawnedTheServer = true;
-            await waitForServerReady({ command, member, platform, host, port, log });
+            await waitForServerReady({ command, member, platform, shell, host, port, log });
         }
 
         // If not preflight-validated by the pin ladder, the fallback dolt
@@ -889,7 +914,7 @@ export async function settleDoltConflicts(member, opts = {}) {
         // BEFORE republishing -- embedded bd must not race the server's
         // exclusive chunk-journal lock on the same data dir.
         if (weSpawnedTheServer && pid) {
-            await killServerAndVerify({ command, member, platform, pid, host, port, log });
+            await killServerAndVerify({ command, member, platform, shell, pid, host, port, log });
             pid = null;
         }
 
@@ -908,7 +933,7 @@ export async function settleDoltConflicts(member, opts = {}) {
         // Guaranteed teardown -- covers every throw path above. On the happy
         // path pid is already null (torn down before republish per 7.2).
         if (weSpawnedTheServer && pid) {
-            await killServerAndVerify({ command, member, platform, pid, host, port, log }).catch((err) => {
+            await killServerAndVerify({ command, member, platform, shell, pid, host, port, log }).catch((err) => {
                 log(`[Dolt Settle] WARNING: finally-block teardown failed for member '${member}': ${err.message}`);
             });
         }
@@ -997,12 +1022,15 @@ export function buildSettleCallback(member, opts = {}) {
  * age threshold plus its run interval (~15 minutes with the current
  * defaults) until the sweep reaps the orphan.
  */
-async function pickFreePort({ command, member, platform, portRangeStart, portRangeEnd }) {
+async function pickFreePort({ command, member, platform, shell = '', portRangeStart, portRangeEnd }) {
     // Same node-based probe as tcpProbeScript, scanning the range member-side
     // in ONE dispatch: a round trip per candidate port would be 100 SSH
     // sessions, and no shell one-liner is portable across PowerShell 5.1,
-    // bash and zsh (see tcpProbeScript for the live evidence).
-    const script = nodeEval(platform,
+    // bash and zsh (see tcpProbeScript for the live evidence). Dialect is
+    // resolved off the member's registered shell, not bare platform, so a
+    // gitbash member takes the POSIX (unescaped) nodeEval branch just like
+    // tcpProbeScript (apra-fleet-7dir.22).
+    const script = nodeEval({ os: platform, shell },
         `const net=require("net");const host="${RECOVERY_SQL_SERVER_HOST}";`
         + 'const free=(p)=>new Promise((r)=>{const s=net.connect(p,host);const done=(v)=>{try{s.destroy()}catch(e){};r(v)};'
         + 's.on("connect",()=>done(false));s.on("error",()=>done(true));setTimeout(()=>done(true),500)});'
