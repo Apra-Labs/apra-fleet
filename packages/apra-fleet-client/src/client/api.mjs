@@ -109,9 +109,9 @@
  * @property {number} [cloud_idle_timeout_min] - Minutes of inactivity before auto-stop (default: 30)
  * @property {string} [cloud_activity_command] - Custom shell command for workload detection. Must output "busy" or "idle" on stdout.
  * @property {"claude" | "codex" | "copilot" | "agy" | "opencode" | "none"} [llm_provider] - LLM provider for this member (default: "claude")
- * @property {string} [model_cheap] - Custom cheap model choice from a curated list (e.g. "gpt-oss-120b", "gpt-120", "gemini-3.5-flash-lite", "haiku", "gpt-5.4-mini")
- * @property {string} [model_standard] - Custom standard model choice from a curated list (e.g. "gemini-3.5-flash", "gpt-oss-120b", "gpt-120", "sonnet", "gpt-5.4")
- * @property {string} [model_premium] - Custom premium model choice from a curated list (e.g. "sonnet", "opus", "gpt-oss-120b")
+ * @property {"gpt-oss-120b" | "gpt-120" | "gemini-3.5-flash-lite" | "haiku" | "gpt-5.4-mini"} [model_cheap] - Custom cheap model choice from a curated list
+ * @property {"gemini-3.5-flash" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Custom standard model choice from a curated list
+ * @property {"sonnet" | "opus" | "gpt-oss-120b"} [model_premium] - Custom premium model choice from a curated list
  * @property {{cheap?: string, standard?: string, premium?: string}} [model_tiers] - Per-member model tier map. A single model fills all tiers.
  * @property {"codebase-memory" | "gitnexus" | "none"} [code_intel_provider] - Code-intelligence provider for this member (default: fleet-wide config)
  * @property {string} [category] - Optional group label
@@ -142,9 +142,9 @@
  * @property {number} [cloud_idle_timeout_min] - Minutes of inactivity before auto-stop
  * @property {string} [cloud_activity_command] - Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.
  * @property {"claude" | "codex" | "copilot" | "agy" | "opencode"} [llm_provider] - Change the LLM provider
- * @property {string} [model_cheap] - Change custom cheap model (e.g. "gpt-oss-120b", "gpt-120", "gemini-3.5-flash-lite", "haiku", "gpt-5.4-mini")
- * @property {string} [model_standard] - Change custom standard model (e.g. "gemini-3.5-flash", "gpt-oss-120b", "gpt-120", "sonnet", "gpt-5.4")
- * @property {string} [model_premium] - Change custom premium model (e.g. "sonnet", "opus", "gpt-oss-120b")
+ * @property {"gpt-oss-120b" | "gpt-120" | "gemini-3.5-flash-lite" | "haiku" | "gpt-5.4-mini"} [model_cheap] - Change custom cheap model
+ * @property {"gemini-3.5-flash" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Change custom standard model
+ * @property {"sonnet" | "opus" | "gpt-oss-120b"} [model_premium] - Change custom premium model
  * @property {{cheap?: string, standard?: string, premium?: string}} [model_tiers] - Per-member model tier map with free-form model IDs. A single model fills all tiers.
  * @property {"codebase-memory" | "gitnexus" | "none"} [code_intel_provider] - Change the code-intelligence provider for this member
  * @property {string} [category] - Group label
