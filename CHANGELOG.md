@@ -34,7 +34,7 @@ any of the 23 inventoried kb_*/code_* tools: `wrapTool`'s onboarding preamble
 and nudge suffix only ever attach when the tool result is non-JSON
 (`isJsonResponse` false), all 23 kb_*/code_* handlers return
 `JSON.stringify(...)`, and the nudge-suffix path is gated to `register_member`
-only (`src/services/tool-registry.ts`, `src/services/onboarding.ts`). The
+and `execute_prompt` (`src/services/tool-registry.ts`, `src/services/onboarding.ts`). The
 published single-text-block response schemas are still narrower than the real
 three-block `wrapTool` envelope in general -- `register_member`,
 `execute_prompt`, and any future non-JSON-returning tool can still trigger
