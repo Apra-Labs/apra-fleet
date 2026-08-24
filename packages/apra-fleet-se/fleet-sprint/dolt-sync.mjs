@@ -1267,18 +1267,24 @@ export function flush(filter = {}) {
  * `platform`/`arch` are optional and probed from the member when absent.
  * `opts.settle` may be supplied to override the callback (tests do this).
  *
+ * `opts.shell` threads the member's REGISTERED shell into dolt-settle
+ * (apra-fleet-7dir.16/.24) the same way every other buildSettleCallback call
+ * site does -- omitted (defaulting to '', the PowerShell dialect on
+ * Windows) is the pre-shell-aware behavior, not a regression, for any
+ * caller that has not resolved it.
+ *
  * @param {string} member
- * @param {{ command?: Function, log?: Function, platform?: string, arch?: string, settle?: Function, [key: string]: any }} [opts]
+ * @param {{ command?: Function, log?: Function, platform?: string, arch?: string, shell?: string, settle?: Function, [key: string]: any }} [opts]
  * @returns {Promise<{ repaired: boolean, escalation?: string, result?: object }>}
  */
 export async function repair(member, opts = {}) {
-    const { command, log = () => {}, platform, arch } = opts;
+    const { command, log = () => {}, platform, arch, shell = '' } = opts;
     if (typeof command !== 'function') {
         return { repaired: false, escalation: 'not-configured: repair() requires an injected command() to run settle' };
     }
     const settle = typeof opts.settle === 'function'
         ? opts.settle
-        : buildSettleCallback(member, { command, log, platform, arch });
+        : buildSettleCallback(member, { command, log, platform, arch, shell });
     let result = null;
     try {
         result = await settle({ operation: 'repair' });

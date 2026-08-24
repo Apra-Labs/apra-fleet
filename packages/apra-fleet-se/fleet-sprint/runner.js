@@ -1099,6 +1099,7 @@ export {
  *   remote?: string, agent?: Function, resolveConflictModel?: string,
  *   onAuthFailure?: Function,
  *   resolveMemberProvider?: (member: string) => Promise<string|undefined>,
+ *   args?: { callTool?: Function },
  * }} opts
  * @returns {Promise<{ ok: true, member: string, gPush: object, dPush: object }>}
  */
@@ -1106,7 +1107,7 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     const {
         command, pushCode = true, pushBeads = true, log = () => {},
         mutex, sprintId, branch, maxTransientRetries = 1, remote = 'origin',
-        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider,
+        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider, args,
     } = opts;
 
     let gPush;
@@ -1139,7 +1140,12 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     // and re-bootstraps a clone, so an arbitrary multi-command dispatch's bead
     // mutations cannot be silently thrown away here. There is no pendingMutation
     // to capture and replay because nothing is ever dropped.
-    const settle = buildSettleCallback(member, { command, log });
+    // Thread this member's REGISTERED shell into dolt-settle the same way
+    // the pre-dispatch bracket does (apra-fleet-7dir.16/.24), guarded on
+    // `args.callTool` so a caller with no MCP client (mock-sprint scenarios)
+    // keeps the pre-shell-aware default.
+    const shell = await resolveSettleShell({ args, member, log });
+    const settle = buildSettleCallback(member, { command, log, shell });
     const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, settle });
     return { ok: true, member, gPush, dPush };
 }
@@ -2418,6 +2424,24 @@ export async function resolveMemberOs(opts) {
     return os;
 }
 
+/**
+ * Resolve a member's registered shell for a buildSettleCallback call site,
+ * guarded on the presence of a callTool the same way the original
+ * pre-dispatch wiring at runSprintCycle's dispatch bracket is (apra-
+ * fleet-7dir.16) -- so a mock-sprint scenario with no MCP client wired keeps
+ * its pre-shell-aware default ('', PowerShell dialect on Windows) instead of
+ * throwing or hanging on a fleetApi call that has nothing to answer it.
+ * Shared by every remaining buildSettleCallback call site so each one does
+ * not have to re-implement the guard (apra-fleet-7dir.24).
+ * @param {{ args?: { callTool?: Function }, member: string, log?: Function }} opts
+ * @returns {Promise<string>}
+ */
+async function resolveSettleShell({ args, member, log = () => {} }) {
+    if (!(args && typeof args.callTool === 'function')) return '';
+    const target = await resolveMemberTarget({ fleetApi: new ApraFleet({ callTool: args.callTool }), member, log });
+    return target.shell;
+}
+
 // Builds the member-bound command that RUNS the deployed git-credential-helper
 // and the human-readable descriptor used in this function's error messages
 // (the descriptor must stay readable -- the Windows command itself is an
@@ -3161,15 +3185,19 @@ export async function persistNewTaskBestEffort({ createFn, command, member, pare
  * Returns the ids that are NOT closed after the D-pull-then-read. An empty
  * array means the streak genuinely closed everything it was assigned.
  *
- * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function }} opts
+ * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function, args?: { callTool?: Function } }} opts
  * @returns {Promise<string[]>} the still-unclosed bead ids
  */
-export async function verifyDoerStreakClosed({ command, orchestratorMember, beadIds, log = () => {} }) {
+export async function verifyDoerStreakClosed({ command, orchestratorMember, beadIds, log = () => {}, args }) {
     // D-pull FIRST so the orchestrator's clone observes the doer's just-pushed
     // closes. Routed through the single dolt-sync module's purpose-based BEFORE
     // bracket (apra-fleet-417.2.1); behavior is identical to the previous
     // direct doltPullBefore() call.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
+    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // guarded on args.callTool the same way the pre-dispatch bracket is
+    // (apra-fleet-7dir.24).
+    const shell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell }) });
     const label = `bd show ${beadIds.join(' ')} --json`;
     const showRes = await command(label, { member_name: orchestratorMember, silent: true });
     const showBeads = parseBdJson(showRes, label);
@@ -6599,7 +6627,7 @@ async function runSprintCycle(context) {
                         await syncMemberAfterOrdered(member, {
                             command, pushCode, pushBeads, log, branch: validated.branch,
                             mutex: doltPushMutex, sprintId: sprintMutexId, agent, onAuthFailure,
-                            resolveMemberProvider: resolveMemberVcsProvider,
+                            resolveMemberProvider: resolveMemberVcsProvider, args,
                         });
                         syncErr = null;
                         break;
@@ -7144,7 +7172,11 @@ async function runSprintCycle(context) {
     // readinessGate (apra-fleet-417.5 rename of healthGate) selects the
     // pre-flight variant of the BEFORE bracket.
     // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
+    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // guarded on args.callTool the same way the pre-dispatch bracket is
+    // (apra-fleet-7dir.24).
+    const preflightSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: preflightSettleShell }) }));
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
@@ -7456,7 +7488,11 @@ async function runSprintCycle(context) {
     // DoltSync.syncBefore() is a benign no-op when the clone is current and
     // when no dolt remote is configured at all.
     // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
+    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // guarded on args.callTool the same way the pre-dispatch bracket is
+    // (apra-fleet-7dir.24).
+    const verifyReadSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: verifyReadSettleShell }) }));
 
     await updateDashboard();
 
@@ -8925,7 +8961,7 @@ async function runSprintCycle(context) {
                         // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
                         // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
                         const preResumeUnclosed = await withOpenSyncBracket(() => verifyDoerStreakClosed({
-                            command, orchestratorMember, beadIds: actualBeadIds, log,
+                            command, orchestratorMember, beadIds: actualBeadIds, log, args,
                         }));
                         if (preResumeUnclosed.length === 0) {
                             log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns), but all assigned bead id(s) are already closed -- WARNING: the doer missed the VERIFY checkpoint (kept running after its last bd close instead of stopping). Treating this streak as a successful completion, not a failure; issuing NO resume dispatch.`);
@@ -9024,7 +9060,7 @@ async function runSprintCycle(context) {
                     // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
                     // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
                     const unclosedIds = await withOpenSyncBracket(() => verifyDoerStreakClosed({
-                        command, orchestratorMember, beadIds: actualBeadIds, log,
+                        command, orchestratorMember, beadIds: actualBeadIds, log, args,
                     }));
                     const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
                     log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);
@@ -9079,7 +9115,7 @@ async function runSprintCycle(context) {
                 // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
                 // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
                 const unclosedIds = await withOpenSyncBracket(() => verifyDoerStreakClosed({
-                    command, orchestratorMember, beadIds: actualBeadIds, log,
+                    command, orchestratorMember, beadIds: actualBeadIds, log, args,
                 }));
                 const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
 
@@ -9823,7 +9859,11 @@ async function runSprintCycle(context) {
         // beads state (every member's D-pushed closes) rather than the
         // orchestrator's stale local copy.
         // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-        await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
+        // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+        // guarded on args.callTool the same way the pre-dispatch bracket is
+        // (apra-fleet-7dir.24).
+        const cycleEvalSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+        await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: cycleEvalSettleShell }) }));
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -10113,7 +10153,11 @@ async function runSprintCycle(context) {
     // reflects every member's D-pushed beads state, not the orchestrator's
     // stale local copy.
     // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
+    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // guarded on args.callTool the same way the pre-dispatch bracket is
+    // (apra-fleet-7dir.24).
+    const finalReviewSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: finalReviewSettleShell }) }));
     const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
