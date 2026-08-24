@@ -131,6 +131,24 @@ export class SePosixCommands {
       .replace(/\$/g, '\\$')
       .replace(/"/g, '\\"');
   }
+
+  /**
+   * A POSIX member has no PowerShell -- there is nothing this method could
+   * correctly return (returning the script unchanged would hand a bash
+   * interpreter raw PowerShell text and fail confusingly; inventing a bash
+   * translation would violate the design decision pinned on this primitive,
+   * which is to keep the live-verified PowerShell body and only change how
+   * it is INVOKED). So the base implementation throws a clear, loud error
+   * naming the caller, rather than silently returning something that runs
+   * the wrong interpreter (apra-fleet-7dir.21). SeWindowsCommands and
+   * SeWindowsGitbashCommands both override this with a real implementation.
+   * @param {string} _script
+   * @param {string} [callerName] name of the calling function/site, for the error message
+   * @returns {never}
+   */
+  wrapPowerShellScript(_script, callerName = 'wrapPowerShellScript caller') {
+    throw new Error(`${callerName}: cannot wrap a PowerShell script for a POSIX member -- this member has no PowerShell interpreter to invoke it with.`);
+  }
 }
 
 export default SePosixCommands;

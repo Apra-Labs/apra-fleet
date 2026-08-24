@@ -124,6 +124,20 @@ export class SeWindowsCommands {
       .replace(/\$/g, `${bq}$`)
       .replace(/"/g, `${bq}"`);
   }
+
+  /**
+   * This member's OWN shell already IS PowerShell, so a script destined for
+   * it needs no envelope at all -- returning it unchanged is what keeps
+   * every non-gitbash Windows member's dispatched script byte-identical to
+   * today (apra-fleet-7dir.21). Contrast with SeWindowsGitbashCommands'
+   * override, which DOES need to wrap the same script for a bash shell to
+   * invoke it.
+   * @param {string} script
+   * @returns {string}
+   */
+  wrapPowerShellScript(script) {
+    return String(script);
+  }
 }
 
 export default SeWindowsCommands;

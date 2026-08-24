@@ -39,6 +39,31 @@
 //                          one member-bound string, two dialects, resolved
 //                          through getSeCommands. General argument quoting
 //                          otherwise stays out for the reasons below.
+//   wrapPowerShellScript   dolt-settle.mjs's installPinnedDolt/
+//                          killProcessAtPath/spawnEphemeralServer (Sections
+//                          3/4): whole PowerShell SCRIPTS with no safe bash
+//                          equivalent worth inventing (Invoke-WebRequest/
+//                          Expand-Archive install, Get-Process/Stop-Process
+//                          kill, Invoke-CimMethod Win32_Process spawn --
+//                          the last one's own header records that
+//                          Start-Process/schtasks were verified live to die
+//                          with the SSH session, so the script body itself
+//                          is not something to casually replace). Added
+//                          (apra-fleet-7dir.21) because a Windows member
+//                          whose registered shell is gitbash still HAS a
+//                          PowerShell interpreter available -- per the repo
+//                          CLAUDE.md rule ("Wrap PowerShell commands
+//                          explicitly... rather than assuming the member's
+//                          shell"), the fix is to keep the live-verified
+//                          PowerShell script bodies unchanged and invoke
+//                          them FROM bash via `-EncodedCommand`, not to
+//                          rewrite them in bash. SeWindowsCommands returns
+//                          the script unchanged (its own shell already IS
+//                          PowerShell); SeWindowsGitbashCommands wraps it as
+//                          a bash-invocable `powershell -EncodedCommand
+//                          <base64 utf16le>` string; SePosixCommands throws
+//                          (a true POSIX member has no PowerShell to hand
+//                          the script to at all).
 //
 // Deliberately NOT included, so this stays an interface rather than a
 // catalogue:
