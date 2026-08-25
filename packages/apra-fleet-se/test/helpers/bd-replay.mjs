@@ -89,8 +89,8 @@ const isBdCommand = (cmd) => /^\s*bd(\s|$)/.test(cmd);
 // recordings. Real/integration mode still runs them against the real `bd`
 // CLI. The dolt bracket behavior itself (retry/reconcile/divergence, exact
 // insertion points) is covered directly by the unit tests in
-// dolt-sync-brackets.test.mjs / mock-sprint-git-sync-brackets.test.mjs, which
-// drive the helpers with an injected command() mock rather than through this
+// dolt-sync-brackets.test.mjs / git-sync-brackets.test.mjs, which drive the
+// helpers with an injected command() mock rather than through this
 // record/replay layer.
 const isDoltSyncCommand = (cmd) => /^\s*bd\s+dolt\s+(pull|push)\b/.test(cmd);
 

@@ -127,7 +127,7 @@ overview, project/feature/member selection, default + verbose rendering, marker
 styling, shell-completion helper.
 
 **Deferred:**
-- Gemini/other-provider transcript parsing, and remote transcript tailing for
+- Other-provider transcript parsing, and remote transcript tailing for
   non-Claude providers (fleet-log activity still works for them; only the rich
   LLM detail is Claude-only).
 - Push-based SSE/WebSocket sink and a multi-pane web/TUI.

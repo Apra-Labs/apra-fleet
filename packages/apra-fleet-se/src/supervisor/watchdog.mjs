@@ -10,11 +10,21 @@
 // events alone to know a sprint's true state -- we need an out-of-band probe.
 //
 // This module is that probe. On a short, CONFIGURABLE interval it PID-probes
-// every ledger-listed sprint and combines two independent signals -- PID
-// liveness and child HTTP reachability (the child's own `/state` endpoint on
-// its --viewer-port) -- into EXACTLY FIVE statuses:
+// every ledger-listed sprint and combines three independent signals -- PID
+// liveness, child HTTP reachability (the child's own `/state` endpoint on
+// its --viewer-port), and (apra-fleet-p2to.3.1) that SAME `/state` payload's
+// generic `pause.status` field (see packages/apra-fleet-workflow/src/viewer/
+// index.mjs's `state.pause`, apra-fleet-p2to.2.1) -- into EXACTLY SIX statuses:
 //
-//   running-healthy      PID alive (and plausibly OUR child) AND HTTP answering
+//   running-healthy      PID alive (and plausibly OUR child), HTTP answering,
+//                        and not paused.
+//   paused               PID alive, HTTP answering, and the child's own
+//                        `state.pause.status` reads 'paused' (apra-fleet-
+//                        p2to.1's engine pause primitive has actually
+//                        engaged, not merely been requested). Treated as a
+//                        LIVE, healthy state -- never stalled/dead, and
+//                        (like running-healthy/running-unresponsive) its
+//                        reservation is never auto-released.
 //   running-unresponsive PID alive but HTTP silent. This is an OPERATOR-ATTENTION
 //                        signal, NOT a death sentence: a wedged/slow child is
 //                        never auto-declared crashed and is never killed here.
@@ -27,9 +37,12 @@
 //                        NO terminal state, a symptom of immediate child exit
 //
 // CRITICAL invariants (acceptance criteria):
-//   * The classifier returns EXACTLY ONE of the five statuses per sprint.
+//   * The classifier returns EXACTLY ONE of the six statuses per sprint.
 //   * A hung child (PID alive, HTTP not answering) is running-unresponsive --
 //     never crashed, never killed.
+//   * A live-pid child the engine has actually paused is `paused`, never
+//     stalled/dead/crashed -- and, like every other live status, its
+//     reservation is never force-released (apra-fleet-p2to.3.1).
 //   * PID-gone WITH an old_runs/ (or legacy old_sprints/) terminal state =>
 //     finished; WITHOUT one => crashed.
 //   * PID reuse is guarded: the liveness probe validates the PID is plausibly
@@ -50,9 +63,13 @@ import { writeJsonFileAtomic } from '@apralabs/apra-fleet-workflow/viewer/deboun
 import { withTimestamps } from './log-timestamp.mjs';
 import { HISTORY_EVENTS } from './history.mjs';
 
-/** The five statuses the classifier may return. */
+/** The six statuses the classifier may return. */
 export const WATCHDOG_STATUS = Object.freeze({
     RUNNING_HEALTHY: 'running-healthy',
+    // (apra-fleet-p2to.3.1) A live, HTTP-reachable child the engine has
+    // actually paused (state.pause.status === 'paused', not merely
+    // 'pausing') -- see this module's file-level doc comment.
+    PAUSED: 'paused',
     RUNNING_UNRESPONSIVE: 'running-unresponsive',
     CRASHED: 'crashed',
     FINISHED: 'finished',
@@ -284,6 +301,50 @@ export function probeChildHttp(port, opts = {}) {
 }
 
 /**
+ * (apra-fleet-p2to.3.1) Default pause-status probe: GETs the SAME child
+ * `/state` endpoint probeChildHttp() above already knows is reachable, and
+ * reads its generic `pause.status` field (packages/apra-fleet-workflow/src/
+ * viewer/index.mjs's `state.pause`, set by the p2to.2.1 viewer from the
+ * p2to.1 engine's own 'pause:requested'/'paused'/'resumed' events). Returns
+ * the raw string ('none' | 'pausing' | 'paused'), or `null` when the request
+ * fails, times out, or the body is not parseable JSON -- "cannot verify" is
+ * never conflated with "not paused": classifySprint() below only acts on an
+ * explicit `'paused'` value, so a probe failure here just leaves the child
+ * classified by PID+HTTP alone (running-healthy), exactly as it was before
+ * this probe existed. Never throws.
+ * @param {number} port
+ * @param {{ host?: string, path?: string, timeoutMs?: number }} [opts]
+ * @returns {Promise<string|null>}
+ */
+export function probeChildPauseStatus(port, opts = {}) {
+    const host = opts.host ?? '127.0.0.1';
+    const path = opts.path ?? '/state';
+    const timeoutMs = Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : WATCHDOG_DEFAULT_HTTP_TIMEOUT_MS;
+    if (!Number.isInteger(port) || port <= 0) return Promise.resolve(null);
+    return new Promise((resolve) => {
+        let settled = false;
+        const done = (val) => { if (!settled) { settled = true; resolve(val); } };
+        const req = http.request({ host, port, path, method: 'GET', timeout: timeoutMs }, (res) => {
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+                try {
+                    const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+                    const status = body && typeof body === 'object' ? body?.pause?.status : null;
+                    done(typeof status === 'string' ? status : null);
+                } catch {
+                    done(null);
+                }
+            });
+            res.on('error', () => done(null));
+        });
+        req.on('timeout', () => { req.destroy(); done(null); });
+        req.on('error', () => done(null));
+        req.end();
+    });
+}
+
+/**
  * apra-fleet-k7b.3: formats a human-readable exit-detail string for a
  * PID-gone sprint from whatever the ledger's recordExit() (spawner's own
  * SAME-INSTANCE 'exit' listener, see spawner.mjs/bin/serve.mjs's wiring)
@@ -495,6 +556,7 @@ export function defaultRecordTerminalError({ sprintId, childPid, env, logger, de
  *   resolvePort?: (sprintId: string) => number|undefined,
  *   isChildAlive?: (pid: number, marker?: string|number|null) => boolean|Promise<boolean>,
  *   probeHttp?: (port: number) => Promise<boolean>|boolean,
+ *   probePauseState?: (port: number) => Promise<string|null>|string|null,
  *   hasTerminalState?: (sprintId: string, branch?: string|null) => object|boolean|null,
  *   recordTerminalError?: (info: { sprintId: string, childPid: number|null, env: NodeJS.ProcessEnv, logger: object }) => void,
  *   recordFinished?: (info: { sprintId: string, state: object|null, env: NodeJS.ProcessEnv, logger: object, history: object|null }) => void,
@@ -524,6 +586,11 @@ export function createWatchdog(deps = {}) {
     const resolvePort = deps.resolvePort ?? (() => undefined);
     const isChildAlive = deps.isChildAlive ?? makeChildPidProbe();
     const probeHttp = deps.probeHttp ?? probeChildHttp;
+    // (apra-fleet-p2to.3.1) Only ever consulted when probeHttp above already
+    // confirmed the child is reachable -- see classifySprint()'s pidAlive
+    // branch below. Injectable so a test can drive a deterministic 'paused'/
+    // 'pausing'/'none'/null value without a real child HTTP server.
+    const probePauseState = deps.probePauseState ?? probeChildPauseStatus;
     // apra-fleet-k7b.2: resolves by run-id first, falling back to the
     // reservation's own recorded `branch` (ledger.mjs's Reservation.branch,
     // legacy pre-run-id lookup key) ONLY when the run-id lookup misses; see
@@ -691,7 +758,7 @@ export function createWatchdog(deps = {}) {
     }
 
     /**
-     * Classify a SINGLE ledger entry into exactly one of the four statuses.
+     * Classify a SINGLE ledger entry into exactly one of the six statuses.
      * @param {{ sprintId: string, childPid: number|null }} entry
      * @returns {Promise<{ sprintId: string, status: string, pidAlive: boolean, httpOk: boolean, childPid: number|null, port: number|undefined }>}
      */
@@ -719,13 +786,36 @@ export function createWatchdog(deps = {}) {
                     httpOk = false;
                 }
             }
+            // (apra-fleet-p2to.3.1) Only consult the pause-state probe once
+            // HTTP is already known reachable -- an unresponsive child cannot
+            // be asked anything, so it stays running-unresponsive exactly as
+            // before this probe existed. A live, HTTP-reachable child the
+            // engine has actually engaged a pause on (state.pause.status ===
+            // 'paused', NOT the deferred 'pausing') is classified PAUSED
+            // instead of running-healthy -- still a live, non-terminal
+            // status, so it falls through the same "pidAlive" branch as
+            // running-healthy/running-unresponsive and is NEVER routed
+            // through releaseTerminalReservation() below (that only runs in
+            // the PID-gone branch).
+            let pauseStatus = null;
+            if (httpOk && Number.isInteger(port)) {
+                try {
+                    pauseStatus = await probePauseState(port);
+                } catch {
+                    pauseStatus = null;
+                }
+            }
+            const status = pauseStatus === 'paused'
+                ? WATCHDOG_STATUS.PAUSED
+                : (httpOk ? WATCHDOG_STATUS.RUNNING_HEALTHY : WATCHDOG_STATUS.RUNNING_UNRESPONSIVE);
             return {
                 sprintId,
-                status: httpOk ? WATCHDOG_STATUS.RUNNING_HEALTHY : WATCHDOG_STATUS.RUNNING_UNRESPONSIVE,
+                status,
                 pidAlive: true,
                 httpOk,
                 childPid,
                 port,
+                ...(pauseStatus ? { pauseStatus } : {}),
             };
         }
 

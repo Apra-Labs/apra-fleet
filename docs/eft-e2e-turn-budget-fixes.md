@@ -126,5 +126,5 @@ workflow step (already `if: always()`, and runs *before* T6 teardown removes
 alice/bella, so they're still reachable) to also pull each member's most
 recent Claude Code session transcript file into the run's artifact directory,
 scoped to the `claude` provider for now (matching the suites currently
-exercising this P0 investigation; gemini/agy/opencode store sessions
+exercising this P0 investigation; agy/opencode store sessions
 differently and would need separate handling if/when that's needed).

@@ -169,7 +169,7 @@ section as uniform self-spawn behavior, which is wrong:**
   plain HTTP client (`packages/apra-fleet-client`'s already-implemented
   `StreamableHttpTransport`, `factory.mjs`/`transport.mjs`) that connects to
   that already-running singleton, the same one every other registered
-  provider (Claude Code, Gemini, Codex, Copilot, etc.) is already talking to.
+  provider (Claude Code, Antigravity, Codex, Copilot, etc.) is already talking to.
   Discovery/liveness works exactly the way `src/services/singleton.ts`
   already does it for the server's own startup-dedup: `~/.apra-fleet/data/
   server.json` holds `{pid, url}` written by the running instance;

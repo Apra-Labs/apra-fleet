@@ -1,6 +1,6 @@
 ---
 name: plan-reviewer
-description: Reviews beads DAG structure for coverage, task size, and acceptance criteria; classifies each task complexity bucket and reads its assigned model; returns APPROVED or CHANGES NEEDED.
+description: Reviews beads DAG structure for coverage, task size, and acceptance criteria; classifies each task complexity bucket and reads its assigned model; returns APPROVED or CHANGES_NEEDED.
 tools: [Read, Grep, Glob, Bash, Write, ToolSearch]
 ---
 
@@ -48,10 +48,6 @@ to satisfy a criterion as SETTLED for the rest of the cycle:
 - This binds within the current review cycle only. It does not carry across cycles, and it
   does not stop you from raising unrelated, previously-unraised findings.
 
-This rule exists because each review round otherwise runs blind to earlier rounds' own
-rulings, letting the goalposts move round to round on the same criterion even though the
-plan correctly implemented what a prior round said was acceptable.
-
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
 1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
@@ -85,40 +81,34 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
 6. **No scope creep**: tasks address only the original sprint goals and open bugs/features
 7. **No duplicate work**: no two tasks do the same thing
 8. **Feasibility**: no task assumes something that has not been built yet
-9. **Ready-work check -- scoped to the UNION of this review's roots, not each root alone**
-   (see the graph-semantics section above): run `bd list --parent <scope> --ready
-   --type=task --json` for EACH sprint root and reason over the COMBINED result. The
-   invariant is that the UNION of ready work across all roots is non-empty whenever open
-   tasks remain anywhere in scope -- NOT that every root independently has ready work. Do
-   NOT use bare `bd ready`, which lists ready work across the entire database and is not a
-   signal about this DAG.
+9. **Ready-work check -- scoped to the UNION of this review's roots** (see the
+   graph-semantics section): run `bd list --parent <scope> --ready --type=task --json`
+   for EACH sprint root and reason over the COMBINED result. The invariant: the UNION of
+   ready work across all roots is non-empty whenever open tasks remain anywhere in
+   scope -- NOT that every root independently has ready work. Do NOT use bare
+   `bd ready` (whole-database output, not a signal about this DAG).
    - A single root whose scoped `--ready` list is EMPTY is NOT a failure when its open
-     tasks are blocked (directly or transitively) by an open task in a DIFFERENT root that
-     is itself ready now or reachable from the union ready-set. That is legitimate
-     cross-goal sequencing (a seeded or intended cross-root `blocks` edge), not a cycle --
-     do NOT tear out the edge and do NOT hard-fail for it.
-   - Hard CHANGES NEEDED only when EITHER (a) the union of `--ready` across every root is
-     empty while open tasks remain anywhere in scope (the whole sprint cannot start -- a
-     true deadlock), OR (b) a root's blocked chain traces back into its OWN subtree (a
-     self-cycle -- a `blocks` edge to a `--parent` ancestor/descendant). Diagnose with `bd
-     blocked --parent <scope>` and `bd dep list <id>` on the suspicious issues; list every
-     ID in the cycle. Do NOT assume a self-cycle is structurally impossible for any
-     scope-root type except `epic` -- bd's protection is narrower than that.
-   Epic-level completion tracking (has everything under this epic actually finished) is a
-   separate question -- use `bd epic status <scope>` for that ONLY when `<scope>` is itself
-   `issue_type=epic` (check via `bd show <scope> --json` first: on a non-epic scope, `bd
-   epic status` silently lists unrelated epics instead of erroring) -- fall back to
-   `dependent_count`/manual child inspection for non-epic scopes.
-10. **Model metadata**: every task has a model tier set as beads metadata, i.e.
-    `--metadata '{"model": "..."}'` at creation (visible as the `model` key in `bd show <id>`'s
-    metadata output). This is the single location the tier lives in -- `planner.md` Step 3
-    writes it here and nowhere else (not `--notes`, not free text). A task missing this
-    metadata key is a Step 2 criterion-10 failure, not a fallback case for this step; see
-    Step 3 for the read-time fallback used only when classifying/reporting.
-11. **Lane cohesion**: every task carries `streak` and `streakOrder` lane metadata via the
-    same `--metadata` channel as `model` (visible as the `streak`/`streakOrder` keys in `bd
-    show <id>`'s metadata output) -- a task missing either key is a criterion-11 finding.
-    Beyond presence, check:
+     tasks are blocked (directly or transitively) by an open task in a DIFFERENT root
+     reachable from the union ready-set -- legitimate cross-goal sequencing, not a
+     cycle; do NOT tear out the edge and do NOT hard-fail.
+   - Hard CHANGES_NEEDED only when EITHER (a) the union of `--ready` across every root
+     is empty while open tasks remain anywhere in scope (true deadlock), OR (b) a
+     root's blocked chain traces back into its OWN subtree (a self-cycle -- a `blocks`
+     edge to a `--parent` ancestor/descendant). Diagnose with `bd blocked --parent
+     <scope>` and `bd dep list <id>`; list every ID in the cycle. Do NOT assume a
+     self-cycle is structurally impossible except for `epic` scope roots -- bd's
+     protection is narrower than that.
+   Epic-level completion tracking is separate -- use `bd epic status <scope>` ONLY when
+   `<scope>` is itself `issue_type=epic` (check `bd show <scope> --json` first: on a
+   non-epic scope it silently lists unrelated epics instead of erroring); otherwise
+   fall back to `dependent_count`/manual child inspection.
+10. **Model metadata**: every task has a model tier in beads metadata (the `model` key
+    in `bd show <id>` -- the single location, per `planner.md` Step 3; never `--notes`
+    or free text). A missing key is a criterion-10 failure; Step 3's fallback is for
+    classification/reporting only.
+11. **Lane cohesion**: every task carries `streak` and `streakOrder` in the same
+    `--metadata` channel as `model` -- a task missing either key is a criterion-11
+    finding. Beyond presence, check:
     - **Cohesive lanes**: the tasks sharing a `streak` id name overlapping files or the same
       component/module in their descriptions -- a lane grouping unrelated work areas is a
       finding.
@@ -146,12 +136,10 @@ For each open `type=task` issue, determine:
 - **M**: 2-3 files, moderate logic (new endpoint, test suite, small refactor)
 - **L**: 3+ files or non-trivial design (auth flow, migration, cross-cutting change)
 
-**Model** -- read from the task's beads metadata (`model` key, set via `--metadata`) in
-`bd show <id>` output. This is the same location `planner.md` Step 3 writes to -- do not
-look in `--notes` or anywhere else. If no `model` metadata key is set on a task, use the
-fallback tier: `standard`, AND flag it under Step 2 criterion 10 as a CHANGES_NEEDED
-finding (the fallback lets you finish classification/reporting in the same pass; it does
-not excuse the planner from setting the metadata).
+**Model** -- read from the task's beads metadata (`model` key in `bd show <id>`; never
+`--notes`). If missing, use fallback tier `standard` AND flag it under Step 2
+criterion 10 as a CHANGES_NEEDED finding -- the fallback lets you finish
+classification, it does not excuse the planner.
 
 ## Step 4 -- Output verdict
 

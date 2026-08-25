@@ -384,6 +384,19 @@ scenario.
    reset and move on -- this repo treats sprint-run surprises as signal.
 6. Hand off to Teardown regardless of the assertion's outcome.
 
+### Smoke evidence output fields
+
+The generic `regression-test-runner` output schema leaves `smokeEvidence`
+target-defined. For this repo's own dispatches, populate it with exactly
+these three fields, sourced from the checks above:
+
+- `versionStdout` -- verbatim stdout of the toy CLI's `--version` run from
+  step 5.
+- `canaryStatus` -- the `status` field from `bd show gh-toy-4ef` (step 2),
+  e.g. `"closed"`.
+- `toyRepoHeadSha` -- the toy repo's head commit SHA after the toy sprint
+  (step 4).
+
 ## Reporting failures
 
 Regression failures are filed as STANDALONE, PARENT-LESS beads (`bd

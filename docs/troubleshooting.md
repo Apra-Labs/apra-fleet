@@ -49,7 +49,6 @@ Fleet can configure member permissions. Ask it to, for example, "Grant
 | Provider | Config location |
 |----------|-----------------|
 | Claude | `.claude/settings.local.json` |
-| Gemini | `.gemini/policies/` |
 | Codex | `.codex/config.toml` (approval mode) |
 | Copilot | `.github/copilot/settings.local.json` |
 

@@ -32,7 +32,7 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 | `password` | string | conditional | Required when `auth_type` is `"password"` |
 | `key_path` | string | conditional | Required when `auth_type` is `"key"` |
 | `work_folder` | string | yes | Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- `~` and relative paths are rejected |
-| `llm_provider` | `"claude"` \| `"gemini"` \| `"codex"` \| `"copilot"` | no | Default: `"claude"`. LLM backend for this member |
+| `llm_provider` | `"claude"` \| `"codex"` \| `"copilot"` | no | Default: `"claude"`. LLM backend for this member |
 
 **What it does, step by step:**
 
@@ -40,7 +40,7 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 2. **Duplicate folder check** -- rejects if another member already uses the same folder on the same device (same host for remote, same machine for local).
 3. **Tests connectivity** -- remote members get an SSH connection test with latency measurement. Local members always pass (they're on the same machine).
 4. **Detects OS** -- remote members run `uname -s` and `cmd /c ver` to determine Linux/macOS/Windows. Local members read `process.platform` directly.
-5. **Checks provider CLI** -- runs `<provider> --version` (e.g. `claude --version`, `gemini --version`) to verify the LLM CLI is installed and capture the version.
+5. **Checks provider CLI** -- runs `<provider> --version` (e.g. `claude --version`, `codex --version`) to verify the LLM CLI is installed and capture the version.
 6. **Auth test (remote only)** -- for Claude members, runs a quick `claude -p "hello"` to verify authentication. For non-Claude providers, the version check from step 5 serves as the CLI availability check; auth is verified separately via `provision_llm_auth`. Skipped for local members since they inherit the current session's auth.
 7. **Creates working folder** -- `mkdir -p` (or equivalent) on the target.
 8. **Provisions role-agent files (remote only)** -- hashes the canonical set of PM role-agent files (planner, doer, reviewer, etc., plus `_shared/` and `schemas/`) against what is already on the remote box and uploads anything missing or stale. Skipped for local members (they share the operator's home directory) and for providers with no agents directory (codex, copilot). A provisioning failure is reported as a warning but never blocks registration.
@@ -82,7 +82,7 @@ Modifies an existing member's registration. All fields except `member_id` are op
 | `password` | string | no | New password (encrypted before storage) |
 | `key_path` | string | no | New private key path |
 | `work_folder` | string | no | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- `~` and relative paths are rejected |
-| `llm_provider` | `"claude"` \| `"gemini"` \| `"codex"` \| `"copilot"` | no | Switch LLM backend |
+| `llm_provider` | `"claude"` \| `"codex"` \| `"copilot"` | no | Switch LLM backend |
 
 **What it does:**
 
@@ -110,7 +110,7 @@ Unregisters a fleet member and cleans up its connection.
 **What it does:**
 
 1. Looks up the member by ID.
-2. **Best-effort auth cleanup** -- tests connectivity to the member, and if reachable: removes the provider's credential file (e.g. `~/.claude/.credentials.json` for Claude) if the provider supports OAuth copy, and removes the provider's auth env var (e.g. `ANTHROPIC_API_KEY` for Claude, `GEMINI_API_KEY` for Gemini) from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). If the member is offline, a warning is returned but the removal still proceeds.
+2. **Best-effort auth cleanup** -- tests connectivity to the member, and if reachable: removes the provider's credential file (e.g. `~/.claude/.credentials.json` for Claude) if the provider supports OAuth copy, and removes the provider's auth env var (e.g. `ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex) from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). If the member is offline, a warning is returned but the removal still proceeds.
 3. Calls `strategy.close()` -- for remote members, this closes the pooled SSH connection. For local members, this is a no-op.
 4. Removes the member from the registry file.
 
@@ -174,7 +174,7 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 |------|------|----------|-------------|
 | `member_id` | string | yes | UUID of the target member |
 | `prompt` | string | yes | The prompt text to send to the LLM agent |
-| `resume` | boolean | no | Default: `true`. Continue the previous session if one exists |
+| `resume` | boolean \| string | no | Default: `true`. `true` continues the member's most recently stored session if one exists. A string value is an explicit session id to resume instead -- used when a caller must target one specific prior session rather than "whatever the member last used" (e.g. a retry that must reattach to the exact session that produced a prior failed attempt). An explicit-id resume that the provider reports as not found is terminal for that dispatch, not silently retried as a fresh session -- callers needing a fallback must re-dispatch with `resume: false` themselves. |
 | `timeout_s` | number | no | Default: 300 (5 min). **Inactivity timeout** -- resets on every output chunk; kills the session only when silent for this many seconds |
 | `max_total_s` | number | no | Default: none. **Hard ceiling** -- kills the session after this total elapsed time in seconds regardless of activity |
 | `model` | string | no | Model to use. Pass a tier name (`premium`, `standard`, `cheap`) or a provider-specific model ID. Defaults to `standard` tier when omitted. |
@@ -182,13 +182,13 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 
 **Provider-specific behavior:**
 
-| Aspect | Claude | Gemini | Codex | Copilot |
-|--------|--------|--------|-------|---------|
-| CLI invocation | `claude -p "..."` | `gemini -p "..."` | `codex exec "..."` | `copilot -p "..."` |
-| JSON output | Single JSON object | Single JSON object | NDJSON (parsed automatically) | Single JSON object |
-| `max_turns` | `--max-turns N` (default 50) | Not available (ignored) | Not available (ignored) | Not available (ignored) |
-| Skip permissions | `--dangerously-skip-permissions` | `--yolo` | `--sandbox danger-full-access --ask-for-approval never` | `--allow-all-tools` |
-| Session resume | `--resume <session_id>` | `-r` (most recent) | positional `resume` | `--continue` |
+| Aspect | Claude | Codex | Copilot |
+|--------|--------|-------|---------|
+| CLI invocation | `claude -p "..."` | `codex exec "..."` | `copilot -p "..."` |
+| JSON output | Single JSON object | NDJSON (parsed automatically) | Single JSON object |
+| `max_turns` | `--max-turns N` (default 50) | Not available (ignored) | Not available (ignored) |
+| Skip permissions | `--dangerously-skip-permissions` | `--sandbox danger-full-access --ask-for-approval never` | `--allow-all-tools` |
+| Session resume | `--resume <session_id>` | positional `resume` | `--continue` |
 
 **Unattended execution:** Use `update_member(unattended='auto')` or `update_member(unattended='dangerous')` to control permission bypass. The schema is strict -- passing unknown fields returns a validation error.
 
@@ -197,11 +197,11 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 1. Looks up the member by ID and resolves its LLM provider (`getProvider(agent.llmProvider)`). On the first dispatch to a remote member since the server started, it also checks that member's role-agent files (planner, doer, reviewer, etc.) are current and re-provisions any missing or stale ones before proceeding -- this is what carries an already-registered member's agent files forward after an orchestrator upgrade, without requiring a `register_member`/`update_member` call first. A provisioning failure never blocks the prompt dispatch; it is retried on the next `execute_prompt` call to that member. Skipped for local members and for providers with no agents directory (codex, copilot).
 2. **Base64-encodes the prompt** -- this avoids shell escaping issues when the prompt contains quotes, newlines, or special characters. The encoding is decoded on the target side before being passed to the CLI.
 3. **Builds the provider command** -- via `provider.buildPromptCommand()`, which produces the correct CLI call for the member's provider and OS. Max-turns flag is only appended for Claude (the only provider that supports it).
-4. **Appends the resume flag** if `resume=true` and the member has a stored session. Each provider uses its own resume flag.
+4. **Appends the resume flag** if `resume` is truthy (`true`, or an explicit session-id string) and the member has a matching stored session. Each provider uses its own resume flag.
 5. **Executes via strategy** -- `strategy.execCommand(cmd, timeout_s * 1000)`.
 6. **Parses the response** -- via `provider.parseResponse()`. Handles Codex NDJSON transparently; extracts text and session info from all providers.
-7. **Handles stale sessions** -- if the command fails and a resume was attempted, retries with a fresh minted session ID.
-8. **Updates registry** -- stores the new `sessionId` (Claude and Gemini) and `lastUsed` timestamp.
+7. **Handles stale sessions** -- when resuming via `resume=true` (the member's own stored session), a command failure after a resume attempt is retried transparently with a fresh minted session ID. This transparent fallback does **not** apply when `resume` was an explicit session-id string: an unresolvable explicit id is rejected outright as `session_not_found` with no LLM call made, since silently switching to a different session would defeat the caller's reason for naming one. The caller must explicitly re-dispatch (typically with `resume=false`) to recover.
+8. **Updates registry** -- stores the new `sessionId` (Claude) and `lastUsed` timestamp.
 
 **Output:** `structuredContent.response` carries the agent's reply text; `structuredContent.usage` carries token counts when available; `structuredContent.sessionId` carries the session ID if one was returned.
 
@@ -217,8 +217,8 @@ After each successful prompt response, the server automatically accumulates `inp
 **Session behavior:**
 - First prompt on a member: no session exists, agent starts fresh.
 - Subsequent prompts with `resume=true`: agent continues the conversation with full context of prior exchanges.
-- Fleet mints and stores the session ID for Claude and Gemini; both pass it via `--session-id` on the first run and `--resume <id>` on later runs. Codex and Copilot resume the most recent local session via a generic flag.
-- If a session becomes stale, the tool automatically retries without resume.
+- Fleet mints and stores the session ID for Claude, which passes it via `--session-id` on the first run and `--resume <id>` on later runs. Codex and Copilot resume the most recent local session via a generic flag.
+- If the member's own stored session (`resume=true`) becomes stale, the tool automatically retries without resume. An explicit session-id resume that turns out to be stale/unknown is terminal instead (`session_not_found`, no automatic retry) -- see "Handles stale sessions" above.
 
 ### `execute_command`
 
@@ -294,7 +294,6 @@ The correct env var name is automatically determined from the member's `llm_prov
 | Provider | Env Var |
 |----------|---------|
 | Claude | `ANTHROPIC_API_KEY` |
-| Gemini | `GEMINI_API_KEY` |
 | Codex | `OPENAI_API_KEY` |
 | Copilot | `GITHUB_TOKEN` |
 

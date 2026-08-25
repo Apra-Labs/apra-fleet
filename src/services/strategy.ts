@@ -16,6 +16,20 @@ import { execCommand as sshExecCommand, testConnection as sshTestConnection, clo
 import { uploadFiles, downloadFiles } from './file-transfer.js';
 import { RelayStrategy } from './relay-strategy.js';
 
+/** Build the wrapped `powershell -EncodedCommand ...` string RemoteStrategy.
+ *  deleteFiles sends on a Windows agent -- extracted as a pure, exported
+ *  function (apra-fleet-ot2z.15.6) so the paired live-PowerShell test
+ *  (apra-fleet-ot2z.15.5) can execute the REAL script this module sends
+ *  instead of hand-copying its shape, which would let the two drift apart
+ *  silently. Same escapeWindowsArg quoting, same Set-Location then
+ *  Remove-Item with -Force -ErrorAction SilentlyContinue, same
+ *  wrapPowerShellEncoded wrapping as the pre-refactor inline version. */
+export function buildWindowsDeleteFilesScript(folder: string, relativePaths: string[]): string {
+  const files = relativePaths.map(p => `"${escapeWindowsArg(p)}"`).join(', ');
+  const psScript = `Set-Location "${escapeWindowsArg(folder)}"; Remove-Item ${files} -Force -ErrorAction SilentlyContinue`;
+  return wrapPowerShellEncoded(psScript);
+}
+
 export interface AgentStrategy {
   execCommand(command: string, timeoutMs?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult>;
   transferFiles(localPaths: string[], destinationPath?: string, abortSignal?: AbortSignal): Promise<TransferResult>;
@@ -47,9 +61,7 @@ class RemoteStrategy implements AgentStrategy {
     const folder = this.agent.workFolder;
     try {
       if (agentOs === 'windows') {
-        const files = relativePaths.map(p => `"${escapeWindowsArg(p)}"`).join(', ');
-        const psScript = `Set-Location "${escapeWindowsArg(folder)}"; Remove-Item ${files} -Force -ErrorAction SilentlyContinue`;
-        await this.execCommand(wrapPowerShellEncoded(psScript), 10000);
+        await this.execCommand(buildWindowsDeleteFilesScript(folder, relativePaths), 10000);
       } else {
         const files = relativePaths.map(p => `"${escapeDoubleQuoted(p)}"`).join(' ');
         await this.execCommand(`cd "${escapeDoubleQuoted(folder)}" && rm -f ${files}`, 10000);

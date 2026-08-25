@@ -87,7 +87,7 @@ retitled/broadened below).
 The codebase already has exactly the right shape for this: `ProviderAdapter`
 (`src/providers/provider.ts`) already abstracts `composePermissionConfig()` and
 `permissionConfigPaths()` per provider (claude.ts, agy.ts, opencode.ts, codex.ts,
-gemini.ts, copilot.ts each implement it). MCP-endpoint registration is missing the
+copilot.ts each implement it). MCP-endpoint registration is missing the
 same treatment -- it needs a new adapter method, e.g.:
 
 ```ts

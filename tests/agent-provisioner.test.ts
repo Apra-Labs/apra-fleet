@@ -101,7 +101,6 @@ describe('loadCanonicalAgentSet', () => {
 describe('remoteAgentsDir', () => {
   it('maps each provider to its home-relative agents dir', () => {
     expect(remoteAgentsDir('claude')).toBe('.claude/agents');
-    expect(remoteAgentsDir('gemini')).toBe('.gemini/agents');
     expect(remoteAgentsDir('agy')).toBe('.gemini/antigravity-cli/agents');
     expect(remoteAgentsDir('opencode')).toBe('.config/opencode/agents');
   });
@@ -423,7 +422,12 @@ describe('hashFilesRecursive (os-commands)', () => {
     const decoded = Buffer.from(encoded, 'base64').toString('utf16le');
     expect(decoded).toContain('Join-Path $HOME');
     expect(decoded).toContain('.claude\\agents');
-    expect(decoded).toContain('Get-FileHash');
+    // Hashes via [System.Security.Cryptography.SHA256] directly, not the
+    // Get-FileHash cmdlet -- see the hashFilesRecursive() comment in
+    // src/os/windows.ts for why the cmdlet is unreliable on Windows
+    // PowerShell 5.1.
+    expect(decoded).not.toContain('Get-FileHash');
+    expect(decoded).toContain('System.Security.Cryptography.SHA256');
     expect(decoded).toContain('SHA256');
     expect(decoded).toContain('.ToLower()');
   });

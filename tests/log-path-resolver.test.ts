@@ -52,30 +52,6 @@ describe('resolveSessionLogPath', () => {
     expect(result).toBe(expected);
   });
 
-  it('resolves Gemini log path with project name extraction', () => {
-    const result = resolveSessionLogPath(
-      'gemini',
-      'session-789-ghi',
-      '/home/user/my-project',
-      '/home/user'
-    );
-    // Gemini uses last path component as project name and includes chats subdirectory
-    const expected = join('/home/user', '.gemini', 'tmp', 'my-project', 'chats', 'session-789-ghi.jsonl');
-    expect(result).toBe(expected);
-  });
-
-  it('resolves Gemini log path with Windows path', () => {
-    const result = resolveSessionLogPath(
-      'gemini',
-      'session-xyz-123',
-      'C:\\Users\\test\\workspace',
-      'C:\\Users\\test'
-    );
-    // Extract project name from last path component and include chats subdirectory
-    const expected = join('C:\\Users\\test', '.gemini', 'tmp', 'workspace', 'chats', 'session-xyz-123.jsonl');
-    expect(result).toBe(expected);
-  });
-
   it('uses default homedir if homeDir not provided', () => {
     // This test verifies the function uses homedir() when homeDir is omitted
     // Without mocking homedir, we just verify it doesn't throw

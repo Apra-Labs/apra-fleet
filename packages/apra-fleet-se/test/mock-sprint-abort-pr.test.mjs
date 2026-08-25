@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { finalizeAbort } from '../fleet-sprint/runner.js';
-import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
+import { SprintPlanRejectedError, PlanReviewDispatchFailedError } from '../fleet-sprint/errors.mjs';
 import {
     setup,
     teardown,
@@ -278,9 +278,24 @@ test('mock sprint: a zero-commit sprint-abort dispatches no gh pr create but sti
         const scenario = await runAbortTerminalRecordScenario('abortterm');
 
         check(!!scenario.error, 'Expected engine.executeFile() to reject on an unapproved plan');
+        // apra-fleet-ot2z.19: 'always-reject-free-text' is documented (see its
+        // definition in mock-sprint-harness.mjs) as deliberately NEVER
+        // schema-valid JSON, so it must exhaust agent()'s bounded
+        // schema-repair loop every plan round -- that is a plan-reviewer
+        // dispatch channel that never produced a usable verdict, which is
+        // apra-fleet-9ta.4's PlanReviewDispatchFailedError, not a genuine
+        // reviewer rejection (SprintPlanRejectedError). This assertion was
+        // stale from before 9ta.4 landed: it kept passing only because the
+        // pre-apra-fleet-dnri lean repair re-ask didn't reattach "scope"/the
+        // epic id, so this mock's own promptHasScope sniff missed on repair
+        // attempts and silently substituted its schema-valid "missing scope"
+        // verdict instead -- masking the exhaustion this mode is meant to
+        // exercise. Commit 71960822 (apra-fleet-dnri, buildRepairPrompt now
+        // reattaches the original prompt/schema) removed that accidental
+        // masking.
         check(
-            scenario.error instanceof SprintPlanRejectedError,
-            `Expected a SprintPlanRejectedError, got: ${scenario.error ? scenario.error.constructor.name + ': ' + scenario.error.message : 'no error'}`
+            scenario.error instanceof PlanReviewDispatchFailedError,
+            `Expected a PlanReviewDispatchFailedError, got: ${scenario.error ? scenario.error.constructor.name + ': ' + scenario.error.message : 'no error'}`
         );
         check(
             !scenario.dispatched.some((d) => d.agent === 'doer'),

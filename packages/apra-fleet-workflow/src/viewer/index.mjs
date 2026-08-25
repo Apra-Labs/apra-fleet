@@ -62,9 +62,15 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     
     .btn { padding: 4px 12px; font-size: 12px; border-radius: 4px; border: none; cursor: pointer; font-weight: 600; transition: opacity 0.2s; }
     .btn:hover { opacity: 0.8; }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+    .btn:disabled:hover { opacity: 0.4; }
     .btn-save { background: var(--accent); color: #fff; }
     .btn-stop { background: var(--danger); color: #fff; }
+    .btn-pause { background: var(--warning); color: #000; }
     .btn-secondary { background: rgba(255,255,255,0.1); color: var(--text); }
+    /* (apra-fleet-p2to.2.1) 'paused since <ts>' badge + reason card,
+       generic to every workflow run -- no per-workflow-type styling. */
+    .pause-banner { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.4); color: var(--warning); }
     
     /* min-height: 0 on every rung of the flex chain: a flex item's default
        min-height is content-sized, which lets a tall Activity list push the
@@ -205,9 +211,15 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
            (e.g. auto-sprint's verdict badge/PR link) is layered on by a
            dashboard extension's own js, not here. -->
       <div class="stats-banner" id="result-strip" style="display: none;"></div>
+      <!-- (apra-fleet-p2to.2.1) 'paused since <ts>' badge + reason card --
+           shown only while state.pause.status === 'paused' (renderState()
+           below); hidden for the process-free History view exactly like
+           Save/Stop, since a finished run can never be paused. -->
+      ${isHistory ? '' : '<div class="stats-banner pause-banner" id="pause-banner" style="display: none;"></div>'}
       <div class="stats-banner" id="stats-banner"></div>
       <div id="status-indicator" style="font-size: 12px; font-weight: 600; min-width: 70px; text-align: center;"></div>
       ${isHistory ? '' : '<button class="btn btn-save" onclick="saveState()">Save</button>'}
+      ${isHistory ? '' : '<button class="btn btn-pause" id="btn-pause" onclick="pauseWorkflow()">Pause</button>'}
       ${isHistory ? '' : '<button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>'}
     </div>
   </div>
@@ -236,7 +248,10 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       </div>
       ${dashboardExtensions.map(ext => `
         <div id="tab-${ext.id}" class="tab-content panel">
-          <div class="panel-header">${ext.title}</div>
+          <div class="panel-header" id="panel-header-${ext.id}" style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+            <span>${ext.title}</span>
+            <div id="panel-header-${ext.id}-extra" style="flex: 1; min-width: 0; max-width: 320px; text-transform: none; letter-spacing: normal;"></div>
+          </div>
           <div id="extension-${ext.id}" style="flex: 1; min-height: 0; padding: 12px; overflow-y: auto;"></div>
         </div>
       `).join('\\n')}
@@ -352,6 +367,21 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     document.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') closeStopModal();
     });
+
+    // (apra-fleet-p2to.2.1) Pause/Resume -- unlike stopWorkflow() these never
+    // set button state directly: POST /pause and /resume only forward the
+    // request to the engine (which may defer the actual pause), and the
+    // button's label/enabled-state + the 'paused since' badge are entirely
+    // driven by renderState()'s reading of state.pause on the next poll/SSE
+    // tick, below. That keeps the button truthful about what the engine has
+    // ACTUALLY done rather than what the browser merely asked for.
+    async function pauseWorkflow() {
+      await fetch('/pause', { method: 'POST' });
+    }
+    async function resumeWorkflow() {
+      await fetch('/resume', { method: 'POST' });
+    }
+
 
     let allExpanded = true;
     function toggleAllGlobal() {
@@ -777,6 +807,50 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
         else if (state.status === 'cancelled') { ind.innerHTML = '<span style="color:var(--warning)">CANCELLED</span>'; }
         else { ind.innerHTML = '<span style="color:var(--danger)">FAILED</span>'; }
 
+        // (apra-fleet-p2to.2.1) Pause/Resume button state machine: Pause ->
+        // Pausing -> Paused -> Resume, driven entirely by state.pause.status
+        // (itself set only by the engine's own 'pause:requested'/'paused'/
+        // 'resumed' events -- see the workflow.on() wiring in
+        // createDashboardViewer()). Absent for the History view, which never
+        // renders the button at all.
+        const pauseBtn = document.getElementById('btn-pause');
+        if (pauseBtn) {
+            const pause = state.pause || { status: 'none' };
+            if (pause.status === 'paused') {
+                pauseBtn.textContent = 'Resume';
+                pauseBtn.onclick = resumeWorkflow;
+                pauseBtn.disabled = false;
+            } else if (pause.status === 'pausing') {
+                pauseBtn.textContent = 'Pausing...';
+                pauseBtn.onclick = null;
+                pauseBtn.disabled = true;
+            } else {
+                pauseBtn.textContent = 'Pause';
+                pauseBtn.onclick = pauseWorkflow;
+                // Nothing to pause once the run isn't live anymore.
+                pauseBtn.disabled = (state.status !== 'running');
+            }
+        }
+
+        // 'paused since <ts>' badge + reason card -- shown only while the
+        // pause has actually engaged (status === 'paused'), never during the
+        // deferred 'pausing' window, since nothing has happened yet from the
+        // dashboard's point of view.
+        const pauseBanner = document.getElementById('pause-banner');
+        if (pauseBanner) {
+            const pause = state.pause || { status: 'none' };
+            if (pause.status === 'paused') {
+                const sinceStr = pause.since ? new Date(pause.since).toLocaleTimeString([], { hour12: false }) : '-';
+                const reasonHtml = pause.reason ? \`<span>Reason: <strong>\${escapeHtml(pause.reason)}</strong></span>\` : '';
+                const phaseHtml = pause.phase ? \`<span>Phase: <strong>\${escapeHtml(pause.phase)}</strong></span>\` : '';
+                pauseBanner.innerHTML = \`<span>Paused since <strong>\${sinceStr}</strong></span>\${phaseHtml}\${reasonHtml}\`;
+                pauseBanner.style.display = 'flex';
+            } else {
+                pauseBanner.innerHTML = '';
+                pauseBanner.style.display = 'none';
+            }
+        }
+
         const dur = state.status === 'running' ? Date.now() - state.stats.startTime : state.stats.durationMs;
         const unknownCostSuffix = state.stats.unknownCostCount > 0 ? \` <span style="color:var(--warning)">(+\${state.stats.unknownCostCount} unknown)</span>\` : '';
         document.getElementById('stats-banner').innerHTML =
@@ -990,6 +1064,21 @@ export function createDashboardViewer(workflow, opts = {}) {
             startTime: Date.now(),
             durationMs: 0
         },
+        // (apra-fleet-p2to.2.1) Generic pause lifecycle, driven entirely by
+        // the engine's 'pause:requested'/'paused'/'resumed' events wired up
+        // below -- never mutated directly by any route handler. `status` is
+        // one of 'none' (not paused/requested), 'pausing' (requested, still
+        // draining in-flight work / waiting on the script's pause guard) or
+        // 'paused' (engaged: new agent()/command() dispatches are blocked at
+        // the gate). `reason` is carried from the requestPause() call that
+        // started this cycle (the 'paused' event itself carries no reason,
+        // see FleetWorkflow._maybeEngagePause -- so it is preserved here
+        // rather than re-read from that event); `since` is stamped locally
+        // when 'paused' actually fires (the engine event carries no
+        // timestamp). `phase`/`group` mirror wherever the run was when the
+        // pause was requested, for the dashboard's reason card. Generic to
+        // any workflow -- no fleet-sprint-specific fields.
+        pause: { status: 'none', reason: null, since: null, phase: null, group: null },
         tree: [],
         extensions: {}
     };
@@ -1235,6 +1324,45 @@ export function createDashboardViewer(workflow, opts = {}) {
         broadcast({ type: 'state', payload: stateData });
     });
 
+    // (apra-fleet-p2to.2.1) Generic pause lifecycle wiring, mirroring how
+    // 'end' below derives dashboard state entirely from engine events --
+    // the /pause and /resume routes (below) only forward the request to
+    // FleetWorkflow.requestPause()/requestResume() (src/workflow/index.mjs);
+    // every actual state.pause transition happens here, driven by the
+    // engine's own 'pause:requested'/'paused'/'resumed' events, so the
+    // dashboard reflects when a deferred pause has ACTUALLY engaged, not
+    // merely when it was requested.
+    workflow.on('pause:requested', (payload) => {
+        state.pause = {
+            status: 'pausing',
+            reason: payload.reason ?? null,
+            since: null,
+            phase: payload.phase ?? null,
+            group: payload.group ?? null
+        };
+        broadcast({ type: 'update' });
+    });
+
+    workflow.on('paused', (payload) => {
+        // The 'paused' event itself carries no reason (see
+        // FleetWorkflow._maybeEngagePause) -- preserve whatever
+        // 'pause:requested' set, and only stamp `since` now, at the moment
+        // the pause actually engaged.
+        state.pause = {
+            status: 'paused',
+            reason: state.pause.reason,
+            since: nowIso(),
+            phase: payload.phase ?? state.pause.phase,
+            group: payload.group ?? state.pause.group
+        };
+        broadcast({ type: 'update' });
+    });
+
+    workflow.on('resumed', () => {
+        state.pause = { status: 'none', reason: null, since: null, phase: null, group: null };
+        broadcast({ type: 'update' });
+    });
+
     workflow.on('end', (res) => {
         // apra-fleet-eft.53.1: the run's final phase never gets a 'phase'
         // event to close it out -- stamp its phaseEndedAt here so no phase
@@ -1397,6 +1525,44 @@ export function createDashboardViewer(workflow, opts = {}) {
             // fires), but flush eagerly here too so the debounced state
             // file reflects the stop request itself without waiting on that
             // unwind.
+            debouncedWriter.flushSync();
+            res.writeHead(200);
+            res.end();
+        } else if (req.url === '/pause' && req.method === 'POST') {
+            // (apra-fleet-p2to.2.1) Cooperative pause -- same shape as /stop
+            // above, but forwards to FleetWorkflow.requestPause() instead of
+            // requestStop(). That call only fires 'pause:requested'
+            // immediately; the pause itself is DEFERRED until the run drains
+            // to zero in-flight activities and any script-registered pause
+            // guard permits it (see requestPause()'s doc, src/workflow/
+            // index.mjs) -- the workflow event listeners above are what
+            // actually flip state.pause once 'paused' fires, exactly like
+            // /stop leaves the terminal state.status transition to the
+            // workflow's own 'end' handler rather than setting it here.
+            console.log('[Viewer] Pause requested via dashboard /pause endpoint.');
+            if (typeof workflow.requestPause === 'function') {
+                workflow.requestPause('Pause requested via dashboard /pause endpoint');
+            }
+            debouncedWriter.flushSync();
+            res.writeHead(200);
+            res.end();
+        } else if (req.url === '/resume' && req.method === 'POST') {
+            // (apra-fleet-p2to.2.1) Cooperative resume -- mirrors /pause
+            // above, forwarding to FleetWorkflow.requestResume(). A no-op on
+            // the engine side if the run is neither paused nor pause-
+            // requested; the 'resumed' event listener above clears
+            // state.pause once it fires.
+            console.log('[Viewer] Resume requested via dashboard /resume endpoint.');
+            if (typeof workflow.requestResume === 'function') {
+                // (apra-fleet-p2to.1.3) requestResume() is now async -- it
+                // awaits a pre-resume barrier (member re-reserve/resync) before
+                // it completes. Don't block the HTTP response on that barrier,
+                // but do catch a barrier rejection so it surfaces as a log line
+                // rather than an unhandled promise rejection; the run stays
+                // paused on failure, exactly as the engine leaves it.
+                Promise.resolve(workflow.requestResume('Resume requested via dashboard /resume endpoint'))
+                    .catch((err) => console.error('[Viewer] resume barrier failed (run stays paused):', err && err.message ? err.message : err));
+            }
             debouncedWriter.flushSync();
             res.writeHead(200);
             res.end();

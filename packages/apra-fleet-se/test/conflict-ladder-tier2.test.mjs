@@ -9,7 +9,7 @@ import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
-// Same scripted command() mock helper as mock-sprint-git-sync-brackets.test.mjs.
+// Same scripted command() mock helper as git-sync-brackets.test.mjs.
 function makeCommandMock(script) {
     const calls = [];
     const queues = new Map(Object.entries(script).map(([k, v]) => [k, [...v]]));
@@ -42,7 +42,7 @@ const fail = (error) => ({ ok: false, output: '', error });
 // =============================================================================
 // apra-fleet-eft.8.12 -- Tier 2 (agent-with-runbook) git conflict escalation.
 //
-// Tier 1 (already covered by mock-sprint-git-sync-brackets.test.mjs) is
+// Tier 1 (already covered by git-sync-brackets.test.mjs) is
 // unaffected -- these tests confirm that an unmerged-paths conflict, WITH an
 // injected agent(), escalates to Tier 2 exactly once and that Tier 2's
 // outcome is decided by mechanically re-observed git state, never the

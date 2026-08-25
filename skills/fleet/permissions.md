@@ -41,7 +41,7 @@ Tags determine the primary mode and grant additional tool scopes:
 3. Load **custom tag profiles**: for each non-mode tag, load tag-<name>.json and merge its permissions for the primary mode
 4. Load **ledger grants**: merge any permissions previously granted in project_folder/permissions.json
 
-All merges are additive (Set-based) - order is independent, duplicates discarded. The final allow list is delivered to the member's provider (Claude, Gemini, etc.) in the provider's native config format.
+All merges are additive (Set-based) - order is independent, duplicates discarded. The final allow list is delivered to the member's provider (Claude, Codex, etc.) in the provider's native config format.
 
 ### Example
 
@@ -140,8 +140,8 @@ setting `projects[<work_folder>].hasTrustDialogAccepted = true` scoped **strictl
 that exact work folder (never a parent directory, never blanket) - delivered over the
 same channel `compose_permissions` already uses, so it works uniformly for local and
 remote (SSH) members. It logs distinctly whether it just seeded trust or found it
-already present. Other providers no-op: Gemini and OpenCode have their own trust gates
-but already bypass them per-dispatch (`--skip-trust`, `--dangerously-skip-permissions`);
+already present. Other providers no-op: OpenCode has its own trust gate
+but already bypasses it per-dispatch (`--dangerously-skip-permissions`);
 AGY has no per-project trust concept (machine-global config); Codex/Copilot have no
 known equivalent gate.
 

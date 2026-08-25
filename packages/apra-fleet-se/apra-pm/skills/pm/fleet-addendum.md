@@ -89,7 +89,6 @@ Use member_detail -> llmProvider to determine the target filename:
 |----------|----------|
 | Claude | CLAUDE.md |
 | Antigravity (agy) | AGY.md |
-| Gemini | GEMINI.md |
 | Codex | AGENTS.md |
 | Copilot | COPILOT.md |
 | OpenCode | OPENCODE.md |

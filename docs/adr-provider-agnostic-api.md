@@ -6,9 +6,9 @@
 
 ## Context
 
-The fleet server's public API (MCP tool names, parameter names, and output keys) originally reflected Claude-specific naming. As multi-provider support matured, the API started to look inconsistent and confusing to users — `provision_llm_auth` only worked for LLM auth, `claude.version` appeared even for Gemini members, and `work_folder` was used both as a member property and as a tool parameter for something entirely different.
+The fleet server's public API (MCP tool names, parameter names, and output keys) originally reflected Claude-specific naming. As multi-provider support matured, the API started to look inconsistent and confusing to users -- `provision_llm_auth` only worked for LLM auth, `claude.version` appeared even for non-Claude members (at the time, this included Gemini members; Gemini has since been removed as a supported provider), and `work_folder` was used both as a member property and as a tool parameter for something entirely different.
 
-Separately, the PM role was burdened with manually calling `update_task_tokens` to report token usage — a fragile process that was easy to forget and produced incomplete data.
+Separately, the PM role was burdened with manually calling `update_task_tokens` to report token usage -- a fragile process that was easy to forget and produced incomplete data.
 
 This ADR records the design decisions made to address these issues.
 
@@ -26,13 +26,13 @@ This ADR records the design decisions made to address these issues.
 
 ### Why
 
-- `provision_llm_auth` implied a general concept but was actually an LLM credential provisioning tool — renaming to `provision_llm_auth` removes the ambiguity.
-- `claude` as an output key in `member_detail` was misleading when the member uses Gemini, Codex, or Copilot. The key `llm_cli` describes *what* the section covers (the LLM CLI on this member) rather than *which* provider it is.
-- `work_folder` as an `execute_command` parameter conflicted conceptually with the `work_folder` member registration property. The new name `run_from` describes the intent (override directory) and its rarity — the default (member's registered folder) is correct in almost all cases.
+- `provision_llm_auth` implied a general concept but was actually an LLM credential provisioning tool -- renaming to `provision_llm_auth` removes the ambiguity.
+- `claude` as an output key in `member_detail` was misleading when the member uses another provider (Codex, Copilot, and at the time Gemini -- since removed). The key `llm_cli` describes *what* the section covers (the LLM CLI on this member) rather than *which* provider it is.
+- `work_folder` as an `execute_command` parameter conflicted conceptually with the `work_folder` member registration property. The new name `run_from` describes the intent (override directory) and its rarity -- the default (member's registered folder) is correct in almost all cases.
 
 ### Trade-offs
 
-**Breaking change, intentional.** No backward-compat shims were added — callers must update to the new names. A skill doc sweep updated all known internal callers.
+**Breaking change, intentional.** No backward-compat shims were added -- callers must update to the new names. A skill doc sweep updated all known internal callers.
 
 **`run_from` is rarely needed.** Both `execute_command` and `execute_prompt` default to the member's registered `workFolder`. The parameter exists only for unusual cases. Skill docs should not instruct the PM to pass the registered path explicitly.
 
@@ -42,7 +42,7 @@ This ADR records the design decisions made to address these issues.
 
 ### What changed
 
-`member_detail` strips the provider prefix from version strings. `"Claude Code 2.1.92"` → `"2.1.92"`. The same normalization applies to any other provider that includes a prefix.
+`member_detail` strips the provider prefix from version strings. `"Claude Code 2.1.92"` -> `"2.1.92"`. The same normalization applies to any other provider that includes a prefix.
 
 ### Why
 
@@ -58,7 +58,7 @@ The server resolves `~` at the start of any path (both the `run_from` parameter 
 
 ### Scope
 
-Only the current user's home directory is expanded (`~/` and bare `~`). The `~user/foo` form (another user's home) is **not** expanded — this is not a fleet use case. The resolution uses Node's `os.homedir()` on the master machine, which is correct because the master constructs the command string.
+Only the current user's home directory is expanded (`~/` and bare `~`). The `~user/foo` form (another user's home) is **not** expanded -- this is not a fleet use case. The resolution uses Node's `os.homedir()` on the master machine, which is correct because the master constructs the command string.
 
 ---
 
@@ -70,7 +70,7 @@ The server auto-accumulates token usage from provider responses in `execute_prom
 
 ### Why
 
-Manual token reporting via `update_task_tokens` put burden on the PM to call it after every prompt, was frequently skipped, and added noise to the PM's plan. The server has all the information it needs to accumulate tokens automatically — the provider's JSON response always includes usage metadata.
+Manual token reporting via `update_task_tokens` put burden on the PM to call it after every prompt, was frequently skipped, and added noise to the PM's plan. The server has all the information it needs to accumulate tokens automatically -- the provider's JSON response always includes usage metadata.
 
 ### Race condition analysis
 
@@ -94,4 +94,4 @@ If a future use case involves genuinely concurrent prompts for the same member (
 The requirements originally suggested shipping a template `permissions.json` with `{ "granted": [] }`. No template file exists in the repo. Rather than create one, the guard approach was chosen because:
 - It defends against any malformed JSON on disk, not just a missing `granted` key.
 - It requires no change to onboarding or documentation about initial file contents.
-- It matches the existing pattern: `loadLedger` already returns `{ stacks: [], granted: [] }` when the file is missing — the guard makes file-present behavior consistent with file-absent behavior.
+- It matches the existing pattern: `loadLedger` already returns `{ stacks: [], granted: [] }` when the file is missing -- the guard makes file-present behavior consistent with file-absent behavior.

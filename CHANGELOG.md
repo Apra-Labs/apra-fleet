@@ -205,6 +205,339 @@ Pricing source: all 39 priced dispatch(es) used real per-member rates (get_membe
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
 
+## [Unreleased] -- Supervisor dashboard: live-refresh parity with the per-run viewer
+
+Sprint goal: bring the multi-sprint supervisor's own dashboard up to the same
+live-refresh standard every individual sprint's per-run viewer already had --
+adopt that existing architecture rather than invent a second one.
+
+What shipped:
+
+- **Lean `GET /state` JSON endpoint + `GET /events` SSE stream**: the
+  supervisor dashboard now serves a lightweight JSON projection of the same
+  Sprint Stack view model its full HTML page renders, plus a
+  Server-Sent-Events stream that signals "state may have changed, go poll"
+  on a fixed cadence (the supervisor has no single internal event bus the
+  way one workflow run does, since its view model changes via many disjoint
+  HTTP mutation routes) plus once immediately on connect.
+- **Client-side live-refresh loop**: a debounced single poll pipeline fed by
+  both the SSE stream and a heartbeat-interval fallback, re-rendering Sprint
+  Stack rows in place (added/updated/removed by sprint id) using the exact
+  same row-rendering function the server uses for the initial page load --
+  no full-page reload anywhere in the refresh path.
+- **Tab-activation refresh**: switching to the Sprints or Backlog tab
+  triggers a fresh fetch through that tab's own existing fetch/poll
+  plumbing whenever its last fetch is stale, independent of the other tab.
+- **Per-node subprocess spawn removed from every dashboard render**: sprint
+  scope expansion (used for both the raw claimed-bead count and the
+  goal-filtered progress bar) now walks an in-memory index built off a
+  single bulk beads fetch per render, instead of issuing one subprocess call
+  per discovered graph node -- eliminating the dominant cost behind a
+  previously near-unusable page-load time as the number of concurrently
+  running sprints (and the size of their subtrees) grows.
+- **Progress-widget labeling**: the two per-sprint counters that can
+  legitimately disagree (raw claimed-scope bead count vs. the goal-filtered
+  "Required" progress-bar count) are now both explicitly labeled, so a
+  growing raw count no longer reads as a bug.
+
+Carried forward (filed as open, low-priority backlog items; not blocking):
+narrower unit coverage for the base-drift indicator's null/error paths, and
+a documentation/branch-hygiene follow-up on keeping a long-running sprint
+branch's review diffs scopeable against a moving base.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $14.2427.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.5702 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 35 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- fleet-supervisor Backlog: sort by creation timestamp
+
+Sprint goal: give the fleet-supervisor dashboard's Backlog view a way to
+order issues by creation timestamp, so an operator scanning the unclaimed
+task list can find the newest or oldest work without leaving the page.
+
+What shipped:
+
+- **Server-side `created_at` sort**: `GET /api/backlog/tasks` accepts
+  optional `sort=created_at` and `dir=asc|desc` (default `desc`) query
+  params, applied after the existing type/status/priority/model/q
+  narrowing. The sort is a stable decorate-sort-undecorate over each row's
+  original index, so ties never reorder relative to the incoming list.
+  Rows with a missing or unparseable `created_at` always sort last in
+  either direction and never cause an error. Omitting `sort` leaves task
+  order exactly as before -- the feature is strictly additive.
+- **Backlog header sort control**: the Backlog table header gained a
+  Created-at sort `<select>` (Unsorted / Created (newest) / Created
+  (oldest)), wired to re-fetch the task list with the chosen `sort`/`dir`
+  and to reset alongside the other filters when Clear Filters is used. The
+  existing header-injection mechanism still splices exactly once with the
+  extra column present.
+
+Carried forward (filed as backlog items, not blocking): a cosmetic column-
+alignment mismatch between the new sort header cell and the data rows below
+it, and a labeling issue where the "Filtering by ..." indicator can describe
+a chosen sort as if it were a narrowing filter. Both are open, low-priority
+follow-ups.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $5.1721.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3360 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 12 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
+## [Unreleased] -- Fable test-suite audit: hidden subprocess spawns, duplicate tests, redundant bd calls
+
+Sprint goal: work the low-risk/high-confidence subset of a test-suite and
+bd-call-volume audit -- items rated safe to fix without an open design
+question -- while leaving the higher-risk call-volume items for a separate
+human design decision.
+
+What shipped:
+
+- **Hidden live subprocess spawns eliminated**: mocked supervisor
+  dashboard/backlog test fixtures now supply the `listAllBeads`/`driftCheck`
+  seams those modules default to a real subprocess call when omitted, so the
+  fixtures no longer silently shell out to the developer's own live beads DB
+  and git repo on every run. A regression guard runs the fixed fixtures as
+  real child processes under an OS-level PATH shim (fake `bd`/`git`
+  executables) and additionally parses the child's own test-summary output
+  to rule out a vacuous pass (an empty spawn marker file from a child that
+  ran zero subtests).
+- **A real dolt-push bug fixed**: the pre-gate `sync.remote` probe result is
+  now cached and reused on the retry/failure path instead of being
+  re-queried, while keeping the original skip branch as defense-in-depth.
+- **Batched bead claiming investigated and pinned down**: `bd update
+  --claim` was confirmed to support a multi-id batch call; a `bd`-call-volume
+  reduction was implemented and unit-tested, but is intentionally left
+  dormant (no caller sets `assignee` yet) pending a follow-up that resolves a
+  same-assignee re-claim edge case before the path goes live.
+- **Duplicate test files consolidated**: several near-duplicate test files
+  covering the installed-supervisor self-containment check and the watchdog
+  reservation-release path were merged into single, parameterized files, and
+  an exact-duplicate file was deleted outright.
+- See
+  [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md)
+  for the durable patterns behind these fixes (probe caching, the dormant
+  batched-claim contract, and the no-live-spawn test technique).
+
+Carried forward: a follow-up to verify (or rebase away) unrelated
+in-flight orchestrator/member-reservation work that rode along on the same
+branch as this audit but lies outside its scope, and a follow-up to confirm
+`claimBeadsBatched` handles a same-assignee re-claim correctly before the
+batched-claim path is activated. Both remain open as backlog. A same-sprint
+regression pass could not run (see the sprint analysis artifact for the
+permissions gap that blocked it) and is informational only -- it did not
+gate this sprint's verdict.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $8.4210.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1315 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 18 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- Windows/PowerShell shell portability and schema-repair retry correctness
+
+Sprint goal: close out the remaining holistic-audit acceptance criteria for
+member-bound command construction that silently assumed a POSIX shell, and
+fix a schema-repair retry path that could resume the wrong session or lose
+the original request across repair rounds.
+
+What shipped:
+
+- **Cross-shell command construction**: the GitHub VCS command builder now
+  emits `curl.exe` explicitly on Windows members instead of relying on a
+  bare `curl` invocation, which PowerShell silently resolves to its
+  incompatible `Invoke-WebRequest` alias -- confirmed wired through the real
+  production OS-resolution path, not just a test fixture. Golden POSIX
+  command output is unchanged. A PowerShell deep-merge helper no longer
+  throws on nested JSON objects (`PSCustomObject` does not support the
+  `Hashtable` method the merge previously assumed) and no longer leaks
+  internal accumulator metadata keys into merged JSON output. A Windows
+  delete-files script builder was extracted into its own exported function
+  so the regression suite exercises the real production script instead of a
+  hand-duplicated copy that could silently drift.
+- **Live-PowerShell regression coverage**: a reusable live-PowerShell test
+  harness now backs exit-code and on-disk assertions for the credential
+  file write, deep-merge, recursive file hashing, and delete-files code
+  paths, closing the risk that a platform-gated suite reports green purely
+  by skipping rather than by actually exercising real PowerShell.
+- **Schema-repair retry contract**: a schema-invalid dispatch response is
+  now retried by reattaching the original prompt and schema as explicit
+  reference text on every repair round (re-derived from the one true
+  original each time, so repeated rounds don't compound), and by resuming
+  the exact session that produced the failed attempt via its captured
+  session id rather than a generic "resume most recent session" flag. When
+  no session id was captured, the retry now degrades to an explicit,
+  loudly-logged fresh dispatch instead of silently guessing. A
+  session-not-found response to an exact-id resume now triggers one
+  additional fresh-dispatch attempt within the existing repair budget,
+  rather than failing the whole repair outright.
+- **Schema directory resolution**: the packaged-schema loader now picks
+  whichever of its two built-in candidate directories (bundled vs
+  package-local) was most recently edited, based on the newest contained
+  schema file's modification time, rather than always preferring one by
+  fixed convention -- preventing a stale bundled copy from silently
+  shadowing an edited source schema.
+- **Housekeeping**: stray root-level scratch artifacts were removed and the
+  ignore rules widened so equivalent artifacts don't get re-added by
+  accident; several pre-existing test-suite failures were triaged and fixed.
+- See [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md)
+  and [docs/dispatch-reliability-hardening.md](docs/dispatch-reliability-hardening.md)
+  for the full patterns behind these fixes.
+
+Carried forward: extending the root test run to cover the workflow package
+directly (rather than only via a separate invocation), a couple of
+follow-ups on schema-directory-resolution edge cases and an unused
+production caller for one Windows helper, and a same-sprint regression pass
+that reconfirmed several pre-existing, parent-less carry-over issues (long
+single-file test durations, a setup-failure cluster in one test group, a
+couple of flaky timeouts, and a sandbox smoke-test credential-provisioning
+precondition) -- no new defects were found in this sprint's own work and no
+new carry-over issues were filed.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $30.6565.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1440 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 52 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- Cooperative workflow pause/resume: closing the resume-barrier gap
+
+Sprint goal: finish the cooperative pause/resume feature by closing three
+integration-verification gaps found in the prior round -- the resume-time
+reservation re-acquire/resync still raced the first post-resume dispatch
+instead of strictly preceding it, a duplicated member-argument guard
+remained in the workflow engine's internal dispatch path, and a requested
+regression test pinning a reservation-store failure marker had not actually
+been added. All three are now closed, verified against source rather than
+against child-task titles alone. Final verdict is a clean PASS.
+
+What shipped:
+
+- **Workflow engine**: a new `setPreResumeHook(fn)` primitive. `requestResume()`
+  is now `async` and awaits this hook as a hard barrier -- strictly before it
+  clears pause state, releases any gate waiter, or emits the resume event --
+  so a caller's reacquire/resync work is guaranteed to finish ahead of the
+  first post-resume dispatch instead of racing it. A rejecting hook
+  propagates out of `requestResume()` with pause state left intact, so a
+  failed resume leaves the run parked rather than resuming on a
+  half-restored state. `setPreResumeHook` is generic (no domain semantics of
+  its own) and defaults to a no-op barrier when unregistered, so callers with
+  nothing to do before resuming see no behavior change.
+- **fleet-sprint**: its reservation re-acquire and resync now run through the
+  new pre-resume hook instead of a fire-and-forget event listener, closing
+  the race described above. A pause requested while a git/dolt sync
+  "bracket" is open now also engages the instant that bracket closes, rather
+  than waiting on whatever dispatch happens to arrive next. The
+  reservation-release helper used for both a full teardown and a pause
+  hand-back is now a single shared implementation instead of two
+  independently-maintained copies of the same loop.
+- **Reservation store**: a reserve call that fails at the storage-write step
+  now returns a failure marker consistent with every other rejection path,
+  so a resume's re-reserve step correctly treats a failed store write as
+  "member not reacquired" instead of silently trusting it as a success. A
+  regression test now pins this marker directly.
+- **Workflow engine cleanup**: a duplicated member-argument validation guard
+  in the engine's internal dispatch path was removed; the public entry point
+  the internal path is exclusively reached through already enforces it.
+- See [docs/features/workflow-pause-resume.md](docs/features/workflow-pause-resume.md)
+  and `packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md`
+  section 4.7 for the full design, now describing the pre-resume hook as the
+  hard barrier it is rather than as a known limitation.
+
+Carried forward: a follow-up to add direct unit coverage for the
+`setPreResumeHook` type-guard paths (rejecting a non-function argument,
+clearing the hook with `null`) remains open, as does a follow-up to guard
+`requestResume()` against two concurrent resume calls both passing the pause
+gate and running the pre-resume hook in parallel. A same-day regression pass
+(informational, non-gating) reconfirmed several pre-existing, parent-less
+carry-over issues in an unrelated functional test suite, a slow-lane
+fixture-drift test, and a sandbox smoke-test preflight gate; no new defects
+were found in this sprint's own work and no new carry-over issues were filed.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $16.3035.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3214 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 25 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- Cooperative workflow pause/resume (engine, viewer, supervisor, fleet-sprint)
+
+Sprint goal: add a generic, cooperative pause/resume primitive to the workflow
+engine and wire it through every layer that needs to react to it -- the
+per-run viewer's UI, the multi-sprint supervisor's dashboard and watchdog, and
+fleet-sprint's own git/beads sync and member-reservation handling, as the
+first workflow to attach real domain state to a pause. All in-scope work
+closed; final verdict is a clean PASS.
+
+What shipped:
+
+- **Workflow engine**: `requestPause()`/`requestResume()`/`setPauseGuard()` on
+  the workflow engine, alongside the existing `requestStop()`. A pause is
+  deferred rather than immediate -- it only actually engages once every
+  in-flight dispatch has drained to zero and an optional caller-supplied guard
+  confirms the run is at a state boundary it considers clean -- so a pause can
+  never land mid-way through a sequence a workflow script considers atomic.
+  `requestStop()` while paused rejects every blocked dispatch so a paused run
+  tears down instead of hanging.
+- **Per-run viewer**: Pause/Resume buttons and a "paused since" badge, driven
+  entirely by the engine's own pause lifecycle events rather than by the
+  button click itself, so the UI always reflects what the engine actually did
+  (including the deferred window between request and engagement).
+- **Supervisor**: row-level Pause/Resume controls that proxy to the child
+  viewer's own routes (never the kill+force-release path Stop uses); the
+  crash watchdog now classifies a live, engine-paused child as a distinct
+  healthy "paused" state (never conflated with stalled or crashed, and never
+  auto-released); a base-branch-drift indicator shows how far a paused sprint
+  branch has fallen behind its base branch.
+- **fleet-sprint**: registers a pause guard so a pause only ever lands at a
+  clean git/dolt-sync boundary; releases its member reservations on pause
+  (so other sprints can use those members while this one is parked) and
+  re-acquires them on resume with an owner-checked re-reserve that fails
+  loudly (naming the unavailable members) if another sprint claimed one while
+  paused; every re-acquired member is unconditionally resynced (git fetch,
+  branch reconciliation, beads pull) before further work is dispatched to it,
+  since both git and the beads database can move independently of a paused
+  sprint. See [docs/features/workflow-pause-resume.md](docs/features/workflow-pause-resume.md)
+  for the full design and known limitations.
+- Bundled alongside this work: a fix to the Windows stall-poller's mtime probe
+  commands to avoid an intermediate PowerShell `$variable` pattern that a
+  remote execution path was found to silently strip, which had been turning
+  the probe into a parse error on every poll for at least one real Windows
+  member.
+
+Follow-up hardening (second cycle, same sprint): fleet-sprint's resume-time
+reservation re-acquire and resync is no longer best-effort -- `requestResume()`
+now awaits a caller-supplied pre-resume hook as a hard barrier before any
+post-resume dispatch can proceed, closing the race where a member could be
+dispatched to before its reservation/resync completed. The duplicated
+member-argument guard in `_commandDispatch()` was removed (the single copy in
+`command()` is now the only enforcement point). A regression test now pins the
+`[-]` store-write-failure marker so a reservation-store write failure is never
+misread as a successful resume re-reserve. A new follow-up
+(`apra-fleet-p2to.5`) was filed to guard `requestResume()` against concurrent
+double-invocation of the pre-resume hook.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $22.9383.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1429 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 34 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- fleet-supervisor self-containment fix and lifecycle documentation
 
 Sprint goal: make the always-on fleet-sprint supervisor fully self-contained
@@ -428,6 +761,7 @@ via its audit task, and the corresponding verification task confirmed the
 results. No bugs were filed as a result of the audit, consistent with a
 clean pass -- the full test suite (2314 tests, 0 failures) provides
 independent confirmation.
+
 ## [Unreleased] -- compose_permissions silent write no-op fix
 
 Sprint goal: fix a bug where `compose_permissions` could report a grant as
@@ -1574,7 +1908,9 @@ Committed work is buildable, fully tested, and matches the acceptance criteria f
 
 - **MCP config updated for all providers** -- the MCP server command
   registered during `apra-fleet install` now includes `run` as an explicit
-  argument for every provider (claude, gemini, agy, codex, copilot, opencode).
+  argument for every provider (claude, gemini, agy, codex, copilot, opencode --
+  gemini was a supported provider at the time of this release and has since
+  been removed).
   Example SEA mode: `{ "command": "/path/apra-fleet", "args": ["run"] }`.
 
 - **Claude `mcp add` command handles all args** -- the `claude mcp add`

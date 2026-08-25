@@ -258,9 +258,10 @@ stderr) instead of falling through to the generic failure/retry paths.
 5. `~/.claude.json` contained **exactly one** `projects` key, matching the work folder
    path precisely (`hasTrustDialogAccepted: true`) -- confirms exact-folder scoping, no
    parent-directory or sibling-project leakage.
-6. A non-Claude provider (`GeminiProvider.ensureWorkspaceTrusted`) returned
-   `{ seeded: false }` and never invoked the exec callback -- confirms the fix is a no-op
-   for other providers.
+6. A non-Claude provider (`GeminiProvider.ensureWorkspaceTrusted` -- Gemini was a
+   supported provider at the time of this verification and has since been removed)
+   returned `{ seeded: false }` and never invoked the exec callback -- confirms the fix
+   is a no-op for other providers.
 7. `remove_member` cleaned up the temp registry entry; the temp `HOME`/`work_folder`
    scratch directories were deleted after the run.
 

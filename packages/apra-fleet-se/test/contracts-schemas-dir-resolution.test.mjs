@@ -22,12 +22,30 @@ describe('resolveSchemasDir', () => {
         assert.strictEqual(result, '/fixture/override');
     });
 
-    test('branch 2: dist/agents/schemas wins when it exists, even if the package-local and monorepo dirs also exist', () => {
+    test('branch 2: when both candidates exist, dist/agents/schemas wins on a freshness tie (preserving pre-apra-fleet-ot2z.20 behaviour)', () => {
+        // apra-fleet-ot2z.20.1: resolution between two existing candidates is
+        // now freshness-first (newer .json content wins), not
+        // dist-always-wins. Inject newestJsonMtimeMs (in addition to exists)
+        // so this stays a pure, deterministic branch test instead of falling
+        // through to a real recursive filesystem walk of the actual dist/
+        // and package-local directories on this machine -- see the
+        // "deps.exists-only stub no longer isolates from the real
+        // filesystem" note in test/contracts-schema-packaging.test.mjs.
         const result = resolveSchemasDir({
             env: {},
-            exists: (candidate) => true,
+            exists: () => true,
+            newestJsonMtimeMs: () => 1000, // both candidates equally fresh -> tie resolves to dist
         });
         assert.ok(candidate_matches(result, 'dist', 'agents', 'schemas'), result);
+    });
+
+    test('branch 2b: when both candidates exist, the package-local copy wins when it is strictly newer', () => {
+        const result = resolveSchemasDir({
+            env: {},
+            exists: () => true,
+            newestJsonMtimeMs: (dir) => (candidate_matches(dir, 'dist', 'agents', 'schemas') ? 1000 : 2000),
+        });
+        assert.ok(candidate_matches(result, 'apra-fleet-se', 'apra-pm', 'agents', 'schemas'), result);
     });
 
     test('branch 3: falls through to packages/apra-fleet-se/apra-pm/agents/schemas when dist/agents/schemas is absent', () => {

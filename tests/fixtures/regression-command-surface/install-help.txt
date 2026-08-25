@@ -11,16 +11,14 @@ Usage:
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
   apra-fleet install --force           Stop a running server before installing
-  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
+  apra-fleet install --llm <provider>  Target LLM provider: claude (default), codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
   apra-fleet install --help            Show this help
 
 Options:
-  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot, agy, opencode.
-                          Defaults to claude. Note: --llm gemini shows a warning about sequential
-                          dispatch -- Gemini does not support background agents, so fleet operations
-                          run sequentially rather than in parallel.
+  --llm <provider>        LLM provider to configure. Supported: claude, codex, copilot, agy, opencode.
+                          Defaults to claude.
   --transport <mode>      MCP transport to use: http (default) or stdio. HTTP uses the singleton
                           fleet server at http://localhost:7523/mcp. stdio runs fleet as a subprocess.
   --skill <mode>          Which skills to install: all (default), fleet, pm, or none.

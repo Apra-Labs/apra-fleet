@@ -5,7 +5,7 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, MemberReservationResumeError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
 // runner.js call site uses the purpose-based entry points on DoltSync
 // (apra-fleet-417.2.2); the named primitives are imported here only to be
@@ -910,7 +910,7 @@ export async function syncMemberBefore(member, opts = {}) {
 export async function syncMemberAfter(member, opts = {}) {
     const {
         command, pushCode = true, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch,
-        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider,
+        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider, setUpstream = false,
     } = opts;
     if (typeof command !== 'function') {
         throw new Error("syncMemberAfter requires an injected command() in opts");
@@ -921,7 +921,15 @@ export async function syncMemberAfter(member, opts = {}) {
     }
     const provider = await resolveGitProviderForClassification(resolveMemberProvider, member, log);
 
-    const pushCmd = branch ? `git push ${remote} ${branch}` : 'git push';
+    // apra-fleet: `setUpstream` (opt-in, default false -- every existing
+    // caller's command text is byte-for-byte unchanged) is for Publish PR's
+    // push specifically: it needs `-u` to set the tracking branch on a brand
+    // new sprint branch's first push, AND that distinct spelling is what lets
+    // mock-sprint-publish-push-failure.test.mjs's `gitGhFailurePattern` (and
+    // any real-world log grep) target Publish's push in isolation from every
+    // OTHER per-dispatch G-push in the same sprint, which all share the plain
+    // `git push <remote> <branch>` spelling below.
+    const pushCmd = branch ? `git push${setUpstream ? ' -u' : ''} ${remote} ${branch}` : 'git push';
 
     let push = await runGitStep({
         command, member, cmd: pushCmd,
@@ -2046,16 +2054,30 @@ export function createMemberReservationClient(opts = {}) {
         return '';
     }
 
+    // Returns { ok, text } rather than throwing so BOTH the best-effort callers
+    // (reserveAll/releaseAll, which ignore the outcome) and the owner-checked
+    // resume caller (reReserveForResume, which MUST know per-member whether the
+    // reserve was granted or rejected) can share one call path. `ok` is false
+    // on a tool rejection ("already reserved by X") OR a transport throw; the
+    // caller decides what a failure means for its own contract.
     async function callFor(action, member) {
         try {
             const result = await callTool('member_reservation', { member_name: member, action, sprint_id: sprintId });
             const text = resultText(result);
             if ((result && result.isError) || text.startsWith('[-]')) {
                 log(`[member-reservation] ${action} rejected for member '${member}': ${text || '(no detail)'}`);
+                return { ok: false, text };
             }
+            return { ok: true, text };
         } catch (err) {
             log(`[member-reservation] ${action} failed for member '${member}' (non-fatal; execute_prompt's dispatch-time reservedBy check still applies): ${err.message}`);
+            return { ok: false, text: err.message };
         }
+    }
+
+    async function releaseAll() {
+        if (!active) return;
+        for (const member of members) await callFor('release', member);
     }
 
     return {
@@ -2063,9 +2085,66 @@ export function createMemberReservationClient(opts = {}) {
             if (!active) return;
             for (const member of members) await callFor('reserve', member);
         },
-        async releaseAll() {
-            if (!active) return;
-            for (const member of members) await callFor('release', member);
+        releaseAll,
+
+        // (apra-fleet-p2to.4.2) Pause hand-back: release EVERY member so a
+        // different sprint may claim it while this one is parked at a
+        // cooperative pause. Best-effort per member, exactly like releaseAll()
+        // -- a pause must never fail on a release hiccup, and execute_prompt's
+        // dispatch-time reservedBy check still fails loudly on any member this
+        // sprint later dispatches to without holding.
+        //
+        // (apra-fleet-p2to.4.4.1) releaseForPause() is intentionally the SAME
+        // operation as releaseAll() -- both release every member,
+        // best-effort, with no distinct behavior of their own -- so this
+        // calls straight through to releaseAll() rather than keeping a
+        // byte-identical second copy of the loop to drift out of sync. The
+        // two names stay separate call sites (not aliased) because they mean
+        // different things to a caller even though today they do the same
+        // work: this is intended to change independently if a pause hand-back
+        // ever needs behavior releaseAll() should not have (e.g. skipping a
+        // member expected back imminently).
+        releaseForPause: releaseAll,
+
+        // (apra-fleet-p2to.4.2) Resume re-acquire, OWNER-CHECKED: re-reserve
+        // every member released at pause. A member is "unavailable" when its
+        // reserve is rejected -- another sprint claimed it while we were paused,
+        // so it is no longer ours. We refuse to silently continue on top of a
+        // member some other sprint now owns: collect every unavailable member
+        // and, if any, fail the resume with a single clean error that NAMES
+        // them (MemberReservationResumeError) so the operator knows exactly what
+        // to free before retrying the resume.
+        //
+        // Every successfully re-acquired member then runs `resyncMember` (git
+        // fetch + decideEnsureBranchAction probe + bd dolt pull) UNCONDITIONALLY
+        // before any work continues -- while paused, origin and the beads DB can
+        // have moved (another sprint, a human push), so the re-sync is never
+        // gated on a "looks unchanged" heuristic.
+        //
+        // @param {{ resyncMember?: (member: string) => Promise<void> }} [opts]
+        // @returns {Promise<{ reacquired: string[] }>}
+        async reReserveForResume({ resyncMember } = {}) {
+            if (!active) return { reacquired: [] };
+            const reacquired = [];
+            const unavailable = [];
+            for (const member of members) {
+                const res = await callFor('reserve', member);
+                if (res.ok) reacquired.push(member);
+                else unavailable.push(member);
+            }
+            if (unavailable.length > 0) {
+                // Hand back the ones we DID re-grab so a failed resume does not
+                // leave this sprint holding a partial, unusable reservation set
+                // that blocks the very members another operator may need to free
+                // up the unavailable ones. Best-effort -- the resume is failing
+                // regardless.
+                for (const member of reacquired) await callFor('release', member);
+                throw new MemberReservationResumeError(unavailable);
+            }
+            if (typeof resyncMember === 'function') {
+                for (const member of reacquired) await resyncMember(member);
+            }
+            return { reacquired };
         },
     };
 }
@@ -2694,12 +2773,16 @@ export function createUnattendedAutoProvisioner(opts = {}) {
  * greps deploy.md by hand and runs compose_permissions manually -- exactly
  * the failure mode this closes the loop on.
  *
- * Reads deploy.md via `command()` against the ORCHESTRATOR member (its own
- * checkout is the source of truth for what is about to be dispatched) and
- * caches the parsed prefix list for the lifetime of the returned function --
- * one read per sprint run, since deploy.md does not change mid-run on a
- * healthy pipeline. Also caches per TARGET member, like
- * createUnattendedAutoProvisioner above, so repeat cycles don't re-grant.
+ * Reads deploy.md via `command()` against the FIRST target member it is asked
+ * to provision (that member is about to be dispatched as deployer/
+ * integ-test-runner/regression-test-runner, so its own checkout is the source
+ * of truth for what it is about to run) and caches the parsed prefix list for
+ * the lifetime of the returned function -- one read per sprint run, since
+ * deploy.md does not change mid-run on a healthy pipeline. Also caches per
+ * TARGET member, like createUnattendedAutoProvisioner above, so repeat cycles
+ * don't re-grant. Deliberately does NOT read via a separate orchestrator
+ * member: the orchestrator role may be shared/unreservable across concurrent
+ * sprints and carries no git checkout of its own to read from.
  *
  * Failure at any step (probe fails, deploy.md missing/unparseable,
  * compose_permissions unreachable, a listed prefix hitting the
@@ -2707,23 +2790,23 @@ export function createUnattendedAutoProvisioner(opts = {}) {
  * best-effort acceleration -- the deployer's own Step 0a check remains the
  * authoritative, fail-closed backstop regardless of whether this succeeds.
  *
- * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, orchestratorMember: string, log?: Function }} opts
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function }} opts
  * @returns {(member: string) => Promise<void>}
  */
 export function createDeployPermissionsProvisioner(opts = {}) {
-    const { callTool, command, orchestratorMember, log = () => {} } = opts;
+    const { callTool, command, log = () => {} } = opts;
     const fleetApi = new ApraFleet({ callTool });
     /** @type {Set<string>} members already granted deploy.md's permissions this run. */
     const provisioned = new Set();
     /** @type {string[] | null | undefined} undefined = not yet attempted. */
     let cachedPrefixes;
 
-    async function loadRequiredPrefixes() {
+    async function loadRequiredPrefixes(targetMember) {
         if (cachedPrefixes !== undefined) return cachedPrefixes;
         try {
             const res = await command(
                 `node -e "const fs=require('fs'); if(fs.existsSync('deploy.md')) process.stdout.write(fs.readFileSync('deploy.md','utf8'))"`,
-                { member_name: orchestratorMember, silent: true, label: `Read deploy.md permissions`, failSoft: true },
+                { member_name: targetMember, silent: true, label: `Read deploy.md permissions`, failSoft: true },
             );
             if (!res.ok || !res.output) {
                 cachedPrefixes = null;
@@ -2741,7 +2824,7 @@ export function createDeployPermissionsProvisioner(opts = {}) {
 
     return async function ensureDeployPermissions(member) {
         if (!member || provisioned.has(member)) return;
-        const prefixes = await loadRequiredPrefixes();
+        const prefixes = await loadRequiredPrefixes(member);
         if (!prefixes) return;
         try {
             const result = await fleetApi.composePermissions({
@@ -3100,6 +3183,71 @@ export async function verifyDoerStreakClosed({ command, orchestratorMember, bead
     const showBeads = parseBdJson(showRes, label);
     const statusById = new Map(showBeads.map((b) => [b.id, b.status]));
     return beadIds.filter((id) => statusById.get(id) !== 'closed');
+}
+
+/**
+ * Batched per-streak work-claiming (apra-fleet-7h6n.7, audit R6): claims
+ * every id in `beadIds` with ONE `bd update <id...> --claim --json`
+ * invocation instead of one `bd update <id> --claim` call per bead.
+ *
+ * RESEARCH FINDING this batching relies on (verified against real `bd`
+ * 1.1.0, both by reading `bd update --help`'s `Usage: bd update [id...]`
+ * and by exercising a scratch sandbox DB): `bd update` DOES accept a
+ * variadic id list, and `--claim --json` on a MULTI-id invocation returns a
+ * JSON array containing ONLY the issues that were successfully claimed --
+ * an id that fails to resolve, or is already claimed by a DIFFERENT
+ * assignee, is silently dropped from the array (its error goes to stderr,
+ * not stdout) rather than aborting the whole call. Two non-obvious
+ * consequences, both load-bearing for this function's design:
+ *   1. This is NOT atomic in the transactional sense -- ids before a
+ *      failing one are still committed, there is no all-or-nothing
+ *      rollback. It IS enough to cut the streak's claim step from N
+ *      subprocess spawns to 1, which is this bead's actual goal.
+ *   2. The process exit code stays 0 even when SOME ids in the batch
+ *      failed to claim (verified: a lone failing id exits 1, but the exact
+ *      same failure mixed into a multi-id batch with a succeeding id exits
+ *      0) -- so, unlike the old single-id-per-call loop, success can NEVER
+ *      be inferred from "command() did not throw". The returned JSON array
+ *      is the only reliable signal, which is why this function always
+ *      diffs `beadIds` against the parsed array rather than relying on a
+ *      catch block.
+ *
+ * A total call failure (command() itself throws -- e.g. a transient
+ * dispatch/network fault reaching the member) is treated the same way the
+ * old loop treated "every id failed": every id is reported skipped, never
+ * thrown, so one bad batch degrades the streak (all its beads stay
+ * unclaimed, caller decides whether to skip the streak) rather than
+ * crashing the sprint.
+ *
+ * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function }} opts
+ * @returns {Promise<{ claimedBeadIds: string[], skippedBeadIds: string[] }>}
+ */
+export async function claimBeadsBatched({ command, orchestratorMember, beadIds, log = () => {} }) {
+    if (!Array.isArray(beadIds) || beadIds.length === 0) {
+        return { claimedBeadIds: [], skippedBeadIds: [] };
+    }
+    const label = `bd update ${beadIds.join(' ')} --claim --json`;
+    let raw;
+    try {
+        raw = await command(label, { member_name: orchestratorMember, silent: true });
+    } catch (err) {
+        // A dispatch/exec-level failure (member unreachable, transient
+        // network fault) degrades gracefully -- every id in this batch
+        // stays unclaimed, same as the old per-id loop's catch-and-skip.
+        // This is DISTINCT from a malformed-JSON parse failure below, which
+        // stays fatal (per parseBdJson's own doc comment: a parse failure
+        // must be LOUD, never silently swallowed as "everything skipped").
+        log(`Batched claim failed for [${beadIds.join(', ')}]: ${err.message}`);
+        return { claimedBeadIds: [], skippedBeadIds: [...beadIds] };
+    }
+    const claimed = parseBdJson(raw, label);
+    const claimedIds = new Set((Array.isArray(claimed) ? claimed : []).map((b) => b && b.id).filter(Boolean));
+    const claimedBeadIds = beadIds.filter((id) => claimedIds.has(id));
+    const skippedBeadIds = beadIds.filter((id) => !claimedIds.has(id));
+    if (skippedBeadIds.length > 0) {
+        log(`Batched claim: claimed ${claimedBeadIds.length} bead(s) [${claimedBeadIds.join(', ')}]; skipped ${skippedBeadIds.length} already-claimed/unresolvable bead(s) [${skippedBeadIds.join(', ')}].`);
+    }
+    return { claimedBeadIds, skippedBeadIds };
 }
 
 /**
@@ -5712,8 +5860,207 @@ export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, br
     };
 }
 
+/**
+ * (apra-fleet-p2to.4.2) Map an `execute_command` tool result to the SOFT git
+ * runner contract resyncReacquiredMember() consumes:
+ *   { ok: boolean, stdout?: string, error?: string }
+ *
+ * `ok` MUST be derived from the command's real EXIT CODE, never from an
+ * `isError` flag: the fleet server's `execute_command` tool does NOT set
+ * `isError` on a non-zero exit (see src/services/tool-registry.ts wrapTool() --
+ * it returns `{ content, structuredContent: { exitCode } }` with no isError,
+ * and src/tools/execute-command.ts formats the text as `Exit code: N\n...`).
+ * Reading `isError` here would make EVERY git command look successful, which is
+ * catastrophic for `git merge-base --is-ancestor` where the whole point is that
+ * a NON-zero exit (1 = "not an ancestor") is the meaningful signal: misreading
+ * it as ok=true collapses 'ahead'/'diverged' into 'behind-or-equal' and lets
+ * resyncReacquiredMember() run `git checkout -B <branch> origin/<branch>`,
+ * resetting away committed-but-unpushed work. So: prefer the structured
+ * `exitCode`, else parse the `Exit code: N` line out of the text, and only as a
+ * last resort (no exit code recoverable at all -- e.g. a transport-level string
+ * failure from the tool) fall back to the `isError` flag.
+ *
+ * @param {any} res - an `execute_command` MCP result (`{ content, structuredContent }`),
+ *   a plain string, or `{ isError, ... }`.
+ * @returns {{ ok: boolean, stdout: string, error: string|undefined }}
+ */
+export function commandResultToSoftGit(res) {
+    let text = '';
+    if (typeof res === 'string') {
+        text = res;
+    } else if (res && Array.isArray(res.content)) {
+        text = res.content
+            .map((c) => (c && typeof c.text === 'string' ? c.text : ''))
+            .join('\n');
+    } else if (res && typeof res.text === 'string') {
+        text = res.text;
+    }
+
+    let exitCode;
+    if (res && res.structuredContent && typeof res.structuredContent.exitCode === 'number') {
+        exitCode = res.structuredContent.exitCode;
+    } else {
+        const m = /Exit code:\s*(-?\d+)/.exec(text);
+        if (m) exitCode = Number(m[1]);
+    }
+
+    const ok = exitCode !== undefined ? exitCode === 0 : !(res && res.isError);
+    return { ok, stdout: text, error: ok ? undefined : (text || 'unknown error') };
+}
+
+/**
+ * (apra-fleet-p2to.4.2) Re-sync ONE member that was just re-acquired on resume.
+ * Runs -- UNCONDITIONALLY, never gated on a "looks unchanged" heuristic -- the
+ * same three reconciliation steps a fresh dispatch would rely on, because while
+ * this sprint was paused both origin and the beads DB can have moved (another
+ * sprint, a human push) on top of the released member:
+ *
+ *   1. `git fetch` (base branch, then the sprint branch soft -- a brand-new
+ *      branch legitimately has no remote ref yet).
+ *   2. The pure decideEnsureBranchAction() probe: fetch outcome + a local-branch
+ *      existence probe + (when both tips exist) a two-way ancestor comparison,
+ *      fed into the SAME decision helper the Ensure Sprint Branch phase uses.
+ *      An 'abort' decision (fetch failed for a non-"missing ref" reason, or the
+ *      tips diverged) THROWS rather than touch git -- resuming onto a diverged
+ *      branch could silently discard real pushed work. A 'checkout' decision is
+ *      executed so the member's working branch is reconciled to origin's new
+ *      tip before work continues.
+ *   3. `bd dolt pull` -- re-sync the beads clone to whatever landed while paused.
+ *
+ * All I/O is injected so this stays transport-agnostic and unit-testable:
+ *   - `runGit(cmd)` -> Promise<{ ok: boolean, stdout?: string, error?: string }>
+ *     (a SOFT git runner: it never throws; this function decides which failures
+ *     are fatal).
+ *   - `doltPull(member)` -> Promise<any> (runs `bd dolt pull` on the member).
+ *
+ * @param {{ member: string, branch: string, baseBranch: string,
+ *           runGit: (cmd: string) => Promise<{ ok: boolean, stdout?: string, error?: string }>,
+ *           doltPull: (member: string) => Promise<any>, log?: Function }} opts
+ * @returns {Promise<void>}
+ */
+export async function resyncReacquiredMember(opts = {}) {
+    const { member, branch, baseBranch, runGit, doltPull, log = () => {} } = opts;
+    if (typeof runGit !== 'function' || typeof doltPull !== 'function') {
+        throw new TypeError('resyncReacquiredMember requires runGit() and doltPull() to be injected');
+    }
+
+    async function gitStep(cmd, { failSoft = false } = {}) {
+        const res = await runGit(cmd);
+        if (!failSoft && !(res && res.ok)) {
+            throw new Error(
+                `[resume-resync] '${cmd}' failed on member '${member}': ${(res && (res.error || res.stdout)) || 'unknown error'}`
+            );
+        }
+        return res || { ok: false };
+    }
+
+    // 1. git fetch: base (hard -- a missing base is a real problem) then the
+    //    sprint branch (soft -- a brand-new branch has no remote ref yet).
+    await gitStep(`git fetch origin ${baseBranch} --quiet`);
+    const branchFetch = await gitStep(`git fetch origin ${branch} --quiet`, { failSoft: true });
+
+    // 2. decideEnsureBranchAction probe: local-branch existence + tip comparison.
+    const localProbe = await gitStep(`git rev-parse --verify --quiet refs/heads/${branch}`, { failSoft: true });
+    const localBranchExists = localProbe.ok;
+    let localTipStatus;
+    if (branchFetch.ok && localBranchExists) {
+        const localIsAncestorOfRemote = await gitStep(
+            `git merge-base --is-ancestor ${branch} origin/${branch}`, { failSoft: true }
+        );
+        const remoteIsAncestorOfLocal = await gitStep(
+            `git merge-base --is-ancestor origin/${branch} ${branch}`, { failSoft: true }
+        );
+        if (localIsAncestorOfRemote.ok) {
+            localTipStatus = 'behind-or-equal';
+        } else if (remoteIsAncestorOfLocal.ok) {
+            localTipStatus = 'ahead';
+        } else {
+            localTipStatus = 'diverged';
+        }
+    }
+    const decision = decideEnsureBranchAction({
+        branch,
+        baseBranch,
+        branchFetchOk: branchFetch.ok,
+        branchFetchError: branchFetch.error,
+        localBranchExists,
+        localTipStatus,
+    });
+    if (decision.action === 'abort') {
+        throw new Error(`[resume-resync] ${decision.message} (member '${member}')`);
+    }
+    // Reconcile the member's working branch to origin's (possibly moved) tip.
+    await gitStep(decision.command);
+
+    // 3. bd dolt pull: re-sync the beads clone.
+    await doltPull(member);
+
+    log(`[resume-resync] member '${member}' re-synced (git fetch + branch reconcile + beads D-pull) before work resumed`);
+}
+
 async function runSprintCycle(context) {
-    const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget } = context;
+    const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget, setPauseGuard } = context;
+
+    // (apra-fleet-p2to.4.1) Clean-state pause guard: this is runner.js's OWN
+    // pause-awareness -- the engine's cooperative pause primitive
+    // (apra-fleet-p2to.1's requestPause()/setPauseGuard()) only ever engages
+    // a pending pause at a zero-in-flight-activity boundary that ALSO passes
+    // this predicate, so registering it here is what keeps a pause from
+    // landing mid-git/mid-dolt-sync (e.g. between a pull and its matching
+    // push, or mid-D-push) and leaving the workspace/beads clone in an
+    // inconsistent state to resume from. `openSyncBracketCount` counts every
+    // currently-open "bracket": withGitSync()'s FULL body (pre-dispatch sync
+    // through post-dispatch sync, wrapped as a single bracket below) and
+    // every standalone DoltSync.syncBefore()/syncAfter() call elsewhere in
+    // this file that is NOT already nested inside a withGitSync bracket (a
+    // nested one is harmless double-counting, never a leak, since
+    // withOpenSyncBracket()'s increment/decrement is always paired). The
+    // guard itself is trivial and adds NO behavior when no pause is pending
+    // -- the engine only ever consults it while a pause is deferred (see
+    // FleetWorkflow._guardPermitsPause(), packages/apra-fleet-workflow/src/
+    // workflow/index.mjs), so a clean run with setPauseGuard registered but
+    // no pause ever requested behaves identically to one with no guard at
+    // all. `setPauseGuard` is only present on `context` when this script
+    // runs through WorkflowEngine.executeFile() (see that module's
+    // _bindPrimitives()) -- guarded so direct/legacy callers of
+    // runSprintCycle() that never go through the engine (existing tests)
+    // keep working unchanged.
+    let openSyncBracketCount = 0;
+    if (typeof setPauseGuard === 'function') {
+        setPauseGuard(() => openSyncBracketCount === 0);
+    }
+    /**
+     * Runs `fn` with the open-sync-bracket counter incremented for its
+     * duration, decrementing again on EVERY exit path (success or throw) via
+     * `finally` -- never leaves a stale increment behind on an error.
+     * @template T
+     * @param {() => Promise<T>} fn
+     * @returns {Promise<T>}
+     */
+    async function withOpenSyncBracket(fn) {
+        openSyncBracketCount += 1;
+        try {
+            return await fn();
+        } finally {
+            openSyncBracketCount -= 1;
+            // (apra-fleet-p2to.4.4.1) Closing the LAST open sync bracket is
+            // itself a clean-state boundary a deferred pause may complete at,
+            // but the engine only re-checks its pause-engage condition
+            // (WorkflowEngine._maybeEngagePause()) at specific trigger points
+            // -- requestPause(), an in-flight activity draining to zero, the
+            // gate at the next agent()/command() dispatch, or setPauseGuard()
+            // itself (which re-checks as a side effect of registering). None
+            // of those necessarily fire here: this bracket can close with no
+            // further dispatch immediately following. Re-registering the SAME
+            // guard predicate is a deliberate poke -- it engages a pause
+            // requested while sync brackets were open the instant this guard
+            // opens, rather than leaving it stranded until some later
+            // dispatch happens to hit the gate.
+            if (openSyncBracketCount === 0 && typeof setPauseGuard === 'function') {
+                setPauseGuard(() => openSyncBracketCount === 0);
+            }
+        }
+    }
 
     // The shared full-DB beads snapshot served by fetchAllBeadsShared(), plus
     // the two choke points that keep it correct. Both wrappers are installed
@@ -5724,13 +6071,34 @@ async function runSprintCycle(context) {
     // variable -- transparently goes through the wrapped version.
     //
     // The snapshot MUST be invalidated the instant the underlying data can
-    // have changed, so invalidation fires on BOTH:
+    // have changed, so invalidation fires on ALL of:
     //   1. every `phase()` call -- a new step must never inherit a stale view
-    //      from the step before it, and
+    //      from the step before it,
     //   2. every bd command that is not a known read (list/show/ready/config).
     //      Update/create/close/note/dep/dolt-pull are all mutations, and an
     //      unrecognized bd subcommand is conservatively assumed to mutate: the
-    //      failure mode is a redundant full fetch, never silently stale data.
+    //      failure mode is a redundant full fetch, never silently stale data,
+    //      and
+    //   3. every PLANNER dispatch that returns successfully (see the explicit
+    //      invalidateAllBeadsCache() calls right after dispatchPlanner()
+    //      below, in both the main Planning Loop and the in-cycle scoped
+    //      replan). The planner mutates beads on ITS OWN clone via its own
+    //      `bd create` tool calls, never through this orchestrator-side
+    //      `command()` wrapper -- so (2) alone cannot see it, and Execution
+    //      Prep runs later in the SAME "Plan C{cycle} R{round}" phase (no
+    //      intervening phase() call), so (1) cannot see it either. Without
+    //      (3), a planner that creates its task DAG inside one dispatch
+    //      leaves the very next Execution Prep step looking at the pre-plan
+    //      snapshot, which filters those tasks' still-unseen parent features
+    //      out as non-target features and finds nothing ready -- silently
+    //      skipping Develop for that whole cycle (apra-fleet-zmqm).
+    //      Deliberately scoped to the planner only, NOT every dispatch: an
+    //      unconditional per-dispatch invalidation was tried and reverted --
+    //      it defeats the "one full-DB fetch per phase" cost control
+    //      full-db-fetch-tripwire.test.mjs pins, for every OTHER role
+    //      (doer/reviewer/deployer/...) that has no same-phase reader
+    //      depending on its bead mutations the way Execution Prep depends on
+    //      the planner's.
     //      Non-bd commands (git, node probes) never touch beads state.
     let allBeadsSnapshot = null; // { beads } -- cleared by invalidateAllBeadsCache()
     function invalidateAllBeadsCache() { allBeadsSnapshot = null; }
@@ -5999,7 +6367,27 @@ async function runSprintCycle(context) {
     const roundSessions = createRoundSessionRegistry({ log });
 
     const targetIssues = validated.targetIssues;
-    const sprintFilter = targetIssues.length > 0 ? `--parent ${targetIssues.join(',')}` : '';
+    // Display-only label for error/diagnostic text -- NEVER fed to an actual
+    // `bd` invocation (bdListScoped below builds scope structurally, via an
+    // in-memory BFS over `bd list --all`, not via a `bd list --parent` call).
+    // `--parent` is only an accurate description of that BFS for the
+    // single-target case (one root + all its descendants); for 2+ target
+    // ids with no shared parent -- e.g. a flat batch of independent leaf
+    // beads -- comma-joining them after a single `--parent` flag misdescribes
+    // the scope as "all these ids are children of one parent" (they are not)
+    // and, worse, LOOKS like a real, directly-runnable `bd` invocation that a
+    // human debugging a "Nothing to do" failure will paste verbatim -- `bd
+    // list --parent <id1>,<id2>,...` does not do a multi-root union; `bd`
+    // treats a comma-joined value as one (nonexistent) parent id and returns
+    // `[]`, which reads as "confirms the sprint's own finding" and sends
+    // debugging in exactly the wrong direction (this shape was mistaken for
+    // the root cause of a real "Nothing to do" incident before this comment
+    // was added -- see the multi-id flat-leaf-scope bug writeup).
+    const sprintFilter = targetIssues.length === 0
+        ? ''
+        : targetIssues.length === 1
+            ? `--parent ${targetIssues[0]}`
+            : `sprint targets (each root + its descendants): ${targetIssues.join(', ')}`;
 
     // Member mapping resolution
     const physicalMembers = validated.members;
@@ -6053,9 +6441,32 @@ async function runSprintCycle(context) {
             if (Array.isArray(list)) for (const m of list) roleMapSpecialists.add(m);
         }
     }
+    // apra-fleet: roleMap.orchestrator members are excluded from BOTH the
+    // generalist pool and its degenerate physicalMembers fallback -- not just
+    // from the generalist filter -- because the orchestrator role may be a
+    // shared/unreservable, git-less member (docs/design-orchestrator-
+    // worktree-model-v2.md). Without this, the "every member is a specialist"
+    // degradation re-selects the orchestrator for OTHER unmapped roles
+    // (harvester/planner/deployer/etc.), silently undoing the branchEnsureMembers
+    // removal and every probeFileExists/publishGitMember fix elsewhere in this
+    // file: those call getMemberForRole()/getMembersForRole() for roles that
+    // still expect a real git checkout.
+    const orchestratorRoleMapMembers = new Set(
+        (validated.roleMap && Array.isArray(validated.roleMap[ROLE_ORCHESTRATOR]))
+            ? validated.roleMap[ROLE_ORCHESTRATOR]
+            : []
+    );
     const unmappedRoleFallbackPool = (() => {
-        const generalists = physicalMembers.filter((m) => !roleMapSpecialists.has(m));
-        return generalists.length > 0 ? generalists : physicalMembers;
+        const eligible = physicalMembers.filter((m) => !orchestratorRoleMapMembers.has(m));
+        const generalists = eligible.filter((m) => !roleMapSpecialists.has(m));
+        if (generalists.length > 0) return generalists;
+        if (eligible.length > 0) return eligible;
+        // Every physical member IS the mapped orchestrator (e.g. a single-member
+        // launch that role-maps the same member as both a dispatch role and
+        // orchestrator): there is no other member to fall back to, so this
+        // degrades to the original physicalMembers behavior rather than
+        // resolving to an empty pool.
+        return physicalMembers;
     })();
 
     const getMemberForRole = (role) => {
@@ -6081,6 +6492,17 @@ async function runSprintCycle(context) {
     // Uses the canonical ROLE_ORCHESTRATOR constant, not a literal -- see its
     // doc comment for why 'orchestrator' is an application-level pseudo-role
     // deliberately outside contracts.ROLES.
+    //
+    // apra-fleet-TODO(orchestrator-hard-fail): an unmapped orchestrator
+    // silently falling back to unmappedRoleFallbackPool[0] is a known defect
+    // (docs/design-orchestrator-worktree-model-v2.md section 1/6.4) -- it has
+    // repeatedly caused the orchestrator to run against a stale/wrong-scope bd
+    // clone. Making this a hard launch-time failure is the intended fix, but
+    // it cannot land in isolation: it requires the supervisor to
+    // auto-inject roleMap.orchestrator on every launch first (section 6.2,
+    // not yet implemented) -- otherwise every existing caller that relies on
+    // the implicit fallback (including this file's own test harness) breaks.
+    // Land 6.2, update callers, THEN make this throw.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
 
     // Self-heals deploy.md's declared Permissions onto the deployer /
@@ -6092,7 +6514,7 @@ async function runSprintCycle(context) {
     // from `args.callTool`, else a no-op when neither is available.
     const ensureDeployPermissions = context.ensureDeployPermissions ?? (
         (args && typeof args.callTool === 'function')
-            ? createDeployPermissionsProvisioner({ callTool: args.callTool, command, orchestratorMember, log })
+            ? createDeployPermissionsProvisioner({ callTool: args.callTool, command, log })
             : async () => {}
     );
 
@@ -6156,6 +6578,16 @@ async function runSprintCycle(context) {
     // agent-with-runbook resolution before failing the streak (a no-op for
     // non-code-writing roles; never fires for a plain divergence).
     async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, needsVcsAuth = pushCode || pushBeads, skipPreDispatchSync = false, skipPreDispatchDoltPull = false, resumeOntoRemoteTip = false } = {}) {
+      // (apra-fleet-p2to.4.1) The WHOLE withGitSync bracket -- pre-dispatch
+      // G-pull/D-pull, the dispatch itself, and post-dispatch G-push/D-push
+      // -- counts as ONE open sync bracket for the clean-state pause guard
+      // above: a pause must never land between, say, a pre-dispatch pull and
+      // its matching post-dispatch push, which would leave the workspace/
+      // beads clone mid-cycle. `finally` guarantees the decrement fires on
+      // every exit path (the normal return, or any of the throws below),
+      // never leaving a stale increment behind.
+      openSyncBracketCount += 1;
+      try {
         if (skipPreDispatchSync) {
             log(`[Sync] Skipping pre-dispatch G-pull/D-pull for member '${member}' on a retry after a terminal no-mutation dispatch failure (prior attempt published nothing -- workspace unchanged since the last pull).`);
         } else {
@@ -6249,6 +6681,18 @@ async function runSprintCycle(context) {
         }
         if (dispatchThrew) throw dispatchThrew;
         return dispatchResult;
+      } finally {
+        openSyncBracketCount -= 1;
+        // (apra-fleet-p2to.4.4.1) See withOpenSyncBracket()'s matching
+        // comment above: poke the engine's pause-engage check by
+        // re-registering the same guard predicate the instant this bracket
+        // -- the whole pre-dispatch sync/dispatch/post-dispatch sync unit --
+        // closes, so a pause deferred for its duration engages right away
+        // rather than waiting on whatever dispatch happens to come next.
+        if (openSyncBracketCount === 0 && typeof setPauseGuard === 'function') {
+          setPauseGuard(() => openSyncBracketCount === 0);
+        }
+      }
     }
 
     // Scope discovery cannot be built on `bd list --parent`: it accepts exactly
@@ -6720,8 +7164,14 @@ async function runSprintCycle(context) {
     // sprint starts; this ensure-everywhere is the git half of the same "every
     // member starts from the same state" guarantee. See docs/architecture.md
     // "Multi-member topology (fleet-sprint)".
+    // apra-fleet: orchestratorMember is deliberately NOT included here -- the
+    // orchestrator role issues only bd/Dolt commands (never git), and a
+    // shared/unreservable orchestrator member used across concurrent sprints
+    // cannot be checked out onto N different branches at once. If an operator
+    // explicitly role-maps a dispatch member (doer/reviewer/planner/etc.) as
+    // orchestrator too, that member is still included below via its dispatch
+    // role, so the ensure-everywhere guarantee is unaffected for that case.
     const branchEnsureMembers = [...new Set([
-        orchestratorMember,
         ...getMembersForRole(ROLE_DOER),
         ...getMembersForRole(ROLE_REVIEWER),
         ...getMembersForRole('planner'),
@@ -6754,7 +7204,8 @@ async function runSprintCycle(context) {
     // Routed through the single dolt-sync module (apra-fleet-417.2.1):
     // readinessGate (apra-fleet-417.5 rename of healthGate) selects the
     // pre-flight variant of the BEFORE bracket.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
+    // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
@@ -7045,10 +7496,13 @@ async function runSprintCycle(context) {
     // single-quoted JS literals inside a double-quoted shell argument (no
     // escaped-quote-inside-quote traps). failSoft, so a probe failure can never
     // throw and kill the sprint -- it just means "skip the dependent phase".
-    async function probeFileExists(filename) {
+    // Runs on `member` -- the role member about to consume the probed file --
+    // never on orchestratorMember: a shared/unreservable orchestrator member
+    // carries no git checkout to probe.
+    async function probeFileExists(filename, member) {
         const res = await command(
             `node -e "console.log(require('fs').existsSync('${filename}') ? 'found' : 'not found')"`,
-            { member_name: orchestratorMember, silent: true, label: `Probe for '${filename}'`, failSoft: true }
+            { member_name: member, silent: true, label: `Probe for '${filename}'`, failSoft: true }
         );
         if (!res.ok) {
             log(`Probe for '${filename}' failed (treating as not-found, skipping the dependent phase): ${res.error}`);
@@ -7062,7 +7516,8 @@ async function runSprintCycle(context) {
     // doer's work, so pull again immediately before the verification read.
     // DoltSync.syncBefore() is a benign no-op when the clone is current and
     // when no dolt remote is configured at all.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
+    // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
 
     await updateDashboard();
 
@@ -7113,6 +7568,31 @@ async function runSprintCycle(context) {
 
         if (initialBeads.length === 0) {
             if (notDoneBeads.length === 0) {
+                // Distinguish "every target issue is genuinely done" from "one
+                // or more target ids are not visible to this orchestrator
+                // member's own bd clone AT ALL" -- the latter reads
+                // identically as "Nothing to do" without this check (an empty
+                // `notDoneBeads` either way), but is a completely different
+                // problem: those beads are not closed, they are invisible
+                // here, most commonly because they were created/mutated on a
+                // different clone that was never `bd dolt push`ed to the
+                // shared remote before this sprint launched, or because a
+                // members-persistent-across-sprints orchestrator (see
+                // DoltSync.syncBefore's fatal:true D-pull above) still hasn't
+                // synced them for some other reason. Reusing the already-
+                // fetched project-wide snapshot -- no extra bd call.
+                const allBeadsForVisibilityCheck = await fetchAllBeadsShared();
+                const knownIds = new Set(allBeadsForVisibilityCheck.map((b) => b.id));
+                const invisibleTargets = targetIssues.filter((id) => !knownIds.has(id));
+                if (invisibleTargets.length > 0) {
+                    throw new Error(
+                        `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
+                        `are not visible to the orchestrator member ('${orchestratorMember}')'s bd clone at all: ` +
+                        `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
+                        `means they were created/updated on a different clone that was never synced to the shared Dolt remote ` +
+                        `(dolt-push it there first) or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`
+                    );
+                }
                 throw new Error(`Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`);
             }
 
@@ -7479,6 +7959,13 @@ async function runSprintCycle(context) {
                     const skipPreDispatchDoltPull =
                         i === 0 && cycle === 1 && planningRounds === 1 && plannerSharesOrchestratorClone;
                     await dispatchPlanner({ skipPreDispatchSync: skipPreDispatchSyncNext, skipPreDispatchDoltPull });
+                    // apra-fleet-zmqm: the planner just created/mutated beads on
+                    // its own clone via its own bd tool calls -- invisible to
+                    // this orchestrator's command()-wrapper invalidation (see
+                    // fetchAllBeadsShared()'s doc comment, point 3). Execution
+                    // Prep runs later in this SAME phase, so without this the
+                    // cache built before Plan silently survives into it.
+                    invalidateAllBeadsCache();
                     plannerErr = null;
                     break;
                 } catch (err) {
@@ -7728,7 +8215,8 @@ async function runSprintCycle(context) {
                     { member_name: orchestratorMember, silent: true, label: `Attach plan-cap deferral finding to ${id}` }
                 );
             }
-            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
             planCapDeferredIds = contestedIds;
         }
 
@@ -7931,6 +8419,14 @@ async function runSprintCycle(context) {
                         { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: 'Scoped Replan Plan (interactive)', log }
                     ), { pushBeads: true });
                     log(`Scoped Replan Planner: ${scopedPlannerRes}`);
+                    // apra-fleet-zmqm: same reasoning as the main Planning
+                    // Loop's invalidateAllBeadsCache() call -- this dispatch
+                    // mutated beads on its own clone, and everything after it
+                    // in this same "Replan C{cycle} R{devRounds}" phase (the
+                    // scoped plan-reviewer, the resumed develop round) must
+                    // see those mutations, not the pre-replan snapshot taken
+                    // when this phase() started.
+                    invalidateAllBeadsCache();
                 } catch (err) {
                     scopedPlannerOk = false;
                     // Self-heal an LLM-auth failure so the next cycle's planner
@@ -7995,7 +8491,8 @@ async function runSprintCycle(context) {
                 // and refresh the dashboard before re-evaluating the loop top.
                 // Routed through the single dolt-sync module's AFTER bracket
                 // (apra-fleet-417.2.1); behavior is identical.
-                await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+                // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+                await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
                 await updateDashboard();
                 continue;
             }
@@ -8253,24 +8750,18 @@ async function runSprintCycle(context) {
                 // FIRST attempt passes nothing and keeps plain ff-only
                 // pre-dispatch sync.
                 const dispatchDoer = (syncOpts = {}) => withGitSync(doerMember, true, async () => {
-                    // Claim once per streak turn, after the D-pull.
+                    // Claim once per streak turn, after the D-pull. Batched into ONE
+                    // bd update id-list --claim --json call (apra-fleet-7h6n.7)
+                    // instead of one bd update id --claim call per bead -- see the
+                    // claimBeadsBatched doc comment above for the verified
+                    // multi-id --claim contract (non-atomic, JSON-array-only
+                    // success signal) this relies on.
                     if (!hasClaimedBeads) {
                         hasClaimedBeads = true;
                         if (validated.assignee) {
-                            const claimedBeadIds = [];
-                            const skippedBeadIds = [];
-                            for (const beadId of actualBeadIds) {
-                                try {
-                                    const claimLabel = `bd update ${beadId} --claim`;
-                                    await command(claimLabel, { member_name: orchestratorMember, silent: true });
-                                    claimedBeadIds.push(beadId);
-                                } catch (claimErr) {
-                                    // A claim can fail if the bead is already claimed by another
-                                    // sprint/assignee. Skip this bead instead of crashing.
-                                    skippedBeadIds.push(beadId);
-                                    log(`Doer streak: bead ${beadId} already claimed (skipping): ${claimErr.message}`);
-                                }
-                            }
+                            const { claimedBeadIds, skippedBeadIds } = await claimBeadsBatched({
+                                command, orchestratorMember, beadIds: actualBeadIds, log,
+                            });
                             if (claimedBeadIds.length === 0) {
                                 // All beads in this streak are already claimed by other sprints.
                                 // Skip this streak entirely.
@@ -8281,7 +8772,6 @@ async function runSprintCycle(context) {
                                 );
                             }
                             if (skippedBeadIds.length > 0) {
-                                log(`Doer streak: claimed ${claimedBeadIds.length} bead(s) [${claimedBeadIds.join(', ')}]; skipped ${skippedBeadIds.length} already-claimed bead(s) [${skippedBeadIds.join(', ')}].`);
                                 actualBeadIds = claimedBeadIds; // Update to only the successfully claimed ones
                             }
                         }
@@ -8486,9 +8976,11 @@ async function runSprintCycle(context) {
                         // SUCCEEDED: resuming it wastes a dispatch on a session with
                         // nothing left to do, and classifying it 'failed' would
                         // falsely re-lane already-completed work.
-                        const preResumeUnclosed = await verifyDoerStreakClosed({
+                        // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
+                        // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
+                        const preResumeUnclosed = await withOpenSyncBracket(() => verifyDoerStreakClosed({
                             command, orchestratorMember, beadIds: actualBeadIds, log,
-                        });
+                        }));
                         if (preResumeUnclosed.length === 0) {
                             log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns), but all assigned bead id(s) are already closed -- WARNING: the doer missed the VERIFY checkpoint (kept running after its last bd close instead of stopping). Treating this streak as a successful completion, not a failure; issuing NO resume dispatch.`);
                             dispatchError = null;
@@ -8583,9 +9075,11 @@ async function runSprintCycle(context) {
                     // assuming every bead in the streak is still open, so
                     // completed work is never discarded because a sibling in the
                     // same streak was never reached.
-                    const unclosedIds = await verifyDoerStreakClosed({
+                    // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
+                    // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
+                    const unclosedIds = await withOpenSyncBracket(() => verifyDoerStreakClosed({
                         command, orchestratorMember, beadIds: actualBeadIds, log,
-                    });
+                    }));
                     const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
                     log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);
                     if (batchStreaks) {
@@ -8636,9 +9130,11 @@ async function runSprintCycle(context) {
                 // D-pull this read sees stale (still-open) status and EVERY
                 // remote doer streak is falsely marked FAILED -- the single most
                 // divergence-sensitive read in the file.
-                const unclosedIds = await verifyDoerStreakClosed({
+                // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
+                // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
+                const unclosedIds = await withOpenSyncBracket(() => verifyDoerStreakClosed({
                     command, orchestratorMember, beadIds: actualBeadIds, log,
-                });
+                }));
                 const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
 
                 // KB trust pipeline Phase 2: the doer decides what to capture,
@@ -8940,7 +9436,8 @@ async function runSprintCycle(context) {
             // The orchestrator just MUTATED beads (reopens + newTask creates) in
             // its own clone -- D-push so members observe them on their next
             // dispatch's D-pull.
-            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
             } // end assignedBeadIds.length > 0 (Review dispatch + orchestrator-applied transitions)
 
             await updateDashboard();
@@ -8978,8 +9475,8 @@ async function runSprintCycle(context) {
         // error, portability quirk on a given member, etc.) SKIPS the dependent
         // phase with a logged warning -- it must never throw and kill the
         // sprint.
-        const hasDeploy = await probeFileExists('deploy.md');
-        const hasPlaybook = await probeFileExists('integ-test-playbook.md');
+        const hasDeploy = await probeFileExists('deploy.md', getMemberForRole('deployer'));
+        const hasPlaybook = await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner'));
 
         let deployedThisCycle = false;
 
@@ -9379,7 +9876,8 @@ async function runSprintCycle(context) {
         // counts so the completion/stall math reads the current cross-member
         // beads state (every member's D-pushed closes) rather than the
         // orchestrator's stale local copy.
-        await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
+        // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+        await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -9608,7 +10106,8 @@ async function runSprintCycle(context) {
 
             // D-push the orchestrator's applied re-review reopens/newTask
             // creates, same as the Develop/Review transition site above.
-            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
         }
 
         // apra-fleet-jfo.2: verify-routed beads are decomposed parents, so
@@ -9667,7 +10166,8 @@ async function runSprintCycle(context) {
     // the sprint's closing evidence (finalOpenAtGoal / finalClosedCount)
     // reflects every member's D-pushed beads state, not the orchestrator's
     // stale local copy.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
+    // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
     const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
@@ -10012,7 +10512,7 @@ async function runSprintCycle(context) {
     // part 2 provisions its own fresh sandbox install, so neither depends on
     // the per-cycle Deploy target.
     let regressionResult = null;
-    const hasRegressionPlaybook = await probeFileExists('regression-test-playbook.md');
+    const hasRegressionPlaybook = await probeFileExists('regression-test-playbook.md', getMemberForRole('regression-test-runner'));
     if (hasRegressionPlaybook) {
         phase(`Regression Test C${finalCycleLabel}`);
         await ensureUnattendedAuto(getMemberForRole('regression-test-runner'));
@@ -10288,32 +10788,44 @@ async function runSprintCycle(context) {
     // closing the sprint's target issue would advertise a completion nobody can
     // see. This is the deliberately MINIMAL hardening -- the pluggable-publish
     // restructure is apra-fleet-647.2, which supersedes it.
+    // apra-fleet: this push and the origin-remote read just below it run on
+    // publishGitMember -- a real dispatch member with an actual git checkout
+    // (harvester, falling back to the fallback pool like every other role
+    // resolution in this file) -- NEVER orchestratorMember, which may be a
+    // shared/unreservable, git-less member (docs/design-orchestrator-
+    // worktree-model-v2.md section 4.3/4.5). raiseVcsPrForMember() below
+    // stays on orchestratorMember: it is a credential-file read + REST call,
+    // not git, and is explicitly designed to stay there (section 4.6).
+    const publishGitMember = getMemberForRole('harvester');
     let pushed = false;
     let lastPushError = '';
-    for (let attempt = 0; attempt < POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length; attempt++) {
-        if (POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt] > 0) {
-            log(`Publish PR: pushing sprint branch '${validated.branch}' failed; retrying in ${POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt] / 1000}s (attempt ${attempt + 1}/${POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length}): ${lastPushError}`);
-            if (!mockInstantRetryBackoff()) {
-                await new Promise((resolve) => setTimeout(resolve, POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt]));
-            }
-        }
-        const pushRes = await command(
-            `git push -u origin ${validated.branch}`,
-            {
-                member_name: orchestratorMember,
-                silent: true,
-                failSoft: true,
-                label: `Push sprint branch '${validated.branch}'`,
-            }
-        );
-        if (pushRes.ok) {
-            pushed = true;
-            break;
-        }
-        lastPushError = pushRes.error;
+    // apra-fleet-9wdh-adjacent (Publish-PR push self-heal): this used to retry
+    // the byte-identical `git push` up to 3 times with no fetch/rebase step in
+    // between -- fine for a transient/busy-remote failure, but a genuine
+    // non-fast-forward rejection ("fetch first") is deterministic, so all 3
+    // attempts failed identically and the branch's work was stranded local-
+    // only. syncMemberAfter() (this file, above) already implements the
+    // correct self-heal for exactly this failure shape -- bounded transient
+    // retry, then one pull-rebase-then-re-push on a genuine non-fast-forward
+    // divergence, never a blind force-push -- and every OTHER post-dispatch
+    // G-push in this file already routes through it. Publish PR is the one
+    // push site that bypassed it. Route through it here too instead of the
+    // raw retry loop. NOTE: no `agent` is passed here, so a real content
+    // conflict during the rebase (not just a plain non-FF race) throws
+    // GitDivergedError directly rather than getting syncMemberAfter's
+    // optional Tier 2 conflict-resolution-agent dispatch -- same as the old
+    // loop, which had no Tier 2 either; not a regression.
+    try {
+        await syncMemberAfter(publishGitMember, {
+            command, log, branch: validated.branch, remote: 'origin', setUpstream: true,
+            onAuthFailure, resolveMemberProvider: resolveMemberVcsProvider,
+        });
+        pushed = true;
+    } catch (pushErr) {
+        lastPushError = pushErr.message;
     }
     if (!pushed) {
-        log(`[Publish Push Failed] Could not push sprint branch '${validated.branch}' to origin after ${POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length} attempts -- the sprint's work is COMMITTED LOCALLY ONLY and is NOT on the remote. Skipping PR creation and target-issue closure (neither is meaningful for an unpushed branch); the sprint's own computed verdict (${finalVerdictResult.verdict}) is preserved and returned with pushed:false. Push the branch by hand and raise the PR, or re-run finalization once the remote is reachable. Last error: ${lastPushError}`);
+        log(`[Publish Push Failed] Could not push sprint branch '${validated.branch}' to origin (bounded transient retry, and a rebase-then-re-push if diverged, both exhausted) -- the sprint's work is COMMITTED LOCALLY ONLY and is NOT on the remote. Skipping PR creation and target-issue closure (neither is meaningful for an unpushed branch); the sprint's own computed verdict (${finalVerdictResult.verdict}) is preserved and returned with pushed:false. Push the branch by hand and raise the PR, or re-run finalization once the remote is reachable. Last error: ${lastPushError}`);
         endGroup();
         return {
             status: finalVerdictResult.verdict === 'PASS' ? 'success' : 'failed',
@@ -10344,7 +10856,7 @@ async function runSprintCycle(context) {
     // capabilities()'s own contract -- so a probe hiccup here can never kill
     // the sprint.
     const originUrlRes = await command('git remote get-url origin', {
-        member_name: orchestratorMember,
+        member_name: publishGitMember,
         silent: true,
         failSoft: true,
         label: 'Resolve origin remote URL',
@@ -10375,7 +10887,8 @@ async function runSprintCycle(context) {
                     log(`Publish PR: failed to close target issue '${id}' directly (non-fatal, continuing): ${closeRes.error}`);
                 }
             }
-            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
+            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
         } else {
             log('Publish PR: final verdict is FAIL -- leaving target issue(s) open (not closing on a non-PASS verdict).');
         }
@@ -10689,9 +11202,25 @@ export async function main(context) {
         // the watchdog needs a reason either way.
         if (isTypedAbortError(err)) {
             try {
-                const member = (validatedForLock.roleMap && validatedForLock.roleMap[ROLE_ORCHESTRATOR] && validatedForLock.roleMap[ROLE_ORCHESTRATOR].length > 0)
-                    ? validatedForLock.roleMap[ROLE_ORCHESTRATOR][0]
-                    : validatedForLock.members[0];
+                // apra-fleet: finalizeAbort() runs `git fetch`/`git push` against
+                // this member's LOCAL checkout, which the orchestrator role no
+                // longer has (it may be a shared/unreservable, git-less member --
+                // see docs/design-orchestrator-worktree-model-v2.md section 4.5).
+                // Resolve a git-capable DISPATCH member instead: the harvester's
+                // member (the last code-writing role, so its clone pushed most
+                // recently), falling back to the first doer, never
+                // roleMap.orchestrator and never a bare validatedForLock.members[0]
+                // pick (that silent pick is the original bug this closes).
+                const roleMap = validatedForLock.roleMap;
+                const harvesterMembers = (roleMap && Array.isArray(roleMap['harvester'])) ? roleMap['harvester'] : [];
+                const doerMembers = (roleMap && Array.isArray(roleMap[ROLE_DOER])) ? roleMap[ROLE_DOER] : [];
+                const member = harvesterMembers[0]
+                    ?? doerMembers[0]
+                    ?? validatedForLock.members.find((m) => !roleMap || !roleMap[ROLE_ORCHESTRATOR] || !roleMap[ROLE_ORCHESTRATOR].includes(m));
+                if (!member) {
+                    log('[Terminal History] finalizeAbort() skipped: no harvester/doer/dispatch member could be resolved to push the aborted branch.');
+                    throw new Error('no git-capable member resolved for finalizeAbort');
+                }
                 abortResult = await finalizeAbort({
                     error: err,
                     branch,

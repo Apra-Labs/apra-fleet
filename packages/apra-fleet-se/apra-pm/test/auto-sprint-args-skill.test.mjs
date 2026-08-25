@@ -46,7 +46,7 @@ test('uninstall removes the installed auto-sprint-args skill dir for Claude', ()
 });
 
 test('uninstall does NOT touch an auto-sprint-args dir for non-Claude providers', () => {
-  const cfg = { name: 'Gemini', configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'pm-argsskill-g-')), settingsFile: 'settings.json' };
+  const cfg = { name: 'OpenCode', configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'pm-argsskill-g-')), settingsFile: 'settings.json' };
   const dest = argsSkillDest(cfg);
   fs.mkdirSync(dest, { recursive: true });
   fs.writeFileSync(path.join(dest, 'SKILL.md'), 'stray');

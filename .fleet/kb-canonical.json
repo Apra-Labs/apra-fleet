@@ -1,662 +1,33 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "a90a2fb5b8dfaa5c009f1204eda62359f046638a",
-    "branch": "u1_contract_v1_skeleton",
-    "entry_count": 81
+    "commit": "08ad5f1554e1a401d77320bf63f7f579c527387a",
+    "branch": "chore/kb-bible-reconcile",
+    "entry_count": 24
   },
   "entries": [
     {
-      "id": "02543e23-58b6-40cf-945a-cd7ad3098a85",
+      "id": "0e10e4ea-5c23-4fc9-bd7a-baf1af522a3e",
       "type": "knowledge",
-      "title": "code_* adapters convert connect failures into offline results; only getProvider still throws",
-      "summary": "Both code-intelligence adapters catch connect/dead-client errors at their single guarded entry point and return a structured offline result, so the only throwing site on the code_* side is getProvider's unconfigured-provider-key resolution.",
+      "title": "Provider abstraction: six adapters, never assume Claude",
+      "summary": "src/providers/index.ts registers exactly six LlmProvider adapters -- claude, codex, copilot, agy, opencode, none -- matching the LlmProvider union at src/types.ts:4. There is no gemini adapter. Any auth, credential or dispatch change must route through the ProviderAdapter interface rather than assuming Claude-specific fields, and getProvider() defaults to claude only when the argument is null/undefined.",
       "symbols": [
-        "callGitNexus",
-        "callCodebaseMemory",
-        "offlineResult",
-        "missingIndexResult",
-        "getProvider"
-      ],
-      "source_files": [
-        "src/tools/code-intelligence-gitnexus.ts",
-        "src/tools/code-intelligence-codebase-memory.ts",
-        "src/tools/code-intelligence.ts",
-        "memory-contract/v1/taxonomy.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T13:06:53.327Z"
-    },
-    {
-      "id": "05e4e9c4-a001-4e65-ad7d-ae8909ea7908",
-      "type": "learning",
-      "title": "Test no-injection branches by stripping process.env, never by injecting a real-passthrough deps function",
-      "summary": "checkDoltRemoteAbsent's filesystem quick-check is gated on if (!deps.execFileSync), so any deps injection -- even a wrapper that still shells out for real with no canned output -- skips that branch entirely and makes assertions about it unfalsifiable.",
-      "symbols": [],
-      "source_files": [
-        "tests/check-sandbox-sync-remote.test.ts",
-        "scripts/check-sandbox-sync-remote.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T03:45:34.279Z"
-    },
-    {
-      "id": "0633ac36-3d13-49cc-a268-46425bbf8bf9",
-      "type": "knowledge",
-      "title": "kb_export and kb_import validate repo_path on the real filesystem before getKbProviders",
-      "summary": "In the table-driven forwarding test, kb_export and kb_import cannot use an arbitrary fake repo_path string like the other kb tools -- both resolve and validate the path against the real filesystem before the mocked getKbProviders is reached, so their table entries must anchor on real tmpdir fixtures.",
-      "symbols": [
-        "kbExport",
-        "kbImport",
-        "resolveRepoPath"
-      ],
-      "source_files": [
-        "tests/knowledge/kb-remote-url-forwarding.test.ts",
-        "src/tools/kb-export.ts",
-        "src/tools/kb-import.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:40.221Z"
-    },
-    {
-      "id": "08b5205d-84ce-44ba-bfb4-250ae0156e89",
-      "type": "knowledge",
-      "title": "OS-assigned ephemeral ports can collide with undici's fetch blocked-port list, especially on hosts with a low dynamic port range",
-      "summary": "A server using listen(0) can still get a port on undici's WHATWG-fetch blocked-port list; fix is to detect a blocked bound port in listenOnPort and close-and-relisten, not to read the port earlier.",
-      "symbols": [
-        "listenOnPort"
-      ],
-      "source_files": [
-        "src/services/http-transport.ts",
-        "tests/http-transport.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T08:01:49.596Z"
-    },
-    {
-      "id": "09cf8172-cd04-40f1-b9c9-d927baf22902",
-      "type": "knowledge",
-      "title": "zod-to-json-schema's jsonSchema2020-12 target is worse than its jsonSchema7 target",
-      "summary": "In zod-to-json-schema@3.25.1, target 'jsonSchema2020-12' differs from 'jsonSchema7' in exactly two ways and both are wrong for a real 2020-12 consumer: it emits no $schema at all, and it rewrites exclusive numeric bounds into the draft-04 boolean form that the 2020-12 metaschema rejects.",
-      "symbols": [
-        "codeMapSchema",
-        "postprocessTo2020_12"
-      ],
-      "source_files": [
-        "memory-contract/v1/tests/GENERATOR-DECISION.md",
-        "memory-contract/v1/tests/postprocess-2020-12.mjs",
-        "memory-contract/v1/tests/probe-generator-2020-12.mjs",
-        "src/tools/code-intelligence.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T03:45:34.282Z"
-    },
-    {
-      "id": "0e4160e6-175d-4591-b40a-1be3f648da47",
-      "type": "knowledge",
-      "title": "One anchor policy, three branches: verbatim for read tools, hard-fail for kb_export",
-      "summary": "kb_session_prime and kb_stats pass a supplied repo_path to getKbProviders verbatim so an unreachable remote anchor stays honestly missing; kb_export deliberately keeps throwing instead, because it writes into repo_path -- and it throws before getKbProviders, so it never anchors at the server cwd either.",
-      "symbols": [
-        "kbStats",
-        "kbExport",
-        "kbSessionPrime",
-        "getKbProviders",
-        "resolveRepoPath"
-      ],
-      "source_files": [
-        "src/tools/kb-stats.ts",
-        "src/tools/kb-export.ts",
-        "src/tools/kb-session-prime.ts",
-        "src/services/knowledge/kb-providers.ts",
-        "tests/knowledge/kb-anchor-never-cwd.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:41.136Z"
-    },
-    {
-      "id": "10e15056-ffd7-4f2a-9441-0847c0f382a2",
-      "type": "knowledge",
-      "title": "Provider abstraction: never assume Claude",
-      "summary": "apra-fleet supports seven LLM providers (claude, agy, opencode, codex, copilot, gemini, none), not just Claude. Any auth/credential/dispatch-related change must go through the generic ProviderAdapter interface rather than assuming Claude-specific fields or behavior.",
-      "symbols": [
+        "LlmProvider",
         "ProviderAdapter",
-        "authEnvVar",
-        "authEnvVarForToken",
-        "oauthCredentialFiles"
+        "getProvider",
+        "ClaudeProvider",
+        "NoneProvider"
       ],
       "source_files": [
+        "src/providers/index.ts",
         "src/providers/provider.ts",
-        "src/providers/opencode.ts"
+        "src/types.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:40.551Z"
+      "updated_at": "2026-08-21T05:31:31.679Z"
     },
     {
-      "id": "12c0efd1-c7b6-4249-811a-2284a0278eea",
-      "type": "knowledge",
-      "title": "check-sandbox-sync-remote.test.ts fails only when ambient BEADS_DIR is set",
-      "summary": "The embeddeddolt-layout case at tests/check-sandbox-sync-remote.test.ts:435 fails on any host with BEADS_DIR exported, because the bd child inherits it and resolves it before cwd; clearing BEADS_DIR makes all 55 tests pass.",
-      "symbols": [
-        "checkDoltRemoteAbsent",
-        "BD_CHILD_ENV",
-        "execBdSync"
-      ],
-      "source_files": [
-        "tests/check-sandbox-sync-remote.test.ts",
-        "tests/2cc-win-bd-invocation-integ.test.ts",
-        "scripts/check-sandbox-sync-remote.mjs",
-        "scripts/lib/exec-bd.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T02:34:03.953Z"
-    },
-    {
-      "id": "130bc73b-fade-4d3a-8254-2ad3b2e1bfef",
-      "type": "knowledge",
-      "title": "KB provider cache is now keyed by (slug, repoPath), not slug alone",
-      "summary": "getKbProviders/_providers Map keys on providerKey(slug, repoPath) via a NUL join, so two callers resolving to the same project slug but different repoPath values get distinct provider instances, each anchored at its own caller's repoPath.",
-      "symbols": [],
-      "source_files": [
-        "src/services/knowledge/kb-providers.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:40.822Z"
-    },
-    {
-      "id": "168aac64-d799-4b10-8a3d-32da6fc9db6a",
-      "type": "knowledge",
-      "title": "contract:generate projects 21 of taxonomy.json's 23 codes and emits openapi.yaml as JSON",
-      "summary": "Silent-surfaced codes are filtered out of both wire projections per taxonomy _meta.projection_rule, and bindings/openapi/openapi.yaml is JSON text with a .yaml extension so it stays on the same deterministic emit path.",
-      "symbols": [],
-      "source_files": [
-        "memory-contract/v1/generate-contract.mjs",
-        "memory-contract/v1/taxonomy.json",
-        "memory-contract/v1/bindings/openapi/openapi.yaml"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T14:02:32.369Z"
-    },
-    {
-      "id": "16f67a68-4a79-4cba-914f-d725618b29b9",
-      "type": "knowledge",
-      "title": "QueryOptions declares symbols, source_files and tags that no provider query() reads",
-      "summary": "Three QueryOptions fields are dead request surface: neither SqliteProvider.query nor HttpKbProvider.query reads opts.symbols, opts.source_files or opts.tags, and kbQuerySchema does not expose them.",
-      "symbols": [
-        "QueryOptions",
-        "SqliteProvider.query",
-        "HttpKbProvider.query",
-        "kbQuerySchema"
-      ],
-      "source_files": [
-        "src/services/knowledge/types.ts",
-        "src/services/knowledge/sqlite-provider.ts",
-        "src/services/knowledge/http-provider.ts",
-        "src/tools/kb-query.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-20T09:08:16.759Z"
-    },
-    {
-      "id": "178f22f6-03e8-42ec-aad2-f3636a8b6c8d",
-      "type": "knowledge",
-      "title": "The round-trip harness asserts refusals by normalised message equality, not by taxonomy code",
-      "summary": "Taxonomy codes never appear on the wire, so the exit-criterion harness compares each refusal's live error message (after path/URL/id normalisation) byte-for-byte against the recorded message; any second provider adapter must reproduce those messages.",
-      "symbols": [
-        "runRoundTrip",
-        "normalizeMessage",
-        "taxonomyFailures"
-      ],
-      "source_files": [
-        "memory-contract/v1/tests/roundtrip-harness.mjs",
-        "tests/memory-contract-roundtrip.test.ts",
-        "memory-contract/v1/tests/DEGRADATION.md",
-        "memory-contract/v1/fixtures/kb_promote/refusal-entry-not-found.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T19:56:12.900Z"
-    },
-    {
-      "id": "1a5d562f-8cee-4abe-a11e-b93d6d62c653",
-      "type": "knowledge",
-      "title": "Guard automated beads-export commits by comparing id sets, not file size or line count",
-      "summary": "A divergent local Dolt DB export can grow in total lines while dropping most previously-committed ids; the export-shrink-guard.mjs guard compares id sets to catch this, mirroring kb_export's shrink precedent.",
-      "symbols": [
-        "buildExportShrinkGuardCmd"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
-        "packages/apra-fleet-se/apra-pm/lib/export-shrink-guard.mjs",
-        "src/tools/kb-export.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T08:01:49.565Z"
-    },
-    {
-      "id": "1ae4ce00-ce11-4bc4-becb-7e6355809f6b",
-      "type": "knowledge",
-      "title": "A directory-level gitignore rule shadows everything inside it, un-ignore patterns included",
-      "summary": "The blanket '/sprint-logs/' rule made every file under sprint-logs unstageable regardless of narrower rules elsewhere; only removing the directory rule and keeping the scoped '**/sprint-logs/sprint_*.json' rule restored the durable-vs-scratch split the sprint workflow documents.",
-      "symbols": [],
-      "source_files": [
-        ".gitignore",
-        "packages/apra-fleet-se/bin/cli.mjs",
-        "packages/apra-fleet-se/apra-pm/skills/pm/cost.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:41.432Z"
-    },
-    {
-      "id": "1faabb4e-a2e3-43b7-b6d6-ef959a93f21c",
-      "type": "knowledge",
-      "title": "bd dolt remote list --json prints null, not [], when no remotes are configured",
-      "summary": "parseDoltRemoteList must map the JSON literal null to an empty array; treating null as an unexpected shape makes checkDoltRemoteAbsent return ok:false ('could not parse') for a repo that is simply not wired to any Dolt remote.",
-      "symbols": [
-        "parseDoltRemoteList",
-        "checkDoltRemoteAbsent"
-      ],
-      "source_files": [
-        "scripts/check-sandbox-sync-remote.mjs",
-        "tests/check-sandbox-sync-remote.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:49.092Z"
-    },
-    {
-      "id": "202cd324-f6d9-42d0-b0a2-a4aa8e1741ef",
-      "type": "knowledge",
-      "title": "Local members use host OAuth; provision_llm_auth skips them",
-      "summary": "Local fleet members share the orchestrator's own machine, so they use whatever OAuth session is already active on that host. provision_llm_auth explicitly skips local members rather than attempting to provision credentials for them.",
-      "symbols": [
-        "provisionAuth"
-      ],
-      "source_files": [
-        "src/tools/provision-auth.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:41.759Z"
-    },
-    {
-      "id": "254b18e2-8f53-4a3b-bebd-3ab08609aec7",
-      "type": "knowledge",
-      "title": "The nonexistent-path + NO-url slug assertion passes on both pre-fix and post-fix trees",
-      "summary": "resolveProjectSlug(<nonexistent windows path>) returning 'default' is NOT a pre-fix failure and cannot be used as a regression pin for the remote-URL work; the assertions that actually go red on the pre-fix tree are the URL-bearing ones.",
-      "symbols": [
-        "resolveProjectSlug"
-      ],
-      "source_files": [
-        "tests/knowledge/kb-remote-scope.test.ts",
-        "src/services/knowledge/project-slug.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:42.431Z"
-    },
-    {
-      "id": "275e72f2-d844-4134-9885-cd146ece7455",
-      "type": "knowledge",
-      "title": "No kb_* tool reads SqliteProvider.repoPath; the sweep root defaults inside the provider",
-      "summary": "kb_freshness_sweep calls freshnessSweep() with no argument, so the sweep root is resolved from the provider's own repoPath field rather than passed in by the tool layer.",
-      "symbols": [
-        "freshnessSweep",
-        "SqliteProvider",
-        "MemoryProvider",
-        "kbFreshnessSweep"
-      ],
-      "source_files": [
-        "src/tools/kb-freshness-sweep.ts",
-        "src/services/knowledge/sqlite-provider.ts",
-        "src/services/knowledge/types.ts",
-        "memory-contract/v1/INVENTORY.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-20T06:28:48.467Z"
-    },
-    {
-      "id": "2ff14a5c-f502-4212-bc1d-89c5955cd364",
-      "type": "knowledge",
-      "title": "kb-remote-scope.test.ts pins handler forwarding, not the zod schema spread",
-      "summary": "The b4g.1.5 end-to-end test calls kbCapture/kbList with raw objects cast 'as any', so it bypasses zod parse entirely and cannot detect a dropped ...kbScopeFields spread; that layer is pinned only by kb-remote-url-forwarding.test.ts.",
-      "symbols": [
-        "kbList",
-        "kbListSchema",
-        "kbScopeFields"
-      ],
-      "source_files": [
-        "tests/knowledge/kb-remote-scope.test.ts",
-        "tests/knowledge/kb-remote-url-forwarding.test.ts",
-        "src/tools/kb-list.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:42.723Z"
-    },
-    {
-      "id": "3236c857-6fc2-4968-82e3-3f0f1dda3afc",
-      "type": "knowledge",
-      "title": "kb_capture.role is an open string on purpose; the Author enum is handler-enforced",
-      "summary": "Any generated schema or binding will show kb_capture.role as a bare {\"type\":\"string\"} with no enum. That is deliberate: AUTHOR_VALUES/validateAuthor in the handler stamps 'unknown' for anything outside the Author list, so an invalid role hint degrades instead of rejecting the whole capture call.",
-      "symbols": [
-        "AUTHOR_VALUES",
-        "validateAuthor",
-        "kbCaptureSchema"
-      ],
-      "source_files": [
-        "src/tools/kb-capture.ts",
-        "memory-contract/v1/tests/GENERATOR-DECISION.md",
-        "memory-contract/v1/tests/probe-generator-2020-12.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T03:45:34.329Z"
-    },
-    {
-      "id": "3ab805a0-765c-441c-aa74-27b711e7875e",
-      "type": "knowledge",
-      "title": "repo_remote_url is defined once in kbScopeFields but only 3 of ~16 kb_* tools spread it",
-      "summary": "src/services/knowledge/kb-scope-input.ts holds the single zod definition; only kb_session_prime, kb_capture and kb_harvest spread it, so kb_list and the other read tools silently drop the field and resolve to the path-derived KB.",
-      "symbols": [
-        "kbScopeFields",
-        "kbListSchema",
-        "kbCaptureSchema",
-        "kbHarvestSchema",
-        "kbSessionPrimeSchema"
-      ],
-      "source_files": [
-        "src/services/knowledge/kb-scope-input.ts",
-        "src/tools/kb-list.ts",
-        "src/tools/kb-capture.ts",
-        "src/tools/kb-harvest.ts",
-        "src/tools/kb-session-prime.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:44.765Z"
-    },
-    {
-      "id": "3ff898d2-7bd9-4aec-8e16-80d33a57cf85",
-      "type": "knowledge",
-      "title": "memory-contract error refs are positional JSON Pointers, so reordering taxonomy.json silently rewrites published identifiers",
-      "summary": "taxonomyCodeRef() builds taxonomy.json#/groups/<group>/codes/<index> refs that carry no code string, and contract:check cannot detect a reorder because all three ref sets come from one loadProjectableCodes() call.",
-      "symbols": [],
-      "source_files": [
-        "memory-contract/v1/generate-contract.mjs",
-        "memory-contract/v1/taxonomy.json",
-        "memory-contract/v1/bindings/openapi/openapi.yaml",
-        "memory-contract/v1/bindings/mcp/kb_capture.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T14:02:32.353Z"
-    },
-    {
-      "id": "40295d4d-390f-466a-87c9-2df0a94cf3a6",
-      "type": "knowledge",
-      "title": "The embeddeddolt sandbox test can pass vacuously when bd is unavailable",
-      "summary": "checkDoltRemoteAbsent's bd-unavailable fallback message contains the word 'unavailable', which the embeddeddolt test's own /Dolt-level remotes|unavailable/ assertion accepts -- so on a machine without bd the test is green without ever reaching the parser it is meant to exercise.",
-      "symbols": [
-        "checkDoltRemoteAbsent",
-        "parseDoltRemoteList"
-      ],
-      "source_files": [
-        "tests/check-sandbox-sync-remote.test.ts",
-        "scripts/check-sandbox-sync-remote.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:43.290Z"
-    },
-    {
-      "id": "431a8c9b-2990-4131-a3d6-6bc7a9433c00",
-      "type": "knowledge",
-      "title": "Every kb_*/code_* tool response is a single un-annotated content block, never the 3-block wrapTool envelope",
-      "summary": "wrapTool can build up to three content blocks with annotations and structuredContent, but none of the 23 kb_*/code_* contract tools can reach that shape: the nudge fires only for register_member/execute_prompt, the preamble is suppressed for JSON payloads, and no kb_*/code_* handler returns structuredContent.",
-      "symbols": [],
-      "source_files": [
-        "src/services/tool-registry.ts",
-        "src/services/onboarding.ts",
-        "memory-contract/v1/response-schemas.mjs",
-        "memory-contract/v1/spec.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T20:56:46.528Z"
-    },
-    {
-      "id": "45a60a7b-a639-4121-b13b-e64b105f07a5",
-      "type": "learning",
-      "title": "methods.json now formally splits error_codes from taxonomy non_error_outcomes via a dedicated field",
-      "summary": "As of my-beads-db-27m.44, memory-contract/v1/methods.json's error_codes arrays no longer carry bare non-error names; affected methods (P-2, P-10, P-12, X-2, C-1..C-7) cite taxonomy.json non_error_outcomes names in a separate non_error_outcomes field instead, enforced by a new tests/memory-contract-taxonomy.test.ts assertion.",
-      "symbols": [
-        "non_error_outcomes_note",
-        "allMethods"
-      ],
-      "source_files": [
-        "memory-contract/v1/methods.json",
-        "memory-contract/v1/taxonomy.json",
-        "tests/memory-contract-taxonomy.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T14:02:32.384Z"
-    },
-    {
-      "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
-      "type": "knowledge",
-      "title": "hasOppositePolarity matches on word-boundary regexes, not substrings",
-      "summary": "audn.ts hasOppositePolarity tests NEGATIVE_PATTERNS/POSITIVE_PATTERNS with precompiled word-boundary regexes, so \"prefixed\" no longer collides with \"fixed\".",
-      "symbols": [
-        "hasOppositePolarity"
-      ],
-      "source_files": [
-        "src/services/knowledge/audn.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:43.583Z"
-    },
-    {
-      "id": "46947fab-b939-4e49-b36e-0ad904a849a4",
-      "type": "learning",
-      "title": "memory-contract fixture corpus volatility is real and confirmed on three specific axes across two commits",
-      "summary": "memory-contract/v1/fixtures is not byte-reproducible: entry id (fresh UUID), created_at (wall-clock), and result order (kb_list/happy.json) all vary between recordings of the same scenario -- confirmed against real commits f230c530 and 8d6a5e00, and fixed for semantic comparison via normalizeVolatileFixtureFields in roundtrip-harness.mjs.",
-      "symbols": [
-        "normalizeVolatileFixtureFields",
-        "decodeEnvelope",
-        "stableStringify"
-      ],
-      "source_files": [
-        "memory-contract/v1/tests/roundtrip-harness.mjs",
-        "memory-contract/v1/tests/record-fixtures.mjs",
-        "memory-contract/v1/README.md",
-        "memory-contract/v1/fixtures/kb_list/happy.json",
-        "tests/memory-contract-fixture-volatility.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T18:09:37.184Z"
-    },
-    {
-      "id": "4844d64a-deee-4b5d-87d2-6fcd8c596f64",
-      "type": "knowledge",
-      "title": "apra-fleet-se's plain npm test never sets APRA_FLEET_TEST_CONCURRENCY",
-      "summary": "packages/apra-fleet-se's \"test\" script runs node --test directly with --test-concurrency=8, but does NOT set the APRA_FLEET_TEST_CONCURRENCY env var -- only the separate test:unit/test:integration/test:record scripts (which route through scripts/run-tests.mjs) set it. A scaledTimeout()/waitFor() call that relies on the env var being set will silently use an unscaled timeout under plain npm test.",
-      "symbols": [
-        "scaledTimeout",
-        "waitFor"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/package.json",
-        "packages/apra-fleet-se/scripts/run-tests.mjs",
-        "packages/apra-fleet-se/test/helpers/scaled-timeout.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:43.859Z"
-    },
-    {
-      "id": "52e2604a-184d-4bc3-ad2a-a4bc7e12e3ee",
-      "type": "learning",
-      "title": "Interpolating JSON.stringify(path) into an auto-sprint node -e command breaks the shell quoting",
-      "summary": "auto-sprint.js builds dispatched commands as node -e \"...\"; embedding a path with JSON.stringify inside that double-quoted string injects inner double quotes, so the shell strips them and node dies with a SyntaxError before any logic runs.",
-      "symbols": [
-        "buildExportShrinkGuardCmd",
-        "runExportShrinkGuard",
-        "SHELL_DISPATCH_PROMPT_HEADER"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
-        "packages/apra-fleet-se/apra-pm/lib/export-shrink-guard.mjs",
-        "packages/apra-fleet-se/apra-pm/test/plan-commit-cmds.test.mjs",
-        "packages/apra-fleet-se/apra-pm/test/export-shrink-guard.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-20T02:42:55.738Z"
-    },
-    {
-      "id": "54af3b6a-e5a1-401a-a713-f2923f8dfcc9",
-      "type": "learning",
-      "title": "Tests that spawn real subprocesses need per-test timeouts sized to subprocess cost, not the framework default",
-      "summary": "Tests spawning git clone, PowerShell, or an external CLI reliably pass in isolation but flake under full-suite parallel load purely from host contention; the durable fix is a per-test timeout sized to real subprocess cost, never a global bump or a skip.",
-      "symbols": [],
-      "source_files": [
-        "tests/register-member.test.ts",
-        "tests/register-member-bootstrap-gate.test.ts",
-        "tests/task-wrapper.test.ts",
-        "tests/knowledge/kb-remote-member-e2e.test.ts",
-        "tests/2cc-win-bd-invocation-integ.test.ts",
-        "tests/eft-41-symlinked-entry.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T19:33:41.445Z"
-    },
-    {
-      "id": "58ecdbd4-89e0-4f8f-95b6-23dfd7645674",
-      "type": "knowledge",
-      "title": "x-invariant annotations are T1.2.2's job, not the postprocess module's",
-      "summary": "GENERATOR-DECISION.md's INV-01..INV-09 table is a mapping deliverable only; no committed code stamps x-invariant onto emitted schemas, and postprocessTo2020_12 deliberately does not.",
-      "symbols": [
-        "postprocessTo2020_12",
-        "DIALECT_2020_12"
-      ],
-      "source_files": [
-        "memory-contract/v1/tests/GENERATOR-DECISION.md",
-        "memory-contract/v1/tests/postprocess-2020-12.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:32:04.946Z"
-    },
-    {
-      "id": "62a26c94-e079-4158-b83b-5702e317b54c",
-      "type": "knowledge",
-      "title": "auto-sprint workflow VM has no fs/os/process.env, so path redaction must be pure string work",
-      "summary": "redactHomeFromTranscriptDir anchors on the literal '/.claude/projects/' substring instead of comparing against $HOME because the auto-sprint workflow VM cannot read env or fs; the anchor is safe only because Setup Step 7 constructs transcriptDir as $HOME/.claude/projects/<slug>.",
-      "symbols": [
-        "redactHomeFromTranscriptDir"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
-        "packages/apra-fleet-se/apra-pm/test/sprint-meta.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:45.072Z"
-    },
-    {
-      "id": "66075242-ab8e-40f1-a1b4-c2ecb01a007c",
-      "type": "knowledge",
-      "title": "git add <dir>/ errors on a directory-level ignore but silently no-ops on an inner file glob",
-      "summary": "The failure mode of an ignored sprint-logs/ is not uniform: a directory rule like '/sprint-logs/' makes `git add sprint-logs/` exit 1 with an explicit advice message, while a file-glob rule like '**/sprint-logs/*.jsonl' makes the same command exit 0 and stage nothing.",
-      "symbols": [],
-      "source_files": [
-        ".gitignore",
-        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
-        "packages/apra-fleet-se/apra-pm/test/sprint-log-flush.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:45.360Z"
-    },
-    {
-      "id": "696d42bc-615c-4156-b43a-b67210fc2dea",
-      "type": "knowledge",
-      "title": "agent.gitRepos is a bare owner/repo access-list, never a full git remote URL, in live fleet data",
-      "summary": "Empirically verified against this fleet's own ~/.apra-fleet/data/registry.json: every populated gitRepos entry across all registered members (local and remote) is a short 'Owner/Repo' GitHub identifier, never a scheme-qualified clone URL -- confirming src/services/vcs/github.ts's own https://github.com/${repo}.git construction (used only for connectivity testing) is the correct mental model for what this field actually contains.",
-      "symbols": [
-        "Agent",
-        "knownRepoRemoteUrl",
-        "enrichMember"
-      ],
-      "source_files": [
-        "src/types.ts",
-        "src/tools/register-member.ts",
-        "src/services/vcs/github.ts",
-        "src/services/watch/project-resolver.ts",
-        "src/tools/execute-prompt.ts",
-        "tests/execute-prompt-kb-harvest-remote-url.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:45.640Z"
-    },
-    {
-      "id": "7156a8bc-5a6b-44af-9ad7-d4e4d2a83aa2",
-      "type": "knowledge",
-      "title": "APRA_FLEET_DATA_DIR overrides FLEET_DIR but not three hardcoded-homedir code-intelligence paths",
-      "summary": "Setting APRA_FLEET_DATA_DIR redirects src/paths.ts's FLEET_DIR (and everything built on it: KB sqlite files, onboarding.json, knowledge/config.json), but code-intelligence.ts's provider CONFIG_PATH, code-intelligence-telemetry.ts's USAGE_DIR, and code-intelligence-codebase-memory.ts's CACHE_DIR all build their path from os.homedir() directly, bypassing the override entirely.",
-      "symbols": [
-        "FLEET_DIR",
-        "CONFIG_PATH",
-        "USAGE_DIR",
-        "CACHE_DIR"
-      ],
-      "source_files": [
-        "src/paths.ts",
-        "src/tools/code-intelligence.ts",
-        "src/tools/code-intelligence-telemetry.ts",
-        "src/tools/code-intelligence-codebase-memory.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T19:56:12.843Z"
-    },
-    {
-      "id": "735f21d3-01da-4913-9ebe-d31320b9bef4",
-      "type": "knowledge",
-      "title": "{{secure.NAME}} substitution is pre-escaped and launch-time bound",
-      "summary": "execute_command resolves {{secure.NAME}} fleet-secret placeholders with single-quote escaping already applied. Reference the token bare in a command string, not wrapped in your own quotes -- double-escaping produces a corrupted value and a false 401/invalid-token error.",
-      "symbols": [
-        "resolveSecurePlaceholders"
-      ],
-      "source_files": [
-        "src/tools/execute-command.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:45.939Z"
-    },
-    {
-      "id": "75b907bb-7025-484d-992e-a8a42d7636f2",
-      "type": "knowledge",
-      "title": "The kb_/code_ tool response envelope is not always a single text block",
-      "summary": "wrapTool can prepend an extra annotated apra-fleet-display text block, so a response-schema generated as a one-element content array is wrong for the code_* tools whose payload stringifies to a scalar.",
-      "symbols": [
-        "wrapTool",
-        "getOnboardingPreamble",
-        "isJsonResponse",
-        "sanitizeToolResult",
-        "getOnboardingNudge"
-      ],
-      "source_files": [
-        "src/services/tool-registry.ts",
-        "src/services/onboarding.ts",
-        "src/tools/code-intelligence.ts",
-        "memory-contract/v1/INVENTORY.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-20T04:28:10.206Z"
-    },
-    {
-      "id": "75efedad-d45d-4f94-b322-3be64e989c36",
-      "type": "knowledge",
-      "title": "bindings/openapi/openapi.yaml is JSON text under a .yaml name, by design",
-      "summary": "contract:generate emits openapi.yaml through the same JSON.stringify emit() path as the schemas, relying on JSON being valid YAML 1.2 flow; there is no YAML serializer or parser anywhere in the repo.",
-      "symbols": [
-        "writeOpenApiDoc",
-        "emit"
-      ],
-      "source_files": [
-        "memory-contract/v1/generate-contract.mjs",
-        "memory-contract/v1/bindings/openapi/openapi.yaml"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T17:08:48.326Z"
-    },
-    {
-      "id": "78dc0c4b-edaa-4d93-8134-1cd7cabc653d",
+      "id": "0f432ed4-a1fa-4185-8a5f-d7d62fe8cc5d",
       "type": "knowledge",
       "title": "Same-slug callers now open two SqliteProvider handles on one kb.sqlite",
       "summary": "Keying the KB provider cache by (slug, repoPath) means two local clones of the same remote get two separate SqliteProvider instances pointed at the same kb.sqlite file; this is safe by design because init sets WAL plus busy_timeout=5000.",
@@ -670,26 +41,83 @@
         "src/services/knowledge/sqlite-provider.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:42.095Z"
+      "updated_at": "2026-08-21T05:24:37.838Z"
     },
     {
-      "id": "7cc58351-c7f9-4f14-99b0-cdd04cf83d7c",
+      "id": "130bc73b-fade-4d3a-8254-2ad3b2e1bfef",
       "type": "knowledge",
-      "title": "Member OS resolution: always via agent.os",
-      "summary": "The orchestrator and each fleet member can independently run Windows/Mac/Linux -- local members share the orchestrator's own OS, but remote members can be any OS regardless of the orchestrator's. Never assume a target member's shell/OS matches the orchestrator's.",
-      "symbols": [
-        "getAgentOS",
-        "getOsCommands"
-      ],
+      "title": "KB provider cache is now keyed by (slug, repoPath), not slug alone",
+      "summary": "getKbProviders/_providers Map keys on providerKey(slug, repoPath) via a NUL join, so two callers resolving to the same project slug but different repoPath values get distinct provider instances, each anchored at its own caller's repoPath.",
+      "symbols": [],
       "source_files": [
-        "src/os/index.ts",
-        "src/utils/agent-helpers.ts"
+        "src/services/knowledge/kb-providers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:46.226Z"
+      "updated_at": "2026-08-17T20:10:22.938Z"
     },
     {
-      "id": "8254d8e0-5cca-4c3c-88a1-5461be51db2f",
+      "id": "16ba5328-63a9-4f98-8614-fa3137afe2f3",
+      "type": "knowledge",
+      "title": "secure.NAME token values arrive already shell-escaped, and the escaping is OS-branched",
+      "summary": "execute_command replaces each secure.NAME token with a value that has ALREADY been quoted for the target member's shell -- escapePowerShellArg for windows members, escapeShellArg otherwise, chosen from agentOs. Reference the token bare in a command string; wrapping it in your own quotes double-escapes the value and surfaces as a false 401 or invalid-token error. This entry deliberately writes the token without its surrounding double braces: kb_session_prime injects KB entries verbatim into every agent dispatch prompt, and execute_prompt rejects any prompt matching the braced secure-token pattern, so spelling it in full here makes every dispatch in a sprint fail.",
+      "symbols": [
+        "escapeShellArg",
+        "escapePowerShellArg",
+        "executeCommand"
+      ],
+      "source_files": [
+        "src/tools/execute-command.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:32:34.285Z"
+    },
+    {
+      "id": "1be49eaa-30f9-4ae0-917e-5b98d3d37eeb",
+      "type": "knowledge",
+      "title": "bd prints literal JSON null, not [], for an empty dolt remote list",
+      "summary": "`bd dolt remote list --json` emits the JSON literal null when no Dolt remotes are configured. parseDoltRemoteList maps that to [] before its non-array guard, so an unwired repo reads as \"no remotes\" rather than a parse error; every other non-array shape still throws. Without the null branch, checkDoltRemoteAbsent returns ok:false (\"could not parse\") for a repo that is simply not wired to a Dolt remote.",
+      "symbols": [
+        "parseDoltRemoteList",
+        "checkDoltRemoteAbsent"
+      ],
+      "source_files": [
+        "scripts/check-sandbox-sync-remote.mjs",
+        "tests/check-sandbox-sync-remote.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:32:37.012Z"
+    },
+    {
+      "id": "202cd324-f6d9-42d0-b0a2-a4aa8e1741ef",
+      "type": "knowledge",
+      "title": "Local members use host OAuth; provision_llm_auth skips them",
+      "summary": "Local fleet members share the orchestrator's own machine, so they use whatever OAuth session is already active on that host. provision_llm_auth explicitly skips local members rather than attempting to provision credentials for them.",
+      "symbols": [
+        "provisionAuth"
+      ],
+      "source_files": [
+        "src/tools/provision-auth.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.822Z"
+    },
+    {
+      "id": "22e52be3-d44c-4c71-ae51-9f25a498af40",
+      "type": "knowledge",
+      "title": "sprint-logs/ must never carry a blanket directory ignore -- .gitignore says so inline",
+      "summary": "A directory-level rule such as '/sprint-logs/' shadows everything beneath it, un-ignore patterns included, and silently breaks the sprint cost ledger because auto-sprint.js stages it with an unguarded `git add sprint-logs/`. Merged main keeps only scoped rules and records the prohibition as a comment in .gitignore itself, so the lesson survives without depending on the KB.",
+      "symbols": [
+        "redactHomeFromTranscriptDir"
+      ],
+      "source_files": [
+        ".gitignore",
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:35:33.037Z"
+    },
+    {
+      "id": "256b2dc0-4d08-40e9-b3c6-0f79dd824b8e",
       "type": "knowledge",
       "title": "kb-setup is the one kb tool that takes repo_path but resolves no KB",
       "summary": "Fifteen of the sixteen src/tools/kb-*.ts tools spread kbScopeFields and forward repo_remote_url to getKbProviders; kb-setup is excluded by design because its repo_path only locates a .git dir for hook installation and it writes a single global config, never selecting a project KB.",
@@ -706,27 +134,86 @@
         "src/tools/kb-stats.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:44.491Z"
+      "updated_at": "2026-08-21T05:24:37.901Z"
     },
     {
-      "id": "865a7626-5d25-4b6f-83a8-57618cbe57e0",
+      "id": "4406ee08-d77d-44a5-a5d2-83c9d02ba092",
       "type": "knowledge",
-      "title": "kb_session_prime must pass an explicit repo_path to getKbProviders verbatim, never through resolveRepoPath",
-      "summary": "Validating repo_path before handing it to getKbProviders converts a remote member's unreachable path into the fleet server's own cwd, silently staling healthy entries in the shared project KB; the anchor must stay honestly missing.",
+      "title": "A fallback message sharing the assertion's alternate keyword makes a test vacuous",
+      "summary": "checkDoltRemoteAbsent's bd-unavailable fallback messages all contain the word \"unavailable\", so the old combined assertion /Dolt-level remotes|unavailable/ was satisfied on any machine without bd without ever reaching the parser under test. Merged main closes this by probing bd --version first and asserting the two cases separately. The reusable trap: never OR an assertion's success keyword with its own fallback keyword.",
       "symbols": [
-        "kbSessionPrime",
-        "resolveRepoPath",
-        "getKbProviders",
-        "anchorIsMissing"
+        "checkDoltRemoteAbsent",
+        "parseDoltRemoteList"
       ],
       "source_files": [
-        "src/tools/kb-session-prime.ts",
-        "src/services/knowledge/kb-providers.ts",
-        "src/services/knowledge/sqlite-provider.ts",
-        "tests/knowledge/kb-remote-anchor-freshness.test.ts"
+        "tests/check-sandbox-sync-remote.test.ts",
+        "scripts/check-sandbox-sync-remote.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:50.037Z"
+      "updated_at": "2026-08-21T05:31:45.629Z"
+    },
+    {
+      "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
+      "type": "knowledge",
+      "title": "hasOppositePolarity matches on word-boundary regexes, not substrings",
+      "summary": "audn.ts hasOppositePolarity tests NEGATIVE_PATTERNS/POSITIVE_PATTERNS with precompiled word-boundary regexes, so \"prefixed\" no longer collides with \"fixed\".",
+      "symbols": [
+        "hasOppositePolarity"
+      ],
+      "source_files": [
+        "src/services/knowledge/audn.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-04T04:04:51.757Z"
+    },
+    {
+      "id": "4844d64a-deee-4b5d-87d2-6fcd8c596f64",
+      "type": "knowledge",
+      "title": "apra-fleet-se's plain npm test never sets APRA_FLEET_TEST_CONCURRENCY",
+      "summary": "packages/apra-fleet-se's \"test\" script runs node --test directly with --test-concurrency=8, but does NOT set the APRA_FLEET_TEST_CONCURRENCY env var -- only the separate test:unit/test:integration/test:record scripts (which route through scripts/run-tests.mjs) set it. A scaledTimeout()/waitFor() call that relies on the env var being set will silently use an unscaled timeout under plain npm test.",
+      "symbols": [
+        "scaledTimeout",
+        "waitFor"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/test/helpers/scaled-timeout.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.879Z"
+    },
+    {
+      "id": "6241ee4c-ceb3-4b58-b1b4-015a0d8d8ec1",
+      "type": "knowledge",
+      "title": "The .trim() guard in resolveProjectSlug is provably redundant and cannot be pinned by any test",
+      "summary": "project-slug.ts guards its remote-URL short-circuit twice, but the outer remoteUrl.trim() check is unreachable-by-effect given slugify, so no input can distinguish its removal and no regression test can pin it.",
+      "symbols": [
+        "resolveProjectSlug",
+        "slugify"
+      ],
+      "source_files": [
+        "src/services/knowledge/project-slug.ts",
+        "tests/knowledge/kb-remote-scope.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.888Z"
+    },
+    {
+      "id": "7cc58351-c7f9-4f14-99b0-cdd04cf83d7c",
+      "type": "knowledge",
+      "title": "Member OS resolution: always via agent.os",
+      "summary": "The orchestrator and each fleet member can independently run Windows/Mac/Linux -- local members share the orchestrator's own OS, but remote members can be any OS regardless of the orchestrator's. Never assume a target member's shell/OS matches the orchestrator's.",
+      "symbols": [
+        "getAgentOS",
+        "getOsCommands"
+      ],
+      "source_files": [
+        "src/os/index.ts",
+        "src/utils/agent-helpers.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.927Z"
     },
     {
       "id": "8997f326-d6e7-485f-ad84-782650030314",
@@ -740,178 +227,10 @@
         "src/services/preflight-check.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:46.521Z"
+      "updated_at": "2026-08-21T05:24:37.934Z"
     },
     {
-      "id": "8aa0ffeb-a1a0-4c61-9853-5919b14e1865",
-      "type": "knowledge",
-      "title": "The auto-sprint beads export can replace the committed id set, not just grow it",
-      "summary": "auto-sprint.js exports and stages .beads/issues.jsonl unguarded, so a sprint run whose Dolt DB diverges from the repo's committed export silently deletes issue records while the file grows in size.",
-      "symbols": [
-        "bd export",
-        "kb_export"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
-        ".beads/issues.jsonl",
-        ".beads/metadata.json",
-        "src/tools/kb-export.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-20T01:36:34.089Z"
-    },
-    {
-      "id": "8f1f4e55-1b2d-458e-9cb6-3d81b58ae9d5",
-      "type": "knowledge",
-      "title": "A missing-anchor freshness regression surfaces first as kb_list dropping entries, not as a stale-flag assertion",
-      "summary": "In tests/knowledge/kb-remote-member-e2e.test.ts the four remote-member assertions live in one it(), so removing SqliteProvider's anchorIsMissing guard fails at the SAME DATABASE read-back (line 165) and never reaches the raw stale-row check (line 181).",
-      "symbols": [
-        "anchorIsMissing",
-        "checkFreshness",
-        "kbStats"
-      ],
-      "source_files": [
-        "tests/knowledge/kb-remote-member-e2e.test.ts",
-        "src/services/knowledge/sqlite-provider.ts",
-        "src/tools/kb-stats.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:48.001Z"
-    },
-    {
-      "id": "8f47086f-5fb0-477c-9a74-1062e7df80b6",
-      "type": "learning",
-      "title": "LocalStrategy's rolling inactivity timer never resets for a command that emits no stdout/stderr, so timeoutMs becomes a total wall-clock ceiling, not an idle-detection window",
-      "summary": "resetInactivityTimer only fires from stdout/stderr 'data' handlers, so any silent command (mkdir, a file write, a cat/Get-Content against a missing file) gets no resets at all -- for those callers timeoutMs is effectively a hard ceiling on spawn+run, not real inactivity detection, and must be sized for host-contention scheduling delay, not command runtime.",
-      "symbols": [
-        "resetInactivityTimer",
-        "LocalStrategy.execCommand",
-        "deliverConfigFile"
-      ],
-      "source_files": [
-        "src/services/strategy.ts",
-        "src/tools/compose-permissions.ts",
-        "tests/register-member.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T03:45:34.336Z"
-    },
-    {
-      "id": "9014493c-363a-4345-bcf2-2dd61c30be90",
-      "type": "knowledge",
-      "title": "Recorded wrapTool envelopes omit parsed, so kb_* round-trip fixtures fail their own response schemas",
-      "summary": "memory-contract/v1/fixtures records the raw {content} envelope, but the published kb_* response schemas require parsed, so 25 of 32 recorded responses are invalid against the very schemas the corpus exists to validate.",
-      "symbols": [],
-      "source_files": [
-        "memory-contract/v1/tests/record-fixtures.mjs",
-        "memory-contract/v1/response-schemas.mjs",
-        "memory-contract/v1/schemas/kb_capture.response.json",
-        "memory-contract/v1/spec.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T15:09:23.241Z"
-    },
-    {
-      "id": "910f8ae9-ffde-4b79-bef2-fd6d5d556c27",
-      "type": "knowledge",
-      "title": "openapi.yaml is JSON-shaped YAML emitted through emit(), and tests rely on that",
-      "summary": "memory-contract/v1/bindings/openapi/openapi.yaml is written by the same JSON.stringify-based emit() helper, so it is valid JSON as well as YAML -- which is why the parity test JSON.parses a .yaml file.",
-      "symbols": [
-        "emit",
-        "buildOpenApiDoc"
-      ],
-      "source_files": [
-        "memory-contract/v1/generate-contract.mjs",
-        "memory-contract/v1/bindings/openapi/openapi.yaml",
-        "tests/memory-contract-parity.test.ts",
-        "tests/memory-contract-openapi-yaml-parse.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T19:12:18.115Z"
-    },
-    {
-      "id": "9676e715-e2a2-447a-b0d0-54077c4a5903",
-      "type": "knowledge",
-      "title": "Published response schemas are narrower than the real wrapTool envelope",
-      "summary": "The emitted *.response.json files pin content to exactly one un-annotated block with a closed root, but wrapTool can return three blocks, annotations, and structuredContent.",
-      "symbols": [
-        "toolTextEnvelope",
-        "responseSchema",
-        "wrapTool",
-        "KB_RESPONSE_BODIES"
-      ],
-      "source_files": [
-        "memory-contract/v1/response-schemas.mjs",
-        "src/services/tool-registry.ts",
-        "memory-contract/v1/INVENTORY.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T08:01:49.538Z"
-    },
-    {
-      "id": "a2ef8270-c41d-4cbf-afd3-08704a030a19",
-      "type": "knowledge",
-      "title": "The embeddeddolt test now branches on bd availability instead of a loose regex",
-      "summary": "tests/check-sandbox-sync-remote.test.ts probes `bd --version` and asserts /Dolt-level remotes/ when bd is reachable, /unavailable/ when it is not, closing the vacuous-pass hole the old combined regex left open.",
-      "symbols": [
-        "checkDoltRemoteAbsent"
-      ],
-      "source_files": [
-        "tests/check-sandbox-sync-remote.test.ts",
-        "scripts/check-sandbox-sync-remote.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:49.727Z"
-    },
-    {
-      "id": "a3e956a1-d5ff-4f85-9dd7-6a2b34faf6b2",
-      "type": "knowledge",
-      "title": "zod's native toJSONSchema cannot read this repo's v3-authored tool schemas",
-      "summary": "zod 3.25.76 ships the v4 API at the zod/v4 subpath including z.toJSONSchema, but that emitter only walks v4 internals, so it throws TypeError reading 'def' on any schema authored with the v3 import - which is every schema in src/tools/.",
-      "symbols": [
-        "kbCaptureSchema",
-        "kbScopeFields"
-      ],
-      "source_files": [
-        "src/tools/kb-capture.ts",
-        "src/services/knowledge/kb-scope-input.ts",
-        "memory-contract/v1/tests/probe-generator-2020-12.mjs",
-        "memory-contract/v1/tests/GENERATOR-DECISION.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T03:45:34.296Z"
-    },
-    {
-      "id": "a61a8450-eab3-4ae0-a1bc-1b7949104b55",
-      "type": "knowledge",
-      "title": "taxonomy.json quarantines directive activation by absence, not by a refusal code",
-      "summary": "The v1 error taxonomy holds the three CLI-only directive approve/reject error codes in excluded_from_closed_set outside every group, while still publishing the governance refusals of activation attempts made on routes that really exist.",
-      "symbols": [],
-      "source_files": [
-        "memory-contract/v1/taxonomy.json",
-        "memory-contract/v1/spec.md",
-        "tests/memory-contract-taxonomy.test.ts",
-        "memory-contract/v1/INVENTORY.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T20:56:46.545Z"
-    },
-    {
-      "id": "a96e64d8-e304-4a46-baeb-d36fe1371a94",
-      "type": "knowledge",
-      "title": "Lockfile drift is invisible to npm test",
-      "summary": "A PR review that runs only 'npm test' cannot catch package.json/package-lock.json drift (e.g. a dependency override added to package.json without regenerating the lockfile), because npm test runs against whatever node_modules is already populated. Only 'npm ci' -- the reproducible-install path CI actually uses -- reproduces that failure.",
-      "symbols": [],
-      "source_files": [
-        "package.json",
-        "package-lock.json",
-        "packages/apra-fleet-se/fleet-sprint/runner.js"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:47.118Z"
-    },
-    {
-      "id": "aac4f201-b84e-4e39-a3fe-5b423c1ab4d8",
+      "id": "91cb711b-9ca0-4994-b73b-2d93cb8e47d8",
       "type": "knowledge",
       "title": "Four resolveRepoPath helpers exist in src/tools, but only prime and stats ever had the null-to-cwd shape",
       "summary": "kb-session-prime.ts and kb-stats.ts returned string|null and degraded to process.cwd(); kb-export.ts and kb-import.ts have always returned string and thrown, so they were never part of the b4g.7 anchor defect despite the bead naming kb-export as a third instance.",
@@ -929,23 +248,39 @@
         "docs/knowledge-layer.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:42.993Z"
+      "updated_at": "2026-08-21T05:24:37.855Z"
     },
     {
-      "id": "af869c0e-d9c5-4e4e-a1d3-8bd74d4479e8",
+      "id": "96a63862-eb7a-43f3-8352-4cd686412d43",
       "type": "knowledge",
-      "title": "The .trim() guard in resolveProjectSlug is provably redundant and cannot be pinned by any test",
-      "summary": "project-slug.ts guards its remote-URL short-circuit twice, but the outer remoteUrl.trim() check is unreachable-by-effect given slugify, so no input can distinguish its removal and no regression test can pin it.",
+      "title": "gitRepos is an access list; only a single URL-shaped entry is a usable origin",
+      "summary": "agent.gitRepos is declared string[] and holds bare \"Owner/Repo\" access identifiers, not clone URLs. knownRepoRemoteUrl (now in src/services/member-remote-url.ts, re-exported from execute-prompt.ts) returns a URL only when gitRepos has EXACTLY one entry AND that entry is scheme-qualified; anything else yields undefined rather than a guessed URL.",
       "symbols": [
-        "resolveProjectSlug",
-        "slugify"
+        "knownRepoRemoteUrl",
+        "Agent",
+        "gitRepos"
       ],
       "source_files": [
-        "src/services/knowledge/project-slug.ts",
-        "tests/knowledge/kb-remote-scope.test.ts"
+        "src/services/member-remote-url.ts",
+        "src/types.ts",
+        "src/tools/execute-prompt.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:44.179Z"
+      "updated_at": "2026-08-21T05:35:02.929Z"
+    },
+    {
+      "id": "a96e64d8-e304-4a46-baeb-d36fe1371a94",
+      "type": "knowledge",
+      "title": "Lockfile drift is invisible to npm test",
+      "summary": "A PR review that runs only 'npm test' cannot catch package.json/package-lock.json drift (e.g. a dependency override added to package.json without regenerating the lockfile), because npm test runs against whatever node_modules is already populated. Only 'npm ci' -- the reproducible-install path CI actually uses -- reproduces that failure.",
+      "symbols": [],
+      "source_files": [
+        "package.json",
+        "package-lock.json",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.949Z"
     },
     {
       "id": "b0f6be79-738c-491b-9ba5-7c7e5d69b805",
@@ -966,57 +301,7 @@
         "src/tools/code-intelligence-kb-enrich.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:47.400Z"
-    },
-    {
-      "id": "b1b0785b-a158-4d7d-98d3-2fc368ab575c",
-      "type": "knowledge",
-      "title": "contract:generate reads dist, not src, and is byte-idempotent",
-      "summary": "memory-contract/v1/generate-contract.mjs imports the compiled dist/tools/*.js schemas, so npm run build must precede npm run contract:generate; re-running it leaves git status empty.",
-      "symbols": [
-        "buildDoc",
-        "postprocessTo2020_12",
-        "EXPECTED_TOOL_COUNT",
-        "validateOrThrow"
-      ],
-      "source_files": [
-        "memory-contract/v1/generate-contract.mjs",
-        "memory-contract/v1/tests/postprocess-2020-12.mjs",
-        "package.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T08:01:49.549Z"
-    },
-    {
-      "id": "b368ad28-9c4a-47fd-9acf-5f25a8a29bca",
-      "type": "knowledge",
-      "title": "git check-ignore silently skips tracked paths unless --no-index",
-      "summary": "An acceptance criterion of the form 'git check-ignore -v <path> returns no match' does not prove the path is unignored -- check-ignore ignores index entries by default, so any tracked path reports no match even when a .gitignore rule matches it.",
-      "symbols": [],
-      "source_files": [
-        ".gitignore",
-        ".claude/settings.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:47.706Z"
-    },
-    {
-      "id": "be148968-9b99-4155-93ad-933c28468cec",
-      "type": "knowledge",
-      "title": "postprocess definitions rename is container-aware via a JSON-Pointer state machine",
-      "summary": "normaliseSchemaMap keeps map KEYS untouched and rewriteDefinitionsPointer walks pointer segments in schema/mapName states, so a user field or $defs entry literally named definitions survives.",
-      "symbols": [
-        "normaliseSchemaMap",
-        "rewriteDefinitionsPointer",
-        "SCHEMA_MAP_KEYWORDS",
-        "normaliseNode"
-      ],
-      "source_files": [
-        "memory-contract/v1/tests/postprocess-2020-12.mjs",
-        "tests/memory-contract-postprocess-2020-12.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T08:01:49.580Z"
+      "updated_at": "2026-08-17T21:58:44.645Z"
     },
     {
       "id": "beb4faf7-40fa-4484-9cf5-b287df8f47d2",
@@ -1029,26 +314,7 @@
         "src/services/knowledge/kb-scope-input.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:48.408Z"
-    },
-    {
-      "id": "bede3dce-e2d1-4109-b41b-8ef017a31b62",
-      "type": "knowledge",
-      "title": "MemoryProvider implementations diverge outside the shared interface (teardown name, capture signature)",
-      "summary": "SqliteProvider and HttpKbProvider both implement MemoryProvider but differ in teardown method name and in capture's parameter list, breaking polymorphic binding generation.",
-      "symbols": [
-        "SqliteProvider.close",
-        "HttpKbProvider.dispose",
-        "SqliteProvider.capture",
-        "MemoryProvider"
-      ],
-      "source_files": [
-        "src/services/knowledge/sqlite-provider.ts",
-        "src/services/knowledge/http-provider.ts",
-        "src/services/knowledge/types.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T19:56:12.868Z"
+      "updated_at": "2026-08-17T20:10:22.943Z"
     },
     {
       "id": "c2899616-0cb1-41e8-b229-76e291a0cd81",
@@ -1068,346 +334,86 @@
         "tests/knowledge/kb-remote-anchor-freshness.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:48.736Z"
+      "updated_at": "2026-08-17T20:10:22.934Z"
     },
     {
-      "id": "c3c5933c-7da0-47d2-b589-a3cca4deee8d",
+      "id": "c2d3fa00-5f7f-408e-9bdd-0f49101173fc",
       "type": "knowledge",
-      "title": "apra-pm test suite is deliberately not an npm workspace, so local npm test must invoke it via explicit --prefix",
-      "summary": "packages/apra-fleet-se/apra-pm is excluded from the root npm workspaces array on purpose (to avoid lockfile churn), so its suite is only reachable via an explicit --prefix invocation -- both CI and the local run-all-tests.mjs must include that invocation or local runs give false green signals.",
-      "symbols": [],
-      "source_files": [
-        "scripts/run-all-tests.mjs",
-        ".github/workflows/ci.yml",
-        "packages/apra-fleet-se/apra-pm"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T01:59:12.397Z"
-    },
-    {
-      "id": "c7122837-d7fe-4cf6-a74b-4537c1b51cb5",
-      "type": "knowledge",
-      "title": "The kb_/code_ MCP surface is 23 tools, and none of them declares a response schema",
-      "summary": "registerAllTools registers exactly 16 kb_* and 7 code_* tools (23 of 57 total), every one with a request shape only -- no response zod schema and no structuredContent anywhere in that surface, because all 23 handlers return a bare JSON-stringified string through wrapTool.",
+      "title": "kb_session_prime must pass an explicit repo_path to getKbProviders verbatim, never through resolveRepoPath",
+      "summary": "Validating repo_path before handing it to getKbProviders converts a remote member's unreachable path into the fleet server's own cwd, silently staling healthy entries in the shared project KB; the anchor must stay honestly missing.",
       "symbols": [
-        "registerAllTools",
-        "wrapTool",
-        "handleCodeGraph",
-        "kbQuery",
-        "kbStats"
+        "kbSessionPrime",
+        "resolveRepoPath",
+        "getKbProviders",
+        "anchorIsMissing"
       ],
       "source_files": [
-        "src/services/tool-registry.ts",
-        "src/tools/code-intelligence.ts",
-        "src/tools/kb-query.ts",
-        "src/tools/kb-stats.ts",
-        "memory-contract/v1/INVENTORY.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-20T04:28:10.224Z"
-    },
-    {
-      "id": "c7d59394-00b6-4721-a247-0145fb32d713",
-      "type": "knowledge",
-      "title": "A low TCP dynamic port range makes listen(0) hand back fetch-blocked ports",
-      "summary": "On a host whose TCP dynamic port range starts at 1024, server.listen(0) can bind one of the WHATWG fetch blocked ports, so any Node fetch()-based client fails with 'bad port' -- looking exactly like a load-dependent test flake.",
-      "symbols": [
-        "listenOnPort",
-        "listenOncePort",
-        "isFetchBlockedPort",
-        "createHttpTransport",
-        "FETCH_BLOCKED_PORTS"
-      ],
-      "source_files": [
-        "src/services/http-transport.ts",
-        "tests/http-transport.test.ts",
-        "tests/workspace-isolation.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T08:01:49.613Z"
-    },
-    {
-      "id": "c818dafb-5e88-4d3e-a0fe-7fe1ffa63675",
-      "type": "knowledge",
-      "title": "An unmatched kb_capture supersedes request is silently ignored, not rejected",
-      "summary": "makeAudnDecision honours supersedes:<id> only if that candidate independently passes the dedup gates (same type, symbol overlap, file overlap, target not an ACTIVE directive); otherwise the request falls through to the ordinary AUDN paths with no error, so the caller believes it retired an entry that is still live.",
-      "symbols": [
-        "makeAudnDecision",
-        "AudnResult",
-        "capture",
-        "assertCheckableBasis",
-        "kbCapture"
-      ],
-      "source_files": [
-        "src/services/knowledge/audn.ts",
+        "src/tools/kb-session-prime.ts",
+        "src/services/knowledge/kb-providers.ts",
         "src/services/knowledge/sqlite-provider.ts",
-        "src/tools/kb-capture.ts",
-        "memory-contract/v1/INVENTORY.md"
+        "tests/knowledge/kb-remote-anchor-freshness.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-20T04:28:10.238Z"
+      "updated_at": "2026-08-17T21:02:37.675Z"
     },
     {
-      "id": "c996a17a-24af-4009-8472-0f1c5b868ca7",
-      "type": "knowledge",
-      "title": "deploy.md's Permissions section is the source of truth for .claude/settings.json allow-list",
-      "summary": "The deploy phase's runnable command set is defined by deploy.md lines 6-18, and .claude/settings.json permissions.allow must mirror exactly that list -- bead descriptions quoting an older list are stale and must not be followed.",
-      "symbols": [],
-      "source_files": [
-        "deploy.md",
-        ".claude/settings.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:49.411Z"
-    },
-    {
-      "id": "cf3f793f-a36a-4356-83d8-ba1e2af69e6b",
-      "type": "knowledge",
-      "title": "contract:generate --check cannot see a newly registered tool, only a deleted one",
-      "summary": "The generator's roster is the hardcoded KB_MODULES/CODE_EXPORTS list with EXPECTED_TOOL_COUNT = 23 and no import of the live tool registry, so --check catches deletions and strays but never a tool newly registered in tool-registry.ts.",
-      "symbols": [
-        "KB_MODULES",
-        "CODE_EXPORTS",
-        "EXPECTED_TOOL_COUNT",
-        "checkNoExtraFiles",
-        "registerAllTools"
-      ],
-      "source_files": [
-        "memory-contract/v1/generate-contract.mjs",
-        "tests/memory-contract-roster-guard.test.ts",
-        "src/services/tool-registry.ts",
-        "memory-contract/v1/SIGNOFF.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T19:33:41.424Z"
-    },
-    {
-      "id": "d806ce21-ddb7-4eaf-9479-a344482b4e49",
-      "type": "knowledge",
-      "title": "Only fix 1 of postprocess-2020-12 fires on the real 23-tool surface",
-      "summary": "Emitting all 23 inventoried request schemas with the chosen jsonSchema7 + definitionPath $defs config produces no definitions key, no boolean exclusive bound and no array-form items, so only the dialect fix is reachable there.",
-      "symbols": [
-        "postprocessTo2020_12",
-        "convertExclusiveBound",
-        "convertTupleItems",
-        "normaliseNode"
-      ],
-      "source_files": [
-        "memory-contract/v1/tests/postprocess-2020-12.mjs",
-        "memory-contract/v1/tests/probe-generator-2020-12.mjs",
-        "memory-contract/v1/tests/GENERATOR-DECISION.md",
-        "src/tools/code-intelligence.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T19:56:12.885Z"
-    },
-    {
-      "id": "d82ea45c-55fc-413a-84e1-002995f1a918",
-      "type": "knowledge",
-      "title": "HttpKbProvider falls back to local only on connection errors, not on HTTP 4xx/5xx or bad JSON",
-      "summary": "isConnectionError matches only ECONNREFUSED/ENOTFOUND/ETIMEDOUT/ECONNRESET/socket-hang-up, so a remote 500 or a malformed remote body propagates as a throw instead of degrading to the SqliteProvider fallback.",
-      "symbols": [
-        "isConnectionError",
-        "HttpKbProvider.context",
-        "HttpKbProvider.prime",
-        "HttpKbProvider.rawRequest"
-      ],
-      "source_files": [
-        "src/services/knowledge/http-provider.ts",
-        "memory-contract/v1/INVENTORY.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-20T07:42:19.604Z"
-    },
-    {
-      "id": "d8845914-cef0-4e44-b154-29d3f0a4d1a8",
-      "type": "knowledge",
-      "title": "HttpKbProvider.sync mirrors stats E-STATS-UNSUPPORTED pattern, not a throw",
-      "summary": "HttpKbProvider.sync() hardcodes return {synced:false, reason:'local-only provider'} regardless of opts, same non-throwing documented-not-supported shape as stats' E-STATS-UNSUPPORTED, so both belong in the same verdict class for contract-binding purposes.",
-      "symbols": [
-        "HttpKbProvider.sync",
-        "HttpKbProvider.stats"
-      ],
-      "source_files": [
-        "src/services/knowledge/http-provider.ts",
-        "memory-contract/v1/INVENTORY.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-20T07:09:59.247Z"
-    },
-    {
-      "id": "daf6fb22-307e-45b4-87ce-0dbcedca9064",
-      "type": "knowledge",
-      "title": "The auto-sprint cost ledger is staged by an unconditional plain git add sprint-logs/",
-      "summary": "beads-export-cleanup stages sprint logs with a plain, unguarded `git add sprint-logs/` before `bd export` and the export commit, pinned by sprint-log-flush.test.mjs -- so any gitignore rule covering that directory silently drops the ledger rather than erroring.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
-        "packages/apra-fleet-se/apra-pm/test/sprint-log-flush.test.mjs",
-        ".gitignore"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:50.368Z"
-    },
-    {
-      "id": "e2376f2c-9de4-421a-a090-f88a516fbe90",
-      "type": "knowledge",
-      "title": "The memory-contract drift guard needs both halves: CI git-diff cannot see untracked emitted files",
-      "summary": "The CI regenerate-and-diff step uses git diff --exit-code, which ignores untracked files, so a newly emitted uncommitted artifact passes that step; the vitest --check half is what reports MISSING/EXTRA.",
-      "symbols": [
-        "emit",
-        "checkNoExtraFiles"
-      ],
-      "source_files": [
-        ".github/workflows/ci.yml",
-        "memory-contract/v1/generate-contract.mjs",
-        "tests/memory-contract-drift-guard.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T19:12:18.119Z"
-    },
-    {
-      "id": "ea9fea1f-930b-414d-87ee-f99a8b67bf87",
-      "type": "knowledge",
-      "title": "Injecting deps.execFileSync into checkDoltRemoteAbsent silently disables its filesystem probe",
-      "summary": "checkDoltRemoteAbsent guards its whole .beads layout quick-check with if (!deps.execFileSync), so any test that injects deps to control the child env stops testing layout recognition and its no-short-circuit assertion becomes unfalsifiable.",
-      "symbols": [
-        "checkDoltRemoteAbsent",
-        "BEADS_DATABASE_DIRS",
-        "execFileSyncWithoutBeadsDir"
-      ],
-      "source_files": [
-        "scripts/check-sandbox-sync-remote.mjs",
-        "tests/check-sandbox-sync-remote.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T03:45:34.275Z"
-    },
-    {
-      "id": "eb1611af-81c9-4331-b9f4-65d6427ae818",
-      "type": "knowledge",
-      "title": "bd prints literal 'null' for an empty dolt remote list, not an empty array",
-      "summary": "Code parsing bd's dolt-remote-list output must treat a parsed result of null (or whitespace-padded 'null\\n') as 'no remotes configured' rather than a parse error; any other non-array non-null shape is still a genuine error.",
-      "symbols": [],
-      "source_files": [
-        "scripts/check-sandbox-sync-remote.mjs",
-        "tests/check-sandbox-sync-remote.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:50.694Z"
-    },
-    {
-      "id": "ec8b983b-88f0-4830-bd56-0068aa91cd0b",
+      "id": "f4bbc2aa-3e45-4112-860c-aab263e2736a",
       "type": "learning",
-      "title": "gitRepos is single-entry-safe, multi-entry-ambiguous for deriving an origin URL",
-      "summary": "knownRepoRemoteUrl(agent) in src/tools/execute-prompt.ts only treats agent.gitRepos[0] as a genuine origin URL when gitRepos has exactly one entry; a multi-entry gitRepos (an access list, not an origin field) is left unforwarded even if its first element already looks like a URL, since it could belong to an unrelated repo.",
+      "title": "Wrap getKbProviders with a delegating vi.mock to assert real provider anchoring",
+      "summary": "To assert which dbPath/repoPath a kb tool actually anchored at, vi.mock kb-providers.js with importOriginal, spread the actual module and replace only getKbProviders with a spy that delegates to the real one and records (cwd, remoteUrl, providers).",
       "symbols": [
-        "knownRepoRemoteUrl"
+        "getKbProviders",
+        "resetKbProviders",
+        "SqliteProvider"
       ],
       "source_files": [
-        "src/tools/execute-prompt.ts",
-        "tests/execute-prompt-kb-harvest-remote-url.test.ts",
-        "src/tools/register-member.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-19T21:44:51.006Z"
-    },
-    {
-      "id": "f3654c5a-fd28-487a-b6cb-1bfbd9ff66e1",
-      "type": "knowledge",
-      "title": "Fixture expected_error_code and observed_via mean different things and only one is cross-checked",
-      "summary": "In the recorded corpus, expected_error_code asserts the fixture's own tool raises that taxonomy code; observed_via records that the response is downstream evidence of a code another tool raised, and must not be cross-checked against the tool's bindings.",
-      "symbols": [
-        "recordObservedEffect",
-        "recordResponseFieldRefusal"
-      ],
-      "source_files": [
-        "memory-contract/v1/tests/record-fixtures.mjs",
-        "memory-contract/v1/fixtures/kb_list/observed-directive-quarantine.json",
-        "memory-contract/v1/taxonomy.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T18:09:37.193Z"
-    },
-    {
-      "id": "f4d39699-c6e7-413d-a0ed-630b274426df",
-      "type": "knowledge",
-      "title": "Six SqliteProvider methods are tool-reachable but absent from the MemoryProvider interface",
-      "summary": "MemoryProvider (types.ts:230) declares 12 methods, but registered kb_* tools additionally call list, feedback, freshnessSweep, resolveContradiction, reconcilePrefilter and hasEntry plus the repoPath property directly on SqliteProvider -- so code typed against the interface alone does not cover the real surface.",
-      "symbols": [
-        "MemoryProvider",
-        "SqliteProvider",
-        "hasEntry",
-        "freshnessSweep",
-        "reconcilePrefilter",
-        "resolveContradiction"
-      ],
-      "source_files": [
-        "src/services/knowledge/types.ts",
-        "src/services/knowledge/sqlite-provider.ts",
-        "src/tools/kb-import.ts",
-        "src/tools/kb-freshness-sweep.ts",
-        "src/tools/kb-list.ts",
-        "memory-contract/v1/INVENTORY.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T19:56:12.853Z"
-    },
-    {
-      "id": "f6647f0e-4533-483f-a125-02b0eff829be",
-      "type": "learning",
-      "title": "memory-contract v1 response schemas now declare parsed optional, not required",
-      "summary": "response-schemas.mjs's responseSchema() used to require both content and parsed on every kb_*/code_* response schema, but no wrapTool handler ever puts a literal parsed key on the wire -- it was made optional (my-beads-db-27m.47) so raw recorded envelopes validate as-is while still fully typing the parsed body when a consumer decodes it.",
-      "symbols": [
-        "responseSchema",
-        "decodeEnvelope",
-        "KB_RESPONSE_BODIES"
-      ],
-      "source_files": [
-        "memory-contract/v1/response-schemas.mjs",
-        "memory-contract/v1/schemas/kb_capture.response.json",
-        "memory-contract/v1/generate-contract.mjs",
-        "tests/memory-contract-response-envelope.test.ts",
-        "tests/memory-contract-fixture-response-schema.test.ts",
-        "memory-contract/v1/tests/DEGRADATION.md",
-        "memory-contract/v1/tests/roundtrip-harness.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-24T18:09:37.174Z"
-    },
-    {
-      "id": "fa75e607-4fa8-4c22-9fc4-42cf0747ffa4",
-      "type": "knowledge",
-      "title": "contract:generate --check does not enumerate registered tools; it trusts the hardcoded roster",
-      "summary": "The --check parity mode of memory-contract/v1/generate-contract.mjs compares generated documents against committed ones using KB_MODULES/CODE_EXPORTS resolved against dist/tools, so a tool registered in tool-registry.ts but missing from that roster still passes check.",
-      "symbols": [],
-      "source_files": [
-        "memory-contract/v1/generate-contract.mjs",
-        "tests/memory-contract-roster-guard.test.ts",
-        "src/services/tool-registry.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T20:56:46.542Z"
-    },
-    {
-      "id": "fb101622-41fa-45b7-8e1b-c475323e4b7f",
-      "type": "knowledge",
-      "title": "HttpKbProvider.query drops ids, so kb_query L2 hydration would return wrong rows over HTTP",
-      "summary": "The HTTP provider forwards only query/type/limit/l1_only/include_stale/include_superseded, so query({ids}) becomes a parameter-less remote GET while SqliteProvider treats ids as an exact-id fetch.",
-      "symbols": [
-        "HttpKbProvider.query",
-        "SqliteProvider.query",
-        "kbQuery",
-        "QueryOptions"
-      ],
-      "source_files": [
-        "src/services/knowledge/http-provider.ts",
-        "src/services/knowledge/sqlite-provider.ts",
-        "src/tools/kb-query.ts",
+        "tests/knowledge/kb-anchor-never-cwd.test.ts",
+        "tests/knowledge/kb-remote-url-forwarding.test.ts",
+        "tests/knowledge/kb-import.test.ts",
         "src/services/knowledge/kb-providers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-20T07:09:59.262Z"
+      "updated_at": "2026-08-17T21:02:37.669Z"
+    },
+    {
+      "id": "f92f896f-cc6d-4c1f-8144-f42ce2a3707f",
+      "type": "knowledge",
+      "title": "A missing-anchor freshness regression surfaces first as kb_list dropping entries, not as a stale-flag assertion",
+      "summary": "In tests/knowledge/kb-remote-member-e2e.test.ts the four remote-member assertions live in one it(), so removing SqliteProvider's anchorIsMissing guard fails at the SAME DATABASE read-back (line 165) and never reaches the raw stale-row check (line 181).",
+      "symbols": [
+        "anchorIsMissing",
+        "checkFreshness",
+        "kbStats"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-remote-member-e2e.test.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-stats.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-17T22:08:25.572Z"
+    },
+    {
+      "id": "ff6f9eff-1532-4e9a-85fb-f3b4778e4733",
+      "type": "knowledge",
+      "title": "One anchor policy, three branches: verbatim for read tools, hard-fail for kb_export",
+      "summary": "kb_session_prime and kb_stats pass a supplied repo_path to getKbProviders verbatim so an unreachable remote anchor stays honestly missing; kb_export deliberately keeps throwing instead, because it writes into repo_path -- and it throws before getKbProviders, so it never anchors at the server cwd either.",
+      "symbols": [
+        "kbStats",
+        "kbExport",
+        "kbSessionPrime",
+        "getKbProviders",
+        "resolveRepoPath"
+      ],
+      "source_files": [
+        "src/tools/kb-stats.ts",
+        "src/tools/kb-export.ts",
+        "src/tools/kb-session-prime.ts",
+        "src/services/knowledge/kb-providers.ts",
+        "tests/knowledge/kb-anchor-never-cwd.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-08-21T05:24:37.794Z"
     }
   ]
 }

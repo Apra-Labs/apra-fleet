@@ -126,7 +126,7 @@ test('uninstall() removes the auto-sprint-args skill for Claude', () => {
 });
 
 test('uninstall() does not touch workflows for non-claude providers', () => {
-  const cfg = makeTmpCfg('Gemini');
+  const cfg = makeTmpCfg('OpenCode');
   seedInstalledConfigDir(cfg);
   const removed = uninstall(cfg, agentsSrc);
   assert.equal(removed.workflow, false);

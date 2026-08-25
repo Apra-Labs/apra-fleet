@@ -349,56 +349,6 @@ describe('pollLogFile', () => {
     });
   });
 
-  describe('Gemini -- lastUpdated extraction from $set lines', () => {
-    beforeEach(() => {
-      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'gemini' }));
-    });
-
-    it('extracts lastUpdated from the last $set line', async () => {
-      const stdout = jsonLines(
-        { type: 'user', content: 'hello' },
-        { '$set': { lastUpdated: '2026-05-05T10:03:00.000Z', other: 'field' } },
-      );
-      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
-
-      const result = await pollLogFile('member-1', '/log.jsonl');
-      expect(result.lastTimestamp).toBe('2026-05-05T10:03:00.000Z');
-      expect(result.error).toBeUndefined();
-    });
-
-    it('picks the last $set line when multiple are present', async () => {
-      const stdout = jsonLines(
-        { '$set': { lastUpdated: '2026-05-05T10:00:00.000Z' } },
-        { '$set': { lastUpdated: '2026-05-05T10:05:00.000Z' } },
-      );
-      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
-
-      const result = await pollLogFile('member-1', '/log.jsonl');
-      expect(result.lastTimestamp).toBe('2026-05-05T10:05:00.000Z');
-    });
-
-    it('returns null without format error when no $set lines exist', async () => {
-      const stdout = jsonLines({ type: 'user', content: 'hello' });
-      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
-
-      const result = await pollLogFile('member-1', '/log.jsonl');
-      expect(result.lastTimestamp).toBeNull();
-      expect(mockLogLine).not.toHaveBeenCalledWith('stall_poll_format_error', expect.any(String));
-    });
-
-    it('logs stall_poll_format_error when $set entry is missing lastUpdated', async () => {
-      const stdout = jsonLines({ '$set': { otherField: 'value' } });
-      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
-
-      const result = await pollLogFile('member-1', '/log.jsonl');
-      expect(result.lastTimestamp).toBeNull();
-      expect(mockLogLine).toHaveBeenCalledWith(
-        'stall_poll_format_error',
-        expect.stringContaining('$set entry missing lastUpdated')
-      );
-    });
-  });
-
   describe('error handling', () => {
     it('returns null without error when file does not exist', async () => {
       mockExecCommand.mockResolvedValue({

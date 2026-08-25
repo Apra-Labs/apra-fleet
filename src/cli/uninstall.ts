@@ -122,7 +122,9 @@ function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): boolean
       } catch {}
     }
   } else {
-    // Claude uses "PostToolUse", Gemini uses "AfterTool"
+    // "AfterTool" is kept alongside Claude's "PostToolUse" so uninstall still
+    // cleans up hook entries left behind by a now-removed provider that used
+    // that event name.
     const hookEventNames = ['PostToolUse', 'AfterTool'];
     for (const eventName of hookEventNames) {
       if (settings.hooks?.[eventName]) {
@@ -242,7 +244,7 @@ Usage:
   apra-fleet uninstall --help            Show this help
 
 Options:
-  --llm <provider>   Specific provider to clean up: claude, gemini, codex, copilot, agy, opencode.
+  --llm <provider>   Specific provider to clean up: claude, codex, copilot, agy, opencode.
   --skill <mode>     Skills to remove: fleet, pm, workflows, or all (default). "workflows" removes
                       the ~/.apra-fleet/{node_modules,schemas} runtime and built-in workflow dirs,
                       leaving any user-authored workflows/<name>/ directories in place.
@@ -324,7 +326,7 @@ Options:
   const recordedProviders = Object.keys(installConfig.providers) as LlmProvider[];
   const isFallback = recordedProviders.length === 0;
   const providersToClean = targetLlm === 'all' 
-    ? (recordedProviders.length > 0 ? recordedProviders : (['claude', 'gemini', 'codex', 'copilot', 'agy'] as LlmProvider[]))
+    ? (recordedProviders.length > 0 ? recordedProviders : (['claude', 'codex', 'copilot', 'agy'] as LlmProvider[]))
     : [targetLlm];
 
   if (isFallback && targetLlm === 'all') {

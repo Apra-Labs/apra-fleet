@@ -439,6 +439,29 @@ describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLau
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    test('an unreservable orchestrator member is NOT caught by an existing overlap -- the launch succeeds and the ledger never claims it', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        // s-active already claims 'supervisor' (e.g. from an earlier sprint that
+        // also used it as orchestrator).
+        await ledger.claim('s-active', { members: ['alice', 'supervisor'], issueRoots: ['R1'], childPid: 1 });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [{ name: 'supervisor', unreservable: true }] }),
+            getBacklog: () => ({}),
+        });
+        const r = await controller.launch({
+            issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+            roleMap: { orchestrator: ['supervisor'] },
+        });
+        assert.equal(captured.length, 1);
+        // The ledger's own reservation for the NEW sprint never includes the
+        // unreservable member -- it is subtracted from the union entirely.
+        assert.deepEqual([...r.members].sort(), ['dave']);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('a rejected launch leaves the ledger byte-identical (no partial claim)', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
@@ -505,6 +528,17 @@ describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLau
     // naming the owning sprint id -- this is what makes a workflow/cli-launched
     // sprint's member_reservation claim (eft.26.1) visible to a launch routed
     // through THIS supervisor.
+    test('defaultMemberOverlapGuard: an unreservable member carrying a stale server-side reservedBy is skipped -- no 409', async () => {
+        const ledgerStub = { list: () => [] };
+        // 'alice' somehow still carries a reservedBy (e.g. set before it was
+        // flagged unreservable, or a bug elsewhere) -- the guard must skip it
+        // by construction, not merely because a well-behaved caller never sets
+        // reservedBy on an unreservable member.
+        const listMembers = () => ({ members: [{ name: 'alice', reservedBy: 'workflow-sprint-1', unreservable: true }] });
+        const guard = defaultMemberOverlapGuard(ledgerStub, listMembers);
+        await assert.doesNotReject(() => guard({ members: ['alice'] }));
+    });
+
     test('defaultMemberOverlapGuard: a server-side-only reservation (ledger empty) still rejects with 409 naming the owning sprint id', async () => {
         const ledgerStub = { list: () => [] };
         const listMembers = () => ({ members: [{ name: 'alice', reservedBy: 'workflow-sprint-1' }, { name: 'bob', reservedBy: null }] });

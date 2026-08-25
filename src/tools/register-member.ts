@@ -50,7 +50,7 @@ export const registerMemberSchema = z.object({
   cloud_profile: z.string().optional().describe('AWS CLI profile name (e.g. "apra")'),
   cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
   cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle" on stdout. Checked after GPU, before process check. Useful for CPU-intensive tasks, downloads, or any non-GPU workload.'),
-  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot', 'agy', 'opencode', 'none']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli. Use "none" for a plain command executor with no LLM at all -- execute_prompt is rejected for these members; use execute_command instead.'),
+  llm_provider: z.enum(['claude', 'codex', 'copilot', 'agy', 'opencode', 'none']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli. Use "none" for a plain command executor with no LLM at all -- execute_prompt is rejected for these members; use execute_command instead.'),
   model_cheap: z.enum(CURATED_CHEAP_MODELS).optional().describe('Custom cheap model choice from a curated list'),
   model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Custom standard model choice from a curated list'),
   model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Custom premium model choice from a curated list'),
@@ -69,6 +69,7 @@ export const registerMemberSchema = z.object({
     premium: z.string().optional(),
   }).optional().describe('Per-member model tier map. Keys: cheap, standard, premium. Values: model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model recommended for opencode members.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Code-intelligence provider for this member (default: fleet-wide config).'),
+  unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it. Default: false.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
@@ -131,6 +132,17 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (!input.host) return '❌ "host" is required for remote members. Member was NOT registered.';
     if (!input.username) return '❌ "username" is required for remote members. Member was NOT registered.';
     if (!input.auth_type) return '❌ "auth_type" is required for remote members. Member was NOT registered.';
+  }
+
+  // unreservable is reserved for members that never receive a real agent
+  // dispatch (e.g. a beads-only fleet-sprint orchestrator shared across
+  // concurrent sprints). Without this constraint, an ordinary dispatch
+  // member flagged unreservable would let two sprints dispatch to it
+  // concurrently -- interleaving prompts into one working tree -- and any
+  // member with update_member access could self-escalate past the
+  // exclusivity guard entirely.
+  if (input.unreservable && (input.llm_provider ?? 'claude') !== 'none') {
+    return '❌ "unreservable" requires llm_provider: "none" -- it is reserved for plain command-executor members that never receive an agent dispatch. Member was NOT registered.';
   }
 
   // SF-17: a remote member's work_folder is used verbatim on the MEMBER's
@@ -280,6 +292,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     category: input.category,
     tags: input.tags,
     codeIntelProvider: input.code_intel_provider,
+    unreservable: input.unreservable ?? false,
   };
 
   // --- SSH-dependent steps (skipped for stopped cloud instances) ---
@@ -402,8 +415,8 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   //
   // Every provider's transcript path is built under the MEMBER's home dir
   // (issue #390). Only pollDirectoryActivity ever probed it, and that runs
-  // exclusively for provisional (AGY/OpenCode) dispatches -- so for Claude and
-  // Gemini members, whose entries always carry a caller-minted logFilePath, the
+  // exclusively for provisional (AGY/OpenCode) dispatches -- so for Claude
+  // members, whose entries always carry a caller-minted logFilePath, the
   // cache was never populated and the synchronous dispatch path
   // (getCachedMemberPathContext) permanently used the username-convention
   // GUESS. A member with a relocated or domain-suffixed home then got a
@@ -546,6 +559,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   }
   if (tempAgent.tags && tempAgent.tags.length > 0) {
     result += `  Tags:     ${tempAgent.tags.join(', ')}\n`;
+  }
+  if (tempAgent.unreservable) {
+    result += `  Unreservable: true (shared -- never exclusively reserved)\n`;
   }
   if (tempAgent.modelCheap) result += `  Model Cheap: ${tempAgent.modelCheap}\n`;
   if (tempAgent.modelStandard) result += `  Model Standard: ${tempAgent.modelStandard}\n`;

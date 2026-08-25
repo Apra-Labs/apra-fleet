@@ -176,12 +176,12 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
   });
 
   it('falls through to the subprocess path even WITH a live session, for a non-Claude provider that has NOT declared the channel capability (apra-fleet-us9.9: mode b was only proven on Claude)', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-with-live-session', llmProvider: 'gemini' });
+    const member = makeTestAgent({ friendlyName: 'codex-with-live-session', llmProvider: 'codex' });
     memberId = member.id;
     addAgent(member);
 
     // This member DOES have a live sessionRegistry entry -- registerMcpEndpoint
-    // gives Gemini/Codex/OpenCode basic MCP tool access (apra-fleet-fnz.1-3),
+    // gives Codex/OpenCode/Copilot basic MCP tool access (apra-fleet-fnz.1-3),
     // but docs/interactive-injection-provider-survey.md confirms none of them
     // can receive/act on a server-push mid-session prompt injection the way
     // Claude can, so none of them declare channelCapable in practice.
@@ -203,7 +203,7 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
 
     expect(mockExecCommand).toHaveBeenCalled();
     expect(notification).not.toHaveBeenCalled();
-    expect(resultText(result)).toContain('gemini-with-live-session');
+    expect(resultText(result)).toContain('codex-with-live-session');
   });
 
   // apra-fleet-cqa: routing is gated solely by SessionState.channelCapable, not
@@ -211,10 +211,10 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
   // notifications/claude/channel capability at MCP initialize time must be
   // routed over the interactive channel exactly like a Claude member would be.
   // This proves the old isClaudeMember provider-name pre-filter is gone: were
-  // it still present, this channel-capable Gemini session would have been
+  // it still present, this channel-capable non-Claude session would have been
   // skipped before channelCapable was ever consulted.
   it('routes interactively for a non-Claude provider whose session HAS declared the channel capability (provider-agnostic routing, apra-fleet-cqa)', async () => {
-    const member = makeTestAgent({ friendlyName: 'gemini-channel-capable', llmProvider: 'gemini' });
+    const member = makeTestAgent({ friendlyName: 'codex-channel-capable', llmProvider: 'codex' });
     memberId = member.id;
     addAgent(member);
 
@@ -233,12 +233,12 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
     const promptPromise = executePrompt({ member_id: memberId, prompt: 'do it interactively', resume: false, timeout_s: 5 });
     await vi.waitFor(() => expect(notification).toHaveBeenCalledTimes(1));
     const msgid = notification.mock.calls[0][0].params.meta.msgid;
-    const respondResult = await respondToMessage({ reply_to: msgid, content: 'gemini replied interactively' });
+    const respondResult = await respondToMessage({ reply_to: msgid, content: 'codex replied interactively' });
     expect(JSON.parse(respondResult)).toEqual({ ok: true });
 
     const result = await promptPromise;
-    expect(resultText(result)).toContain('gemini-channel-capable');
-    expect(resultText(result)).toContain('gemini replied interactively');
+    expect(resultText(result)).toContain('codex-channel-capable');
+    expect(resultText(result)).toContain('codex replied interactively');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 });

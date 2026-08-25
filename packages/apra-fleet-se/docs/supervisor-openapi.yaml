@@ -165,6 +165,21 @@ paths:
           name: q
           schema: { type: string }
           description: case-insensitive substring match against "<id> <title>"
+        - in: query
+          name: sort
+          schema: { type: string, enum: [created_at] }
+          description: >
+            optional ordering key applied after the filters above; only
+            `created_at` is supported. Omitting it leaves task order exactly
+            as the type/status/priority/model/q narrowing produced it -- no
+            reordering is imposed.
+        - in: query
+          name: dir
+          schema: { type: string, enum: [asc, desc] }
+          description: >
+            direction for `sort`; defaults to `desc` when `sort=created_at`
+            is given. Rows with a missing/unparseable `created_at` always
+            sort last regardless of direction and never cause an error.
       responses:
         "200":
           description: OK

@@ -199,6 +199,59 @@ describe('command() typed error classification', () => {
     });
 });
 
+// (apra-fleet-p2to.2.3.2) The member-argument guard ('command() requires
+// either member_name or member_id') used to be duplicated between command()
+// and _commandDispatch() (apra-fleet-p2to.2.3's dead-code finding); the
+// _commandDispatch() copy was removed (apra-fleet-p2to.2.3.1) so a single
+// copy, in command(), fires. These pin that: the guard still throws the
+// identical message, a valid call never trips it, and it fires exactly once
+// per malformed call rather than command() and _commandDispatch() both
+// throwing (or the removed copy silently going dead without ever being
+// reached, either of which would hide a regression back to duplication).
+describe('apra-fleet-p2to.2.3.2: command() member-argument guard fires exactly once', () => {
+    test('command() with neither member_name nor member_id throws the guard error', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi());
+        await assert.rejects(
+            () => wf.command('echo hi', {}),
+            /command\(\) requires either member_name or member_id/
+        );
+    });
+
+    test('a valid command() call (member provided) dispatches without hitting the guard', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi());
+        let dispatchCalls = 0;
+        const originalDispatch = wf._commandDispatch.bind(wf);
+        wf._commandDispatch = async (...args) => {
+            dispatchCalls += 1;
+            return originalDispatch(...args);
+        };
+
+        const result = await wf.command('echo hi', { member_name: KNOWN_MEMBER });
+        assert.strictEqual(result, 'echo hi');
+        assert.strictEqual(dispatchCalls, 1, '_commandDispatch() reached exactly once for a valid call');
+    });
+
+    test('the guard fires exactly once for a malformed call: it rejects before ever reaching _commandDispatch()', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi());
+        let dispatchCalls = 0;
+        const originalDispatch = wf._commandDispatch.bind(wf);
+        wf._commandDispatch = async (...args) => {
+            dispatchCalls += 1;
+            return originalDispatch(...args);
+        };
+
+        await assert.rejects(
+            () => wf.command('echo hi', { member_name: '', member_id: undefined }),
+            /command\(\) requires either member_name or member_id/
+        );
+        // Single guard, in command(): a malformed call never reaches
+        // _commandDispatch() at all -- if the removed duplicate guard were
+        // ever reinstated there, that would still show as 0 calls here, so
+        // this also guards against a second copy silently reappearing.
+        assert.strictEqual(dispatchCalls, 0, '_commandDispatch() must never be entered on the guard-reject path');
+    });
+});
+
 describe('apra-fleet-unw2.12: command() must not double-emit activity:end for typed errors', () => {
     // Mirrors agent()'s catch: MemberNotFoundError/CommandError already
     // emit their own activity:end at the throw site inside the try block,

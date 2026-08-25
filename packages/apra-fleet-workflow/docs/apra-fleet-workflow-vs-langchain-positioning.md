@@ -11,7 +11,7 @@
 
 ### apra-fleet-workflow (ours)
 
-A ~1,500-line JS engine (`packages/apra-fleet-workflow/src/workflow/index.mjs`) whose unit of work is **a dispatch to a physically separate machine**. `agent(prompt, opts)` sends a prompt over MCP (stdio or streamableHTTP) to a named fleet *member* -- a local or SSH-reachable box running its own Claude/Gemini/Codex/Copilot CLI -- and `command(cmd, opts)` runs a shell command there. On top of that dispatch primitive it layers:
+A ~1,500-line JS engine (`packages/apra-fleet-workflow/src/workflow/index.mjs`) whose unit of work is **a dispatch to a physically separate machine**. `agent(prompt, opts)` sends a prompt over MCP (stdio or streamableHTTP) to a named fleet *member* -- a local or SSH-reachable box running its own Claude/AGY/Codex/Copilot CLI -- and `command(cmd, opts)` runs a shell command there. On top of that dispatch primitive it layers:
 
 - **Structured output**: ajv-compiled JSON-schema validation with a real bracket-matching extractor (fenced-block-first, string-state-aware balanced scan) and a **bounded schema-repair loop** -- on invalid output it re-asks the *same* member with a self-contained prompt embedding the original prompt, the member's own invalid output, and the ajv errors, up to `schemaRetries` (default 2) times.
 - **Typed error taxonomy** (`errors.mjs`): `AgentDispatchError` (busy member, non-zero CLI exit, transport exception -- the LLM never answered) is deliberately distinguished from `AgentOutputError` (the LLM answered garbage), and dispatch failures are *never* fed into the repair loop, because "here's why your JSON was invalid" cannot fix a busy member. Plus `MemberNotFoundError`, `CommandError`, `FleetTransportError`, `BudgetExceededError`, `CancelledError`.

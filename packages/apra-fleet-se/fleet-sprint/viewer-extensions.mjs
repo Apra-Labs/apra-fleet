@@ -9,7 +9,22 @@ import { computeSprintProgress } from './sprint-progress.mjs';
  * itself -- and renders a horizontal bar that fills left-to-right by
  * `fraction`, plus the numeric 'M/N' text. Styled with the viewer's existing
  * `--bg`/`--bg-glass`/`--accent` CSS variables. `required === 0` renders a
- * flat, empty bar and '0/0' text rather than dividing by zero or throwing.
+ * flat, empty bar and 'Required: 0/0' text rather than dividing by zero or
+ * throwing.
+ *
+ * apra-fleet-vk0a.1: the 'M/N' text carries an explicit `Required: ` label
+ * (closed/required, goal+decomposedParentIds-filtered per
+ * computeSprintProgress()) -- this widget is reused as-is by BOTH the
+ * fleet-sprint per-sprint viewer's Tasks tab (renderBeadsPanel() below --
+ * apra-fleet-vk0a.2 pins it into the FIXED panel-header row, next to the
+ * 'Tasks' label, rather than the top of the scrollable tree below, so it
+ * never scrolls out of view alongside renderBeadsHtml()'s OWN,
+ * differently-scoped 'All tasks (incl. backlog)' count -- see that widget's
+ * doc comment) AND the supervisor dashboard's Sprint Stack card
+ * (dashboard.mjs's renderSprintProgressHtml(), next to its OWN
+ * differently-scoped 'N total in scope' count -- apra-fleet-vk0a.3).
+ * Labeling it once, here, keeps both pairings unambiguous without a second
+ * implementation.
  *
  * @param {{ closed: number, required: number, fraction: number }} progress
  * @returns {string}
@@ -25,7 +40,7 @@ export function renderProgressBarHtml(progress) {
         '<div style="flex: 1; height: 8px; background: var(--bg); border: 1px solid var(--bg-glass); border-radius: 4px; overflow: hidden;">' +
         '<div style="width: ' + pct + '%; height: 100%; background: var(--accent);"></div>' +
         '</div>' +
-        '<div style="color: #a1a1aa; white-space: nowrap;">' + closed + '/' + required + '</div>' +
+        '<div style="color: #a1a1aa; white-space: nowrap;">Required: ' + closed + '/' + required + '</div>' +
         '</div>'
     );
 }
@@ -89,20 +104,21 @@ export function renderProgressBarHtml(progress) {
  * header row and outer `<table>` wrapper always render regardless of which
  * (if either) section has content.
  *
- * apra-fleet-k7s: unlike Sprint (nested by `parent` containment), Backlog
- * has no shared parent/epic to nest under -- what it DOES sometimes have is
- * `blocks`-type dependency edges BETWEEN backlog items themselves (e.g. two
- * unplanned beads under the same stale epic, one blocking the other). When
- * present, those edges now drive nesting the same way `renderNode` nests
- * Sprint rows: the blocker renders as the parent row, the blocked item
- * nests as its child, using the identical indent/prefix/cycle-guard
- * mechanics. A backlog item with no blocks-edge to another IN-SET backlog
- * item (the common case -- most backlog beads are unrelated to each other)
- * remains a flat, top-level row, same as before -- nesting is only ever
- * drawn when a real edge justifies it, never implied. Root rows (including
- * every item with no in-set blocker) are still sorted priority-then-id for
- * scannability; a blocked item's DEPTH in the tree is what shows structure,
- * not its position in that sort.
+ * apra-fleet-k7s: Backlog nests the same way Sprint does -- by `parent`
+ * containment FIRST (an in-set parent-child edge, e.g. an epic's children
+ * that never made it into a sprint run) -- falling back to `blocks`-type
+ * dependency edges BETWEEN backlog items only for a genuinely parent-less
+ * item (e.g. two unplanned beads under the same stale epic, one blocking
+ * the other, with the epic itself out of this dataset). When a blocks-edge
+ * fallback fires, it drives nesting the same way `renderNode` nests Sprint
+ * rows: the blocker renders as the parent row, the blocked item nests as
+ * its child, using the identical indent/prefix/cycle-guard mechanics. A
+ * backlog item with neither an in-set parent nor a blocks-edge to another
+ * IN-SET backlog item remains a flat, top-level row -- nesting is only
+ * ever drawn when a real edge justifies it, never implied. Root rows
+ * (including every item with no in-set parent/blocker) are still sorted
+ * priority-then-id for scannability; a nested item's DEPTH in the tree is
+ * what shows structure, not its position in that sort.
  *
  * Every rendering decision here (status/type badges, tree placement) is
  * defensive by construction: unrecognized/missing status, type, model, or
@@ -475,15 +491,14 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         return html;
     }
 
-    // apra-fleet-k7s: Backlog is built into a tree from `blocks`-type
-    // dependency edges BETWEEN backlog items (mirrors the doc-comment above
-    // and reuses renderNode's own indent/prefix/cycle-guard mechanics, just
-    // keyed off a separate `backlogMap`/`backlogChildrenOf` built from
-    // blocks-edges instead of Sprint's `map`/`childrenOf` built from
-    // `parent`). A blocker outside the backlog set (e.g. it's actually in
-    // this run's Sprint, or not part of this dataset at all) does not
-    // count -- same "only an in-dataset edge nests" rule Sprint applies to
-    // `parent`.
+    // apra-fleet-k7s: Backlog is built into a tree from `parent` containment
+    // FIRST, `blocks`-type dependency edges BETWEEN backlog items SECOND
+    // (mirrors the doc-comment above and reuses renderNode's own indent/
+    // prefix/cycle-guard mechanics, just keyed off a separate `backlogMap`/
+    // `backlogChildrenOf` rather than Sprint's `map`/`childrenOf`). A parent
+    // or blocker outside the backlog set (e.g. it's actually in this run's
+    // Sprint, or not part of this dataset at all) does not count -- same
+    // "only an in-dataset edge nests" rule Sprint applies to `parent`.
     const backlogMap = {};
     backlogTasks.forEach((t) => { backlogMap[t.id] = { ...t, blockedBy: [] }; });
 
@@ -496,7 +511,20 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
             .filter((d) => d && d.type === 'blocks' && backlogMap[d.depends_on_id])
             .map((d) => d.depends_on_id);
         backlogMap[t.id].blockedBy = blockerIds;
-        if (blockerIds.length > 0) {
+
+        // apra-fleet: containment (`parent`, in-set) nests FIRST, mirroring
+        // Sprint's `map`/`childrenOf` above -- most backlog beads have a real
+        // parent-child edge (an epic's children that never made it into a
+        // sprint run), and nesting those under a `blocks` edge instead left
+        // every parent-child-only bead rendering as a flat root alongside
+        // its own epic. `blocks`-edge nesting is now the FALLBACK, used only
+        // for a genuinely parent-less backlog item that still blocks/is
+        // blocked by another in-set item.
+        const parentId = t.parent;
+        if (parentId !== undefined && parentId !== null && backlogMap[parentId]) {
+            (backlogChildrenOf[parentId] = backlogChildrenOf[parentId] || []).push(t.id);
+            nestedBacklogIds.add(t.id);
+        } else if (blockerIds.length > 0) {
             // A node renders exactly once (cycle-guard below), so with
             // multiple in-set blockers only one can be the tree-parent --
             // the lowest-sorted blocker id wins, for deterministic output.
@@ -565,20 +593,31 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         return html;
     }
 
-    // apra-fleet-eft.90: a persistent 'M/N' item count at the top of the
-    // panel -- N = every rendered bead across BOTH sections (Sprint +
-    // Backlog), M = how many of those are not closed (open, in_progress,
-    // blocked, etc). Parent and child beads each count as their own item
-    // toward both numbers -- these are flat counts over the input arrays
-    // themselves, never deduped/collapsed by tree hierarchy (a bead present
-    // in `sprintTasks`/`backlogTasks` counts exactly once regardless of how
+    // apra-fleet-eft.90: a persistent item count at the top of the panel --
+    // N = every rendered bead across BOTH sections (Sprint + Backlog), M =
+    // how many of those are not closed (open, in_progress, blocked, etc).
+    // Parent and child beads each count as their own item toward both
+    // numbers -- these are flat counts over the input arrays themselves,
+    // never deduped/collapsed by tree hierarchy (a bead present in
+    // `sprintTasks`/`backlogTasks` counts exactly once regardless of how
     // many descendants it has). An empty panel (both lists empty) renders
-    // '0/0', never NaN/throwing.
+    // 'All tasks (incl. backlog): 0 open / 0 total', never NaN/throwing.
+    //
+    // apra-fleet-vk0a.1: labeled 'All tasks (incl. backlog)' -- explicitly
+    // distinct from the DIFFERENT scope/definition of renderProgressBarHtml()'s
+    // 'Required: M/N' widget (goal+decomposedParentIds-filtered, sprintTasks
+    // only), which apra-fleet-vk0a.2 pins into the Tasks tab's FIXED
+    // panel-header row (renderBeadsPanel() below) rather than rendering it
+    // here at the top of this scrollable panel. Before the vk0a.1 label, the
+    // two counts read as a bug (same-looking 'M/N' pair, different
+    // denominators AND inverted numerator polarity -- this one is
+    // open-count, that one is closed-count) rather than two intentionally
+    // different, both-useful numbers.
     const countedTasks = sprintTasks.concat(backlogTasks);
     const totalBeadCount = countedTasks.length;
     const openBeadCount = countedTasks.filter((t) => t && (t.status || '').toString().toLowerCase() !== 'closed').length;
     const countHtml = '<div class="beads-count" style="padding: 4px 8px; font-size: 12px; color: #a1a1aa;">' +
-        openBeadCount + '/' + totalBeadCount + '</div>';
+        'All tasks (incl. backlog): ' + openBeadCount + ' open / ' + totalBeadCount + ' total</div>';
 
     let html = countHtml + '<table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">';
     html += '<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">' +
@@ -900,8 +939,24 @@ export const beadsExtension = {
                 goalMax: lastBeadsData.goalMax,
                 decomposedParentIds: lastBeadsData.decomposedParentIds,
             });
-            container.innerHTML = renderProgressBarHtml(progress)
-                + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+            const progressHtml = renderProgressBarHtml(progress);
+            // apra-fleet-vk0a.2: pinned into the FIXED panel-header row (a
+            // sibling of the 'Tasks' label, core's generic per-extension
+            // header hook -- \`id="panel-header-\${ext.id}-extra"\`, see
+            // viewer/index.mjs) instead of re-rendered at the top of the
+            // SCROLLABLE #extension-beads container on every poll -- so it
+            // stays visible regardless of scroll position in a long task
+            // list. Falls back to the pre-vk0a.2 inline placement when the
+            // hook is absent (an older/mismatched core template), rather
+            // than silently dropping the widget.
+            const headerExtra = document.getElementById('panel-header-beads-extra');
+            if (headerExtra) {
+                headerExtra.innerHTML = progressHtml;
+                container.innerHTML = renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+            } else {
+                container.innerHTML = progressHtml
+                    + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+            }
         }
 
         // Single document-level click-delegation listener (same rationale

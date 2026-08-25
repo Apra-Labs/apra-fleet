@@ -114,6 +114,69 @@ failures should be retried on the next call rather than memoized.
   numeric parsing used for POSIX `stat`/`date` output. Don't assume a single
   numeric-epoch parser covers both branches.
 
+## `curl` on Windows is a PowerShell alias, not the real binary
+
+A command builder that emits a bare `curl ...` invocation works on a POSIX
+member but silently resolves to PowerShell's `Invoke-WebRequest` alias on a
+Windows member, which does not accept the same argument syntax (flags like
+`-sS`, `-d @-`, header repetition, etc. are not compatible). The fix is not a
+new abstraction -- it is to have the command builder emit `curl.exe`
+explicitly whenever the target is Windows, which bypasses the alias and
+reaches the real curl binary bundled with modern Windows. As with every
+other OS-branch in this document, the OS value must be threaded through from
+the *actual* production resolution path (the same place that already
+resolves a member's OS for other purposes) and not just supplied by a test
+fixture -- a builder that only receives `os` in its test harness but never
+in its real caller is an unfixed bug wearing a passing test.
+
+## PowerShell object-merge pitfalls: `Hashtable` vs `PSCustomObject`
+
+A recursive JSON deep-merge implemented in PowerShell has two distinct traps
+that look like the same bug but need different fixes:
+
+- **`.Contains()` is a `Hashtable` method, not a `PSCustomObject` one.**
+  `ConvertFrom-Json` produces `PSCustomObject` instances by default, so a
+  merge routine written against `Hashtable` semantics throws (or silently
+  misbehaves) the moment it walks into a nested object read from JSON.
+  Convert the target to a `Hashtable` (recursively, before merging into it)
+  rather than assuming the parsed JSON already has the shape the merge code
+  expects.
+- **Seeding the merge accumulator as an empty `Hashtable` before any keys
+  are known leaks Hashtable-internal metadata keys into the final written
+  JSON.** Start the accumulator as `$null` and only materialize it as a real
+  Hashtable once actual content exists to merge into it, so the
+  serialized-back-to-JSON result contains only the caller's own keys.
+
+Both fixes are exercised by a live PowerShell process (not a string-matching
+unit test), since the bug only manifests through PowerShell's real object
+model and JSON cmdlets -- a test that mocks or hand-simulates PowerShell
+semantics can pass while the real interpreter still throws or corrupts
+output.
+
+## A Windows script builder must be extracted, not hand-duplicated in tests
+
+When a Windows-bound script gets non-trivial (e.g. a multi-step delete-files
+routine), factor the script-string construction into its own exported
+function and have the live-PowerShell test call that function directly,
+rather than hand-copying an equivalent script inline in the test. A
+hand-copied duplicate silently drifts from the real implementation the
+moment either side changes, so a "passing" test can stop being evidence
+about the production code path. Exercising the real, exported builder
+closes that drift risk structurally instead of relying on someone
+remembering to keep the two copies in sync.
+
+## A platform-gated live-shell test suite needs positive proof it actually ran
+
+A test suite that is conditionally skipped based on real platform/tool
+availability (e.g. only running live PowerShell assertions when a real
+`powershell` binary is present) looks identical in CI output whether it
+executed and passed, or was skipped outright -- both show as "no failures."
+When reviewing or citing such a suite as evidence a fix works, confirm the
+run actually executed (non-trivial test count, non-zero duration, assertions
+against real on-disk/process state) rather than trusting a green checkmark
+alone. A suite that can silently no-op is not evidence by itself; the
+positive-execution signal is what makes it evidence.
+
 ## Where this pattern must be checked when adding a new member-bound command
 
 Any code that builds a command string for `strategy.execCommand` (directly,

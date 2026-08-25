@@ -14,7 +14,6 @@ Use `member_detail` to determine `llmProvider` and `os`. Run `execute_command` w
 - **Antigravity:** `agy --version 2>&1`
 - **Codex:** `codex --version`
 - **Copilot:** `copilot --version`
-- **Gemini:** `gemini --version`
 
 If the LLM CLI is not installed or the command fails, use `update_llm_cli` to install it before proceeding. Do not attempt any prompt dispatch until the CLI is confirmed.
 
@@ -26,7 +25,7 @@ Call `provision_llm_auth`. Skip for local members - they inherit auth from the P
 
 **Claude only.** Write `{"attribution":{"commit":"","pr":""}}` to `.claude/settings.json` in the member's work folder via `execute_command`. Merge if file already exists.
 
-Antigravity, Codex, Copilot, and Gemini do not support attribution config  -  skip this step for those providers.
+Antigravity, Codex, and Copilot do not support attribution config  -  skip this step for those providers.
 
 ## Step 3: Detect VCS Provider
 
@@ -60,7 +59,7 @@ Add to the member's status file:
 
 ```
 ## Member Profile
-- LLM Provider: Claude (or agy, gemini, etc.)
+- LLM Provider: Claude (or agy, codex, etc.)
 - VCS: Bitbucket (kumaakh/apra-lic-mgr)
 - Roles: development, code-review
 - Auth: Bitbucket API token (verified)

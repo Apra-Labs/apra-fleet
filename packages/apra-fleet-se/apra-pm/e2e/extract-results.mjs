@@ -61,7 +61,6 @@ const EMPTY_TELEMETRY = { tokens_in: 0, tokens_out: 0, cache_creation: 0, cache_
 
 // Sum token usage from a provider's stream-json output.
 //   claude: usage on every `assistant` event (includes subagent turns in-process)
-//   gemini: `result` event `stats` (input = non-cached input, cached = cache reads)
 //   agy:    transcript carries no token counts -> reported as unavailable
 export function parseTelemetryFile(file, provider) {
   if (!fs.existsSync(file)) return { ...EMPTY_TELEMETRY };
@@ -162,23 +161,13 @@ export function parseTelemetryFile(file, provider) {
     let o;
     try { o = JSON.parse(t); } catch { continue; }
 
-    if (provider === 'gemini') {
-      if (o.type === 'result' && o.stats) {
-        const s = o.stats;
-        tIn += (s.input ?? 0);
-        tOut += (s.output_tokens ?? 0);
-        cRead += (s.cached ?? 0);
-        seen = true;
-      }
-    } else { // claude
-      if (o.type === 'assistant' && o.message?.usage) {
-        const u = o.message.usage;
-        tIn += (u.input_tokens ?? 0);
-        tOut += (u.output_tokens ?? 0);
-        cCreate += (u.cache_creation_input_tokens ?? 0);
-        cRead += (u.cache_read_input_tokens ?? 0);
-        seen = true;
-      }
+    if (o.type === 'assistant' && o.message?.usage) { // claude
+      const u = o.message.usage;
+      tIn += (u.input_tokens ?? 0);
+      tOut += (u.output_tokens ?? 0);
+      cCreate += (u.cache_creation_input_tokens ?? 0);
+      cRead += (u.cache_read_input_tokens ?? 0);
+      seen = true;
     }
   }
 

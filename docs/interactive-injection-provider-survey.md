@@ -10,6 +10,11 @@
 
 # Interactive-Injection Capability Survey (Non-Claude Providers)
 
+> **Historical note:** Gemini was a supported provider when this survey was
+> written (2026-07-04); it has since been fully removed from apra-fleet. The
+> Gemini CLI section below is retained as a point-in-time technical record and
+> does not describe a currently supported provider.
+
 Status: research document, 2026-07-04. Answers docs/hub-spoke-master-plan.md
 section 9.7 / point 7 of the Claude-centrism audit, and beads item
 apra-fleet-us9.9. Method: each provider's public documentation and/or

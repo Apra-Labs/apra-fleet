@@ -45,6 +45,7 @@ See sub-documents for detailed usage:
 - `skill-matrix.md`  -  skill installation matrix by project + VCS + role
 - `auth-github.md`, `auth-bitbucket.md`, `auth-azdevops.md`  -  VCS auth provisioning per provider
 - `beads.md`  -  Beads persistent task DB: commands, backlog ops, session recovery patterns
+- `beads-conflict-resolution.md`  -  manual dolt SQL recovery when `bd dolt pull`/`push` reports a real merge conflict
 
 ## Beads  -  Persistent Task Tracking
 
@@ -204,15 +205,25 @@ The `resume` parameter controls whether a prior session is continued:
 
 | Value | Behaviour |
 |-------|-----------|
-| `true` (default) | If a session ID is stored for this member, continues it. If none exists, starts fresh. |
+| `true` (default) | Best-effort resume of the member's STORED LAST session. If a session ID is stored for this member, continues it; if none exists, starts fresh. |
 | `false` | Always starts a fresh session  -  ignores any stored session ID. |
+| `"<session-id>"` (string) | EXPLICIT resume of exactly that session, preferred over the member's stored session. Terminal on an unknown/expired id: the call returns structured `{ isError: true, reason: "session_not_found" }`, makes NO LLM call, and does NOT fall back to a fresh session. |
 
-`resume` is boolean only. There is no way to target a specific session ID by value.
-The tool always resumes the most recently stored session for that member.
+`resume` accepts a boolean OR a session-ID string, so a caller CAN target a specific
+session by value. The `session_id` parameter is a shorthand for the string form
+(`session_id: "X"` is equivalent to `resume: "X"`, and takes precedence over `resume`).
+
+Prefer the string form whenever the prompt depends on one specific session's prior
+context. `true` resolves to the member's single globally-stored last session, which is
+shared across every role and has no task scoping  -  under `true`, a retry can silently
+land in an unrelated role's session and answer with the wrong shape. The string form
+trades that silent-wrong-context failure for a loud, pre-LLM `session_not_found` that the
+caller can handle (typically: re-dispatch once with `resume: false`).
 
 **Automatic stale-session recovery:** If `resume=true` and the stored session has expired
 or the provider returns an error, `execute_prompt` retries once automatically with a fresh
-session. This recovery is transparent  -  no caller intervention required.
+session. This recovery is transparent  -  no caller intervention required. It applies ONLY
+to `resume: true`; an explicit session-ID string never falls back this way (see the table).
 
 **Provider support:**
 
@@ -222,7 +233,6 @@ session. This recovery is transparent  -  no caller intervention required.
 | Antigravity (agy) | Full | `agy --conversation <sessionId>` |
 | Codex | Partial | `resume` command supported |
 | Copilot | None | Always starts fresh regardless of `resume` value |
-| Gemini | Full | Native session support |
 
 Session IDs are parsed from `execute_prompt` output and stored server-side per member.
 The output footer contains: `session: <sessionId>` when the provider supports it.
@@ -245,7 +255,6 @@ Per-provider flag behaviour:
 | Antigravity (agy) | None (config-file only via `compose_permissions`) | `--dangerously-skip-permissions` |
 | Codex | `--ask-for-approval auto-edit` | `--sandbox danger-full-access --ask-for-approval never` |
 | Copilot | Not supported  -  warns and runs interactively | Not supported |
-| Gemini | None (config-file only via `compose_permissions`) | `--yolo` |
 
 Auto-approval is delivered via config files written by `compose_permissions`  -  call it before every dispatch.
 
@@ -282,9 +291,9 @@ When you see this notice, surface it to the user verbatim before the rest of the
 
 | Concern | How to handle |
 |---------|---------------|
-| **Agent context file** | Use `member_detail` -> `llmProvider` to determine filename: CLAUDE.md (Claude), AGY.md (Antigravity), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT.md (Copilot) |
+| **Agent context file** | Use `member_detail` -> `llmProvider` to determine filename: CLAUDE.md (Claude), AGY.md (Antigravity), AGENTS.md (Codex), COPILOT.md (Copilot) |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md)  -  skip for all other providers |
-| **Timeouts** | Antigravity/Gemini members are slower -> use 2-3x timeout multiplier for `execute_prompt` dispatches to those members. Minimum `timeout_s: 900` for any non-trivial task. |
+| **Timeouts** | Antigravity members are slower -> use 2-3x timeout multiplier for `execute_prompt` dispatches to those members. Minimum `timeout_s: 900` for any non-trivial task. |
 
 ## Fleet Logs
 
