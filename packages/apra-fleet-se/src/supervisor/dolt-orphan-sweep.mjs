@@ -27,6 +27,9 @@
 // =============================================================================
 
 import { DEFAULT_PORT_RANGE } from '../../fleet-sprint/dolt-settle.mjs';
+import { SeWindowsCommands } from '../../fleet-sprint/se-windows.mjs';
+
+const seWindows = new SeWindowsCommands();
 
 /** How often the sweep runs. Settles take seconds; this is a safety net. */
 export const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
@@ -67,7 +70,17 @@ export function buildSweepCommand(family, maxAgeMs = DEFAULT_MAX_AGE_MS) {
     const portLo = SETTLE_PORT_RANGE.start;
     const portHi = SETTLE_PORT_RANGE.end - 1; // inclusive upper bound
     if (family === 'win32') {
-        return [
+        // The registered `shell` for a win32 member can be real PowerShell OR
+        // gitbash (bash.exe) -- and MSYS `ps` cannot support the POSIX branch
+        // below (no -o/etimes support, confirmed live). Rather than add a
+        // third shell-family branch, wrap this script as an opaque
+        // `powershell -EncodedCommand <blob>` invocation via the same
+        // wrapForMember() envelope se-windows.mjs uses for its own member
+        // dispatch. That string is a single shell-agnostic argument to any
+        // OUTER shell (bash.exe, cmd.exe, powershell.exe) -- it always execs
+        // the literal powershell.exe binary regardless of which one the
+        // receiving member actually runs.
+        const rawScript = [
             `$cutoff = (Get-Date).AddSeconds(-${maxAgeSeconds})`,
             '$procs = Get-CimInstance Win32_Process -Filter "Name=\'dolt.exe\'" -ErrorAction SilentlyContinue |'
             + ' Where-Object { $_.CommandLine -match \'sql-server\''
@@ -75,6 +88,7 @@ export function buildSweepCommand(family, maxAgeMs = DEFAULT_MAX_AGE_MS) {
             + ' -and $_.CreationDate -lt $cutoff }',
             'foreach ($p in $procs) { Write-Output "ORPHAN:$($p.ProcessId):$($p.CommandLine)"; Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }',
         ].join('; ');
+        return seWindows.wrapForMember(rawScript);
     }
     // POSIX: etimes is the process age in seconds, so no clock skew maths.
     // awk has no lookahead, so the port bound is an actual numeric range

@@ -26,13 +26,27 @@ import { DEFAULT_PORT_RANGE } from '../fleet-sprint/dolt-settle.mjs';
 
 const silent = { log: () => {}, error: () => {} };
 
+// The win32 branch now wraps its raw PowerShell script as an opaque
+// `powershell -EncodedCommand <base64>` string (apra-fleet-40no) so it is
+// safe to dispatch regardless of whether the receiving member's actual
+// shell is real PowerShell or gitbash. Decode it back to the raw script
+// before asserting on its content, matching the convention already
+// established in test/se-os-commands-shell-matrix.test.mjs.
+function decodeWinCommand(wrapped) {
+    const m = wrapped.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)$/i);
+    assert.ok(m, `expected a -EncodedCommand envelope, got: ${wrapped}`);
+    return Buffer.from(m[1], 'base64').toString('utf16le');
+}
+
 test('the sweep only ever targets settle`s own ephemeral port range', () => {
     assert.equal(SETTLE_PORT_RANGE, DEFAULT_PORT_RANGE, 'the sweep range must be the SAME object as dolt-settle.mjs`s range, never re-derived');
     assert.equal(SETTLE_PORT_RANGE.start, 13300);
     assert.equal(SETTLE_PORT_RANGE.end, 13400);
     const win = buildSweepCommand('win32');
-    assert.match(win, /-ge 13300 -and \[int\]\$Matches\[1\] -le 13399/, 'win32 probe must be an EXACT numeric range check, not a digit-prefix regex');
-    assert.match(win, /sql-server/, 'win32 probe must only match sql-server processes');
+    assert.match(win, /^powershell -EncodedCommand [A-Za-z0-9+/=]+$/, 'win32 probe must be wrapped as an opaque powershell -EncodedCommand envelope (apra-fleet-40no)');
+    const winScript = decodeWinCommand(win);
+    assert.match(winScript, /-ge 13300 -and \[int\]\$Matches\[1\] -le 13399/, 'win32 probe must be an EXACT numeric range check, not a digit-prefix regex');
+    assert.match(winScript, /sql-server/, 'win32 probe must only match sql-server processes');
     const posix = buildSweepCommand('posix');
     assert.match(posix, /lo=13300/);
     assert.match(posix, /hi=13399/);
@@ -76,7 +90,7 @@ test('the port bound is EXACT: an operator`s own --port 1337 server is never a f
 
 test('the age threshold is generous enough that a settle in progress is never interrupted', () => {
     assert.ok(DEFAULT_MAX_AGE_MS >= 10 * 60 * 1000, 'a live settle takes seconds; the cutoff must be far above that');
-    assert.match(buildSweepCommand('win32'), /AddSeconds\(-600\)/);
+    assert.match(decodeWinCommand(buildSweepCommand('win32')), /AddSeconds\(-600\)/);
     assert.match(buildSweepCommand('posix'), /\$2 > 600/);
     assert.ok(DEFAULT_SWEEP_INTERVAL_MS > 0);
 });
@@ -123,7 +137,8 @@ test('sweepOnce probes every member with its OWN shell family and reports what i
     assert.equal(result.swept, 2);
     assert.equal(result.errors, 0);
     assert.deepEqual(result.killed, [{ member: 'fleet-win-dev1', pid: 4242, commandLine: 'dolt.exe sql-server --port 13301 --data-dir X' }]);
-    assert.match(issued[0].command, /Get-CimInstance Win32_Process/, 'the Windows member gets the PowerShell probe');
+    assert.match(issued[0].command, /^powershell -EncodedCommand [A-Za-z0-9+/=]+$/, 'the Windows member gets an opaque -EncodedCommand envelope (apra-fleet-40no)');
+    assert.match(decodeWinCommand(issued[0].command), /Get-CimInstance Win32_Process/, 'the Windows member gets the PowerShell probe');
     assert.match(issued[1].command, /ps -eo pid=,etimes=,args=/, 'the Linux member gets the POSIX probe');
 });
 
