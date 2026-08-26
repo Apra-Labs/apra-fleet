@@ -26,29 +26,11 @@
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
+import { shQuote, assertToken } from './shell-helpers.mjs';
 
 const GITHUB_API = 'https://api.github.com';
 const REDACTED = '***REDACTED***';
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
-
-/** Single-quote a string for embedding in a shell command. The built curl
- *  command is dispatched through the member's own shell -- POSIX sh/bash
- *  closes/reopens the quote around an embedded single quote ('\''), but
- *  Windows PowerShell (the shell every Windows member's commands actually
- *  run through -- see wrapPowerShellEncoded()/isWindows in
- *  src/tools/remove-member.ts) escapes an embedded single quote inside a
- *  single-quoted string by DOUBLING it (''), not by backslash-closing. Using
- *  the POSIX form on a Windows member breaks the quoting outright (observed
- *  live: Publish PR crashing on any title/body containing an apostrophe).
- *  `os` is one of resolveMemberOs()'s return values ('windows'/'linux'/
- *  'darwin'); anything other than 'windows' keeps the POSIX behavior
- *  byte-identical to before this branch existed. */
-function shQuote(value, os) {
-    if (os === 'windows') {
-        return `'${String(value).replace(/'/g, "''")}'`;
-    }
-    return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
 
 /** Which curl binary token to emit for a given member OS. On Windows the bare
  *  word `curl` is a built-in PowerShell alias for Invoke-WebRequest, NOT the
@@ -70,14 +52,6 @@ function assertRepo(repo) {
     const value = String(repo ?? '').trim();
     if (!REPO_RE.test(value)) {
         throw new Error(`ERROR: VCSModule: invalid repo "${repo}" -- expected "owner/name" (e.g. "Apra-Labs/apra-fleet").`);
-    }
-    return value;
-}
-
-function assertToken(token) {
-    const value = String(token ?? '');
-    if (!value) {
-        throw new Error('ERROR: VCSModule: no token supplied -- caller must mint one via provision_vcs_auth before calling VCSModule.');
     }
     return value;
 }
