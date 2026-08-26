@@ -225,9 +225,16 @@ export async function pollLogFile(memberId: string, logFilePath: string): Promis
   // stream megabytes over SSH every poll (the byte cap is applied from the END,
   // so the final line stays complete; only the leading fragment is lost, and
   // the parser already skips that).
+  // apra-fleet-jxdf.7: the POSIX branch's `tail -c ${TAIL_BYTES}` byte cap has
+  // no PowerShell equivalent here -- `Get-Content -Tail` alone hands back
+  // whichever raw lines it read, so a single oversized tool_result line (a
+  // multi-MB bd/git payload) reaches extractPendingToolTimeoutMs uncapped.
+  // Join the tail lines and trim from the front the same way the POSIX pipe
+  // does, so both platforms give that parser the same completed-final-line
+  // guarantee the module doc comment above already assumes for everyone.
   const cmd = posix
     ? `tail -n ${TAIL_LINES} "${logFilePath}" | tail -c ${TAIL_BYTES}`
-    : `powershell -c "Get-Content -Tail ${TAIL_LINES} -Path '${logFilePath}'"`;
+    : `powershell -c "$c = (Get-Content -Tail ${TAIL_LINES} -Path '${logFilePath}') -join [Environment]::NewLine; if ($c.Length -gt ${TAIL_BYTES}) { $c.Substring($c.Length - ${TAIL_BYTES}) } else { $c }"`;
 
   try {
     const strategy = getStrategy(agent);

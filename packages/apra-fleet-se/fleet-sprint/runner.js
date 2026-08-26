@@ -8152,6 +8152,20 @@ async function runSprintCycle(context) {
                     const skipPreDispatchDoltPull =
                         i === 0 && cycle === 1 && planningRounds === 1 && plannerSharesOrchestratorClone;
                     await dispatchPlanner({ skipPreDispatchSync: skipPreDispatchSyncNext, skipPreDispatchDoltPull });
+                    // apra-fleet-jxdf.1: when the planner runs on a DIFFERENT
+                    // clone than the orchestrator, its newly-created/mutated
+                    // beads are invisible to the orchestrator's own Dolt clone
+                    // until that clone is actually pulled -- invalidating the
+                    // JS-level cache below is not enough, since the cache's
+                    // NEXT read still hits stale on-disk data. Fatal on
+                    // failure: proceeding to Execution Prep against a plan the
+                    // orchestrator cannot actually see reproduces exactly the
+                    // "epic looks like a childless ready leaf" failure this
+                    // fix exists to close.
+                    if (!plannerSharesOrchestratorClone) {
+                        const postPlanSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+                        await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: postPlanSettleShell }) }));
+                    }
                     // apra-fleet-zmqm: the planner just created/mutated beads on
                     // its own clone via its own bd tool calls -- invisible to
                     // this orchestrator's command()-wrapper invalidation (see
