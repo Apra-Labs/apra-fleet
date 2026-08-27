@@ -2,6 +2,83 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Azure DevOps VCS auth: credential assembly, PR builders, and known gaps (sprint FAILED)
+
+Sprint goal: make `provision_vcs_auth` and the fleet-sprint VCS layer support
+Azure DevOps end-to-end -- guided PAT creation and storage, provisioning a
+user's existing PAT to local and remote members, clean actionable surfacing
+of Azure DevOps auth failure modes, and doing all of it through the existing
+provider-abstraction rather than ad hoc conditionals.
+
+**Verdict: FAIL.** The branch was red at handoff (a stale test pin asserting
+Azure DevOps is NOT pull-request-capable, contradicted by work landed later
+in the same sprint) and the scope issue's own epic-level acceptance criteria
+are not met -- the opt-in real end-to-end Azure DevOps lane and the mock-sprint
+coverage for consuming the provider's pull-request response mapping in the
+publish path are both still open. Treat everything below as landed-but-not-
+yet-proven-stable, not as a finished, user-facing Azure DevOps integration.
+
+What shipped:
+
+- **Azure DevOps host/URL recognition and repo-reference parsing**, dispatched
+  from shared VCSModule code rather than hardcoded into the runner.
+- **Provider-owned credential assembly**: `buildCredentials`/
+  `missingCredential`/`testConnectivity` for Azure DevOps accept a PAT via
+  either of two field names, validate an optional expiry at assembly time
+  (rejecting an unparseable value instead of silently degrading), prefer the
+  exact URL the credential was scoped to when testing connectivity, and test
+  connectivity with an authenticated `git ls-remote` against a validated,
+  concrete repo URL instead of an unauthenticated call to the org root.
+- **A `setTimeout`-overflow guard on credential auto-cleanup**: a long-lived
+  Azure DevOps PAT's expiry can exceed what a 32-bit signed millisecond delay
+  can express; scheduling a raw timer for it would have silently fired
+  almost immediately and auto-revoked the credential just deployed. The
+  cleanup scheduler now skips scheduling entirely beyond that ceiling and
+  relies on day-scale expiry warnings and reactive failure classification
+  instead.
+- **Azure DevOps auth-failure classification**: TF-numbered error codes and
+  REST status codes are mapped to the same provider-neutral failure taxonomy
+  every other provider uses, distinguishing an expired/revoked PAT
+  (re-minting fixes it) from a missing-scope PAT (widening scopes fixes it)
+  from an ambiguous repo-not-found-or-no-access response (neither remedy
+  necessarily fixes it) -- and prints PAT-specific remedy text acknowledging
+  that, unlike a GitHub App token, an Azure DevOps PAT cannot be re-minted by
+  the fleet itself.
+- **Azure DevOps pull-request and comment REST builders**, with the
+  provider owning its own response-field mapping (Azure DevOps has no
+  web-URL field and uses `pullRequestId`, not GitHub's `number`/`html_url`)
+  and its own success/already-exists interpretation contract.
+- **Documentation**: `docs/design-azure-devops-vcs-auth.md` captures the
+  credential-assembly seam, classification rules, PAT-lifetime handling, and
+  a harness-vs-production quoting distinction worth knowing before assuming
+  an Azure DevOps test failure is a runtime bug.
+
+Carried forward (filed as open issues, not blocking further sprints from
+starting, but blocking this epic's own completion):
+
+- Consuming the provider-owned pull-request response mapping in the actual
+  publish path, and end-to-end mock-sprint coverage for that path.
+- The opt-in real (non-mocked) Azure DevOps end-to-end lane (provision,
+  verify, publish) is not yet built.
+- Publish PR currently re-throws the raw missing-PAT error instead of the
+  clean, actionable guidance the scope issue requires.
+- A stale test pin asserting Azure DevOps is not pull-request-capable needs
+  removing now that PR-capability has landed.
+- Regression-pass carryover from this sprint's full-suite run (member
+  registry read failure in one integration test, a bd-replay recording drift
+  after a stall-watchdog fires, and a long-pole test-runtime-budget item)
+  are tracked as standalone, parent-less backlog and are unrelated to the
+  Azure DevOps scope itself.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $33.9097.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.5148 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 55 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Supervisor dashboard: live-refresh parity with the per-run viewer
 
 Sprint goal: bring the multi-sprint supervisor's own dashboard up to the same

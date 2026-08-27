@@ -297,7 +297,12 @@ Secrets are entered out-of-band into a credential store and referenced as
 any LLM or log. Credentials scope to members, expire on TTL, and can carry
 a network egress policy (allow / deny / confirm). Every member runs with
 composed, provider-native permission files -- allow-listed tools, not
-god-mode. VCS access is provisioned and revocable per member. Permission
+god-mode. VCS access is provisioned and revocable per member, across GitHub,
+Bitbucket, and Azure DevOps -- host differences (URL shape, PR REST dialect,
+auth pattern, error vocabulary) are hidden behind a per-provider descriptor
+rather than leaking into shared code; see
+`docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
+credential-assembly and PAT-lifetime details. Permission
 composition verifies its own delivery: a grant is read back off the target
 member and structurally compared against what was intended before it is
 reported as applied, so a failed or partial write is surfaced as an
