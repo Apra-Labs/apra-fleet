@@ -44,7 +44,7 @@ import { preflightCheck } from '../services/preflight-check.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -872,7 +872,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
   }
 
-  const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
+  const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} fork=${input.fork} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
 
   // Resume semantics (apra-fleet-eft.78.1). `resume` is boolean | string:
   //  - true   -> best-effort resume of the member's stored last session; a
@@ -886,12 +886,28 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const explicitResumeId = (typeof input.session_id === 'string' && input.session_id.trim().length > 0)
     ? input.session_id.trim()
     : (typeof input.resume === 'string' && input.resume.length > 0 ? input.resume : undefined);
-  const resumeRequested = input.resume === true || explicitResumeId !== undefined;
+  // Fork semantics (apra-fleet-lmtg.5) mirror resume's SHAPE but BRANCH instead
+  // of continuing in place. `fork` is boolean | string:
+  //  - true   -> best-effort fork of the member's stored last session; a
+  //              stale/unknown stored session logs a warning and falls back to a
+  //              plain FRESH session (analogous to resume=true), never a hard error.
+  //  - string -> EXPLICIT fork of exactly that source id -- an unknown/expired
+  //              source is a TERMINAL session_not_found (like an explicit resume).
+  // The mutual-exclusivity guard above only lets fork through with resume at its
+  // DEFAULT (true), so fork must SUPERSEDE that default resume here: a fork
+  // request forces resuming off so the dispatch mints a fresh distinct output
+  // session id instead of continuing the stored one in place.
+  const explicitForkId = (typeof input.fork === 'string' && input.fork.trim().length > 0)
+    ? input.fork.trim()
+    : undefined;
+  // forkRequested is already computed at the top of executePrompt for the
+  // fork/resume mutual-exclusivity guard (apra-fleet-lmtg.4) -- reuse it here.
+  const resumeRequested = (input.resume === true || explicitResumeId !== undefined) && !forkRequested;
   const resumeTargetId = explicitResumeId ?? agent.sessionId;
-  // An explicit-id resume must never silently degrade to a fresh session: that
-  // is exactly the wrong-context dispatch this feature forbids. resume=true and
-  // resume=false keep their pre-existing transparent recovery.
-  const allowFreshSessionFallback = explicitResumeId === undefined;
+  // An explicit-id resume OR an explicit-id fork must never silently degrade to a
+  // fresh session: that is exactly the wrong-context dispatch this feature
+  // forbids. resume=true/false and fork=true keep their transparent recovery.
+  const allowFreshSessionFallback = explicitResumeId === undefined && explicitForkId === undefined;
   const resuming = !!(resumeRequested && resumeTargetId && provider.supportsResume());
   const isCallerMinted = provider.sessionIdStrategy().type === 'caller-minted';
   const mintedId = isCallerMinted
@@ -920,6 +936,70 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   }
 
+  // Fork mode resolution (apra-fleet-lmtg.5). Resolved AFTER the resume gate
+  // (the two are mutually exclusive, guarded before member resolution). Fork
+  // requires a fork-capable provider; when active it produces a ForkDescriptor
+  // that buildAgentPromptCommand (fork-prov lane, apra-fleet-lmtg.2) turns into
+  // the provider's own source-seeded, new-session-id fork invocation.
+  let forkActive = false;
+  let forkSourceId: string | undefined;
+  if (forkRequested) {
+    // fork requires provider.supportsFork(): a fork request against a provider
+    // whose CLI cannot fork is surfaced as a clear TERMINAL error, never
+    // silently downgraded to a plain fresh/resume dispatch (the wrong behavior).
+    if (!provider.supportsFork?.()) {
+      scope.abort(`fork rejected -- provider "${provider.name}" does not support fork-mode dispatch (no LLM call)`);
+      inFlightAgents.delete(agent.id);
+      stallDetector.remove(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- provider "${provider.name}" does not support fork-mode dispatch. No LLM call was made. Re-dispatch without fork (resume=true/false), or use a fork-capable provider.`,
+        structuredContent: { isError: true, reason: 'fork_unsupported' },
+      };
+    }
+    if (explicitForkId !== undefined) {
+      // Terminal source-not-found gate, mirroring the explicit-resume gate: an
+      // unknown/expired source id has no context to branch from, so reject
+      // BEFORE any spawn with a structured session_not_found and NO LLM call.
+      const forkable = isKnownSession(agent.id, explicitForkId) || explicitForkId === agent.sessionId;
+      if (!forkable) {
+        scope.abort(`explicit fork rejected -- source session "${explicitForkId}" is unknown/expired (no LLM call)`);
+        inFlightAgents.delete(agent.id);
+        stallDetector.remove(agent.id);
+        writeStatusline(new Map([[agent.id, 'idle']]));
+        return {
+          text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- source session "${explicitForkId}" cannot be forked (unknown or expired). No LLM call was made. Rebuild the context and re-dispatch with a full, self-contained prompt (fork=false/resume=false), or fork=true for best-effort branching from the member's stored session.`,
+          structuredContent: { isError: true, reason: 'session_not_found', sessionId: explicitForkId },
+        };
+      }
+      forkSourceId = explicitForkId;
+      forkActive = true;
+    } else {
+      // fork === true: best-effort branch from the member's stored last session.
+      // A stale/unknown stored session (or none at all) is NOT a hard error --
+      // log a warning and fall through to a plain FRESH session, mirroring
+      // resume=true's transparent recovery.
+      const stored = agent.sessionId;
+      if (stored && isKnownSession(agent.id, stored)) {
+        forkSourceId = stored;
+        forkActive = true;
+      } else {
+        scope.info(`fork=true: stored session ${stored ? `"${stored}" is stale/unknown` : 'is absent'} -- falling back to a fresh session`);
+        forkActive = false;
+      }
+    }
+  }
+
+  // Mint a fresh distinct output session id for the forked conversation (never
+  // reuse the source id): mintedId is already a freshly minted uuid here because
+  // fork forced resuming off above (see resumeRequested). It is NOT emitted as a
+  // CLI flag in fork mode (the provider mints/uses its own forked output id --
+  // see ForkDescriptor.newSessionId); we track it for recordKnownSession, the
+  // stall-detector log path, and the post-dispatch session bookkeeping below.
+  const forkDescriptor = forkActive && forkSourceId
+    ? { sourceSessionId: forkSourceId, newSessionId: mintedId ?? uuid() }
+    : undefined;
+
   const promptOpts = {
     folder: resolvedWorkFolder,
     promptFile: promptFileName,
@@ -931,6 +1011,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     maxTurns: input.max_turns,
     inv: scope.getInv(),
     agentName: input.agent,
+    fork: forkDescriptor,
   };
 
   // apra-fleet issue #390: session log paths live on the MEMBER's machine, under
@@ -1189,7 +1270,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (budget.exhausted) throw dispatchErr;
       scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
       await tryKillPid(agent, strategy, cmds);
-      const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
+      const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
     }
@@ -1222,7 +1303,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (!staleBudget.exhausted) {
         scope.info(`[${resolvedModel}] retrying -- stale session`);
         await tryKillPid(agent, strategy, cmds);
-        const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
+        const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
         parsed = provider.parseResponse(result);
@@ -1241,7 +1322,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         scope.info(`[${resolvedModel}] retrying -- server overloaded`);
         await tryKillPid(agent, strategy, cmds);
         await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-        const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
+        const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
         parsed = provider.parseResponse(result);
@@ -1363,7 +1444,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const healBudget = retryBudget();
         if (!healBudget.exhausted) {
           await tryKillPid(agent, strategy, cmds);
-          const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
+          const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
           const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
           result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
           parsed = provider.parseResponse(result);
