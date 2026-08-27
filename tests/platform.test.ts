@@ -4,6 +4,7 @@ import { detectOS, isContainedInWorkFolder } from '../src/utils/platform.js';
 import { getSSHConfig } from '../src/services/ssh.js';
 import { getOsCommands } from '../src/os/index.js';
 import type { OsCommands } from '../src/os/index.js';
+import type { ForkDescriptor } from '../src/os/os-commands.js';
 import { getProvider } from '../src/providers/index.js';
 
 describe('detectOS', () => {
@@ -165,6 +166,48 @@ describe('OsCommands via getOsCommands', () => {
         it(`${name}: buildAgentPromptCommand wraps command with PID-capture shell wrapper`, () => {
           const cmd = cmds.buildAgentPromptCommand(claudeProvider, opts);
           expect(cmd).toContain('FLEET_PID:');
+        });
+      }
+    });
+
+    // apra-fleet-lmtg.3: fork descriptor threaded through buildAgentPromptCommand
+    // (apra-fleet-lmtg.2). Covers both the linux/macos and windows builders via
+    // the shared `all` fixture -- the two paths must not diverge.
+    describe('buildAgentPromptCommand with fork descriptor', () => {
+      const opts = { folder: '/tmp/work', promptFile: '.fleet-task.md' };
+      const fork: ForkDescriptor = { sourceSessionId: 'src-sess-1', newSessionId: 'new-sess-2' };
+
+      for (const [name, cmds] of all) {
+        it(`${name}: emits the provider's fork invocation (--resume <source> --fork-session) when a fork descriptor is supplied`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, fork });
+          expect(cmd).toContain('--resume "src-sess-1"');
+          expect(cmd).toContain('--fork-session');
+        });
+
+        it(`${name}: never emits a --session-id (or the newly minted id) for the forked output session -- the CLI mints it, not the caller`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, fork });
+          expect(cmd).not.toContain('--session-id');
+          expect(cmd).not.toContain(fork.newSessionId);
+          // the emitted source id must be distinct from the (never-emitted) new id
+          expect(fork.newSessionId).not.toBe(fork.sourceSessionId);
+        });
+
+        it(`${name}: suppresses the ordinary sessionId/resuming flags when a fork descriptor is present (mutually exclusive intents)`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, fork, sessionId: 'should-be-ignored', resuming: true });
+          expect(cmd).not.toContain('should-be-ignored');
+          expect(cmd).toContain('--resume "src-sess-1"');
+          expect(cmd).toContain('--fork-session');
+        });
+
+        it(`${name}: is unchanged (no fork flags) when the fork descriptor is absent`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, opts);
+          expect(cmd).not.toContain('--fork-session');
+        });
+
+        it(`${name}: a non-fork-capable provider ignores a supplied fork descriptor rather than crashing or leaking it`, () => {
+          const cmd = cmds.buildAgentPromptCommand(agyProvider, { ...opts, fork });
+          expect(cmd).not.toContain('--fork-session');
+          expect(cmd).not.toContain('src-sess-1');
         });
       }
     });
