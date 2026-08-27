@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "apra_fleet",
+  "project_id": "e149f84f-9b57-4886-bd82-b96fdcd4fa17"
+}

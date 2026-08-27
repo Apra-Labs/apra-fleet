@@ -1296,7 +1296,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     // ONLY the best-effort resume=true mode gets this transparent retry-fresh
     // recovery. An explicit session-id resume (string) deliberately does NOT --
     // its caller asserted context dependence, so a not-found id is terminal.
-    if (result.code !== 0 && input.resume === true && agent.sessionId) {
+    // apra-fleet-lmtg.5: gate on allowFreshSessionFallback too, so an explicit
+    // fork (fork="<id>") never degrades here. The mutual-exclusivity guard keeps
+    // input.resume at its default true for ANY fork request, so `input.resume
+    // === true` alone would also fire for an explicit fork -- a silent
+    // wrong-context fresh dispatch the explicit-fork gate exists to prevent.
+    // allowFreshSessionFallback is false only for explicit resume/fork; it stays
+    // true for resume=true and fork=true, which the AC permits to degrade.
+    if (result.code !== 0 && allowFreshSessionFallback && input.resume === true && agent.sessionId) {
       // apra-fleet-y8q.1: share the remaining max_total_s budget with this
       // retry too -- skip it outright once exhausted (see retryBudget above).
       const staleBudget = retryBudget();
@@ -1464,8 +1471,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       }
     }
 
-    // Session-id assertion: returned id must match the one we minted/resumed
-    const expectedSid = resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined);
+    // Session-id assertion: returned id must match the one we minted/resumed.
+    // apra-fleet-lmtg.5: a fork is exempt. For a caller-minted provider (Claude)
+    // the fork mints its OWN new id server-side (--resume <src> --fork-session,
+    // with --session-id suppressed in the OS builders), so mintedId is only a
+    // placeholder that is never sent and can never match parsed.sessionId. Left
+    // in, that guarantees a spurious "session-id mismatch ... not persisting" log
+    // on every successful fork. Treat expectedSid as undefined when a fork is
+    // active so the real forked id flows straight through to recordKnownSession.
+    const expectedSid = forkActive
+      ? undefined
+      : (resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined));
     const isMismatch = expectedSid && parsed.sessionId && parsed.sessionId !== expectedSid;
     if (isMismatch) {
       scope.info(`session-id mismatch: expected=${expectedSid} got=${parsed.sessionId} -- not persisting`);
