@@ -137,7 +137,7 @@ export class WindowsCommands implements OsCommands {
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv, agentName } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv, agentName, fork } = opts;
     const escapedFolder = escapeWindowsArg(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
@@ -165,7 +165,15 @@ export class WindowsCommands implements OsCommands {
     if (provider.supportsMaxTurns()) {
       argList += ` --max-turns ${maxTurns ?? 50}`;
     }
-    if (sessionId && provider.supportsResume()) {
+    // apra-fleet-lmtg.2: fork mode seeds a NEW session from an existing one's
+    // transcript and must not also carry an ordinary resume/session-id flag
+    // (mutually exclusive intents), so it takes priority over the plain
+    // resume branch below. Absent a fork descriptor (or a non-fork-capable
+    // provider), behavior is unchanged.
+    if (fork && provider.supportsFork?.()) {
+      const ff = provider.forkFlag?.(fork.sourceSessionId);
+      if (ff) argList += ` ${ff}`;
+    } else if (sessionId && provider.supportsResume()) {
       const rf = provider.resumeFlag(sessionId, resuming);
       if (rf) argList += ` ${rf}`;
     }
