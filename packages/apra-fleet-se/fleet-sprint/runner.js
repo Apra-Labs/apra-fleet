@@ -3023,6 +3023,26 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
     return async function onAuthFailure({ member, label, error }) {
         log(`[Sync] self-heal: auth failure detected for member '${member}' (${label}); calling provision_vcs_auth to re-provision credentials: ${error}`);
 
+        // apra-fleet-5co8.4.2: some providers (e.g. Azure DevOps PATs) can
+        // never be fixed by this reactive re-provisioning call alone -- it
+        // only redeploys the SAME stored secret, it never mints a new one.
+        // Print that provider's own remedy hint via the generic
+        // `authRemedy` descriptor field (no provider-name conditional here,
+        // see vcs-providers/index.mjs) BEFORE attempting the self-heal below,
+        // so the operator has the real remedy even if that attempt also
+        // fails. A provider that declares no `authRemedy` (or
+        // `serverSideReMintable: true`, e.g. GitHub's App-minted token) prints
+        // nothing extra here -- unchanged from before this task.
+        try {
+            const { provider } = await resolveProvider(member, { fleetApi });
+            const impl = getVcsProvider(provider);
+            if (impl && impl.authRemedy && impl.authRemedy.serverSideReMintable === false) {
+                log(`[Sync] self-heal: member '${member}' (${label}) uses '${provider}', whose credentials cannot be re-minted server-side. ${impl.authRemedy.hint}`);
+            }
+        } catch (resolveErr) {
+            log(`[Sync] self-heal: could not resolve member '${member}' (${label})'s VCS provider to check for an auth remedy hint (continuing with the self-heal attempt): ${resolveErr.message}`);
+        }
+
         await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName });
 
         log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);

@@ -150,6 +150,42 @@
  *                                                // not yet implemented" (fails
  *                                                // closed with a typed ERROR:,
  *                                                // never a silently wrong command)
+ *     authRemedy: {                       // OPTIONAL; auth-self-heal axis
+ *       serverSideReMintable: boolean,    //   (apra-fleet-5co8.4.2). Whether
+ *       hint: string                      //   the REACTIVE self-heal callback
+ *     }                                   //   (runner.js's
+ *                                          //   createVcsAuthSelfHealCallback)
+ *                                          //   can actually fix an
+ *                                          //   auth-classified failure by
+ *                                          //   calling provision_vcs_auth
+ *                                          //   again on its own: true for a
+ *                                          //   GitHub App installation token
+ *                                          //   (minted fresh server-side
+ *                                          //   every call) or a credential the
+ *                                          //   fleet can otherwise regenerate
+ *                                          //   without a human; false for a
+ *                                          //   long-lived PAT/app password the
+ *                                          //   fleet only ever stores and
+ *                                          //   redeploys, never mints (see
+ *                                          //   ./azure-devops.mjs) -- re-
+ *                                          //   provisioning there just
+ *                                          //   redeploys the SAME dead
+ *                                          //   secret, so the self-heal
+ *                                          //   attempt is expected to fail
+ *                                          //   again. `hint` is the exact
+ *                                          //   operator-facing remedy text
+ *                                          //   printed alongside the self-
+ *                                          //   heal attempt when
+ *                                          //   `serverSideReMintable` is
+ *                                          //   false, so a provider-specific
+ *                                          //   literal never leaks into the
+ *                                          //   shared runner.js caller.
+ *                                          //   Omitting this hook (or
+ *                                          //   omitting `serverSideReMintable`
+ *                                          //   from it) means "assume
+ *                                          //   re-mintable" -- the
+ *                                          //   pre-existing GitHub/generic
+ *                                          //   behavior, unchanged.
  *   }
  *
  * The manifest is an explicit import list rather than a directory scan on
@@ -247,6 +283,24 @@ export function registerVcsProvider(impl) {
             if (prr[field] != null && typeof prr[field] !== 'string') {
                 throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with a non-string, non-null \`${field}\`.`);
             }
+        }
+    }
+    // apra-fleet-5co8.4.2: the auth-self-heal remedy axis. OPTIONAL (omitting
+    // it means "assume re-mintable", the pre-existing behavior), but
+    // validated up front for the same reason as the hooks above -- a
+    // malformed remedy must fail at registration, not while reporting an
+    // already-failed self-heal attempt, where the error would mask the real
+    // auth failure.
+    if (impl.authRemedy != null) {
+        const remedy = impl.authRemedy;
+        if (typeof remedy !== 'object') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`authRemedy\`.`);
+        }
+        if (typeof remedy.serverSideReMintable !== 'boolean') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has an \`authRemedy\` with a non-boolean \`serverSideReMintable\`.`);
+        }
+        if (typeof remedy.hint !== 'string' || !remedy.hint.trim()) {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has an \`authRemedy\` with no non-empty string \`hint\`.`);
         }
     }
     if (impl.builders != null) {

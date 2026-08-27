@@ -57,6 +57,12 @@
  * AUTH_DENIED doc comments below for the exact texts and why each is
  * additive only, with no verdict moved for the pre-existing TF401019 case.
  *
+ * apra-fleet-5co8.4.2 declares `authRemedy` (see its own doc comment below):
+ * an auth-classified failure here can never be fixed by the shared reactive
+ * self-heal alone, because a PAT is stored/redeployed, never re-minted --
+ * runner.js prints this provider's remedy text via that generic descriptor
+ * field rather than a provider-name conditional of its own.
+ *
  * ASCII only.
  */
 
@@ -622,6 +628,39 @@ const pullRequestResponse = Object.freeze({
     map: mapPullRequestResponse,
 });
 
+// ---------------------------------------------------------------------------
+// Auth self-heal remedy (apra-fleet-5co8.4.2)
+// ---------------------------------------------------------------------------
+//
+// Unlike a GitHub App installation token (minted fresh, server-side, on every
+// provision_vcs_auth call), an Azure DevOps PAT is a long-lived secret the
+// fleet only ever STORES and REDEPLOYS -- it never mints one. The Azure
+// DevOps PAT lifecycle management API requires an Entra (Azure AD) OAuth
+// token with admin consent the fleet does not hold (skills/fleet/
+// auth-azdevops.md's "PAT Lifetime and Expiry" section). So when the
+// REACTIVE self-heal (runner.js's createVcsAuthSelfHealCallback) fires on an
+// auth-classified failure, calling provision_vcs_auth again just redeploys
+// the SAME dead secret and is expected to fail again -- serverSideReMintable
+// is false, and `hint` is the exact operator-facing remedy runner.js prints
+// alongside the (still-attempted, still-logged) self-heal call, covering
+// both AUTH_EXPIRED (401/TF400813 -- the PAT itself is dead) and AUTH_DENIED
+// (403 -- the PAT is valid but scoped too narrowly; TF401019 is a
+// repo/permission grant, not a scope, and has no PAT-rotation remedy) since
+// the self-heal callback is never told which kind fired -- see
+// ./index.mjs's authRemedy doc.
+const AUTH_REMEDY_HINT =
+    'Azure DevOps PATs cannot be re-minted server-side. If the PAT expired or ' +
+    'was revoked: create a new PAT at https://dev.azure.com/ORG/_settings/tokens, ' +
+    'then credential_store_set the fleet secret and re-run provision_vcs_auth. ' +
+    'If access was denied for insufficient scope: create a PAT with broader ' +
+    'scopes per the role/scope table in skills/fleet/auth-azdevops.md, then ' +
+    'credential_store_set the fleet secret and re-run provision_vcs_auth.';
+
+const authRemedy = Object.freeze({
+    serverSideReMintable: false,
+    hint: AUTH_REMEDY_HINT,
+});
+
 export const AzureDevOpsVCS = Object.freeze({
     name: 'azure-devops',
     extends: 'generic-git',
@@ -651,6 +690,8 @@ export const AzureDevOpsVCS = Object.freeze({
     // apra-fleet-lzfv.4: this provider's create-pull-request response dialect
     // (pullRequestId + a CONSTRUCTED web URL) -- see above.
     pullRequestResponse,
+    // apra-fleet-5co8.4.2: PATs are never re-minted server-side -- see above.
+    authRemedy,
     // apra-fleet-lzfv.2: the REST builders. Present, but capabilitiesForHost()
     // above deliberately still reports canOpenPullRequest:false -- the publish
     // path cannot dispatch them yet, so advertising the capability would be
