@@ -101,6 +101,49 @@
  *                                          // classification-only provider
  *                                          // (generic-git, dolt) that is not a
  *                                          // member-facing VCS auth backend.
+ *     pullRequestResponse: {              // OPTIONAL; response axis
+ *       idField: string,                  //   apra-fleet-lzfv.4. How to read a
+ *       webUrlField: string|null,         //   create-pull-request 2xx response
+ *       webUrlTemplate: string|null,      //   BODY, which is as provider-
+ *       map: (body, ctx) => { id, url }   //   specific as the request is:
+ *     }                                   //   GitHub answers with `number` +
+ *                                          //   `html_url`, Azure DevOps with
+ *                                          //   `pullRequestId` and NO web-URL
+ *                                          //   field at all (its `url` is the
+ *                                          //   REST resource, not a page), so
+ *                                          //   its browsable URL must be
+ *                                          //   CONSTRUCTED from the request's
+ *                                          //   own org/project/repo plus the
+ *                                          //   returned id. Declaring the
+ *                                          //   mapping on the descriptor is
+ *                                          //   what keeps either dialect out
+ *                                          //   of the shared caller, which
+ *                                          //   until this hook existed read
+ *                                          //   `html_url` off the body itself.
+ *                                          //   `idField`/`webUrlField`/
+ *                                          //   `webUrlTemplate` are the
+ *                                          //   DECLARATION (what a consumer
+ *                                          //   mirroring this contract in
+ *                                          //   another language/package
+ *                                          //   restates); `map` is the single
+ *                                          //   executable source of truth and
+ *                                          //   MUST read those same declared
+ *                                          //   fields rather than repeat them.
+ *                                          //   `map` MUST NOT throw and MUST
+ *                                          //   return { id: number|null,
+ *                                          //   url: string|null } -- an
+ *                                          //   unreadable id or a coordinate
+ *                                          //   missing from `ctx` yields null,
+ *                                          //   never a guessed value, so a
+ *                                          //   successful PR is never turned
+ *                                          //   into a crash by its own
+ *                                          //   reporting step. `ctx` is the
+ *                                          //   request-side coordinates
+ *                                          //   (org/project/repo, or a
+ *                                          //   `repoRef` object -- the same
+ *                                          //   shape the builders take); a
+ *                                          //   provider whose body is
+ *                                          //   self-sufficient ignores it.
  *     builders:   { [action]: Function }|null  // create-pull-request/comment
  *                                                // command builders; null means
  *                                                // "known provider, action(s)
@@ -183,6 +226,28 @@ export function registerVcsProvider(impl) {
     // same rationale as `rules`/`extractProviderCode` above.
     if (Object.prototype.hasOwnProperty.call(impl, 'defaultAuthMode') && impl.defaultAuthMode !== null && typeof impl.defaultAuthMode !== 'string') {
         throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-string, non-null \`defaultAuthMode\`.`);
+    }
+    // apra-fleet-lzfv.4: the create-pull-request RESPONSE mapping. OPTIONAL
+    // (a classification-only provider, or one with no PR builder, declares
+    // none), but validated up front for the same reason as the hooks above --
+    // a malformed mapping must fail at registration, not while reporting an
+    // already-created pull request, where the error would mask a success.
+    if (impl.pullRequestResponse != null) {
+        const prr = impl.pullRequestResponse;
+        if (typeof prr !== 'object') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`pullRequestResponse\`.`);
+        }
+        if (typeof prr.idField !== 'string' || !prr.idField.trim()) {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with no non-empty string \`idField\`.`);
+        }
+        if (typeof prr.map !== 'function') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with a non-function \`map\`.`);
+        }
+        for (const field of ['webUrlField', 'webUrlTemplate']) {
+            if (prr[field] != null && typeof prr[field] !== 'string') {
+                throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with a non-string, non-null \`${field}\`.`);
+            }
+        }
     }
     if (impl.builders != null) {
         if (typeof impl.builders !== 'object') {

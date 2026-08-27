@@ -121,6 +121,46 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
     };
 }
 
+// ---------------------------------------------------------------------------
+// Pull-request RESPONSE mapping (apra-fleet-lzfv.4)
+// ---------------------------------------------------------------------------
+//
+// GitHub's create-pull-request 2xx body carries the PR number as `number` and
+// the browsable page as `html_url`. That mapping was previously IMPLICIT -- a
+// consumer (runner.js's raiseVcsPrForMember) read `html_url` off the body
+// directly, which is a GitHub dialect literal living in a provider-agnostic
+// caller. It is declared here instead, so a provider whose body speaks a
+// different dialect (see ./azure-devops.mjs: `pullRequestId`, and no web-URL
+// field at all) is read through the SAME descriptor hook rather than a caller
+// branch. See ./index.mjs for the contract.
+
+const PR_ID_FIELD = 'number';
+const PR_WEB_URL_FIELD = 'html_url';
+
+/** Map a GitHub create-pull-request response body to { id, url }. Reads the
+ *  DECLARED field names above rather than hardcoding them a second time, and
+ *  reproduces runner.js's historical behavior exactly: a missing or non-string
+ *  `html_url` yields `url: null` rather than a guessed URL. `ctx` is unused --
+ *  GitHub's body already carries the browsable URL. */
+function mapPullRequestResponse(body, _ctx) {
+    const source = (body && typeof body === 'object') ? body : {};
+    const rawId = source[PR_ID_FIELD];
+    let id = null;
+    if (typeof rawId === 'number' && Number.isFinite(rawId)) id = rawId;
+    else if (typeof rawId === 'string' && /^\d+$/.test(rawId.trim())) id = Number(rawId.trim());
+    const rawUrl = source[PR_WEB_URL_FIELD];
+    return { id, url: typeof rawUrl === 'string' ? rawUrl : null };
+}
+
+const pullRequestResponse = Object.freeze({
+    idField: PR_ID_FIELD,
+    webUrlField: PR_WEB_URL_FIELD,
+    // The web URL is READ from the body, never constructed, so there is no
+    // template -- contrast ./azure-devops.mjs.
+    webUrlTemplate: null,
+    map: mapPullRequestResponse,
+});
+
 /** GitHub's credential-rejection literals. "remote: Invalid username or
  *  token/password" is what a git push over HTTPS gets back from GitHub with a
  *  dead PAT; "Bad credentials" is the REST API's equivalent, which reaches us
@@ -200,6 +240,9 @@ export const GitHubVCS = Object.freeze({
     // makes a provider part of resolveProvider()'s/buildVcsCommand()'s known
     // vocabulary -- see ./index.mjs's isAuthBackend().
     defaultAuthMode: 'github-app',
+    // apra-fleet-lzfv.4: GitHub's create-pull-request response dialect, stated
+    // explicitly instead of left implicit in a caller (see above).
+    pullRequestResponse,
     builders: Object.freeze({
         'create-pull-request': buildGitHubCreatePrCommand,
         comment: buildGitHubCommentCommand,

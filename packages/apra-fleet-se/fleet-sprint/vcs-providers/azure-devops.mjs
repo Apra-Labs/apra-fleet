@@ -537,6 +537,69 @@ function buildAzureDevOpsCommentCommand(params) {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Pull-request RESPONSE mapping (apra-fleet-lzfv.4)
+// ---------------------------------------------------------------------------
+//
+// Azure DevOps' create-pull-request 2xx body speaks a DIFFERENT dialect than
+// GitHub's: the identifier is `pullRequestId` (not `number`), and the body
+// carries NO browsable web URL at all -- its `url` field is the REST resource
+// (.../_apis/git/repositories/{id}/pullRequests/{id}), which is not a page an
+// operator can open. The browsable URL therefore has to be CONSTRUCTED from
+// the same org/project/repo coordinates the request was built from plus the
+// returned id. Declaring both here (rather than teaching the caller either
+// dialect) is the whole point of the contract -- see ./index.mjs and
+// ./github.mjs's mirror-image declaration.
+
+const PR_ID_FIELD = 'pullRequestId';
+
+/** The browsable pull request page Azure DevOps renders for a PR -- the shape
+ *  the web UI itself uses:
+ *  https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}
+ *  (the same org/project/_git/repo prefix as the clone URL REPO_REF_HINT
+ *  quotes). Published as a template string so a consumer that must mirror this
+ *  contract elsewhere (canonical VCS types / fleet client) can restate it
+ *  without re-deriving it. */
+const PR_WEB_URL_TEMPLATE = 'https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}';
+
+/** Soft coordinate pick for the response mapping: unlike assertRepoCoords()
+ *  (which is building a request URL and MUST fail loudly), a response mapping
+ *  never throws -- a missing coordinate simply yields `url: null`, so a caller
+ *  reporting an otherwise successful PR is never turned into a crash. */
+function softRepoCoords(ctx) {
+    const source = (ctx && typeof ctx === 'object') ? ctx : {};
+    const ref = (source.repoRef && typeof source.repoRef === 'object') ? source.repoRef : {};
+    const pick = (key) => String((source[key] != null ? source[key] : ref[key]) ?? '').trim();
+    return { org: pick('org'), project: pick('project'), repo: pick('repo') };
+}
+
+/** Map an Azure DevOps create-pull-request response body to { id, url }.
+ *  Reads the DECLARED id field above, and builds the web URL from `ctx`'s
+ *  org/project/repo (each segment re-encoded, same reason repoApiBase() does).
+ *  `ctx` accepts either explicit org/project/repo or a `repoRef` object -- the
+ *  same shape the builders take. */
+function mapPullRequestResponse(body, ctx) {
+    const source = (body && typeof body === 'object') ? body : {};
+    const rawId = source[PR_ID_FIELD];
+    let id = null;
+    if (typeof rawId === 'number' && Number.isFinite(rawId)) id = rawId;
+    else if (typeof rawId === 'string' && /^\d+$/.test(rawId.trim())) id = Number(rawId.trim());
+    if (id === null) return { id: null, url: null };
+
+    const { org, project, repo } = softRepoCoords(ctx);
+    if (!org || !project || !repo) return { id, url: null };
+    const url = `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repo)}/pullrequest/${encodeURIComponent(String(id))}`;
+    return { id, url };
+}
+
+const pullRequestResponse = Object.freeze({
+    idField: PR_ID_FIELD,
+    // No web-URL field exists in the body -- it is constructed, see above.
+    webUrlField: null,
+    webUrlTemplate: PR_WEB_URL_TEMPLATE,
+    map: mapPullRequestResponse,
+});
+
 export const AzureDevOpsVCS = Object.freeze({
     name: 'azure-devops',
     extends: 'generic-git',
@@ -563,6 +626,9 @@ export const AzureDevOpsVCS = Object.freeze({
     // apra-fleet-5co8.2.1: OPTIONAL descriptor hook -- see ./index.mjs.
     buildProvisionArgs,
     defaultAuthMode: null,
+    // apra-fleet-lzfv.4: this provider's create-pull-request response dialect
+    // (pullRequestId + a CONSTRUCTED web URL) -- see above.
+    pullRequestResponse,
     // apra-fleet-lzfv.2: the REST builders. Present, but capabilitiesForHost()
     // above deliberately still reports canOpenPullRequest:false -- the publish
     // path cannot dispatch them yet, so advertising the capability would be
