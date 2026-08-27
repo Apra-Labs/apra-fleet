@@ -228,6 +228,30 @@
  */
 
 /**
+ * @typedef {Object} VcsPullRequestResponseMapping
+ * @property {string} idField - Body field carrying the PR identifier
+ *   (GitHub: 'number', Azure DevOps: 'pullRequestId').
+ * @property {string|null} webUrlField - Body field carrying the browsable PR
+ *   URL, or null when the body carries none (Azure DevOps).
+ * @property {string|null} webUrlTemplate - Template to CONSTRUCT the
+ *   browsable URL when webUrlField is null, or null when the URL is read
+ *   straight from the body.
+ *
+ * Mirrors the `pullRequestResponse` descriptor hook (apra-fleet-lzfv.4) from
+ * packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs and the
+ * canonical src/services/vcs/types.ts `VcsPullRequestResponseMapping`
+ * field-for-field, so the fleet-sprint provider registry, the server-side
+ * VCS contract and this client never drift. Declaration-only: the
+ * executable `map(body, ctx)` the JS descriptor also carries is
+ * deliberately NOT restated here, because index.mjs's own contract comment
+ * says a mirroring consumer restates `idField`/`webUrlField`/
+ * `webUrlTemplate` while `map` stays the single executable source of truth
+ * that reads those same declared fields. This typedef is declarative-only
+ * today: no MCP tool in this client yet returns a create-pull-request
+ * response for a caller to map.
+ */
+
+/**
  * @typedef {Object} ComposePermissionsOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
