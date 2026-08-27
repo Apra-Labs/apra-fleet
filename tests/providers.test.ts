@@ -4,7 +4,7 @@ import { CodexProvider } from '../src/providers/codex.js';
 import { CopilotProvider } from '../src/providers/copilot.js';
 import { AgyProvider } from '../src/providers/agy.js';
 import { getProvider } from '../src/providers/index.js';
-import { buildResumeFlag, buildSessionIdFlag, isMaxTurnsResponse } from '../src/providers/provider.js';
+import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, isMaxTurnsResponse } from '../src/providers/provider.js';
 import { isMaxTurnsSignal } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
 
@@ -313,6 +313,36 @@ describe('ClaudeProvider', () => {
 
   it('resumeFlag without sessionId returns empty string', () => {
     expect(p.resumeFlag()).toBe('');
+  });
+
+  // --- apra-fleet-lmtg.1: fork-mode dispatch capability ---------------------
+
+  it('reports fork capability (supportsFork)', () => {
+    expect(p.supportsFork?.()).toBe(true);
+  });
+
+  it('forkFlag seeds from the source session id via --resume + --fork-session', () => {
+    expect(p.forkFlag?.('source-ses-1')).toBe('--resume "source-ses-1" --fork-session');
+  });
+
+  it('forkFlag never hardcodes a --session-id -- the CLI mints the forked output id, not the caller', () => {
+    const flag = p.forkFlag?.('source-ses-1') ?? '';
+    expect(flag).not.toContain('--session-id');
+  });
+
+  it('forkFlag is structurally distinct from a plain in-place resume of the same source id -- --fork-session is what guarantees a NEW, distinct output session id (Claude never reuses the source id under fork)', () => {
+    const forked = p.forkFlag?.('source-ses-1') ?? '';
+    const resumed = p.resumeFlag('source-ses-1', true);
+    expect(forked).not.toBe(resumed);
+    expect(forked).toContain(resumed); // fork extends plain resume with --fork-session
+    expect(forked).toContain('--fork-session');
+  });
+
+  it('resumeFlag/resume behavior is unchanged by fork support (regression)', () => {
+    expect(p.resumeFlag('ses-1', true)).toBe('--resume "ses-1"');
+    expect(p.resumeFlag('ses-1', false)).toBe('--session-id "ses-1"');
+    expect(p.resumeFlag()).toBe('');
+    expect(p.supportsResume()).toBe(true);
   });
 
   it('maps model tiers', () => {
@@ -699,6 +729,27 @@ describe('buildSessionIdFlag', () => {
   });
 });
 
+// --- buildForkFlag shared helper (apra-fleet-lmtg.1) -------------------------
+
+describe('buildForkFlag', () => {
+  it('returns empty string when no sourceSessionId and no fallback', () => {
+    expect(buildForkFlag(undefined)).toBe('');
+  });
+
+  it('returns fallback when no sourceSessionId', () => {
+    expect(buildForkFlag(undefined, '--fork-fallback')).toBe('--fork-fallback');
+  });
+
+  it('sanitizes and quotes the source session ID, appending --fork-session', () => {
+    expect(buildForkFlag('sess-abc-123')).toBe('--resume "sess-abc-123" --fork-session');
+  });
+
+  it('rejects malicious session IDs', () => {
+    expect(() => buildForkFlag('$(whoami)')).toThrow('Invalid session ID');
+    expect(() => buildForkFlag('id;rm -rf /')).toThrow('Invalid session ID');
+  });
+});
+
 // --- Cross-OS consistency (Linux buildPromptCommand vs Windows resumeFlag) --
 
 describe('cross-OS session flag consistency', () => {
@@ -904,5 +955,22 @@ describe('SessionIdStrategy & Log Path Resolution', () => {
     expect(getProvider('codex').resolveSessionLogPath('sid', '/path')).toBe('');
     expect(getProvider('copilot').resolveSessionLogPath('sid', '/path')).toBe('');
     expect(getProvider('none').resolveSessionLogPath('sid', '/path')).toBe('');
+  });
+});
+
+// --- apra-fleet-lmtg.1: fork capability across providers ----------------------
+
+describe('Fork capability (supportsFork / forkFlag)', () => {
+  it('claude is the only fork-capable provider today', () => {
+    expect(getProvider('claude').supportsFork?.()).toBe(true);
+  });
+
+  it('providers that do not implement fork are NOT fork-capable -- callers must fall back via ?? false, never crash', () => {
+    for (const name of ['agy', 'opencode', 'codex', 'copilot', 'none'] as const) {
+      const provider = getProvider(name);
+      expect(() => provider.supportsFork?.() ?? false).not.toThrow();
+      expect(provider.supportsFork?.() ?? false).toBe(false);
+      expect(provider.forkFlag).toBeUndefined();
+    }
   });
 });
