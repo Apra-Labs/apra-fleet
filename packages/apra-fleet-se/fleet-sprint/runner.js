@@ -2767,10 +2767,39 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
     // endpoint for a windows+gitbash member).
     const { os, shell } = await resolveMemberTarget({ fleetApi, member, log });
 
+    // apra-fleet-lzfv.5: resolve the member's OWN registered VCS provider
+    // (VCSModule.resolveProvider(), never a hardcoded 'github' literal --
+    // same rule provisionVcsAuthForMember already follows) so
+    // buildCreatePrCommand dispatches to the right REST dialect for a
+    // dev.azure.com (or any other) remote, not just GitHub.
+    const { provider } = await resolveProvider(member, { fleetApi });
+
+    // The provider's own coordinate shape (e.g. Azure DevOps' org/project/repo
+    // -- see VCSModule.parseProviderRepoRef()/that provider's parseRepoRef
+    // hook) when one exists; null for a provider with no such hook (GitHub),
+    // which keeps using the two-part `repo` string above unchanged. Only ONE
+    // of `repo`/`repoRef` is ever sent below: passing both would let the
+    // (possibly provider-specific, e.g. 3-part) canonical `repo` string
+    // silently override repoRef's own coordinates and mis-encode the request
+    // URL (see azure-devops.mjs's assertRepoCoords doc comment). Both real
+    // call sites (Publish PR, [ABORTED] PR) already resolve and pass
+    // `remoteUrlOverride` themselves (see their own comments), so this never
+    // needs a git-remote read of its own; a caller that omits it simply gets
+    // no repoRef (falls back to `repo`, unchanged from before this task).
+    const providerRef = remoteUrlOverride ? parseProviderRepoRef(remoteUrlOverride) : null;
+    if (providerRef && providerRef.error) {
+        throw new Error(providerRef.error);
+    }
+    const repoRef = providerRef ? providerRef.ref : null;
+
     let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token, os, shell });
+        const built = buildCreatePrCommand({
+            provider,
+            ...(repoRef ? { repoRef } : { repo }),
+            base, head, title, body, token, os, shell,
+        });
 
         const res = await command(built.command, {
             member_name: member,
@@ -2785,8 +2814,19 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
         const { status, body: respBody, bodyText } = parseVcsCurlOutput(res.output);
         const [lo, hi] = built.interpret.successStatusRange;
         if (status !== null && status >= lo && status <= hi) {
-            const prUrl = respBody && typeof respBody.html_url === 'string' ? respBody.html_url : null;
-            return { ok: true, alreadyExists: false, prUrl, error: null, authFailure: false };
+            // apra-fleet-lzfv.5: read the created PR's id/url through the
+            // provider's OWN pullRequestResponse.map hook (declared on its
+            // descriptor -- see vcs-providers/github.mjs and
+            // vcs-providers/azure-devops.mjs) instead of a GitHub-dialect
+            // `html_url` field literal here. A provider with no mapping
+            // (should not happen for an auth-backend provider, but never
+            // throws) yields prUrl: null rather than crashing on an
+            // otherwise-successful PR.
+            const impl = getVcsProvider(provider);
+            const mapped = (impl && impl.pullRequestResponse && typeof impl.pullRequestResponse.map === 'function')
+                ? impl.pullRequestResponse.map(respBody, repoRef ? { repoRef } : { repo })
+                : { id: null, url: null };
+            return { ok: true, alreadyExists: false, prUrl: mapped.url, error: null, authFailure: false };
         }
 
         const errorMessages = [];

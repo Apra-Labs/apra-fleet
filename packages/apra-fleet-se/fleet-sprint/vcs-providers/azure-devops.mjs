@@ -11,9 +11,10 @@
  * provision_vcs_auth time, same as Bitbucket -- see ./bitbucket.mjs).
  * apra-fleet-lzfv.2 adds the REST create-pull-request/comment builders (see
  * buildAzureDevOpsCreatePrCommand/buildAzureDevOpsCommentCommand below);
- * capabilitiesForHost()'s canOpenPullRequest stays false until the publish
- * path can actually dispatch them (see that function's doc comment). Any
- * action WITHOUT a builder still fails closed with a clear ASCII
+ * capabilitiesForHost()'s canOpenPullRequest is now true (apra-fleet-lzfv.5),
+ * once runner.js's publish path could actually dispatch them (see that
+ * function's doc comment). Any action WITHOUT a builder still fails closed
+ * with a clear ASCII
  * "ERROR: ... does not yet implement action ..." from buildVcsCommand()
  * instead of a silently wrong command. Declaring `defaultAuthMode` (even as
  * `null`) is what makes 'azure-devops' part of resolveProvider()'s known
@@ -43,10 +44,10 @@
  * capabilitiesForHost() and parseRepoRef(). All three are descriptor hooks
  * dispatched from shared code (./index.mjs's resolveVcsProviderForHost(),
  * vcs-module.mjs's capabilities()), so no Azure DevOps conditional leaks into
- * a shared file. capabilitiesForHost() still reports canOpenPullRequest:false
- * even now that `builders` is populated -- see its own doc comment below for
- * the measured reason (runner.js's publish path still hardcodes
- * provider:'github'), and which change flips it.
+ * a shared file. capabilitiesForHost() now reports canOpenPullRequest:true
+ * (apra-fleet-lzfv.5) -- runner.js's publish path (raiseVcsPrForMember) is
+ * provider-aware now, resolving the member's own registered provider instead
+ * of hardcoding 'github', so this host can actually reach `builders` above.
  *
  * apra-fleet-5co8.4.1 adds two more additive rules on top of the bare
  * TF401019 AUTH_DENIED rule above (which stays exactly as-is): a REST 401 /
@@ -151,28 +152,24 @@ function matchesHost(host) {
     return typeof host === 'string' && HOST_RE.test(host.trim());
 }
 
-/** STILL false, deliberately, even though `builders` is now populated
- *  (apra-fleet-lzfv.2) -- and this is the lockstep rule in ./index.mjs's
- *  REQUIRED EXPORT SHAPE being honoured, not broken. The rule exists so a host
- *  never ADVERTISES a pull request it cannot actually deliver, and Azure
- *  DevOps still cannot: runner.js's publish path (raiseVcsPrForMember) calls
- *  buildCreatePrCommand with a HARDCODED `provider: 'github'` and a two-part
- *  'owner/name' repo, so an Azure DevOps remote reaching it dies inside
- *  GitHubVCS's assertRepo on the three-part org/project/repo canonical
- *  ("invalid repo ... expected \"owner/name\"") instead of building this
- *  file's command. While canOpenPullRequest stays false, that path is skipped
- *  cleanly (runner.js's non-hosted-remote branch still closes target issues on
- *  a PASS verdict); flipping it true today turns that graceful skip into a
- *  hard sprint-level throw -- measured, not assumed:
- *  test/mock-sprint-azure-devops-vcs-preflight.test.mjs fails 2 of 3 with the
- *  flip and passes 3 of 3 without it.
- *
- *  This therefore flips in the change that makes the publish path
- *  provider-aware (apra-fleet-lzfv.5, which owns runner.js's publish region),
- *  NOT here. The builders below are reachable and testable directly through
- *  buildVcsCommand() in the meantime. */
+/** TRUE (apra-fleet-lzfv.5), now that `builders` (apra-fleet-lzfv.2) is
+ *  reachable through a publish path that actually knows how to dispatch them
+ *  -- honouring the lockstep rule in ./index.mjs's REQUIRED EXPORT SHAPE: a
+ *  host never ADVERTISES a pull request it cannot actually deliver. Before
+ *  this flip, Azure DevOps genuinely could not: runner.js's publish path
+ *  (raiseVcsPrForMember) called buildCreatePrCommand with a HARDCODED
+ *  `provider: 'github'` and a two-part 'owner/name' repo, so an Azure DevOps
+ *  remote reaching it died inside GitHubVCS's assertRepo on the three-part
+ *  org/project/repo canonical ("invalid repo ... expected \"owner/name\"")
+ *  instead of building this file's command -- measured, not assumed:
+ *  test/mock-sprint-azure-devops-vcs-preflight.test.mjs failed 2 of 3 with the
+ *  flip alone and passed 3 of 3 without it. raiseVcsPrForMember now resolves
+ *  the member's own registered provider (VCSModule.resolveProvider(), never
+ *  hardcoded) and reads the provider-owned repoRef/response-mapping
+ *  descriptors instead of a GitHub literal, which is what makes this flip
+ *  safe. */
 function capabilitiesForHost(_host) {
-    return { canOpenPullRequest: false };
+    return { canOpenPullRequest: true };
 }
 
 /** Percent-decode one path segment; an invalid escape (e.g. a bare '%') is
@@ -692,11 +689,10 @@ export const AzureDevOpsVCS = Object.freeze({
     pullRequestResponse,
     // apra-fleet-5co8.4.2: PATs are never re-minted server-side -- see above.
     authRemedy,
-    // apra-fleet-lzfv.2: the REST builders. Present, but capabilitiesForHost()
-    // above deliberately still reports canOpenPullRequest:false -- the publish
-    // path cannot dispatch them yet, so advertising the capability would be
-    // the lockstep violation, not withholding it. Any action not listed here
-    // still fails closed with buildVcsCommand()'s typed ERROR.
+    // apra-fleet-lzfv.2: the REST builders. capabilitiesForHost() above now
+    // reports canOpenPullRequest:true (apra-fleet-lzfv.5) -- the publish path
+    // can dispatch them. Any action not listed here still fails closed with
+    // buildVcsCommand()'s typed ERROR.
     builders: Object.freeze({
         'create-pull-request': buildAzureDevOpsCreatePrCommand,
         comment: buildAzureDevOpsCommentCommand,
