@@ -32,19 +32,41 @@ const REDACTED = '***REDACTED***';
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
 /** Single-quote a string for embedding in a shell command. The built curl
- *  command is dispatched through the member's own shell -- POSIX sh/bash
- *  closes/reopens the quote around an embedded single quote ('\''), but
- *  Windows PowerShell (the shell every Windows member's commands actually
- *  run through -- see wrapPowerShellEncoded()/isWindows in
- *  src/tools/remove-member.ts) escapes an embedded single quote inside a
- *  single-quoted string by DOUBLING it (''), not by backslash-closing. Using
- *  the POSIX form on a Windows member breaks the quoting outright (observed
- *  live: Publish PR crashing on any title/body containing an apostrophe).
+ *  command is dispatched through the member's own COMMAND SHELL, so the
+ *  quoting dialect must follow that shell -- NOT the bare OS:
+ *    - POSIX sh/bash (and Git-for-Windows bash on a Windows member) closes/
+ *      reopens the quote around an embedded single quote ('\'').
+ *    - Windows PowerShell (see wrapPowerShellEncoded()/isWindows in
+ *      src/tools/remove-member.ts) escapes an embedded single quote inside a
+ *      single-quoted string by DOUBLING it (''), not by backslash-closing.
+ *  Using the POSIX form on a PowerShell member breaks the quoting outright
+ *  (observed live: Publish PR crashing on any title/body containing an
+ *  apostrophe) -- and, the mirror defect, using the PowerShell form on a
+ *  Windows member whose registered shell is gitbash corrupts the curl -d
+ *  JSON payload (observed live: GitHub's create-PR endpoint answering
+ *  "HTTP 400: Problems parsing JSON"), because bash reads '' as
+ *  close-then-reopen, not as an escaped quote.
+ *
  *  `os` is one of resolveMemberOs()'s return values ('windows'/'linux'/
- *  'darwin'); anything other than 'windows' keeps the POSIX behavior
- *  byte-identical to before this branch existed. */
-function shQuote(value, os) {
-    if (os === 'windows') {
+ *  'darwin'); `shell` is the member's registered shell as resolved by
+ *  runner.js's resolveMemberTarget() -- 'gitbash' | 'pwsh7' | 'powershell5'
+ *  | '' (empty when the registry recorded none). Resolution, mirroring
+ *  se-os-commands.mjs's getSeCommands() matrix:
+ *    - shell 'gitbash'                 -> POSIX quoting, even on Windows
+ *    - shell 'pwsh7'/'powershell5'     -> PowerShell doubling
+ *    - unresolved shell ('') + windows -> PowerShell doubling (the historical
+ *      default: every Windows member was assumed PowerShell before shells
+ *      were recorded -- the fallback stays byte-identical)
+ *    - any non-Windows os              -> POSIX quoting, byte-identical to
+ *      before this parameter existed. */
+function usesPowerShellQuoting(os, shell) {
+    if (shell === 'gitbash') return false;
+    if (shell === 'pwsh7' || shell === 'powershell5') return true;
+    return os === 'windows';
+}
+
+function shQuote(value, os, shell) {
+    if (usesPowerShellQuoting(os, shell)) {
         return `'${String(value).replace(/'/g, "''")}'`;
     }
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -61,7 +83,10 @@ function shQuote(value, os) {
  *  `Get-Command curl.exe` both resolve on a live Windows box), so emitting
  *  the explicit `curl.exe` token sidesteps the alias entirely without
  *  needing a different request mechanism. Non-Windows os values keep the
- *  bare `curl` token byte-identical to before this branch existed. */
+ *  bare `curl` token byte-identical to before this branch existed.
+ *  Deliberately OS-keyed (not shell-keyed like shQuote above): curl.exe is
+ *  equally resolvable from Git-for-Windows bash, so a windows+gitbash member
+ *  keeps the same binary token. */
 function curlBinary(os) {
     return os === 'windows' ? 'curl.exe' : 'curl';
 }
@@ -85,7 +110,7 @@ function assertToken(token) {
 /** Build the GitHub REST "create pull request" curl command.
  *  POST /repos/{owner}/{repo}/pulls -- see
  *  https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request */
-function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os }) {
+function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os, shell }) {
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
@@ -99,12 +124,12 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os }
 
     const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X POST`,
-        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os)}`,
-        `-H ${shQuote('Accept: application/vnd.github+json', os)}`,
-        `-H ${shQuote('Content-Type: application/json', os)}`,
-        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os)}`,
-        `-d ${shQuote(payloadJson, os)}`,
-        `-w ${shQuote('\n%{http_code}', os)}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        `-d ${shQuote(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
 
@@ -132,7 +157,7 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os }
  *  raised (rather than opening a second PR for the same head).
  *  POST /repos/{owner}/{repo}/issues/{issue_number}/comments -- see
  *  https://docs.github.com/en/rest/issues/comments#create-an-issue-comment */
-function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token, os }) {
+function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token, os, shell }) {
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     if (!issueNumber) throw new Error('ERROR: VCSModule: "issue_number" is required to build a comment command.');
@@ -143,12 +168,12 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
 
     const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X POST`,
-        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os)}`,
-        `-H ${shQuote('Accept: application/vnd.github+json', os)}`,
-        `-H ${shQuote('Content-Type: application/json', os)}`,
-        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os)}`,
-        `-d ${shQuote(payloadJson, os)}`,
-        `-w ${shQuote('\n%{http_code}', os)}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        `-d ${shQuote(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
 

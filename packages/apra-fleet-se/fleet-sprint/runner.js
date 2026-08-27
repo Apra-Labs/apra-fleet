@@ -2754,12 +2754,19 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
         throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
     }
     let token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
-    const os = await resolveMemberOs({ fleetApi, member, log });
+    // Both os AND shell feed the command builder: os picks the curl binary
+    // token (curl.exe vs curl), shell picks the quoting dialect. A Windows
+    // member whose registered shell is gitbash needs POSIX quoting, not
+    // PowerShell doubled-quote escaping -- resolving only the OS here fed
+    // shell-less params to shQuote and corrupted the curl -d JSON payload
+    // (observed live: GitHub 400 "Problems parsing JSON" on the create-PR
+    // endpoint for a windows+gitbash member).
+    const { os, shell } = await resolveMemberTarget({ fleetApi, member, log });
 
     let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token, os });
+        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token, os, shell });
 
         const res = await command(built.command, {
             member_name: member,
