@@ -66,6 +66,38 @@ test('mock sprint: an Azure DevOps member is provisioned unattended by the prefl
         // top-level dispatch error, never a silent stall.
         check(!scenario.error, `expected no sprint-level error from the unattended preflight path, got: ${scenario.error ? scenario.error.message : ''}`);
 
+        // apra-fleet-5co8.14.2 (revert-proofing for apra-fleet-5co8.14.1):
+        // this scenario's single task reaches Publish PR, whose
+        // raiseVcsPrForMember -> buildCreatePrCommand path shells VCSModule's
+        // Azure DevOps create-pull-request curl
+        // (.../pullrequests?api-version=...) via execute_command. Assert
+        // BOTH that this exact command was actually issued (proving there
+        // was something here to intercept -- a suite that never reaches this
+        // call would pass vacuously) AND that the run is HERMETIC: no
+        // command/log/error text anywhere in the scenario carries the
+        // signature of a real curl escaping this in-process mock and hitting
+        // the network for real ('curl: (6)' / 'Could not resolve host', the
+        // exact strings a real, offline curl against dev.azure.com prints).
+        //
+        // Exercised against the regression this guards: narrowing
+        // mock-sprint-harness.mjs's PR-curl predicate back to the GitHub
+        // '/pulls' shape (reverting apra-fleet-5co8.14.1's
+        // `isAzureDevOpsCreatePr` branch) makes the ADO create-PR curl above
+        // fall through to the harness's real-exec fallback, which spawns a
+        // genuine curl against the unreachable https://dev.azure.com host in
+        // this offline test environment and fails with exactly one of the
+        // two strings below -- confirmed by temporarily reverting that
+        // harness change locally and re-running this file (it failed on the
+        // hermeticity assertion, as intended; the revert was not committed).
+        const adoCreatePrCommands = scenario.commandLog.filter((c) => /\/pullrequests\?api-version=/.test(c));
+        check(
+            adoCreatePrCommands.length === 1,
+            `expected exactly one Azure DevOps create-pull-request curl to have been issued via VCSModule, got: ${JSON.stringify(scenario.commandLog)}`,
+        );
+        const haystack = [...scenario.commandLog, ...scenario.logs, scenario.error ? scenario.error.message : ''].join('\n');
+        check(!/curl: \(6\)/.test(haystack), `expected no real curl escape (curl: (6)) in the run output, got: ${haystack}`);
+        check(!/Could not resolve host/.test(haystack), `expected no real curl escape (Could not resolve host) in the run output, got: ${haystack}`);
+
         // THE acceptance criterion: provision_vcs_auth was invoked, unattended,
         // with the org_url derived from the member's own git remote and the
         // PAT passed as a secure placeholder -- never a raw value, never
