@@ -190,9 +190,20 @@ test('parseRepoRef: unparseable or non-Azure input returns null and never throws
 // (4) capabilities
 // -----------------------------------------------------------------------------
 
-test('capabilitiesForHost: PR capability stays false until the Azure DevOps builders land', () => {
+// INTERIM INVARIANT (apra-fleet-lzfv.2): the builders now EXIST, but the PR
+// capability is still false on purpose -- runner.js's publish path
+// (raiseVcsPrForMember) still hardcodes provider:'github' and a two-part
+// 'owner/name' repo, so an advertised capability would route an Azure DevOps
+// remote into GitHubVCS's assertRepo and turn today's graceful skip into a
+// hard sprint-level throw (mock-sprint-azure-devops-vcs-preflight.test.mjs
+// fails 2 of 3 with the flip). The flip belongs to the change that makes the
+// publish path provider-aware (apra-fleet-lzfv.5); this test asserts the
+// honest present state, so it goes red the moment either side moves alone.
+test('capabilitiesForHost: builders exist but the PR capability stays false until the publish path is provider-aware', () => {
     assert.deepEqual(AzureDevOpsVCS.capabilitiesForHost('dev.azure.com'), { canOpenPullRequest: false });
-    assert.equal(AzureDevOpsVCS.builders, null, 'capability and builders must flip together');
+    assert.ok(AzureDevOpsVCS.builders, 'the create-pull-request/comment builders must exist');
+    assert.equal(typeof AzureDevOpsVCS.builders['create-pull-request'], 'function');
+    assert.equal(typeof AzureDevOpsVCS.builders.comment, 'function');
     const caps = capabilities('https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e2e-toy');
     assert.deepEqual(caps, { hasRemote: true, canOpenPullRequest: false, host: 'dev.azure.com' });
 });

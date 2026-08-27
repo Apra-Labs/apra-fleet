@@ -8,14 +8,16 @@
  * new provider had to also edit.
  *
  * No auth-mode axis of its own (a single PAT token field at
- * provision_vcs_auth time, same as Bitbucket -- see ./bitbucket.mjs), and no
- * REST create-pull-request/comment builders implemented yet -- both are
- * DELIBERATELY absent (`builders: null`) rather than guessed at, so
- * buildVcsCommand() fails closed with a clear ASCII "ERROR: ... does not yet
- * implement action ..." instead of silently building a wrong command.
- * Declaring `defaultAuthMode` (even as `null`) is what makes 'azure-devops'
- * part of resolveProvider()'s known vocabulary -- see ./index.mjs's
- * isAuthBackend().
+ * provision_vcs_auth time, same as Bitbucket -- see ./bitbucket.mjs).
+ * apra-fleet-lzfv.2 adds the REST create-pull-request/comment builders (see
+ * buildAzureDevOpsCreatePrCommand/buildAzureDevOpsCommentCommand below);
+ * capabilitiesForHost()'s canOpenPullRequest stays false until the publish
+ * path can actually dispatch them (see that function's doc comment). Any
+ * action WITHOUT a builder still fails closed with a clear ASCII
+ * "ERROR: ... does not yet implement action ..." from buildVcsCommand()
+ * instead of a silently wrong command. Declaring `defaultAuthMode` (even as
+ * `null`) is what makes 'azure-devops' part of resolveProvider()'s known
+ * vocabulary -- see ./index.mjs's isAuthBackend().
  *
  * Extends GenericGitVCS for stderr classification. Azure DevOps' own
  * TF-numbered error codes (e.g. TF401019) previously were NOT added as a
@@ -41,8 +43,10 @@
  * capabilitiesForHost() and parseRepoRef(). All three are descriptor hooks
  * dispatched from shared code (./index.mjs's resolveVcsProviderForHost(),
  * vcs-module.mjs's capabilities()), so no Azure DevOps conditional leaks into
- * a shared file. capabilitiesForHost() reports canOpenPullRequest:false while
- * `builders` is null and flips true in the SAME change that adds them.
+ * a shared file. capabilitiesForHost() still reports canOpenPullRequest:false
+ * even now that `builders` is populated -- see its own doc comment below for
+ * the measured reason (runner.js's publish path still hardcodes
+ * provider:'github'), and which change flips it.
  *
  * apra-fleet-5co8.4.1 adds two more additive rules on top of the bare
  * TF401019 AUTH_DENIED rule above (which stays exactly as-is): a REST 401 /
@@ -57,6 +61,7 @@
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
+import { shQuote, curlBinary, assertToken } from './shell-helpers.mjs';
 
 /** Credential no longer good -- re-minting a PAT (skills/fleet/auth-azdevops.md
  *  "401 Unauthorized -> Create new PAT and re-deploy") is the remedy, so
@@ -70,8 +75,8 @@ import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
  *      so a REST call's own stdout ends in a status-code-only line; anchored
  *      to end-of-string/line so an inline "401" mentioned mid-sentence (which
  *      says nothing about THIS call's own outcome) is never matched.
- *      azure-devops.mjs has no REST builders yet (`builders: null` below),
- *      but classifyFailure() is reachable standalone (see
+ *      azure-devops.mjs's own REST builders (added apra-fleet-lzfv.2, below)
+ *      append it too, and classifyFailure() is reachable standalone (see
  *      vcs-classify-failure.test.mjs AC1/'providers listed as known but
  *      unimplemented ... still classify'), and PAT validation elsewhere in
  *      the fleet already shells a curl+`-w '\n%{http_code}'` call against this
@@ -140,10 +145,26 @@ function matchesHost(host) {
     return typeof host === 'string' && HOST_RE.test(host.trim());
 }
 
-/** Azure DevOps cannot open a pull request yet: `builders` is still null, so
- *  advertising the capability would let a caller (runner.js's Publish-PR gate)
- *  reach buildVcsCommand() only to get a typed "does not yet implement action"
- *  ERROR. This flips to true in the SAME change that adds the builders. */
+/** STILL false, deliberately, even though `builders` is now populated
+ *  (apra-fleet-lzfv.2) -- and this is the lockstep rule in ./index.mjs's
+ *  REQUIRED EXPORT SHAPE being honoured, not broken. The rule exists so a host
+ *  never ADVERTISES a pull request it cannot actually deliver, and Azure
+ *  DevOps still cannot: runner.js's publish path (raiseVcsPrForMember) calls
+ *  buildCreatePrCommand with a HARDCODED `provider: 'github'` and a two-part
+ *  'owner/name' repo, so an Azure DevOps remote reaching it dies inside
+ *  GitHubVCS's assertRepo on the three-part org/project/repo canonical
+ *  ("invalid repo ... expected \"owner/name\"") instead of building this
+ *  file's command. While canOpenPullRequest stays false, that path is skipped
+ *  cleanly (runner.js's non-hosted-remote branch still closes target issues on
+ *  a PASS verdict); flipping it true today turns that graceful skip into a
+ *  hard sprint-level throw -- measured, not assumed:
+ *  test/mock-sprint-azure-devops-vcs-preflight.test.mjs fails 2 of 3 with the
+ *  flip and passes 3 of 3 without it.
+ *
+ *  This therefore flips in the change that makes the publish path
+ *  provider-aware (apra-fleet-lzfv.5, which owns runner.js's publish region),
+ *  NOT here. The builders below are reachable and testable directly through
+ *  buildVcsCommand() in the meantime. */
 function capabilitiesForHost(_host) {
     return { canOpenPullRequest: false };
 }
@@ -341,6 +362,181 @@ function buildProvisionArgs(ctx) {
     };
 }
 
+// ---------------------------------------------------------------------------
+// REST command builders (apra-fleet-lzfv.2)
+// ---------------------------------------------------------------------------
+//
+// PARAMETER CONTRACT (the shape buildVcsCommand() hands a builder, and what
+// apra-fleet-lzfv.3's golden tests and apra-fleet-lzfv.4's response mapping
+// read as this provider's contract):
+//
+//   provider  'azure-devops'
+//   repoRef   OPTIONAL { org, project, repo } -- parseRepoRef()'s own output,
+//             passed straight through. Individual org/project/repo params
+//             take PRECEDENCE over the matching repoRef field, so a caller can
+//             override one coordinate without rebuilding the object.
+//   org/project/repo  the three coordinates every Azure DevOps REST call
+//             needs. All three are required after the repoRef merge; a missing
+//             one is a typed ERROR naming the expected remote shape, never a
+//             half-built URL.
+//   base/head branch names, in GitHub's OWN vocabulary deliberately (`base` =
+//             the branch merged INTO -> targetRefName, `head` = the branch
+//             merged FROM -> sourceRefName). Keeping github.mjs's field names
+//             is what lets runner.js stay provider-agnostic -- see
+//             ./index.mjs's "NO OTHER FILE under fleet-sprint/ changes".
+//   title/body  PR title and description.
+//   pull_request_id  (comment only) the PR to annotate.
+//   token     the PAT. REQUIRED -- assertToken() throws the shared typed ERROR.
+//   os        resolveMemberOs()'s value, threaded into shQuote()/curlBinary().
+//
+// AUTH: Azure DevOps' REST API takes a PAT as HTTP Basic with an EMPTY
+// username (`-u :PAT`), NOT a bearer token -- the exact form skills/fleet/
+// auth-azdevops.md already documents for its connectivity Test call. The PAT
+// therefore appears in `command` ONLY; `logSafeCommand` is built by the same
+// closure with REDACTED substituted, so no field other than `command` can
+// carry it.
+//
+// URL ENCODING: parseRepoRef() percent-DECODES every field it returns (Azure
+// DevOps project names commonly contain spaces), so each coordinate is
+// re-encoded per segment here -- see parseRepoRef's own doc note.
+
+/** api-version pinned to 7.1, matching skills/fleet/auth-azdevops.md's own
+ *  REST calls. Pinned, never floating: an unversioned Azure DevOps REST call
+ *  is rejected outright. */
+const API_VERSION = '7.1';
+
+/** Same fixed marker github.mjs uses, so a log scrubber/assertion looking for
+ *  a redacted VCS command matches identically across providers. */
+const REDACTED = '***REDACTED***';
+
+/** Merge a `repoRef` object with any explicit org/project/repo overrides and
+ *  require all three. Throws the typed ERROR (quoting REPO_REF_HINT, the same
+ *  remedy text repoRefHint publishes) rather than building a partial URL. */
+function assertRepoCoords(params, action) {
+    const ref = (params && typeof params.repoRef === 'object' && params.repoRef) ? params.repoRef : {};
+    const pick = (key) => {
+        const own = params && params[key] != null ? params[key] : ref[key];
+        return String(own ?? '').trim();
+    };
+    const org = pick('org');
+    const project = pick('project');
+    const repo = pick('repo');
+    if (!org || !project || !repo) {
+        throw new Error(`ERROR: VCSModule: azure-devops "${action}" needs org, project and repo (missing: ${[['org', org], ['project', project], ['repo', repo]].filter(([, v]) => !v).map(([k]) => k).join(', ')}) -- pass them explicitly or as the repoRef parsed from a remote of the shape ${REPO_REF_HINT}.`);
+    }
+    return { org, project, repo };
+}
+
+/** The org/project/repo REST prefix, each coordinate re-encoded per segment. */
+function repoApiBase({ org, project, repo }) {
+    return `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repo)}`;
+}
+
+/** Azure DevOps' pullrequests endpoint takes FULL ref names
+ *  ('refs/heads/main'), not the bare branch names GitHub's API takes, and
+ *  rejects a bare name outright. An input that already carries a 'refs/'
+ *  prefix is passed through untouched so a caller holding a real ref (e.g.
+ *  'refs/heads/feat/x') is never double-prefixed. */
+function toFullRef(branch) {
+    const value = String(branch).trim();
+    return /^refs\//i.test(value) ? value : `refs/heads/${value}`;
+}
+
+/**
+ * Build the Azure DevOps REST "create pull request" curl command.
+ * POST {org}/{project}/_apis/git/repositories/{repo}/pullrequests?api-version=7.1
+ * -- see https://learn.microsoft.com/rest/api/azure/devops/git/pull-requests/create
+ */
+function buildAzureDevOpsCreatePrCommand(params) {
+    const { base, head, title, body, token, os } = params || {};
+    const coords = assertRepoCoords(params, 'create-pull-request');
+    const safeToken = assertToken(token);
+    if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
+    if (!head) throw new Error('ERROR: VCSModule: "head" branch is required to build a create-pull-request command.');
+    if (!title) throw new Error('ERROR: VCSModule: "title" is required to build a create-pull-request command.');
+
+    const payload = {
+        sourceRefName: toFullRef(head),
+        targetRefName: toFullRef(base),
+        title,
+    };
+    if (body !== undefined) payload.description = body;
+    const payloadJson = JSON.stringify(payload);
+    const url = `${repoApiBase(coords)}/pullrequests?api-version=${API_VERSION}`;
+
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X POST`,
+        `-u ${shQuote(`:${authToken}`, os)}`,
+        `-H ${shQuote('Content-Type: application/json', os)}`,
+        `-H ${shQuote('Accept: application/json', os)}`,
+        `-d ${shQuote(payloadJson, os)}`,
+        `-w ${shQuote('\n%{http_code}', os)}`,
+        url,
+    ].join(' ');
+
+    return {
+        provider: 'azure-devops',
+        action: 'create-pull-request',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        // Interpretation contract, same field NAMES github.mjs uses so a
+        // consumer reads it generically:
+        //   - 2xx                   -> success; body has .pullRequestId
+        //   - 409 + TF401179        -> an active PR for this source/target
+        //                              pair already exists, which is the
+        //                              idempotent re-run case, so success
+        //   - anything else         -> error
+        interpret: {
+            successStatusRange: [200, 299],
+            alreadyExistsStatus: 409,
+            alreadyExistsPattern: 'TF401179',
+        },
+    };
+}
+
+/**
+ * Build the Azure DevOps REST "comment on a pull request" curl command, used
+ * to annotate an existing PR when a sprint aborts after the PR was already
+ * raised (rather than opening a second PR for the same source branch).
+ * POST .../pullrequests/{id}/threads?api-version=7.1 -- Azure DevOps has no
+ * bare "PR comment" resource: a comment is one entry in a THREAD, so a single
+ * text comment is posted as a new active thread carrying exactly one comment.
+ * See https://learn.microsoft.com/rest/api/azure/devops/git/pull-request-threads/create
+ */
+function buildAzureDevOpsCommentCommand(params) {
+    const { pull_request_id: pullRequestId, body, token, os } = params || {};
+    const coords = assertRepoCoords(params, 'comment');
+    const safeToken = assertToken(token);
+    if (!pullRequestId) throw new Error('ERROR: VCSModule: "pull_request_id" is required to build an azure-devops comment command.');
+    if (!body) throw new Error('ERROR: VCSModule: "body" is required to build a comment command.');
+
+    const payloadJson = JSON.stringify({
+        comments: [{ parentCommentId: 0, content: body, commentType: 'text' }],
+        status: 'active',
+    });
+    const url = `${repoApiBase(coords)}/pullrequests/${encodeURIComponent(String(pullRequestId))}/threads?api-version=${API_VERSION}`;
+
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X POST`,
+        `-u ${shQuote(`:${authToken}`, os)}`,
+        `-H ${shQuote('Content-Type: application/json', os)}`,
+        `-H ${shQuote('Accept: application/json', os)}`,
+        `-d ${shQuote(payloadJson, os)}`,
+        `-w ${shQuote('\n%{http_code}', os)}`,
+        url,
+    ].join(' ');
+
+    return {
+        provider: 'azure-devops',
+        action: 'comment',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: {
+            successStatusRange: [200, 299],
+        },
+    };
+}
+
 export const AzureDevOpsVCS = Object.freeze({
     name: 'azure-devops',
     extends: 'generic-git',
@@ -367,7 +563,15 @@ export const AzureDevOpsVCS = Object.freeze({
     // apra-fleet-5co8.2.1: OPTIONAL descriptor hook -- see ./index.mjs.
     buildProvisionArgs,
     defaultAuthMode: null,
-    builders: null,
+    // apra-fleet-lzfv.2: the REST builders. Present, but capabilitiesForHost()
+    // above deliberately still reports canOpenPullRequest:false -- the publish
+    // path cannot dispatch them yet, so advertising the capability would be
+    // the lockstep violation, not withholding it. Any action not listed here
+    // still fails closed with buildVcsCommand()'s typed ERROR.
+    builders: Object.freeze({
+        'create-pull-request': buildAzureDevOpsCreatePrCommand,
+        comment: buildAzureDevOpsCommentCommand,
+    }),
 });
 
 export default AzureDevOpsVCS;
