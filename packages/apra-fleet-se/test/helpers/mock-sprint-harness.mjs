@@ -636,15 +636,25 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             //      provision_vcs_auth deployed -- answered with a fixed mock
             //      'password=' line, mirroring the real script's protocol/
             //      host/username/password output.
-            //   2. VCSModule's `curl -sS -X POST ... /pulls` REST call itself
-            //      -- answered with a fake JSON body + trailing HTTP status
-            //      line (mirroring buildCreatePrCommand's `-w '\n%{http_code}'`),
-            //      reusing the SAME prExistsState idempotency simulation the
-            //      old `gh pr create` mock used to provide.
+            //   2. VCSModule's `curl -sS -X POST ... /pulls` (GitHub) or
+            //      `curl -sS -X POST .../pullrequests?api-version=...` (Azure
+            //      DevOps) REST call itself -- answered with a fake JSON body
+            //      + trailing HTTP status line (mirroring buildCreatePrCommand's
+            //      `-w '\n%{http_code}'`), reusing the SAME prExistsState
+            //      idempotency simulation the old `gh pr create` mock used to
+            //      provide.
+            //      apra-fleet-5co8.14.1: the ADO branch here only has to be
+            //      hermetic BY DEFAULT for scenarios that supply no canned
+            //      prCurlResponseQueueLocal at all (e.g. the preflight suite).
+            //      The canned 201/409-TF401179 response queue and the
+            //      already-exists response-mapping assertions for Azure
+            //      DevOps belong to apra-fleet-lzfv.6 (same mutex file) -- do
+            //      not build those out further here.
             if (/^\$HOME\/\.fleet-git-credential-/.test(opts.command)) {
                 return mockCmdResult(0, 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n', '');
             }
-            if (/^curl(?:\.exe)? -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
+            const isAzureDevOpsCreatePr = /\/pullrequests\?/.test(opts.command);
+            if (/^curl(?:\.exe)? -sS -X POST\b/.test(opts.command) && (/\/pulls\b/.test(opts.command) || isAzureDevOpsCreatePr)) {
                 if (prCurlResponseQueueLocal && prCurlResponseQueueLocal.length > 0) {
                     const next = prCurlResponseQueueLocal.length > 1 ? prCurlResponseQueueLocal.shift() : prCurlResponseQueueLocal[0];
                     const resolved = typeof next === 'function' ? next() : next;
@@ -660,6 +670,17 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     // HTTP status, which prExistsState below cannot express,
                     // so those scenarios should prefer a dedicated handler).
                     return mockCmdResult(1, '', gitGhFailureMessage || `mock curl failure (injected) for: ${opts.command}`);
+                }
+                if (isAzureDevOpsCreatePr) {
+                    // Azure DevOps' create-pull-request payload carries
+                    // sourceRefName/targetRefName (full 'refs/heads/...'
+                    // names), not GitHub's bare "head" field -- see
+                    // buildAzureDevOpsCreatePrCommand in
+                    // vcs-providers/azure-devops.mjs. No already-exists
+                    // simulation here (that's lzfv.6's canned-queue scope);
+                    // always answer with a hermetic default success.
+                    const body = JSON.stringify({ pullRequestId: 101, _links: { web: { href: 'https://dev.azure.com/mock-org/mock-project/_git/mock-repo/pullRequest/101' } } });
+                    return mockCmdResult(0, `${body}\n201`, '');
                 }
                 const headMatch = /"head":"([^"]*)"/.exec(opts.command);
                 const branch = headMatch ? headMatch[1] : null;

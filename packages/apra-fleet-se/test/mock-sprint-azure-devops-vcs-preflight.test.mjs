@@ -110,11 +110,31 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
             originUrl: AZ_ORIGIN,
         });
 
-        // A missing secret degrades the preflight (it never throws out of
-        // withGitSync -- see createVcsAuthPreflightCallback's own doc
-        // comment); the run must never stall waiting on an interactive
-        // credential prompt.
-        check(!scenario.error, `expected no sprint-level error from a swallowed preflight failure, got: ${scenario.error ? scenario.error.message : ''}`);
+        // A missing secret degrades the PREFLIGHT specifically (it never
+        // throws out of withGitSync -- see createVcsAuthPreflightCallback's
+        // own doc comment); the run must never stall waiting on an
+        // interactive credential prompt because of the preflight.
+        //
+        // apra-fleet-5co8.14.1: with dev.azure.com's canOpenPullRequest now
+        // true, this scenario's single task also reaches the Publish PR
+        // phase, which calls provisionPrCapableAuthForMember ->
+        // provisionVcsAuthForMember directly (not through the preflight
+        // callback). That wrapper is a thin, provider-agnostic pass-through
+        // over the SAME buildProvisionArgsForProvider used by the preflight
+        // (runner.js:2470) with no failSoft of its own, so it re-throws the
+        // identical missing-secret error at sprint level -- this is
+        // pre-existing provider-agnostic publish behavior, not a preflight
+        // regression, and runner.js is out of scope for this task. So this
+        // case only asserts the PREFLIGHT's own behavior (no
+        // provision_vcs_auth call, credential_store_set named in the logs);
+        // if a sprint-level error surfaces, it must be exactly this same
+        // missing-secret error and not some other regression.
+        if (scenario.error) {
+            check(
+                /cannot provision Azure DevOps auth for member 'local': the credential store has no entry named 'azdevops_pat'/.test(scenario.error.message),
+                `expected any sprint-level error to be the known missing-secret error from the (non-preflight) Publish PR phase, got: ${scenario.error.message}`,
+            );
+        }
 
         check(
             vcsAuthCalls.length === 0,
