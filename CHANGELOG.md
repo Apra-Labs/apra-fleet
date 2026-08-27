@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- execute_prompt: session forking
+
+Sprint goal: let `execute_prompt` branch a new, independent session from an
+existing session's context (`fork`), instead of only being able to continue
+a session in place (`resume`) -- enabling reusable-priming workflows where
+expensive shared context is built once and then forked per task without
+re-spending tokens to rebuild it each time.
+
+What shipped:
+
+- **`fork` parameter on `execute_prompt`**, mirroring `resume`'s shape
+  (`boolean | string`): `true` best-effort-forks the member's stored last
+  session (falling back to a fresh session with a logged warning if that
+  session is stale or absent); a session-id string forks exactly that
+  source session, with unknown/expired sources failing as a terminal
+  `session_not_found` and no LLM call -- no silent wrong-context fallback.
+- **`resume`/`fork` and `session_id`/`fork` mutual exclusivity**, rejected
+  as a validation error before any member resolution or LLM call, since the
+  two express contradictory intents (continue in place vs. branch away).
+- **Provider capability model**: fork support is declared per-provider via
+  an optional capability-method pair (a support check plus a flag builder),
+  the same pattern any future provider-specific capability can reuse.
+  Claude Code is fork-capable today; a `fork` request against a
+  non-fork-capable provider is rejected outright (`fork_unsupported`, no
+  LLM call) rather than silently downgraded to resume or a fresh session.
+- **Fork descriptor threaded through both POSIX and Windows command
+  builders**, so a fork-mode dispatch emits the provider's fork invocation
+  in place of the ordinary resume/session-id flags on every supported OS.
+- **Retry/self-heal safety**: every internal retry path (transient dispatch
+  failure, stale-session retry, server-overload retry, self-heal retry)
+  dispatches as an ordinary fresh/resume attempt on retry, never re-forking
+  from the same source -- re-forking on every retry would multiply, not
+  save, token spend.
+- **`apra-fleet-client` updated** in the same change to keep the client
+  wrapper's `ExecutePromptOptions` in sync with the new server-side option.
+
+Carried forward (filed as open backlog; not blocking): a coverage gap for
+the `fork_unsupported` terminal-rejection path in `execute_prompt` itself
+(existing tests exercise it only against a fork-capable provider), and a
+follow-up to actually wire `fork` into a reusable-priming workflow lane to
+realize the token-savings motivation end to end.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $13.5981.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3278 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 33 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Supervisor dashboard: live-refresh parity with the per-run viewer
 
 Sprint goal: bring the multi-sprint supervisor's own dashboard up to the same

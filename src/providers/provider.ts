@@ -78,6 +78,22 @@ export function buildSessionIdFlag(sessionId: string): string {
   return `--session-id "${sanitizeSessionId(sessionId)}"`;
 }
 
+/**
+ * Build a fork-mode resume flag: seed context from `sourceSessionId`'s transcript
+ * but yield a NEW, distinct session id rather than continuing the source id in
+ * place (contrast with {@link buildResumeFlag}, which resumes the source id
+ * unchanged). Shared by providers whose CLI supports resuming into a forked
+ * session id (Claude's `--fork-session`, used together with `--resume`).
+ * @param sourceSessionId - The session ID to seed/fork from (will be sanitized)
+ * @param fallback - Value to return when sourceSessionId is absent (default: '')
+ */
+export function buildForkFlag(sourceSessionId: string | undefined, fallback = ''): string {
+  if (sourceSessionId) {
+    return `--resume "${sanitizeSessionId(sourceSessionId)}" --fork-session`;
+  }
+  return fallback;
+}
+
 export interface PromptOptions {
   folder: string;
   promptFile: string;
@@ -197,6 +213,21 @@ export interface ProviderAdapter {
   resumeFlag(sessionId?: string, resuming?: boolean): string;
   /** Defines whether this provider accepts caller-minted UUIDs or generates session IDs natively. */
   sessionIdStrategy(): SessionIdStrategy;
+  /** apra-fleet-lmtg.1: true when this provider supports fork-mode dispatch --
+   *  branching a NEW, distinct session id from an existing session's context,
+   *  as opposed to resume (which continues the source id in place). Optional:
+   *  providers that do not implement it are NOT fork-capable. Callers MUST
+   *  check `provider.supportsFork?.() ?? false` before ever calling
+   *  {@link forkFlag} -- never assume support. */
+  supportsFork?(): boolean;
+  /** Builds the CLI flag(s) for a fork-mode dispatch: seeds context from
+   *  `sourceSessionId`'s transcript but yields a NEW session id distinct from
+   *  the source (the source session itself is left untouched). Only called
+   *  when `supportsFork()` returns true. For providers whose CLI cannot
+   *  express "new id, seeded from an existing transcript" (i.e. mints a new
+   *  session id NOT derived from source context, same as a fresh dispatch),
+   *  omit both this and {@link supportsFork} rather than faking support. */
+  forkFlag?(sourceSessionId: string): string;
   /** Resolves the session transcript log path for a given session ID, AS IT EXISTS
    *  ON THE MEMBER'S MACHINE.
    *  @param homeDir  The MEMBER's home directory. `undefined` falls back to this

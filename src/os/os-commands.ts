@@ -1,8 +1,38 @@
 ﻿import { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId } from '../utils/shell-escape.js';
-import type { ProviderAdapter, PromptOptions } from '../providers/provider.js';
+import type { ProviderAdapter, PromptOptions as BasePromptOptions } from '../providers/provider.js';
 
 export { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId };
-export type { ProviderAdapter, PromptOptions };
+export type { ProviderAdapter };
+
+/**
+ * apra-fleet-lmtg.2: fork descriptor threaded through buildAgentPromptCommand
+ * so both POSIX and Windows builders can emit a provider's fork invocation
+ * (source-seeded, new-session-id output) instead of the ordinary
+ * resume/fresh-session flags that `sessionId`/`resuming` would otherwise
+ * produce.
+ */
+export interface ForkDescriptor {
+  /** Existing session id to seed context from -- fed to the provider's
+   *  forkFlag() (analogous to the source id a resume flag would reuse). */
+  sourceSessionId: string;
+  /** Newly minted output session id for the forked conversation, tracked by
+   *  the caller (e.g. execute-prompt.ts, for recordKnownSession/bookkeeping).
+   *  NOT emitted as a CLI flag: a fork-capable provider mints its own output
+   *  session id (see ProviderAdapter.forkFlag), so this must never be
+   *  confused with a caller-minted --session-id. */
+  newSessionId: string;
+}
+
+/**
+ * PromptOptions extended with an optional fork descriptor. When `fork` is
+ * present and the provider is fork-capable (`provider.supportsFork?.()`),
+ * buildAgentPromptCommand emits the provider's fork invocation in place of
+ * the resume/session-id flags `sessionId`/`resuming` would otherwise
+ * produce. When `fork` is absent, generated commands are unchanged.
+ */
+export interface PromptOptions extends BasePromptOptions {
+  fork?: ForkDescriptor;
+}
 
 /**
  * Platform-specific command builders.

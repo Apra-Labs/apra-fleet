@@ -127,6 +127,10 @@ src/providers/
   index.ts       - getProvider() singleton factory
 ```
 
+### Optional Capability Methods
+
+Not every provider CLI can do everything -- some capabilities (e.g. session forking) only exist on a subset of providers. Rather than making every `ProviderAdapter` implement a capability it may not be able to honor, or maintaining a separate out-of-band capability registry, the interface declares such capabilities as an **optional method pair**: a `supportsX?(): boolean` check plus the flag/command builder it gates (e.g. `forkFlag?(sourceSessionId): string`). A provider that has not implemented the pair is capability-incapable by default -- there is no third state and no fallback that fakes the capability through some other mechanism. Callers must always check the support method (`provider.supportsX?.() ?? false`) before calling the builder; calling the builder without checking support first is a caller bug, not a case the interface guards against for you. This keeps capability detection colocated with the capability itself (same file, same provider), avoids a growing "which providers support what" table that drifts from the actual adapter code, and lets a capability request against an unsupporting provider fail loudly and specifically (a dedicated terminal error) instead of degrading silently into different, unexpected behavior.
+
 ### Mix-and-Match Fleet
 
 A fleet can have members on different providers simultaneously. The PM dispatches work to members by name  -- it doesn't need to know which LLM backend each member uses. The fleet server resolves the correct CLI commands per member at runtime.
