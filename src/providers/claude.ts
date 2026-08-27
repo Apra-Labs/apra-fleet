@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
 import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
-import { buildResumeFlag, buildSessionIdFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -242,6 +242,22 @@ export class ClaudeProvider implements ProviderAdapter {
 
   sessionIdStrategy(): SessionIdStrategy {
     return { type: 'caller-minted' };
+  }
+
+  // apra-fleet-lmtg.1: Claude Code's CLI supports fork-mode dispatch natively
+  // via `--resume <source> --fork-session` -- per `claude --help`, --fork-session
+  // "When resuming, create a new session ID instead of reusing the original".
+  // Unlike a plain new-session dispatch (sessionIdStrategy() 'caller-minted',
+  // where WE mint the --session-id UUID), the CLI itself mints the forked
+  // output session id -- it is not something we can pass in and must not be
+  // confused with a caller-minted id. The source session is left untouched;
+  // only the forked dispatch continues under the new, CLI-minted id.
+  supportsFork(): boolean {
+    return true;
+  }
+
+  forkFlag(sourceSessionId: string): string {
+    return buildForkFlag(sourceSessionId);
   }
 
   resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {
