@@ -422,7 +422,7 @@ VCSModule replaces that with a provider-agnostic seam:
   registering it -- not editing the runner's dispatch/classification logic.
   A synthetic/unregistered provider still classifies correctly through the
   generic-git fallback rather than falling through to `unknown` by default.
-  See `docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
+  See the repo-root `docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
   own credential-assembly, PR-response-mapping and PAT-lifetime details.
 - **The member registry, not a hardcoded literal, decides which provider
   applies.** A member's configured VCS provider is resolved from its
