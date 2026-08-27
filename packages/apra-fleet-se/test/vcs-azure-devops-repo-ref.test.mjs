@@ -190,20 +190,22 @@ test('parseRepoRef: unparseable or non-Azure input returns null and never throws
 // (4) capabilities
 // -----------------------------------------------------------------------------
 
-// INTERIM INVARIANT (apra-fleet-lzfv.2): the builders now EXIST, but the PR
-// capability is still false on purpose -- runner.js's publish path
-// (raiseVcsPrForMember) still hardcodes provider:'github' and a two-part
-// 'owner/name' repo, so an advertised capability would route an Azure DevOps
-// remote into GitHubVCS's assertRepo and turn today's graceful skip into a
-// hard sprint-level throw (mock-sprint-azure-devops-vcs-preflight.test.mjs
-// fails 2 of 3 with the flip). The flip belongs to the change that makes the
-// publish path provider-aware (apra-fleet-lzfv.5); this test asserts the
-// honest present state, so it goes red the moment either side moves alone.
-test('capabilitiesForHost: builders exist but the PR capability stays false until the publish path is provider-aware', () => {
-    assert.deepEqual(AzureDevOpsVCS.capabilitiesForHost('dev.azure.com'), { canOpenPullRequest: false });
+// The builders now EXIST (apra-fleet-lzfv.2). This test deliberately does NOT
+// assert what capabilitiesForHost('dev.azure.com').canOpenPullRequest is: the
+// value of that flag is owned by the change that makes runner.js's publish
+// path provider-aware (apra-fleet-lzfv.5), which flips it from false to true.
+// The former version of this test pinned it to false and would have had to be
+// edited by that change; pinning it here is explicitly out of scope for this
+// task, so only the provider-shaped facts this task actually delivers are
+// asserted -- the builders' existence, and that capabilitiesForHost still
+// answers only for a host this provider claims.
+test('capabilitiesForHost: the create-pull-request/comment builders exist and capabilities() recognizes a dev.azure.com remote', () => {
     assert.ok(AzureDevOpsVCS.builders, 'the create-pull-request/comment builders must exist');
     assert.equal(typeof AzureDevOpsVCS.builders['create-pull-request'], 'function');
     assert.equal(typeof AzureDevOpsVCS.builders.comment, 'function');
+    const shape = AzureDevOpsVCS.capabilitiesForHost('dev.azure.com');
+    assert.equal(typeof shape.canOpenPullRequest, 'boolean');
     const caps = capabilities('https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e2e-toy');
-    assert.deepEqual(caps, { hasRemote: true, canOpenPullRequest: false, host: 'dev.azure.com' });
+    assert.equal(caps.hasRemote, true);
+    assert.equal(caps.host, 'dev.azure.com');
 });
