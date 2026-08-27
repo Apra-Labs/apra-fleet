@@ -411,7 +411,24 @@ const REDACTED = '***REDACTED***';
 
 /** Merge a `repoRef` object with any explicit org/project/repo overrides and
  *  require all three. Throws the typed ERROR (quoting REPO_REF_HINT, the same
- *  remedy text repoRefHint publishes) rather than building a partial URL. */
+ *  remedy text repoRefHint publishes) rather than building a partial URL.
+ *
+ *  apra-fleet-5co8.11: an explicit param takes precedence over the matching
+ *  repoRef field (see the PARAMETER CONTRACT doc block above), but a caller
+ *  can hand this a three-part canonical (parseRepoRef()'s own
+ *  `org/project/repo` string, or github.mjs's two-part `owner/name`) as a
+ *  SINGLE coordinate -- most plausibly `repo` -- instead of splitting it
+ *  first. repoApiBase() would then percent-encode the whole slash-bearing
+ *  string into one URL segment, building a silently wrong URL (a 404 at
+ *  request time) rather than failing at build time. Reject a '/' inside
+ *  `org` or `repo` with the same typed ERROR raised for a missing
+ *  coordinate, so the mistake surfaces immediately instead of round-tripping
+ *  through a live REST call first. `project` is EXCLUDED from this check: an
+ *  Azure DevOps project name is decoded free-form by parseRepoRef() and a
+ *  literal '/' inside it is a legitimate value re-encoded per segment by
+ *  repoApiBase() below (pinned by "each coordinate is percent-encoded per URL
+ *  segment" in vcs-azure-devops-builders.test.mjs), not a coordinate-mixing
+ *  mistake -- org and repo, by contrast, are never expected to contain one. */
 function assertRepoCoords(params, action) {
     const ref = (params && typeof params.repoRef === 'object' && params.repoRef) ? params.repoRef : {};
     const pick = (key) => {
@@ -421,8 +438,13 @@ function assertRepoCoords(params, action) {
     const org = pick('org');
     const project = pick('project');
     const repo = pick('repo');
-    if (!org || !project || !repo) {
-        throw new Error(`ERROR: VCSModule: azure-devops "${action}" needs org, project and repo (missing: ${[['org', org], ['project', project], ['repo', repo]].filter(([, v]) => !v).map(([k]) => k).join(', ')}) -- pass them explicitly or as the repoRef parsed from a remote of the shape ${REPO_REF_HINT}.`);
+    const missing = [['org', org], ['project', project], ['repo', repo]].filter(([, v]) => !v).map(([k]) => k);
+    if (missing.length > 0) {
+        throw new Error(`ERROR: VCSModule: azure-devops "${action}" needs org, project and repo (missing: ${missing.join(', ')}) -- pass them explicitly or as the repoRef parsed from a remote of the shape ${REPO_REF_HINT}.`);
+    }
+    const slashed = [['org', org], ['repo', repo]].filter(([, v]) => v.includes('/'));
+    if (slashed.length > 0) {
+        throw new Error(`ERROR: VCSModule: azure-devops "${action}" got a '/' inside ${slashed.map(([k]) => k).join(', ')} -- pass the three org/project/repo coordinates SEPARATELY, not a combined "org/project/repo" string, per the remote shape ${REPO_REF_HINT}.`);
     }
     return { org, project, repo };
 }

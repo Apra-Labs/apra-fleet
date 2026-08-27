@@ -223,6 +223,32 @@ test('azure-devops builders: missing org/project/repo raises a typed ERROR namin
     );
 });
 
+// apra-fleet-5co8.11: a three-part canonical (parseRepoRef()'s own
+// `org/project/repo`, the exact shape github.mjs's builders accept as
+// `repo`) passed as a SINGLE coordinate must be rejected with a typed ERROR
+// at build time, never percent-encoded whole into a silently wrong URL that
+// would only 404 at request time.
+test('azure-devops builders: a three-part org/project/repo canonical passed as the single "repo" param is rejected, not URL-encoded whole', () => {
+    assert.throws(
+        () => buildCreatePrCommand({
+            ...PR_PARAMS,
+            repoRef: { org: 'apralabs', project: 'e2e-fleet-testing', repo: 'apralabs/e2e-fleet-testing/fleet-e2e-toy' },
+        }),
+        (err) => /^ERROR: VCSModule: azure-devops "create-pull-request" got a '\/' inside repo/.test(err.message)
+            && err.message.includes('https://dev.azure.com/ORG/PROJECT/_git/REPO'),
+    );
+});
+
+test('azure-devops builders: a stray slash in org or repo is rejected the same way (project is exempt -- a literal slash there is a legitimate, percent-encoded project name, see the test above)', () => {
+    for (const [key, value] of [['org', 'apralabs/extra'], ['repo', 'fleet-e2e-toy/extra']]) {
+        assert.throws(
+            () => buildCommentCommand({ ...COMMENT_PARAMS, repoRef: { ...REPO_REF, [key]: value } }),
+            (err) => err.message.startsWith(`ERROR: VCSModule: azure-devops "comment" got a '/' inside ${key}`),
+            `expected a typed ERROR for a stray slash in ${key}`,
+        );
+    }
+});
+
 // -----------------------------------------------------------------------------
 // (3) interpret contract.
 //
