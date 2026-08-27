@@ -83,6 +83,17 @@ export const executePromptSchema = z.object({
     'A session-id STRING = EXPLICIT resume of exactly that session, preferred over the member\'s stored session -- the caller asserts this prompt depends on that session\'s prior context, so an unknown/expired id is a TERMINAL error ' +
     '(structured {isError, reason: "session_not_found"}, NO LLM call, and NO fresh-session fallback) rather than a silent wrong-context dispatch.'
   ),
+  fork: z.union([z.boolean(), z.string()]).optional().describe(
+    'Branch a NEW session from an existing one instead of continuing it in place. ' +
+    'Mirrors resume\'s shape, but BRANCHES rather than continues: it mints a distinct new ' +
+    'session id seeded from the source session\'s context, leaving the source session itself ' +
+    'untouched. true = fork from the member\'s stored last session. A session-id STRING = fork ' +
+    'from exactly that session. Mutually exclusive with resume (any non-default value, i.e. ' +
+    'false or a session-id string) and with session_id (a resume shorthand) -- specifying fork ' +
+    'together with either is rejected as a validation error before any member resolution or LLM ' +
+    'call. NOTE: this field only covers the schema + the mutual-exclusivity guard; actual fork ' +
+    'MODE RESOLUTION (minting/wiring the forked session) is implemented separately.'
+  ),
   timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- the command is killed after this many seconds without any stdout/stderr output (default: 300s / 5 minutes)'),
   max_total_s: z.number().optional().describe('Hard ceiling in seconds -- the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
@@ -496,6 +507,26 @@ async function executePromptInteractive(
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
   if (SECURE_TOKEN_RE.test(input.prompt)) {
     return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
+  }
+
+  // fork/resume mutual-exclusivity guard (apra-fleet-lmtg.4): fork branches a
+  // NEW session from an existing one, resume continues IN PLACE -- the two
+  // are semantically incompatible, so a call requesting both is rejected here,
+  // before any member resolution or LLM invocation, rather than silently
+  // preferring one. session_id is documented as pure resume shorthand, so its
+  // mere presence also conflicts with fork even when the `resume` field
+  // itself still holds its default. "Non-default resume" means any value
+  // other than the schema default `true` (i.e. `false`, or an explicit
+  // session-id string) -- default-true resume is left alone since fork mode
+  // resolution (next task) supersedes it.
+  const forkRequested = input.fork === true || (typeof input.fork === 'string' && input.fork.length > 0);
+  if (forkRequested) {
+    if (input.session_id !== undefined) {
+      return 'error: execute_prompt cannot set both "fork" and "session_id" -- session_id is resume shorthand, and fork branches a new session instead of resuming. Specify only one.';
+    }
+    if (input.resume !== true) {
+      return 'error: execute_prompt cannot set both "fork" and a non-default "resume" -- fork branches a new session instead of resuming. Specify only one.';
+    }
   }
 
   // Validate substitution keys before any I/O or member resolution.
