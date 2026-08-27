@@ -14,6 +14,7 @@
  *   prompts (see AgentOptions.resume there and apra-fleet-unw.3 / F10) -- so workflow
  *   callers effectively opt out of this client-level default unless they ask for resume.
  * @property {string} [session_id] - Optional explicit session ID to resume (shorthand alias for resume: "<sessionId>")
+ * @property {boolean|string} [fork] - Branch a NEW session seeded from an existing one instead of continuing it in place. true = fork from the member's stored last session. A session-id STRING = fork from exactly that session. Mutually exclusive with resume (any non-default value) and with session_id.
  * @property {Record<string, string>} [substitutions] - Optional map of token name to replacement value
  * @property {number} [timeout_s] - Inactivity timeout in seconds (default: 300)
  * @property {number} [expected_context_tokens] - Optional estimate of how many
