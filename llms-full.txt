@@ -179,7 +179,7 @@ flowchart LR
     CP["Control Plane<br/>(Server, Engine, Supervisor)"] -->|Dispatch & Sync| M1["MacBook<br/>(Claude)"] & M2["Linux GPU<br/>(vLLM)"] & M3["Cloud VM<br/>(AGY)"] & M4["Windows<br/>(OpenCode)"]
 ```
 
-- **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet.
+- **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet. `execute_prompt` supports session forking (`fork`) on fork-capable providers -- branch a new, independent session from an existing one's context (e.g. a primed session reused across per-task dispatches) without continuing to write into the source session. See [docs/mcp-tools.md](docs/mcp-tools.md#execute_prompt) for the parameter contract.
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket.
 - **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, per-activity persistent state, and a cooperative pause/resume gate any workflow can hook into.
 - **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger, crash watchdog (including a live "paused" state and base-branch-drift indicator), run history.
@@ -677,6 +677,10 @@ src/providers/
   opencode.ts    - OpenCodeProvider (NDJSON parser, local/self-hosted models)
   index.ts       - getProvider() singleton factory
 ```
+
+### Optional Capability Methods
+
+Not every provider CLI can do everything -- some capabilities (e.g. session forking) only exist on a subset of providers. Rather than making every `ProviderAdapter` implement a capability it may not be able to honor, or maintaining a separate out-of-band capability registry, the interface declares such capabilities as an **optional method pair**: a `supportsX?(): boolean` check plus the flag/command builder it gates (e.g. `forkFlag?(sourceSessionId): string`). A provider that has not implemented the pair is capability-incapable by default -- there is no third state and no fallback that fakes the capability through some other mechanism. Callers must always check the support method (`provider.supportsX?.() ?? false`) before calling the builder; calling the builder without checking support first is a caller bug, not a case the interface guards against for you. This keeps capability detection colocated with the capability itself (same file, same provider), avoids a growing "which providers support what" table that drifts from the actual adapter code, and lets a capability request against an unsupporting provider fail loudly and specifically (a dedicated terminal error) instead of degrading silently into different, unexpected behavior.
 
 ### Mix-and-Match Fleet
 
