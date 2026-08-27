@@ -2364,9 +2364,9 @@ function selfHealResultText(result) {
 // the just-in-time credential-scoping ADR (docs/adr-server-never-acts-on-repo.md)
 // for the rogue-dispatch blast-radius rationale: widening this default would
 // give every member standing pull_requests:write for the whole sprint.
-// @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string }} opts
+// @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string, resolvedProvider?: { provider: string, authMode: string|null } }} opts
 // @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
-async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName, remoteUrlOverride }) {
+async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName, remoteUrlOverride, resolvedProvider }) {
     let repos;
     let derivedRepo = null;
     let derivedRef = null;
@@ -2417,7 +2417,11 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // providers: null, no separate mode axis) and is only forwarded as
     // `<provider>_mode` when non-null, matching provision_vcs_auth's own
     // `github_mode` field name for the one provider that has one today.
-    const { provider, authMode } = await resolveProvider(member, { fleetApi });
+    // apra-fleet-5co8.13: a caller that already resolved the provider (e.g.
+    // the self-heal callback's authRemedy hint lookup) can thread it through
+    // via `resolvedProvider`, saving a second member_detail round trip. Falls
+    // back to this function's own lookup when not supplied.
+    const { provider, authMode } = resolvedProvider || await resolveProvider(member, { fleetApi });
     // apra-fleet-5co8.2.1: the argument shape itself is now provider-owned.
     // What follows is the DEFAULT (GitHub-App) shape; a provider that declares
     // a buildProvisionArgs hook replaces it wholesale -- see
@@ -3033,8 +3037,16 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
         // fails. A provider that declares no `authRemedy` (or
         // `serverSideReMintable: true`, e.g. GitHub's App-minted token) prints
         // nothing extra here -- unchanged from before this task.
+        // apra-fleet-5co8.13: resolve the provider ONCE here and thread it into
+        // provisionVcsAuthForMember below via `resolvedProvider`, so a single
+        // self-heal attempt makes exactly one member_detail round trip instead
+        // of two. A resolution failure here must NOT short-circuit the
+        // self-heal attempt -- `resolved` simply stays undefined and
+        // provisionVcsAuthForMember falls back to its own lookup.
+        let resolved;
         try {
-            const { provider } = await resolveProvider(member, { fleetApi });
+            resolved = await resolveProvider(member, { fleetApi });
+            const { provider } = resolved;
             const impl = getVcsProvider(provider);
             if (impl && impl.authRemedy && impl.authRemedy.serverSideReMintable === false) {
                 log(`[Sync] self-heal: member '${member}' (${label}) uses '${provider}', whose credentials cannot be re-minted server-side. ${impl.authRemedy.hint}`);
@@ -3043,7 +3055,7 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
             log(`[Sync] self-heal: could not resolve member '${member}' (${label})'s VCS provider to check for an auth remedy hint (continuing with the self-heal attempt): ${resolveErr.message}`);
         }
 
-        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName });
+        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName, resolvedProvider: resolved });
 
         log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
     };
