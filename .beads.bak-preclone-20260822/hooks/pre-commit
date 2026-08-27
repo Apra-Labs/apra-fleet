@@ -1,0 +1,147 @@
+#!/bin/sh
+# pre-commit:
+#   0. Self-update: reinstall if .github/hooks/pre-commit is newer than the installed copy
+#   1. Portability checks (non-ASCII, PS backtick escapes) on staged files
+#   2. Auto-regen llms-full.txt when any of its inputs are staged
+#
+# Works on Windows (Git Bash), Linux, and macOS.
+
+# ============================================================================
+# Part 0: self-update
+# ============================================================================
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+if [ -n "$REPO_ROOT" ]; then
+  HOOK_SRC="$REPO_ROOT/.github/hooks/pre-commit"
+  HOOK_DST="$REPO_ROOT/.git/hooks/pre-commit"
+  if [ -f "$HOOK_SRC" ] && [ -f "$HOOK_DST" ] && [ "$HOOK_SRC" -nt "$HOOK_DST" ]; then
+    cp "$HOOK_SRC" "$HOOK_DST"
+    chmod +x "$HOOK_DST"
+    echo "pre-commit: hook updated from .github/hooks -- re-running"
+    exec "$HOOK_DST" "$@"
+  fi
+fi
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$STAGED" ] && exit 0
+
+# ============================================================================
+# Part 1: portability checks
+# ============================================================================
+# Non-ASCII check: YAML, shell, and Markdown only.
+#   Rationale: GitHub Actions parses YAML, bash runs shell scripts, and Markdown
+#   is rendered across platforms -- non-ASCII characters cause silent failures or
+#   rendering differences. TypeScript/JS files are excluded because Node.js handles
+#   UTF-8 fine and emoji in user-facing output strings is intentional.
+#
+# PowerShell backtick-n/t/r check: all staged text file types.
+#   Rationale: backtick-n is a PS escape that silently becomes a literal newline
+#   in bash, breaking scripts on Linux runners.
+
+# Files where non-ASCII is banned
+ASCII_FILES=$(echo "$STAGED" | grep -E '\.(yml|yaml|sh|md)$')
+# Files where PS backtick escapes are banned
+BACKTICK_FILES=$(echo "$STAGED" | grep -E '\.(yml|yaml|sh|js|ts|mjs|cjs|md)$')
+
+ISSUES=$(
+  echo "$ASCII_FILES" | while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    if git show ":$file" | grep -Pq '[^\x00-\x7F]'; then
+      echo "non-ascii:$file"
+    fi
+  done
+  echo "$BACKTICK_FILES" | while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    if git show ":$file" | grep -Pq '`[ntr](?![a-zA-Z0-9_])'; then
+      echo "backtick:$file"
+    fi
+  done
+)
+
+if [ -n "$ISSUES" ]; then
+  echo ""
+  echo "COMMIT BLOCKED -- the following files have portability issues:"
+  echo ""
+  echo "$ASCII_FILES" | while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    if git show ":$file" | grep -Pq '[^\x00-\x7F]'; then
+      echo "  [non-ASCII] $file"
+      git show ":$file" | grep -Pn '[^\x00-\x7F]' | head -3 | sed 's/^/    /'
+    fi
+  done
+  echo "$BACKTICK_FILES" | while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    if git show ":$file" | grep -Pq '`[ntr](?![a-zA-Z0-9_])'; then
+      echo "  [PS-escape] $file"
+      git show ":$file" | grep -Pn '`[ntr](?![a-zA-Z0-9_])' | head -3 | sed 's/^/    /'
+    fi
+  done
+  echo ""
+  echo "Fix: use ASCII only in YAML/shell/Markdown -- '-' for dashes, '->' for arrows."
+  echo "     PowerShell backtick-n/t/r are not valid bash -- use a real newline."
+  exit 1
+fi
+
+# ============================================================================
+# Part 2: auto-regen llms-full.txt when its inputs are staged
+# ============================================================================
+# gen-llms-full.mjs reads llms.txt and concatenates every local file it links to.
+# Inputs that could affect output: any .md, llms.txt itself, or the script.
+# We re-run the generator only when one of those is staged. Then re-stage
+# llms-full.txt if it changed. CI verifies (defense against --no-verify).
+
+NEEDS_REGEN=$(echo "$STAGED" | grep -E '(\.md$|^llms\.txt$|^scripts/gen-llms-full\.mjs$)')
+if [ -n "$NEEDS_REGEN" ]; then
+  if ! command -v node >/dev/null 2>&1; then
+    echo ""
+    echo "pre-commit: node is not on PATH -- cannot regenerate llms-full.txt"
+    echo "  Install Node.js, or commit with --no-verify and run"
+    echo "  'node scripts/gen-llms-full.mjs' before pushing."
+    echo "  (CI verifies llms-full.txt is current and will fail if stale.)"
+    exit 1
+  fi
+  if ! node scripts/gen-llms-full.mjs >/dev/null 2>&1; then
+    echo ""
+    echo "pre-commit: 'node scripts/gen-llms-full.mjs' failed -- not auto-staging llms-full.txt"
+    echo "  Investigate the script error and commit when fixed."
+    exit 1
+  fi
+  if ! git diff --quiet llms-full.txt 2>/dev/null; then
+    git add llms-full.txt
+    echo "pre-commit: regenerated llms-full.txt and staged it."
+  fi
+fi
+
+exit 0
+
+# --- BEGIN BEADS INTEGRATION v1.1.0 ---
+# This section is managed by beads. Do not remove these markers.
+if command -v bd >/dev/null 2>&1; then
+  export BD_GIT_HOOK=1
+  _bd_timeout=${BEADS_HOOK_TIMEOUT:-300}
+  _bd_used_perl=0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$_bd_timeout" bd hooks run pre-commit "$@"
+    _bd_exit=$?
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$_bd_timeout" bd hooks run pre-commit "$@"
+    _bd_exit=$?
+  elif command -v perl >/dev/null 2>&1; then
+    _bd_used_perl=1
+    perl -e 'alarm shift; exec @ARGV' "$_bd_timeout" bd hooks run pre-commit "$@"
+    _bd_exit=$?
+  else
+    echo >&2 "beads: hook 'pre-commit' running without timeout; install coreutils or perl to enable BEADS_HOOK_TIMEOUT"
+    bd hooks run pre-commit "$@"
+    _bd_exit=$?
+  fi
+  if [ $_bd_exit -eq 124 ] || { [ $_bd_used_perl -eq 1 ] && [ $_bd_exit -eq 142 ]; }; then
+    echo >&2 "beads: hook 'pre-commit' timed out after ${_bd_timeout}s — continuing without beads"
+    _bd_exit=0
+  fi
+  if [ $_bd_exit -eq 3 ]; then
+    echo >&2 "beads: database not initialized — skipping hook 'pre-commit'"
+    _bd_exit=0
+  fi
+  if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
+fi
+# --- END BEADS INTEGRATION v1.1.0 ---
