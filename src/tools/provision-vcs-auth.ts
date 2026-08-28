@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import { credentialResolve } from '../services/credential-store.js';
@@ -60,33 +60,28 @@ export const provisionVcsAuthSchema = z.object({
   // Azure DevOps fields
   org_url: z.string().optional().describe('Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)'),
   pat: z.string().optional().describe('Azure DevOps personal access token. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
+  // apra-fleet-5co8.5.1: OPTIONAL, caller-supplied -- Azure DevOps exposes no
+  // API to query a PAT's expiry back, so this must come from the operator
+  // (the date they picked in the "Set expiration" step when creating the
+  // PAT; see skills/fleet/auth-azdevops.md). Deliberately NOT the
+  // credential-store's own TTL (credential_store_set ttl_seconds): that
+  // mechanism DELETES the stored secret on a resolve past its TTL, which is
+  // why e.g. the fleet-e2e-ado store entry is set up with no store-side TTL
+  // at all -- conflating the two would silently start deleting a credential
+  // whose PAT is merely nearing expiry, not gone. This field only ever flows
+  // into deploy metadata to warn/cleanup, never to delete a stored secret.
+  // A malformed value here is NOT harmless: it is truthy, so it reaches
+  // vcsTokenExpiresAt verbatim, makes every checkVcsTokenExpiry comparison
+  // NaN (silencing the warning entirely) and makes scheduleCredentialCleanup
+  // fall back to its 55-minute DEFAULT_TTL_MS -- i.e. it would auto-revoke the
+  // PAT that was just deployed. Rejected at the schema boundary so no caller
+  // can construct that state.
+  pat_expires_at: z.string().refine((v) => !Number.isNaN(Date.parse(v)), {
+    message: 'pat_expires_at must be a parseable date/time (ISO 8601, e.g. 2027-08-20T00:00:00Z)',
+  }).optional().describe('ISO 8601 date/time the Azure DevOps PAT expires, as chosen when creating the token. Propagated to the member registry so provisioning can warn when the PAT is nearing expiry.'),
 });
 
 export type ProvisionVcsAuthInput = z.infer<typeof provisionVcsAuthSchema>;
-
-function buildCredentials(input: ProvisionVcsAuthInput): unknown | string {
-  switch (input.provider) {
-    case 'github': {
-      const mode = input.github_mode ?? 'github-app';
-      if (mode === 'pat') {
-        if (!input.token) return 'GitHub PAT mode requires "token" field.';
-        return { type: 'pat', token: input.token };
-      }
-      return { type: 'github-app', git_access: input.git_access, repos: input.repos };
-    }
-    case 'bitbucket': {
-      if (!input.email || !input.api_token || !input.workspace) {
-        return 'Bitbucket requires "email", "api_token", and "workspace" fields.';
-      }
-      return { email: input.email, api_token: input.api_token, workspace: input.workspace };
-    }
-    case 'azure-devops': {
-      const azPat = input.pat ?? input.token;
-      if (!input.org_url || !azPat) return 'Azure DevOps requires "org_url" and "pat" (or "token") fields.';
-      return { org_url: input.org_url, pat: azPat };
-    }
-  }
-}
 
 export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
@@ -105,30 +100,29 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
     }
   }
 
-  // OOB fallback for absent credential fields
-  if (resolvedInput.provider === 'github' && (resolvedInput.github_mode ?? 'github-app') === 'pat' && resolvedInput.token === undefined) {
+  // OOB fallback for an absent credential field, dispatched through the
+  // resolved provider (apra-fleet-5co8.3.2). The provider owns which field its
+  // secret lives in, when it counts as missing and what the operator is asked
+  // -- no provider name and no auth-mode knowledge is left at this call site.
+  // Order is unchanged: {{secure.NAME}} resolution first, then OOB collection
+  // (an OOB-collected secret is deliberately NOT re-run through
+  // resolveSecureField), then credential assembly.
+  const missing = service.missingCredential;
+  if (missing && missing.isMissing(resolvedInput)) {
     const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
-      prompt: `Enter GitHub personal access token for ${agent.friendlyName}`,
+      prompt: missing.promptFor(agent.friendlyName),
     });
     if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
-    resolvedInput.token = decryptPassword(oob.password!);
-  }
-  if (resolvedInput.provider === 'bitbucket' && resolvedInput.api_token === undefined) {
-    const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
-      prompt: `Enter Bitbucket API token for ${agent.friendlyName}`,
-    });
-    if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
-    resolvedInput.api_token = decryptPassword(oob.password!);
-  }
-  if (resolvedInput.provider === 'azure-devops' && resolvedInput.pat === undefined && resolvedInput.token === undefined) {
-    const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
-      prompt: `Enter Azure DevOps personal access token for ${agent.friendlyName}`,
-    });
-    if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
-    resolvedInput.pat = decryptPassword(oob.password!);
+    resolvedInput[missing.field] = decryptPassword(oob.password!);
   }
 
-  const creds = buildCredentials(resolvedInput);
+  // buildCredentials is still optional on VcsProviderService while the seam is
+  // being adopted; every provider registered above implements it, so an absent
+  // implementation is a wiring bug, reported rather than silently deploying
+  // undefined credentials.
+  const creds = service.buildCredentials
+    ? service.buildCredentials(resolvedInput)
+    : `Provider "${input.provider}" does not support credential assembly.`;
   if (typeof creds === 'string') return `❌ ${creds}`;
 
   const label = input.label ?? input.provider;
@@ -142,7 +136,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   const conn = await strategy.testConnection();
   if (!conn.ok) return `❌ Member "${agent.friendlyName}" is offline: ${conn.error}`;
 
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const exec = async (cmd: string): Promise<string> => {
     const result = await strategy.execCommand(cmd, 15000);
     if (result.code !== 0 && result.stderr) throw new Error(result.stderr);
@@ -175,7 +169,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   // Best-effort connectivity test
   let connectivity;
   try {
-    connectivity = await service.testConnectivity(agent, exec);
+    connectivity = await service.testConnectivity(agent, exec, scopeUrl);
   } catch {
     connectivity = { success: false, message: 'connectivity test threw' };
   }
@@ -187,9 +181,13 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
     ? Object.entries(deployResult.metadata).map(([k, v]) => `  ${k}: ${v}`).join('\n')
     : '';
 
-  // Check if the just-deployed token is already near expiry
+  // Check if the just-deployed token is already near expiry. `agent` was
+  // resolved before the updateAgent() call above, so its own vcsProvider may
+  // still be stale/absent (e.g. a member's first-ever azure-devops
+  // provision) -- pass input.provider explicitly rather than relying on
+  // `agent.vcsProvider` reflecting the write that just happened.
   const expiryWarning = deployResult.metadata?.expiresAt
-    ? checkVcsTokenExpiry({ ...agent, vcsTokenExpiresAt: deployResult.metadata.expiresAt })
+    ? checkVcsTokenExpiry({ ...agent, vcsProvider: input.provider, vcsTokenExpiresAt: deployResult.metadata.expiresAt })
     : null;
 
   return `✅ ${deployResult.message} on "${agent.friendlyName}"\n`

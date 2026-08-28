@@ -11,6 +11,8 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import type { Agent } from '../types.js';
+import type { MemberShell } from '../os/os-commands.js';
+import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
@@ -358,10 +360,22 @@ function stableStringify(value: unknown): string {
  *  <workFolder>/.claude/settings.local.json -- the read-back verification
  *  passed because it re-read the same (wrong) relative path it had just
  *  written, so the mismatch was invisible to that check alone. */
-function resolveRemotePath(workFolder: string, relPath: string, isWindows: boolean): string {
+function resolveRemotePath(
+  workFolder: string,
+  relPath: string,
+  isWindows: boolean,
+  shell?: MemberShell,
+): string {
   if (isWindows) {
     const base = workFolder.replace(/[\\/]+$/, '').replace(/\//g, '\\');
-    return `${base}\\${relPath.replace(/\//g, '\\')}`;
+    const winPath = `${base}\\${relPath.replace(/\//g, '\\')}`;
+    // A Git-for-Windows member runs bash.exe, where a backslash inside double
+    // quotes is a literal character, not a path separator. MSYS accepts the
+    // drive-letter form with forward slashes ("C:/Users/..."), so hand bash
+    // that instead. Every other Windows member (pwsh7/powershell5/unrecorded)
+    // keeps the byte-identical backslash string it got before.
+    if (isPosixShell(isWindows, shell)) return winPath.replace(/\\/g, '/');
+    return winPath;
   }
   const base = workFolder.replace(/\/+$/, '');
   return `${base}/${relPath}`;
@@ -373,16 +387,18 @@ async function deliverConfigFile(
   workFolder: string,
   filePath: string,
   content: Record<string, unknown> | string,
+  shell?: MemberShell,
 ): Promise<void> {
   const isWindows = agentOs === 'windows';
-  const absPath = resolveRemotePath(workFolder, filePath, isWindows);
+  const posix = isPosixShell(isWindows, shell);
+  const absPath = resolveRemotePath(workFolder, filePath, isWindows, shell);
   const winPath = absPath.replace(/\//g, '\\');
-  const dir = isWindows
-    ? winPath.split('\\').slice(0, -1).join('\\')
-    : absPath.split('/').slice(0, -1).join('/');
-  const mkdirCmd = isWindows
-    ? `New-Item -ItemType Directory -Force "${dir}"`
-    : `mkdir -p "${dir}"`;
+  const dir = posix
+    ? absPath.split('/').slice(0, -1).join('/')
+    : winPath.split('\\').slice(0, -1).join('\\');
+  const mkdirCmd = posix
+    ? `mkdir -p "${dir}"`
+    : `New-Item -ItemType Directory -Force "${dir}"`;
   const mkdirResult = await strategy.execCommand(mkdirCmd, 5000);
   if (mkdirResult.code !== 0) {
     throw new ConfigDeliveryError(
@@ -391,9 +407,9 @@ async function deliverConfigFile(
     );
   }
 
-  const readCmd = isWindows
-    ? `Get-Content -Raw "${winPath}" -ErrorAction SilentlyContinue`
-    : `cat "${absPath}" 2>/dev/null || true`;
+  const readCmd = posix
+    ? `cat "${absPath}" 2>/dev/null || true`
+    : `Get-Content -Raw "${winPath}" -ErrorAction SilentlyContinue`;
 
   let mergedContent: Record<string, unknown> | string = content;
   if (isPlainObject(content)) {
@@ -412,9 +428,9 @@ async function deliverConfigFile(
     ? mergedContent
     : JSON.stringify(mergedContent, null, 2);
 
-  const writeCmd = isWindows
-    ? `[System.IO.File]::WriteAllText("${winPath}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
-    : `cat > "${absPath}" << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`;
+  const writeCmd = posix
+    ? `cat > "${absPath}" << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`
+    : `[System.IO.File]::WriteAllText("${winPath}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`;
   const writeResult = await strategy.execCommand(writeCmd, 5000);
   if (writeResult.code !== 0) {
     throw new ConfigDeliveryError(
@@ -476,6 +492,9 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   const provider = getProvider(agent.llmProvider);
   const strategy = getStrategy(agent);
+  // The member's registered shell decides POSIX vs PowerShell command strings
+  // for every config write below (apra-fleet-7dir.1.3).
+  const agentShell = getAgentShell(agent);
   const profilesDir = findProfilesDir();
   const ledger = input.project_folder ? loadLedger(input.project_folder) : { stacks: [], granted: [] };
 
@@ -501,12 +520,12 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       // wrong file here would silently discard every pre-existing grant in the
       // real settings.local.json once the write lands at the correct path.
       const isWindowsAgent = (agent.os ?? 'linux') === 'windows';
-      const absSettingsPath = resolveRemotePath(agent.workFolder, '.claude/settings.local.json', isWindowsAgent);
-      // TODO: unbranched POSIX `2>/dev/null || echo` -- same defect class as
-      // orphan-recovery.ts's pid-alive/file-read commands. Not yet OS-branched.
-      const readResult = isWindowsAgent
-        ? await strategy.execCommand(`Get-Content -Raw "${absSettingsPath.replace(/\//g, '\\')}" -ErrorAction SilentlyContinue`, 5000)
-        : await strategy.execCommand(`cat "${absSettingsPath}" 2>/dev/null || echo "{}"`, 5000);
+      const absSettingsPath = resolveRemotePath(agent.workFolder, '.claude/settings.local.json', isWindowsAgent, agentShell);
+      // Branched on the member's SHELL, not just its OS: a gitbash Windows
+      // member cannot run Get-Content (apra-fleet-7dir.1.3).
+      const readResult = isPosixShell(isWindowsAgent, agentShell)
+        ? await strategy.execCommand(`cat "${absSettingsPath}" 2>/dev/null || echo "{}"`, 5000)
+        : await strategy.execCommand(`Get-Content -Raw "${absSettingsPath.replace(/\//g, '\\')}" -ErrorAction SilentlyContinue`, 5000);
       let current: any;
       try {
         current = JSON.parse(readResult.stdout.trim());
@@ -525,7 +544,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     const paths = provider.permissionConfigPaths();
     try {
       for (let i = 0; i < paths.length; i++) {
-        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i]);
+        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell);
       }
     } catch (e) {
       if (e instanceof ConfigDeliveryError) {
@@ -568,7 +587,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   try {
     for (let i = 0; i < paths.length; i++) {
-      await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i]);
+      await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell);
     }
   } catch (e) {
     if (e instanceof ConfigDeliveryError) {

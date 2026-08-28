@@ -15,12 +15,17 @@ const {
   mockLogLine,
   mockLogWarn,
   mockGetAgentOS,
+  mockGetAgentShell,
 } = vi.hoisted(() => ({
   mockGetAgent: vi.fn<(id: string) => Agent | undefined>(),
   mockExecCommand: vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>(),
   mockLogLine: vi.fn(),
   mockLogWarn: vi.fn(),
   mockGetAgentOS: vi.fn<(agent: Agent) => string>(),
+  // apra-fleet-7dir.2.2: member-home.ts now also imports getAgentShell from
+  // this module; default to undefined (no registered shell) so every
+  // existing test here keeps its pre-shell-awareness behavior.
+  mockGetAgentShell: vi.fn<(agent: Agent) => string | undefined>(),
 }));
 
 vi.mock('../src/services/registry.js', () => ({
@@ -39,6 +44,11 @@ vi.mock('../src/utils/log-helpers.js', () => ({
 
 vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: mockGetAgentOS,
+  getAgentShell: mockGetAgentShell,
+  // apra-fleet-7dir.2.5: stall-poller.ts's command builders now also derive
+  // a posix/PowerShell decision through isPosixShell -- mirror the real
+  // implementation here rather than re-mocking every call site's behavior.
+  isPosixShell: (os: string, shell?: string) => os !== 'windows' || shell === 'gitbash',
 }));
 
 import { pollLogFile, pollDirectoryActivity } from '../src/services/stall/stall-poller.js';
@@ -592,6 +602,78 @@ describe('pollLogFile', () => {
           const bound = Number(/-maxdepth (\d+)/.exec(scanCmd)![1]);
           expect(bound).toBeGreaterThanOrEqual(requiredDepth);
         }
+      });
+    });
+
+    /**
+     * apra-fleet-9iaz.1: the false-stall-kill bug fixed on this streak was
+     * OpenCode-specific -- resolveSessionLogDir pointed at a directory that
+     * did not exist, so this poller saw no files at all and the provisional
+     * baseline timeout scored a healthy dispatch as "no progress". HEAD fixes
+     * the directory (see opencode.ts resolveSessionLogDir); this locks down
+     * that pollDirectoryActivity treats a PLAIN, non-jsonl file dropped in
+     * that directory (opencode.log, not a *.jsonl transcript) as a valid
+     * activity signal, since the generated find/Get-ChildItem scan has no
+     * extension filter -- and that OpenCode's capability probe still reports
+     * pollable (findLogFile's .jsonl-only filter in
+     * src/services/stall/find-log-file.ts is NOT on this live path).
+     */
+    describe.skipIf(process.platform === 'darwin')('OpenCode non-jsonl activity signal', () => {
+      const targetOs: 'windows' | 'linux' = process.platform === 'win32' ? 'windows' : 'linux';
+      const opencode = getProvider('opencode');
+      let fixtureHome: string;
+      let logDir: string;
+      let logFilePath: string;
+
+      beforeEach(() => {
+        clearMemberHomeDirCache();
+        fixtureHome = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'opencode-log-'));
+        logDir = opencode.resolveSessionLogDir('/work/repo', fixtureHome, targetOs)!;
+        // A plain, non-jsonl activity file -- exactly the shape that a
+        // .jsonl-only filter would miss.
+        logFilePath = path.join(logDir, 'opencode.log');
+        fs.mkdirSync(logDir, { recursive: true });
+        fs.writeFileSync(logFilePath, 'plain text log line, not jsonl\n');
+
+        mockGetAgent.mockReturnValue(makeAgent({
+          id: 'member-1',
+          agentType: 'remote',
+          username: 'bella',
+          llmProvider: 'opencode',
+          workFolder: '/work/repo',
+        }));
+        mockGetAgentOS.mockReturnValue(targetOs);
+        mockExecCommand.mockImplementation(async (cmd: string) => {
+          const decodedCmd = decodePowerShellEncodedCommand(cmd);
+          if (decodedCmd.includes('$HOME') || decodedCmd.includes('USERPROFILE')) {
+            return { stdout: fixtureHome, stderr: '', code: 0 };
+          }
+          const { stdout, stderr } = await execAsync(cmd, { timeout: 30_000, maxBuffer: 1024 * 1024 });
+          return { stdout: String(stdout), stderr: String(stderr), code: 0 };
+        });
+      });
+
+      afterEach(() => {
+        fs.rmSync(fixtureHome, { recursive: true, force: true });
+        clearMemberHomeDirCache();
+      });
+
+      it('capability probe still treats OpenCode as pollable (resolveSessionLogDir is non-null)', () => {
+        expect(opencode.resolveSessionLogDir('/work/repo', '/__fleet_capability_probe__', targetOs)).not.toBeNull();
+      });
+
+      it('reports activity from a plain non-jsonl log file, never scored as no progress', async () => {
+        const activity = await pollDirectoryActivity('member-1');
+
+        const scanCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
+        expect(scanCmd).toBeDefined();
+        expect(scanCmd).toContain(logDir);
+
+        expect(activity.signalAvailable).toBe(true);
+        expect(activity.mtimeMs).not.toBeNull();
+        const actualMtime = fs.statSync(logFilePath).mtimeMs;
+        // POSIX branch reports whole seconds, so allow a 1s truncation window.
+        expect(Math.abs(activity.mtimeMs! - actualMtime)).toBeLessThan(1500);
       });
     });
   });

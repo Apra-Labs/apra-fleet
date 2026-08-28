@@ -56,6 +56,7 @@
 // =============================================================================
 
 import { DoltDivergedError, DoltSyncError, DoltBinaryUnavailableError } from './errors.mjs';
+import { getSeCommands } from './se-os-commands.mjs';
 
 /** Must equal src/cli/dolt-install.ts's DOLT_VERSION byte-for-byte -- a
  *  drift-guard test (dolt-settle.test.mjs) asserts this against that file's
@@ -122,12 +123,22 @@ export function resolveDoltAsset(platform, arch) {
     return { assetName, url: `${DOLT_RELEASE_BASE}/${assetName}`, archiveType, binaryName };
 }
 
-/** The member-side fleet-managed dolt path, resolved with the MEMBER's own
- *  shell (never the orchestrator's homedir/platform). */
-function memberDoltPath(platform) {
-    return platform === 'win32'
-        ? '"$env:USERPROFILE\\.apra-fleet\\bin\\dolt.exe"'
-        : '"$HOME/.apra-fleet/bin/dolt"';
+/**
+ * The member-side fleet-managed dolt path, resolved with the MEMBER's own
+ * shell dialect (never the orchestrator's homedir/platform) via
+ * se-os-commands.mjs's getSeCommands(). The binary filename is still
+ * OS-dependent (dolt.exe on either Windows dialect, dolt everywhere else --
+ * the same OS-vs-shell distinction resolveDoltAsset's platform-branched
+ * asset selection stays on), decided off the resolved primitive's `.shell`
+ * identifier rather than a `platform === 'win32'` check, so this function
+ * carries no platform branch of its own (apra-fleet-7dir.16).
+ * @param {{ os?: string, shell?: string }|string} target
+ * @returns {string} a double-quoted, shell-dialect-correct path
+ */
+function memberDoltPath(target) {
+    const seCmds = getSeCommands(target);
+    const binaryName = seCmds.shell === 'posix' ? 'dolt' : 'dolt.exe';
+    return `"${seCmds.homePath(`.apra-fleet/bin/${binaryName}`)}"`;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,34 +155,38 @@ function memberDoltPath(platform) {
 //     can avoid backticks entirely simply does).
 //   - `cmd 2>$null || fallback` parses in bash but is a hard parse ERROR in
 //     PowerShell 5.1, so no single "works everywhere" probe string exists.
+//
+// memberDoltPath/invokeBinary/escapeSqlForShell all resolve their dialect via
+// se-os-commands.mjs's getSeCommands({ os, shell }) rather than a bare
+// `platform === 'win32'` check (apra-fleet-7dir.16/.20), so a Windows member
+// whose registered shell is Git-for-Windows bash gets the bash dialect for
+// all three instead of being force-assumed PowerShell.
 // ---------------------------------------------------------------------------
 
-/** Invoke an executable at a quoted path with arguments, in the member's shell. */
-function invokeBinary(platform, quotedPath, args) {
-    return platform === 'win32' ? `& ${quotedPath} ${args}` : `${quotedPath} ${args}`;
+/**
+ * Invoke an executable at a quoted path with arguments, in the member's
+ * actual shell dialect.
+ * @param {{ os?: string, shell?: string }|string} target
+ * @param {string} quotedPath
+ * @param {string} args
+ */
+function invokeBinary(target, quotedPath, args) {
+    return getSeCommands(target).shell === 'powershell' ? `& ${quotedPath} ${args}` : `${quotedPath} ${args}`;
 }
 
 /**
  * Escape a SQL string so it survives as ONE double-quoted argument in the
  * member's shell. Backticks and `$` are the dangerous characters in both
- * dialects, for opposite reasons.
+ * dialects, for opposite reasons. Delegates to se-os-commands.mjs's
+ * escapeSqlArg primitive (apra-fleet-7dir.20) rather than re-implementing the
+ * escaping here.
+ * @param {{ os?: string, shell?: string }|string} target bare platform string
+ *   ('win32'|'linux'|'darwin', back-compat with every existing caller/test)
+ *   or a { os, shell } record for full shell-dialect fidelity.
+ * @param {string} sql
  */
-export function escapeSqlForShell(platform, sql) {
-    const bq = String.fromCharCode(96);
-    if (platform === 'win32') {
-        // PowerShell: ` escapes; a literal backtick is a doubled backtick, a
-        // literal quote is `" and a literal $ is `$.
-        return String(sql)
-            .split(bq).join(bq + bq)
-            .replace(/\$/g, `${bq}$`)
-            .replace(/"/g, `${bq}"`);
-    }
-    // bash: backslash escapes inside double quotes.
-    return String(sql)
-        .replace(/\\/g, '\\\\')
-        .split(bq).join('\\' + bq)
-        .replace(/\$/g, '\\$')
-        .replace(/"/g, '\\"');
+export function escapeSqlForShell(target, sql) {
+    return getSeCommands(target).escapeSqlArg(sql);
 }
 
 // ---------------------------------------------------------------------------
@@ -204,16 +219,25 @@ export async function resolveDoltStatus({ command, member, log = () => {} }) {
 // ---------------------------------------------------------------------------
 
 /** Probe an existing binary at `doltPath` for exit-0 + parseable version. */
-async function probeDoltVersion({ command, member, doltPath, platform }) {
-    const res = await command(invokeBinary(platform, doltPath, 'version'), { member_name: member, silent: true, failSoft: true, label: `settle: probe dolt version for '${member}'` });
+async function probeDoltVersion({ command, member, doltPath, platform, shell = '' }) {
+    const res = await command(invokeBinary({ os: platform, shell }, doltPath, 'version'), { member_name: member, silent: true, failSoft: true, label: `settle: probe dolt version for '${member}'` });
     const text = String((res && (res.output || res.error)) || '');
     const match = text.match(/dolt version (\d+\.\d+\.\d+\S*)/i);
     return { ok: !!(res && res.ok !== false) && !!match, version: match ? match[1] : null, raw: text };
 }
 
 /** Step 1b: install the pinned binary via remote shell from the same pinned
- *  asset URL resolveDoltAsset() computes. Bounded, single-attempt. */
-async function installPinnedDolt({ command, member, platform, arch, doltPath, log }) {
+ *  asset URL resolveDoltAsset() computes. Bounded, single-attempt.
+ *  The PowerShell script body is kept byte-identical to today regardless of
+ *  the member's registered shell -- it is `doltPath` (already the
+ *  PowerShell-dialect `psDoltPath` form, resolved by the caller) that must
+ *  stay in `$env:USERPROFILE...` form even for a gitbash member, since the
+ *  dialect INSIDE the wrapped script is PowerShell, not the member's own
+ *  shell (apra-fleet-7dir.21's NON-OBVIOUS constraint). Only the OUTER
+ *  invocation is routed via getSeCommands(...).wrapPowerShellScript, which
+ *  returns the script unchanged for a powershell member and a bash-invocable
+ *  `-EncodedCommand` form for a gitbash member. */
+async function installPinnedDolt({ command, member, platform, arch, doltPath, shell = '', log }) {
     const asset = resolveDoltAsset(platform, arch);
     log(`[Dolt Settle] installing pinned dolt ${DOLT_VERSION} on member '${member}' from ${asset.url}`);
 
@@ -225,7 +249,8 @@ async function installPinnedDolt({ command, member, platform, arch, doltPath, lo
             `Get-ChildItem -Recurse -Filter "${asset.binaryName}" "$env:TEMP\\dolt-settle" | Select-Object -First 1 | Copy-Item -Force -Destination ${doltPath}`,
             'Remove-Item -Recurse -Force "$env:TEMP\\dolt-settle.zip","$env:TEMP\\dolt-settle" -ErrorAction SilentlyContinue',
         ].join('; ');
-        return command(script, { member_name: member, silent: true, failSoft: true, timeout_s: 320, label: `settle: install pinned dolt on '${member}'` });
+        const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle installPinnedDolt');
+        return command(wrapped, { member_name: member, silent: true, failSoft: true, timeout_s: 320, label: `settle: install pinned dolt on '${member}'` });
     }
 
     const script = [
@@ -254,10 +279,12 @@ function isBinaryLockedError(output) {
  *  path -- by construction the only thing that ever launches a binary there
  *  is settle/the installer, so this is always a legitimate self-heal, never
  *  collateral damage against an unrelated process. */
-async function killProcessAtPath({ command, member, platform, doltPath, log }) {
+async function killProcessAtPath({ command, member, platform, doltPath, shell = '', log }) {
     log(`[Dolt Settle] attempting to kill any process locking '${doltPath}' on member '${member}' before retrying the pinned install.`);
     if (platform === 'win32') {
-        return command(`Get-Process | Where-Object { $_.Path -eq ${doltPath} } | Stop-Process -Force -ErrorAction SilentlyContinue`, { member_name: member, silent: true, failSoft: true, label: `settle: kill locking dolt process on '${member}'` });
+        const script = `Get-Process | Where-Object { $_.Path -eq ${doltPath} } | Stop-Process -Force -ErrorAction SilentlyContinue`;
+        const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle killProcessAtPath');
+        return command(wrapped, { member_name: member, silent: true, failSoft: true, label: `settle: kill locking dolt process on '${member}'` });
     }
     return command('pkill -f "\\.apra-fleet/bin/dolt" || true', { member_name: member, silent: true, failSoft: true, label: `settle: kill locking dolt process on '${member}'` });
 }
@@ -270,21 +297,35 @@ async function killProcessAtPath({ command, member, platform, doltPath, log }) {
  * after the full ladder, or the platform/arch is unsupported with no
  * existing binary -- an ordinary operational failure, not an escalation.
  *
- * @returns {Promise<{ doltPath: string, version: string, pinned: boolean, warnings: string[] }>}
+ * @returns {Promise<{ doltPath: string, psDoltPath: string, version: string, pinned: boolean, warnings: string[] }>}
  */
-export async function ensurePinnedDolt({ command, member, platform, arch = 'x64', log = () => {} }) {
-    const doltPath = memberDoltPath(platform);
+export async function ensurePinnedDolt({ command, member, platform, arch = 'x64', shell = '', log = () => {} }) {
+    // `doltPath` is the member-shell-native invocation path (bash for a
+    // gitbash member, PowerShell otherwise) -- used for the version probe and
+    // (via the returned doltInfo) every later `dolt` invocation dispatched
+    // directly to the member's own shell (runDoltSql).
+    const doltPath = memberDoltPath({ os: platform, shell });
+    // `psDoltPath` is ALWAYS the PowerShell-dialect form (shell forced to ''),
+    // because installPinnedDolt/killProcessAtPath/spawnEphemeralServer embed
+    // it inside a raw PowerShell SCRIPT body, not a member-shell-dispatched
+    // command. The dialect INSIDE those wrapped scripts is always PowerShell
+    // even for a gitbash member -- only the OUTER invocation is now routed
+    // through getSeCommands(...).wrapPowerShellScript (apra-fleet-7dir.21/.22)
+    // -- so a gitbash member must still get the PowerShell-dialect path here,
+    // or a bare `$HOME/...` path would silently fail to expand inside those
+    // PowerShell script bodies.
+    const psDoltPath = memberDoltPath({ os: platform, shell: '' });
     const warnings = [];
 
-    const initial = await probeDoltVersion({ command, member, doltPath, platform });
+    const initial = await probeDoltVersion({ command, member, doltPath, platform, shell });
     if (initial.ok && initial.version === DOLT_VERSION.replace(/^v/, '')) {
-        return { doltPath, version: initial.version, pinned: true, warnings };
+        return { doltPath, psDoltPath, version: initial.version, pinned: true, warnings };
     }
 
     // Missing, broken, or wrong version -- attempt the pinned install.
     let install;
     try {
-        install = await installPinnedDolt({ command, member, platform, arch, doltPath, log });
+        install = await installPinnedDolt({ command, member, platform, arch, doltPath: psDoltPath, shell, log });
     } catch (err) {
         throw new DoltBinaryUnavailableError(
             `[Dolt Settle] unsupported platform/arch for member '${member}' installing pinned dolt: ${err.message}`,
@@ -297,19 +338,19 @@ export async function ensurePinnedDolt({ command, member, platform, arch = 'x64'
 
     if (installFailed && isBinaryLockedError(installOutput)) {
         // Kill-first, then retry once (Part 5.6 step 2).
-        await killProcessAtPath({ command, member, platform, doltPath, log });
-        const retry = await installPinnedDolt({ command, member, platform, arch, doltPath, log });
+        await killProcessAtPath({ command, member, platform, doltPath: psDoltPath, shell, log });
+        const retry = await installPinnedDolt({ command, member, platform, arch, doltPath: psDoltPath, shell, log });
         if (!(retry && retry.ok === false)) {
-            const reprobed = await probeDoltVersion({ command, member, doltPath, platform });
-            if (reprobed.ok) return { doltPath, version: reprobed.version, pinned: true, warnings };
+            const reprobed = await probeDoltVersion({ command, member, doltPath, platform, shell });
+            if (reprobed.ok) return { doltPath, psDoltPath, version: reprobed.version, pinned: true, warnings };
         }
         // Still blocked after kill+retry -- warn and fall back (Part 5.6 step 3).
-        const fallback = await probeDoltVersion({ command, member, doltPath, platform });
+        const fallback = await probeDoltVersion({ command, member, doltPath, platform, shell });
         if (fallback.ok) {
             const warn = `[Dolt Settle] pin not enforced on '${member}': could not replace ${doltPath} (locked even after kill+retry); proceeding with dolt ${fallback.version} as a functionally-probed fallback. Landmines unverified on this version -- see docs/dolt-sync-redesign.md Part 5.6.`;
             log(warn);
             warnings.push(warn);
-            return { doltPath, version: fallback.version, pinned: false, warnings };
+            return { doltPath, psDoltPath, version: fallback.version, pinned: false, warnings };
         }
         throw new DoltBinaryUnavailableError(
             `[Dolt Settle] no usable dolt binary on member '${member}' after install+kill+retry: ${installOutput}`,
@@ -324,14 +365,14 @@ export async function ensurePinnedDolt({ command, member, platform, arch = 'x64'
         );
     }
 
-    const reprobed = await probeDoltVersion({ command, member, doltPath, platform });
+    const reprobed = await probeDoltVersion({ command, member, doltPath, platform, shell });
     if (!reprobed.ok) {
         throw new DoltBinaryUnavailableError(
             `[Dolt Settle] pinned dolt install reported success but the binary still fails 'dolt version' on member '${member}' -- likely a corrupted download.`,
             { member, probedPath: doltPath, probeOutput: reprobed.raw, repairCommand: `delete ${doltPath} on ${member} and re-run settle` },
         );
     }
-    return { doltPath, version: reprobed.version, pinned: true, warnings };
+    return { doltPath, psDoltPath, version: reprobed.version, pinned: true, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +382,7 @@ export async function ensurePinnedDolt({ command, member, platform, arch = 'x64'
 /** Genuinely-detached spawn -- WMI on Windows (Start-Process/schtasks both
  *  die with the launching SSH session, verified live), nohup+disown on
  *  POSIX. Returns the pid so teardown can target it precisely. */
-export async function spawnEphemeralServer({ command, member, platform, doltPath, dataDir, host, port, log = () => {} }) {
+export async function spawnEphemeralServer({ command, member, platform, doltPath, dataDir, host, port, shell = '', log = () => {} }) {
     log(`[Dolt Settle] starting ephemeral dolt sql-server for member '${member}' at ${host}:${port} --data-dir ${dataDir}`);
 
     if (platform === 'win32') {
@@ -358,7 +399,8 @@ export async function spawnEphemeralServer({ command, member, platform, doltPath
             'if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create failed with ReturnValue $($r.ReturnValue) for command line: $cl" }',
             'Write-Output "PID:$($r.ProcessId)"',
         ].join('; ');
-        const res = await command(script, { member_name: member, silent: true, failSoft: true, label: `settle: spawn ephemeral sql-server on '${member}'` });
+        const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle spawnEphemeralServer');
+        const res = await command(wrapped, { member_name: member, silent: true, failSoft: true, label: `settle: spawn ephemeral sql-server on '${member}'` });
         if (res && res.ok === false) {
             throw new DoltSyncError(`[Dolt Settle] failed to spawn ephemeral sql-server for member '${member}': ${res.error}`, { member, doltOutput: res.error });
         }
@@ -402,9 +444,9 @@ export async function spawnEphemeralServer({ command, member, platform, doltPath
 
 /** Bounded poll for the server to actually accept connections -- never
  *  sleep-and-hope. */
-export async function waitForServerReady({ command, member, platform, host, port, log = () => {}, attempts = 10, intervalMs = 500 }) {
+export async function waitForServerReady({ command, member, platform, shell = '', host, port, log = () => {}, attempts = 10, intervalMs = 500 }) {
     for (let i = 0; i < attempts; i += 1) {
-        const probe = platformAwareTcpProbe({ command, member, platform, host, port });
+        const probe = platformAwareTcpProbe({ command, member, platform, shell, host, port });
         // eslint-disable-next-line no-await-in-loop -- intentional bounded poll
         const res = await probe;
         if (res) return true;
@@ -434,26 +476,33 @@ export async function waitForServerReady({ command, member, platform, host, port
  * single-quoted string, so `require("net")` arrived at node as
  * `require(net)` and died with a SyntaxError (verified live on
  * fleet-win-dev1). Backslash-escaping them is the documented workaround --
- * and must NOT be applied on POSIX, where the backslashes would survive
- * literally into the JS.
+ * and must NOT be applied on POSIX (or on a Windows member whose registered
+ * shell is Git-for-Windows bash, which runs `node` directly rather than
+ * through PowerShell's native-argument passing): the backslashes would
+ * survive literally into the JS. Dialect is resolved off the member's
+ * REGISTERED shell (getSeCommands) rather than platform, so this only
+ * escapes for the true powershell dialect (apra-fleet-7dir.22/.23).
+ * @param {{ os?: string, shell?: string }|string} target
+ * @param {string} js
  */
-function nodeEval(platform, js) {
-    return `node -e '${platform === 'win32' ? js.replace(/"/g, '\\"') : js}'`;
+function nodeEval(target, js) {
+    const needsPowerShellEscaping = getSeCommands(target).shell === 'powershell';
+    return `node -e '${needsPowerShellEscaping ? js.replace(/"/g, '\\"') : js}'`;
 }
 
-function tcpProbeScript(platform, host, port, timeoutMs = 2000) {
-    return nodeEval(platform, `const net=require("net");const s=net.connect(${port},"${host}");const done=(v)=>{try{s.destroy()}catch(e){};console.log(v?"PROBE:True":"PROBE:False");process.exit(0)};s.on("connect",()=>done(true));s.on("error",()=>done(false));setTimeout(()=>done(false),${timeoutMs})`);
+function tcpProbeScript(target, host, port, timeoutMs = 2000) {
+    return nodeEval(target, `const net=require("net");const s=net.connect(${port},"${host}");const done=(v)=>{try{s.destroy()}catch(e){};console.log(v?"PROBE:True":"PROBE:False");process.exit(0)};s.on("connect",()=>done(true));s.on("error",()=>done(false));setTimeout(()=>done(false),${timeoutMs})`);
 }
 
-async function platformAwareTcpProbe({ command, member, platform, host, port }) {
-    const res = await command(tcpProbeScript(platform, host, port), { member_name: member, silent: true, failSoft: true, label: `settle: TCP probe for '${member}'` });
+async function platformAwareTcpProbe({ command, member, platform, shell = '', host, port }) {
+    const res = await command(tcpProbeScript({ os: platform, shell }, host, port), { member_name: member, silent: true, failSoft: true, label: `settle: TCP probe for '${member}'` });
     return /PROBE:True/i.test(String((res && res.output) || ''));
 }
 
 /** Kill the server + verify the port is actually closed. Best-effort by
  *  design (called from the happy path AND the unconditional `finally` --
  *  see settleDoltConflicts). */
-async function killServerAndVerify({ command, member, platform, pid, host, port, log = () => {} }) {
+async function killServerAndVerify({ command, member, platform, shell = '', pid, host, port, log = () => {} }) {
     // Kill the recorded pid AND, belt-and-braces, anything still bound to our
     // ephemeral port: the recorded pid is resolved by a pattern match at spawn
     // time, so a mis-resolved pid must not be able to leave the real server
@@ -461,8 +510,10 @@ async function killServerAndVerify({ command, member, platform, pid, host, port,
     // Both forms are scoped to settle's own port, never to dolt at large.
     const matcher = `sql-server --host ${host} --port ${port}`;
     if (platform === 'win32') {
+        const script = `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process -Filter "Name='dolt.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '--port ${port}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+        const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle killServerAndVerify');
         await command(
-            `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process -Filter "Name='dolt.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '--port ${port}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+            wrapped,
             { member_name: member, silent: true, failSoft: true, label: `settle: kill ephemeral sql-server pid ${pid} on '${member}'` },
         );
     } else {
@@ -470,7 +521,7 @@ async function killServerAndVerify({ command, member, platform, pid, host, port,
     }
     for (let i = 0; i < 6; i += 1) {
         // eslint-disable-next-line no-await-in-loop -- bounded teardown-verify poll
-        const stillUp = await platformAwareTcpProbe({ command, member, platform, host, port });
+        const stillUp = await platformAwareTcpProbe({ command, member, platform, shell, host, port });
         if (!stillUp) {
             log(`[Dolt Settle] torn down ephemeral sql-server (pid ${pid}) for member '${member}'; port ${port} confirmed closed.`);
             return;
@@ -495,7 +546,7 @@ async function killServerAndVerify({ command, member, platform, pid, host, port,
  *
  * @returns {Promise<object[]>} parsed rows (empty array for statements with no result set)
  */
-export async function runDoltSql({ command, member, platform, doltPath, host, port, query, log = () => {} }) {
+export async function runDoltSql({ command, member, platform, doltPath, host, port, query, log = () => {}, shell = '' }) {
     // EVERY invocation is its own SQL SESSION -- `dolt sql -q` connects,
     // runs, and disconnects -- so session-scoped state does NOT carry over
     // between calls. `@@dolt_allow_commit_conflicts` is therefore set on each
@@ -504,9 +555,10 @@ export async function runDoltSql({ command, member, platform, doltPath, host, po
     // (verified live on fleet-lin-dev1). The conflict data itself IS durable
     // -- it lives in the working set -- which is what lets the subsequent
     // resolve/commit statements run in later sessions.
+    const target = { os: platform, shell };
     const preamble = 'USE beads; SET @@dolt_allow_commit_conflicts = 1;';
-    const fullQuery = escapeSqlForShell(platform, `${preamble} ${query}`);
-    const cmd = invokeBinary(platform, doltPath, `--no-tls --host=${host} --port=${port} sql -r json -q "${fullQuery}"`);
+    const fullQuery = escapeSqlForShell(target, `${preamble} ${query}`);
+    const cmd = invokeBinary(target, doltPath, `--no-tls --host=${host} --port=${port} sql -r json -q "${fullQuery}"`);
     const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label: `settle: dolt sql for '${member}'` });
     if (res && res.ok === false) {
         throw new DoltSyncError(`[Dolt Settle] dolt sql query failed for member '${member}': ${res.error}\nquery: ${query}`, { member, doltOutput: res.error });
@@ -555,9 +607,9 @@ export function parseDoltJsonRows(output) {
 // Section 6: the settle rulebook -- TOTAL over every conflicted table.
 // ---------------------------------------------------------------------------
 
-async function tableColumns({ command, member, platform, doltPath, host, port, table }) {
+async function tableColumns({ command, member, platform, doltPath, host, port, table, shell }) {
     const rows = await runDoltSql({
-        command, member, platform, doltPath, host, port,
+        command, member, platform, doltPath, host, port, shell,
         query: `SELECT COLUMN_NAME FROM information_schema.columns WHERE TABLE_NAME = '${table}';`,
     });
     return rows.map((r) => r.COLUMN_NAME || r.column_name).filter(Boolean);
@@ -568,9 +620,9 @@ async function tableColumns({ command, member, platform, doltPath, host, port, t
  *  `their_*` row is already present on our side. Falls back to the full column
  *  list (whole-row identity) when a table declares no PRIMARY KEY, which is
  *  still a correct -- if conservative -- set-union identity. */
-async function tablePrimaryKey({ command, member, platform, doltPath, host, port, table }) {
+async function tablePrimaryKey({ command, member, platform, doltPath, host, port, table, shell }) {
     const rows = await runDoltSql({
-        command, member, platform, doltPath, host, port,
+        command, member, platform, doltPath, host, port, shell,
         query: `SELECT COLUMN_NAME FROM information_schema.key_column_usage WHERE TABLE_NAME = '${table}' AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION;`,
     });
     return rows.map((r) => r.COLUMN_NAME || r.column_name).filter(Boolean);
@@ -580,12 +632,12 @@ async function tablePrimaryKey({ command, member, platform, doltPath, host, port
  *  that has an `updated_at` column -- this is what makes settle TOTAL rather
  *  than gated to a fixed table list. Falls back to a plain `--theirs`
  *  resolve for a table with no `updated_at` column. */
-async function resolveLwwTable({ command, member, platform, doltPath, host, port, table, log }) {
+async function resolveLwwTable({ command, member, platform, doltPath, host, port, table, log, shell = '' }) {
     const bq = String.fromCharCode(96); // backtick, built at runtime -- avoids a literal backslash-backtick sequence in source
-    const cols = await tableColumns({ command, member, platform, doltPath, host, port, table });
+    const cols = await tableColumns({ command, member, platform, doltPath, host, port, table, shell });
     if (!cols.includes('updated_at')) {
         log(`[Dolt Settle] table '${table}' has no updated_at column -- resolving via plain --theirs (no per-field merge possible).`);
-        await runDoltSql({ command, member, platform, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
+        await runDoltSql({ command, member, platform, doltPath, host, port, shell, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
         return;
     }
     const pk = cols.includes('id') ? 'id' : cols[0];
@@ -619,14 +671,14 @@ async function resolveLwwTable({ command, member, platform, doltPath, host, port
         t.updated_at = GREATEST(c.our_updated_at, c.their_updated_at)
         WHERE t.${bq}${pk}${bq} IN (SELECT our_${pk} FROM dolt_conflicts_${table});
     `;
-    await runDoltSql({ command, member, platform, doltPath, host, port, query: updateSql });
+    await runDoltSql({ command, member, platform, doltPath, host, port, shell, query: updateSql });
 
     // Their-side-only rows (an add they made that we do not have) would be
     // DROPPED by the --ours resolve below, so carry them over first.
-    const keyCols = (await tablePrimaryKey({ command, member, platform, doltPath, host, port, table })).length > 0
-        ? await tablePrimaryKey({ command, member, platform, doltPath, host, port, table })
+    const keyCols = (await tablePrimaryKey({ command, member, platform, doltPath, host, port, table, shell })).length > 0
+        ? await tablePrimaryKey({ command, member, platform, doltPath, host, port, table, shell })
         : [pk];
-    await runDoltSql({ command, member, platform, doltPath, host, port, query: buildTheirMissingInsert(table, cols, keyCols) });
+    await runDoltSql({ command, member, platform, doltPath, host, port, shell, query: buildTheirMissingInsert(table, cols, keyCols) });
 
     // --ours, NOT --theirs. The design doc flagged this as the one step to
     // validate live, and the live run settled it: DOLT_CONFLICTS_RESOLVE
@@ -635,7 +687,7 @@ async function resolveLwwTable({ command, member, platform, doltPath, host, port
     // row whose later updated_at was ours came back with their older value).
     // '--ours' keeps the row the UPDATE just merged, which is the whole point
     // of computing it.
-    await runDoltSql({ command, member, platform, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--ours', '${table}');` });
+    await runDoltSql({ command, member, platform, doltPath, host, port, shell, query: `CALL DOLT_CONFLICTS_RESOLVE('--ours', '${table}');` });
 }
 
 /**
@@ -685,31 +737,31 @@ function buildTheirMissingInsert(table, cols, keyCols) {
  * rather than issuing an INSERT it cannot construct correctly -- settle stays
  * total either way.
  */
-async function resolveUnionTable({ command, member, platform, doltPath, host, port, table, log }) {
-    const cols = await tableColumns({ command, member, platform, doltPath, host, port, table });
+async function resolveUnionTable({ command, member, platform, doltPath, host, port, table, log, shell = '' }) {
+    const cols = await tableColumns({ command, member, platform, doltPath, host, port, table, shell });
     if (cols.length === 0) {
         log(`[Dolt Settle] table '${table}' set-union: could not read its columns from information_schema -- falling back to a plain --theirs resolve.`);
-        await runDoltSql({ command, member, platform, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
+        await runDoltSql({ command, member, platform, doltPath, host, port, shell, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
         return;
     }
 
-    const pkFromSchema = await tablePrimaryKey({ command, member, platform, doltPath, host, port, table });
+    const pkFromSchema = await tablePrimaryKey({ command, member, platform, doltPath, host, port, table, shell });
     const keyCols = pkFromSchema.length > 0 ? pkFromSchema : cols;
     log(`[Dolt Settle] table '${table}' conflict: resolving as a set-union (both sides' rows kept; identity = ${keyCols.join(' + ')}).`);
 
-    await runDoltSql({ command, member, platform, doltPath, host, port, query: buildTheirMissingInsert(table, cols, keyCols) });
+    await runDoltSql({ command, member, platform, doltPath, host, port, shell, query: buildTheirMissingInsert(table, cols, keyCols) });
     // --ours, not --theirs (same live finding as resolveLwwTable): the resolve
     // rewrites the working-set row from the chosen side, so --theirs here
     // would undo the union by dropping the rows only WE had. Their rows have
     // just been inserted, so --ours is what actually keeps both sides.
-    await runDoltSql({ command, member, platform, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--ours', '${table}');` });
+    await runDoltSql({ command, member, platform, doltPath, host, port, shell, query: `CALL DOLT_CONFLICTS_RESOLVE('--ours', '${table}');` });
 }
 
 /** Plain theirs -- machine-local/config rows, and append-only tables
  *  (comments/events) where both sides already survive by construction. */
-async function resolveTheirsTable({ command, member, platform, doltPath, host, port, table, log }) {
+async function resolveTheirsTable({ command, member, platform, doltPath, host, port, table, log, shell = '' }) {
     log(`[Dolt Settle] table '${table}' conflict: resolving --theirs.`);
-    await runDoltSql({ command, member, platform, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
+    await runDoltSql({ command, member, platform, doltPath, host, port, shell, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
 }
 
 /** Dispatch a single conflicted table to its rulebook entry, or the generic
@@ -732,6 +784,7 @@ async function resolveConflictedTable(ctx, table) {
  * @property {(msg: string) => void} [log]
  * @property {'win32'|'linux'|'darwin'} platform - the MEMBER's platform. REQUIRED -- never assume process.platform.
  * @property {'x64'|'arm64'} [arch]
+ * @property {string} [shell] - the MEMBER's registered shell ('gitbash' on a Windows member running Git-for-Windows bash, '' otherwise). Resolved via runner.js's resolveMemberTarget; drives memberDoltPath/invokeBinary/escapeSqlForShell's dialect through se-os-commands.mjs's getSeCommands (apra-fleet-7dir.16). Defaults to '' (PowerShell dialect on Windows), matching pre-shell-aware behavior when unknown.
  * @property {string} [remote]
  * @property {string} [branch]
  * @property {number} [portRangeStart]
@@ -757,6 +810,7 @@ export async function settleDoltConflicts(member, opts = {}) {
         log = () => {},
         platform,
         arch = 'x64',
+        shell = '',
         remote = 'origin',
         branch = 'main',
         portRangeStart = DEFAULT_PORT_RANGE.start,
@@ -778,7 +832,7 @@ export async function settleDoltConflicts(member, opts = {}) {
 
         // Step 1: ensure a correctly-pinned (or functionally-probed-fallback)
         // dolt binary exists on the member.
-        const doltInfo = await ensurePinnedDolt({ command, member, platform, arch, log });
+        const doltInfo = await ensurePinnedDolt({ command, member, platform, arch, shell, log });
         const warnings = [...doltInfo.warnings];
 
         if (status.mode === 'server' && status.host && status.port) {
@@ -789,7 +843,7 @@ export async function settleDoltConflicts(member, opts = {}) {
             log(`[Dolt Settle] member '${member}' already has a live server at ${status.host}:${status.port} -- targeting it instead of spawning a second one.`);
         } else {
             const dataDir = status.dataDir || DEFAULT_EMBEDDED_DATA_DIR;
-            port = await pickFreePort({ command, member, platform, portRangeStart, portRangeEnd });
+            port = await pickFreePort({ command, member, platform, shell, portRangeStart, portRangeEnd });
 
             // A busy candidate port is SKIPPED, not killed-and-reused: pickFreePort
             // only ever hands back a port nothing answers on (design doc Part 3.5,
@@ -800,10 +854,20 @@ export async function settleDoltConflicts(member, opts = {}) {
             // settle legitimately in progress" inline, since getting that
             // distinction wrong (killing a live settle) is worse than the
             // bounded wait on the sweep.
-            const spawned = await spawnEphemeralServer({ command, member, platform, doltPath: doltInfo.doltPath, dataDir, host, port, log });
+            // spawnEphemeralServer embeds doltPath inside a raw PowerShell/WMI
+            // script body on Windows (Section 4). The script body itself must
+            // keep receiving the PowerShell-dialect path (psDoltPath)
+            // regardless of the member's actual registered shell -- the
+            // dialect INSIDE the wrapped script is always PowerShell -- but
+            // the OUTER invocation is now routed through
+            // getSeCommands(...).wrapPowerShellScript via `shell`
+            // (apra-fleet-7dir.22), so a gitbash member gets it via
+            // `powershell -EncodedCommand` from bash instead of the raw
+            // PowerShell text being handed directly to bash.
+            const spawned = await spawnEphemeralServer({ command, member, platform, doltPath: doltInfo.psDoltPath, dataDir, host, port, shell, log });
             pid = spawned.pid;
             weSpawnedTheServer = true;
-            await waitForServerReady({ command, member, platform, host, port, log });
+            await waitForServerReady({ command, member, platform, shell, host, port, log });
         }
 
         // If not preflight-validated by the pin ladder, the fallback dolt
@@ -815,11 +879,11 @@ export async function settleDoltConflicts(member, opts = {}) {
         // "succeeded but returned something unusable" case to additionally
         // check here.
         if (!doltInfo.pinned) {
-            await runDoltSql({ command, member, platform, doltPath: doltInfo.doltPath, host, port, query: 'SELECT 1;', log });
+            await runDoltSql({ command, member, platform, doltPath: doltInfo.doltPath, host, port, query: 'SELECT 1;', log, shell });
         }
 
         // Step 3/4: re-open the merge, enumerate every conflicted table.
-        const ctx = { command, member, platform, doltPath: doltInfo.doltPath, host, port, log };
+        const ctx = { command, member, platform, doltPath: doltInfo.doltPath, host, port, log, shell };
         await runDoltSql({ ...ctx, query: `CALL DOLT_MERGE('${remote}/${branch}');` });
 
         // NOTE: `SELECT *`, not a backtick-quoted `table` column -- dolt_conflicts'
@@ -850,7 +914,7 @@ export async function settleDoltConflicts(member, opts = {}) {
         // BEFORE republishing -- embedded bd must not race the server's
         // exclusive chunk-journal lock on the same data dir.
         if (weSpawnedTheServer && pid) {
-            await killServerAndVerify({ command, member, platform, pid, host, port, log });
+            await killServerAndVerify({ command, member, platform, shell, pid, host, port, log });
             pid = null;
         }
 
@@ -869,7 +933,7 @@ export async function settleDoltConflicts(member, opts = {}) {
         // Guaranteed teardown -- covers every throw path above. On the happy
         // path pid is already null (torn down before republish per 7.2).
         if (weSpawnedTheServer && pid) {
-            await killServerAndVerify({ command, member, platform, pid, host, port, log }).catch((err) => {
+            await killServerAndVerify({ command, member, platform, shell, pid, host, port, log }).catch((err) => {
                 log(`[Dolt Settle] WARNING: finally-block teardown failed for member '${member}': ${err.message}`);
             });
         }
@@ -920,18 +984,23 @@ export async function detectMemberPlatform({ command, member }) {
  * lifetime.
  *
  * @param {string} member
- * @param {{ command: Function, log?: Function, platform?: string, arch?: string }} opts
+ * @param {{ command: Function, log?: Function, platform?: string, arch?: string, shell?: string }} opts
  * @returns {() => Promise<{ ok: true, resolvedTables: string[], warnings: string[], doltVersionUsed: string }>}
  */
 export function buildSettleCallback(member, opts = {}) {
-    const { command, log = () => {}, platform, arch } = opts;
+    const { command, log = () => {}, platform, arch, shell = '' } = opts;
     if (!member) throw new Error('buildSettleCallback requires a member');
     if (typeof command !== 'function') throw new Error('buildSettleCallback requires an injected command() in opts');
 
     let resolved = platform ? { platform, arch: arch || 'x64' } : null;
     return async () => {
         if (!resolved) resolved = await detectMemberPlatform({ command, member });
-        return settleDoltConflicts(member, { command, log, platform: resolved.platform, arch: resolved.arch });
+        // `shell` is resolved once by the CALLER (runner.js's
+        // resolveMemberTarget, via member_detail) and closed over here --
+        // detectMemberPlatform only probes process.platform/arch on the
+        // member, which carries no shell information, so it cannot supply
+        // this itself (apra-fleet-7dir.16).
+        return settleDoltConflicts(member, { command, log, platform: resolved.platform, arch: resolved.arch, shell });
     };
 }
 
@@ -953,12 +1022,15 @@ export function buildSettleCallback(member, opts = {}) {
  * age threshold plus its run interval (~15 minutes with the current
  * defaults) until the sweep reaps the orphan.
  */
-async function pickFreePort({ command, member, platform, portRangeStart, portRangeEnd }) {
+async function pickFreePort({ command, member, platform, shell = '', portRangeStart, portRangeEnd }) {
     // Same node-based probe as tcpProbeScript, scanning the range member-side
     // in ONE dispatch: a round trip per candidate port would be 100 SSH
     // sessions, and no shell one-liner is portable across PowerShell 5.1,
-    // bash and zsh (see tcpProbeScript for the live evidence).
-    const script = nodeEval(platform,
+    // bash and zsh (see tcpProbeScript for the live evidence). Dialect is
+    // resolved off the member's registered shell, not bare platform, so a
+    // gitbash member takes the POSIX (unescaped) nodeEval branch just like
+    // tcpProbeScript (apra-fleet-7dir.22).
+    const script = nodeEval({ os: platform, shell },
         `const net=require("net");const host="${RECOVERY_SQL_SERVER_HOST}";`
         + 'const free=(p)=>new Promise((r)=>{const s=net.connect(p,host);const done=(v)=>{try{s.destroy()}catch(e){};r(v)};'
         + 's.on("connect",()=>done(false));s.on("error",()=>done(true));setTimeout(()=>done(true),500)});'

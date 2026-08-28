@@ -3,6 +3,7 @@
  */
 import type { Agent } from '../types.js';
 import type { RemoteOS } from './platform.js';
+import type { MemberShell } from '../os/os-commands.js';
 import { getAgent, findAgentByName, updateAgent } from '../services/registry.js';
 
 /**
@@ -23,6 +24,52 @@ export function getAgentOrFail(id: string): Agent | string {
  */
 export function getAgentOS(agent: Agent): RemoteOS {
   return (agent.os ?? 'linux') as RemoteOS;
+}
+
+/**
+ * Get the registered shell for an agent (undefined if none recorded/detected).
+ * Pass alongside getAgentOS() to getOsCommands() so a gitbash Windows member
+ * resolves to bash command strings instead of the PowerShell default.
+ */
+export function getAgentShell(agent: Agent): MemberShell | undefined {
+  return agent.shell;
+}
+
+/**
+ * True when `os`/`shell` resolve to a POSIX-speaking shell -- any non-Windows
+ * OS, or a Windows member registered as Git-for-Windows bash
+ * (apra-fleet-7dir.2.4/2.5). A Windows member with no shell recorded, or
+ * pwsh7/powershell5, still resolves to PowerShell exactly as before.
+ *
+ * THE single definition of this predicate (apra-fleet-7dir.11) -- every
+ * former private copy (member-home.ts, orphan-recovery.ts,
+ * compose-permissions.ts, execute-prompt.ts's isPosixShellMember) now calls
+ * through here so a future shell enum value (WSL, cmd) is added in exactly
+ * one place.
+ *
+ * The first parameter also accepts a plain `isWindows` boolean, for the one
+ * call site (compose-permissions.ts) that only ever had a boolean on hand --
+ * behaviourally identical to passing 'windows' / a non-windows RemoteOS,
+ * kept as an overload rather than forcing that caller to synthesize a
+ * RemoteOS value it doesn't otherwise need. `os: RemoteOS` also accepts a
+ * `TargetOS` (src/providers/provider.ts) value as-is: the two are the same
+ * three-value string union, just declared independently.
+ */
+export function isPosixShell(os: RemoteOS, shell?: MemberShell): boolean;
+export function isPosixShell(isWindows: boolean, shell?: MemberShell): boolean;
+export function isPosixShell(osOrIsWindows: RemoteOS | boolean, shell?: MemberShell): boolean {
+  const isWindows = typeof osOrIsWindows === 'boolean' ? osOrIsWindows : osOrIsWindows === 'windows';
+  return !isWindows || shell === 'gitbash';
+}
+
+/**
+ * Agent-taking convenience wrapper around isPosixShell -- reads the member's
+ * os/shell off the Agent itself instead of requiring the caller to unpack
+ * getAgentOS(agent)/getAgentShell(agent) first (apra-fleet-7dir.11; formerly
+ * execute-prompt.ts's private isPosixShellMember).
+ */
+export function isPosixShellMember(agent: Agent): boolean {
+  return isPosixShell(getAgentOS(agent), getAgentShell(agent));
 }
 
 /**
@@ -49,7 +96,22 @@ export function setIdleTouchHook(fn: (agentId: string) => void): void {
   idleTouchHook = fn;
 }
 
-const EXPIRY_WARNING_MS = 10 * 60 * 1000; // 10 minutes
+const EXPIRY_WARNING_MS = 10 * 60 * 1000; // 10 minutes -- sized for GitHub App tokens (~1hr lifetime)
+
+// apra-fleet-5co8.5.1: long-lived PAT providers (Azure DevOps PATs run
+// weeks/months per skills/fleet/auth-azdevops.md's "Set expiration"
+// guidance, unlike a GitHub App token's ~1hr lifetime the 10-minute
+// threshold above was designed for) need a heads-up long before the
+// minute-scale check above would ever fire.
+const DAY_SCALE_WARNING_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// apra-fleet-5co8.5.1: providers this day-scale threshold applies to.
+// Deliberately scoped by provider rather than made unconditional: a
+// GitHub App token's remaining lifetime is always well inside 7 days, so an
+// unscoped check would spuriously warn on every fresh GitHub deploy and
+// change existing GitHub short-lived-token behavior (see
+// agent-helpers.test.ts 'returns null when token is not near expiry').
+const DAY_SCALE_WARNING_PROVIDERS: ReadonlySet<NonNullable<Agent['vcsProvider']>> = new Set(['azure-devops']);
 
 /**
  * Check if an agent's VCS token is expired or expiring soon.
@@ -65,6 +127,10 @@ export function checkVcsTokenExpiry(agent: Agent, now: Date = new Date()): strin
   if (remaining <= EXPIRY_WARNING_MS) {
     const mins = Math.ceil(remaining / 60000);
     return `⚠️ VCS token expires in ${mins} minute${mins === 1 ? '' : 's'} (${agent.vcsTokenExpiresAt}) — consider refreshing.`;
+  }
+  if (agent.vcsProvider && DAY_SCALE_WARNING_PROVIDERS.has(agent.vcsProvider) && remaining <= DAY_SCALE_WARNING_MS) {
+    const days = Math.ceil(remaining / (24 * 60 * 60 * 1000));
+    return `⚠️ VCS token expires in ${days} day${days === 1 ? '' : 's'} (${agent.vcsTokenExpiresAt}) — consider refreshing.`;
   }
   return null;
 }

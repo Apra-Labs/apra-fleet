@@ -301,16 +301,218 @@ describe('Azure DevOps provider', () => {
     expect(execCalls[0]).toContain('credential.https://dev.azure.com.helper');
   });
 
-  it('testConnectivity: succeeds when curl works', async () => {
+  it('testConnectivity: succeeds when git ls-remote works against a known gitRepos URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['https://dev.azure.com/myorg/myproject/_git/myrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(member, exec);
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('myrepo');
+    expect(execCalls[0]).toBe('git ls-remote https://dev.azure.com/myorg/myproject/_git/myrepo HEAD');
+    // The credential comes from the git credential helper deploy() already
+    // configured -- never appears in the executed command string.
+    expect(execCalls[0]).not.toMatch(/az-pat|pat=|token=/);
+  });
+
+  it('testConnectivity: falls back to a repo-scoped scope_url when gitRepos has no usable URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['myorg/myproject/myrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg/myproject/_git/myrepo',
+    );
+    expect(result.success).toBe(true);
+    expect(execCalls[0]).toContain('_git/myrepo');
+  });
+
+  // apra-fleet-5co8.5.2 (review round 2): a cross-host gitRepos URL must
+  // never be reported as an Azure DevOps connectivity result. knownRepoRemoteUrl
+  // is host-agnostic (see member-remote-url.ts), so without an Azure-DevOps-
+  // shaped URL check, this repro would ls-remote github.com and report success
+  // as if it verified the Azure DevOps credential.
+  it('testConnectivity: skips rather than testing a cross-host gitRepos URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['https://github.com/foo/bar.git'] });
+
+    // No repo-scoped scope_url supplied -- only the org-level default, which
+    // is not itself a usable repo -- so the only candidate is the cross-host
+    // gitRepos entry, which must be rejected rather than tested.
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg',
+    );
+    expect(execCalls).toHaveLength(0);
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('Skipped');
+  });
+
+  // A repo-scoped scope_url is what deploy() actually scoped the credential
+  // to (gitCredentialHelperWrite writes credential.<scopeUrl>.helper -- see
+  // src/os/linux.ts), so it must win over a same-request gitRepos URL rather
+  // than being shadowed by it.
+  it('testConnectivity: prefers a repo-scoped scope_url over a gitRepos URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['https://dev.azure.com/otherorg/otherproj/_git/otherrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg/myproject/_git/myrepo',
+    );
+    expect(result.success).toBe(true);
+    expect(execCalls[0]).toBe('git ls-remote https://dev.azure.com/myorg/myproject/_git/myrepo HEAD');
+  });
+
+  // A derived URL is interpolated into a command string executed on the
+  // member (`git ls-remote ${repoUrl} HEAD`); before this bead's validation,
+  // shell metacharacters in scope_url would inject an extra command.
+  it('testConnectivity: rejects a scope_url carrying shell metacharacters instead of executing it', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
+    const member = makeAgent();
+
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg/proj/_git/x; echo pwned',
+    );
+    expect(execCalls).toHaveLength(0);
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('Skipped');
+  });
+
+  it('testConnectivity: fails when git ls-remote throws', async () => {
+    const exec = async () => { throw new Error('connection refused'); };
+    const member = makeAgent({ gitRepos: ['https://dev.azure.com/myorg/myproject/_git/myrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(member, exec);
+    expect(result.success).toBe(false);
+  });
+
+  it('testConnectivity: skips with a documented message when no repo is known', async () => {
     const exec = async () => '';
-    const result = await azureDevOpsProvider.testConnectivity(makeAgent(), exec);
+    // No gitRepos entry and scope_url is only the org-level default -- there
+    // is no concrete repo to ls-remote against.
+    const result = await azureDevOpsProvider.testConnectivity(
+      makeAgent(), exec, 'https://dev.azure.com/myorg',
+    );
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('Skipped');
+  });
+
+  // apra-fleet-5co8.5.1: the expiry is caller-supplied (Azure DevOps exposes
+  // no API to read a PAT's expiry back), so deploy metadata must carry it
+  // through when present and be BYTE-IDENTICAL to the old shape when absent --
+  // an `expiresAt: undefined` key would still flow into the registry write.
+  it('deploy: propagates a supplied expires_at into metadata.expiresAt', async () => {
+    const exec = async () => '';
+    const result = await azureDevOpsProvider.deploy(
+      makeAgent(), cmds, exec,
+      { org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-123', expires_at: '2027-08-20T00:00:00Z' },
+    );
+    expect(result.metadata?.expiresAt).toBe('2027-08-20T00:00:00Z');
+  });
+
+  it('deploy: omits expiresAt entirely when no expiry is supplied', async () => {
+    const exec = async () => '';
+    const result = await azureDevOpsProvider.deploy(
+      makeAgent(), cmds, exec,
+      { org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-123' },
+    );
+    expect(result.metadata && 'expiresAt' in result.metadata).toBe(false);
+  });
+});
+
+// apra-fleet-5co8.5.1: an unparseable pat_expires_at is NOT a harmless typo.
+// It is truthy, so it would reach vcsTokenExpiresAt verbatim, make every
+// checkVcsTokenExpiry comparison NaN (no warning at all) and make
+// scheduleCredentialCleanup fall back to DEFAULT_TTL_MS -- a 55-minute
+// auto-revoke of the PAT that was just deployed. Rejected at the boundary.
+// apra-fleet-5co8.3.1: the credential-assembly and missing-credential
+// descriptors are a VERBATIM move of the provider switch / out-of-band
+// if-blocks that still live in src/tools/provision-vcs-auth.ts (the call-site
+// rewrite is a separate task). These assertions therefore pin the MOVED logic
+// against the behaviour the tool has today -- same defaults, same error
+// strings, same prompt text -- so the later rewrite is provably a no-op.
+describe('provider credential assembly (apra-fleet-5co8.3.1)', () => {
+  it('github: defaults to github-app mode and passes access/repos through', () => {
+    expect(githubProvider.buildCredentials!({ provider: 'github', git_access: 'push', repos: ['acme/widgets'] }))
+      .toEqual({ type: 'github-app', git_access: 'push', repos: ['acme/widgets'] });
+  });
+
+  it('github: pat mode returns the pat credential', () => {
+    expect(githubProvider.buildCredentials!({ provider: 'github', github_mode: 'pat', token: 'ghp_x' }))
+      .toEqual({ type: 'pat', token: 'ghp_x' });
+  });
+
+  it('github: pat mode without a token returns the error string', () => {
+    expect(githubProvider.buildCredentials!({ provider: 'github', github_mode: 'pat' }))
+      .toBe('GitHub PAT mode requires "token" field.');
+  });
+
+  it('bitbucket: returns the credential when all three fields are present', () => {
+    expect(bitbucketProvider.buildCredentials!({ provider: 'bitbucket', email: 'd@co.com', api_token: 't', workspace: 'ws' }))
+      .toEqual({ email: 'd@co.com', api_token: 't', workspace: 'ws' });
+  });
+
+  it('bitbucket: returns the error string when any field is missing', () => {
+    for (const input of [
+      { provider: 'bitbucket' as const, api_token: 't', workspace: 'ws' },
+      { provider: 'bitbucket' as const, email: 'd@co.com', workspace: 'ws' },
+      { provider: 'bitbucket' as const, email: 'd@co.com', api_token: 't' },
+    ]) {
+      expect(bitbucketProvider.buildCredentials!(input)).toBe('Bitbucket requires "email", "api_token", and "workspace" fields.');
+    }
+  });
+});
+
+describe('provider missing-credential descriptors (apra-fleet-5co8.3.1)', () => {
+  it('github: prompts only in pat mode with no token', () => {
+    const d = githubProvider.missingCredential!;
+    expect(d.field).toBe('token');
+    expect(d.isMissing({ provider: 'github', github_mode: 'pat' })).toBe(true);
+    expect(d.isMissing({ provider: 'github', github_mode: 'pat', token: 'ghp_x' })).toBe(false);
+    // github-app mode mints server-side and must never reach a prompt.
+    expect(d.isMissing({ provider: 'github' })).toBe(false);
+    expect(d.isMissing({ provider: 'github', github_mode: 'github-app' })).toBe(false);
+    expect(d.promptFor('alice')).toBe('Enter GitHub personal access token for alice');
+  });
+
+  it('bitbucket: prompts whenever api_token is absent', () => {
+    const d = bitbucketProvider.missingCredential!;
+    expect(d.field).toBe('api_token');
+    expect(d.isMissing({ provider: 'bitbucket', email: 'd@co.com', workspace: 'ws' })).toBe(true);
+    expect(d.isMissing({ provider: 'bitbucket', api_token: 't' })).toBe(false);
+    expect(d.promptFor('bob')).toBe('Enter Bitbucket API token for bob');
+  });
+});
+
+describe('provisionVcsAuthSchema pat_expires_at', () => {
+  it('accepts a parseable ISO 8601 expiry', async () => {
+    const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');
+    const result = provisionVcsAuthSchema.safeParse({
+      member_id: 'a', provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg',
+      pat: 'p', pat_expires_at: '2027-08-20T00:00:00Z',
+    });
     expect(result.success).toBe(true);
   });
 
-  it('testConnectivity: fails when curl throws', async () => {
-    const exec = async () => { throw new Error('connection refused'); };
-    const result = await azureDevOpsProvider.testConnectivity(makeAgent(), exec);
-    expect(result.success).toBe(false);
+  it('accepts an omitted expiry', async () => {
+    const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');
+    const result = provisionVcsAuthSchema.safeParse({
+      member_id: 'a', provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'p',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an unparseable expiry', async () => {
+    const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');
+    for (const bad of ['not-a-date', '', '2027-13-45']) {
+      const result = provisionVcsAuthSchema.safeParse({
+        member_id: 'a', provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg',
+        pat: 'p', pat_expires_at: bad,
+      });
+      expect(result.success, `expected rejection for ${JSON.stringify(bad)}`).toBe(false);
+    }
   });
 });
 

@@ -1,6 +1,7 @@
 import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
+import type { MemberShell } from '../os/os-commands.js';
 
 const NO_LLM_ERROR = 'This member has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead of execute_prompt.';
 
@@ -29,7 +30,10 @@ export class NoneProvider implements ProviderAdapter {
     throw new Error(NO_LLM_ERROR);
   }
 
-  installCommand(_os: 'linux' | 'macos' | 'windows'): string {
+  // Still refuses by design (apra-fleet-7dir.2.7): the widened signature
+  // gains no new behavior here -- there is no install path for a
+  // no-LLM member regardless of shell.
+  installCommand(_os: 'linux' | 'macos' | 'windows', _shell?: MemberShell): string {
     throw new Error(NO_LLM_ERROR);
   }
 
@@ -153,7 +157,7 @@ export class NoneProvider implements ProviderAdapter {
     throw new Error(NO_LLM_ERROR);
   }
 
-  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
     // No-LLM members have no CLI and no trust concept whatsoever. No-op (unlike other
     // methods on this class, this one is reachable from call sites that iterate all
     // members regardless of provider, so it returns a plain no-op rather than throwing).

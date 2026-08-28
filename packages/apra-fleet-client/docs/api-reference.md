@@ -245,13 +245,13 @@ Calls `fleet_status` -- status of all fleet members.
 
 Calls `member_detail` -- detailed status for one member: connectivity,
 session (`session.id`, the current session ID or `null`), work folder
-(`folder`), and provider (`llmProvider`).
+(`folder`), shell (Windows members only), and LLM provider.
 
 | Field | Type | Notes |
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `format` | `"compact" \| "json"?` | Output format. |
+| `format` | `"compact" \| "json"?` | Output format (default: `"compact"`). |
 
 #### `sendFiles(options: SendFilesOptions)`
 
@@ -282,26 +282,73 @@ Calls `register_member` -- adds a machine to the fleet.
 
 | Field | Type | Notes |
 |---|---|---|
-| `friendly_name` | `string` | Required. Human-friendly name for this member. |
-| `work_folder` | `string` | Required. Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- `~` and relative paths are rejected. |
-| `member_type` | `"local" \| "remote"?` | Default: `"remote"`. |
+| `friendly_name` | `string` | Required. Human-friendly name for this member (1-64 chars, alphanumeric, dots, dashes, underscores only). |
+| `work_folder` | `string` | Required. Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. |
+| `member_type` | `"local" \| "remote"?` | Member type (default: `"remote"`). |
 | `host` | `string?` | IP address or hostname of the remote machine. |
-| `username` | `string?` | SSH username. |
 | `port` | `number?` | SSH port (default: 22). |
-| `auth_type` | `"password" \| "key"?` | Authentication method. |
-| `password` | `string?` | SSH password. |
-| `key_path` | `string?` | Path to SSH private key. |
-| `llm_provider` | `string?` | LLM provider for this member. |
-| `category` | `string?` | Optional group label. |
-| `tags` | `string[]?` | Optional list of free-form labels. |
-| `unattended` | `"false" \| "auto" \| "dangerous"?` | Permission mode for unattended execution. |
+| `username` | `string?` | SSH username. |
+| `auth_type` | `"password" \| "key"?` | SSH authentication method. |
+| `password` | `string?` | SSH password. Omit for out-of-band secure entry via terminal prompt. Supports secure credential tokens. |
+| `key_path` | `string?` | Path to SSH private key file. |
+| `git_access` | `"read" \| "push" \| "admin" \| "issues" \| "full"?` | Git access level for this member. |
+| `git_repos` | `string[]?` | Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"]). |
+| `cloud_provider` | `"aws"?` | Cloud provider name (e.g. "aws"). When set, `cloud_instance_id` and `key_path` are required. |
+| `cloud_instance_id` | `string?` | EC2 instance ID (e.g. "i-0abc123def456789a"). Required when `cloud_provider` is set. |
+| `cloud_region` | `string?` | AWS region (default: "us-east-1"). |
+| `cloud_profile` | `string?` | AWS CLI profile name for cloud instance access. |
+| `cloud_idle_timeout_min` | `number?` | Minutes of inactivity before auto-stop (default: 30, min: 1, max: 1440). |
+| `cloud_activity_command` | `string?` | Custom shell command for workload detection. Must output "busy" or "idle". Checked after GPU, before process check. |
+| `llm_provider` | `"claude" \| "codex" \| "copilot" \| "agy" \| "opencode" \| "none"?` | LLM provider for this member (default: `"claude"`). Use `"none"` for a plain command executor with no LLM. |
+| `model_cheap` | `string?` | Custom cheap model choice from configured curated list. |
+| `model_standard` | `string?` | Custom standard model choice from configured curated list. |
+| `model_premium` | `string?` | Custom premium model choice from configured curated list. |
+| `model_tiers` | `{cheap?: string, standard?: string, premium?: string}?` | Per-member model tier map with free-form model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. |
+| `unattended` | `"false" \| "auto" \| "dangerous" \| false?` | Permission mode for unattended execution. Omit or pass `false` for interactive (default); `"auto"` for auto-approve safe operations; `"dangerous"` to skip all permission checks. |
+| `category` | `string?` | Optional group label (max 64 chars). Used to group members in fleet status output. |
+| `tags` | `string[]?` | Optional list of free-form labels (max 10 tags, each max 64 chars). Used for filtering and grouping. |
+| `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Code-intelligence provider for this member. Omit for fleet-wide default. |
+| `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "orchestrator" role). Default: `false`. |
+| `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
+
 
 #### `updateMember(options: UpdateMemberOptions)`
 
-Calls `update_member` -- changes a member's settings. Same shape as
-`RegisterMemberOptions` but every field is optional and semantically means
-"new value for this field"; identifies the target member via `member_id`
-or `member_name`.
+Calls `update_member` -- changes a member's settings. Every field is optional
+and means "new value for this field". Identifies the target member via
+`member_id` or `member_name`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `friendly_name` | `string?` | New friendly name. |
+| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. |
+| `host` | `string?` | New host (remote members only). |
+| `port` | `number?` | New SSH port (remote members only). |
+| `username` | `string?` | New SSH username (remote members only). |
+| `auth_type` | `"password" \| "key"?` | New SSH authentication method (remote members only). |
+| `password` | `string?` | New SSH password. Omit for out-of-band secure entry via terminal prompt. Supports secure credential tokens. |
+| `rotate_password` | `boolean?` | Trigger secure out-of-band password re-entry for a member already using password auth. Ignored if `auth_type` is not password. |
+| `key_path` | `string?` | New SSH private key path. Used for both regular SSH connections and cloud instance lifecycle. |
+| `git_access` | `"read" \| "push" \| "admin" \| "issues" \| "full"?` | Git access level for this member. |
+| `git_repos` | `string[]?` | Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"]). |
+| `icon` | `string?` | Override the auto-assigned emoji icon. Use named aliases (blue-circle, green-square, red-circle, etc.) or pass raw emoji. |
+| `cloud_region` | `string?` | New AWS region for the cloud instance. |
+| `cloud_profile` | `string?` | New AWS CLI profile name. |
+| `cloud_idle_timeout_min` | `number?` | New minutes of inactivity before auto-stop. |
+| `cloud_activity_command` | `string?` | New custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear. |
+| `llm_provider` | `"claude" \| "codex" \| "copilot" \| "agy" \| "opencode"?` | Change the LLM provider for this member. |
+| `model_cheap` | `string?` | Change custom cheap model. |
+| `model_standard` | `string?` | Change custom standard model. |
+| `model_premium` | `string?` | Change custom premium model. |
+| `model_tiers` | `{cheap?: string, standard?: string, premium?: string}?` | Per-member model tier map with free-form model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. |
+| `unattended` | `"false" \| "auto" \| "dangerous" \| false?` | Permission mode for unattended execution. Pass `false` to reset to interactive (default); `"auto"` for auto-approve safe operations; `"dangerous"` to skip all permission checks. |
+| `category` | `string?` | Group label for this member. Pass empty string to clear. |
+| `tags` | `string[]?` | Free-form labels for this member (max 10 tags, each max 64 chars). Empty array clears all tags; non-empty array replaces existing tags. |
+| `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Change the code-intelligence provider for this member. |
+| `unreservable` | `boolean?` | Mark/unmark this member as shared or never exclusively reservable. |
+| `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 
 #### `removeMember(options: RemoveMemberOptions)`
 

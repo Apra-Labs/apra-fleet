@@ -27,7 +27,7 @@ import os from 'node:os';
 import type { Agent } from '../types.js';
 import type { TargetOS } from '../providers/provider.js';
 import { getStrategy } from './strategy.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { getProvider } from '../providers/index.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
@@ -55,23 +55,26 @@ const PROBE_TIMEOUT_MS = 10_000;
  *  - POSIX: `printf '%s'` rather than `echo` -- no trailing newline, no shell
  *    builtin escape-interpretation differences between sh/bash/dash.
  */
-function probeCommandFor(targetOs: TargetOS): string {
-  return targetOs === 'windows'
-    ? wrapPowerShellEncoded('[Console]::Out.Write($env:USERPROFILE)')
-    : 'printf \'%s\' "$HOME"';
+function probeCommandFor(targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>): string {
+  return isPosixShell(targetOs, shell)
+    ? 'printf \'%s\' "$HOME"'
+    : wrapPowerShellEncoded('[Console]::Out.Write($env:USERPROFILE)');
 }
 
 /** Absolute POSIX path, Windows drive path, or UNC share. Anything else is
- *  shell noise (banner text, an error message), not a home directory. */
-function looksAbsolute(candidate: string, targetOs: TargetOS): boolean {
-  if (targetOs === 'windows') return /^([A-Za-z]:[\\/]|\\\\)/.test(candidate);
+ *  shell noise (banner text, an error message), not a home directory. A
+ *  gitbash member's $HOME is itself a POSIX-style path (e.g. /c/Users/name),
+ *  so it is checked the same way as a non-Windows member. */
+function looksAbsolute(candidate: string, targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>): boolean {
+  if (targetOs === 'windows' && !isPosixShell(targetOs, shell)) return /^([A-Za-z]:[\\/]|\\\\)/.test(candidate);
   return candidate.startsWith('/');
 }
 
 async function probeHomeDir(agent: Agent): Promise<string | null> {
   const targetOs = getAgentOS(agent) as TargetOS;
+  const shell = getAgentShell(agent);
   try {
-    const result = await getStrategy(agent).execCommand(probeCommandFor(targetOs), PROBE_TIMEOUT_MS);
+    const result = await getStrategy(agent).execCommand(probeCommandFor(targetOs, shell), PROBE_TIMEOUT_MS);
     if (result.code !== 0) {
       logWarn('member_home_probe', `home dir probe failed for ${agent.friendlyName}: code=${result.code} stderr=${result.stderr.trim()}`);
       return null;
@@ -83,7 +86,7 @@ async function probeHomeDir(agent: Agent): Promise<string | null> {
       .map(l => l.trim())
       .filter(Boolean)
       .pop();
-    if (!candidate || !looksAbsolute(candidate, targetOs)) {
+    if (!candidate || !looksAbsolute(candidate, targetOs, shell)) {
       logWarn('member_home_probe', `home dir probe for ${agent.friendlyName} returned a non-path value; ignoring`);
       return null;
     }

@@ -230,6 +230,18 @@ export async function isMemberSyncRemoteConfigured(member, opts) {
 const DOLT_BACKOFF_BASE_MS = 500;
 const DOLT_BACKOFF_MAX_MS = 8000;
 
+// apra-fleet-jxdf.2: every `bd dolt pull`/`bd dolt push` this module issues
+// used to inherit whatever generic default the injected command() primitive
+// falls back to when no timeout is specified (120s, sized for an ordinary
+// shell command, not a Dolt sync). A live incident confirmed an INCREMENTAL
+// pull against an already-cloned, several-hundred-MB embedded Dolt DB can
+// take multiple minutes -- an order of magnitude past that default -- and
+// every one of those pulls was timing out, silently, every single time,
+// with no fatal error surfaced and the caller left reading stale data. Size
+// this for realistic Dolt DB sizes in this fleet, not a toy DB; callers that
+// need a different budget can still override via opts.timeoutS.
+const DOLT_STEP_TIMEOUT_S = 600;
+
 /**
  * Delay before transient retry #`attempt` (1-based): base * 2^(attempt-1),
  * capped at DOLT_BACKOFF_MAX_MS.
@@ -279,12 +291,12 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown' }>}
  */
-async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS }) {
+async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S }) {
     let attempt = 0;
     let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-        const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label });
+        const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS });
         if (res && res.ok) return res;
         const error = res ? res.error : 'unknown command failure';
         const kind = classifyDoltFailure(error);
@@ -302,11 +314,22 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
                 await onAuthFailure({ member, label, cmd, error, kind: 'dolt' });
             } catch (healErr) {
                 log(`[Dolt] self-heal for member '${member}' (${label}) failed; not retrying further: ${healErr.message}`);
+                log(`[Dolt] ${label} FAILED (${kind}) -- reads/writes for member '${member}' may be stale until this is resolved. Raw: ${error}`);
                 return { ok: false, output: res ? res.output : '', error, kind };
             }
             log(`[Dolt] self-heal for member '${member}' (${label}) completed; retrying the failed dolt command once.`);
             continue;
         }
+        // apra-fleet-jxdf.2: every non-ok exit from this function used to be
+        // reported ONLY as a structured return value -- a caller on the
+        // fatal:false path (the common case, e.g. refreshView's documented
+        // "never throws" contract) could silently proceed on stale data with
+        // no trace of this failure anywhere in the sprint log. Log it loudly
+        // here, once, at the single choke point every D-pull/D-push passes
+        // through, so a degraded read/write is always visible to whoever is
+        // watching a live sprint -- independent of whether the caller treats
+        // it as fatal.
+        log(`[Dolt] ${label} FAILED (${kind}) -- reads/writes for member '${member}' may be stale until this is resolved. Raw: ${error}`);
         return { ok: false, output: res ? res.output : '', error, kind };
     }
 }
@@ -382,7 +405,7 @@ async function attemptSettle({ settle, member, operation, error, log }) {
 }
 
 export async function doltPullBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, settle } = opts;
+    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -405,7 +428,7 @@ export async function doltPullBefore(member, opts = {}) {
 
     const pull = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs,
+        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS,
     });
     if (!pull.ok) {
         if (pull.kind === 'no-remote') {
@@ -596,7 +619,7 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote', recovered?: true, settledTables?: string[] }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -690,7 +713,7 @@ export async function doltPushAfter(member, opts = {}) {
     async function doltPushGuarded() {
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs,
+        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, reconciled: false };
@@ -748,7 +771,7 @@ export async function doltPushAfter(member, opts = {}) {
     log(`[Dolt] D-push for member '${member}' was rejected (another writer pushed first); reconciling with a single D-pull then one re-push (first-successful-pusher-wins).`);
     const reconcile = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs,
+        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS,
     });
     if (!reconcile.ok) {
         if (reconcile.kind === 'diverged') {
@@ -768,7 +791,7 @@ export async function doltPushAfter(member, opts = {}) {
 
     push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs,
+        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, reconciled: true };
@@ -1093,7 +1116,9 @@ async function runDegradable(run, ctx) {
  *
  * All other opts are passed through unchanged to doltPullBefore():
  * `command` (required), `log`, `maxTransientRetries`, `onAuthFailure`,
- * `checkSyncRemoteConfigured`, `sleep`, `backoffBaseMs`.
+ * `checkSyncRemoteConfigured`, `sleep`, `backoffBaseMs`, `timeoutS` (defaults
+ * to DOLT_STEP_TIMEOUT_S -- override only for a call site with a known-
+ * different Dolt DB size/latency profile).
  *
  * @param {string} member
  * @param {{ command: Function, readinessGate?: boolean, fatal?: boolean, onDegraded?: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, skipRefresh?: boolean, onAuthFailure?: Function, sleep?: Function, backoffBaseMs?: number }} opts
@@ -1277,18 +1302,24 @@ export function flush(filter = {}) {
  * `platform`/`arch` are optional and probed from the member when absent.
  * `opts.settle` may be supplied to override the callback (tests do this).
  *
+ * `opts.shell` threads the member's REGISTERED shell into dolt-settle
+ * (apra-fleet-7dir.16/.24) the same way every other buildSettleCallback call
+ * site does -- omitted (defaulting to '', the PowerShell dialect on
+ * Windows) is the pre-shell-aware behavior, not a regression, for any
+ * caller that has not resolved it.
+ *
  * @param {string} member
- * @param {{ command?: Function, log?: Function, platform?: string, arch?: string, settle?: Function, [key: string]: any }} [opts]
+ * @param {{ command?: Function, log?: Function, platform?: string, arch?: string, shell?: string, settle?: Function, [key: string]: any }} [opts]
  * @returns {Promise<{ repaired: boolean, escalation?: string, result?: object }>}
  */
 export async function repair(member, opts = {}) {
-    const { command, log = () => {}, platform, arch } = opts;
+    const { command, log = () => {}, platform, arch, shell = '' } = opts;
     if (typeof command !== 'function') {
         return { repaired: false, escalation: 'not-configured: repair() requires an injected command() to run settle' };
     }
     const settle = typeof opts.settle === 'function'
         ? opts.settle
-        : buildSettleCallback(member, { command, log, platform, arch });
+        : buildSettleCallback(member, { command, log, platform, arch, shell });
     let result = null;
     try {
         result = await settle({ operation: 'repair' });

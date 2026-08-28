@@ -6,7 +6,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 
@@ -60,6 +60,23 @@ class RemoteStrategy implements AgentStrategy {
     const agentOs = getAgentOS(this.agent);
     const folder = this.agent.workFolder;
     try {
+      // Confirmed shell-agnostic this pass (apra-fleet-7dir.5.2 audit): stays
+      // on agentOs alone, deliberately NOT branching on isPosixShell. The
+      // Windows branch is buildWindowsDeleteFilesScript, which is
+      // wrapPowerShellEncoded-wrapped -- a single base64 `powershell
+      // -EncodedCommand <blob>` string that is shell-agnostic AS A STRING, the
+      // same reasoning execute-command.ts's long_running Windows launch and
+      // monitor-task.ts's status/pid/log commands document -- so a gitbash
+      // member's bash.exe exec shell runs it exactly as correctly as a
+      // powershell5/pwsh7/unset member's default shell does; no re-tokenizing
+      // risk exists here to fix. Deliberately did NOT reroute gitbash to the
+      // POSIX `rm -f` branch below despite it being three lines away: that
+      // branch does `cd "<folder>"` assuming a POSIX-formatted path, and
+      // nothing here guarantees agent.workFolder for a Windows member is
+      // stored in POSIX form (`/c/Users/...`) rather than native Windows form
+      // (`C:\Users\...`) -- switching branches would trade a proven-safe path
+      // for an unverified one. Keep this comment if a future survey asks the
+      // same question again.
       if (agentOs === 'windows') {
         await this.execCommand(buildWindowsDeleteFilesScript(folder, relativePaths), 10000);
       } else {
@@ -84,7 +101,7 @@ class LocalStrategy implements AgentStrategy {
   async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult> {
     let pidExtracted = false;
     const result = await new Promise<SSHExecResult>((resolve, reject) => {
-      const cmds = getOsCommands(getAgentOS(this.agent));
+      const cmds = getOsCommands(getAgentOS(this.agent), getAgentShell(this.agent));
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
       const child = spawn(wrapped, { shell: shell ?? true, cwd: this.agent.workFolder, env, windowsHide: true });
 
@@ -105,7 +122,13 @@ class LocalStrategy implements AgentStrategy {
         // already terminated the wrapper, and taskkill can't traverse from
         // an already-dead PID, silently leaving descendants running.
         try {
-          execSync(cmds.killPid(child.pid), { stdio: 'ignore' });
+          // Must run through the same shell cleanExec resolved (e.g. Git
+          // Bash's bash.exe for a gitbash member) -- execSync with no
+          // `shell` option falls back to cmd.exe on Windows, which cannot
+          // parse a gitbash-flavoured kill string like
+          // `taskkill //F //T //PID <n> >/dev/null 2>&1; true`
+          // (apra-fleet-7dir.4).
+          execSync(cmds.killPid(child.pid), shell ? { stdio: 'ignore', shell } : { stdio: 'ignore' });
         } catch { /* best-effort; process may already be dead */ }
       }
 

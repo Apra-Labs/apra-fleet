@@ -100,11 +100,25 @@
  * @property {"password" | "key"} [auth_type] - Authentication method
  * @property {string} [password] - SSH password
  * @property {string} [key_path] - Path to SSH private key
- * @property {string} [llm_provider] - LLM provider for this member
+ * @property {"read" | "push" | "admin" | "issues" | "full"} [git_access] - Git access level for this member
+ * @property {string[]} [git_repos] - Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])
+ * @property {"aws"} [cloud_provider] - Cloud provider. When set, cloud_instance_id and key_path are required.
+ * @property {string} [cloud_instance_id] - EC2 instance ID (e.g. "i-0abc123def456789a"). Required when cloud_provider is set.
+ * @property {string} [cloud_region] - AWS region (default: "us-east-1")
+ * @property {string} [cloud_profile] - AWS CLI profile name (e.g. "apra")
+ * @property {number} [cloud_idle_timeout_min] - Minutes of inactivity before auto-stop (default: 30)
+ * @property {string} [cloud_activity_command] - Custom shell command for workload detection. Must output "busy" or "idle" on stdout.
+ * @property {"claude" | "codex" | "copilot" | "agy" | "opencode" | "none"} [llm_provider] - LLM provider for this member (default: "claude")
+ * @property {"gpt-oss-120b" | "gpt-120" | "gemini-3.5-flash-lite" | "haiku" | "gpt-5.4-mini"} [model_cheap] - Custom cheap model choice from a curated list
+ * @property {"gemini-3.5-flash" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Custom standard model choice from a curated list
+ * @property {"sonnet" | "opus" | "gpt-oss-120b"} [model_premium] - Custom premium model choice from a curated list
+ * @property {{cheap?: string, standard?: string, premium?: string}} [model_tiers] - Per-member model tier map. A single model fills all tiers.
+ * @property {"codebase-memory" | "gitnexus" | "none"} [code_intel_provider] - Code-intelligence provider for this member (default: fleet-wide config)
  * @property {string} [category] - Optional group label
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "orchestrator" role)
+ * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  */
 
 /**
@@ -118,12 +132,54 @@
  * @property {number} [port] - New SSH port
  * @property {"password" | "key"} [auth_type] - New auth method
  * @property {string} [password] - New SSH password
+ * @property {boolean} [rotate_password] - Trigger secure out-of-band password re-entry for a member already using password auth. Ignored if auth_type is not password.
  * @property {string} [key_path] - New SSH private key path
- * @property {string} [llm_provider] - Change the LLM provider
+ * @property {"read" | "push" | "admin" | "issues" | "full"} [git_access] - Git access level for this member
+ * @property {string[]} [git_repos] - Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])
+ * @property {string} [icon] - Override the auto-assigned emoji icon. Use named aliases (e.g. blue-circle, green-square) or a raw emoji.
+ * @property {string} [cloud_region] - AWS region for the cloud instance
+ * @property {string} [cloud_profile] - AWS CLI profile name
+ * @property {number} [cloud_idle_timeout_min] - Minutes of inactivity before auto-stop
+ * @property {string} [cloud_activity_command] - Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.
+ * @property {"claude" | "codex" | "copilot" | "agy" | "opencode"} [llm_provider] - Change the LLM provider
+ * @property {"gpt-oss-120b" | "gpt-120" | "gemini-3.5-flash-lite" | "haiku" | "gpt-5.4-mini"} [model_cheap] - Change custom cheap model
+ * @property {"gemini-3.5-flash" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Change custom standard model
+ * @property {"sonnet" | "opus" | "gpt-oss-120b"} [model_premium] - Change custom premium model
+ * @property {{cheap?: string, standard?: string, premium?: string}} [model_tiers] - Per-member model tier map with free-form model IDs. A single model fills all tiers.
+ * @property {"codebase-memory" | "gitnexus" | "none"} [code_intel_provider] - Change the code-intelligence provider for this member
  * @property {string} [category] - Group label
  * @property {string[]} [tags] - Free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode
  * @property {boolean} [unreservable] - Mark/unmark this member as shared/never exclusively reservable
+ * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
+ */
+
+/**
+ * Structured result returned by memberDetail() when called with format: 'json'
+ * (src/tools/member-detail.ts). When format is 'compact' (the default), memberDetail()
+ * instead returns a plain multi-line text summary, not this shape.
+ * @typedef {Object} MemberDetailResult
+ * @property {string} server_version - Fleet server version string
+ * @property {string} name - Friendly name of the member
+ * @property {string} icon - Emoji icon for this member
+ * @property {string} id - UUID of the member
+ * @property {"local" | "remote"} type - Member type
+ * @property {string} host - "(local)" for local members, or "host:port" for remote members
+ * @property {string} [username] - SSH username (remote members)
+ * @property {string} os - Detected/registered operating system
+ * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Registered Windows shell for this member (Windows members only)
+ * @property {string} folder - Working directory on the target machine
+ * @property {string} [repo_remote_url] - Origin URL of the git repo in `folder`, when known
+ * @property {string} [vcsProvider] - VCS provider configured for this member
+ * @property {Object} connectivity - Connectivity check result (status, latencyMs, auth, keyPath, or error)
+ * @property {boolean} [offline] - Set when the member could not be reached
+ * @property {string} llmProvider - LLM provider for this member (default: "claude")
+ * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
+ * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
+ * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
+ * @property {Object} [resources] - System resource snapshot: { cpu, memory, disk, gpu }
+ * @property {string} [branch] - Current git branch in `folder`, when it is a git repo
+ * @property {Object} [cloud] - Cloud instance details, for cloud-backed members only
  */
 
 /**
@@ -164,6 +220,11 @@
  * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)
  * @property {string} [pat] - Azure DevOps personal access token. Supports {{secure.NAME}}
  *   token -- resolved from the credential store server-side before use.
+ * @property {string} [pat_expires_at] - ISO 8601 date/time the Azure DevOps PAT expires, as
+ *   chosen when creating the token. Propagated to the member registry so provisioning can
+ *   warn when the PAT is nearing expiry. Must be parseable by Date.parse -- the server
+ *   REJECTS an unparseable value rather than storing it, because a NaN expiry silences the
+ *   warning and makes the credential-cleanup timer fall back to its 55-minute default.
  */
 
 /**
@@ -321,8 +382,10 @@ export class ApraFleet {
     }
 
     /**
-     * Get detailed status for one member: connectivity, session, work folder, provider.
+     * Get detailed status for one member: connectivity, session, work folder, provider, registered shell (Windows).
      * @param {{ member_id?: string, member_name?: string, format?: 'compact'|'json' }} options
+     * @returns {Promise<string|MemberDetailResult>} A compact text summary when format is
+     *   "compact" (default), or the structured MemberDetailResult object when format is "json".
      */
     async memberDetail(options) {
         return this.mcpClient.callTool('member_detail', options);

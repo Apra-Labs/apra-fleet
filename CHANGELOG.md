@@ -138,6 +138,179 @@ Tracked spend (priced dispatches only): $8.4210.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.1315 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
 Pricing source: all 18 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
+## [Unreleased] -- Windows shell selection: finish wiring fleet-sprint through the registered shell
+
+Sprint goal: close out the remaining scope of the Windows shell-selection
+epic -- wire the fleet-sprint-side command builders into their real call
+sites (previously present as source but unused), mirror the registered
+`shell` field into the MCP client's type definitions, align the
+Windows-Git-Bash candidate list between probe and command builder, and fix
+an unrelated, independently-discovered native-addon lock-detection gap in
+the pre-build lock-clearing script. Final verdict is a PASS: all in-scope
+work items closed, with the two remaining follow-ups noted below carried
+forward as their own tracked items rather than blocking this sprint.
+
+What shipped:
+
+- **fleet-sprint dolt-settle now routes through the registered shell**:
+  installing, probing, killing, and spawning the pinned local dolt server,
+  plus the SQL/node-eval command strings sent around it, are built via the
+  shell-aware command-builder classes instead of a fixed PowerShell
+  assumption. A dedicated shell-aware SQL-escaping primitive and a
+  wrap-PowerShell primitive for gitbash members were added to the
+  fleet-sprint command-builder set to support this. Any command body that
+  is embedded in a WMI/`Win32_Process` script (used for the pinned-dolt
+  install/kill/spawn lifecycle) is now resolved in PowerShell dialect
+  specifically, separately from the member's own shell-dialect path, since
+  such script bodies are always interpreted by PowerShell regardless of
+  the target member's registered shell -- a distinction that was not
+  previously made and would otherwise silently break a gitbash member.
+- **Runner threads the registered shell everywhere it settles state**: the
+  remaining call sites that build a settle callback now resolve and pass
+  the member's registered shell, closing the last gap where fleet-sprint
+  fell back to a fixed PowerShell assumption regardless of what shell a
+  Windows member actually runs.
+- **MCP client typedefs mirror the server schema**: the client wrapper's
+  register/update-member option typedefs and its member-detail result
+  typedef now declare the `shell` field and the curated model-tier enums,
+  matching the real server-side zod schemas -- closing a docs/typedef gap
+  where the client already forwarded the field correctly at runtime but
+  did not declare it. A parity test now reads the real zod schemas on both
+  sides and asserts they agree, rather than relying on the two staying in
+  sync by convention.
+- **Git-bash candidate list unified**: the shell probe's remote discovery
+  script and the local command-builder's resolver now consume one shared
+  candidate-list literal (including the shared user-scope install-path
+  suffix), with the parity test-asserted. The local resolver no longer
+  falls back to a bare, PATH-resolved `bash.exe` when no known-good
+  candidate checks out -- it now throws, rather than silently
+  reintroducing the WSL/System32 Git-Bash-impersonation ambiguity the
+  probe exists to close.
+- **`isPosixShell` consolidated**: the several previously-deliberate
+  private copies of the POSIX-vs-PowerShell branch predicate are now
+  routed through one exported, overloaded helper (plus a convenience
+  wrapper that reads both fields off an agent), with semantics unchanged.
+- **Pre-build lock-clearing script hardened** (independently discovered,
+  not part of the shell-selection epic's original scope): the script now
+  also detects processes that hold a native build addon open as a mapped
+  module rather than only processes whose own image path or command line
+  lives inside the checkout -- closing a real gap where a native addon
+  loaded by an unrelated host process (a system interpreter, an editor
+  language server, a leftover test worker) was invisible to the previous
+  matcher. It now re-probes empirically before reporting failure, names
+  the blocking process when it cannot clear a lock instead of reporting a
+  false success, and supports a dry-run mode.
+- **Docs**: see
+  [docs/windows-shell-selection.md](docs/windows-shell-selection.md) and
+  [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md),
+  both updated this sprint to describe the now-completed fleet-sprint
+  wiring, the consolidated `isPosixShell` helper, and the PowerShell
+  error-guard requirement for any script-emitting wrapper -- including
+  ones serving gitbash members.
+
+Carried forward (not closed this sprint):
+
+- Adding the PowerShell error-guard envelope
+  (`$ErrorActionPreference = 'Stop'` + try/catch + explicit exit code) to
+  the gitbash-specific wrap-PowerShell primitive, which currently emits an
+  unguarded `-EncodedCommand` invocation unlike its sibling wrappers
+  elsewhere in the codebase. Each current call site is independently
+  protected by its own result-gating, so this is not believed to be
+  live-exploitable today, but the gap should be closed rather than relied
+  upon.
+- Test coverage for the pre-build lock-clearing script rewrite, which
+  shipped without its own test suite.
+- A same-sprint regression pass (informational, does not gate this
+  sprint's verdict) reconfirmed several pre-existing, parent-less
+  carry-over issues (a long-running integration test, a KB
+  remote-scope test, a publish-push-failure test, and the
+  test-suite-file-duration budget) and surfaced one new, low-confidence
+  candidate in the same family as a known bd-init-template-collision
+  class of intermittent failure; a known sandbox-smoke-test
+  credential-provisioning environment block (unrelated to this sprint's
+  changes) was also reconfirmed. None of this blocks the sprint verdict.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $12.7413.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3455 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 22 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- Windows shell selection: probe and register the real shell, not just the OS
+
+Sprint goal: stop assuming every Windows member runs PowerShell. Add a
+registered `shell` field (`gitbash | pwsh7 | powershell5`) alongside the
+existing `os` field, probe for it at registration time, and route
+Windows-bound command construction through the registered shell instead of
+a fixed PowerShell assumption. Final verdict is a FAIL: the probe/register
+path and the core command-construction routing landed and are verified
+real and passing, but the epic as a whole is materially incomplete against
+its own acceptance criteria (see "Carried forward" below).
+
+What shipped:
+
+- **Shell probe and registration**: registration now probes, in order,
+  Git-for-Windows Bash, PowerShell 7, then PowerShell 5.1, trusting a
+  candidate only when a real smoke command returns both exit code 0 and an
+  expected stdout marker -- never on path/presence alone. A PATH-resolved
+  `bash.exe` is rejected as a Git-for-Windows Bash candidate unless it is
+  both outside known WSL/System32/WindowsApps launcher locations AND its
+  own `uname` output confirms a real MINGW/MSYS environment, closing the
+  WSL-launcher-impersonation gap. If every probe fails, registration still
+  succeeds and degrades to `powershell5` with a surfaced warning rather than
+  failing outright.
+- **Shell-aware command construction (core)**: a new `WindowsGitBashCommands`
+  implementation (extends the POSIX command builder, overriding only the
+  Windows-native surface) is now selected for any member registered with
+  `shell: 'gitbash'`. Command-construction call sites across member-home
+  resolution, provider install commands, workspace-trust seeding, the
+  local-execution strategy's process-kill and clean-env paths, credential
+  escaping, and prompt-transfer/durable-mirror/orphan-recovery now branch on
+  the registered shell (`isPosixShell(os, shell)`) rather than on `os`
+  alone.
+- **Docs**: see
+  [docs/windows-shell-selection.md](docs/windows-shell-selection.md) for the
+  probe design, the shell-vs-os distinction, the git-bash candidate-list
+  invariant, and the design decision to keep the core and fleet-sprint
+  implementations of this pattern independent rather than sharing a
+  package.
+
+Carried forward (epic left open; none of the following were closed this
+sprint):
+
+- Mirroring the new `shell` field into the MCP client wrapper's type
+  definitions and API-reference documentation (the client already forwards
+  the field correctly at runtime, so this is a docs/typedef gap, not a
+  functional break).
+- Wiring the fleet-sprint-side shell-command modules into their intended
+  call site (the runner's encoded-PowerShell-command wrapper) -- the module
+  set exists as source but nothing outside itself imports it yet, so it has
+  no effect on fleet-sprint's actual behavior today.
+- Aligning the Windows-Git-Bash command builder's candidate-path list with
+  the probe's candidate list, so a user-scope (non-admin) Git for Windows
+  install resolves consistently between probing and command construction
+  instead of falling back to an unqualified, PATH-resolved `bash.exe`.
+- Closing out the remaining Windows-equals-PowerShell survey sites (a
+  shell-aware-string test-assertion gap remains against otherwise-verified
+  production code).
+- Consolidating the several current copies of the POSIX-shell-branch
+  predicate behind one shared helper (currently deliberate, intentional
+  duplication, not a defect).
+- A deploy step that did not complete: `npm ci` failed reproducibly on
+  attempting to unlink a native build addon file, before the build/binary
+  and install steps could run; a working-tree hygiene follow-up (a few
+  scratch files at repo root not yet covered by ignore rules); and a
+  regression pass carry-over unrelated to this sprint's own changes.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $41.1657.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2004 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 55 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- Windows/PowerShell shell portability and schema-repair retry correctness
