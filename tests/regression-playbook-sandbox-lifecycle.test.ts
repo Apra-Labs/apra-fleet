@@ -185,6 +185,27 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
       cleanupDirs.push(sandbox);
       expect(fs.existsSync(`${sandbox}.lock`)).toBe(false);
     });
+
+    it('regression-test-playbook.md Setup actually invokes sandbox-lock.mjs acquire and kill-port.mjs 18700 before "node dist/index.js start" -- reverting either line is what the prior tests prove would leave the busy-check/stale-port guard unenforced', () => {
+      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
+      // Anchor to the actual '## Setup'/'## Reset' HEADINGS (a whole line),
+      // not a backticked mention of the same text elsewhere in the file's
+      // intro/cross-reference prose -- mirrors the sibling
+      // regression-playbook-port3001-guard.test.ts pattern.
+      const setupSection = text.split(/^## Setup$/m)[1]?.split(/^## Reset$/m)[0] ?? '';
+      const acquireMatch = /^node "<repo-root>\/scripts\/sandbox-lock\.mjs" acquire "\$SANDBOX" "\$\$" \|\| exit 1$/m.exec(
+        setupSection,
+      );
+      const killPortMatch = /^node "<repo-root>\/scripts\/kill-port\.mjs" 18700 "sandbox scratch port 18700" 5000 \|\| exit 1$/m.exec(
+        setupSection,
+      );
+      const startMatch = /^node dist\/index\.js start$/m.exec(setupSection);
+      expect(acquireMatch).not.toBeNull();
+      expect(killPortMatch).not.toBeNull();
+      expect(startMatch).not.toBeNull();
+      expect(acquireMatch!.index).toBeLessThan(startMatch!.index);
+      expect(killPortMatch!.index).toBeLessThan(startMatch!.index);
+    });
   });
 
   // ---------------------------------------------------------------------
@@ -371,10 +392,17 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
   // is present and the smoke test's own bounds stay inside it.
   // ---------------------------------------------------------------------
   describe('cross-instance safety: the documented time-bound mitigation is present', () => {
-    it('regression-test-playbook.md Teardown hard-enforces the SUPERVISOR_UPTIME >= 300 (5-minute) bound', () => {
+    it('regression-test-playbook.md Test scenario step 4 hard-enforces the UPTIME_DEADLINE = SUPERVISOR_STARTED_AT + 280 stop (the actual enforcement point) -- Teardown\'s SUPERVISOR_UPTIME >= 300 check is only a belt-and-suspenders warning, not the hard stop', () => {
       const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-      expect(text).toMatch(/SUPERVISOR_UPTIME\s*=\s*\$\(\(\s*\$\(date \+%s\)\s*-\s*SUPERVISOR_STARTED_AT\s*\)\)/);
+      // The real hard stop: Test scenario step 4's sprint-poll loop bails at
+      // +280s, before the sweep's 300s/5-minute tick can ever fire.
+      expect(text).toMatch(/UPTIME_DEADLINE\s*=\s*\$\(\(\s*SUPERVISOR_STARTED_AT\s*\+\s*280\s*\)\)/);
+      expect(text).toMatch(/"\$\(date \+%s\)"\s*-ge\s*"\$UPTIME_DEADLINE"/);
+      // The Teardown check is documented as belt-and-suspenders, not the
+      // enforcement mechanism -- still present, but not what this test
+      // treats as the hard bound.
       expect(text).toMatch(/SUPERVISOR_UPTIME"\s*-ge\s*300/);
+      expect(text).toMatch(/belt-and-suspenders/i);
       expect(text).toMatch(/dolt-orphan-sweep/i);
     });
   });
