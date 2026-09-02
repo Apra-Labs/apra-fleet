@@ -710,6 +710,18 @@ rm -f "$SANDBOX.setup_started_at"
 rm -rf "$SANDBOX"
 ```
 
+`tests/regression-playbook-sandbox-lifecycle.test.ts` is an automated,
+pass/fail regression suite for the Setup busy-check, the Setup/
+Teardown stale-port guards above, Teardown's dolt-sql-server reap, and the
+cross-instance time-bound mitigation documented above -- run it via `npx
+vitest run tests/regression-playbook-sandbox-lifecycle.test.ts` whenever this
+sandbox lifecycle changes. It drives the real `scripts/sandbox-lock.mjs`,
+`scripts/kill-port.mjs`, and `scripts/reap-sandbox-dolt.mjs` CLIs/functions
+against throwaway sandboxes and OS-assigned ports; it does not run the live
+Setup/Teardown sequence end to end (no real `node dist/index.js
+install/start`, no network clone) -- that remains this file's job, run for
+real by `regression-test-runner`.
+
 ## Test scenario (informational)
 
 The smoke test itself: what `regression-test-runner` does with the
