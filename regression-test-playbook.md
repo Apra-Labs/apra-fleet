@@ -722,6 +722,15 @@ Setup/Teardown sequence end to end (no real `node dist/index.js
 install/start`, no network clone) -- that remains this file's job, run for
 real by `regression-test-runner`.
 
+`tests/regression-playbook-port3001-guard.test.ts` is the same kind of
+automated, pass/fail regression suite, scoped to the toy app's dev-server
+port (3001) guard in `## Setup` above and the documented Teardown rationale
+for not separately reaping it -- run it via `npx vitest run
+tests/regression-playbook-port3001-guard.test.ts` whenever that guard
+changes. Same scope limits as the suite above: it drives the real
+`scripts/kill-port.mjs` CLI against throwaway dummy listeners and OS-assigned
+ports, never the real HOME or a real toy dev server.
+
 ## Test scenario (informational)
 
 The smoke test itself: what `regression-test-runner` does with the
