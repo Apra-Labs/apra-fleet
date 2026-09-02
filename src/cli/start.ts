@@ -7,6 +7,7 @@ import { checkRunningInstance } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { LOG_FILE_PATH, FLEET_DIR, isNonDefaultInstance } from '../paths.js';
 import { BIN_DIR } from './config.js';
+import { serverVersion } from '../version.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -54,6 +55,14 @@ function directSpawn(): void {
 export async function runStart(_args: string[]): Promise<void> {
   const instance = await checkRunningInstance();
   if (instance.running) {
+    if (instance.version && instance.version !== serverVersion) {
+      console.error(
+        `Server already running at ${instance.url} pid=${instance.pid} is version ${instance.version}, `
+        + `but the installed version is ${serverVersion}. Refusing to reuse a stale server -- `
+        + `stop it (apra-fleet stop) and re-run start.`,
+      );
+      process.exit(1);
+    }
     console.log(`Server already running at ${instance.url} pid=${instance.pid}`);
     return;
   }
