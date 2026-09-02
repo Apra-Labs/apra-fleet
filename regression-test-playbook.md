@@ -93,7 +93,13 @@ runtime:
   relative-prefix entry like `Bash(node scripts/sandbox-lock.mjs *)` does
   NOT cover any of these: the invocations use the absolute `<repo-root>/...`
   form (see Conventions above), so only a broader `Bash(node:*)`-class
-  entry satisfies it.
+  entry satisfies it. Note: `kill-port.mjs`/`reap-sandbox-dolt.mjs` in turn
+  spawn their own subprocesses internally (`netstat`/`taskkill` on Windows,
+  `lsof`/`ps` on POSIX) -- those do NOT need their own permission entries,
+  the same way `sandbox-lock.mjs`'s and `check-sandbox-sync-remote.mjs`'s
+  own internal `git`/`bd` calls never have: the permission layer gates this
+  playbook's own `Bash` tool calls, not what a permitted process spawns
+  internally.
 - `Bash(git clone *)`
 - `Bash(git -C ~/temp/.apra-fleet-tests* *)`
 - `Bash(node scripts/run-integ-suites.mjs *)` (for the

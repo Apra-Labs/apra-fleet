@@ -53,6 +53,22 @@ describe('parseNetstatPids', () => {
   it('returns empty array for output with no matching rows', () => {
     expect(parseNetstatPids(sample, 65000)).toEqual([]);
   });
+
+  it('excludes PID 0 rows (netstat reports 0 for some TIME_WAIT/closing rows with no real owning process)', () => {
+    const withZeroPid = [
+      '  TCP    0.0.0.0:18700          0.0.0.0:0              TIME_WAIT       0',
+    ].join('\r\n');
+    expect(parseNetstatPids(withZeroPid, 18700)).toEqual([]);
+  });
+
+  it('does not match on the FOREIGN address column -- a loopback client whose remote port happens to equal the target port is not the server', () => {
+    // The client-side socket of a loopback connection to the server: its
+    // OWN local address is the ephemeral port (51000), and the foreign
+    // address is the server's port (18700). Only the server-side row
+    // (local address == :18700, tested above) should match.
+    const clientSideRow = '  TCP    127.0.0.1:51000        127.0.0.1:18700        ESTABLISHED     7777';
+    expect(parseNetstatPids(clientSideRow, 18700)).toEqual([]);
+  });
 });
 
 describe('findPids', () => {
@@ -107,8 +123,9 @@ describe('waitPortFree', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('kills and re-probes until the port frees, then succeeds', async () => {
+  it('kills (via process.kill, not a shelled-out "kill" binary) and re-probes until the port frees, then succeeds', async () => {
     let calls = 0;
+    const killed = [];
     const deps = {
       platform: 'linux',
       execFileSync: (cmd) => {
@@ -118,12 +135,14 @@ describe('waitPortFree', () => {
         }
         return '';
       },
+      processKill: (pid) => { killed.push(pid); },
       sleep: async () => {},
       now: () => 0,
     };
     const result = await waitPortFree(18700, 'test port', 5000, deps);
     expect(result.ok).toBe(true);
     expect(calls).toBeGreaterThanOrEqual(2);
+    expect(killed).toEqual([4242]);
   });
 
   it('fails loud (ok:false, names the still-bound pid) if the port stays occupied past the deadline', async () => {
@@ -131,6 +150,7 @@ describe('waitPortFree', () => {
     const deps = {
       platform: 'linux',
       execFileSync: (cmd) => (cmd === 'lsof' ? '4242\n' : ''),
+      processKill: () => {},
       sleep: async () => { now += 1000; },
       now: () => now,
     };

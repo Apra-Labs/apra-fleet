@@ -113,7 +113,15 @@ export function listCandidates(deps = {}) {
       out = exec('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
     } catch (err) {
       if (err && err.code === 'ENOENT') throw new ProbeToolMissingError('powershell');
-      out = err && typeof err.stdout === 'string' ? err.stdout : '';
+      // Unlike lsof/ps, a non-zero exit here is NOT documented PowerShell
+      // behavior for "no matching process" -- Get-CimInstance's own
+      // -ErrorAction SilentlyContinue already makes the "nothing found"
+      // case exit 0 with empty output. A non-zero exit means the probe
+      // script itself failed (bad quoting, CIM access denied, etc.);
+      // swallowing that here would report "no matching processes remain"
+      // when the truth is "could not check" -- rethrow so the caller sees
+      // a real failure instead of a false-success empty result.
+      throw err;
     }
     return parseWindowsRows(out);
   }
@@ -127,11 +135,16 @@ export function listCandidates(deps = {}) {
   return parsePsRows(out, Math.floor(now() / 1000));
 }
 
+/** POSIX uses `process.kill` directly (SIGKILL) rather than shelling out to
+ *  a `kill` binary -- on a bare POSIX host `kill` is frequently a shell
+ *  builtin, not `/bin/kill`, so `execFileSync('kill', ...)` can ENOENT
+ *  there; `process.kill` needs no external binary at all. */
 export function killPid(pid, deps = {}) {
   const exec = deps.execFileSync ?? execFileSync;
+  const kill = deps.processKill ?? process.kill;
   try {
     if (isWindows(deps)) exec('taskkill', ['/F', '/PID', String(pid)], { stdio: 'ignore' });
-    else exec('kill', ['-9', String(pid)], { stdio: 'ignore' });
+    else kill(Number(pid), 'SIGKILL');
   } catch {
     // best effort -- the retry loop's own deadline + final verification
     // decides pass/fail, not this individual kill call.
@@ -206,5 +219,12 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main();
+  main().catch((err) => {
+    // Any error reaching here is an unexpected probe/kill failure (e.g. the
+    // PowerShell script itself failing on Windows) -- fail loud with a real
+    // non-zero exit and the actual error, rather than Node's default
+    // unhandled-rejection dump or, worse, a silent false success.
+    console.error(`[reap-sandbox-dolt] unexpected error: ${err && err.stack ? err.stack : err}`);
+    process.exit(1);
+  });
 }

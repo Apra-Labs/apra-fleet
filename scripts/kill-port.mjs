@@ -50,10 +50,16 @@ export function parseLsofPids(output) {
     .filter((line) => /^\d+$/.test(line));
 }
 
-/** Parse `netstat -ano` output for every row whose local address ends in
- *  ':<port>' (TCP or UDP, any state), returning the PID column. Windows'
- *  netstat format: 'TCP    0.0.0.0:18700    0.0.0.0:0    LISTENING    12345'
- *  (columns are whitespace-separated; the PID is always the last column). */
+/** Parse `netstat -ano` output for every row whose LOCAL address (column 2,
+ *  never the foreign/remote address column) ends in ':<port>' (TCP or UDP,
+ *  any state), returning the PID column. Windows' netstat format:
+ *  'TCP    0.0.0.0:18700    0.0.0.0:0    LISTENING    12345' (columns are
+ *  whitespace-separated; the PID is always the last column).
+ *
+ *  Explicitly excludes PID '0' -- netstat reports that for certain
+ *  TIME_WAIT/closing rows with no real owning process; treating it as a
+ *  killable candidate would spin the retry loop to its deadline on a
+ *  process that was never going to go away because there is no process. */
 export function parseNetstatPids(output, port) {
   const pids = new Set();
   const suffix = `:${port}`;
@@ -65,7 +71,7 @@ export function parseNetstatPids(output, port) {
     const localAddr = cols[1];
     if (!localAddr.endsWith(suffix)) continue;
     const pid = cols[cols.length - 1];
-    if (/^\d+$/.test(pid)) pids.add(pid);
+    if (/^\d+$/.test(pid) && pid !== '0') pids.add(pid);
   }
   return [...pids];
 }
@@ -102,13 +108,20 @@ export function findPids(port, deps = {}) {
 }
 
 /** Kill every pid in `pids`, best-effort (a pid that already exited between
- *  the probe and the kill is not an error). */
+ *  the probe and the kill is not an error). POSIX uses `process.kill`
+ *  directly (SIGKILL) rather than shelling out to a `kill` binary -- on a
+ *  bare POSIX host `kill` is frequently a shell builtin, not `/bin/kill`,
+ *  so `execFileSync('kill', ...)` can ENOENT there; `process.kill` needs no
+ *  external binary at all. Windows still shells out to `taskkill.exe`
+ *  (there is no `process.kill`-only equivalent that force-kills reliably
+ *  cross-version on Windows). */
 export function killPids(pids, deps = {}) {
   const exec = deps.execFileSync ?? execFileSync;
+  const kill = deps.processKill ?? process.kill;
   for (const pid of pids) {
     try {
       if (isWindows(deps)) exec('taskkill', ['/F', '/PID', String(pid)], { stdio: 'ignore' });
-      else exec('kill', ['-9', String(pid)], { stdio: 'ignore' });
+      else kill(Number(pid), 'SIGKILL');
     } catch {
       // best effort -- already gone, or unkillable; the retry loop's own
       // deadline + final verification is what actually decides pass/fail.
@@ -169,5 +182,13 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main();
+  main().catch((err) => {
+    // Any error that reaches here is neither the invalid-port nor the
+    // ProbeToolMissingError case main() already handles -- an unexpected
+    // probe/kill failure. Fail loud with a real non-zero exit and the
+    // actual error, rather than falling through to Node's default
+    // unhandled-rejection dump (or, worse, a silent false success).
+    console.error(`[kill-port] unexpected error: ${err && err.stack ? err.stack : err}`);
+    process.exit(1);
+  });
 }

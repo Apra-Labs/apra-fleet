@@ -101,6 +101,19 @@ describe('listCandidates', () => {
     };
     expect(() => listCandidates(deps)).toThrow(ProbeToolMissingError);
   });
+
+  it('rethrows a non-ENOENT PowerShell failure on Windows rather than swallowing it as "no processes found"', () => {
+    // Get-CimInstance's own -ErrorAction SilentlyContinue already makes the
+    // real "nothing found" case exit 0 with empty output, so a non-zero
+    // exit here means the probe script itself failed (bad quoting, CIM
+    // access denied, etc.) -- treating that as an empty result would be a
+    // false "no matching processes remain".
+    const deps = {
+      platform: 'win32',
+      execFileSync: () => { throw Object.assign(new Error('script error'), { code: 1, stdout: '' }); },
+    };
+    expect(() => listCandidates(deps)).toThrow(/script error/);
+  });
 });
 
 describe('reapSandboxDolt', () => {
@@ -114,8 +127,9 @@ describe('reapSandboxDolt', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('kills a matching process and succeeds once it is gone', async () => {
+  it('kills (via process.kill, not a shelled-out "kill" binary) a matching process and succeeds once it is gone', async () => {
     let calls = 0;
+    const killed = [];
     const deps = {
       platform: 'linux',
       execFileSync: (cmd) => {
@@ -127,12 +141,14 @@ describe('reapSandboxDolt', () => {
         }
         return '';
       },
+      processKill: (pid) => { killed.push(pid); },
       sleep: async () => {},
       now: () => 1000,
     };
     const result = await reapSandboxDolt({ sandboxPath: SANDBOX, since: 0, deadlineMs: 5000 }, deps);
     expect(result.ok).toBe(true);
     expect(calls).toBeGreaterThanOrEqual(2);
+    expect(killed).toEqual([4242]);
   });
 
   it('fails loud, naming the surviving process, if it outlives the deadline', async () => {
@@ -142,6 +158,7 @@ describe('reapSandboxDolt', () => {
       execFileSync: (cmd) => (cmd === 'ps'
         ? `4242   30   dolt sql-server --data-dir ${SANDBOX}/toy-repo/.beads/dolt`
         : ''),
+      processKill: () => {},
       sleep: async () => { now += 1000; },
       now: () => now,
     };
