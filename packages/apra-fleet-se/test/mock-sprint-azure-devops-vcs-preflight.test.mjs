@@ -142,31 +142,24 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
             originUrl: AZ_ORIGIN,
         });
 
-        // A missing secret degrades the PREFLIGHT specifically (it never
-        // throws out of withGitSync -- see createVcsAuthPreflightCallback's
-        // own doc comment); the run must never stall waiting on an
-        // interactive credential prompt because of the preflight.
+        // A missing secret degrades the preflight (it never throws out of
+        // withGitSync -- see createVcsAuthPreflightCallback's own doc
+        // comment); the run must never stall waiting on an interactive
+        // credential prompt.
         //
-        // apra-fleet-5co8.14.1: with dev.azure.com's canOpenPullRequest now
+        // apra-fleet-5co8.15: with dev.azure.com's canOpenPullRequest now
         // true, this scenario's single task also reaches the Publish PR
         // phase, which calls provisionPrCapableAuthForMember ->
         // provisionVcsAuthForMember directly (not through the preflight
-        // callback). That wrapper is a thin, provider-agnostic pass-through
-        // over the SAME buildProvisionArgsForProvider used by the preflight
-        // (runner.js:2470) with no failSoft of its own, so it re-throws the
-        // identical missing-secret error at sprint level -- this is
-        // pre-existing provider-agnostic publish behavior, not a preflight
-        // regression, and runner.js is out of scope for this task. So this
-        // case only asserts the PREFLIGHT's own behavior (no
-        // provision_vcs_auth call, credential_store_set named in the logs);
-        // if a sprint-level error surfaces, it must be exactly this same
-        // missing-secret error and not some other regression.
-        if (scenario.error) {
-            check(
-                /cannot provision Azure DevOps auth for member 'local': the credential store has no entry named 'azdevops_pat'/.test(scenario.error.message),
-                `expected any sprint-level error to be the known missing-secret error from the (non-preflight) Publish PR phase, got: ${scenario.error.message}`,
-            );
-        }
+        // callback). raiseVcsPrForMember (runner.js) now catches that
+        // provisioning failure itself, logs the Azure DevOps provider's own
+        // authRemedy hint, and returns a degraded authFailure outcome instead
+        // of rethrowing the raw missing-secret text -- so the Publish PR
+        // phase no longer aborts the sprint on this condition (mirrored in
+        // runSprintCycle's Publish PR step). The strict assertion below was
+        // relaxed by e54fbdcd to tolerate the sprint-level abort that fix now
+        // removes; restored to its original, stricter form.
+        check(!scenario.error, `expected no sprint-level error from a swallowed preflight failure, got: ${scenario.error ? scenario.error.message : ''}`);
 
         check(
             vcsAuthCalls.length === 0,
@@ -178,6 +171,20 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
         check(
             scenario.logs.some((l) => /ERROR:.*credential_store_set name=azdevops_pat/.test(l)),
             `expected the preflight's swallowed failure log to name 'credential_store_set name=azdevops_pat', got logs: ${JSON.stringify(scenario.logs.filter((l) => /preflight/i.test(l)))}`,
+        );
+
+        // apra-fleet-5co8.15: the Publish PR phase reaches the same missing
+        // secret (dev.azure.com's canOpenPullRequest is now true), and must
+        // surface the Azure DevOps provider's own authRemedy guidance
+        // (vcs-providers/azure-devops.mjs's AUTH_REMEDY_HINT, naming the
+        // missing secret and the operator action) rather than aborting the
+        // sprint with the raw provision_vcs_auth failure text (already
+        // covered by the `!scenario.error` assertion above -- that raw text
+        // legitimately still appears in the preflight's OWN swallowed log
+        // checked just above, which is a different, non-aborting code path).
+        check(
+            scenario.logs.some((l) => /\[Publish PR Skipped\]/.test(l) && /PATs cannot be re-minted server-side/.test(l) && /credential_store_set/.test(l)),
+            `expected a Publish PR log to carry the Azure DevOps provider's authRemedy guidance, got logs: ${JSON.stringify(scenario.logs.filter((l) => /Publish PR/i.test(l)))}`,
         );
     });
 });

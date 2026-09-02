@@ -2753,7 +2753,35 @@ function isPrAuthFailure(status, errorText) {
 // @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string }} opts
 // @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean }>}
 async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride }) {
-    let { repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
+    let repo;
+    try {
+        ({ repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride }));
+    } catch (provisionErr) {
+        // apra-fleet-5co8.15: provisionPrCapableAuthForMember has no failSoft
+        // of its own (by design -- see its doc comment above), so a
+        // provisioning failure that happens BEFORE any PR-creation attempt
+        // (e.g. a missing Azure DevOps PAT credential-store entry) used to
+        // escape here as the raw provision_vcs_auth failure text and abort
+        // the whole sprint. Degrade it the same way the reactive
+        // auth-self-heal retry below already degrades a mid-retry failure:
+        // log the provider's own authRemedy hint (never a wording duplicated
+        // here) and return authFailure:true instead of throwing, so a caller
+        // (Publish PR, finalizeAbort) can report clean, actionable guidance
+        // and keep going rather than aborting on this condition.
+        let remedyHint = null;
+        try {
+            const { provider } = await resolveProvider(member, { fleetApi });
+            const impl = getVcsProvider(provider);
+            if (impl && impl.authRemedy && impl.authRemedy.hint) remedyHint = impl.authRemedy.hint;
+        } catch (resolveErr) {
+            log(`${logPrefix}: could not resolve member '${member}'s VCS provider to look up an auth remedy hint (falling back to the raw provisioning error): ${resolveErr.message}`);
+        }
+        const message = remedyHint
+            ? `Could not provision a push+pr credential for member '${member}': ${remedyHint}`
+            : provisionErr.message;
+        log(`${logPrefix}: PR-capable credential provisioning failed for member '${member}'; degrading (not throwing): ${message}`);
+        return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true };
+    }
     if (!repo) {
         throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
     }
@@ -11256,12 +11284,23 @@ async function runSprintCycle(context) {
                 remoteUrlOverride: originUrl,
             });
             if (!prResult.ok) {
-                throw new CommandError(
-                    `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
-                    { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prResult.error } }
-                );
-            }
-            if (prResult.alreadyExists) {
+                if (prResult.authFailure) {
+                    // apra-fleet-5co8.15: an auth failure raiseVcsPrForMember
+                    // could not clear -- including one that never got past
+                    // credential provisioning, e.g. a missing Azure DevOps PAT
+                    // credential-store entry -- degrades the publish phase
+                    // instead of aborting the sprint, same policy
+                    // finalizeAbort() already applies to its own authFailure
+                    // outcome (see above). The branch is already pushed; only
+                    // the PR itself is skipped.
+                    log(`[Publish PR Skipped] could not raise a PR for branch '${validated.branch}' -> '${validated.baseBranch}' (branch is pushed) due to an unrecoverable VCS auth failure: ${prResult.error}`);
+                } else {
+                    throw new CommandError(
+                        `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
+                        { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prResult.error } }
+                    );
+                }
+            } else if (prResult.alreadyExists) {
                 log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success.`);
             }
         }
