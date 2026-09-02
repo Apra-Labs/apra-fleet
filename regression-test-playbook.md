@@ -54,11 +54,16 @@ prevents that ambiguity from ever arising -- respect its exit code.
 Conventions used below:
 - Sandbox root: `~/temp/.apra-fleet-tests` (`$HOME/temp/.apra-fleet-tests`
   on POSIX, `%USERPROFILE%\temp\.apra-fleet-tests` on Windows).
-- Scratch port: `18700` (`APRA_FLEET_PORT`) -- kept away from the default MCP
-  server port `7523`, viewer ports starting at `8081`
-  (DEFAULT_SPAWNER_BASE_PORT in packages/apra-fleet-se/src/supervisor/spawner.mjs),
-  and the dolt settle port range `13300-13400`
-  (DEFAULT_PORT_RANGE in packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs).
+- Scratch port: `18700` (`APRA_FLEET_PORT`) -- the fleet MCP server (`node
+  dist/index.js start`). Kept away from the default MCP server port `7523`,
+  viewer ports starting at `8081` (DEFAULT_SPAWNER_BASE_PORT in
+  packages/apra-fleet-se/src/supervisor/spawner.mjs), and the dolt settle
+  port range `13300-13400` (DEFAULT_PORT_RANGE in
+  packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs).
+- Supervisor scratch port: `18701` (`SUPERVISOR_PORT` below,
+  apra-fleet-uof6.1) -- the fleet-sprint supervisor
+  (`packages/apra-fleet-se/bin/serve.mjs`), distinct from the fleet MCP
+  server's `18700` above and from every range in the previous bullet.
 - `<repo-root>`: the root of this apra-fleet checkout -- the directory
   containing this playbook. The executing agent substitutes its actual
   checkout path.
@@ -95,6 +100,12 @@ runtime:
 - `Bash(bd *)` (for "Reporting failures" below -- `bd search` to dedupe and
   `bd create` to file the parent-less carry-over beads; also the sandbox
   `bd show`/`bd dolt` steps in `## Setup` and `## Test scenario`)
+- `Bash(curl:*)` -- drives the supervisor's HTTP API (`POST /api/sprints`,
+  `GET /api/sprints/:id`, `GET /api/members`, `POST /api/shutdown`) in
+  `## Setup`, `## Test scenario`, and `## Teardown` (apra-fleet-uof6.1).
+- `Bash(pgrep:*)`/`Bash(kill:*)` -- covers the supervisor-boot verification
+  and stop steps below, alongside the pre-existing `dolt sql-server` reap
+  loop in `## Teardown`.
 
 ## Run the apra-fleet-se suite against real bd
 
@@ -312,6 +323,82 @@ origin`) ever resolve outside the sandbox root or reference
 node "<repo-root>/scripts/check-sandbox-sync-remote.mjs" "$HOME/toy-repo"
 ```
 
+### Boot the fleet-sprint supervisor (apra-fleet-uof6.1)
+
+The toy sprint runs THROUGH a real supervisor instance
+(`packages/apra-fleet-se/bin/serve.mjs`), not the direct `apra-fleet
+workflow fleet-sprint` CLI, so this smoke test exercises the same
+reservation-ledger / member-dispatch / HTTP-API path a real production
+sprint launch actually uses (see `fleet-supervisor` skill guidance).
+
+Isolate the supervisor's own service data directory from any real,
+already-running supervisor on this machine -- `FLEET_SE_DATA_DIR` (read by
+`ledger.mjs`/`history.mjs`/`spawner.mjs`) is NOT covered by the `HOME`
+override above, so it must be set explicitly:
+
+Note: by this point in `## Setup`, `HOME` (and `USERPROFILE`) are already
+overridden to the sandbox root (see the `export HOME="$SANDBOX"` earlier in
+this section) -- every command below uses `$HOME`, never `$SANDBOX`
+directly, matching the convention the rest of `## Setup` already uses
+(e.g. `GIT_MIRROR="$HOME/..."` above).
+
+```bash
+export SUPERVISOR_PORT=18701
+export FLEET_SE_DATA_DIR="$HOME/.apra-fleet-se-data"
+mkdir -p "$FLEET_SE_DATA_DIR"
+```
+
+**dolt-orphan-sweep hazard (apra-fleet-uof6 parent bead) -- accepted,
+time-bounded mitigation.** The supervisor's `dolt-orphan-sweep` seam
+(`packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs`) scopes
+`listMembers()` to whatever fleet server this process's `HOME` resolves to
+(the sandbox's own, per the override above -- so it will only ever
+enumerate `toy-doer`), but its actual probe/kill command is a MACHINE-WIDE
+process scan filtered only by port range (`13300-13400`) and process age
+(`DEFAULT_MAX_AGE_MS`, 10 minutes) -- NOT by which supervisor instance or
+`FLEET_SE_DATA_DIR` owns the process. There is no deps-level seam in
+`bin/serve.mjs`/`fleet-se serve` to disable or re-scope this sweep today
+(mitigation options (a) code patch and (c) disable-via-override from the
+bead are both unavailable without a source change out of this playbook's
+scope), so this test takes mitigation (b): the sweep runs on EVERY tick of
+its `DEFAULT_SWEEP_INTERVAL_MS` (5-minute) timer once started, with no
+immediate first pass -- so as long as this sandbox's supervisor process
+never lives to see a single tick, the sweep never runs at all during this
+test. Keeping the process alive for well under 5 minutes total (boot ->
+launch -> terminal sprint -> stop, all inside the existing 10-minute smoke
+budget) guarantees that. `SUPERVISOR_STARTED_AT` below records the boot
+time so `## Teardown` can confirm this bound held.
+
+```bash
+node "<repo-root>/packages/apra-fleet-se/bin/serve.mjs" --port "$SUPERVISOR_PORT" \
+  > "$HOME/supervisor.log" 2>&1 &
+SUPERVISOR_PID=$!
+SUPERVISOR_STARTED_AT=$(date +%s)
+# Marker files live NEXT TO the sandbox (mirrors "$SANDBOX.lock"'s placement
+# above), not inside it -- so a later '## Teardown' can still find them even
+# though it deletes "$HOME" (== "$SANDBOX" here) wholesale.
+echo "$SUPERVISOR_PID" > "$SANDBOX.supervisor.pid"
+echo "$SUPERVISOR_STARTED_AT" > "$SANDBOX.supervisor.started_at"
+
+DEADLINE=$(( $(date +%s) + 30 ))
+until curl -sf "http://localhost:$SUPERVISOR_PORT/api/members" > /dev/null 2>&1; do
+  if ! kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
+    echo "Setup: supervisor process exited before coming up -- see" \
+         "$HOME/supervisor.log." >&2
+    rm -f "$SANDBOX.supervisor.pid" "$SANDBOX.supervisor.started_at"
+    exit 1
+  fi
+  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+    echo "Setup: supervisor did not answer on port $SUPERVISOR_PORT within" \
+         "30s -- see $HOME/supervisor.log." >&2
+    kill -9 "$SUPERVISOR_PID" 2>/dev/null || true
+    rm -f "$SANDBOX.supervisor.pid" "$SANDBOX.supervisor.started_at"
+    exit 1
+  fi
+  sleep 1
+done
+```
+
 ## Reset
 
 A faster alternative to Teardown + Setup between test runs in the same
@@ -395,6 +482,59 @@ export APRA_FLEET_PORT=18700
 # of destroying it. Runs BEFORE 'stop' so it reads the still-live
 # server.json to compare against.
 node "<repo-root>/scripts/sandbox-lock.mjs" release "$SANDBOX" || exit 1
+
+# Stop the supervisor (apra-fleet-uof6.1) BEFORE the fleet MCP server below --
+# also confirms the dolt-orphan-sweep time bound documented in ## Setup
+# actually held for this run (a loud warning, not a failure: the sweep only
+# ACTS if it also finds an aged dolt sql-server in its port range, which this
+# sandbox's own dolt processes never are by the time we get here).
+if [ -f "$SANDBOX.supervisor.pid" ] && [ -f "$SANDBOX.supervisor.started_at" ]; then
+  SUPERVISOR_PID="$(cat "$SANDBOX.supervisor.pid")"
+  SUPERVISOR_STARTED_AT="$(cat "$SANDBOX.supervisor.started_at")"
+  SUPERVISOR_PORT="${SUPERVISOR_PORT:-18701}"
+  SUPERVISOR_UPTIME=$(( $(date +%s) - SUPERVISOR_STARTED_AT ))
+  if [ "$SUPERVISOR_UPTIME" -ge 300 ]; then
+    echo "Teardown: supervisor was up for ${SUPERVISOR_UPTIME}s (>= the" \
+         "dolt-orphan-sweep's 5-minute tick) -- the accepted time-bound" \
+         "mitigation from ## Setup did not hold this run. File this per" \
+         "'## Reporting failures' below as a carry-over bug (not just slow" \
+         "-- the sweep may have run against other live processes on this" \
+         "machine)." >&2
+  fi
+  curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/shutdown" > /dev/null 2>&1 || true
+  DEADLINE=$(( $(date +%s) + 10 ))
+  while kill -0 "$SUPERVISOR_PID" 2>/dev/null; do
+    if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+      kill -9 "$SUPERVISOR_PID" 2>/dev/null || true
+      break
+    fi
+    sleep 1
+  done
+  # Primary evidence the port is free: the recorded PID is gone AND the API
+  # no longer answers -- portable to every host, unlike an lsof-ti probe
+  # (Git Bash/Windows has no lsof; see the KB note this playbook's earlier
+  # port-kill loops already run into). lsof below is best-effort only, run
+  # if present, never the sole basis for a pass/fail verdict.
+  DEADLINE=$(( $(date +%s) + 5 ))
+  while kill -0 "$SUPERVISOR_PID" 2>/dev/null || curl -sf "http://localhost:$SUPERVISOR_PORT/api/members" > /dev/null 2>&1; do
+    kill -9 "$SUPERVISOR_PID" 2>/dev/null || true
+    if command -v lsof > /dev/null 2>&1; then
+      PIDS="$(lsof -ti tcp:$SUPERVISOR_PORT 2>/dev/null || true)"
+      [ -n "$PIDS" ] && kill -9 $PIDS 2>/dev/null || true
+    fi
+    if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+      break
+    fi
+    sleep 1
+  done
+  if kill -0 "$SUPERVISOR_PID" 2>/dev/null || curl -sf "http://localhost:$SUPERVISOR_PORT/api/members" > /dev/null 2>&1; then
+    echo "Teardown: the supervisor (pid $SUPERVISOR_PID, port $SUPERVISOR_PORT)" \
+         "is still alive/answering after stop + 5s of kill retries." \
+         "Manually confirm it is stopped before continuing." >&2
+    exit 1
+  fi
+  rm -f "$SANDBOX.supervisor.pid" "$SANDBOX.supervisor.started_at"
+fi
 
 node dist/index.js stop
 
@@ -548,17 +688,73 @@ scenario.
    ```bash
    node "<repo-root>/scripts/check-toy-doer-credentials.mjs" toy-doer "$SANDBOX"
    ```
-4. Run `apra-fleet workflow fleet-sprint` against the canary issue with
-   `--max-cycles 1` and `--dispatch-timeout-s 900` (bounds a hung dispatch
-   to 15 minutes instead of the default hour). No `--skip-dolt-push` flag
-   needed: with the sandbox's `sync.remote` neutralized per `## Reset`,
-   the engine's D-push pre-gate refuses to issue any `bd dolt push`. If
-   the sprint plans more than a couple of tasks for the canary's
+4. Launch the toy sprint THROUGH the supervisor's HTTP API
+   (`POST /api/sprints` on `$SUPERVISOR_PORT`, apra-fleet-uof6.1) instead of
+   the direct `apra-fleet workflow fleet-sprint` CLI, matching how a real
+   production sprint is actually launched (fleet-supervisor skill
+   guidance). No `--skip-dolt-push` equivalent is needed: with the
+   sandbox's `sync.remote` neutralized per `## Reset`, the engine's D-push
+   pre-gate refuses to issue any `bd dolt push` regardless of launch path.
+   If the sprint plans more than a couple of tasks for the canary's
    single-flag scope, that is itself suspicious and worth a bug bead.
-5. Assert the canary issue is now closed and the toy repo's sprint branch
-   has a commit. Because the canary's deliverable is concrete, also
-   verify it functionally when the canary is the "--version flag" issue:
-   run the toy CLI with `--version` from the sprint branch and confirm it
+
+   Note: the supervisor's launch body (`createSprintController`'s
+   `launch()` in `src/supervisor/api.mjs`) does not currently forward a
+   per-request dispatch-timeout override the way the CLI's
+   `--dispatch-timeout-s` flag does -- a dispatch on this path runs under
+   the engine's default (1 hour), not the CLI path's bounded 15 minutes.
+   The bounded poll deadline below (6 minutes -- leaves headroom in the
+   playbook's overall 10-minute budget for the ~30s supervisor boot and
+   Teardown's own stop/reap steps) is what actually keeps THIS test's wall
+   time bounded; a genuinely hung dispatch still fails this step loud via
+   that deadline rather than the engine's own timeout. This gap is worth
+   its own follow-up bead if the supervisor API grows a timeout field
+   later.
+
+   `SPRINT_BRANCH` is fixed here (not looked up) so step 5 below can check
+   out the exact same branch this launch used.
+
+   ```bash
+   export SUPERVISOR_PORT="${SUPERVISOR_PORT:-18701}"
+   SPRINT_BRANCH="smoke-uof6"
+   RESPONSE="$(curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/sprints" \
+     -H 'Content-Type: application/json' \
+     -d "{\"issue\":\"gh-toy-4ef\",\"branch\":\"$SPRINT_BRANCH\",\"base\":\"main\",\"members\":[\"toy-doer\"],\"maxCycles\":1}")"
+   SPRINT_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).sprintId)' "$RESPONSE")"
+   if [ -z "$SPRINT_ID" ]; then
+     echo "Test scenario: POST /api/sprints did not return a sprintId --" \
+          "response was: $RESPONSE" >&2
+     exit 1
+   fi
+
+   DEADLINE=$(( $(date +%s) + 360 ))
+   while :; do
+     STATE="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/sprints/$SPRINT_ID")"
+     # GET /api/sprints/:id (api.mjs's getSprint): 'live:false' covers both
+     # its 'terminal:true' branch (persisted run-state found) and its
+     # history-fallback branch (child gone, no persisted run-state yet) --
+     # either way the sprint is no longer actively dispatching.
+     IS_LIVE="$(node -e '
+       const s = JSON.parse(process.argv[1]);
+       process.stdout.write(s.live === false ? "no" : "yes");
+     ' "$STATE")"
+     if [ "$IS_LIVE" = "no" ]; then
+       break
+     fi
+     if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+       echo "Test scenario: sprint '$SPRINT_ID' did not reach a terminal" \
+            "state within 6 minutes -- see the supervisor dashboard" \
+            "(http://localhost:$SUPERVISOR_PORT/) or $HOME/supervisor.log." >&2
+       exit 1
+     fi
+     sleep 5
+   done
+   ```
+5. Assert the canary issue is now closed and `$SPRINT_BRANCH` (the fixed
+   branch step 4 launched, `smoke-uof6`) has a commit. Because the
+   canary's deliverable is concrete, also verify it functionally when the
+   canary is the "--version flag" issue: check out `$SPRINT_BRANCH` in
+   `$HOME/toy-repo` and run the toy CLI with `--version`, confirming it
    prints a version string and exits 0. If any assertion fails, fail
    loud: file a bug bead per "Reporting failures" below. Do not silently
    reset and move on -- this repo treats sprint-run surprises as signal.
@@ -618,21 +814,27 @@ description rather than creating a new one.
 
 ## Sandbox isolation: FLEET_SE_DATA_DIR and supervisor
 
-This playbook does not override `FLEET_SE_DATA_DIR` (the supervisor's service
-data directory) because this sandbox never spawns a supervisor process
-(`bin/serve.mjs`). The smoke test drives `apra-fleet workflow fleet-sprint`
-directly via CLI, not through a supervisor instance. The HOME override
-(SANDBOX/$HOME) and port override (APRA_FLEET_PORT) cover the isolation
-needs for this mode.
-
-If a future change adds supervisor boot to this sandbox (see apra-fleet-uof6.1),
-it MUST first address the dolt-orphan-sweep cross-instance hazard documented
-on the parent bead (apra-fleet-uof6). dolt-orphan-sweep.mjs scopes its member
-list by FLEET_SE_DATA_DIR but probes for stray Dolt sql-server processes by
-port range (13300-13400) only, so an isolated supervisor with a locally-
-registered member could kill orphaned Dolt processes belonging to a DIFFERENT,
-live supervisor instance on the same machine if FLEET_SE_DATA_DIR is not also
-isolated.
+As of apra-fleet-uof6.1, `## Setup`'s "Boot the fleet-sprint supervisor"
+subsection DOES spawn a real supervisor process (`bin/serve.mjs`) in the
+sandbox, and `## Test scenario` step 4 drives the toy sprint through its
+HTTP API (`POST /api/sprints`) rather than the direct `apra-fleet workflow
+fleet-sprint` CLI. `FLEET_SE_DATA_DIR` is overridden to a sandbox-local
+directory for that process (`$SANDBOX/.apra-fleet-se-data`) so its
+reservation ledger/history/logs never mix with a real, already-running
+supervisor's own data dir. That directory override is NOT, by itself,
+enough to fully isolate the supervisor's `dolt-orphan-sweep` seam --
+see the dolt-orphan-sweep hazard note in `## Setup`'s supervisor-boot
+subsection for the actual mitigation this playbook takes (a time-bounded
+supervisor lifetime, not a code-level scope fix) and why: `dolt-orphan-
+sweep.mjs`'s `listMembers()` is scoped correctly (via the HOME-scoped
+fleet server this supervisor process resolves against), but its probe/kill
+command is a MACHINE-WIDE process scan filtered only by port range
+(`13300-13400`, `SETTLE_PORT_RANGE`) and age (`DEFAULT_MAX_AGE_MS`), not by
+`FLEET_SE_DATA_DIR` or supervisor instance. Mitigation options (a) (patch
+the sweep to also filter by owner/tag) and (c) (a deps-level seam to
+disable the sweep for one instance) both require a source change outside
+this playbook's scope and remain open follow-up work if the accepted
+time-bound mitigation ever proves insufficient.
 
 ## Adding new features to this test
 
