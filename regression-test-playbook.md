@@ -24,8 +24,11 @@ needed between steps.
 Conventions used below:
 - Sandbox root: `~/temp/.apra-fleet-tests` (`$HOME/temp/.apra-fleet-tests`
   on POSIX, `%USERPROFILE%\temp\.apra-fleet-tests` on Windows).
-- Scratch port: `18700` (`APRA_FLEET_PORT`) -- kept away from the default
-  `7523` and the `18300`-series fleet-sprint dashboard ports.
+- Scratch port: `18700` (`APRA_FLEET_PORT`) -- kept away from the default MCP
+  server port `7523`, viewer ports starting at `8081`
+  (DEFAULT_SPAWNER_BASE_PORT in packages/apra-fleet-se/src/supervisor/spawner.mjs),
+  and the dolt settle port range `13300-13400`
+  (DEFAULT_PORT_RANGE in packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs).
 - `<repo-root>`: the root of this apra-fleet checkout -- the directory
   containing this playbook. The executing agent substitutes its actual
   checkout path.
@@ -441,6 +444,24 @@ bd search "[integ]"
 ```
 If an existing bug (either tag) covers the same failure, update its
 description rather than creating a new one.
+
+## Sandbox isolation: FLEET_SE_DATA_DIR and supervisor
+
+This playbook does not override `FLEET_SE_DATA_DIR` (the supervisor's service
+data directory) because this sandbox never spawns a supervisor process
+(`bin/serve.mjs`). The smoke test drives `apra-fleet workflow fleet-sprint`
+directly via CLI, not through a supervisor instance. The HOME override
+(SANDBOX/$HOME) and port override (APRA_FLEET_PORT) cover the isolation
+needs for this mode.
+
+If a future change adds supervisor boot to this sandbox (see apra-fleet-uof6.1),
+it MUST first address the dolt-orphan-sweep cross-instance hazard documented
+on the parent bead (apra-fleet-uof6). dolt-orphan-sweep.mjs scopes its member
+list by FLEET_SE_DATA_DIR but probes for stray Dolt sql-server processes by
+port range (13300-13400) only, so an isolated supervisor with a locally-
+registered member could kill orphaned Dolt processes belonging to a DIFFERENT,
+live supervisor instance on the same machine if FLEET_SE_DATA_DIR is not also
+isolated.
 
 ## Adding new features to this test
 
