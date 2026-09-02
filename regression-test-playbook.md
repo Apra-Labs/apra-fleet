@@ -229,8 +229,39 @@ git config --global user.email "integ-smoke-runner@apra-fleet.invalid"
 `## Test scenario` credential-provisioning step below -- it is the only place
 downstream that still needs to read anything from outside `$SANDBOX`.
 
-Before handing off to the test: verify `node dist/index.js status` exits 0
-and reports the server listening on `18700`.
+Before handing off to the test: verify the server is actually bound to the
+sandbox's scratch port. `node dist/index.js status` exiting 0 alone is NOT
+sufficient here -- the server silently rebinds to an OS-assigned port on
+EADDRINUSE instead of failing loud (see the stale-process guard comment
+above and `src/services/http-transport.ts` / `src/index.ts`), so a runner
+that only checks the exit code could hand off against the wrong instance
+without ever noticing. Read `server.json` directly (the authoritative
+source `status` itself reads -- `SERVER_INFO_PATH` in `src/paths.ts`,
+`$HOME/.apra-fleet/data/server.json` once `HOME` is overridden to
+`$SANDBOX` above) and assert its recorded port is exactly `18700`, failing
+loud (non-zero exit, clear message) otherwise:
+
+```bash
+node dist/index.js status || {
+  echo "Setup: 'node dist/index.js status' exited non-zero -- server did not" \
+       "come up." >&2
+  exit 1
+}
+ACTUAL_PORT="$(node -e '
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const p = path.join(process.env.HOME, ".apra-fleet", "data", "server.json");
+  const info = JSON.parse(fs.readFileSync(p, "utf8"));
+  process.stdout.write(String(info.port ?? ""));
+')"
+if [ "$ACTUAL_PORT" != "18700" ]; then
+  echo "Setup: server.json reports port '$ACTUAL_PORT', not the expected" \
+       "sandbox scratch port 18700 -- the server likely silently rebound" \
+       "after finding 18700 occupied (EADDRINUSE). Refusing to hand off to" \
+       "the test against the wrong instance." >&2
+  exit 1
+fi
+```
 
 ### Seed the sandbox beads DB (structural isolation, no bootstrap, no neutralize)
 
