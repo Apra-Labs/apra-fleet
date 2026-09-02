@@ -373,7 +373,19 @@ launch -> terminal sprint -> stop, all inside the existing 10-minute smoke
 budget) guarantees that. `SUPERVISOR_STARTED_AT` below records the boot
 time so `## Teardown` can confirm this bound held.
 
+**Stale-process guard: kill any process still bound to $SUPERVISOR_PORT
+(18701) before starting.** Mirrors the 18700 guard above and the `## Reset`
+guard for port 3001: on `EADDRINUSE` the supervisor's `server.once('error',
+...)` handler rejects `start()` rather than silently rebinding
+(`packages/apra-fleet-se/src/supervisor/server.mjs`), but a plain
+readiness-loop against the port cannot tell "our new process bound the
+port" apart from "a leftover supervisor from a prior crashed/interrupted
+run is still answering here" -- the identity check below closes that gap
+for the boot itself, but only if the port is free to bind on first try.
+
 ```bash
+node "<repo-root>/scripts/kill-port.mjs" "$SUPERVISOR_PORT" "supervisor port $SUPERVISOR_PORT" 5000 || exit 1
+
 node "<repo-root>/packages/apra-fleet-se/bin/serve.mjs" --port "$SUPERVISOR_PORT" \
   > "$HOME/supervisor.log" 2>&1 &
 SUPERVISOR_PID=$!
@@ -384,17 +396,36 @@ SUPERVISOR_STARTED_AT=$(date +%s)
 echo "$SUPERVISOR_PID" > "$SANDBOX.supervisor.pid"
 echo "$SUPERVISOR_STARTED_AT" > "$SANDBOX.supervisor.started_at"
 
+# Identity-checked readiness: GET /api/health returns the answering
+# process's OWN pid (server.mjs), so require it to equal $SUPERVISOR_PID
+# rather than accepting "something answered" on the port. A plain
+# 'curl -sf .../api/members' readiness loop would false-positive against a
+# foreign supervisor already bound to this port -- our process would then
+# die (EADDRINUSE) while the test proceeds to drive someone else's
+# supervisor, whose HOME/FLEET_SE_DATA_DIR are the real machine's, not this
+# sandbox's, and whose uptime already exceeds the dolt-orphan-sweep's
+# 5-minute tick.
 DEADLINE=$(( $(date +%s) + 30 ))
-until curl -sf "http://localhost:$SUPERVISOR_PORT/api/members" > /dev/null 2>&1; do
+while :; do
   if ! kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
     echo "Setup: supervisor process exited before coming up -- see" \
          "$HOME/supervisor.log." >&2
     rm -f "$SANDBOX.supervisor.pid" "$SANDBOX.supervisor.started_at"
     exit 1
   fi
+  HEALTH="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/health" 2>/dev/null || true)"
+  if [ -n "$HEALTH" ]; then
+    HEALTH_PID="$(node -e '
+      try { process.stdout.write(String(JSON.parse(process.argv[1]).pid)); } catch { /* empty */ }
+    ' "$HEALTH")"
+    if [ "$HEALTH_PID" = "$SUPERVISOR_PID" ]; then
+      break
+    fi
+  fi
   if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-    echo "Setup: supervisor did not answer on port $SUPERVISOR_PORT within" \
-         "30s -- see $HOME/supervisor.log." >&2
+    echo "Setup: supervisor did not answer with its own pid on port" \
+         "$SUPERVISOR_PORT within 30s (possibly a foreign process already" \
+         "held it) -- see $HOME/supervisor.log." >&2
     kill -9 "$SUPERVISOR_PID" 2>/dev/null || true
     rm -f "$SANDBOX.supervisor.pid" "$SANDBOX.supervisor.started_at"
     exit 1
@@ -428,20 +459,84 @@ elapses -- a single fire-and-forget kill (the original approach) does not
 reliably free a port a resumed/interrupted-attempt process is still
 holding.
 
+**Reset also stops and reboots the sandbox supervisor.** `## Setup`'s
+dolt-orphan-sweep mitigation is a per-process uptime bound (the sweep only
+fires once its 5-minute-tick timer has run at least once), so a supervisor
+that survives across `## Reset` into a second test run in the same session
+accumulates uptime across BOTH runs -- a Reset-and-rerun can push a
+supervisor that individually looked fine each run past the 5-minute tick
+without either run's own Teardown ever seeing it. Rebooting on every Reset
+resets `SUPERVISOR_STARTED_AT` (and hence the uptime clock `## Teardown`
+checks) so the accepted mitigation actually holds across repeated
+Reset-and-rerun cycles, not just a single Setup-to-Teardown run. This
+reuses the same identity-checked stop as `## Teardown` and the same
+identity-checked boot as `## Setup` -- see those sections for the
+rationale behind each check.
+
 ```bash
 SANDBOX="$HOME/temp/.apra-fleet-tests"
 export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
+
+SUPERVISOR_PORT="${SUPERVISOR_PORT:-18701}"
+if [ -f "$SANDBOX.supervisor.pid" ]; then
+  OLD_SUPERVISOR_PID="$(cat "$SANDBOX.supervisor.pid")"
+  curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/shutdown" > /dev/null 2>&1 || true
+  DEADLINE=$(( $(date +%s) + 10 ))
+  while kill -0 "$OLD_SUPERVISOR_PID" 2>/dev/null; do
+    if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+      kill -9 "$OLD_SUPERVISOR_PID" 2>/dev/null || true
+      break
+    fi
+    sleep 1
+  done
+  rm -f "$SANDBOX.supervisor.pid" "$SANDBOX.supervisor.started_at"
+fi
 # scripts/kill-port.mjs: portable to Windows Git Bash (no lsof dependency)
 # and hard-fails naming the missing probe tool rather than silently passing
 # -- see the same guard's comment in `## Setup` for the full rationale.
 node "<repo-root>/scripts/kill-port.mjs" 3001 "toy app dev-server port 3001" 5000 || exit 1
+node "<repo-root>/scripts/kill-port.mjs" "$SUPERVISOR_PORT" "supervisor port $SUPERVISOR_PORT" 5000 || exit 1
 cd "$HOME/toy-repo"
 git fetch origin
 git reset --hard origin/main
 git clean -fdx
 node "<repo-root>/scripts/sandbox-seed-beads.mjs" --sandbox-root "$HOME" --toy-repo "$HOME/toy-repo" --mode reset
+
+node "<repo-root>/packages/apra-fleet-se/bin/serve.mjs" --port "$SUPERVISOR_PORT" \
+  > "$HOME/supervisor.log" 2>&1 &
+SUPERVISOR_PID=$!
+SUPERVISOR_STARTED_AT=$(date +%s)
+echo "$SUPERVISOR_PID" > "$SANDBOX.supervisor.pid"
+echo "$SUPERVISOR_STARTED_AT" > "$SANDBOX.supervisor.started_at"
+
+DEADLINE=$(( $(date +%s) + 30 ))
+while :; do
+  if ! kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
+    echo "Reset: rebooted supervisor process exited before coming up --" \
+         "see $HOME/supervisor.log." >&2
+    rm -f "$SANDBOX.supervisor.pid" "$SANDBOX.supervisor.started_at"
+    exit 1
+  fi
+  HEALTH="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/health" 2>/dev/null || true)"
+  if [ -n "$HEALTH" ]; then
+    HEALTH_PID="$(node -e '
+      try { process.stdout.write(String(JSON.parse(process.argv[1]).pid)); } catch { /* empty */ }
+    ' "$HEALTH")"
+    if [ "$HEALTH_PID" = "$SUPERVISOR_PID" ]; then
+      break
+    fi
+  fi
+  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+    echo "Reset: rebooted supervisor did not answer with its own pid on" \
+         "port $SUPERVISOR_PORT within 30s -- see $HOME/supervisor.log." >&2
+    kill -9 "$SUPERVISOR_PID" 2>/dev/null || true
+    rm -f "$SANDBOX.supervisor.pid" "$SANDBOX.supervisor.started_at"
+    exit 1
+  fi
+  sleep 1
+done
 ```
 
 `--mode reset` re-seeds through the same `[sandbox-seed guard]` path
@@ -464,19 +559,16 @@ export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
 
-# Ownership check: only stop the server and rm -rf the sandbox if this
-# Teardown can prove it owns the lock -- i.e. the lock currently names THIS
-# sandbox's own fleet-server PID (or is missing/stale, meaning there is
-# nothing live to protect). A lock naming some OTHER live PID means a
-# different run currently owns this sandbox; refuse loud instead of
-# destroying it. Runs BEFORE 'stop' so it reads the still-live server.json
-# to compare against.
-node "<repo-root>/scripts/sandbox-lock.mjs" release "$SANDBOX" || exit 1
-
-# Stop the supervisor BEFORE the fleet MCP server below -- also confirms the
-# dolt-orphan-sweep time bound documented in ## Setup
-# actually held for this run (a loud warning, not a failure: the sweep only
-# ACTS if it also finds an aged dolt sql-server in its port range, which this
+# Stop the supervisor FIRST, before the sandbox-lock release below and
+# before the fleet MCP server further down -- a concurrent run's Setup
+# readiness loop is now identity-checked (see '## Setup'), but stopping the
+# outgoing supervisor before releasing the lock still closes the window
+# where the lock is free (signalling "safe to acquire") while port 18701 is
+# still held by this run's dying instance; releasing the lock first would
+# let a new run's kill-port.mjs guard race this shutdown. This also
+# confirms the dolt-orphan-sweep time bound documented in ## Setup actually
+# held for this run (a loud warning, not a failure: the sweep only ACTS if
+# it also finds an aged dolt sql-server in its port range, which this
 # sandbox's own dolt processes never are by the time we get here).
 if [ -f "$SANDBOX.supervisor.pid" ] && [ -f "$SANDBOX.supervisor.started_at" ]; then
   SUPERVISOR_PID="$(cat "$SANDBOX.supervisor.pid")"
@@ -525,6 +617,16 @@ if [ -f "$SANDBOX.supervisor.pid" ] && [ -f "$SANDBOX.supervisor.started_at" ]; 
   fi
   rm -f "$SANDBOX.supervisor.pid" "$SANDBOX.supervisor.started_at"
 fi
+
+# Ownership check: only rm -rf the sandbox further down if this Teardown
+# can prove it owns the lock -- i.e. the lock currently names THIS
+# sandbox's own fleet-server PID (or is missing/stale, meaning there is
+# nothing live to protect). A lock naming some OTHER live PID means a
+# different run currently owns this sandbox; refuse loud instead of
+# destroying it. Runs AFTER the supervisor stop above (see that block's
+# comment for why) but still BEFORE 'stop' below so it reads the
+# still-live server.json to compare against.
+node "<repo-root>/scripts/sandbox-lock.mjs" release "$SANDBOX" || exit 1
 
 node dist/index.js stop
 
@@ -692,15 +794,31 @@ scenario.
    its own follow-up bead if the supervisor API grows a timeout field
    later.
 
-   `SPRINT_BRANCH` is fixed here (not looked up) so step 5 below can check
-   out the exact same branch this launch used.
+   `SPRINT_BRANCH` gets a per-run timestamp suffix (not a fixed literal) so
+   step 5 below can still check out the exact branch this launch used, but
+   a Reset-and-relaunch within the same session (`## Reset` now reboots the
+   supervisor but does NOT wipe `$FLEET_SE_DATA_DIR`'s on-disk ledger/
+   history) never collides with a previous run's branch name and hits the
+   launch API's 409 relaunch-guard (`createSprintController`'s `launch()`
+   in `src/supervisor/api.mjs`).
 
    ```bash
    export SUPERVISOR_PORT="${SUPERVISOR_PORT:-18701}"
-   SPRINT_BRANCH="smoke-uof6"
-   RESPONSE="$(curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/sprints" \
+   SPRINT_BRANCH="smoke-uof6-$(date +%s)"
+   # No '-f': a 409 (or any non-2xx) response body is the diagnostic here,
+   # and '-f' makes curl discard the body and exit nonzero with nothing to
+   # show for it. Capture the HTTP status separately via '-w' instead and
+   # check it explicitly.
+   HTTP_RESPONSE="$(curl -s -w '\n%{http_code}' -X POST "http://localhost:$SUPERVISOR_PORT/api/sprints" \
      -H 'Content-Type: application/json' \
      -d "{\"issue\":\"gh-toy-4ef\",\"branch\":\"$SPRINT_BRANCH\",\"base\":\"main\",\"members\":[\"toy-doer\"],\"maxCycles\":1}")"
+   HTTP_CODE="$(printf '%s' "$HTTP_RESPONSE" | tail -n1)"
+   RESPONSE="$(printf '%s' "$HTTP_RESPONSE" | sed '$d')"
+   if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+     echo "Test scenario: POST /api/sprints returned HTTP $HTTP_CODE --" \
+          "response was: $RESPONSE" >&2
+     exit 1
+   fi
    SPRINT_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).sprintId)' "$RESPONSE")"
    if [ -z "$SPRINT_ID" ]; then
      echo "Test scenario: POST /api/sprints did not return a sprintId --" \
@@ -731,14 +849,19 @@ scenario.
      sleep 5
    done
    ```
-5. Assert the canary issue is now closed and `$SPRINT_BRANCH` (the fixed
-   branch step 4 launched, `smoke-uof6`) has a commit. Because the
+5. Assert the canary issue is now closed and `$SPRINT_BRANCH` (the branch
+   step 4 launched, `smoke-uof6-<timestamp>`) has a commit. Because the
    canary's deliverable is concrete, also verify it functionally when the
-   canary is the "--version flag" issue: check out `$SPRINT_BRANCH` in
-   `$HOME/toy-repo` and run the toy CLI with `--version`, confirming it
-   prints a version string and exits 0. If any assertion fails, fail
-   loud: file a bug bead per "Reporting failures" below. Do not silently
-   reset and move on -- this repo treats sprint-run surprises as signal.
+   canary is the "--version flag" issue: in `$HOME/toy-repo`, run
+   `git fetch origin` FIRST -- the sprint's push lands on the sandbox-local
+   `$GIT_MIRROR` (this clone's `origin`, wired in `## Setup`), not directly
+   in this working copy, so `git checkout "$SPRINT_BRANCH"` without
+   fetching first fails with "unknown revision" even though the branch
+   exists on `origin`. After the fetch, check out `$SPRINT_BRANCH` and run
+   the toy CLI with `--version`, confirming it prints a version string and
+   exits 0. If any assertion fails, fail loud: file a bug bead per
+   "Reporting failures" below. Do not silently reset and move on -- this
+   repo treats sprint-run surprises as signal.
 6. Hand off to Teardown regardless of the assertion's outcome.
 
 ### Smoke evidence output fields
