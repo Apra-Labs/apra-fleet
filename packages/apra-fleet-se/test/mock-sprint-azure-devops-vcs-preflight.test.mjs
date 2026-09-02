@@ -112,6 +112,15 @@ test('mock sprint: an Azure DevOps member is provisioned unattended by the prefl
                 && !('repos' in c)),
             `expected an unattended provision_vcs_auth call with a derived org_url and a secure PAT placeholder, got: ${JSON.stringify(vcsAuthCalls)}`,
         );
+
+        // apra-fleet-5co8.19: happy-path control for the missing-secret
+        // scenario's authRemedy assertion below -- with the credential
+        // present, Publish PR must proceed normally and never emit the
+        // provider's degraded authRemedy guidance text.
+        check(
+            !scenario.logs.some((l) => /PATs cannot be re-minted server-side/.test(l)),
+            `expected no authRemedy guidance text when the Azure DevOps PAT credential is present, got logs: ${JSON.stringify(scenario.logs.filter((l) => /Publish PR/i.test(l)))}`,
+        );
     });
 });
 
@@ -182,9 +191,24 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
         // covered by the `!scenario.error` assertion above -- that raw text
         // legitimately still appears in the preflight's OWN swallowed log
         // checked just above, which is a different, non-aborting code path).
+        const publishPrLogs = scenario.logs.filter((l) => /Publish PR/i.test(l));
         check(
-            scenario.logs.some((l) => /\[Publish PR Skipped\]/.test(l) && /PATs cannot be re-minted server-side/.test(l) && /credential_store_set/.test(l)),
-            `expected a Publish PR log to carry the Azure DevOps provider's authRemedy guidance, got logs: ${JSON.stringify(scenario.logs.filter((l) => /Publish PR/i.test(l)))}`,
+            publishPrLogs.some((l) => /\[Publish PR Skipped\]/.test(l) && /PATs cannot be re-minted server-side/.test(l) && /credential_store_set/.test(l)),
+            `expected a Publish PR log to carry the Azure DevOps provider's authRemedy guidance, got logs: ${JSON.stringify(publishPrLogs)}`,
+        );
+
+        // apra-fleet-5co8.19: the Publish PR phase must degrade to the
+        // provider's clean authRemedy guidance ONLY -- it must never also
+        // leak the raw provision_vcs_auth failure text ("the credential
+        // store has no entry named") that raiseVcsPrForMember's catch
+        // (apra-fleet-5co8.15) is supposed to have replaced with
+        // remedyHint. This is deliberately scoped to the Publish-PR-tagged
+        // logs, not the whole log stream: that raw text legitimately still
+        // appears in the PREFLIGHT's own swallowed log (asserted above),
+        // which is a different, non-Publish-PR code path.
+        check(
+            !publishPrLogs.some((l) => /the credential store has no entry named/.test(l)),
+            `expected no Publish PR log to leak the raw provision_vcs_auth failure text, got logs: ${JSON.stringify(publishPrLogs)}`,
         );
     });
 });
