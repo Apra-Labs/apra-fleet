@@ -405,7 +405,7 @@ async function attemptSettle({ settle, member, operation, error, log }) {
 }
 
 export async function doltPullBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle } = opts;
+    const { command, log = () => {}, maxTransientRetries = 5, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -619,7 +619,7 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote', recovered?: true, settledTables?: string[] }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 5, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
