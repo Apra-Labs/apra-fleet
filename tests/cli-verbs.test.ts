@@ -18,7 +18,7 @@ const { mockCheckRunning, mockGetSvcMgr, mockSvcMgr } = vi.hoisted(() => {
     unregister: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
   };
   return {
-    mockCheckRunning: vi.fn<() => Promise<{ running: boolean; url?: string; pid?: number }>>()
+    mockCheckRunning: vi.fn<() => Promise<{ running: boolean; url?: string; pid?: number; version?: string }>>()
       .mockResolvedValue({ running: false }),
     mockGetSvcMgr: vi.fn<() => Promise<typeof mockSvcMgr>>().mockResolvedValue(mockSvcMgr),
     mockSvcMgr,
@@ -44,6 +44,7 @@ import { runStart } from '../src/cli/start.js';
 import { runStop } from '../src/cli/stop.js';
 import { runRestart } from '../src/cli/restart.js';
 import { runStatus } from '../src/cli/status.js';
+import { serverVersion } from '../src/version.js';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -208,6 +209,36 @@ describe('runStart', () => {
     await vi.advanceTimersByTimeAsync(2001);
     await p;
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  // apra-fleet-yru.2: verification for apra-fleet-yru.1 (version-freshness
+  // fix) -- a running server reporting a DIFFERENT version than the
+  // installed one must be refused loud, not silently reused.
+  it('refuses to reuse a running server whose version does not match the installed version', async () => {
+    mockCheckRunning.mockResolvedValue({
+      ...RUNNING,
+      version: 'v0.0.1-stale-does-not-match',
+    });
+    await runStart([]);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining('v0.0.1-stale-does-not-match'),
+    );
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining(serverVersion),
+    );
+    expect(mockGetSvcMgr).not.toHaveBeenCalled();
+  });
+
+  // apra-fleet-yru.2: matching versions must preserve the existing reuse
+  // (fast path) behaviour -- no error, no exit(1), no service-manager call.
+  it('reuses a running server whose version matches the installed version', async () => {
+    mockCheckRunning.mockResolvedValue({ ...RUNNING, version: serverVersion });
+    await runStart([]);
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('already running'));
+    expect(errSpy).not.toHaveBeenCalled();
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockGetSvcMgr).not.toHaveBeenCalled();
   });
 });
 
