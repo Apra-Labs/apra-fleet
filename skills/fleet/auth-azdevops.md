@@ -14,7 +14,12 @@ Personal Access Tokens (PATs) with configurable scopes and expiration. Auth: emp
 
 ### Expiry Capture (Optional)
 
-When first registering a PAT, you can optionally capture its expiration date by responding to the out-of-band prompt with the expiry timestamp. The fleet stores this expiry date and uses it for day-scale preflight warnings: if a credential is within 10 minutes of expiry, the fleet will request a fresh provisioning before the sprint dispatch rather than failing mid-sprint when the credential becomes invalid.
+When first registering a PAT, you can optionally capture its expiration date by responding to the out-of-band prompt with the expiry timestamp. The fleet stores this expiry date and checks it against two separate thresholds (see `src/utils/agent-helpers.ts`):
+
+- **Minute-scale warning** (`EXPIRY_WARNING_MS`, 10 minutes): fires for any provider once the credential is within 10 minutes of expiry. This threshold was sized for GitHub App tokens (~1hr lifetime).
+- **Day-scale warning** (`DAY_SCALE_WARNING_MS`, 7 days): fires only for providers listed in `DAY_SCALE_WARNING_PROVIDERS`, which currently includes `azure-devops`. Because Azure DevOps PATs run weeks to months (see "Set expiration" above), this gives a heads-up long before the minute-scale check would ever fire.
+
+Either warning causes the fleet to request a fresh provisioning before the sprint dispatch rather than failing mid-sprint when the credential becomes invalid.
 
 This step is optional; PATs function normally even without expiry tracking. However, recording expiry dates helps prevent surprise authentication failures and reduces retry cycles.
 
@@ -37,7 +42,7 @@ credential_store_set  name=azdevops_pat
 execute_command  command="curl -sf -u :{{secure.azdevops_pat}} 'https://dev.azure.com/{org}/_apis/projects?api-version=7.1'"
 ```
 
-**Per-sprint override:** To use a different credential name for a specific sprint (for example, when working with a different Azure DevOps organization or test repo), the fleet supports a per-sprint override. Contact your fleet administrator to configure this option.
+**Per-sprint override:** To use a different credential name for a specific sprint (for example, when working with a different Azure DevOps organization or test repo), pass the `azdevops_pat_secret_name` argument to the sprint invocation (threaded through `packages/apra-fleet-se/fleet-sprint/runner.js`). It must name a credential already stored via `credential_store_set`; the runner validates it as a credential-store name at contract-validation time and uses it instead of the default `azdevops_pat` entry for provisioning, self-heal, and preflight checks on that sprint.
 
 ## Scopes
 
