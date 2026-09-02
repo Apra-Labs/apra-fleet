@@ -368,10 +368,14 @@ scope), so this test takes mitigation (b): the sweep runs on EVERY tick of
 its `DEFAULT_SWEEP_INTERVAL_MS` (5-minute) timer once started, with no
 immediate first pass -- so as long as this sandbox's supervisor process
 never lives to see a single tick, the sweep never runs at all during this
-test. Keeping the process alive for well under 5 minutes total (boot ->
-launch -> terminal sprint -> stop, all inside the existing 10-minute smoke
-budget) guarantees that. `SUPERVISOR_STARTED_AT` below records the boot
-time so `## Teardown` can confirm this bound held.
+test. `SUPERVISOR_STARTED_AT` below records the boot time, and this bound
+is HARD-ENFORCED, not merely asserted: `## Test scenario` step 4's sprint
+poll loop stops polling and shuts the supervisor down itself once uptime
+reaches 280s (before the 300s/5-minute tick), rather than relying on its
+360s poll deadline plus the ~30s boot time never crossing 300s in practice
+(they can -- 30s boot + 360s poll is ~6.5 minutes). `## Teardown`'s
+`SUPERVISOR_UPTIME >= 300` check remains as a belt-and-suspenders
+after-the-fact confirmation.
 
 **Stale-process guard: kill any process still bound to $SUPERVISOR_PORT
 (18701) before starting.** Mirrors the 18700 guard above and the `## Reset`
@@ -397,14 +401,27 @@ echo "$SUPERVISOR_PID" > "$SANDBOX.supervisor.pid"
 echo "$SUPERVISOR_STARTED_AT" > "$SANDBOX.supervisor.started_at"
 
 # Identity-checked readiness: GET /api/health returns the answering
-# process's OWN pid (server.mjs), so require it to equal $SUPERVISOR_PID
-# rather than accepting "something answered" on the port. A plain
+# process's OWN pid (server.mjs), so require it to match the NEWLY-BOOTED
+# process's own pid rather than accepting "something answered" on the
+# port. This is compared against the pid server.mjs itself logs on boot
+# ("[supervisor] listening on http://localhost:<port> (pid N)",
+# server.mjs), NOT against $SUPERVISOR_PID/$! -- under MSYS/MinGW bash
+# (Git Bash on Windows, which this playbook targets), $! is a
+# bash-internal pid that never equals the native process's own
+# process.pid (confirmed: a backgrounded node process reported $!=10954
+# while its own process.pid was 117404), so comparing HEALTH_PID to
+# $SUPERVISOR_PID can never match there and this readiness loop would
+# always time out and kill the supervisor it just booted. Parsing the
+# boot log for the process's own reported pid keeps both sides of the
+# comparison native, which is what makes it identity-safe: a plain
 # 'curl -sf .../api/members' readiness loop would false-positive against a
 # foreign supervisor already bound to this port -- our process would then
 # die (EADDRINUSE) while the test proceeds to drive someone else's
 # supervisor, whose HOME/FLEET_SE_DATA_DIR are the real machine's, not this
 # sandbox's, and whose uptime already exceeds the dolt-orphan-sweep's
-# 5-minute tick.
+# 5-minute tick. `kill -0`/`kill -9` below still use $SUPERVISOR_PID (the
+# MSYS pid) -- that IS the correct pid space for bash's own liveness/kill
+# builtins, even though it is the wrong pid space for this identity check.
 DEADLINE=$(( $(date +%s) + 30 ))
 while :; do
   if ! kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
@@ -413,12 +430,13 @@ while :; do
     rm -f "$SANDBOX.supervisor.pid" "$SANDBOX.supervisor.started_at"
     exit 1
   fi
+  LOG_PID="$(grep -o '(pid [0-9]*)' "$HOME/supervisor.log" 2>/dev/null | tail -n1 | grep -o '[0-9]*' || true)"
   HEALTH="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/health" 2>/dev/null || true)"
-  if [ -n "$HEALTH" ]; then
+  if [ -n "$HEALTH" ] && [ -n "$LOG_PID" ]; then
     HEALTH_PID="$(node -e '
       try { process.stdout.write(String(JSON.parse(process.argv[1]).pid)); } catch { /* empty */ }
     ' "$HEALTH")"
-    if [ "$HEALTH_PID" = "$SUPERVISOR_PID" ]; then
+    if [ "$HEALTH_PID" = "$LOG_PID" ]; then
       break
     fi
   fi
@@ -511,6 +529,10 @@ SUPERVISOR_STARTED_AT=$(date +%s)
 echo "$SUPERVISOR_PID" > "$SANDBOX.supervisor.pid"
 echo "$SUPERVISOR_STARTED_AT" > "$SANDBOX.supervisor.started_at"
 
+# See '## Setup's identity-checked readiness loop for why HEALTH_PID is
+# compared to a boot-log-parsed native pid (LOG_PID), not to
+# $SUPERVISOR_PID/$! -- the latter is an MSYS-internal pid under Git Bash
+# and never equals the native process's own reported pid.
 DEADLINE=$(( $(date +%s) + 30 ))
 while :; do
   if ! kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
@@ -519,12 +541,13 @@ while :; do
     rm -f "$SANDBOX.supervisor.pid" "$SANDBOX.supervisor.started_at"
     exit 1
   fi
+  LOG_PID="$(grep -o '(pid [0-9]*)' "$HOME/supervisor.log" 2>/dev/null | tail -n1 | grep -o '[0-9]*' || true)"
   HEALTH="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/health" 2>/dev/null || true)"
-  if [ -n "$HEALTH" ]; then
+  if [ -n "$HEALTH" ] && [ -n "$LOG_PID" ]; then
     HEALTH_PID="$(node -e '
       try { process.stdout.write(String(JSON.parse(process.argv[1]).pid)); } catch { /* empty */ }
     ' "$HEALTH")"
-    if [ "$HEALTH_PID" = "$SUPERVISOR_PID" ]; then
+    if [ "$HEALTH_PID" = "$LOG_PID" ]; then
       break
     fi
   fi
@@ -825,20 +848,51 @@ scenario.
           "response was: $RESPONSE" >&2
      exit 1
    fi
+   ```
 
+   Hard-enforces the `## Setup` dolt-orphan-sweep mitigation: this loop
+   stops itself and shuts the supervisor down BEFORE uptime reaches the
+   sweep's 300s/5-minute tick, rather than only asserting boot (~30s) +
+   this 360s poll deadline never crosses it (they can -- 30s + 360s is
+   already past 300s, `## Teardown`'s own `SUPERVISOR_UPTIME >= 300` check
+   only warns after the fact). `SUPERVISOR_STARTED_AT` is read from the
+   marker file `## Setup`/`## Reset` wrote, not a shell variable, since
+   this may be a separate script invocation from the one that booted it.
+
+   ```bash
+   SUPERVISOR_STARTED_AT="$(cat "$SANDBOX.supervisor.started_at")"
+   UPTIME_DEADLINE=$(( SUPERVISOR_STARTED_AT + 280 ))
    DEADLINE=$(( $(date +%s) + 360 ))
    while :; do
-     STATE="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/sprints/$SPRINT_ID")"
-     # GET /api/sprints/:id (api.mjs's getSprint): 'live:false' covers both
-     # its 'terminal:true' branch (persisted run-state found) and its
-     # history-fallback branch (child gone, no persisted run-state yet) --
-     # either way the sprint is no longer actively dispatching.
-     IS_LIVE="$(node -e '
-       const s = JSON.parse(process.argv[1]);
-       process.stdout.write(s.live === false ? "no" : "yes");
-     ' "$STATE")"
-     if [ "$IS_LIVE" = "no" ]; then
-       break
+     # '|| true': GET /api/sprints/:id 404s (api.mjs's getSprint) if the
+     # sprint is neither live nor in history yet, which would otherwise
+     # make 'curl -sf' fail silently, leave STATE empty, and spin the
+     # loop to its deadline instead of retrying/reporting -- treat an
+     # empty STATE as "not yet terminal" and just keep polling.
+     STATE="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/sprints/$SPRINT_ID" 2>/dev/null || true)"
+     if [ -n "$STATE" ]; then
+       # GET /api/sprints/:id (api.mjs's getSprint): 'live:false' covers
+       # both its 'terminal:true' branch (persisted run-state found) and
+       # its history-fallback branch (child gone, no persisted run-state
+       # yet) -- either way the sprint is no longer actively dispatching.
+       IS_LIVE="$(node -e '
+         const s = JSON.parse(process.argv[1]);
+         process.stdout.write(s.live === false ? "no" : "yes");
+       ' "$STATE")"
+       if [ "$IS_LIVE" = "no" ]; then
+         break
+       fi
+     fi
+     if [ "$(date +%s)" -ge "$UPTIME_DEADLINE" ]; then
+       echo "Test scenario: supervisor uptime is approaching the" \
+            "dolt-orphan-sweep's 5-minute tick (## Setup's accepted," \
+            "time-bounded mitigation) before sprint '$SPRINT_ID' reached a" \
+            "terminal state -- stopping the supervisor now rather than" \
+            "risk the sweep's machine-wide kill scope firing. File this as" \
+            "a carry-over bug: the toy sprint did not finish within the" \
+            "mitigation window." >&2
+       curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/shutdown" > /dev/null 2>&1 || true
+       exit 1
      fi
      if [ "$(date +%s)" -ge "$DEADLINE" ]; then
        echo "Test scenario: sprint '$SPRINT_ID' did not reach a terminal" \
