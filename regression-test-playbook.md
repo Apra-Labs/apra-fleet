@@ -172,6 +172,38 @@ export APRA_FLEET_PORT=18700
 mkdir -p "$HOME"
 cd "<repo-root>"
 node dist/index.js install
+
+# Stale-process guard (apra-fleet-uof6.2): kill any process still bound to
+# the sandbox's own scratch port (18700) before starting the server --
+# mirrors the bounded-retry kill-loop `## Reset` already uses for the toy
+# app's dev-server port (3001). Without this, a previous run's crashed or
+# interrupted 'node dist/index.js' left bound to 18700 causes this Setup's
+# 'start' to hit EADDRINUSE; the real server silently rebinds to an
+# OS-assigned port on EADDRINUSE instead of failing loud (see
+# src/services/http-transport.ts / src/index.ts), which can leave the
+# sandbox listening on the wrong port with no obvious error. Fails loud
+# (non-zero exit, clear message) instead of proceeding if the port is still
+# occupied once the deadline elapses.
+DEADLINE=$(( $(date +%s) + 5 ))
+while :; do
+  PIDS="$(lsof -ti tcp:18700 2>/dev/null || true)"
+  if [ -z "$PIDS" ]; then
+    break
+  fi
+  kill -9 $PIDS 2>/dev/null || true
+  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+    break
+  fi
+  sleep 1
+done
+if [ -n "$(lsof -ti tcp:18700 2>/dev/null || true)" ]; then
+  echo "Setup: port 18700 is still bound after 5s of kill retries -- a stray" \
+       "'node dist/index.js' from a crashed/interrupted prior run survived" \
+       "cleanup. Manually run 'lsof -ti tcp:18700 | xargs kill -9' before" \
+       "continuing." >&2
+  exit 1
+fi
+
 node dist/index.js start
 
 # Re-point the lock at the sandbox's own long-lived fleet-server PID (not
@@ -334,6 +366,51 @@ export APRA_FLEET_PORT=18700
 node "<repo-root>/scripts/sandbox-lock.mjs" release "$SANDBOX" || exit 1
 
 node dist/index.js stop
+
+# Detached-dolt-sql-server reap (apra-fleet-uof6.4): 'node dist/index.js stop'
+# only stops the fleet server process itself -- it does NOT (and by design
+# cannot) reap a `dolt sql-server` that fleet-sprint/dolt-settle.mjs may have
+# spawned during Dolt conflict resolution in the toy sprint (see
+# packages/apra-fleet-se/fleet-sprint/docs/dolt-sync-redesign.md Part 3.3).
+# settleDoltConflicts() spawns that server genuinely DETACHED
+# (setsid/nohup on POSIX, WMI on Windows --
+# see dolt-settle.mjs's spawnEphemeralServer) specifically so it survives
+# its parent process, and tears it down itself in a real `finally`
+# (killServerAndVerify) once settle completes -- so under the smoke test's
+# normal pass/fail completion, by the time this Teardown runs, settle has
+# already reaped its own server and this loop finds nothing. The one gap
+# `stop` cannot close is the orchestrator (fleet server) process itself
+# dying mid-settle before that `finally` runs; the supervisor's own
+# dolt-orphan-sweep (packages/apra-fleet-se/src/supervisor/dolt-orphan-
+# sweep.mjs) is the long-term backstop for that, but its 5-minute interval
+# and 10-minute max-age threshold are far longer than this smoke test's
+# window, so it cannot be relied on to run before the 'rm -rf' below. This
+# loop is what actually closes that window for the sandbox: find and kill
+# any `dolt sql-server` process whose command line references this
+# sandbox's own data dir before the sandbox directory is deleted.
+DEADLINE=$(( $(date +%s) + 5 ))
+while :; do
+  PIDS="$(pgrep -f "dolt.*sql-server.*${SANDBOX}" 2>/dev/null || true)"
+  if [ -z "$PIDS" ]; then
+    break
+  fi
+  kill -9 $PIDS 2>/dev/null || true
+  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+    break
+  fi
+  sleep 1
+done
+if [ -n "$(pgrep -f "dolt.*sql-server.*${SANDBOX}" 2>/dev/null || true)" ]; then
+  echo "Teardown: a detached 'dolt sql-server' under $SANDBOX is still" \
+       "running after 5s of kill retries -- settle's own finally-block" \
+       "teardown did not reap it (see dolt-settle.mjs's spawnEphemeralServer" \
+       "/ killServerAndVerify). Manually run" \
+       "'pgrep -f \"dolt.*sql-server.*$SANDBOX\" | xargs kill -9' before" \
+       "continuing -- proceeding would rm -rf a directory a live process" \
+       "still holds open." >&2
+  exit 1
+fi
+
 rm -rf "$SANDBOX"
 ```
 
