@@ -125,10 +125,11 @@ describe('regression-test-playbook.md Setup toy dev-server port 3001 guard', () 
     }
   });
 
-  it('kills a decoy listener on the literal port 3001 the playbook hardcodes, via the real kill-port.mjs CLI Setup invokes -- skipping if a real service already legitimately owns it', async () => {
+  it('kills a decoy listener on the literal port 3001 the playbook hardcodes, via the real kill-port.mjs CLI Setup invokes -- skipping if a real service already legitimately owns it', async (ctx) => {
     const alreadyBound = !(await isPortFree(3001));
     if (alreadyBound) {
       // Never collide with a real dev sandbox/service already on 3001.
+      ctx.skip();
       return;
     }
     const listener = await spawnDummyListener(3001);

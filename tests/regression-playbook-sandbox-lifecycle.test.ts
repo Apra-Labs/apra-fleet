@@ -233,10 +233,11 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
       expect(await isPortFree(listener.port)).toBe(true);
     });
 
-    it('clears the literal sandbox scratch port 18700 the playbook hardcodes, skipping if a real service already legitimately owns it', async () => {
+    it('clears the literal sandbox scratch port 18700 the playbook hardcodes, skipping if a real service already legitimately owns it', async (ctx) => {
       const alreadyBound = !(await isPortFree(18700));
       if (alreadyBound) {
         // Never collide with a real dev sandbox/service already on 18700.
+        ctx.skip();
         return;
       }
       const listener = await spawnDummyListener(18700);
