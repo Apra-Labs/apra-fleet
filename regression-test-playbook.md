@@ -200,12 +200,10 @@ cd "<repo-root>"
 node dist/index.js install
 
 # Stale-process guard: kill any process still bound to the sandbox's own
-# scratch port (18700) before starting the server -- mirrors the
-# bounded-retry kill-loop `## Reset` already uses for the toy app's
-# dev-server port (3001). Without this, a previous run's crashed or
-# interrupted 'node dist/index.js' left bound to 18700 causes this Setup's
-# 'start' to hit EADDRINUSE; the real server silently rebinds to an
-# OS-assigned port on EADDRINUSE instead of failing loud (see
+# scratch port (18700) before starting the server. Without this, a previous
+# run's crashed or interrupted 'node dist/index.js' left bound to 18700
+# causes this Setup's 'start' to hit EADDRINUSE; the real server silently
+# rebinds to an OS-assigned port on EADDRINUSE instead of failing loud (see
 # src/services/http-transport.ts / src/index.ts), which can leave the
 # sandbox listening on the wrong port with no obvious error.
 #
@@ -218,6 +216,19 @@ node dist/index.js install
 # replaces. Fails loud (non-zero exit) if the port is still occupied once
 # the deadline elapses, or if this host has no supported probe tool.
 node "<repo-root>/scripts/kill-port.mjs" 18700 "sandbox scratch port 18700" 5000 || exit 1
+
+# Same stale-process guard, but for the toy app's dev-server port (3001,
+# from 'npm run start:test' / 'cross-env PORT=3001'). This mirrors the
+# bounded-retry kill-loop '## Reset' already uses for 3001: a prior
+# interrupted run's toy-repo Deploy phase can leave its dev server bound to
+# 3001, which would otherwise survive into this run's own '## Test
+# scenario' and make its Deploy phase fail with 'listen EADDRINUSE :::3001'.
+# Unlike the 18700 case the toy dev server just dies rather than silently
+# rebinding, but this guard still fails loud (non-zero exit) instead of
+# proceeding, matching the shape of every other port guard in this
+# playbook. Runs before 'node dist/index.js start' like the 18700 guard
+# above, and after the sandbox lock is acquired.
+node "<repo-root>/scripts/kill-port.mjs" 3001 "toy app dev-server port 3001" 5000 || exit 1
 
 node dist/index.js start
 
@@ -690,6 +701,8 @@ rm -f "$SANDBOX.setup_started_at"
 
 rm -rf "$SANDBOX"
 ```
+
+No separate guard reaps the toy app's dev-server port (3001) here: `rm -rf "$SANDBOX"` above does not depend on 3001 being free (the dev server, if still alive, has nothing left to read or write once the sandbox directory is gone), and the next run's own `## Setup` stale-process guard (see `## Setup`) closes the port before it is needed again. Leaving a stray dev server running between runs is a hygiene gap, not a correctness one, so it is intentionally left to the next `## Setup`/`## Reset` to clear rather than duplicated here.
 
 ## Test scenario (informational)
 
