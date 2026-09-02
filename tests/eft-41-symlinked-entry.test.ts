@@ -31,6 +31,42 @@ import { execFileSync } from 'node:child_process';
 const root = path.resolve(__dirname, '..');
 const realBinDir = path.join(root, 'packages', 'apra-fleet-se', 'bin');
 
+/**
+ * Probe symlink capability ONCE at module load: on Windows without
+ * Administrator or Developer Mode, `fs.symlinkSync` throws EPERM, which
+ * would otherwise make this whole suite's first test fail on every such
+ * host even though nothing under test (this test, or cli.mjs) has changed
+ * -- an environment-capability gap, not a real regression. The probe
+ * creates and immediately removes a throwaway symlink inside a fresh temp
+ * dir so it never touches the real bin/ directory.
+ */
+function probeSymlinkCapability(): { ok: boolean; reason: string } {
+  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-eft41-symlink-probe-'));
+  try {
+    const target = path.join(probeDir, 'target');
+    const link = path.join(probeDir, 'link');
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, link, 'dir');
+    return { ok: true, reason: '' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, reason: message };
+  } finally {
+    fs.rmSync(probeDir, { recursive: true, force: true });
+  }
+}
+
+const symlinkCapability = probeSymlinkCapability();
+if (!symlinkCapability.ok) {
+  // eslint-disable-next-line no-console -- deliberate, one-line, explains
+  // why the symlink-dependent test below is skipped rather than failing.
+  console.warn(
+    `[eft-41-symlinked-entry.test.ts] symlink creation is not permitted on this host `
+    + `(${symlinkCapability.reason}) -- skipping the symlink-dependent test. Run as `
+    + 'Administrator, or enable Windows Developer Mode, to exercise it.',
+  );
+}
+
 describe('cli.mjs entry-resolution self-executes through a symlinked invocation path (apra-fleet-eft.41.1)', () => {
   const tmpDirs: string[] = [];
 
@@ -41,7 +77,7 @@ describe('cli.mjs entry-resolution self-executes through a symlinked invocation 
     }
   });
 
-  it('--help via a symlinked bin/ dir prints usage text on stdout and exits 0 (not a silent no-op)', () => {
+  it.skipIf(!symlinkCapability.ok)('--help via a symlinked bin/ dir prints usage text on stdout and exits 0 (not a silent no-op) [skipped without symlink permission]', () => {
     // Build a fresh parent dir with a symlink pointing at the real bin/
     // directory. process.argv[1] (the invoked path) will run through the
     // symlink and stay un-canonicalized, while Node's ESM loader will
