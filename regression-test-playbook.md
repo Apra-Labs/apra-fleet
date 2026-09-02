@@ -28,8 +28,7 @@ can destroy a first run's sandbox while it is still mid-`## Setup` or
 mid-`## Test scenario`. `## Setup` and `## Teardown` below guard against
 this with a lock file living NEXT TO the sandbox (`$SANDBOX.lock` --
 deliberately outside the directory `## Teardown` deletes, so the lock is
-never a casualty of the cleanup it gates), via `scripts/sandbox-lock.mjs`
-(apra-fleet-egc.1):
+never a casualty of the cleanup it gates), via `scripts/sandbox-lock.mjs`:
 - `## Setup` acquires the lock before touching anything (mkdir/install/
   clone); if another live run already holds it, Setup fails loud with a
   `sandbox busy` message and a non-zero exit instead of proceeding.
@@ -60,10 +59,10 @@ Conventions used below:
   packages/apra-fleet-se/src/supervisor/spawner.mjs), and the dolt settle
   port range `13300-13400` (DEFAULT_PORT_RANGE in
   packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs).
-- Supervisor scratch port: `18701` (`SUPERVISOR_PORT` below,
-  apra-fleet-uof6.1) -- the fleet-sprint supervisor
-  (`packages/apra-fleet-se/bin/serve.mjs`), distinct from the fleet MCP
-  server's `18700` above and from every range in the previous bullet.
+- Supervisor scratch port: `18701` (`SUPERVISOR_PORT` below) -- the
+  fleet-sprint supervisor (`packages/apra-fleet-se/bin/serve.mjs`),
+  distinct from the fleet MCP server's `18700` above and from every range
+  in the previous bullet.
 - `<repo-root>`: the root of this apra-fleet checkout -- the directory
   containing this playbook. The executing agent substitutes its actual
   checkout path.
@@ -87,11 +86,14 @@ runtime:
 - `Bash(node dist/index.js *)`
 - `Bash(node:*)` -- covers the sandbox lock's
   `node "<repo-root>/scripts/sandbox-lock.mjs" acquire|mark-server-started|
-  release` calls in `## Setup` and `## Teardown` (apra-fleet-egc.1). A
+  release` calls in `## Setup` and `## Teardown`, and every other
+  `node "<repo-root>/scripts/*.mjs"` helper this playbook invokes
+  (`kill-port.mjs`, `reap-sandbox-dolt.mjs`, `sandbox-seed-beads.mjs`,
+  `check-sandbox-sync-remote.mjs`, `check-toy-doer-credentials.mjs`). A
   relative-prefix entry like `Bash(node scripts/sandbox-lock.mjs *)` does
-  NOT cover this: the invocation uses the absolute `<repo-root>/...` form
-  (see Conventions above), so only a broader `Bash(node:*)`-class entry
-  satisfies it.
+  NOT cover any of these: the invocations use the absolute `<repo-root>/...`
+  form (see Conventions above), so only a broader `Bash(node:*)`-class
+  entry satisfies it.
 - `Bash(git clone *)`
 - `Bash(git -C ~/temp/.apra-fleet-tests* *)`
 - `Bash(node scripts/run-integ-suites.mjs *)` (for the
@@ -102,10 +104,11 @@ runtime:
   `bd show`/`bd dolt` steps in `## Setup` and `## Test scenario`)
 - `Bash(curl:*)` -- drives the supervisor's HTTP API (`POST /api/sprints`,
   `GET /api/sprints/:id`, `GET /api/members`, `POST /api/shutdown`) in
-  `## Setup`, `## Test scenario`, and `## Teardown` (apra-fleet-uof6.1).
-- `Bash(pgrep:*)`/`Bash(kill:*)` -- covers the supervisor-boot verification
-  and stop steps below, alongside the pre-existing `dolt sql-server` reap
-  loop in `## Teardown`.
+  `## Setup`, `## Test scenario`, and `## Teardown`.
+- `Bash(kill:*)` -- covers the supervisor-boot verification and stop steps'
+  own direct `kill -0`/`kill -9` calls (the port and dolt-sql-server kill
+  loops now run through the `kill-port.mjs`/`reap-sandbox-dolt.mjs` helpers
+  above, already covered by `Bash(node:*)`).
 
 ## Run the apra-fleet-se suite against real bd
 
@@ -169,12 +172,18 @@ normally has all three already):
 SANDBOX="$HOME/temp/.apra-fleet-tests"
 export REAL_HOME="$HOME"
 
-# Busy-check (apra-fleet-egc.1): claim the sandbox lock BEFORE touching
-# anything below. Fails loud ('sandbox busy', non-zero exit) if another live
-# run already holds it, instead of racing/clobbering it. Passes $$ (this
-# Setup shell's own PID) -- see scripts/sandbox-lock.mjs's file header for
-# why that is correct for the early part of Setup even though it is a
-# transient PID.
+# Records this run's own start time, sibling to the sandbox (like the lock
+# file below) so a later '## Teardown' can still read it after "$HOME" is
+# deleted. Consumed by the dolt-sql-server reap's recency bound (see
+# '## Teardown').
+SETUP_STARTED_AT=$(date +%s)
+echo "$SETUP_STARTED_AT" > "$SANDBOX.setup_started_at"
+
+# Busy-check: claim the sandbox lock BEFORE touching anything below. Fails
+# loud ('sandbox busy', non-zero exit) if another live run already holds it,
+# instead of racing/clobbering it. Passes $$ (this Setup shell's own PID) --
+# see scripts/sandbox-lock.mjs's file header for why that is correct for the
+# early part of Setup even though it is a transient PID.
 node "<repo-root>/scripts/sandbox-lock.mjs" acquire "$SANDBOX" "$$" || exit 1
 
 export HOME="$SANDBOX"
@@ -184,36 +193,25 @@ mkdir -p "$HOME"
 cd "<repo-root>"
 node dist/index.js install
 
-# Stale-process guard (apra-fleet-uof6.2): kill any process still bound to
-# the sandbox's own scratch port (18700) before starting the server --
-# mirrors the bounded-retry kill-loop `## Reset` already uses for the toy
-# app's dev-server port (3001). Without this, a previous run's crashed or
+# Stale-process guard: kill any process still bound to the sandbox's own
+# scratch port (18700) before starting the server -- mirrors the
+# bounded-retry kill-loop `## Reset` already uses for the toy app's
+# dev-server port (3001). Without this, a previous run's crashed or
 # interrupted 'node dist/index.js' left bound to 18700 causes this Setup's
 # 'start' to hit EADDRINUSE; the real server silently rebinds to an
 # OS-assigned port on EADDRINUSE instead of failing loud (see
 # src/services/http-transport.ts / src/index.ts), which can leave the
-# sandbox listening on the wrong port with no obvious error. Fails loud
-# (non-zero exit, clear message) instead of proceeding if the port is still
-# occupied once the deadline elapses.
-DEADLINE=$(( $(date +%s) + 5 ))
-while :; do
-  PIDS="$(lsof -ti tcp:18700 2>/dev/null || true)"
-  if [ -z "$PIDS" ]; then
-    break
-  fi
-  kill -9 $PIDS 2>/dev/null || true
-  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-    break
-  fi
-  sleep 1
-done
-if [ -n "$(lsof -ti tcp:18700 2>/dev/null || true)" ]; then
-  echo "Setup: port 18700 is still bound after 5s of kill retries -- a stray" \
-       "'node dist/index.js' from a crashed/interrupted prior run survived" \
-       "cleanup. Manually run 'lsof -ti tcp:18700 | xargs kill -9' before" \
-       "continuing." >&2
-  exit 1
-fi
+# sandbox listening on the wrong port with no obvious error.
+#
+# scripts/kill-port.mjs (not a raw lsof-based loop) does the actual probe +
+# kill: it is portable to Windows Git Bash (netstat/taskkill, no lsof), and
+# hard-fails naming the missing probe tool instead of silently treating "I
+# could not check" as "the port is free" -- a plain
+# 'lsof -ti tcp:18700 2>/dev/null || true' loop reads as a pass on any host
+# without lsof, which is exactly the false-success failure mode this
+# replaces. Fails loud (non-zero exit) if the port is still occupied once
+# the deadline elapses, or if this host has no supported probe tool.
+node "<repo-root>/scripts/kill-port.mjs" 18700 "sandbox scratch port 18700" 5000 || exit 1
 
 node dist/index.js start
 
@@ -323,7 +321,7 @@ origin`) ever resolve outside the sandbox root or reference
 node "<repo-root>/scripts/check-sandbox-sync-remote.mjs" "$HOME/toy-repo"
 ```
 
-### Boot the fleet-sprint supervisor (apra-fleet-uof6.1)
+### Boot the fleet-sprint supervisor
 
 The toy sprint runs THROUGH a real supervisor instance
 (`packages/apra-fleet-se/bin/serve.mjs`), not the direct `apra-fleet
@@ -348,8 +346,8 @@ export FLEET_SE_DATA_DIR="$HOME/.apra-fleet-se-data"
 mkdir -p "$FLEET_SE_DATA_DIR"
 ```
 
-**dolt-orphan-sweep hazard (apra-fleet-uof6 parent bead) -- accepted,
-time-bounded mitigation.** The supervisor's `dolt-orphan-sweep` seam
+**dolt-orphan-sweep cross-instance hazard -- accepted, time-bounded
+mitigation.** The supervisor's `dolt-orphan-sweep` seam
 (`packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs`) scopes
 `listMembers()` to whatever fleet server this process's `HOME` resolves to
 (the sandbox's own, per the override above -- so it will only ever
@@ -429,24 +427,10 @@ SANDBOX="$HOME/temp/.apra-fleet-tests"
 export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
-DEADLINE=$(( $(date +%s) + 5 ))
-while :; do
-  PIDS="$(lsof -ti tcp:3001 2>/dev/null || true)"
-  if [ -z "$PIDS" ]; then
-    break
-  fi
-  kill -9 $PIDS 2>/dev/null || true
-  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-    break
-  fi
-  sleep 1
-done
-if [ -n "$(lsof -ti tcp:3001 2>/dev/null || true)" ]; then
-  echo "Reset: port 3001 is still bound after 5s of kill retries -- a stray" \
-       "toy-app dev server survived cleanup. Manually run" \
-       "'lsof -ti tcp:3001 | xargs kill -9' before continuing." >&2
-  exit 1
-fi
+# scripts/kill-port.mjs: portable to Windows Git Bash (no lsof dependency)
+# and hard-fails naming the missing probe tool rather than silently passing
+# -- see the same guard's comment in `## Setup` for the full rationale.
+node "<repo-root>/scripts/kill-port.mjs" 3001 "toy app dev-server port 3001" 5000 || exit 1
 cd "$HOME/toy-repo"
 git fetch origin
 git reset --hard origin/main
@@ -474,17 +458,17 @@ export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
 
-# Ownership check (apra-fleet-egc.1): only stop the server and rm -rf the
-# sandbox if this Teardown can prove it owns the lock -- i.e. the lock
-# currently names THIS sandbox's own fleet-server PID (or is missing/stale,
-# meaning there is nothing live to protect). A lock naming some OTHER live
-# PID means a different run currently owns this sandbox; refuse loud instead
-# of destroying it. Runs BEFORE 'stop' so it reads the still-live
-# server.json to compare against.
+# Ownership check: only stop the server and rm -rf the sandbox if this
+# Teardown can prove it owns the lock -- i.e. the lock currently names THIS
+# sandbox's own fleet-server PID (or is missing/stale, meaning there is
+# nothing live to protect). A lock naming some OTHER live PID means a
+# different run currently owns this sandbox; refuse loud instead of
+# destroying it. Runs BEFORE 'stop' so it reads the still-live server.json
+# to compare against.
 node "<repo-root>/scripts/sandbox-lock.mjs" release "$SANDBOX" || exit 1
 
-# Stop the supervisor (apra-fleet-uof6.1) BEFORE the fleet MCP server below --
-# also confirms the dolt-orphan-sweep time bound documented in ## Setup
+# Stop the supervisor BEFORE the fleet MCP server below -- also confirms the
+# dolt-orphan-sweep time bound documented in ## Setup
 # actually held for this run (a loud warning, not a failure: the sweep only
 # ACTS if it also finds an aged dolt sql-server in its port range, which this
 # sandbox's own dolt processes never are by the time we get here).
@@ -538,10 +522,10 @@ fi
 
 node dist/index.js stop
 
-# Detached-dolt-sql-server reap (apra-fleet-uof6.4): 'node dist/index.js stop'
-# only stops the fleet server process itself -- it does NOT (and by design
-# cannot) reap a `dolt sql-server` that fleet-sprint/dolt-settle.mjs may have
-# spawned during Dolt conflict resolution in the toy sprint (see
+# Detached-dolt-sql-server reap: 'node dist/index.js stop' only stops the
+# fleet server process itself -- it does NOT (and by design cannot) reap a
+# `dolt sql-server` that fleet-sprint/dolt-settle.mjs may have spawned during
+# Dolt conflict resolution in the toy sprint (see
 # packages/apra-fleet-se/fleet-sprint/docs/dolt-sync-redesign.md Part 3.3).
 # settleDoltConflicts() spawns that server genuinely DETACHED
 # (setsid/nohup on POSIX, WMI on Windows --
@@ -549,38 +533,29 @@ node dist/index.js stop
 # its parent process, and tears it down itself in a real `finally`
 # (killServerAndVerify) once settle completes -- so under the smoke test's
 # normal pass/fail completion, by the time this Teardown runs, settle has
-# already reaped its own server and this loop finds nothing. The one gap
+# already reaped its own server and this step finds nothing. The one gap
 # `stop` cannot close is the orchestrator (fleet server) process itself
 # dying mid-settle before that `finally` runs; the supervisor's own
 # dolt-orphan-sweep (packages/apra-fleet-se/src/supervisor/dolt-orphan-
 # sweep.mjs) is the long-term backstop for that, but its 5-minute interval
 # and 10-minute max-age threshold are far longer than this smoke test's
-# window, so it cannot be relied on to run before the 'rm -rf' below. This
-# loop is what actually closes that window for the sandbox: find and kill
-# any `dolt sql-server` process whose command line references this
-# sandbox's own data dir before the sandbox directory is deleted.
-DEADLINE=$(( $(date +%s) + 5 ))
-while :; do
-  PIDS="$(pgrep -f "dolt.*sql-server.*${SANDBOX}" 2>/dev/null || true)"
-  if [ -z "$PIDS" ]; then
-    break
-  fi
-  kill -9 $PIDS 2>/dev/null || true
-  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-    break
-  fi
-  sleep 1
-done
-if [ -n "$(pgrep -f "dolt.*sql-server.*${SANDBOX}" 2>/dev/null || true)" ]; then
-  echo "Teardown: a detached 'dolt sql-server' under $SANDBOX is still" \
-       "running after 5s of kill retries -- settle's own finally-block" \
-       "teardown did not reap it (see dolt-settle.mjs's spawnEphemeralServer" \
-       "/ killServerAndVerify). Manually run" \
-       "'pgrep -f \"dolt.*sql-server.*$SANDBOX\" | xargs kill -9' before" \
-       "continuing -- proceeding would rm -rf a directory a live process" \
-       "still holds open." >&2
-  exit 1
-fi
+# window, so it cannot be relied on to run before the 'rm -rf' below.
+#
+# scripts/reap-sandbox-dolt.mjs (not a raw pgrep-based loop) closes that
+# window for the sandbox: it is portable to Windows Git Bash (no pgrep
+# dependency, hard-fails naming the missing probe tool instead of silently
+# passing), and it also covers dolt-settle's RELATIVE-data-dir fallback
+# (dolt-settle.mjs's resolveDoltStatus can fall back to the relative default
+# 'beads/embeddeddolt', in which case the spawned command line carries no
+# absolute sandbox path for a plain 'pgrep -f "dolt.*sql-server.*$SANDBOX"'
+# to match) by ALSO matching that relative default when the process started
+# at/after this run's own '## Setup' timestamp -- see the script's own
+# header comment for why that recency bound is required (a bare match on
+# the relative default alone would recreate the machine-wide-kill hazard
+# documented against dolt-orphan-sweep.mjs).
+SETUP_STARTED_AT="$(cat "$SANDBOX.setup_started_at" 2>/dev/null || echo 0)"
+node "<repo-root>/scripts/reap-sandbox-dolt.mjs" --sandbox "$SANDBOX" --since "$SETUP_STARTED_AT" --deadline-ms 5000 || exit 1
+rm -f "$SANDBOX.setup_started_at"
 
 rm -rf "$SANDBOX"
 ```
@@ -689,8 +664,8 @@ scenario.
    node "<repo-root>/scripts/check-toy-doer-credentials.mjs" toy-doer "$SANDBOX"
    ```
 4. Launch the toy sprint THROUGH the supervisor's HTTP API
-   (`POST /api/sprints` on `$SUPERVISOR_PORT`, apra-fleet-uof6.1) instead of
-   the direct `apra-fleet workflow fleet-sprint` CLI, matching how a real
+   (`POST /api/sprints` on `$SUPERVISOR_PORT`) instead of the direct
+   `apra-fleet workflow fleet-sprint` CLI, matching how a real
    production sprint is actually launched (fleet-supervisor skill
    guidance). No `--skip-dolt-push` equivalent is needed: with the
    sandbox's `sync.remote` neutralized per `## Reset`, the engine's D-push
@@ -814,8 +789,8 @@ description rather than creating a new one.
 
 ## Sandbox isolation: FLEET_SE_DATA_DIR and supervisor
 
-As of apra-fleet-uof6.1, `## Setup`'s "Boot the fleet-sprint supervisor"
-subsection DOES spawn a real supervisor process (`bin/serve.mjs`) in the
+`## Setup`'s "Boot the fleet-sprint supervisor" subsection DOES spawn a
+real supervisor process (`bin/serve.mjs`) in the
 sandbox, and `## Test scenario` step 4 drives the toy sprint through its
 HTTP API (`POST /api/sprints`) rather than the direct `apra-fleet workflow
 fleet-sprint` CLI. `FLEET_SE_DATA_DIR` is overridden to a sandbox-local
