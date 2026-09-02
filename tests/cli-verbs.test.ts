@@ -240,6 +240,20 @@ describe('runStart', () => {
     expect(exitSpy).not.toHaveBeenCalled();
     expect(mockGetSvcMgr).not.toHaveBeenCalled();
   });
+
+  // apra-fleet-5co8.23: deliberate leniency -- an older server.json predating
+  // version recording (no `version` field at all, as opposed to a mismatched
+  // one) must NOT be refused. This pins the existing lenient reuse behaviour
+  // as an explicit invariant rather than something only incidentally covered
+  // by the plain "already running" fixture.
+  it('reuses a running server whose server.json predates version recording (no version field) -- deliberate leniency', async () => {
+    mockCheckRunning.mockResolvedValue(RUNNING); // RUNNING has no `version` field
+    await runStart([]);
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('already running'));
+    expect(errSpy).not.toHaveBeenCalled();
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockGetSvcMgr).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
