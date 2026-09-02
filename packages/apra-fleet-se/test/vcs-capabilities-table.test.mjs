@@ -55,10 +55,10 @@ test('capabilities: a GitHub Enterprise Server host is PR-capable via the "githu
     assert.equal(caps.host, 'github.acme-corp.internal');
 });
 
-test('capabilities: an Azure DevOps URL has a remote but is NOT PR-capable (no registered provider yet)', () => {
+test('capabilities: an Azure DevOps URL has a remote and IS PR-capable (registered provider, apra-fleet-lzfv)', () => {
     const caps = capabilities('https://dev.azure.com/o/proj/_git/r');
     assert.equal(caps.hasRemote, true);
-    assert.equal(caps.canOpenPullRequest, false);
+    assert.equal(caps.canOpenPullRequest, true, 'Azure DevOps has a registered provider (see vcs-providers/azure-devops.mjs) and must be PR-capable');
     assert.equal(caps.host, 'dev.azure.com');
 });
 
