@@ -699,10 +699,16 @@ SETUP_STARTED_AT="$(cat "$SANDBOX.setup_started_at" 2>/dev/null || echo 0)"
 node "<repo-root>/scripts/reap-sandbox-dolt.mjs" --sandbox "$SANDBOX" --since "$SETUP_STARTED_AT" --deadline-ms 5000 || exit 1
 rm -f "$SANDBOX.setup_started_at"
 
+# No separate guard reaps the toy app's dev-server port (3001) here:
+# 'rm -rf "$SANDBOX"' below does not depend on 3001 being free (the dev
+# server, if still alive, has nothing left to read or write once the
+# sandbox directory is gone), and the next run's own '## Setup' stale-
+# process guard closes the port before it is needed again. Leaving a stray
+# dev server running between runs is a hygiene gap, not a correctness one,
+# so it is intentionally left to the next '## Setup'/'## Reset' to clear
+# rather than duplicated here.
 rm -rf "$SANDBOX"
 ```
-
-No separate guard reaps the toy app's dev-server port (3001) here: `rm -rf "$SANDBOX"` above does not depend on 3001 being free (the dev server, if still alive, has nothing left to read or write once the sandbox directory is gone), and the next run's own `## Setup` stale-process guard (see `## Setup`) closes the port before it is needed again. Leaving a stray dev server running between runs is a hygiene gap, not a correctness one, so it is intentionally left to the next `## Setup`/`## Reset` to clear rather than duplicated here.
 
 ## Test scenario (informational)
 
