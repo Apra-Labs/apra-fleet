@@ -66,10 +66,11 @@ What shipped:
 - **Documentation**: `docs/design-azure-devops-vcs-auth.md` captures the
   credential-assembly seam, classification rules, PAT-lifetime handling, and
   a harness-vs-production quoting distinction worth knowing before assuming
-  an Azure DevOps test failure is a runtime bug; `docs/design-regression-
-  sandbox-lifecycle.md` (new) captures the sandbox's cross-instance isolation
-  design and the MSYS-vs-native pid mismatch invariant future contributors
-  must respect when adding any Windows liveness/lock check.
+  an Azure DevOps test failure is a runtime bug;
+  `docs/design-regression-sandbox-lifecycle.md` (new) captures the sandbox's
+  cross-instance isolation design and the MSYS-vs-native pid mismatch
+  invariant future contributors must respect when adding any Windows
+  liveness/lock check.
 
 Carried forward (filed as open issues, not blocking further sprints from
 starting, but blocking these epics' own completion):
@@ -91,9 +92,6 @@ starting, but blocking these epics' own completion):
   native process can read as busy.
 - The mock-sprint unmocked-network-command guard still misses an
   absolute-path curl/wget invocation.
-- A stale test pin asserting Azure DevOps is not pull-request-capable needs
-  removing now that PR-capability has landed and is exercised by a passing
-  test.
 - `.claude/settings.json` now grants a blanket `Edit`/`Write` permission to
   every agent dispatch; this widening is not justified by any scope item
   here and should be reviewed.
