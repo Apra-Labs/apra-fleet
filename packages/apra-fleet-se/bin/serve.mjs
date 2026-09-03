@@ -19,6 +19,7 @@
 
 import { parseArgs } from 'node:util';
 import path from 'node:path';
+import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
@@ -48,7 +49,7 @@ import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dash
 import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
 import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-overlap.mjs';
 import { listFleetMembers, executeFleetCommand } from '../src/supervisor/fleet-members.mjs';
-import { createDoltOrphanSweep } from '../src/supervisor/dolt-orphan-sweep.mjs';
+import { createDoltOrphanSweep, normalizeMsysPathForPlatform } from '../src/supervisor/dolt-orphan-sweep.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
 
 const SERVE_USAGE = `
@@ -280,10 +281,17 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // processes whose `--data-dir` is under that root, so this instance can
     // never kill another live supervisor's ephemeral server.
     const sweepOwnerDataDir = process.env.FLEET_SE_SWEEP_OWNER_DATA_DIR
-        ? path.resolve(process.env.FLEET_SE_SWEEP_OWNER_DATA_DIR)
+        ? path.resolve(normalizeMsysPathForPlatform(process.env.FLEET_SE_SWEEP_OWNER_DATA_DIR))
         : null;
     if (sweepOwnerDataDir) {
         console.log(`[dolt-orphan-sweep] owner-scoped to data dirs under '${sweepOwnerDataDir}' (FLEET_SE_SWEEP_OWNER_DATA_DIR).`);
+        // apra-fleet-5co8.36: a confident scope claim above is worse than
+        // useless if the resolved prefix does not actually exist -- that is
+        // exactly what an un-normalized MSYS path used to produce. Warn
+        // loudly rather than let the sweep silently match nothing.
+        if (!fs.existsSync(sweepOwnerDataDir)) {
+            console.warn(`[dolt-orphan-sweep] WARNING: FLEET_SE_SWEEP_OWNER_DATA_DIR resolved to '${sweepOwnerDataDir}', which does not exist on disk -- the owner-scoped sweep will match no process and silently degrade to matching nothing.`);
+        }
     }
     const doltOrphanSweep = createDoltOrphanSweep({
         listMembers: () => listFleetMembers({ resolveConnection: resolveFleetServerConnection }),

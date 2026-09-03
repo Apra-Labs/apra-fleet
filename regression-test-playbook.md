@@ -388,7 +388,7 @@ which for a real remote member has no relation to the supervisor's own data
 dir, so scoping it unconditionally would silently turn the production sweep
 into a no-op.
 
-Two residual limits keep the old time bound worth having:
+Three residual limits keep the old time bound worth having:
 
 * Under `dolt-settle.mjs`'s `unknown` status-parse fallback the spawned
   command line carries only the RELATIVE default data dir, so it matches no
@@ -399,6 +399,16 @@ Two residual limits keep the old time bound worth having:
 * The scope fix depends on the export above actually being in this
   supervisor's environment; a run that boots the supervisor by hand without
   it is back to the machine-wide scan.
+* `FLEET_SE_SWEEP_OWNER_DATA_DIR="$HOME"` under Git Bash is an MSYS-style
+  POSIX path (e.g. `/c/Users/x/...`), and `bin/serve.mjs` used to pass it
+  straight to Node's `path.resolve()` on win32, which mangled it into a
+  nonexistent path (`/c/Users/x` -> `C:\c\Users\x`) and made this instance's
+  owner scope silently match nothing while still logging a confident scope
+  claim (apra-fleet-5co8.36). `bin/serve.mjs` now normalizes an MSYS-style
+  path to its native Windows form before resolving it and warns loudly if
+  the resolved prefix does not exist on disk, but a future direct caller of
+  `path.resolve()` on an MSYS path bypassing that normalization would
+  reintroduce the same silent-inert failure mode.
 
 So the time bound stays, now as belt-and-braces rather than the only
 defence: the sweep runs on EVERY tick of its `DEFAULT_SWEEP_INTERVAL_MS`

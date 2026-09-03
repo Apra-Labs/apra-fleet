@@ -6,6 +6,7 @@ import {
     buildSweepCommand,
     parseSweepOutput,
     memberShellFamily,
+    normalizeMsysPathForPlatform,
     DEFAULT_SWEEP_INTERVAL_MS,
     DEFAULT_MAX_AGE_MS,
     SETTLE_PORT_RANGE,
@@ -281,6 +282,27 @@ test('a foreign-data-dir server is excluded while a same-owner one is still kill
         assert.equal(runAwk('/tmp/OTHER-supervisor/.beads/embeddeddolt'), false, 'another supervisor instance`s server must NOT be killed (awk)');
         assert.equal(runAwk('.beads/embeddeddolt'), false, 'the relative-data-dir fallback is excluded (awk, fail-safe)');
     }
+});
+
+test('normalizeMsysPathForPlatform converts an MSYS path to native Windows form on win32, and is a no-op elsewhere', () => {
+    // apra-fleet-5co8.36: path.resolve('/c/Users/x/temp') on win32 used to
+    // yield the nonexistent 'C:\c\Users\x\temp' -- reproduce that exact
+    // mangling risk and prove the normalizer neutralizes it BEFORE resolve.
+    assert.equal(normalizeMsysPathForPlatform('/c/Users/x/temp/.apra-fleet-tests', 'win32'), 'C:\\Users\\x\\temp\\.apra-fleet-tests');
+    assert.equal(normalizeMsysPathForPlatform('/d/some/other/root', 'win32'), 'D:\\some\\other\\root');
+
+    // Already-native Windows forms pass through unchanged (nothing to fix).
+    assert.equal(normalizeMsysPathForPlatform('C:\\Users\\x\\temp', 'win32'), 'C:\\Users\\x\\temp');
+    assert.equal(normalizeMsysPathForPlatform('C:/Users/x/temp', 'win32'), 'C:/Users/x/temp');
+
+    // Non-win32 platforms never touch the value -- POSIX paths are correct
+    // as-is on posix, and path.resolve() there has no drive-mangling bug.
+    assert.equal(normalizeMsysPathForPlatform('/c/Users/x/temp', 'linux'), '/c/Users/x/temp');
+    assert.equal(normalizeMsysPathForPlatform('/tmp/sandbox', 'darwin'), '/tmp/sandbox');
+
+    // Empty/nullish input never throws.
+    assert.equal(normalizeMsysPathForPlatform('', 'win32'), '');
+    assert.equal(normalizeMsysPathForPlatform(null, 'win32'), '');
 });
 
 test('sweepOnce propagates the owner prefix into every member`s probe', async () => {

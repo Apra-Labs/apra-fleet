@@ -75,6 +75,38 @@ export function normalizeOwnerDataDirPrefix(prefix) {
     return text ? text : null;
 }
 
+/**
+ * apra-fleet-5co8.36: Node's `path.resolve()` does NOT understand MSYS-style
+ * POSIX paths (e.g. `/c/Users/x/temp` -- what Git Bash reports as `$HOME` on
+ * Windows). On win32 it treats a leading `/c/...` as a root-relative path on
+ * the CURRENT drive and prefixes it with that drive, producing a nonexistent
+ * path like `C:\c\Users\x\temp` rather than `C:\Users\x\temp`. Since
+ * `FLEET_SE_SWEEP_OWNER_DATA_DIR` is commonly set from `$HOME` under Git
+ * Bash (see regression-test-playbook.md's `## Setup`), that mangling made the
+ * owner-scoped sweep match no real `--data-dir` and silently degrade to
+ * matching nothing while still logging a confident scope claim.
+ *
+ * Call this BEFORE `path.resolve()` on a raw env value: it rewrites a
+ * `/<drive>/...` MSYS path to its native Windows form (`<DRIVE>:\...`) when
+ * `platform` is `'win32'`, and returns the input unchanged for any other
+ * platform or any value that does not look like an MSYS path (e.g. one
+ * that is already native, like `C:\Users\x` or `C:/Users/x`).
+ *
+ * @param {string} value
+ * @param {string} [platform] defaults to `process.platform` (win32 under
+ *        Git Bash even though the invoking shell is POSIX-like -- Node's own
+ *        platform, never the shell, decides this).
+ * @returns {string}
+ */
+export function normalizeMsysPathForPlatform(value, platform = process.platform) {
+    const text = String(value == null ? '' : value);
+    if (platform !== 'win32' || !text) return text;
+    const match = /^\/([a-zA-Z])\/(.*)$/.exec(text);
+    if (!match) return text;
+    const [, drive, rest] = match;
+    return `${drive.toUpperCase()}:\\${rest.replace(/\//g, '\\')}`;
+}
+
 /** Quote a value for embedding in a PowerShell single-quoted string literal. */
 function psQuote(value) {
     return `'${String(value).replace(/'/g, "''")}'`;
