@@ -209,8 +209,11 @@ RESERVED for T2. (INV-02, INV-07)
 MUST store it as a pending proposal rather than as requested: confidence
 forced to UNVERIFIED, `flagged_for_review` set, a `directive:pending` tag
 added, and `scope` forced to `project` whatever scope was asked for. A
-provider MUST NOT refuse the capture, and MUST NOT offer any operation that
-activates a directive. (INV-03)
+provider MUST NOT surface that transformation as a refusal, and MUST NOT
+offer any operation that activates a directive. Admission still applies
+independently: a directive citing files that do not resolve in the worktree
+is refused under `E-BASIS-MISSING-FILES`, which is 4.2's rule and not this
+one. (INV-03)
 
 **THE PROOF.** One block at the provider entry point does all four:
 `src/services/knowledge/sqlite-provider.ts:806-818` -- `confidence:
@@ -220,8 +223,13 @@ present (`:807-810`). It rewrites `input` and falls through; it never throws,
 so the call returns an id, and the HTTP capture route reaching that same code
 answers `201` (`src/commands/kb-server.ts:136-143`, provider call at `:142`).
 The refusing siblings of this one policy are separate sites that DO throw:
-`kb_promote` at `:1353-1357` and contradiction resolution at `:1569-1571`
-(`E-PROMOTE-REFUSED-DIRECTIVE`, `E-RESOLVE-DIRECTIVE-PAIR`).
+`kb_promote` at `sqlite-provider.ts:1353-1357` and contradiction resolution
+at `sqlite-provider.ts:1569-1571`
+(`E-PROMOTE-REFUSED-DIRECTIVE`, `E-RESOLVE-DIRECTIVE-PAIR`). The basis
+exemption above is only the empty-basis half: `assertCheckableBasis`
+returns early for a directive at `sqlite-provider.ts:337-338`, nested inside
+the zero-files branch, so the unresolvable-files throw at `:347-355` still
+reaches it.
 
 **THE OBLIGATION.** A second implementation MUST enforce this at its
 provider-level capture entry point, NOT in a request handler. Three of this
@@ -245,8 +253,9 @@ here to compromise because there is nothing here. An implementation MUST NOT
 add such a route, not even a refusing one (see 3.5).
 
 **THE TEST HOOK.** `directive-smuggling-impossible` -- capture a
-`user-directive` through every capture path, assert each call SUCCEEDS with
-an id, then read the entry back and assert UNVERIFIED, flagged,
+`user-directive` through every capture path, assert each call SUCCEEDS (an
+id, or the path's own success counter), then read the entry back and assert
+UNVERIFIED, flagged,
 `directive:pending`, project scope. The read-back is load-bearing: the
 capture response exposes none of the forced fields, so the effect is
 observable only through a later `kb_list` (`tests/DEGRADATION.md` D-8).
