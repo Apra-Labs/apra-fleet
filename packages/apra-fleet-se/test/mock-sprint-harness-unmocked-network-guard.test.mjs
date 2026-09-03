@@ -73,6 +73,40 @@ test('mock-sprint-harness: unmocked network command guard', async (t) => {
         }
     });
 
+    await t.test('a mocked GitHub /pulls create-PR curl still succeeds unchanged (negative control)', async () => {
+        const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-unmocked-network-guard-gh-'));
+        try {
+            const dispatched = [];
+            const commandLog = [];
+            const mockFleetApi = buildMockFleetApi(tempDir, { id: 'bd-1' }, dispatched, commandLog);
+
+            const githubCreatePr = 'curl -sS -X POST https://api.github.com/repos/mock-org/mock-repo/pulls -H "Authorization: Bearer sekret" -d \'{"head":"feature-branch"}\'';
+            const result = await mockFleetApi.executeCommand({ command: githubCreatePr });
+            assert.ok(!result.isError, `expected the mocked GitHub /pulls curl to succeed unchanged, got: ${JSON.stringify(result)}`);
+            assert.equal(result.structuredContent.exitCode, 0, `expected exit 0 from the GitHub /pulls mock, got: ${JSON.stringify(result)}`);
+            assert.match(result.structuredContent.stdout, /html_url/, `expected the canned GitHub PR-created body, got: ${result.structuredContent.stdout}`);
+        } finally {
+            await fs.rm(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    await t.test('a mocked Azure DevOps /pullrequests create-PR curl still succeeds unchanged (negative control)', async () => {
+        const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-unmocked-network-guard-ado-'));
+        try {
+            const dispatched = [];
+            const commandLog = [];
+            const mockFleetApi = buildMockFleetApi(tempDir, { id: 'bd-1' }, dispatched, commandLog);
+
+            const azureDevOpsCreatePr = 'curl -sS -X POST "https://dev.azure.com/mock-org/mock-project/_apis/git/repositories/mock-repo/pullrequests?api-version=6.0" -H "Authorization: Basic sekret" -d \'{"sourceRefName":"refs/heads/feature-branch"}\'';
+            const result = await mockFleetApi.executeCommand({ command: azureDevOpsCreatePr });
+            assert.ok(!result.isError, `expected the mocked Azure DevOps /pullrequests curl to succeed unchanged, got: ${JSON.stringify(result)}`);
+            assert.equal(result.structuredContent.exitCode, 0, `expected exit 0 from the Azure DevOps /pullrequests mock, got: ${JSON.stringify(result)}`);
+            assert.match(result.structuredContent.stdout, /pullRequestId/, `expected the canned Azure DevOps PR-created body, got: ${result.structuredContent.stdout}`);
+        } finally {
+            await fs.rm(tempDir, { recursive: true, force: true });
+        }
+    });
+
     await t.test('a git command still flows through the existing hardcoded git/gh mock unchanged (not the network guard)', async () => {
         const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-unmocked-network-guard-git-'));
         try {
