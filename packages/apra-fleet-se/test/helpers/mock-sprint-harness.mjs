@@ -105,6 +105,37 @@ export function isSpawnFailure(err) {
     return err.code === undefined || err.code === 'ENOENT';
 }
 
+// apra-fleet-5co8.16: any curl/network-shaped command must be intercepted by
+// a dedicated handler ABOVE the generic runCmd() fallback in executeCommand
+// below -- this mock exists precisely so a sprint under test never touches
+// the real network. A command matching this shape that reaches the fallback
+// is therefore a harness bug (a missing/incomplete mock), not something to
+// silently forward to runCmd(): that is exactly how the C4 regression
+// manifested as a real `curl (6) Could not resolve host` error instead of a
+// loud, clear "this is unmocked" failure. Mirrors vcs-module.mjs's
+// `logSafeCommand` convention (see its module doc comment): the raw command
+// is never surfaced, only a redacted copy.
+const NETWORK_SHAPED_COMMAND_RE = /^(curl|wget)(?:\.exe)?\s/i;
+
+// Same redaction marker vcs-providers/*.mjs uses for logSafeCommand, so a
+// redacted command here reads the same way a production log line would.
+const CREDENTIAL_REDACTION_MARKER = '***REDACTED***';
+
+// Strips known credential shapes out of a command string for safe inclusion
+// in an error message: HTTP Basic auth via `-u user:token` (Azure DevOps'
+// `-u :PAT` form), `Authorization: Bearer <token>` / `Authorization: Basic
+// <token>` headers (GitHub), and userinfo embedded directly in a URL
+// (`https://user:token@host/...`). Defense-in-depth, not an allowlist: any
+// of these shapes anywhere in the command text is redacted regardless of
+// quoting style.
+export function redactNetworkCommandForLog(command) {
+    return String(command)
+        .replace(/(-u\s+['"]?)([^\s'":]*):([^\s'"]+)/gi, `$1$2:${CREDENTIAL_REDACTION_MARKER}`)
+        .replace(/(Authorization:\s*(?:Bearer|Basic)\s+)([^\s'"]+)/gi, `$1${CREDENTIAL_REDACTION_MARKER}`)
+        .replace(/(:\/\/[^\s'"@/]+:)([^\s'"@/]+)(@)/gi, `$1${CREDENTIAL_REDACTION_MARKER}$3`)
+        .replace(/((?:access_)?token=)([^\s&'"]+)/gi, `$1${CREDENTIAL_REDACTION_MARKER}`);
+}
+
 // apra-fleet-tfx.8: the Publish PR / finalizeAbort PR-raising call sites now
 // mint a just-in-time push+pr credential via `args.callTool('provision_vcs_auth',
 // ...)` (ApraFleet.provisionVcsAuth) immediately before building/dispatching
@@ -742,6 +773,22 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // src/tools/execute-command.ts and return normal nonzero-exit
                 // data instead of isError.
                 return mockCmdResult(1, '', `mock command failure (injected) for: ${opts.command}`);
+            }
+
+            // apra-fleet-5co8.16: fail loudly instead of falling through to
+            // runCmd() (which would exec this for real against tempDir --
+            // there is no live network here, so this is exactly the shape of
+            // the C4 regression: a `curl (6) Could not resolve host` error
+            // instead of a clear unmocked-command failure). Every currently
+            // known curl shape (GitHub /pulls, Azure DevOps /pullrequests,
+            // the git-credential-helper script read) is intercepted by a
+            // dedicated handler ABOVE this point, so reaching here with a
+            // network-shaped command means either a new endpoint/provider
+            // was added without a mock, or an existing mock's match regex
+            // stopped matching -- both are harness bugs to fix, not commands
+            // to run for real.
+            if (NETWORK_SHAPED_COMMAND_RE.test(opts.command)) {
+                throw new Error(`mock-sprint-harness: unmocked network command reached the runCmd() fallback -- refusing to execute it against the real network. command=${redactNetworkCommandForLog(opts.command)}`);
             }
 
             // No stale intercepts here otherwise: runner.js's Deploy/Integ
