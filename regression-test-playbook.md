@@ -404,11 +404,11 @@ Three residual limits keep the old time bound worth having:
   straight to Node's `path.resolve()` on win32, which mangled it into a
   nonexistent path (`/c/Users/x` -> `C:\c\Users\x`) and made this instance's
   owner scope silently match nothing while still logging a confident scope
-  claim (apra-fleet-5co8.36). `bin/serve.mjs` now normalizes an MSYS-style
-  path to its native Windows form before resolving it and warns loudly if
-  the resolved prefix does not exist on disk, but a future direct caller of
-  `path.resolve()` on an MSYS path bypassing that normalization would
-  reintroduce the same silent-inert failure mode.
+  claim. `bin/serve.mjs` now normalizes an MSYS-style path to its native
+  Windows form before resolving it and warns loudly if the resolved prefix
+  does not exist on disk, but a future direct caller of `path.resolve()` on
+  an MSYS path bypassing that normalization would reintroduce the same
+  silent-inert failure mode.
 
 So the time bound stays, now as belt-and-braces rather than the only
 defence: the sweep runs on EVERY tick of its `DEFAULT_SWEEP_INTERVAL_MS`
@@ -1097,10 +1097,11 @@ work: mitigation option (a) has LANDED as a code-level scope fix --
 families enforce, and `bin/serve.mjs` wires it from the deps-level seam
 `FLEET_SE_SWEEP_OWNER_DATA_DIR`, which `## Setup` exports as the sandbox
 root. See the dolt-orphan-sweep hazard note in `## Setup`'s supervisor-boot
-subsection for the two residual limits (the relative-data-dir parse
-fallback matches no prefix, and the scope holds only where that export is
-actually set) and for why the time-bounded supervisor lifetime is kept
-alongside it as belt-and-braces rather than removed.
+subsection for the three residual limits (the relative-data-dir parse
+fallback matches no prefix, the scope holds only where that export is
+actually set, and the MSYS-path normalization seam) and for why the
+time-bounded supervisor lifetime is kept alongside it as belt-and-braces
+rather than removed.
 
 ## Adding new features to this test
 
