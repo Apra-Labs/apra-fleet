@@ -435,7 +435,87 @@ observable only through a later `kb_list` (`tests/DEGRADATION.md` D-8).
 
 ### 4.4 Superseding and AUDN matching
 
-RESERVED for T2. (INV-04)
+**THE RULE.** A `supersedes` id on a capture MUST retire the named entry ONLY
+IF AUDN independently matches that entry as a same-topic candidate for the
+new one -- same `type`, overlapping `symbols` AND overlapping `source_files`
+-- and MUST NOT retire it merely because the caller named it. When the named
+id fails that match, the request MUST be treated as if `supersedes` had not
+been given at all: the capture still proceeds to whatever ordinary AUDN
+outcome the candidate pool otherwise produces. A provider MUST NOT retire, or
+otherwise mutate via `supersedes`, a candidate that is an ACTIVE user-directive
+(`type='user-directive'` AND `confidence='CONFIRMED'`) -- this guard applies
+regardless of whether the caller named that entry explicitly or AUDN would
+have matched it implicitly. Neither refusal MUST be surfaced on the wire: both
+are `surfaced: "silent"` in the taxonomy, so the capture response reports only
+the ordinary `audn_decision` the fallthrough produced, never a distinguishing
+signal that a supersede was requested and ignored. (INV-04)
+
+**THE PROOF.** The explicit-supersede branch,
+`src/services/knowledge/audn.ts:145-157`, looks up `input.supersedes` among
+the candidates and requires ALL of: `c.id === input.supersedes`, `symbolsOverlap`
+(`:148`), `c.type === input.type` (`:150`), and `filesOverlap` (`:151`) -- an
+AND across every predicate, not an OR; the prompt describing this rule to
+that effect is confirmed by the code. The same line also excludes an ACTIVE
+directive from ever being `target` (`:149`,
+`!(c.type === 'user-directive' && c.confidence === 'CONFIRMED')`). When no
+candidate satisfies all four, `target` is `undefined` and the `if
+(input.supersedes)` block (`:145-157`) falls through with no side effect at
+all -- `input.supersedes` is never referenced again in the function, so
+execution continues into the exact-content pre-pass (`:159-183`) and the main
+candidate loop (`:185-239`) exactly as if the field had been absent. That
+fallthrough can itself resolve to `none`, `flagged`, an `update` against a
+DIFFERENT candidate, or `null` (a plain `add`) -- none of which reports that
+the named supersede was ignored. When a match IS found,
+`src/services/knowledge/sqlite-provider.ts:704-718` (`evaluateAudn`'s EXPLICIT
+branch) runs `UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?`
+against the matched id before inserting the new row; the sibling IMPLICIT
+branch three lines later, `:719-729` (same type, overlapping symbol and file,
+but `input.supersedes` absent or not the matched id), inserts the new row and
+links it to the old one with a `refines` edge instead -- both rows stay live.
+The ACTIVE-directive guard is enforced a second time, independently, in the
+main loop at `src/services/knowledge/audn.ts:224`
+(`if (candidate.type === 'user-directive' && candidate.confidence ===
+'CONFIRMED') continue;`), which skips the update/supersede path for that
+candidate whether or not it was named by `supersedes` -- the candidate
+degrades to `flagged` if a contradiction signal was present, or is skipped
+entirely. The only route to an ACTIVE (CONFIRMED) user-directive is
+`approveDirective`, a CLI-only method never reachable from `capture()`
+(4.3); no capture path can mint or promote one, which is why this guard can
+only ever fire against a directive that was activated by a human, out of
+band. Both refusals are recorded, `surfaced: "silent"`, in
+`taxonomy.json`'s governance group as `E-SUPERSEDE-CONSENT-MISSING`
+(`:215-226`) and `E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD` (`:227-239`).
+
+**THE OBLIGATION.** A second implementation MUST require independent,
+system-decided agreement -- same type, symbol overlap, AND file overlap --
+before retiring anything named by `supersedes`; it MUST NOT treat
+`supersedes` as a direct delete-by-id, no matter how plausible the caller's
+claim looks. It MUST NOT invent a response field, error code, or wire enum
+value to report either refusal -- not the general consent-missing case, and
+not the ACTIVE-directive case -- because doing so would make the
+implementation refuse or signal where this kernel silently proceeds, which is
+itself a non-conforming behavior change. A consumer MUST NOT infer that a
+requested supersession occurred from a successful response: `audn_decision`
+describes what AUDN actually decided for the NEW entry, not whether the named
+OLD entry was retired. This is a different surprise than 4.3's quarantine:
+quarantine is a capture that succeeds and stores a TRANSFORMED entry (the
+directive itself is rewritten before storage); a silent supersede refusal is
+a capture that succeeds, stores the new entry UNCHANGED, and simply drops the
+requested SIDE EFFECT of retiring another row. Both are "success with a
+surprise," but only quarantine changes what was stored -- this one changes
+what else did not happen.
+
+**THE TEST HOOK.** `supersession` -- for the general case: capture an entry,
+then a second capture naming it via `supersedes` with matching type/symbols/
+files, and read the FIRST entry back to assert `superseded_at` is now set (the
+capture response alone cannot show this); separately, capture with a
+`supersedes` id that fails the match (wrong type, or no file overlap), and
+read that named entry back to assert it is UNCHANGED regardless of what
+`audn_decision` reported. For the ACTIVE-directive branch specifically, no
+tool call can construct a CONFIRMED user-directive to supersede in the first
+place (activation is CLI-only, 4.3), so that half of the guard is a named,
+unreachable gap rather than a case the round-trip harness can exercise --
+`tests/DEGRADATION.md` D-9.
 
 ### 4.5 Freshness and content hashing
 
