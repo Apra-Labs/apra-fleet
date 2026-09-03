@@ -211,9 +211,15 @@ channel -- but that exemption MUST be reachable only through an internal,
 non-serializable flag, never a field a caller can set on the request body. A
 closed Author enum MUST gate `role` server-side even though the request
 schema leaves it open; any value outside it, including an absent hint, MUST
-be stamped as the literal `unknown`. `source` MUST be derived from the
-validated role and type and MUST NOT be accepted from the caller. Admission
--- whether an entry cites a checkable basis at all -- is a distinct gate
+be stamped as the literal `unknown`. `source` derivation is a handler-level
+guarantee, not a provider-level one: on the `kb_capture` tool path `source`
+MUST be derived from the validated role and type and MUST NOT be read from
+the request; at the provider choke point a caller-supplied `source` is
+otherwise persisted VERBATIM, except that the two privileged values
+`'import'` and `'promotion'` MUST be forced to `'unknown'` outside import
+mode, because those two mark a trusted-channel provenance and a forged one
+would let an audit keyed on `source='import'` trust a row it should not.
+Admission -- whether an entry cites a checkable basis at all -- is a distinct gate
 enforced at the same provider entry point, not part of this clamp, but this
 is the invariant 4.3 defers it to for the directive case: a directive citing
 zero files is exempt (4.3's basis exemption), but a directive citing files
@@ -252,7 +258,20 @@ reviewer, planner, plan-reviewer, kb-agent, kb-reconciler, harvest, pm, user`;
 anything else, or an absent hint, returns the literal `'unknown'`. `source` is
 computed at `src/tools/kb-capture.ts:117-122` from the validated `author` and
 `type` -- `'user-directive'` for a directive, `'review'` when `author ===
-'reviewer'`, else `'session'` -- and is never read from `input`. Admission is
+'reviewer'`, else `'session'` -- and is never read from `input` ON THIS PATH.
+The provider choke point does not repeat that derivation: `insertEntry()`
+persists `input.source` VERBATIM (comment at
+`src/services/knowledge/sqlite-provider.ts:862-863`), and the only
+normalization applied is at `:873-875` -- a caller-supplied `source` of
+`'import'` or `'promotion'` is overwritten with `'unknown'` when
+`!opts?.importMode`, because those two values mark trusted-channel provenance
+(`'import'` from `kb_import`, `'promotion'` stamped only by `promote()`) and a
+forged one would let an audit keyed on `source='import'` trust a row it
+should not; every other caller-supplied value survives into storage
+unchanged. The HTTP `/api/kb/capture` route reaches this unguarded: it parses
+the request body straight into `KBEntryInput` and calls
+`provider.capture(input)` (`src/commands/kb-server.ts:138-142`), never
+touching the handler that derives `source`. Admission is
 a separate check at the same provider entry point (`assertCheckableBasis`,
 `src/services/knowledge/sqlite-provider.ts:843`, body at `:334-356`): the
 zero-files half exempts `type === 'user-directive'` (`:337-338`, returns
@@ -270,9 +289,16 @@ MUST NOT be coded as a third, independent exemption; it is unaffected only
 because the directive gate runs first and already forced it to UNVERIFIED, and
 an implementation MUST preserve that ordering rather than special-casing
 directives in the clamp condition itself. It MUST close the Author enum
-server-side despite the open schema field, and MUST NOT let a caller set
-`source` directly. Rejecting an entry that cites no source files
-(`E-NO-BASIS`, non-directive only), or one whose cited files do not resolve
+server-side despite the open schema field. It MUST derive `source` from
+validated role/type on the handler path, but MUST NOT assume a
+caller-supplied `source` is trustworthy on any route that reaches the
+provider directly -- that guarantee is handler-level, not provider-level, the
+same shape as `confidence_clamped` (handler-only) and `content_hash`
+(HTTP-caller-settable, 4.5). It MUST reproduce the privileged-value defense
+at the provider boundary itself, forcing a caller-supplied `'import'` or
+`'promotion'` to `'unknown'` outside import mode, rather than relying on a
+request schema to omit a `source` field. Rejecting an entry that cites no
+source files (`E-NO-BASIS`, non-directive only), or one whose cited files do not resolve
 in the worktree (`E-BASIS-MISSING-FILES`, every type including directives),
 is admission's rule, not this clamp's -- but a conforming implementation MUST
 still enforce both halves at this same entry point, since 4.3's directive
