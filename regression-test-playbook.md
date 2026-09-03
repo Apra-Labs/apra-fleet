@@ -929,8 +929,34 @@ scenario.
    marker file `## Setup`/`## Reset` wrote, not a shell variable, since
    this may be a separate script invocation from the one that booted it.
 
+   The marker is validated BEFORE the deadline is computed. Without that
+   guard, a missing/empty/non-numeric marker (Setup partially failed, or
+   this step run as its own invocation before Setup wrote it) makes `cat`
+   yield nothing, `UPTIME_DEADLINE` evaluate to a bare `280` -- decades in
+   the past -- and the loop exit 1 on its very first pass with the
+   sweep-tick message, sending the operator to investigate a timing
+   problem that does not exist. The guard fails with the real reason and
+   names the marker file instead.
+
    ```bash
+   if [ ! -f "$SANDBOX.supervisor.started_at" ]; then
+     echo "Test scenario: supervisor started-at marker file" \
+          "'$SANDBOX.supervisor.started_at' is missing -- ## Setup (or" \
+          "## Reset) never recorded the supervisor boot time, so this" \
+          "step cannot compute its uptime bound. Re-run ## Setup (which" \
+          "boots the supervisor and writes the marker) before this step." >&2
+     exit 1
+   fi
    SUPERVISOR_STARTED_AT="$(cat "$SANDBOX.supervisor.started_at")"
+   case "$SUPERVISOR_STARTED_AT" in
+     '' | *[!0-9]* )
+       echo "Test scenario: supervisor started-at marker file" \
+            "'$SANDBOX.supervisor.started_at' does not hold an integer" \
+            "epoch timestamp (read: '$SUPERVISOR_STARTED_AT') -- re-run" \
+            "## Setup before this step." >&2
+       exit 1
+       ;;
+   esac
    UPTIME_DEADLINE=$(( SUPERVISOR_STARTED_AT + 280 ))
    DEADLINE=$(( $(date +%s) + 360 ))
    while :; do

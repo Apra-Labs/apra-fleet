@@ -406,5 +406,22 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
       expect(text).toMatch(/belt-and-suspenders/i);
       expect(text).toMatch(/dolt-orphan-sweep/i);
     });
+
+    it('regression-test-playbook.md guards the supervisor started-at marker BEFORE computing UPTIME_DEADLINE, so a missing/empty/non-numeric marker fails with the real reason instead of the misleading sweep-tick message', () => {
+      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
+      // An absent marker must be caught by an existence check, and the
+      // diagnostic must name the marker file path.
+      expect(text).toMatch(/if \[ ! -f "\$SANDBOX\.supervisor\.started_at" \]; then/);
+      expect(text).toMatch(/supervisor started-at marker file[\s\S]{0,200}is missing/);
+      // An empty or non-numeric marker must be rejected too (a bare `cat`
+      // of an empty file otherwise makes UPTIME_DEADLINE evaluate to 280).
+      expect(text).toMatch(/case "\$SUPERVISOR_STARTED_AT" in\s*\n\s*'' \| \*\[!0-9\]\* \)/);
+      expect(text).toMatch(/does not hold an integer[\s\S]{0,120}epoch timestamp/);
+      // The guard must sit BEFORE the deadline computation, not after it.
+      const guardIndex = text.indexOf('if [ ! -f "$SANDBOX.supervisor.started_at" ]; then');
+      const deadlineIndex = text.search(/UPTIME_DEADLINE\s*=\s*\$\(\(\s*SUPERVISOR_STARTED_AT\s*\+\s*280\s*\)\)/);
+      expect(guardIndex).toBeGreaterThan(-1);
+      expect(deadlineIndex).toBeGreaterThan(guardIndex);
+    });
   });
 });
