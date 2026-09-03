@@ -536,6 +536,91 @@ async function killServerAndVerify({ command, member, platform, shell = '', pid,
 // Section 5: raw dolt CLI query runner -- the exact live-verified flag set.
 // ---------------------------------------------------------------------------
 
+// apra-fleet-ka1u follow-up (bug #2): MSYS bash (Git for Windows -- the shell
+// every gitbash member's command() dispatches through) SILENTLY TRUNCATES any
+// `bash -c <string>` longer than this many characters, with no error at the
+// truncation point itself -- the failure only surfaces later as a confusing
+// "unexpected EOF while looking for matching '\"'" once the truncated string
+// leaves an unterminated quote. Bisected empirically (byte-precise: 8186 ok,
+// 8187 fails), identically for both the Git-bundled and the standalone MSYS
+// bash on this class of Windows member. A live incident: resolveLwwTable()'s
+// per-column CASE/SET UPDATE for a 53-column table (e.g. 'issues') built a
+// 14,064-character query, well past the limit, and settle silently failed
+// with no usable diagnostic. Kept well under the measured 8186 so escaping
+// overhead (the preamble, and any character that doubles under
+// escapeSqlForShell) can never push a chunk over the real limit.
+const DOLT_SQL_INLINE_LIMIT = 6000;
+
+/** Random-enough per-invocation suffix for a scratch SQL file name -- multiple
+ *  concurrent settle calls on the same member must never collide. Not
+ *  cryptographic; collision just needs to be practically impossible for one
+ *  member's lifetime, not adversarially resistant. */
+function randomFileSuffix() {
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Write `sql` to a scratch file on `member` in chunks that individually stay
+ * well under DOLT_SQL_INLINE_LIMIT (never one giant `-c` string, which is
+ * exactly the bug this exists to avoid), then return the file's path so the
+ * caller can pass it to `dolt sql -f <path>` instead of `-q "<query>"`.
+ * POSIX/gitbash writes under $HOME (both resolve it correctly; verified by
+ * runDoltSql's own pre-existing "$HOME/.apra-fleet/bin/dolt.exe" doltPath
+ * convention); PowerShell writes under $env:TEMP.
+ *
+ * @returns {Promise<string>} the scratch file's path, in the member's own dialect
+ */
+async function writeDoltSqlScratchFile({ command, member, target, sql, log }) {
+    const seCommands = getSeCommands(target);
+    const isPowerShell = seCommands.shell === 'powershell';
+    const suffix = randomFileSuffix();
+    const filePath = isPowerShell
+        ? `$env:TEMP\\dolt-settle-${suffix}.sql`
+        : `$HOME/.apra-fleet-se-dolt-settle-${suffix}.sql`;
+
+    // Create/truncate the file first (a stale file from a killed prior
+    // attempt must never be silently appended to).
+    const createCmd = isPowerShell
+        ? `Set-Content -Path "${filePath}" -Value $null -NoNewline`
+        : `printf '' > "${filePath}"`;
+    const createRes = await command(createCmd, { member_name: member, silent: true, failSoft: true, label: `settle: create scratch SQL file for '${member}'` });
+    if (createRes && createRes.ok === false) {
+        throw new DoltSyncError(`[Dolt Settle] could not create scratch SQL file '${filePath}' for member '${member}': ${createRes.error}`, { member, doltOutput: createRes.error });
+    }
+
+    for (let offset = 0; offset < sql.length; offset += DOLT_SQL_INLINE_LIMIT) {
+        const chunk = sql.slice(offset, offset + DOLT_SQL_INLINE_LIMIT);
+        const escapedChunk = escapeSqlForShell(target, chunk);
+        const appendCmd = isPowerShell
+            ? `Add-Content -Path "${filePath}" -Value "${escapedChunk}" -NoNewline`
+            : `printf '%s' "${escapedChunk}" >> "${filePath}"`;
+        // eslint-disable-next-line no-await-in-loop -- each append MUST land
+        // before the next is issued (same file, sequential writes; a member's
+        // own shell has no ordering guarantee across concurrently-dispatched
+        // commands, only within one command() call's own execution).
+        const appendRes = await command(appendCmd, { member_name: member, silent: true, failSoft: true, label: `settle: append scratch SQL chunk for '${member}'` });
+        if (appendRes && appendRes.ok === false) {
+            throw new DoltSyncError(`[Dolt Settle] could not write scratch SQL file '${filePath}' for member '${member}': ${appendRes.error}`, { member, doltOutput: appendRes.error });
+        }
+    }
+    log(`[Dolt Settle] wrote ${sql.length}-char query to scratch file '${filePath}' for member '${member}' (${Math.ceil(sql.length / DOLT_SQL_INLINE_LIMIT)} chunk(s), staying under bash's ${DOLT_SQL_INLINE_LIMIT}-char -c limit).`);
+    return filePath;
+}
+
+/** Best-effort scratch-file cleanup -- never lets a delete failure surface as
+ *  the query's own result; a leftover scratch file is a minor annoyance, not
+ *  a correctness problem (the next writeDoltSqlScratchFile call for this
+ *  member always creates/truncates its own uniquely-suffixed file anyway). */
+async function cleanupDoltSqlScratchFile({ command, member, target, filePath, log }) {
+    const isPowerShell = getSeCommands(target).shell === 'powershell';
+    const rmCmd = isPowerShell ? `Remove-Item -Path "${filePath}" -ErrorAction SilentlyContinue` : `rm -f "${filePath}"`;
+    try {
+        await command(rmCmd, { member_name: member, silent: true, failSoft: true, label: `settle: remove scratch SQL file for '${member}'` });
+    } catch (err) {
+        log(`[Dolt Settle] WARNING: could not remove scratch SQL file '${filePath}' for member '${member}' (non-fatal): ${err && err.message ? err.message : err}`);
+    }
+}
+
 /**
  * Runs a query against the ephemeral server via the raw `dolt` CLI, using
  * the exact live-verified flag set: `--no-tls` BEFORE `--host`/`--port`
@@ -557,9 +642,28 @@ export async function runDoltSql({ command, member, platform, doltPath, host, po
     // resolve/commit statements run in later sessions.
     const target = { os: platform, shell };
     const preamble = 'USE beads; SET @@dolt_allow_commit_conflicts = 1;';
-    const fullQuery = escapeSqlForShell(target, `${preamble} ${query}`);
-    const cmd = invokeBinary(target, doltPath, `--no-tls --host=${host} --port=${port} sql -r json -q "${fullQuery}"`);
+    const rawFullQuery = `${preamble} ${query}`;
+    const fullQuery = escapeSqlForShell(target, rawFullQuery);
+
+    // apra-fleet-ka1u bug #2: never risk bash's silent >8186-char -c
+    // truncation. Below the limit, keep the exact live-verified -q "<query>"
+    // invocation byte-identical (no behavior change for the overwhelming
+    // majority of settle's queries, which are short). At/above it, write the
+    // RAW (pre-escaped) query to a chunked scratch file and run -f instead --
+    // dolt reads that file's contents literally, so it needs no shell
+    // escaping at all, sidestepping both the length limit and its escaping.
+    let scratchFilePath = null;
+    let cmd;
+    if (fullQuery.length >= DOLT_SQL_INLINE_LIMIT) {
+        scratchFilePath = await writeDoltSqlScratchFile({ command, member, target, sql: rawFullQuery, log });
+        cmd = invokeBinary(target, doltPath, `--no-tls --host=${host} --port=${port} sql -r json -f "${scratchFilePath}"`);
+    } else {
+        cmd = invokeBinary(target, doltPath, `--no-tls --host=${host} --port=${port} sql -r json -q "${fullQuery}"`);
+    }
     const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label: `settle: dolt sql for '${member}'` });
+    if (scratchFilePath) {
+        await cleanupDoltSqlScratchFile({ command, member, target, filePath: scratchFilePath, log });
+    }
     if (res && res.ok === false) {
         throw new DoltSyncError(`[Dolt Settle] dolt sql query failed for member '${member}': ${res.error}\nquery: ${query}`, { member, doltOutput: res.error });
     }
