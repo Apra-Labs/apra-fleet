@@ -197,7 +197,71 @@ else").
 
 ### 4.1 Scope resolution and repo aliasing
 
-RESERVED for T2. (INV-05, INV-06)
+**THE RULE.** Wherever a tool exposes both `repo` and `repo_path` as scope
+inputs for the same call, a provider MUST resolve the effective repo path as
+`input.repo ?? input.repo_path`, with `repo` taking precedence. A generated
+binding MUST carry BOTH field names into its request shape for `kb_import`
+and `kb_stats`; it MUST NOT keep only one, because zod strips an unrecognized
+key silently rather than rejecting it -- a binding that drops one name does
+not fail the call, it silently degrades to reading the wrong repo (or none),
+and reports an EMPTY or ZEROED knowledge base instead of an error. `kb_setup`'s
+`repo_path` MUST NOT be read as a scope-resolution input by any consumer: it
+carries no project-KB scope semantics at all. (INV-05, INV-06)
+
+**THE PROOF.** `kb_import` declares both fields (`src/tools/kb-import.ts:39-40`
+`repo`, `:48-49` `repo_path`, described as an alias "ignored when repo is
+also supplied") and resolves `input.repo ?? input.repo_path` at
+`src/tools/kb-import.ts:137`. `kb_stats` does the same: both fields at
+`src/tools/kb-stats.ts:18-19` and `:27-28`, resolved at
+`src/tools/kb-stats.ts:50`. The shared `kbScopeFields` spread
+(`src/services/knowledge/kb-scope-input.ts:8-11`) supplies only
+`repo_remote_url` -- `repo_path` itself is declared individually per tool
+(e.g. `src/tools/kb-list.ts:12`, `kb-context.ts:8`, `kb-invalidate.ts:10`),
+not by the shared spread; `INVENTORY.md`'s line describing `kbScopeFields` as
+where both names "come from" (section 2.1) is imprecise on this point, though
+its `kb_setup`-exclusion and alias-pair claims both verify against source.
+`src/services/knowledge/kb-providers.ts` caches provider instances by
+`providerKey(slug, repoPath)` (`:59-61`), NUL-joined and used as the map key
+at `:88` -- deliberately NOT slug alone, per the comment at `:49-56`, so two
+callers resolving to the same project slug but different repo paths get
+distinct anchors rather than sharing the first caller's. `kb-setup.ts:8-17`
+does not spread `kbScopeFields`; its `repo_path` (`:9-10`) is used only to
+build `gitDir` and call `installKbPostCommitHook` (`:28-31`, the hook 4.5
+already covers), and the tool writes ONE config to a module-level
+`KB_CONFIG_PATH` (`:22`, `:55`) with no slug or repo dimension at all.
+Validation differs per tool on this same field: `kb_import` and `kb_export`
+validate `repo`/`repo_path` against the real filesystem and refuse before a
+provider exists (`E-REPO-PATH-INVALID`, `taxonomy.json` groups.validation,
+raised at `src/tools/kb-import.ts:75`); `kb_stats` passes its resolved value
+straight into `getKbProviders` verbatim (`src/tools/kb-stats.ts:65-68`) and
+only runs a filesystem check separately, and non-fatally, for the
+bible-drift read (`:86`); `kb_session_prime` is the other verbatim-passthrough
+tool named in `taxonomy.json`'s `_meta.anchor_policy_note`. Both are read-only,
+so an unreachable anchor degrades to "no knowledge here yet" rather than a
+refusal (`taxonomy.json` non_error_outcomes `N-ANCHOR-VERBATIM-MISSING`,
+`_meta.anchor_policy_note`).
+
+**THE OBLIGATION.** A generated binding for `kb_import` or `kb_stats` MUST
+expose both `repo` and `repo_path` as independent request fields, with `repo`
+taking precedence when both are supplied -- omitting either name is not a
+safe simplification. A binding or second implementation MUST NOT infer
+project-KB scope-resolution behavior for `kb_setup` merely because it has a
+`repo_path` field; that field's only effect is locating a `.git` directory
+for hook installation. Any provider-instance cache MUST key on the (slug,
+repoPath) pair, not slug alone, or two callers sharing a slug but not a repo
+path will silently share one anchor and one basis-hash root. An
+implementation MUST preserve which tools validate-and-refuse versus
+pass-through-and-tolerate on this field -- turning `kb_stats`/
+`kb_session_prime` into validators would push callers toward omitting
+`repo_path` altogether, which is the one thing the passthrough design exists
+to avoid.
+
+**THE TEST HOOK.** No assertion in the conformance list matches this
+directly. The round-trip harness exercises `kb_import`/`kb_stats`/`kb_setup`
+happy-path fixtures (`tests/roundtrip-harness.mjs`) at the request-schema
+level, but has no dedicated alias-precedence assertion; the `repo_path`-
+vs-filesystem gap is `tests/DEGRADATION.md` D-1 and the (slug, repoPath)
+cache-keying invariant is `tests/DEGRADATION.md` D-2.
 
 ### 4.2 Capture provenance and confidence clamp
 
@@ -465,7 +529,73 @@ proceeds.
 
 ### 4.6 Query modes
 
-RESERVED for T2. (INV-08, INV-09)
+**THE RULE.** `kb_query` MUST return exactly one of two mutually exclusive
+response shapes, selected by the request: when `flagged_only: true`, the
+response MUST be `{flagged_entries, total, note}`; otherwise it MUST be
+`{l1_results, l2_expanded, related_claims?}`. At least one of `query`, `tag`,
+or `flagged_only` MUST be supplied; a provider MUST refuse a request carrying
+none of the three. A consumer MUST treat this section's response shapes, and
+every other `kb_*` response shape, as a DIFFERENT KIND of claim than the
+request shapes documented elsewhere in this spec: they are OBSERVED, not
+derived from an enforced schema, because no tool in this surface declares
+one. (INV-08, INV-09)
+
+**THE PROOF.** The selector guard is `src/tools/kb-query.ts:33-35`: `if
+(!input.query && !input.flagged_only && !input.tag) throw new Error(...)`.
+This is a documented, coded throw, not an undocumented one: `taxonomy.json`
+carries it as `E-QUERY-NO-SELECTOR` (groups.validation, source cited at
+`src/tools/kb-query.ts:34`, `surfaced: "thrown"`, raised pre-provider by
+`kb_query`/P-3). The `flagged_only` branch (`src/tools/kb-query.ts:39-66`)
+merges project and global flagged results and returns `{flagged_entries,
+total, note}` (`:59-65`); the default branch (`:68-126`) merges L1/L2
+project and global results and returns `{l1_results, l2_expanded,
+...(expand_related ? {related_claims} : {})}` (`:122-126`) -- `related_claims`
+is itself conditional on `expand_related`, so even the non-flagged shape is
+not fixed-key. `schemas/kb_query.response.json` models both branches as an
+`anyOf` of two object schemas under `parsed` (`:58-104`), tagged
+`x-invariant: ["INV-09", "INV-08"]` (`:4-7`) -- the schema faithfully carries
+both observed shapes, but nothing in `src/tools/kb-query.ts` or
+`src/services/tool-registry.ts` (`wrapTool`, which only ever wraps a bare
+returned `string` into the text envelope) checks the stringified body against
+that schema at runtime. `INVENTORY.md` section 3 states the meta-fact
+directly (`:102`, "NO tool in this surface declares a response zod schema").
+The discriminator loss is a separate, related finding: `tests/GENERATOR-
+DECISION.md`'s D1 row records that the generator emits `anyOf`, not `oneOf`,
+for a discriminated response union, because "an OpenAPI 3.1 `discriminator`
+requires `oneOf`, so the mapping from discriminant value to branch is not
+machine-readable in the emitted schema" (tagged `x-invariant: INV-09`) --
+`kb_query.response.json`'s own two-branch `parsed` union is exactly this
+shape: `anyOf`, no `discriminator` keyword, nothing to dispatch on
+mechanically besides re-deriving `flagged_only` from the request that
+produced the response.
+
+**THE OBLIGATION.** A second implementation MUST preserve the two-shape
+split keyed on `flagged_only` and MUST NOT merge them into one
+always-present superset response; each branch is closed
+(`additionalProperties: false` per branch, `schemas/kb_query.response.json:80`,
+`:101`). It MUST refuse when none of `query`/`tag`/`flagged_only` is present;
+the taxonomy already names this refusal (`E-QUERY-NO-SELECTOR`), so a
+conforming implementation has no discretion to silently default to "list
+everything" instead. A consumer or generated binding MUST NOT treat any
+response schema in this section, or elsewhere in this contract, as
+authoritative for what the server will keep returning: because no handler is
+checked against a declared response schema, a field can be added, renamed,
+or dropped from a `parsed` body with no generator or test failure at the
+layer that catches request drift. This is a strictly weaker guarantee than
+the request side, where drift against the zod the code actually runs is what
+the generator is built to catch -- and a consumer MUST dispatch on response
+shape using ITS OWN request (did it send `flagged_only`?), never by
+attempting discriminator-style dispatch against the emitted schema, since the
+emitted `anyOf` carries no machine-readable discriminant mapping.
+
+**THE TEST HOOK.** The selector guard and both response shapes are checked
+by the round-trip harness at the request/happy-path level
+(`tests/roundtrip-harness.mjs`'s `kb_query` `happy` and
+`refusal-no-selector` cases). INV-09's epistemic-status claim itself -- that
+the response contract is observed rather than enforced -- is not
+mechanically checkable; see `tests/DEGRADATION.md` D-4, which records the
+same root fact (`parsed` is a consumer-side decode of `wrapTool`'s text
+envelope, never a schema-checked wire field) for the whole surface.
 
 ## 5. Envelope extensions (T3, RESERVED)
 
