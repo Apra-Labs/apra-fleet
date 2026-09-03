@@ -13,11 +13,13 @@ state of the implementation -- some pieces described in the older
 `design-vcs-auth-onboarding.md` and `design-git-auth.md` documents predate
 this work and are superseded by this file where they conflict. As of this
 writing, end-to-end PR publishing through the fleet-sprint runner is wired
-but not yet fully proven stable: the runner's publish path resolves the
-member's own registered provider and consumes the provider-owned PR response
-mapping, but this is recent, still-settling work -- treat the publish path as
-in-progress rather than a finished, load-bearing guarantee until the sprint
-that stabilizes it is fully closed out.
+and consumes the provider-owned PR response mapping, with mock-sprint
+coverage exercising that publish path against canned Azure DevOps
+responses, plus an opt-in, env-gated real end-to-end harness for
+provision/verify/publish against a live Azure DevOps org. None of this has
+been verified against an installed build -- treat it as landed-but-not-yet-
+proven-stable rather than a finished, load-bearing guarantee until it has
+been exercised end-to-end post-install.
 
 ## Why a provider-owned abstraction, not ad hoc if/else
 
