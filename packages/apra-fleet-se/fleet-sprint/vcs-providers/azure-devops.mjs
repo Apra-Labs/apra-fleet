@@ -390,7 +390,18 @@ function buildProvisionArgs(ctx) {
 //   title/body  PR title and description.
 //   pull_request_id  (comment only) the PR to annotate.
 //   token     the PAT. REQUIRED -- assertToken() throws the shared typed ERROR.
-//   os        resolveMemberOs()'s value, threaded into shQuote()/curlBinary().
+//   os        resolveMemberOs()'s value ('windows'/'linux'/'darwin'). Selects
+//             the curl BINARY token via curlBinary() (curl.exe on Windows,
+//             which stays OS-keyed because curl.exe is equally resolvable from
+//             PowerShell and from Git-for-Windows bash), and is the fallback
+//             input to the quoting dialect when `shell` is unresolved.
+//   shell     the member's registered COMMAND SHELL as resolved by runner.js's
+//             resolveMemberTarget() -- 'gitbash' | 'pwsh7' | 'powershell5' |
+//             '' -- and the primary input to shQuote()'s quoting DIALECT:
+//             gitbash -> POSIX even on Windows, pwsh7/powershell5 -> PowerShell
+//             doubling, unresolved + windows -> PowerShell doubling (the
+//             historical fallback, byte-identical). Distinct from `os`: a
+//             Windows member running gitbash needs curl.exe with POSIX quoting.
 //
 // AUTH: Azure DevOps' REST API takes a PAT as HTTP Basic with an EMPTY
 // username (`-u :PAT`), NOT a bearer token -- the exact form skills/fleet/
@@ -473,7 +484,7 @@ function toFullRef(branch) {
  * -- see https://learn.microsoft.com/rest/api/azure/devops/git/pull-requests/create
  */
 function buildAzureDevOpsCreatePrCommand(params) {
-    const { base, head, title, body, token, os } = params || {};
+    const { base, head, title, body, token, os, shell } = params || {};
     const coords = assertRepoCoords(params, 'create-pull-request');
     const safeToken = assertToken(token);
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
@@ -491,11 +502,11 @@ function buildAzureDevOpsCreatePrCommand(params) {
 
     const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X POST`,
-        `-u ${shQuote(`:${authToken}`, os)}`,
-        `-H ${shQuote('Content-Type: application/json', os)}`,
-        `-H ${shQuote('Accept: application/json', os)}`,
-        `-d ${shQuote(payloadJson, os)}`,
-        `-w ${shQuote('\n%{http_code}', os)}`,
+        `-u ${shQuote(`:${authToken}`, os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-d ${shQuote(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
 
@@ -529,7 +540,7 @@ function buildAzureDevOpsCreatePrCommand(params) {
  * See https://learn.microsoft.com/rest/api/azure/devops/git/pull-request-threads/create
  */
 function buildAzureDevOpsCommentCommand(params) {
-    const { pull_request_id: pullRequestId, body, token, os } = params || {};
+    const { pull_request_id: pullRequestId, body, token, os, shell } = params || {};
     const coords = assertRepoCoords(params, 'comment');
     const safeToken = assertToken(token);
     if (!pullRequestId) throw new Error('ERROR: VCSModule: "pull_request_id" is required to build an azure-devops comment command.');
@@ -543,11 +554,11 @@ function buildAzureDevOpsCommentCommand(params) {
 
     const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X POST`,
-        `-u ${shQuote(`:${authToken}`, os)}`,
-        `-H ${shQuote('Content-Type: application/json', os)}`,
-        `-H ${shQuote('Accept: application/json', os)}`,
-        `-d ${shQuote(payloadJson, os)}`,
-        `-w ${shQuote('\n%{http_code}', os)}`,
+        `-u ${shQuote(`:${authToken}`, os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-d ${shQuote(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
 
