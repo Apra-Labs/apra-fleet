@@ -6,12 +6,15 @@ import { isNetworkShapedCommand } from './helpers/mock-sprint-harness.mjs';
 // apra-fleet-5co8.32 -- guards the fix that relaxed
 // mock-sprint-harness.mjs's network-shaped-command guard from an anchored
 // "curl/wget is the literal first token of the whole string" regex to
-// isNetworkShapedCommand(), which detects a curl/wget invocation at the
-// start of ANY top-level sub-command (composed via &&/||/;/|, an env `VAR=1`
-// prefix, or one level inside a `bash -c "..."` / `sh -c "..."` script) --
-// closing the exact slip-through class apra-fleet-5co8.16 exists to guard
-// against for any FUTURE call site that composes its command instead of
-// emitting a bare leading curl/wget.
+// isNetworkShapedCommand(), which now detects an unquoted curl/wget token at
+// ANY position in the command (not just the start of a top-level
+// sub-command), plus a curl/wget wrapped one level inside a
+// `bash`/`sh -c|-lc|... "..."` script argument -- closing the exact
+// slip-through class apra-fleet-5co8.16 exists to guard against for any
+// composed command shape (cd/&&, env, timeout, nohup, time, bash -lc, an
+// unbalanced quote elsewhere in the string, ...), not just the handful of
+// wrappers a position/wrapper-allowlist approach would have to keep
+// enumerating one at a time.
 // =============================================================================
 
 test('isNetworkShapedCommand', async (t) => {
@@ -53,6 +56,36 @@ test('isNetworkShapedCommand', async (t) => {
     await t.test('matches curl chained after ; or ||', () => {
         assert.equal(isNetworkShapedCommand('echo hi ; curl https://example.com'), true);
         assert.equal(isNetworkShapedCommand('false || curl https://example.com'), true);
+    });
+
+    // apra-fleet-5co8.32 round 2: the first fix (isNetworkShapedTokens gated
+    // on an "at command start" cursor plus a wrapper allowlist) still missed
+    // any wrapper it did not special-case. These pin the three composed
+    // shapes the bead's own description enumerates, none of which are
+    // env-assignment or bash/sh -c.
+    await t.test('matches curl composed after an env prefix with no assignment', () => {
+        assert.equal(isNetworkShapedCommand('env curl https://example.com'), true);
+    });
+
+    await t.test('matches curl composed after a timeout retry wrapper', () => {
+        assert.equal(isNetworkShapedCommand('timeout 30 curl https://example.com'), true);
+    });
+
+    await t.test('matches curl composed after nohup/time wrappers', () => {
+        assert.equal(isNetworkShapedCommand('nohup curl https://example.com &'), true);
+        assert.equal(isNetworkShapedCommand('time curl https://example.com'), true);
+    });
+
+    await t.test('matches curl wrapped inside a bash -lc "..." login-shell script', () => {
+        assert.equal(isNetworkShapedCommand('bash -lc "curl https://example.com/api"'), true);
+    });
+
+    await t.test('matches curl after an unbalanced quote elsewhere in the command', () => {
+        assert.equal(
+            isNetworkShapedCommand("echo it's fine && curl https://example.com"),
+            true,
+            'an unbalanced quote must not swallow the rest of the command and hide a later curl',
+        );
     });
 
     await t.test('does not false-positive on a literal "curl" inside another command\'s payload/message', () => {

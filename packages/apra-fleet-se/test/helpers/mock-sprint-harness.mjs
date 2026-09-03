@@ -120,19 +120,26 @@ export function isSpawnFailure(err) {
 // only ever matched curl/wget as the literal FIRST token of the whole command
 // string, so any composed shape -- `cd /tmp && curl ...`, a `curl` wrapped
 // inside `bash -c "..."`, or an `env VAR=1 curl ...` prefix -- slipped
-// straight through to the real runCmd() fallback below undetected. Replaced
-// with isNetworkShapedCommand(), a small shell-aware scanner that walks the
-// command looking for a curl/wget token at the START of any top-level
-// sub-command (after &&, ||, ;, |, following env `VAR=val` prefixes, and
-// recursing one level into a `bash -c "..."` / `sh -c "..."` script
-// argument), so it catches all three composed shapes above. It deliberately
-// does NOT treat "curl" as network-shaped merely because the substring
-// appears anywhere in the command (e.g. quoted text passed to an unrelated
-// command's -d/-m/-c argument that just happens to mention "curl") -- only a
-// token in actual command position counts, so a literal 'curl' mentioned
-// inside another command's payload/message text does not false-positive.
+// straight through to the real runCmd() fallback below undetected. A first
+// replacement (isNetworkShapedTokens gated on an "at command start" cursor
+// plus a wrapper allowlist for env-assignment/bash/sh) still missed further
+// wrapper shapes it did not special-case (`env curl ...` with no assignment,
+// `timeout 30 curl ...`, `nohup curl ... &`, `bash -lc "..."`) because it
+// enumerated by WRAPPER, which just fails again on the next wrapper. This is
+// inverted: isNetworkShapedTokens now matches an UNQUOTED curl/wget token at
+// ANY position (dropping the position/wrapper allowlist entirely), plus a
+// generalized recursion into a `bash`/`sh` invocation's script-flag argument
+// (any flag token containing `c`, e.g. `-c`, `-lc`, so `bash -lc "curl ..."`
+// is caught, not just the exact `-c` token). For a test-harness guard whose
+// job is to keep sprint tests off the real network, a false positive costs a
+// clear one-line error a developer fixes in a minute; a false negative costs
+// a real network call, so the risk is deliberately pointed toward matching
+// too much rather than too little. It still does not treat "curl" as
+// network-shaped merely because the substring appears inside a QUOTED token
+// (e.g. a `-d`/`-m` payload/message that just happens to mention "curl") --
+// only an unquoted token counts, so a literal 'curl' mentioned inside
+// another command's quoted payload/message text does not false-positive.
 const CURL_WGET_TOKEN_RE = /^(curl|wget)(\.exe)?$/i;
-const ENV_ASSIGNMENT_TOKEN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 // Minimal shell-like tokenizer: quoted substrings ('...'/"...") become a
 // single token with quotes stripped (quoted: true); &&, ||, ;, |, (, ) become
@@ -149,9 +156,19 @@ export function tokenizeShellLikeCommand(command) {
         if (/\s/.test(c)) { i += 1; continue; }
         if (c === '"' || c === "'") {
             const close = str.indexOf(c, i + 1);
-            const end = close === -1 ? n : close;
-            tokens.push({ text: str.slice(i + 1, end), quoted: true, op: false });
-            i = close === -1 ? n : close + 1;
+            // apra-fleet-5co8.32: an UNBALANCED quote (no matching close, e.g.
+            // the apostrophe in `echo it's fine && curl ...`) used to swallow
+            // the rest of the command string into one quoted token, hiding
+            // any curl/wget that followed. Treat an unclosed quote mark as a
+            // single literal, unquoted character instead of a quote-open, so
+            // scanning continues normally and a later curl/wget is still seen.
+            if (close === -1) {
+                tokens.push({ text: c, quoted: false, op: false });
+                i += 1;
+                continue;
+            }
+            tokens.push({ text: str.slice(i + 1, close), quoted: true, op: false });
+            i = close + 1;
             continue;
         }
         const rest = str.slice(i);
@@ -172,22 +189,22 @@ export function tokenizeShellLikeCommand(command) {
 }
 
 function isNetworkShapedTokens(tokens) {
-    let atCommandStart = true;
     for (let idx = 0; idx < tokens.length; idx += 1) {
         const tok = tokens[idx];
-        if (tok.op) { atCommandStart = true; continue; }
-        if (!atCommandStart) continue;
-        if (!tok.quoted && ENV_ASSIGNMENT_TOKEN_RE.test(tok.text)) continue; // still command-start
-        if (!tok.quoted && CURL_WGET_TOKEN_RE.test(tok.text)) return true;
-        if (!tok.quoted && /^(bash|sh)(\.exe)?$/i.test(tok.text)) {
+        if (tok.op || tok.quoted) continue;
+        if (CURL_WGET_TOKEN_RE.test(tok.text)) return true;
+        if (/^(bash|sh)(\.exe)?$/i.test(tok.text)) {
             for (let k = idx + 1; k < tokens.length && !tokens[k].op; k += 1) {
-                if (!tokens[k].quoted && tokens[k].text === '-c' && tokens[k + 1] && !tokens[k + 1].op) {
+                const flag = tokens[k];
+                // Accept any script-flag shape containing `c` (-c, -lc, -cx,
+                // ...), not just the exact `-c` token, so `bash -lc "..."`
+                // is recursed into the same as `bash -c "..."`.
+                if (!flag.quoted && /^-\w*c\w*$/i.test(flag.text) && tokens[k + 1] && !tokens[k + 1].op) {
                     if (isNetworkShapedTokens(tokenizeShellLikeCommand(tokens[k + 1].text))) return true;
                     break;
                 }
             }
         }
-        atCommandStart = false;
     }
     return false;
 }
