@@ -324,6 +324,13 @@ const KNOWN_ARG_KEYS = new Set([
     // and per-bead work-claiming. All three are no-ops without it -- a lone
     // sprint has no sibling to coordinate with.
     'serviceUrl',
+    // apra-fleet-5co8.37: this launch's incarnation-unique run identity -- the
+    // SAME string the supervisor's reservation ledger keys this sprint by
+    // (bin/cli.mjs forwards the supervisor's --run-id, falling back to the
+    // branch name for a direct/standalone launch, which is also what cli.mjs
+    // reserves members under). Threaded to the deployer so its active-sprints
+    // gate can tell this sprint's OWN reservation from a foreign one.
+    'run_id',
     // The assignee identity this sprint claims beads as and filters ready work
     // by (`bd update --claim` / `bd ready --assignee`). Nothing sets this
     // today; the claiming layer stays dormant and bead selection uses the
@@ -3624,6 +3631,12 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid budget "${args.budget}": must be a non-negative finite number (USD ceiling).`);
     }
 
+    // --- run_id (optional) -------------------------------------------------
+    // Free-form supervisor-generated identity; only its shape is checked here.
+    if (args.run_id !== undefined && (typeof args.run_id !== 'string' || args.run_id.length === 0)) {
+        throw new Error('[Arg Contract] Invalid run_id: must be a non-empty string.');
+    }
+
     // --- serviceUrl (optional) --------------------------------------------
     // The always-on supervisor's base HTTP URL. Validated as an http(s) URL so
     // a malformed value fails fast rather than silently disabling the
@@ -3716,6 +3729,7 @@ export function validateArgs(args) {
         roleMap: normalizedRoleMap,
         budget: args.budget,
         serviceUrl: args.serviceUrl,
+        runId: args.run_id,
         assignee: args.assignee,
         dispatchTimeoutS,
         azdevopsPatSecretName: args.azdevops_pat_secret_name,
@@ -9803,6 +9817,22 @@ async function runSprintCycle(context) {
             // turn-exhaustion resume below: a source-build fallback deploy runs
             // npm ci plus two builds, comfortably beyond a small default budget.
             const DEPLOYER_MAX_TURNS = 500;
+            // apra-fleet-5co8.37: hand the deployer THIS sprint's own reservation
+            // identity so deploy.md's active-sprints gate can tell this sprint's
+            // OWN ledger entry (a sprint is always reserved while it runs, so the
+            // entry is ALWAYS there) from a genuinely foreign one. Without it the
+            // gate stopped on every deploy and no sprint could deploy its own
+            // work. `sprintSelfId` is the SAME string the supervisor keys the
+            // reservation by: the forwarded --run-id, or the branch name for a
+            // direct/standalone launch (bin/cli.mjs reserves under the branch
+            // name in that case).
+            const sprintSelfId = validated.runId || validated.branch;
+            const deployerPrompt =
+                'Deploy to test env using deploy.md.\n' +
+                `Your dispatching sprint's own supervisor reservation id (sprintId): ${sprintSelfId}\n` +
+                "Use it for deploy.md's active-sprints gate: a reservation whose sprintId is EXACTLY " +
+                'this string is your own sprint, not a foreign one, so the deploy proceeds. Stop only ' +
+                'for a reservation with a different sprintId.';
             const deployerDispatchOpts = {
                 member_name: getMemberForRole('deployer'),
                 agentType: 'deployer',
@@ -9820,7 +9850,7 @@ async function runSprintCycle(context) {
                 // diff, so it still gets the pre-dispatch G-pull.
                 try {
                     deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
-                        'Deploy to test env using deploy.md.',
+                        deployerPrompt,
                         { ...deployerDispatchOpts, member_name: getMemberForRole('deployer') }
                     ));
                 } catch (err) {

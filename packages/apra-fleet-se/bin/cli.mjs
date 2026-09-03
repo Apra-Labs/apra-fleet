@@ -303,7 +303,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, serviceUrl }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, serviceUrl, runId }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -321,6 +321,12 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // HTTP-backed dolt-mutex/id-allocator clients (fleet-sprint/runner.js
     // ~5013-5052). Omitted when not supplied -- unchanged fallback behavior.
     if (serviceUrl !== undefined) args.serviceUrl = serviceUrl;
+    // apra-fleet-5co8.37: this launch's reservation identity (the supervisor's
+    // --run-id, or the branch name for a direct launch -- the SAME key members
+    // are reserved under below). runner.js threads it into the deployer's
+    // dispatch so deploy.md's active-sprints gate can recognize this sprint's
+    // OWN reservation instead of stopping on it.
+    if (runId !== undefined) args.run_id = runId;
     return args;
 }
 
@@ -891,6 +897,7 @@ async function main() {
                 budget,
                 dispatchTimeoutS,
                 serviceUrl,
+                runId: effectiveRunId,
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc
