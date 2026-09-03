@@ -115,7 +115,86 @@ export function isSpawnFailure(err) {
 // loud, clear "this is unmocked" failure. Mirrors vcs-module.mjs's
 // `logSafeCommand` convention (see its module doc comment): the raw command
 // is never surfaced, only a redacted copy.
-const NETWORK_SHAPED_COMMAND_RE = /^(curl|wget)(?:\.exe)?\s/i;
+//
+// apra-fleet-5co8.32: the original anchored regex `/^(curl|wget)(?:\.exe)?\s/i`
+// only ever matched curl/wget as the literal FIRST token of the whole command
+// string, so any composed shape -- `cd /tmp && curl ...`, a `curl` wrapped
+// inside `bash -c "..."`, or an `env VAR=1 curl ...` prefix -- slipped
+// straight through to the real runCmd() fallback below undetected. Replaced
+// with isNetworkShapedCommand(), a small shell-aware scanner that walks the
+// command looking for a curl/wget token at the START of any top-level
+// sub-command (after &&, ||, ;, |, following env `VAR=val` prefixes, and
+// recursing one level into a `bash -c "..."` / `sh -c "..."` script
+// argument), so it catches all three composed shapes above. It deliberately
+// does NOT treat "curl" as network-shaped merely because the substring
+// appears anywhere in the command (e.g. quoted text passed to an unrelated
+// command's -d/-m/-c argument that just happens to mention "curl") -- only a
+// token in actual command position counts, so a literal 'curl' mentioned
+// inside another command's payload/message text does not false-positive.
+const CURL_WGET_TOKEN_RE = /^(curl|wget)(\.exe)?$/i;
+const ENV_ASSIGNMENT_TOKEN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// Minimal shell-like tokenizer: quoted substrings ('...'/"...") become a
+// single token with quotes stripped (quoted: true); &&, ||, ;, |, (, ) become
+// operator tokens; everything else splits on whitespace. Good enough for
+// scanning composed shell command STRINGS the way this harness receives them
+// (opts.command) -- not a full shell grammar/parser.
+export function tokenizeShellLikeCommand(command) {
+    const str = String(command);
+    const tokens = [];
+    let i = 0;
+    const n = str.length;
+    while (i < n) {
+        const c = str[i];
+        if (/\s/.test(c)) { i += 1; continue; }
+        if (c === '"' || c === "'") {
+            const close = str.indexOf(c, i + 1);
+            const end = close === -1 ? n : close;
+            tokens.push({ text: str.slice(i + 1, end), quoted: true, op: false });
+            i = close === -1 ? n : close + 1;
+            continue;
+        }
+        const rest = str.slice(i);
+        const opMatch = rest.match(/^(&&|\|\||;|\||\(|\))/);
+        if (opMatch) {
+            tokens.push({ text: opMatch[0], quoted: false, op: true });
+            i += opMatch[0].length;
+            continue;
+        }
+        let j = i;
+        while (j < n && !/\s/.test(str[j]) && str[j] !== '"' && str[j] !== "'" && !str.slice(j).match(/^(&&|\|\||;|\|)/)) {
+            j += 1;
+        }
+        tokens.push({ text: str.slice(i, j), quoted: false, op: false });
+        i = j;
+    }
+    return tokens;
+}
+
+function isNetworkShapedTokens(tokens) {
+    let atCommandStart = true;
+    for (let idx = 0; idx < tokens.length; idx += 1) {
+        const tok = tokens[idx];
+        if (tok.op) { atCommandStart = true; continue; }
+        if (!atCommandStart) continue;
+        if (!tok.quoted && ENV_ASSIGNMENT_TOKEN_RE.test(tok.text)) continue; // still command-start
+        if (!tok.quoted && CURL_WGET_TOKEN_RE.test(tok.text)) return true;
+        if (!tok.quoted && /^(bash|sh)(\.exe)?$/i.test(tok.text)) {
+            for (let k = idx + 1; k < tokens.length && !tokens[k].op; k += 1) {
+                if (!tokens[k].quoted && tokens[k].text === '-c' && tokens[k + 1] && !tokens[k + 1].op) {
+                    if (isNetworkShapedTokens(tokenizeShellLikeCommand(tokens[k + 1].text))) return true;
+                    break;
+                }
+            }
+        }
+        atCommandStart = false;
+    }
+    return false;
+}
+
+export function isNetworkShapedCommand(command) {
+    return isNetworkShapedTokens(tokenizeShellLikeCommand(command));
+}
 
 // Same redaction marker vcs-providers/*.mjs uses for logSafeCommand, so a
 // redacted command here reads the same way a production log line would.
@@ -787,7 +866,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // was added without a mock, or an existing mock's match regex
             // stopped matching -- both are harness bugs to fix, not commands
             // to run for real.
-            if (NETWORK_SHAPED_COMMAND_RE.test(opts.command)) {
+            if (isNetworkShapedCommand(opts.command)) {
                 throw new Error(`mock-sprint-harness: unmocked network command reached the runCmd() fallback -- refusing to execute it against the real network. command=${redactNetworkCommandForLog(opts.command)}`);
             }
 
