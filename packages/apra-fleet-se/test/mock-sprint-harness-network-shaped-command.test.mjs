@@ -104,4 +104,24 @@ test('isNetworkShapedCommand', async (t) => {
         assert.equal(isNetworkShapedCommand('git status'), false);
         assert.equal(isNetworkShapedCommand('bd show apra-fleet-5co8.32'), false);
     });
+
+    // apra-fleet-5co8.40 -- CURL_WGET_TOKEN_RE anchored the WHOLE token, so a
+    // path-prefixed curl/wget invocation slipped past this guard to the real
+    // runCmd() fallback and out to the host network. The fix matches on the
+    // command BASENAME (text after the last `/` or `\`) instead.
+    await t.test('matches a path-prefixed curl/wget invocation (basename match)', () => {
+        assert.equal(isNetworkShapedCommand('/usr/bin/curl https://example.com/api'), true);
+        assert.equal(isNetworkShapedCommand('./curl https://example.com/api'), true);
+        assert.equal(isNetworkShapedCommand('C:\\Windows\\System32\\curl.exe https://example.com/api'), true);
+        assert.equal(isNetworkShapedCommand('/usr/bin/wget https://example.com/file'), true);
+        assert.equal(isNetworkShapedCommand('./wget https://example.com/file'), true);
+        assert.equal(isNetworkShapedCommand('C:\\Windows\\System32\\wget.exe https://example.com/file'), true);
+    });
+
+    await t.test('does not false-positive on a basename that merely contains curl/wget as a substring', () => {
+        assert.equal(isNetworkShapedCommand('curlybrace https://example.com'), false);
+        assert.equal(isNetworkShapedCommand('wgetter https://example.com'), false);
+        assert.equal(isNetworkShapedCommand('/usr/bin/curlybrace https://example.com'), false);
+        assert.equal(isNetworkShapedCommand('./wgetter https://example.com'), false);
+    });
 });

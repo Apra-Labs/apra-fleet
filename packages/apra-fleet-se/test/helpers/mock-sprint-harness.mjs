@@ -141,6 +141,17 @@ export function isSpawnFailure(err) {
 // another command's quoted payload/message text does not false-positive.
 const CURL_WGET_TOKEN_RE = /^(curl|wget)(\.exe)?$/i;
 
+// apra-fleet-5co8.40: CURL_WGET_TOKEN_RE above anchors the WHOLE token, so a
+// path-prefixed invocation (`/usr/bin/curl`, `./curl`, a Windows
+// `C:\...\curl.exe` path) never matches and walks past this guard to the
+// real runCmd() fallback. Match on the command BASENAME instead: strip
+// everything up to and including the last `/` or `\` before testing.
+function isCurlOrWgetToken(text) {
+    const lastSep = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
+    const basename = lastSep === -1 ? text : text.slice(lastSep + 1);
+    return CURL_WGET_TOKEN_RE.test(basename);
+}
+
 // Minimal shell-like tokenizer: quoted substrings ('...'/"...") become a
 // single token with quotes stripped (quoted: true); &&, ||, ;, |, (, ) become
 // operator tokens; everything else splits on whitespace. Good enough for
@@ -192,7 +203,7 @@ function isNetworkShapedTokens(tokens) {
     for (let idx = 0; idx < tokens.length; idx += 1) {
         const tok = tokens[idx];
         if (tok.op || tok.quoted) continue;
-        if (CURL_WGET_TOKEN_RE.test(tok.text)) return true;
+        if (isCurlOrWgetToken(tok.text)) return true;
         if (/^(bash|sh)(\.exe)?$/i.test(tok.text)) {
             for (let k = idx + 1; k < tokens.length && !tokens[k].op; k += 1) {
                 const flag = tokens[k];
