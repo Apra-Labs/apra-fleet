@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_session_prime.response.json#",
+  "x-invariant": [
+    "INV-09"
+  ],
+  "$ref": "#/$defs/v1-kb_session_prime-response",
+  "$defs": {
+    "v1-kb_session_prime-response": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              },
+              "text": {
+                "type": "string"
+              },
+              "annotations": {
+                "type": "object",
+                "properties": {
+                  "audience": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "assistant"
+                      ]
+                    }
+                  },
+                  "priority": {
+                    "type": "number"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 3
+        },
+        "structuredContent": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "parsed": {
+          "type": "object",
+          "properties": {
+            "session_warm": {
+              "type": "boolean"
+            },
+            "stale_files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "top_entries": {
+              "type": "array",
+              "items": {}
+            },
+            "fresh_summaries": {
+              "type": "array",
+              "items": {}
+            },
+            "recommended_code_calls": {
+              "type": "array",
+              "items": {}
+            },
+            "token_estimate": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "session_warm",
+            "stale_files",
+            "top_entries",
+            "fresh_summaries",
+            "recommended_code_calls",
+            "token_estimate"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

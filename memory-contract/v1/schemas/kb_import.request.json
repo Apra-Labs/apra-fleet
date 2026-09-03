@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_import.request.json#",
+  "x-invariant": [
+    "INV-05"
+  ],
+  "$ref": "#/$defs/v1-kb_import-request",
+  "$defs": {
+    "v1-kb_import-request": {
+      "type": "object",
+      "properties": {
+        "repo_remote_url": {
+          "type": "string",
+          "description": "Origin remote URL of the repo this call is about. Supply it when repo_path is a path on another host (a remote member work folder), where git cannot be shelled out. When omitted, scope is derived from repo_path as before."
+        },
+        "path": {
+          "type": "string",
+          "description": "Explicit path to a bible JSON file. When omitted, resolves to <repo>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). Directives are quarantined to pending proposals either way."
+        },
+        "repo": {
+          "type": "string",
+          "description": "Repo root used to resolve <repo>/.fleet/kb-canonical.json when --path is omitted, and to anchor the post-import freshness sweep. Validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated process working directory."
+        },
+        "repo_path": {
+          "type": "string",
+          "description": "Alias for `repo`, matching the input name used by every other kb_* tool. Ignored when `repo` is also supplied."
+        },
+        "scope": {
+          "type": "string",
+          "const": "project",
+          "description": "Only project scope is supported (imports into the project KB). Global bibles are a separate concern."
+        },
+        "skip_sweep": {
+          "type": "boolean",
+          "description": "Skip the post-import freshness sweep. The sweep re-judges EVERY entry in the KB against this worktree, which is right for a deliberate audit but wrong for a routine import: an import performed to warm the KB should not mass-stale it because unrelated files have changed since capture. prime() still runs its own bounded freshness check on the entries it actually returns, so skipping this does not surface stale claims. Default false (sweep runs, unchanged)."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

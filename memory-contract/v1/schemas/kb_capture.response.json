@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_capture.response.json#",
+  "x-invariant": [
+    "INV-09"
+  ],
+  "$ref": "#/$defs/v1-kb_capture-response",
+  "$defs": {
+    "v1-kb_capture-response": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              },
+              "text": {
+                "type": "string"
+              },
+              "annotations": {
+                "type": "object",
+                "properties": {
+                  "audience": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "assistant"
+                      ]
+                    }
+                  },
+                  "priority": {
+                    "type": "number"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 3
+        },
+        "structuredContent": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "parsed": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "audn_decision": {
+              "type": "string",
+              "enum": [
+                "add",
+                "update",
+                "flagged",
+                "none"
+              ]
+            },
+            "confidence_clamped": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "audn_decision",
+            "confidence_clamped"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

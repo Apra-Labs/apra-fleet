@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_resolve_contradiction.request.json#",
+  "$ref": "#/$defs/v1-kb_resolve_contradiction-request",
+  "$defs": {
+    "v1-kb_resolve_contradiction-request": {
+      "type": "object",
+      "properties": {
+        "repo_remote_url": {
+          "type": "string",
+          "description": "Origin remote URL of the repo this call is about. Supply it when repo_path is a path on another host (a remote member work folder), where git cannot be shelled out. When omitted, scope is derived from repo_path as before."
+        },
+        "repo_path": {
+          "type": "string",
+          "description": "Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly."
+        },
+        "winnerId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ID of the KB entry the merged code (or trust tier) supports. Ends confidence=CONFIRMED with flags cleared; stale is cleared only if the D2 un-stale predicate holds post-flag-clear."
+        },
+        "loserId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ID of the KB entry the merged code contradicts. Ends superseded_at=now, stale=1, flagged_for_review cleared. Never deleted."
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Evidence note appended to the winner content, e.g. a file+symbol citation or the trust-tier rule applied. Verbatim \"hash-basis match on merged worktree\" when called by kb_reconcile_prefilter."
+        }
+      },
+      "required": [
+        "winnerId",
+        "loserId",
+        "evidence"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

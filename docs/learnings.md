@@ -495,3 +495,20 @@ test command unless that workspace's script is explicitly chained into it.
 A green root test run is only a meaningful gate if it actually executes
 every workspace's suite -- silently excluding one because it uses a
 different runner lets regressions in that workspace pass CI unnoticed.
+
+## Judge a scoped sprint against its epic's own acceptance criteria, not against closed-bead count
+
+A high closed-bead count and a clean per-task diff review are not evidence
+that a scoped multi-task effort (an epic-level "build the skeleton of X")
+is done. Individually well-executed subtasks can still leave the epic's own
+stated acceptance criteria and exit criterion unmet -- e.g. every layer of a
+staged deliverable existing as a directory does not mean every layer is
+populated or has a named owner, and a generation pipeline being wired up is
+not the same as a round-trip validator having ever run against it. When
+evaluating whether a decomposed body of work is complete, re-read the
+parent epic's acceptance criteria directly and check the net diff against
+each clause individually; do not infer completion from the number or
+quality of closed child tasks. Also re-verify, from source, any closed
+child task whose correctness later work is silently assuming (e.g. an
+arbitrated count, or a fix claimed to satisfy another task's stated
+acceptance) rather than trusting the closed status alone.

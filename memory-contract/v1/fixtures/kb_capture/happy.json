@@ -1,0 +1,28 @@
+{
+  "tool": "kb_capture",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "type": "knowledge",
+    "title": "exampleFn returns x + 1",
+    "summary": "exampleFn in src/example.ts is a trivial increment helper used by the fixture corpus.",
+    "content": "exampleFn(x) returns x + 1. Captured as a synthetic fixture for the memory-contract round-trip corpus.",
+    "source_files": [
+      "src/example.ts"
+    ],
+    "symbols": [
+      "exampleFn"
+    ],
+    "role": "doer"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"e12c88e9-0a56-44dd-b1ee-c522b3559a3e\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

@@ -31,6 +31,40 @@ import { execFileSync } from 'node:child_process';
 const root = path.resolve(__dirname, '..');
 const realBinDir = path.join(root, 'packages', 'apra-fleet-se', 'bin');
 
+// my-beads-db-27m.14: creating a DIRECTORY symlink on Windows requires either
+// Developer Mode or an elevated (admin) process -- fs.symlinkSync throws EPERM
+// otherwise. That's a host privilege gap, not a product defect, so probe for it
+// once up front and explicitly skip (with a printed reason) only the test that
+// needs a real symlink, rather than letting the whole suite fail red on a stock
+// dev machine. Any OTHER error from the probe is unexpected and must still
+// surface (not be swallowed into a skip).
+function canCreateDirSymlink(): boolean {
+  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-eft41-probe-'));
+  try {
+    const target = path.join(probeDir, 'target');
+    const link = path.join(probeDir, 'link');
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, link, 'dir');
+    return true;
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === 'EPERM') return false;
+    throw e;
+  } finally {
+    fs.rmSync(probeDir, { recursive: true, force: true });
+  }
+}
+
+const canSymlink = canCreateDirSymlink();
+if (!canSymlink) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[eft-41-symlinked-entry.test.ts] Skipping the symlinked-invocation test: this ' +
+    'process cannot create a directory symlink (needs Windows Developer Mode or an ' +
+    'elevated process). This is an environment gap, not a test failure.'
+  );
+}
+
 describe('cli.mjs entry-resolution self-executes through a symlinked invocation path (apra-fleet-eft.41.1)', () => {
   const tmpDirs: string[] = [];
 
@@ -41,7 +75,7 @@ describe('cli.mjs entry-resolution self-executes through a symlinked invocation 
     }
   });
 
-  it('--help via a symlinked bin/ dir prints usage text on stdout and exits 0 (not a silent no-op)', () => {
+  it.skipIf(!canSymlink)('--help via a symlinked bin/ dir prints usage text on stdout and exits 0 (not a silent no-op)', () => {
     // Build a fresh parent dir with a symlink pointing at the real bin/
     // directory. process.argv[1] (the invoked path) will run through the
     // symlink and stay un-canonicalized, while Node's ESM loader will

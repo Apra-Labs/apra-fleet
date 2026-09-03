@@ -1,0 +1,17 @@
+{
+  "tool": "kb_context",
+  "case": "refusal-path-traversal",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "files": [
+      "../outside-the-repo.txt"
+    ]
+  },
+  "error": {
+    "message": "Path traversal rejected: ../outside-the-repo.txt",
+    "thrown": true
+  },
+  "expected_error_code": "E-PATH-TRAVERSAL"
+}

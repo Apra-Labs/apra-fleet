@@ -2,6 +2,209 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- memory-contract/v1 skeleton complete: round-trip harness, CI drift guard, taxonomy, sign-off
+
+Sprint goal: turn the existing MCP knowledge-tool surface into the
+memory-contract/v1 skeleton (JSON Schemas, method contract, error taxonomy,
+round-trip validation against the live sqlite provider), as a single sprint /
+single PR. **Sprint verdict: PASS**, verified first-hand against the working
+tree rather than by closed-task count: all four contract layers (prose spec,
+JSON Schema 2020-12, MCP + OpenAPI bindings, conformance-suite hook) are
+present or explicitly stubbed with a named downstream owner; the
+provider-parameterized round-trip harness validates both request and
+response for every inventoried tool against the live handler and passes
+clean; the CI drift guard was proven live by a deliberate dry-run break
+(a hand-introduced diff was caught and reported, then the guard passed again
+once reverted); the degradation list (what JSON Schema structurally cannot
+verify) was handed off with named downstream ownership; and the pre-existing
+tool-surface-guard regression stayed green. Full generation is confirmed
+byte-identical on repeat runs with a clean working tree, and the full local
+test suite (unit plus workspace suites) passed with zero failures.
+
+What landed on top of the schema-generation work already described below:
+the error taxonomy with stable machine codes, and its projection into both
+the MCP-side error shape and an RFC 9457 Problem Details OpenAPI stub; a
+fixture corpus recorded from real, live tool calls (including ordered,
+stateful scenarios where a later call depends on an id minted by an earlier
+one); the round-trip validator that exercises every tool's real handler
+against its published request and response schema; a three-way roster guard
+that independently checks the real tool-registration surface, the
+generator's expected roster, and the schemas on disk agree, closing the gap
+where a generator's own hardcoded tool list can only notice a tool
+disappearing, never a new one going unrostered; response schemas widened to
+match the real multi-block response envelope (an optional onboarding
+preamble and nudge alongside the payload, each with optional annotations)
+while keeping the decoded payload shape itself just as strict as before; and
+a self-review sign-off recording the per-layer verdict and the explicit
+scope handed to each downstream owner. See
+`docs/memory-contract-v1-roundtrip-and-handoff.md` for the full design of
+the round-trip harness, the drift guard, the taxonomy-to-wire projection, and
+the handoff boundary, and `docs/memory-contract-v1-generator-design.md` /
+`docs/memory-contract-v1-inventory-notes.md` for the schema-generation and
+inventory-level notes referenced below.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $33.2868.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0813 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 45 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward as backlog (deliberately deferred, not blocking): the
+directive-activation absence scan currently runs only in the generator's
+strict check mode and is not wired into the plain write path; the two
+copies of the beads-export shrink guard (the standalone script and its
+inline copy invoked from the auto-sprint export step) have no equivalence
+test proving they stay in sync; several response-body fields that are typed
+as unconstrained JSON already have a known TypeScript shape available and
+could be tightened; the scratch dump writers used for ad-hoc beads listing
+still target the repo root instead of a temp directory; and the repo-path
+quoting in the auto-sprint export shrink guard command could be hardened
+further. A periodic sweep of this file's own carried-forward lists, to
+correct any item that has since landed, is itself tracked as backlog work.
+
+A full regression pass was also run this cycle as an informational,
+non-gating check and surfaced pre-existing, already-tracked breakage
+unrelated to this sprint's own changes: a set of integration-suite files
+failing for reasons predating this sprint, a single-file test-suite time
+budget exceeded by a number of files, one real-time watchdog test failing on
+replay-drift after the watchdog itself fired correctly, and a smoke-test run
+blocked before completion by a permission classifier declining to seed a
+credential during setup. None of these are new; each was already tracked
+from a prior pass and was reconfirmed rather than duplicated.
+
+## [Unreleased] -- memory-contract/v1 schema generation, postprocess hardening, and test stabilization
+
+Sprint goal: turn the existing MCP knowledge-tool surface into the
+memory-contract/v1 skeleton (JSON Schemas, method contract, error taxonomy,
+round-trip validation against the live sqlite provider), as a single sprint /
+single PR. **Sprint verdict: FAIL**, judged against the epic's own acceptance
+criteria rather than closed-task count: no round-trip validator exists yet
+(the epic's own stated exit criterion), no CI drift guard was wired, and the
+fixture corpus directory is still empty. `bindings/mcp/` now holds 23
+committed tool definitions (commit `fcccf19f`, one per inventoried tool);
+`bindings/openapi/` remains an unowned empty stub. See
+`docs/memory-contract-v1-generator-design.md` for the full design of what did
+land and `docs/learnings.md` for the review approach that reached this
+verdict.
+
+What landed: the zod-to-JSON-Schema generation path was selected, proven
+against every hard construct in the surface (discriminated unions, closed
+enums, optional/nullable/nullish, recursive references, tuples), and wired
+into a `contract:generate` script that emits metaschema-validated draft
+2020-12 request and response schemas for all 23 inventoried tools, with a
+demonstrated byte-identical re-run guarantee. The deterministic postprocess
+step that normalizes the generator's raw output to 2020-12 (dialect
+declaration, `definitions`-to-`$defs` renaming, exclusive-bound numeric
+form, tuple encoding) was hardened to be container-aware when repointing
+`$ref` pointers, so a data field that happens to be named "definitions" is
+no longer mistaken for a schema container and incorrectly rewritten. A claim
+recorded earlier in this cycle -- that a real response carrying a display
+preamble would fail its own published response schema -- does not hold for
+any of the 23 inventoried kb_*/code_* tools: `wrapTool`'s onboarding preamble
+and nudge suffix only ever attach when the tool result is non-JSON
+(`isJsonResponse` false), all 23 kb_*/code_* handlers return
+`JSON.stringify(...)`, and the nudge-suffix path is gated to `register_member`
+and `execute_prompt` (`src/services/tool-registry.ts`, `src/services/onboarding.ts`). The
+published single-text-block response schemas are still narrower than the real
+three-block `wrapTool` envelope in general -- `register_member`,
+`execute_prompt`, and any future non-JSON-returning tool can still trigger
+it, and that gap is exactly what the still-missing round-trip validator is
+meant to catch -- but it is not reachable through the 23 tools this contract
+actually covers. Also fixed: a real
+port-selection bug where an OS-assigned ephemeral port could land in a
+client fetch implementation's blocked-port list, and the beads-export commit
+guard's argument-passing bug in its inline copy. The `apra-pm` test suite
+now also runs from the root local test command, and several subprocess-
+spawning tests had their timeouts raised to real subprocess cost to stop
+flaking under a loaded full-suite run.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $26.8852.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0473 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 31 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward (still open, core to the memory-contract/v1 deliverable): the
+error taxonomy with stable machine codes and its projection into MCP error
+payloads and the OpenAPI stub, the round-trip fixture corpus and its
+provider-parameterized validator (the sprint's stated exit criterion), the CI
+drift guard, and the final self-review/sign-off checklist. Two items
+previously carried forward here have since landed in later cycles of this
+same continuing sprint and are no longer open: the MemoryProvider method
+contract (`methods.json`, commit `c4161584`) and MCP binding definitions for
+every inventoried tool (`bindings/mcp/`, commit `fcccf19f`).
+
+**Correction (all four items above have since landed):** every item this
+paragraph lists as still open has since landed in a later cycle of this same
+continuing sprint -- see the newest entry at the top of this file for the
+error taxonomy and its wire/OpenAPI projection, the round-trip fixture
+corpus and its provider-parameterized validator, the live CI drift guard,
+and the completed self-review/sign-off checklist. None of the four remain
+open.
+
+## [Unreleased] -- memory-contract/v1 inventory and test-suite stabilization
+
+Sprint goal: turn the existing MCP knowledge-tool surface into the
+memory-contract/v1 skeleton (JSON Schemas, method contract, error taxonomy,
+round-trip validation against the live sqlite provider), as a single sprint /
+single PR. **Sprint verdict: FAIL** (a final reviewer dispatch stalled and
+could not be repaired after retry; no PASS was reached).
+
+What landed: the contract-surface inventory (`memory-contract/v1/INVENTORY.md`)
+was corrected and hardened against several inaccuracies found during
+cross-checking against the real code (a tool-call-site miscount, an
+incomplete list of dropped HTTP query filters, a mis-stated anchoring claim,
+and an unflagged teardown-method-naming/extra-parameter asymmetry between the
+two provider implementations -- see `docs/memory-contract-v1-inventory-notes.md`
+for the durable findings). A baseline verification pass was recorded. A
+correctness bug was fixed in the automated beads-export commit guard, which
+could previously let a divergent local export silently replace the
+committed issue-id set while the exported file grew in size (a size-based
+check would not have caught it); the guard now compares id sets. The root
+local test runner now also runs the `apra-pm` suite (previously reachable
+only via CI's explicit `--prefix` invocation), and several tests that spawn
+real subprocesses (git clone, PowerShell, an external CLI) had their
+timeouts raised to real subprocess cost so they stop flaking under a loaded
+full-suite run; a real port-selection bug was also fixed where an
+OS-assigned ephemeral port could land in a client fetch implementation's
+blocked-port list. The zod-to-JSON-Schema generation path and its
+deterministic per-tool schema emit also landed: the `contract:generate`
+script emits metaschema-validated draft 2020-12 request and response schemas
+for all 23 inventoried tools (46 documents in memory-contract/v1/schemas/),
+with a demonstrated byte-identical re-run guarantee.
+
+Carried forward (still open, core to the memory-contract/v1 deliverable):
+the error taxonomy with stable machine codes and its projection into MCP error
+payloads and the OpenAPI stub, the round-trip fixture corpus and its
+provider-parameterized validator (the sprint's stated exit criterion), the CI
+drift guard, and the final self-review/sign-off checklist.
+
+**Correction: all of the above have since landed** in a later cycle of this
+same continuing sprint -- see the newest entry at the top of this file.
+
+Deploy could not be completed during this sprint: repeated attempts were
+blocked either by the runbook's own active-sprint safety gate (deploying
+while this sprint's own dispatch was still the active sprint) or by an `npm
+ci` failure unlinking a native `rollup` binary on Windows, which the existing
+lock-clearing preflight script does not detect (it only scans for orphaned
+`esbuild` holders). A regression pass afterward also could not run, blocked
+on missing command-allowlist entries for its own harness.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $28.4659.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 39 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- Supervisor dashboard: live-refresh parity with the per-run viewer
 
 Sprint goal: bring the multi-sprint supervisor's own dashboard up to the same

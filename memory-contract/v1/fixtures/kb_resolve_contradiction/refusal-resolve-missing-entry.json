@@ -1,0 +1,17 @@
+{
+  "tool": "kb_resolve_contradiction",
+  "case": "refusal-resolve-missing-entry",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "winnerId": "fixture-does-not-exist-winner",
+    "loserId": "fixture-does-not-exist-loser",
+    "evidence": "Neither id was ever captured."
+  },
+  "error": {
+    "message": "resolveContradiction: refused -- one or both entries do not exist (winner=fixture-does-not-exist-winner, loser=fixture-does-not-exist-loser)",
+    "thrown": true
+  },
+  "expected_error_code": "E-RESOLVE-MISSING-ENTRY"
+}

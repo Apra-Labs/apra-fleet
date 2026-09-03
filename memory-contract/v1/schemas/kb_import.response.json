@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_import.response.json#",
+  "x-invariant": [
+    "INV-09"
+  ],
+  "$ref": "#/$defs/v1-kb_import-response",
+  "$defs": {
+    "v1-kb_import-response": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              },
+              "text": {
+                "type": "string"
+              },
+              "annotations": {
+                "type": "object",
+                "properties": {
+                  "audience": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "assistant"
+                      ]
+                    }
+                  },
+                  "priority": {
+                    "type": "number"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 3
+        },
+        "structuredContent": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "parsed": {
+          "type": "object",
+          "properties": {
+            "imported": {
+              "type": "number"
+            },
+            "skipped": {
+              "type": "number"
+            },
+            "linked": {
+              "type": "number"
+            },
+            "flagged": {
+              "type": "number"
+            },
+            "rejected": {
+              "type": "number"
+            },
+            "sweep": {
+              "type": "object",
+              "properties": {
+                "checked": {
+                  "type": "number"
+                },
+                "staled": {
+                  "type": "number"
+                },
+                "unstaled": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "checked",
+                "staled",
+                "unstaled"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "imported",
+            "skipped",
+            "linked",
+            "flagged",
+            "rejected",
+            "sweep"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

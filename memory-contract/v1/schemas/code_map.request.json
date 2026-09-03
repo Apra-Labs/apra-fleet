@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/code_map.request.json#",
+  "$ref": "#/$defs/v1-code_map-request",
+  "$defs": {
+    "v1-code_map-request": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "Absolute path to the repository root. Required when multiple repositories are indexed."
+        },
+        "top": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Maximum number of communities to return (default 20)."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

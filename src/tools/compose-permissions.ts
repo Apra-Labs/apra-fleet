@@ -23,6 +23,19 @@ export const composePermissionsSchema = z.object({
 
 export type ComposePermissionsInput = z.infer<typeof composePermissionsSchema>;
 
+// my-beads-db-27m.27: these are quick local filesystem probes (mkdir/cat/echo/
+// PowerShell one-liners) that normally complete in milliseconds under
+// LocalStrategy, but under full-suite parallel test load the host can be too
+// contended to even schedule the spawned shell for several seconds -- and
+// since none of these commands stream progress output, that whole stall
+// counts as "inactivity" against strategy.ts's rolling inactivity timer
+// (LocalStrategy.execCommand's resetInactivityTimer/settle). The old 5000ms
+// value fired spuriously under that contention (register-member.test.ts AC3);
+// 15000ms leaves real headroom for host contention while still being a hard,
+// killable ceiling -- not a bump to vitest's own per-test timeout, and not a
+// removal of the inactivity ceiling itself.
+const LOCAL_FS_OP_TIMEOUT_MS = 15000;
+
 // Stack marker files -> profile keys
 const STACK_MAP: Record<string, string> = {
   'package.json': 'node',
@@ -200,7 +213,7 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
   }
   // .sln/.csproj need glob - check separately
   // TODO: same unbranched-POSIX defect class as above -- not yet OS-branched.
-  const dotnetCheck = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls *.sln *.csproj 2>/dev/null || true`, 5000);
+  const dotnetCheck = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls *.sln *.csproj 2>/dev/null || true`, LOCAL_FS_OP_TIMEOUT_MS);
   if (dotnetCheck.stdout.trim()) found.add('dotnet');
   return [...found];
 }
@@ -383,7 +396,7 @@ async function deliverConfigFile(
   const mkdirCmd = isWindows
     ? `New-Item -ItemType Directory -Force "${dir}"`
     : `mkdir -p "${dir}"`;
-  const mkdirResult = await strategy.execCommand(mkdirCmd, 5000);
+  const mkdirResult = await strategy.execCommand(mkdirCmd, LOCAL_FS_OP_TIMEOUT_MS);
   if (mkdirResult.code !== 0) {
     throw new ConfigDeliveryError(
       absPath,
@@ -397,7 +410,7 @@ async function deliverConfigFile(
 
   let mergedContent: Record<string, unknown> | string = content;
   if (isPlainObject(content)) {
-    const readResult = await strategy.execCommand(readCmd, 5000);
+    const readResult = await strategy.execCommand(readCmd, LOCAL_FS_OP_TIMEOUT_MS);
     let existing: Record<string, unknown> = {};
     try {
       const parsed = JSON.parse(readResult.stdout.trim());
@@ -415,7 +428,7 @@ async function deliverConfigFile(
   const writeCmd = isWindows
     ? `[System.IO.File]::WriteAllText("${winPath}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
     : `cat > "${absPath}" << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`;
-  const writeResult = await strategy.execCommand(writeCmd, 5000);
+  const writeResult = await strategy.execCommand(writeCmd, LOCAL_FS_OP_TIMEOUT_MS);
   if (writeResult.code !== 0) {
     throw new ConfigDeliveryError(
       absPath,
@@ -427,7 +440,7 @@ async function deliverConfigFile(
   // catches the silent no-op class of failure that a nonzero exit code alone
   // would miss (e.g. a write that "succeeds" but resolves to the wrong path, or
   // a PowerShell quoting fault that writes nothing).
-  const verifyResult = await strategy.execCommand(readCmd, 5000);
+  const verifyResult = await strategy.execCommand(readCmd, LOCAL_FS_OP_TIMEOUT_MS);
   const readBack = verifyResult.stdout.trim();
   if (!readBack) {
     throw new ConfigDeliveryError(
@@ -505,8 +518,8 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       // TODO: unbranched POSIX `2>/dev/null || echo` -- same defect class as
       // orphan-recovery.ts's pid-alive/file-read commands. Not yet OS-branched.
       const readResult = isWindowsAgent
-        ? await strategy.execCommand(`Get-Content -Raw "${absSettingsPath.replace(/\//g, '\\')}" -ErrorAction SilentlyContinue`, 5000)
-        : await strategy.execCommand(`cat "${absSettingsPath}" 2>/dev/null || echo "{}"`, 5000);
+        ? await strategy.execCommand(`Get-Content -Raw "${absSettingsPath.replace(/\//g, '\\')}" -ErrorAction SilentlyContinue`, LOCAL_FS_OP_TIMEOUT_MS)
+        : await strategy.execCommand(`cat "${absSettingsPath}" 2>/dev/null || echo "{}"`, LOCAL_FS_OP_TIMEOUT_MS);
       let current: any;
       try {
         current = JSON.parse(readResult.stdout.trim());

@@ -22,6 +22,32 @@ const SCRIPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const SANDBOX_SEED_SCRIPT = path.join(SCRIPTS_DIR, 'sandbox-seed-beads.mjs');
 const CHECK_TOY_DOER_CREDS_SCRIPT = path.join(SCRIPTS_DIR, 'check-toy-doer-credentials.mjs');
 
+// my-beads-db-27m.14: on a dev host running this suite from inside a real beads
+// workspace (e.g. via the bd-managed sprint tooling), BEADS_DIR is set in the
+// ambient environment and points at THAT workspace's own database -- not the
+// scratch toy-repo fixture below. Every 'bd' child process this file spawns
+// must NOT inherit it: bd init resolves BEADS_DIR before it looks at cwd, so an
+// inherited BEADS_DIR makes 'bd init --prefix cc3scratch' detect the unrelated
+// database as "already initialized" and abort, even though the toy-repo fixture
+// itself is a fresh, empty git repo. Strip it so every invocation here is
+// genuinely scoped to the fixture's own cwd, matching a real toy-repo checkout.
+const BD_CHILD_ENV: NodeJS.ProcessEnv = { ...process.env };
+delete BD_CHILD_ENV.BEADS_DIR;
+
+/** Runs a bd subcommand with BD_CHILD_ENV and surfaces real stderr on failure
+ *  (an execFileSync failure with stdio 'ignore' reports only "Command failed",
+ *  hiding the actual cause -- prefix already taken, stray Dolt state, or a
+ *  missing/misresolved bd binary). */
+function runBd(args: string[], cwd: string): void {
+  try {
+    execBdSync(args, { cwd, env: BD_CHILD_ENV, stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (err) {
+    const e = err as { stderr?: Buffer | string; message?: string };
+    const stderr = e.stderr ? String(e.stderr) : '(no stderr captured)';
+    throw new Error(`bd ${args.join(' ')} failed in "${cwd}":\n${stderr}\n${e.message ?? ''}`);
+  }
+}
+
 const tmpDirs: string[] = [];
 function mkTmp(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -88,9 +114,9 @@ describe('scripts/sandbox-seed-beads.mjs reaches completion of its bd steps agai
     execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: toyRepo, stdio: 'ignore' });
     execFileSync('git', ['config', 'user.name', 'Test'], { cwd: toyRepo, stdio: 'ignore' });
 
-    execBdSync(['init', '--prefix', prefix, '--non-interactive'], { cwd: toyRepo, stdio: 'ignore' });
-    execBdSync(['create', 'scratch fixture seed issue', '--priority=2'], { cwd: toyRepo, stdio: 'ignore' });
-    execBdSync(['export', '-o', '.beads/issues.jsonl'], { cwd: toyRepo, stdio: 'ignore' });
+    runBd(['init', '--prefix', prefix, '--non-interactive'], toyRepo);
+    runBd(['create', 'scratch fixture seed issue', '--priority=2'], toyRepo);
+    runBd(['export', '-o', '.beads/issues.jsonl'], toyRepo);
 
     // Simulate the git-committed subset of a real toy-repo clone (config.yaml
     // + issues.jsonl), stripping the live local Dolt state the real seed
@@ -113,7 +139,7 @@ describe('scripts/sandbox-seed-beads.mjs reaches completion of its bd steps agai
       const res = spawnSync(
         process.execPath,
         [SANDBOX_SEED_SCRIPT, '--sandbox-root', sandboxRoot, '--toy-repo', toyRepo, '--prefix', prefix],
-        { encoding: 'utf-8' },
+        { encoding: 'utf-8', env: BD_CHILD_ENV },
       );
 
       expect(res.status, `stdout: ${res.stdout}\nstderr: ${res.stderr}`).toBe(0);
@@ -123,7 +149,7 @@ describe('scripts/sandbox-seed-beads.mjs reaches completion of its bd steps agai
       // a fresh local Dolt DB was initialized (embeddeddolt regenerated) and
       // the seeded issue survived the --from-jsonl import.
       expect(fs.existsSync(path.join(toyRepo, '.beads', 'embeddeddolt'))).toBe(true);
-      const listed = execBdSync(['list', '--json', '--limit', '0'], { cwd: toyRepo, encoding: 'utf-8' });
+      const listed = execBdSync(['list', '--json', '--limit', '0'], { cwd: toyRepo, encoding: 'utf-8', env: BD_CHILD_ENV });
       expect(String(listed)).toContain('scratch fixture seed issue');
 
       // 'bd dolt push' genuinely reached the sandbox-local Dolt remote (a
