@@ -25,10 +25,20 @@
 // PID recorded by one code block is not, by itself, a reliable liveness
 // signal for a LATER code block of the same logical run):
 //   1. acquire(): '## Setup' claims the lock FIRST, before any mutation
-//      (mkdir/install/clone), recording ITS OWN shell's PID ($$). That PID
-//      stays alive for the rest of that same '## Setup' code block (one
-//      continuous shell process), which covers the early window before the
-//      sandbox's own fleet server exists yet.
+//      (mkdir/install/clone), recording the Setup shell's PID. apra-fleet-
+//      5co8.39: this used to be the shell's own self-reported $$, but under
+//      Git Bash on Windows that is a bash-internal (MSYS) pid which
+//      defaultDeps.isAlive's process.kill(n, 0) below CANNOT see (native
+//      Windows pid namespace) -- so a live Setup shell could be reported
+//      stale and reclaimed out from under it. Fixed by having the CLI (see
+//      main(), 'acquire' branch) record process.ppid instead: since 'node
+//      scripts/sandbox-lock.mjs acquire ...' is itself spawned AS A CHILD of
+//      the Setup shell, process.ppid resolves that parent in the SAME
+//      native-OS pid namespace process.kill() checks, on every platform
+//      (including win32 under Git Bash) -- no MSYS-aware isAlive branch
+//      needed. That PID stays alive for the rest of that same '## Setup'
+//      code block (one continuous shell process), which covers the early
+//      window before the sandbox's own fleet server exists yet.
 //   2. markServerStarted(): once '## Setup' has run 'node dist/index.js
 //      start', it re-points the lock at the sandbox's own long-lived fleet
 //      server PID (read from the sandbox's own server.json) -- that process
@@ -49,9 +59,12 @@
 //
 // CLI (used directly by regression-test-playbook.md -- see '## Setup' /
 // '## Teardown'):
-//   node scripts/sandbox-lock.mjs acquire <sandbox-path> <pid>
+//   node scripts/sandbox-lock.mjs acquire <sandbox-path>
 //   node scripts/sandbox-lock.mjs mark-server-started <sandbox-path>
 //   node scripts/sandbox-lock.mjs release <sandbox-path>
+// 'acquire' takes no explicit pid argument -- it records this CLI process's
+// own process.ppid (see main(), apra-fleet-5co8.39), which is the Setup
+// shell's real, native OS pid regardless of shell family.
 //
 // Every exported function below takes an optional 'deps' object (fs
 // primitives + an 'isAlive' predicate) purely for test injection -- mirrors
@@ -149,8 +162,10 @@ export function checkLockState(lockPath, deps = {}) {
   return { busy: false, stale: true, pid };
 }
 
-/** '## Setup' step 1: claim the lock for `pid` (the Setup shell's own $$),
- *  refusing loud if another live run already holds it. Self-heals a stale
+/** '## Setup' step 1: claim the lock for `pid` (the CLI's own process.ppid --
+ *  see main() -- i.e. the Setup shell's real native OS pid, NOT its
+ *  self-reported $$, apra-fleet-5co8.39), refusing loud if another live run
+ *  already holds it. Self-heals a stale
  *  lock (recorded PID no longer alive) by removing it first. Closes the
  *  check-then-write race between two Setup runs starting at the same
  *  instant via an atomic exclusive create ('wx' -- fails with EEXIST if the
@@ -240,20 +255,26 @@ export function authorizeAndReleaseLock(sandboxPath, deps = {}) {
 
 function usageAndExit() {
   console.error('[sandbox-lock] Usage:');
-  console.error('  node scripts/sandbox-lock.mjs acquire <sandbox-path> <pid>');
+  console.error('  node scripts/sandbox-lock.mjs acquire <sandbox-path>');
   console.error('  node scripts/sandbox-lock.mjs mark-server-started <sandbox-path>');
   console.error('  node scripts/sandbox-lock.mjs release <sandbox-path>');
   process.exit(2);
 }
 
 function main() {
-  const [cmd, sandboxPath, pid] = process.argv.slice(2);
+  const [cmd, sandboxPath] = process.argv.slice(2);
   if (!cmd || !sandboxPath) usageAndExit();
 
   let result;
   if (cmd === 'acquire') {
-    if (!pid) usageAndExit();
-    result = acquireLock(sandboxPath, pid);
+    // apra-fleet-5co8.39: record THIS process's own parent pid
+    // (process.ppid) rather than a pid the caller hands us. Because this CLI
+    // invocation is spawned AS A CHILD of the Setup shell, process.ppid
+    // resolves to that shell's real, native OS pid on every platform
+    // (including win32 under Git Bash, where the shell's own $$ would
+    // instead be an MSYS-internal pid invisible to defaultDeps.isAlive's
+    // native process.kill() check above) -- same namespace, no mismatch.
+    result = acquireLock(sandboxPath, process.ppid);
   } else if (cmd === 'mark-server-started') {
     result = markServerStarted(sandboxPath);
   } else if (cmd === 'release') {

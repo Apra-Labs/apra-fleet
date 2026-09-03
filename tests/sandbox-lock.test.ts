@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 // @ts-expect-error -- plain .mjs helper, no type declarations
 import {
   lockPathFor,
@@ -197,5 +199,111 @@ describe('single normal Setup -> Test -> Teardown pass', () => {
     const teardown = authorizeAndReleaseLock(realSandbox, deps);
     expect(teardown.ok).toBe(true);
     expect(fs.existsSync(lockPathFor(realSandbox))).toBe(false);
+  });
+});
+
+// apra-fleet-5co8.39: the Setup shell's self-reported $$ is, under Git Bash
+// on Windows, an MSYS-internal pid that defaultDeps.isAlive's native
+// process.kill(n, 0) cannot see -- so a live Setup shell could be reported
+// stale and its sandbox reclaimed out from under it. The fix has the CLI's
+// 'acquire' branch (main(), scripts/sandbox-lock.mjs) record its OWN
+// process.ppid instead of whatever pid the caller passes on argv, since the
+// CLI process is itself a direct child of the Setup shell and process.ppid
+// always resolves in the native OS pid namespace, on every platform. These
+// tests spawn the REAL CLI (not just the exported acquireLock() function) so
+// a regression back to "record the argv-supplied pid" is actually caught.
+describe('CLI acquire records its own native process.ppid, not an argv-supplied pid (apra-fleet-5co8.39)', () => {
+  const scriptPath = path.resolve(fileURLToPath(import.meta.url), '../../scripts/sandbox-lock.mjs');
+  let cliSandbox: string;
+
+  beforeEach(() => {
+    cliSandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sandbox-lock-cli-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(cliSandbox, { recursive: true, force: true });
+    const lock = lockPathFor(cliSandbox);
+    if (fs.existsSync(lock)) fs.rmSync(lock, { force: true });
+  });
+
+  it('criterion 1: the recorded pid is one a real native liveness check CAN see for a live holder, even when the caller supplies a bogus/MSYS-style pid the native check could not see', () => {
+    // This test process is the CLI's real parent (spawnSync's child), so a
+    // correct fix records THIS process's pid, not the bogus argv value below
+    // (which stands in for the Setup shell's MSYS-internal $$ -- a value the
+    // native process.kill() liveness check cannot resolve).
+    const bogusMsysStylePid = '987654321';
+    const result = spawnSync(process.execPath, [scriptPath, 'acquire', cliSandbox, bogusMsysStylePid], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+
+    const recordedPid = fs.readFileSync(lockPathFor(cliSandbox), 'utf-8').trim();
+    expect(recordedPid).toBe(String(process.pid));
+    expect(recordedPid).not.toBe(bogusMsysStylePid);
+
+    // Prove it with the SAME liveness primitive defaultDeps.isAlive uses
+    // (native process.kill(pid, 0)), not a re-derivation of the fix's logic:
+    // a live holder must be reported busy, never stale.
+    const nativeIsAlive = (pid: string | number) => {
+      try {
+        process.kill(Number(pid), 0);
+        return true;
+      } catch (err) {
+        return (err as NodeJS.ErrnoException)?.code !== 'ESRCH';
+      }
+    };
+    expect(checkLockState(lockPathFor(cliSandbox), { isAlive: nativeIsAlive })).toEqual({
+      busy: true,
+      stale: false,
+      pid: String(process.pid),
+    });
+  });
+
+  it('criterion 3 (regression guard): reverting to recording the argv-supplied pid would make criterion 1 fail here -- the recorded pid would equal the bogus value, not process.pid', () => {
+    // Documents the falsifiability of the test above without literally
+    // reverting source: acquireLock() (the shared primitive) faithfully
+    // records whatever pid it is given, so if main()'s 'acquire' branch were
+    // reverted to pass argv[3] straight through, this same CLI invocation
+    // would write the bogus pid to the lock file. Verified directly against
+    // acquireLock() to keep this assertion honest about what would change.
+    const bogusMsysStylePid = '555555555';
+    const memFiles = new Map<string, string>();
+    const memDeps = {
+      existsSync: (p: string) => memFiles.has(p),
+      readFileSync: (p: string) => memFiles.get(p) as string,
+      writeFileSync: (p: string, content: string) => { memFiles.set(p, String(content)); },
+      unlinkSync: (p: string) => { memFiles.delete(p); },
+      isAlive: () => false,
+    };
+    acquireLock(cliSandbox, bogusMsysStylePid, memDeps);
+    expect(memFiles.get(lockPathFor(cliSandbox))).toBe(bogusMsysStylePid);
+    // ... which is exactly the pre-fix behavior the CLI no longer exhibits
+    // (criterion 1 above proves the CLI writes process.pid instead).
+  });
+
+  it('criterion 2 (inverse): a genuinely dead holder is still reported stale, so the fix does not make every lock permanent', () => {
+    const result = spawnSync(process.execPath, [scriptPath, 'acquire', cliSandbox], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const recordedPid = fs.readFileSync(lockPathFor(cliSandbox), 'utf-8').trim();
+    expect(recordedPid).toBe(String(process.pid));
+
+    // A pid that is real but has since exited must be reported stale, not
+    // permanently busy. Spawn a short-lived child, wait for it to exit, and
+    // feed ITS (now-dead) pid through checkLockState with the same native
+    // isAlive primitive used above.
+    const dead = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { encoding: 'utf8' });
+    const deadPid = dead.pid;
+    fs.writeFileSync(lockPathFor(cliSandbox), String(deadPid));
+    const nativeIsAlive = (pid: string | number) => {
+      try {
+        process.kill(Number(pid), 0);
+        return true;
+      } catch (err) {
+        return (err as NodeJS.ErrnoException)?.code !== 'ESRCH';
+      }
+    };
+    expect(checkLockState(lockPathFor(cliSandbox), { isAlive: nativeIsAlive })).toEqual({
+      busy: false,
+      stale: true,
+      pid: String(deadPid),
+    });
   });
 });

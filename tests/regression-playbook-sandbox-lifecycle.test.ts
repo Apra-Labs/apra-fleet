@@ -193,7 +193,11 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
       // intro/cross-reference prose -- mirrors the sibling
       // regression-playbook-port3001-guard.test.ts pattern.
       const setupSection = text.split(/^## Setup$/m)[1]?.split(/^## Reset$/m)[0] ?? '';
-      const acquireMatch = /^node "<repo-root>\/scripts\/sandbox-lock\.mjs" acquire "\$SANDBOX" "\$\$" \|\| exit 1$/m.exec(
+      // apra-fleet-5co8.39: acquire no longer takes an explicit "$$" pid
+      // argument -- the CLI now records its own process.ppid (the Setup
+      // shell's real, native OS pid), since $$ is an MSYS-internal pid under
+      // Git Bash on Windows that the native liveness check cannot see.
+      const acquireMatch = /^node "<repo-root>\/scripts\/sandbox-lock\.mjs" acquire "\$SANDBOX" \|\| exit 1$/m.exec(
         setupSection,
       );
       const killPortMatch = /^node "<repo-root>\/scripts\/kill-port\.mjs" 18700 "sandbox scratch port 18700" 5000 \|\| exit 1$/m.exec(
