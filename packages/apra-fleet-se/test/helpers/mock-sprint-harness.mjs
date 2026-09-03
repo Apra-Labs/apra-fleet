@@ -203,16 +203,26 @@ const CREDENTIAL_REDACTION_MARKER = '***REDACTED***';
 // Strips known credential shapes out of a command string for safe inclusion
 // in an error message: HTTP Basic auth via `-u user:token` (Azure DevOps'
 // `-u :PAT` form), `Authorization: Bearer <token>` / `Authorization: Basic
-// <token>` headers (GitHub), and userinfo embedded directly in a URL
-// (`https://user:token@host/...`). Defense-in-depth, not an allowlist: any
-// of these shapes anywhere in the command text is redacted regardless of
-// quoting style.
+// <token>` headers (GitHub), userinfo embedded directly in a URL
+// (`https://user:token@host/...`), a `token=`/`access_token=` query/body
+// param, any OTHER `-H`/`--header '<name>: <value>'` whose header name looks
+// credential-shaped (token/auth/key/secret -- e.g. GitLab's `PRIVATE-TOKEN`,
+// a generic `X-Api-Key`, or a bespoke `X-...-Token` header a new provider's
+// mock never anticipated), and a `"token"`/`"password"` JSON field carried
+// in a `-d`/`--data` body. Defense-in-depth, not an allowlist: any of these
+// shapes anywhere in the command text is redacted regardless of quoting
+// style (apra-fleet-5co8.31 widened the last two shapes -- the guard fires
+// precisely when an UNKNOWN provider/endpoint was added without a mock, so
+// its credential shape is, by definition, exactly the kind not already on
+// this list).
 export function redactNetworkCommandForLog(command) {
     return String(command)
         .replace(/(-u\s+['"]?)([^\s'":]*):([^\s'"]+)/gi, `$1$2:${CREDENTIAL_REDACTION_MARKER}`)
         .replace(/(Authorization:\s*(?:Bearer|Basic)\s+)([^\s'"]+)/gi, `$1${CREDENTIAL_REDACTION_MARKER}`)
         .replace(/(:\/\/[^\s'"@/]+:)([^\s'"@/]+)(@)/gi, `$1${CREDENTIAL_REDACTION_MARKER}$3`)
-        .replace(/((?:access_)?token=)([^\s&'"]+)/gi, `$1${CREDENTIAL_REDACTION_MARKER}`);
+        .replace(/((?:access_)?token=)([^\s&'"]+)/gi, `$1${CREDENTIAL_REDACTION_MARKER}`)
+        .replace(/((?:-H|--header)\s+['"][^'":]*(?:token|auth|key|secret)[^'":]*:\s*)([^'"]+)(['"])/gi, `$1${CREDENTIAL_REDACTION_MARKER}$3`)
+        .replace(/("(?:token|password)"\s*:\s*")([^"]+)(")/gi, `$1${CREDENTIAL_REDACTION_MARKER}$3`);
 }
 
 // apra-fleet-tfx.8: the Publish PR / finalizeAbort PR-raising call sites now
