@@ -303,3 +303,88 @@ test('sweepOnce propagates the owner prefix into every member`s probe', async ()
     });
     assert.equal(unscoped.ownerDataDirPrefix, null, 'unset (production default) stays machine-wide');
 });
+
+// =============================================================================
+// apra-fleet-5co8.35: pin the cross-instance kill hazard at the sweepOnce()
+// seam, not just at buildSweepCommand()'s string level. The owner filter is
+// enforced entirely INSIDE the generated shell command (JS never post-filters
+// execCommand's result -- see sweepOnce()'s loop above), so a seam-level test
+// must actually execute the REAL command createDoltOrphanSweep built (via the
+// stub execCommand) against fabricated candidates from BOTH scopes, then
+// assert on sweepOnce()'s own `killed` result. A test that only inspects the
+// command string (like the tests above) cannot catch a regression where the
+// owner clause is generated correctly but silently dropped/ignored before
+// reaching sweepOnce()'s result.
+//
+// REGRESSION GUARD (confirmed by hand): with the owner argument stripped from
+// the `buildSweepCommand(family, maxAgeMs, owner)` call inside sweepOnce()
+// (i.e. reverting apra-fleet-5co8.33 back to the machine-wide probe), both
+// tests below fail -- the posix one reports 2 killed instead of 1, and the
+// win32 one throws on the missing -like clause assertion.
+// =============================================================================
+
+test('sweepOnce (posix), driven by the REAL generated+executed probe, kills only the in-scope process', { skip: process.platform === 'win32' ? 'requires a real bash/awk to execute the generated posix probe' : false }, async () => {
+    const OWNER = '/tmp/sandbox-run1';
+    const inScopeCmdLine = `dolt sql-server --host 127.0.0.1 --port 13345 --data-dir ${OWNER}/.beads/embeddeddolt`;
+    const outOfScopeCmdLine = 'dolt sql-server --host 127.0.0.1 --port 13346 --data-dir /tmp/OTHER-supervisor/.beads/embeddeddolt';
+    const escape = (value) => value.replace(/"/g, '\\"');
+
+    const sweep = createDoltOrphanSweep({
+        logger: silent,
+        ownerDataDirPrefix: OWNER,
+        listMembers: async () => ({ members: [{ name: 'm1', os: 'linux' }] }),
+        execCommand: async ({ command }) => {
+            // Run the ACTUAL probe sweepOnce() just built (the same `command`
+            // it would hand to a real member's shell) against two fabricated
+            // `ps` lines -- one in-scope, one from a different supervisor
+            // instance's data dir -- so this proves the real filtering logic,
+            // not a re-derivation of it.
+            const awkStage = command.split(' | tee /dev/stderr')[0].replace(/^ps -eo pid=,etimes=,args= \| /, '');
+            const psLine1 = `111 99999 ${inScopeCmdLine}`;
+            const psLine2 = `222 99999 ${outOfScopeCmdLine}`;
+            const pipeline = `printf '%s\\n%s\\n' "${escape(psLine1)}" "${escape(psLine2)}" | ${awkStage}`;
+            const out = execFileSync('bash', ['-c', pipeline], { encoding: 'utf8' });
+            return { ok: true, output: out };
+        },
+    });
+
+    const result = await sweep.sweepOnce();
+    assert.equal(result.killed.length, 1, 'only the in-scope process must be reported killed, not the other supervisor instance`s process');
+    assert.equal(result.killed[0].pid, 111);
+    assert.match(result.killed[0].commandLine, /sandbox-run1/);
+});
+
+test('sweepOnce (win32), applying the ACTUAL generated -like clause, kills only the in-scope process', async () => {
+    const OWNER_WIN = 'C:\\Users\\u\\sandbox-run1';
+    const inScopeCmdLine = 'C:\\dolt.exe sql-server --host 127.0.0.1 --port 13345 --data-dir C:\\Users\\u\\sandbox-run1\\.beads\\embeddeddolt';
+    const outOfScopeCmdLine = 'C:\\dolt.exe sql-server --host 127.0.0.1 --port 13346 --data-dir C:\\Users\\u\\OTHER-supervisor\\.beads\\embeddeddolt';
+
+    const sweep = createDoltOrphanSweep({
+        logger: silent,
+        ownerDataDirPrefix: OWNER_WIN,
+        listMembers: async () => ({ members: [{ name: 'w1', os: 'Windows 11' }] }),
+        execCommand: async ({ command }) => {
+            // Extract the REAL -like clause sweepOnce() just generated (PowerShell
+            // itself cannot run in this test env) and apply its ACTUAL semantics
+            // -- not a re-derivation -- to two fabricated candidate command lines.
+            const winScript = decodeWinCommand(command);
+            const likeMatch = winScript.match(/-like '(\*--data-dir\*.*?\*)'/);
+            assert.ok(likeMatch, 'the real generated command must carry the owner -like clause');
+            const likeRe = new RegExp(`^${likeMatch[1].split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'is');
+            const candidates = [
+                { pid: 111, cmd: inScopeCmdLine },
+                { pid: 222, cmd: outOfScopeCmdLine },
+            ];
+            const output = candidates
+                .filter((c) => likeRe.test(c.cmd))
+                .map((c) => `ORPHAN:${c.pid}:${c.cmd}`)
+                .join('\n');
+            return { ok: true, output };
+        },
+    });
+
+    const result = await sweep.sweepOnce();
+    assert.equal(result.killed.length, 1, 'only the in-scope process must be reported killed, not the other supervisor instance`s process');
+    assert.equal(result.killed[0].pid, 111);
+    assert.match(result.killed[0].commandLine, /sandbox-run1/);
+});
