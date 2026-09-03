@@ -410,3 +410,83 @@ test('sweepOnce (win32), applying the ACTUAL generated -like clause, kills only 
     assert.equal(result.killed[0].pid, 111);
     assert.match(result.killed[0].commandLine, /sandbox-run1/);
 });
+
+// =============================================================================
+// apra-fleet-5co8.42: dolt-orphan-sweep's file-header KNOWN LIMIT says that
+// when dolt-settle.mjs's resolveDoltStatus falls back to its unknown-mode
+// parse, the spawned `dolt sql-server` command line carries a RELATIVE
+// --data-dir, so an owner prefix (an absolute path) can never match it and
+// an owner-scoped sweep silently selects nothing for that member. The
+// direction is FAIL-SAFE: a miss here means the sweep kills nothing for that
+// candidate, never that it kills a foreign process by accident (the owner
+// clause can only narrow the -like/awk match, never widen it to something
+// unrelated). These tests pin that documented limit at the sweepOnce() seam
+// -- executing the REAL generated probe (the same one the tests above use),
+// not a re-derivation of the matching logic -- so a future change cannot
+// silently turn "misses nothing" into "kills a foreign process".
+// =============================================================================
+
+test('sweepOnce (posix): a RELATIVE --data-dir candidate is excluded (fail-safe miss), while the SAME owner`s absolute --data-dir candidate is still selected', { skip: process.platform === 'win32' ? 'requires a real bash/awk to execute the generated posix probe' : false }, async () => {
+    const OWNER = '/tmp/sandbox-run1';
+    // Known-limit case: resolveDoltStatus's unknown-mode fallback emits a
+    // bare relative default with no owner marker at all.
+    const relativeCmdLine = 'dolt sql-server --host 127.0.0.1 --port 13345 --data-dir .beads/embeddeddolt';
+    // Sibling case, same owner, absolute --data-dir: proves the miss above
+    // is the documented relative-path limit, not a dead/broken code path.
+    const absoluteCmdLine = `dolt sql-server --host 127.0.0.1 --port 13346 --data-dir ${OWNER}/.beads/embeddeddolt`;
+
+    const sweep = createDoltOrphanSweep({
+        logger: silent,
+        ownerDataDirPrefix: OWNER,
+        listMembers: async () => ({ members: [{ name: 'm1', os: 'linux' }] }),
+        execCommand: async ({ command }) => {
+            const awkStage = command.split(' | tee /dev/stderr')[0].replace(/^ps -eo pid=,etimes=,args= \| /, '');
+            const psLine1 = `111 99999 ${relativeCmdLine}`;
+            const psLine2 = `222 99999 ${absoluteCmdLine}`;
+            const pipeline = `printf '%s\n%s\n' "${psLine1}" "${psLine2}" | ${awkStage}`;
+            const out = execFileSync('bash', ['-c', pipeline], { encoding: 'utf8' });
+            return { ok: true, output: out };
+        },
+    });
+
+    const result = await sweep.sweepOnce();
+    // FAIL-SAFE assertion: the relative-data-dir candidate (pid 111) must be
+    // MISSING from `killed` -- a miss, meaning nothing is touched for it --
+    // never present under a mismatched identity (which would mean some
+    // OTHER process got killed instead).
+    assert.equal(result.killed.length, 1, 'only the absolute-data-dir, same-owner candidate is selected; the relative-data-dir candidate is a fail-safe miss, not a kill of something else');
+    assert.equal(result.killed[0].pid, 222, 'the relative-data-dir candidate (pid 111) must never appear here');
+    assert.match(result.killed[0].commandLine, /sandbox-run1/);
+});
+
+test('sweepOnce (win32): a RELATIVE --data-dir candidate is excluded (fail-safe miss), while the SAME owner`s absolute --data-dir candidate is still selected', async () => {
+    const OWNER_WIN = String.raw`C:\Users\u\sandbox-run1`;
+    const relativeCmdLine = String.raw`"C:\dolt.exe" sql-server --host 127.0.0.1 --port 13345 --data-dir .beads\embeddeddolt`;
+    const absoluteCmdLine = String.raw`"C:\dolt.exe" sql-server --host 127.0.0.1 --port 13346 --data-dir ${OWNER_WIN}\.beads\embeddeddolt`;
+
+    const sweep = createDoltOrphanSweep({
+        logger: silent,
+        ownerDataDirPrefix: OWNER_WIN,
+        listMembers: async () => ({ members: [{ name: 'w1', os: 'Windows 11' }] }),
+        execCommand: async ({ command }) => {
+            const winScript = decodeWinCommand(command);
+            const likeMatch = winScript.match(/-like '(\*--data-dir\*.*?\*)'/);
+            assert.ok(likeMatch, 'the real generated command must carry the owner -like clause');
+            const likeRe = new RegExp(`^${likeMatch[1].split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'is');
+            const candidates = [
+                { pid: 111, cmd: relativeCmdLine },
+                { pid: 222, cmd: absoluteCmdLine },
+            ];
+            const output = candidates
+                .filter((c) => likeRe.test(c.cmd))
+                .map((c) => `ORPHAN:${c.pid}:${c.cmd}`)
+                .join('\n');
+            return { ok: true, output };
+        },
+    });
+
+    const result = await sweep.sweepOnce();
+    assert.equal(result.killed.length, 1, 'only the absolute-data-dir, same-owner candidate is selected; the relative-data-dir candidate is a fail-safe miss, not a kill of something else');
+    assert.equal(result.killed[0].pid, 222, 'the relative-data-dir candidate (pid 111) must never appear here');
+    assert.match(result.killed[0].commandLine, /sandbox-run1/);
+});
