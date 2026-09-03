@@ -205,7 +205,51 @@ RESERVED for T2. (INV-02, INV-07)
 
 ### 4.3 Directive quarantine
 
-RESERVED for T2. (INV-03)
+**THE RULE.** A provider MUST accept a `type='user-directive'` capture and
+MUST store it as a pending proposal rather than as requested: confidence
+forced to UNVERIFIED, `flagged_for_review` set, a `directive:pending` tag
+added, and `scope` forced to `project` whatever scope was asked for. A
+provider MUST NOT refuse the capture, and MUST NOT offer any operation that
+activates a directive. (INV-03)
+
+**THE PROOF.** One block at the provider entry point does all four:
+`src/services/knowledge/sqlite-provider.ts:806-818` -- `confidence:
+'UNVERIFIED'` (`:813`), `flagged_for_review: true` (`:814`), `scope:
+'project'` (`:815`), and `directive:pending` appended when not already
+present (`:807-810`). It rewrites `input` and falls through; it never throws,
+so the call returns an id, and the HTTP capture route reaching that same code
+answers `201` (`src/commands/kb-server.ts:136-143`, provider call at `:142`).
+The refusing siblings of this one policy are separate sites that DO throw:
+`kb_promote` at `:1353-1357` and contradiction resolution at `:1569-1571`
+(`E-PROMOTE-REFUSED-DIRECTIVE`, `E-RESOLVE-DIRECTIVE-PAIR`).
+
+**THE OBLIGATION.** A second implementation MUST enforce this at its
+provider-level capture entry point, NOT in a request handler. Three of this
+kernel's four capture call sites -- `src/tools/kb-harvest.ts:148`,
+`src/tools/kb-import.ts:224`, and the HTTP route above -- never pass through
+`src/tools/kb-capture.ts`, so a handler-level check is bypassed by most
+capture traffic; the scope force at `src/tools/kb-capture.ts:74` is redundant
+UX copy, not the enforcement point. It MUST NOT report the transformation as
+a failure. That is the trap: quarantine reads like a refusal and is not one,
+so projecting `E-DIRECTIVE-QUARANTINE` onto the wire yields a server that
+rejects a capture this kernel accepts.
+
+**THE POLICY.** Directive activation is human-only, permanently. No server
+route will ever activate a captured directive; activation lives only on the
+CLI (`methods.json`'s `not_in_scope` set), which is structurally a human-only
+surface. The guarantee is the ABSENCE of the capability, not a guarded
+version of it, and absence is strictly stronger than any authenticated route
+could be: a route that always refuses still has a handler to reach, a
+credential to steal and an authorization check to get wrong. There is nothing
+here to compromise because there is nothing here. An implementation MUST NOT
+add such a route, not even a refusing one (see 3.5).
+
+**THE TEST HOOK.** `directive-smuggling-impossible` -- capture a
+`user-directive` through every capture path, assert each call SUCCEEDS with
+an id, then read the entry back and assert UNVERIFIED, flagged,
+`directive:pending`, project scope. The read-back is load-bearing: the
+capture response exposes none of the forced fields, so the effect is
+observable only through a later `kb_list` (`tests/DEGRADATION.md` D-8).
 
 ### 4.4 Superseding and AUDN matching
 
