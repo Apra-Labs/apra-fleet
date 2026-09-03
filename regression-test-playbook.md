@@ -360,31 +360,58 @@ directly, matching the convention the rest of `## Setup` already uses
 ```bash
 export SUPERVISOR_PORT=18701
 export FLEET_SE_DATA_DIR="$HOME/.apra-fleet-se-data"
+# Owner-scopes this instance's dolt-orphan-sweep to the sandbox (see the
+# hazard note below). Every member this supervisor can enumerate lives
+# under the sandbox HOME, so its ephemeral dolt sql-servers do too.
+export FLEET_SE_SWEEP_OWNER_DATA_DIR="$HOME"
 mkdir -p "$FLEET_SE_DATA_DIR"
 ```
 
-**dolt-orphan-sweep cross-instance hazard -- accepted, time-bounded
-mitigation.** The supervisor's `dolt-orphan-sweep` seam
-(`packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs`) scopes
+**dolt-orphan-sweep cross-instance hazard -- now fixed in code, and still
+time-bounded as belt-and-braces.** The supervisor's `dolt-orphan-sweep`
+seam (`packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs`) scopes
 `listMembers()` to whatever fleet server this process's `HOME` resolves to
 (the sandbox's own, per the override above -- so it will only ever
-enumerate `toy-doer`), but its actual probe/kill command is a MACHINE-WIDE
-process scan filtered only by port range (`13300-13400`) and process age
-(`DEFAULT_MAX_AGE_MS`, 10 minutes) -- NOT by which supervisor instance or
-`FLEET_SE_DATA_DIR` owns the process. There is no deps-level seam in
-`bin/serve.mjs`/`fleet-se serve` to disable or re-scope this sweep today
-(mitigation options (a) code patch and (c) disable-via-override from the
-bead are both unavailable without a source change out of this playbook's
-scope), so this test takes mitigation (b): the sweep runs on EVERY tick of
-its `DEFAULT_SWEEP_INTERVAL_MS` (5-minute) timer once started, with no
-immediate first pass -- so as long as this sandbox's supervisor process
-never lives to see a single tick, the sweep never runs at all during this
-test. `SUPERVISOR_STARTED_AT` below records the boot time, and this bound
-is HARD-ENFORCED, not merely asserted: `## Test scenario` step 4's sprint
-poll loop stops polling and shuts the supervisor down itself once uptime
-reaches 280s (before the 300s/5-minute tick), rather than relying on its
-360s poll deadline plus the ~30s boot time never crossing 300s in practice
-(they can -- 30s boot + 360s poll is ~6.5 minutes). `## Teardown`'s
+enumerate `toy-doer`), but its actual probe/kill command USED to be a
+MACHINE-WIDE process scan filtered only by port range (`13300-13400`) and
+process age (`DEFAULT_MAX_AGE_MS`, 10 minutes) -- NOT by which supervisor
+instance owns the process. That is mitigation option (a) from the bead, and
+it has now LANDED as a code-level scope fix: `buildSweepCommand()` takes an
+owner data-dir prefix, and `bin/serve.mjs` wires it from the
+`FLEET_SE_SWEEP_OWNER_DATA_DIR` export above. With it set, BOTH shell
+families (the win32 PowerShell `-like` clause and the POSIX `awk
+index($0, owner)` clause) additionally require the candidate's
+`--data-dir` to sit under the sandbox root, so this instance cannot kill a
+different, live supervisor's ephemeral server. The seam is opt-in on
+purpose: the ephemeral server's `--data-dir` is the MEMBER's beads data dir,
+which for a real remote member has no relation to the supervisor's own data
+dir, so scoping it unconditionally would silently turn the production sweep
+into a no-op.
+
+Two residual limits keep the old time bound worth having:
+
+* Under `dolt-settle.mjs`'s `unknown` status-parse fallback the spawned
+  command line carries only the RELATIVE default data dir, so it matches no
+  prefix at all. That direction is fail-safe -- the sweep skips rather than
+  kills a foreign process -- but it means the owner-scoped sweep is INERT
+  for that case, exactly the blind spot `scripts/reap-sandbox-dolt.mjs`
+  covers in `## Teardown` with a recency bound instead.
+* The scope fix depends on the export above actually being in this
+  supervisor's environment; a run that boots the supervisor by hand without
+  it is back to the machine-wide scan.
+
+So the time bound stays, now as belt-and-braces rather than the only
+defence: the sweep runs on EVERY tick of its `DEFAULT_SWEEP_INTERVAL_MS`
+(5-minute) timer once started, with no immediate first pass -- so as long
+as this sandbox's supervisor process never lives to see a single tick, the
+sweep never runs at all during this test. `SUPERVISOR_STARTED_AT` below
+records the boot time, and this bound is HARD-ENFORCED, not merely
+asserted: `## Test scenario` step 4's sprint poll loop stops polling and
+shuts the supervisor down itself once uptime reaches 280s (before the
+300s/5-minute tick), rather than relying on its 360s poll deadline plus the
+~30s boot time never crossing 300s in practice (they can -- 30s boot + 360s
+poll is ~6.5 minutes). That 280s stop is deliberately KEPT as-is; it also
+bounds how long a stuck toy sprint may run. `## Teardown`'s
 `SUPERVISOR_UPTIME >= 300` check remains as a belt-and-suspenders
 after-the-fact confirmation.
 
@@ -601,9 +628,11 @@ export APRA_FLEET_PORT=18700
 # still held by this run's dying instance; releasing the lock first would
 # let a new run's kill-port.mjs guard race this shutdown. This also
 # confirms the dolt-orphan-sweep time bound documented in ## Setup actually
-# held for this run (a loud warning, not a failure: the sweep only ACTS if
-# it also finds an aged dolt sql-server in its port range, which this
-# sandbox's own dolt processes never are by the time we get here).
+# held for this run (a loud warning, not a failure: the sweep is now
+# owner-scoped in code to $FLEET_SE_SWEEP_OWNER_DATA_DIR -- see ## Setup's
+# hazard note -- and it only ACTS if it also finds an aged dolt sql-server
+# in its port range, which this sandbox's own dolt processes never are by
+# the time we get here).
 if [ -f "$SANDBOX.supervisor.pid" ] && [ -f "$SANDBOX.supervisor.started_at" ]; then
   SUPERVISOR_PID="$(cat "$SANDBOX.supervisor.pid")"
   SUPERVISOR_STARTED_AT="$(cat "$SANDBOX.supervisor.started_at")"
@@ -614,8 +643,9 @@ if [ -f "$SANDBOX.supervisor.pid" ] && [ -f "$SANDBOX.supervisor.started_at" ]; 
          "dolt-orphan-sweep's 5-minute tick) -- the accepted time-bound" \
          "mitigation from ## Setup did not hold this run. File this per" \
          "'## Reporting failures' below as a carry-over bug (not just slow" \
-         "-- the sweep may have run against other live processes on this" \
-         "machine)." >&2
+         "-- the sweep may have run, and its code-level owner scope only" \
+         "holds if FLEET_SE_SWEEP_OWNER_DATA_DIR was exported for this" \
+         "supervisor)." >&2
   fi
   curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/shutdown" > /dev/null 2>&1 || true
   DEADLINE=$(( $(date +%s) + 10 ))
@@ -1020,19 +1050,21 @@ fleet-sprint` CLI. `FLEET_SE_DATA_DIR` is overridden to a sandbox-local
 directory for that process (`$SANDBOX/.apra-fleet-se-data`) so its
 reservation ledger/history/logs never mix with a real, already-running
 supervisor's own data dir. That directory override is NOT, by itself,
-enough to fully isolate the supervisor's `dolt-orphan-sweep` seam --
-see the dolt-orphan-sweep hazard note in `## Setup`'s supervisor-boot
-subsection for the actual mitigation this playbook takes (a time-bounded
-supervisor lifetime, not a code-level scope fix) and why: `dolt-orphan-
+enough to isolate the supervisor's `dolt-orphan-sweep` seam: `dolt-orphan-
 sweep.mjs`'s `listMembers()` is scoped correctly (via the HOME-scoped
 fleet server this supervisor process resolves against), but its probe/kill
-command is a MACHINE-WIDE process scan filtered only by port range
+command was a MACHINE-WIDE process scan filtered only by port range
 (`13300-13400`, `SETTLE_PORT_RANGE`) and age (`DEFAULT_MAX_AGE_MS`), not by
-`FLEET_SE_DATA_DIR` or supervisor instance. Mitigation options (a) (patch
-the sweep to also filter by owner/tag) and (c) (a deps-level seam to
-disable the sweep for one instance) both require a source change outside
-this playbook's scope and remain open follow-up work if the accepted
-time-bound mitigation ever proves insufficient.
+`FLEET_SE_DATA_DIR` or supervisor instance. That is no longer open follow-up
+work: mitigation option (a) has LANDED as a code-level scope fix --
+`buildSweepCommand()` takes an owner data-dir prefix that both shell
+families enforce, and `bin/serve.mjs` wires it from the deps-level seam
+`FLEET_SE_SWEEP_OWNER_DATA_DIR`, which `## Setup` exports as the sandbox
+root. See the dolt-orphan-sweep hazard note in `## Setup`'s supervisor-boot
+subsection for the two residual limits (the relative-data-dir parse
+fallback matches no prefix, and the scope holds only where that export is
+actually set) and for why the time-bounded supervisor lifetime is kept
+alongside it as belt-and-braces rather than removed.
 
 ## Adding new features to this test
 

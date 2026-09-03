@@ -228,3 +228,78 @@ test('the supervisor starts and stops the sweep as a first-class seam', async ()
     await supervisor.stop('test');
     assert.deepEqual(events, ['start', 'stop'], 'the sweep seam must be started with the supervisor and stopped with it');
 });
+
+// =============================================================================
+// apra-fleet-5co8.33: owner scope -- the sweep must never kill an ephemeral
+// dolt sql-server belonging to a DIFFERENT supervisor instance on the same
+// machine. Opt-in via ownerDataDirPrefix (bin/serve.mjs wires it from
+// FLEET_SE_SWEEP_OWNER_DATA_DIR); unset, behaviour is machine-wide as before.
+// =============================================================================
+
+test('the owner constraint appears in BOTH shell families when a prefix is given, and in neither when it is not', () => {
+    const winScoped = decodeWinCommand(buildSweepCommand('win32', DEFAULT_MAX_AGE_MS, 'C:\\sandbox\\run1'));
+    assert.match(winScoped, /-like '\*--data-dir\*C:\\sandbox\\run1\*'/, 'win32 probe must carry the owner data-dir constraint');
+    assert.doesNotMatch(winScoped, /CommandLine -match '[^']*sandbox/, 'the owner constraint must NOT be a regex operator -- it would clobber $Matches, which the port bound reads');
+    assert.match(winScoped, /-ge 13300 -and \[int\]\$Matches\[1\] -le 13399/, 'the exact numeric port bound is unchanged by the owner constraint');
+
+    const posixScoped = buildSweepCommand('posix', DEFAULT_MAX_AGE_MS, '/tmp/sandbox/run1');
+    assert.match(posixScoped, /-v owner='\/tmp\/sandbox\/run1'/, 'posix probe must pass the owner prefix via awk -v, never spliced into the program');
+    assert.match(posixScoped, /index\(\$0, owner\) > 0/, 'posix probe must use a LITERAL substring test, not a regex');
+    assert.match(posixScoped, /lo=13300/);
+    assert.match(posixScoped, /hi=13399/);
+
+    // Unscoped (production default) is byte-identical to the pre-fix command.
+    assert.doesNotMatch(decodeWinCommand(buildSweepCommand('win32')), /--data-dir/);
+    assert.doesNotMatch(buildSweepCommand('posix'), /owner/);
+});
+
+test('a foreign-data-dir server is excluded while a same-owner one is still killed', () => {
+    const OWNER_WIN = 'C:\\Users\\u\\sandbox-run1';
+    const OWNER_POSIX = '/tmp/sandbox-run1';
+
+    // Windows: reproduce the -like semantics the generated PowerShell applies
+    // (case-insensitive, literal, wildcards only where we put them), since
+    // PowerShell cannot be executed in this test env.
+    const winScript = decodeWinCommand(buildSweepCommand('win32', DEFAULT_MAX_AGE_MS, OWNER_WIN));
+    const likePattern = winScript.match(/-like '(\*--data-dir\*.*?\*)'/)[1];
+    const likeRe = new RegExp(`^${likePattern.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'is');
+    const winCmdLine = (dataDir) => `"C:\\dolt.exe" sql-server --host 127.0.0.1 --port 13345 --data-dir "${dataDir}"`;
+    assert.equal(likeRe.test(winCmdLine('C:\\Users\\u\\sandbox-run1\\.beads\\embeddeddolt')), true, 'this instance`s own server must still be killed');
+    assert.equal(likeRe.test(winCmdLine('C:\\Users\\u\\OTHER-supervisor\\.beads\\embeddeddolt')), false, 'another supervisor instance`s server must NOT be killed');
+    assert.equal(likeRe.test(winCmdLine('.beads\\embeddeddolt')), false, 'the relative-data-dir fallback carries no owner marker -- excluded (fail-safe)');
+
+    // POSIX: actually run the generated awk against fabricated `ps` lines.
+    if (process.platform !== 'win32') {
+        const runAwk = (dataDir) => {
+            const cmd = buildSweepCommand('posix', 0, OWNER_POSIX);
+            const awkStage = cmd.split(' | tee /dev/stderr')[0].replace(/^ps -eo pid=,etimes=,args= \| /, '');
+            const psLine = `999 9999 dolt sql-server --host 127.0.0.1 --port 13345 --data-dir ${dataDir}`;
+            const out = execFileSync('bash', ['-c', `printf '%s' "${psLine}" | ${awkStage}`], { encoding: 'utf8' });
+            return out.includes('ORPHAN:999:');
+        };
+        assert.equal(runAwk('/tmp/sandbox-run1/.beads/embeddeddolt'), true, 'this instance`s own server must still be killed (awk)');
+        assert.equal(runAwk('/tmp/OTHER-supervisor/.beads/embeddeddolt'), false, 'another supervisor instance`s server must NOT be killed (awk)');
+        assert.equal(runAwk('.beads/embeddeddolt'), false, 'the relative-data-dir fallback is excluded (awk, fail-safe)');
+    }
+});
+
+test('sweepOnce propagates the owner prefix into every member`s probe', async () => {
+    const issued = [];
+    const sweep = createDoltOrphanSweep({
+        logger: silent,
+        ownerDataDirPrefix: '  /tmp/sandbox-run1  ',
+        listMembers: async () => ({ members: [{ name: 'w', os: 'Windows 11' }, { name: 'l', os: 'linux' }] }),
+        execCommand: async ({ member, command }) => { issued.push({ member, command }); return { ok: true, output: '' }; },
+    });
+    assert.equal(sweep.ownerDataDirPrefix, '/tmp/sandbox-run1', 'the prefix is trimmed once at construction');
+    await sweep.sweepOnce();
+    assert.match(decodeWinCommand(issued[0].command), /-like '\*--data-dir\*\/tmp\/sandbox-run1\*'/);
+    assert.match(issued[1].command, /-v owner='\/tmp\/sandbox-run1'/);
+
+    const unscoped = createDoltOrphanSweep({
+        logger: silent,
+        listMembers: async () => ({ members: [{ name: 'l', os: 'linux' }] }),
+        execCommand: async () => ({ ok: true, output: '' }),
+    });
+    assert.equal(unscoped.ownerDataDirPrefix, null, 'unset (production default) stays machine-wide');
+});

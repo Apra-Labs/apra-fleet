@@ -18,6 +18,7 @@
 // =============================================================================
 
 import { parseArgs } from 'node:util';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
@@ -59,6 +60,14 @@ termination signal (Ctrl-C / SIGTERM).
 Options:
       --port <port>   HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
   -h, --help          Show this help message.
+
+Environment:
+  FLEET_SE_DATA_DIR                 Service data dir (ledger/history/logs).
+  FLEET_SE_SWEEP_OWNER_DATA_DIR     Scope the dolt-orphan-sweep to ephemeral
+                                    dolt sql-servers whose --data-dir is under
+                                    this path, so an isolated supervisor
+                                    instance never kills another instance's
+                                    server. Unset = machine-wide (default).
 `.trim();
 
 /**
@@ -259,9 +268,27 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // collaborators use the same short-lived-MCP-connection pattern as
     // listFleetMembers -- the supervisor never holds a standing fleet
     // transport.
+    // apra-fleet-5co8.33: `FLEET_SE_SWEEP_OWNER_DATA_DIR` is the deps-level
+    // scope seam for that sweep. Unset (production default) the probe/kill
+    // command stays machine-wide -- it must be, because the ephemeral server's
+    // `--data-dir` belongs to the MEMBER (dolt-settle.mjs reads it from
+    // `bd dolt status` there), so a remote member's data dir has no relation to
+    // this supervisor's own FLEET_SE_DATA_DIR and deriving a prefix from the
+    // latter would silently make the sweep a no-op everywhere. Set (an isolated
+    // instance -- e.g. regression-test-playbook.md's sandbox supervisor, whose
+    // HOME and members all live under one root) it constrains candidates to
+    // processes whose `--data-dir` is under that root, so this instance can
+    // never kill another live supervisor's ephemeral server.
+    const sweepOwnerDataDir = process.env.FLEET_SE_SWEEP_OWNER_DATA_DIR
+        ? path.resolve(process.env.FLEET_SE_SWEEP_OWNER_DATA_DIR)
+        : null;
+    if (sweepOwnerDataDir) {
+        console.log(`[dolt-orphan-sweep] owner-scoped to data dirs under '${sweepOwnerDataDir}' (FLEET_SE_SWEEP_OWNER_DATA_DIR).`);
+    }
     const doltOrphanSweep = createDoltOrphanSweep({
         listMembers: () => listFleetMembers({ resolveConnection: resolveFleetServerConnection }),
         execCommand: ({ member, command }) => executeFleetCommand({ member, command, resolveConnection: resolveFleetServerConnection }),
+        ownerDataDirPrefix: sweepOwnerDataDir,
     });
 
     const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep });
