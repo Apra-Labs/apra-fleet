@@ -201,7 +201,90 @@ RESERVED for T2. (INV-05, INV-06)
 
 ### 4.2 Capture provenance and confidence clamp
 
-RESERVED for T2. (INV-02, INV-07)
+**THE RULE.** A provider MUST cap confidence at INFERRED on an ordinary
+capture: an incoming `confidence: CONFIRMED` MUST be downgraded to INFERRED,
+MUST set `confidence_clamped: true` in the `kb_capture` response, and MUST
+append a bracketed note to the stored content. CONFIRMED MAY be minted by the
+promotion path (`kb_promote`) and MAY additionally survive on a dedicated
+bible-import path, because that path is a separately-trusted, human-reviewed
+channel -- but that exemption MUST be reachable only through an internal,
+non-serializable flag, never a field a caller can set on the request body. A
+closed Author enum MUST gate `role` server-side even though the request
+schema leaves it open; any value outside it, including an absent hint, MUST
+be stamped as the literal `unknown`. `source` MUST be derived from the
+validated role and type and MUST NOT be accepted from the caller. Admission
+-- whether an entry cites a checkable basis at all -- is a distinct gate
+enforced at the same provider entry point, not part of this clamp, but this
+is the invariant 4.3 defers it to for the directive case: a directive citing
+zero files is exempt (4.3's basis exemption), but a directive citing files
+that do not resolve is refused the same as any other type
+(`E-BASIS-MISSING-FILES`; a non-directive citing zero files is refused under
+`E-NO-BASIS`, admission group). (INV-02, INV-07)
+
+**THE PROOF.** The request schema still accepts `CONFIRMED` as an input value
+(`src/tools/kb-capture.ts:39-40`) -- that is the trap: honoring it verbatim is
+schema-faithful but non-conforming. The clamp exists at two sites with
+DIFFERENT scopes. The tool handler, `src/tools/kb-capture.ts:99-107`,
+downgrades `confidence`, sets `confidence_clamped`, and appends
+`'\n\n[confidence clamped: CONFIRMED requires kb_promote]'` to content --
+unconditionally, for every `type` including `user-directive`, and only for
+calls that reach this handler (the `kb_capture` MCP tool; `kb_harvest`,
+`kb_import`, and the HTTP route never populate `confidence_clamped` at all).
+The provider choke point, `src/services/knowledge/sqlite-provider.ts:889-895`,
+re-enforces the downgrade for every route that reaches `capture()` --
+`kb_capture`, `kb_harvest`, `kb_import`, and the HTTP `/api/kb/capture` route,
+which calls `provider.capture()` directly and bypasses the tool handler
+entirely (comment at `:845-855` names this explicitly) -- but its condition,
+`!opts?.importMode && input.type !== 'user-directive' && input.confidence ===
+'CONFIRMED'` (`:889`), carries two exemptions the handler does not have.
+`type === 'user-directive'` is excluded because the directive gate
+(`:806-818`) has already forced that entry's confidence to UNVERIFIED before
+this check runs, overriding whatever the handler set. `!opts?.importMode` is
+excluded because a bible import keeps its stored confidence, including
+CONFIRMED (comment `:877-886`): the bible is a git-reviewed, human-merged
+artifact, and re-clamping would demote a whole team's already-earned trust on
+every import. `importMode` is the SECOND parameter of `capture()`, never a
+field of the deserialized request body, so no caller reaching `capture()`
+through a route can set it (`:878-881`). Provenance: `AUTHOR_VALUES`
+(`src/tools/kb-capture.ts:11`) and `validateAuthor`
+(`src/tools/kb-capture.ts:16-21`) gate `role` against the closed set `doer,
+reviewer, planner, plan-reviewer, kb-agent, kb-reconciler, harvest, pm, user`;
+anything else, or an absent hint, returns the literal `'unknown'`. `source` is
+computed at `src/tools/kb-capture.ts:117-122` from the validated `author` and
+`type` -- `'user-directive'` for a directive, `'review'` when `author ===
+'reviewer'`, else `'session'` -- and is never read from `input`. Admission is
+a separate check at the same provider entry point (`assertCheckableBasis`,
+`src/services/knowledge/sqlite-provider.ts:843`, body at `:334-356`): the
+zero-files half exempts `type === 'user-directive'` (`:337-338`, returns
+early), but the unresolvable-files half (`:347-355`) has no type exemption
+and still refuses a directive whose cited files do not exist.
+
+**THE OBLIGATION.** A second implementation MUST enforce the clamp at its
+provider-level capture entry point, not only in a request handler: trusting a
+client-declared CONFIRMED does not conform, because any route that reaches
+storage without passing through the handler would otherwise mint CONFIRMED
+directly. Only two categories may keep an incoming CONFIRMED at that entry
+point: a value written by the promotion path itself, and a bible import
+running under an internal, non-forgeable import flag. `type='user-directive'`
+MUST NOT be coded as a third, independent exemption; it is unaffected only
+because the directive gate runs first and already forced it to UNVERIFIED, and
+an implementation MUST preserve that ordering rather than special-casing
+directives in the clamp condition itself. It MUST close the Author enum
+server-side despite the open schema field, and MUST NOT let a caller set
+`source` directly. Rejecting an entry that cites no source files
+(`E-NO-BASIS`, non-directive only), or one whose cited files do not resolve
+in the worktree (`E-BASIS-MISSING-FILES`, every type including directives),
+is admission's rule, not this clamp's -- but a conforming implementation MUST
+still enforce both halves at this same entry point, since 4.3's directive
+exemption is only the zero-files half and depends on the unresolvable-files
+half still applying.
+
+**THE TEST HOOK.** `clamp` -- for `kb_capture`, assert a request carrying
+`confidence: CONFIRMED` returns `confidence_clamped: true`; for every
+non-import, non-directive route (`kb_capture`, `kb_harvest`, the HTTP capture
+route), assert the entry reads back at INFERRED regardless of what the
+response body reported; separately assert a bible import retains CONFIRMED
+untouched.
 
 ### 4.3 Directive quarantine
 
@@ -266,7 +349,93 @@ RESERVED for T2. (INV-04)
 
 ### 4.5 Freshness and content hashing
 
-RESERVED for T2. (INV-01)
+**THE RULE.** An implementation that computes a whole-file `content_hash` for
+a capture MUST do so only when `type = 'context-cache'` AND `source_file` is
+present; for every other type, or when `source_file` is absent, it MUST NOT
+raise an error -- it MUST silently store no hash. That whole-file
+`content_hash` is a DIFFERENT value
+from the per-entry freshness basis, `source_file_hashes`: a provider MUST
+compute that basis at its capture entry point for every entry that cites
+`source_files`, independent of `type`, because it is what the freshness sweep
+actually reads -- a sweep wired off `content_hash` instead does not conform.
+A provider exposing a freshness sweep MUST report `{checked, staled,
+unstaled}`, MUST both stale entries on a basis mismatch AND revive
+previously-staled entries on a full basis match (bidirectional, not
+stale-only), and MUST yield no verdict when an anchor it was explicitly given
+does not exist on the current host. An implementation with no anchor
+configured at all is not bound by that withholding rule -- it MAY resolve
+basis paths against its own working directory instead. (INV-01)
+
+**THE PROOF.** The hashing gate is `src/tools/kb-capture.ts:58` -- `if
+(input.type === 'context-cache' && input.source_file)` -- guarding
+`computeFileHash` at `:59-64`; when the condition is false, `content_hash`
+stays the initialized empty string (`:55`) and is persisted as-is
+(`src/services/knowledge/sqlite-provider.ts:265`, `input.content_hash ?? ''`),
+with no error path anywhere in between. `capture()` itself never computes
+`content_hash` -- it only persists whatever value `input` already carries.
+`kb_harvest` and `kb_import` both pass it explicitly as `''`
+(`src/tools/kb-harvest.ts:132`, `src/tools/kb-import.ts:206`), so neither ever
+sets a real hash. The HTTP `/api/kb/capture` route is the exception: it
+parses the request body straight into `KBEntryInput` and passes it to
+`provider.capture()` unfiltered (`src/commands/kb-server.ts:138-142`), so an
+HTTP caller supplying its own `content_hash` field has it persisted verbatim,
+bypassing the `kb-capture.ts:58` gate entirely -- the gate is a `kb_capture`-
+handler convenience, not an enforced invariant of `capture()` itself. The
+freshness basis is a different value, computed unconditionally by
+`capture()` itself at `src/services/knowledge/sqlite-provider.ts:902`
+(`computeSourceFileHashes`; comment `:899-901`: "capture() is the single
+choke point every caller ... goes through, so every entry gets a hash basis
+here regardless of type") -- this is what `freshnessSweep` reads, never
+`content_hash` (comment at `:464`: "NOT content_hash, which is only ever set
+for context-cache entries"). `freshnessSweep` (`:586-652`) returns exactly
+`{checked, staled, unstaled}` (`:651`), where `checked` counts entries with a
+non-empty, parseable stored basis (`:622-624`). Staling and reviving share
+one predicate pair: `basisFullyMatches` (`:437-448`, full-basis-only -- an
+empty basis or any single non-matching file never matches) decides the
+mismatch/match, and `freshnessRevivable` (`:417-428`, excludes superseded,
+feedback-flagged, `content_hash='invalidated'`, or durable-downvote-marked
+entries) gates which matches are allowed to revive. The anchor check,
+`anchorIsMissing` (`:325-327`, `anchor !== undefined && !fs.existsSync(anchor)`),
+only withholds a verdict when an anchor IS resolved (an explicit `root`
+argument, or the provider's own configured `repoPath`) and that path does not
+exist on disk (`:588`); when no anchor is configured at all -- `root` omitted
+and the provider has no `repoPath`, the shared global KB's case --
+`anchorIsMissing` returns false and the sweep proceeds, resolving relative
+basis paths against the process's own working directory (`:618`,
+`computeFileHashBatch([...fileSet], anchor ? { cwd: anchor } : undefined)`;
+comment `:583-585` names this the prior "implicit-cwd" behaviour, kept
+deliberately for that case). `src/tools/kb-invalidate.ts` drives explicit
+invalidation: the provider's `invalidate()` marks context-cache entries stale
+by setting `content_hash = 'invalidated'` for files named in a commit
+(`src/services/knowledge/sqlite-provider.ts:1119-1139`, the SET clause at
+`:1137`); the git hook that calls it is installed by
+`installKbPostCommitHook` (`src/tools/kb-invalidate.ts:25-32`), which
+`kb-setup.ts:31` invokes when `repo_path` is supplied -- hook installation is
+the only thing that `repo_path` argument does in `kb-setup.ts` (see 4.1).
+
+**THE OBLIGATION.** A second implementation MUST reproduce the silence, on
+the route that computes `content_hash` at all (`kb_capture`):
+`type='context-cache'` without `source_file` is a valid, successful capture
+that stores no `content_hash`, not an error. This hashing gate MUST NOT be
+conflated with the freshness basis -- `source_file_hashes`
+MUST be computed for every entry that cites `source_files`, regardless of
+`type` and regardless of whether `content_hash` was ever set. Freshness MUST be
+genuinely bidirectional -- an implementation that only stales and never
+revives does not conform -- and revival MUST require a FULL match of the
+stored basis (every cited file, not a majority) AND that the entry is not
+separately retired (superseded, flagged, or invalidated). An implementation
+MUST withhold a verdict when a specifically-configured anchor does not exist
+on the current host, but MAY fall back to an implicit working directory when
+no anchor was configured at all; collapsing that distinction into "always
+withhold" or "always fall back" does not conform.
+
+**THE TEST HOOK.** `freshness` -- capture an entry with a resolvable basis,
+mutate a cited file to force a mismatch and assert `staled` includes it,
+restore the file and assert a later sweep's `unstaled` revives it, repeat
+against a superseded/flagged/invalidated entry and assert it stays retired
+despite a full basis match, then assert a sweep against a configured-but-
+nonexistent anchor returns `{0, 0, 0}` while an unconfigured anchor still
+proceeds.
 
 ### 4.6 Query modes
 
