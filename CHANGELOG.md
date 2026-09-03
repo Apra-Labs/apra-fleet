@@ -2,21 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] -- Azure DevOps VCS auth: credential assembly, PR builders, and known gaps (sprint FAILED)
+## [Unreleased] -- Azure DevOps VCS auth: credential assembly, PR publish path, and regression-sandbox hardening (sprint FAILED)
 
 Sprint goal: make `provision_vcs_auth` and the fleet-sprint VCS layer support
 Azure DevOps end-to-end -- guided PAT creation and storage, provisioning a
 user's existing PAT to local and remote members, clean actionable surfacing
 of Azure DevOps auth failure modes, and doing all of it through the existing
-provider-abstraction rather than ad hoc conditionals.
+provider-abstraction rather than ad hoc conditionals -- alongside hardening
+the regression-test-playbook's sandbox lifecycle so it cannot collide with a
+real, concurrently-running supervisor on the same machine.
 
-**Verdict: FAIL.** The branch was red at handoff (a stale test pin asserting
-Azure DevOps is NOT pull-request-capable, contradicted by work landed later
-in the same sprint) and the scope issue's own epic-level acceptance criteria
-are not met -- the opt-in real end-to-end Azure DevOps lane and the mock-sprint
-coverage for consuming the provider's pull-request response mapping in the
-publish path are both still open. Treat everything below as landed-but-not-
-yet-proven-stable, not as a finished, user-facing Azure DevOps integration.
+**Verdict: FAIL.** Full-suite tests pass at branch head and the code quality
+on the named scope is high, but: both scope issues remain open (Azure DevOps
+VCS auth, P0; regression-sandbox hardening, P1); Deploy halted at its
+documented active-sprints precondition in every attempted cycle, so nothing
+in this sprint was ever verified against an installed build and the
+integration-test lane never ran; and several verify-routed items are still
+open and unverified end-to-end. Treat everything below as landed-but-not-
+yet-proven-stable, not as a finished, user-facing integration.
 
 What shipped:
 
@@ -48,35 +51,70 @@ What shipped:
   provider owning its own response-field mapping (Azure DevOps has no
   web-URL field and uses `pullRequestId`, not GitHub's `number`/`html_url`)
   and its own success/already-exists interpretation contract.
+- **The runner's publish path now consumes that provider-owned PR response
+  mapping** end to end, and mock-sprint gained hermetic coverage exercising
+  the publish path against canned Azure DevOps responses, plus an opt-in,
+  env-gated real end-to-end harness (provision, verify, publish) against a
+  live Azure DevOps org.
+- **Regression-test-playbook sandbox hardening**: a busy/stale/owner-release
+  sandbox lockfile guards the smoke-test sandbox against concurrent runs;
+  Setup now guards the toy dev server's port and a scripted, fail-loud
+  port-verification gate replaces a silent check; dolt-orphan-sweep kills
+  are scoped to the owning supervisor instance instead of a machine-wide
+  heuristic; and `start` now refuses to reuse an already-running server on a
+  version mismatch instead of silently continuing against a stale binary.
 - **Documentation**: `docs/design-azure-devops-vcs-auth.md` captures the
   credential-assembly seam, classification rules, PAT-lifetime handling, and
   a harness-vs-production quoting distinction worth knowing before assuming
-  an Azure DevOps test failure is a runtime bug.
+  an Azure DevOps test failure is a runtime bug; `docs/design-regression-
+  sandbox-lifecycle.md` (new) captures the sandbox's cross-instance isolation
+  design and the MSYS-vs-native pid mismatch invariant future contributors
+  must respect when adding any Windows liveness/lock check.
 
 Carried forward (filed as open issues, not blocking further sprints from
-starting, but blocking this epic's own completion):
+starting, but blocking these epics' own completion):
 
-- Consuming the provider-owned pull-request response mapping in the actual
-  publish path, and end-to-end mock-sprint coverage for that path.
-- The opt-in real (non-mocked) Azure DevOps end-to-end lane (provision,
-  verify, publish) is not yet built.
-- Publish PR currently re-throws the raw missing-PAT error instead of the
-  clean, actionable guidance the scope issue requires.
+- Deploy never completed in any cycle this sprint (halts at the active-
+  sprints precondition gate on its own reservation), so nothing landed here
+  has been verified against an installed build; a follow-up issue tracks
+  making the deploy runbook distinguish a sprint's own reservation from a
+  foreign one so this stops recurring.
+- Six verify-routed items are open and unverified end-to-end: the
+  `canOpenPullRequest` capability-table pin, the Azure DevOps
+  create-pull-request builder, server-reuse version-mismatch handling, the
+  sandbox lockfile, the port-3001 Setup guard, and the opt-in real
+  Azure DevOps end-to-end lane.
+- The sandbox lockfile's liveness check is not safely closable as-is: on
+  Git Bash on Windows -- the platform this sprint runs on -- a pid captured
+  from the shell's `$$` is an MSYS pid, but the liveness check uses a native
+  `process.kill(pid, 0)`, so a live holder can read as stale or an unrelated
+  native process can read as busy.
+- The mock-sprint unmocked-network-command guard still misses an
+  absolute-path curl/wget invocation.
 - A stale test pin asserting Azure DevOps is not pull-request-capable needs
-  removing now that PR-capability has landed.
-- Regression-pass carryover from this sprint's full-suite run (member
-  registry read failure in one integration test, a bd-replay recording drift
-  after a stall-watchdog fires, and a long-pole test-runtime-budget item)
-  are tracked as standalone, parent-less backlog and are unrelated to the
-  Azure DevOps scope itself.
+  removing now that PR-capability has landed and is exercised by a passing
+  test.
+- `.claude/settings.json` now grants a blanket `Edit`/`Write` permission to
+  every agent dispatch; this widening is not justified by any scope item
+  here and should be reviewed.
+- `dolt-orphan-sweep`'s owner-scope filter is inert when the sweep's data
+  directory falls back to a relative path -- a known, not-yet-test-pinned
+  gap.
+- Azure DevOps `testConnectivity` reports a skipped check as success in
+  provisioning output rather than distinguishing "skipped" from "verified".
+- Regression-pass carryover from this sprint's full-suite run (a resumed,
+  not freshly re-run, real-bd functional pass; an unrecoverable slow-lane
+  verdict after an orphaned background process could not be reaped; and
+  known Part-2 smoke-test blockers) is tracked as standalone, parent-less
+  backlog and is unrelated to the Azure DevOps/sandbox scope itself.
 
 ### Cost analysis
 
 Budget ceiling: not set (no --budget flag) -- unlimited for this run.
-Tracked spend (priced dispatches only): $33.9097.
+Tracked spend (priced dispatches only): $19.9785.
 Remaining budget: unknown/unbounded.
-Integ-test-runner spend: $0.5148 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
-Pricing source: all 55 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 38 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- Supervisor dashboard: live-refresh parity with the per-run viewer
