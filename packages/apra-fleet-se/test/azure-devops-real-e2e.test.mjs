@@ -172,7 +172,7 @@ test(
                 llm_provider: 'none',
                 unattended: 'dangerous',
                 unreservable: true,
-                tags: ['apra-fleet-5co8.6.2-real-e2e'],
+                tags: ['real-ado-e2e'],
                 // Force a POSIX-speaking shell on a Windows operator machine
                 // so every command below (git, echo >>) is dispatched the
                 // same way regardless of host OS -- see se-os-commands.mjs's
@@ -289,7 +289,7 @@ test(
                 base: cfg.baseBranch,
                 head: headBranch,
                 title: `apra-fleet real Azure DevOps E2E (${headBranch})`,
-                body: 'Opened by the opt-in real Azure DevOps E2E scenario (apra-fleet-5co8.6.2). Safe to close/abandon.',
+                body: 'Opened by the opt-in real Azure DevOps end-to-end test scenario. Safe to close/abandon.',
                 token,
                 os: target.os,
                 shell: target.shell,
@@ -328,8 +328,24 @@ test(
             if (memberRegistered) {
                 await apraFleet.removeMember({ member_name: memberName, force: true }).catch(() => {});
             }
-            await stop().catch(() => {});
-            fs.rmSync(workDir, { recursive: true, force: true });
+            // StdioTransport.stop() is SYNCHRONOUS and returns undefined (it
+            // only calls this.process.kill() and nulls the handle) -- it is
+            // not a Promise, so `await stop().catch(...)` throws a TypeError
+            // ("Cannot read properties of undefined (reading 'catch')") from
+            // inside this finally block on every run, including the enabled
+            // path. Call it synchronously and guard with try/catch instead,
+            // and keep the workDir cleanup in its own try/catch so a failure
+            // here can never skip it (or vice versa).
+            try {
+                stop();
+            } catch {
+                // best-effort teardown of the spawned server process
+            }
+            try {
+                fs.rmSync(workDir, { recursive: true, force: true });
+            } catch {
+                // best-effort cleanup of the throwaway checkout directory
+            }
         }
     },
 );
