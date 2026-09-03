@@ -1,15 +1,17 @@
 # memory-contract/v1 -- Specification
 
-Status: skeleton created by T1.3.1 (provider-method section authored by T1.3.1).
-This file has exactly two writers by design (see README.md's ownership note in
-`tests/GENERATOR-DECISION.md`): T1.3.1 owns "Envelope" and "Provider methods"
-below; T1.3.2 owns "Error model". Both live in lane `t1-contract-docs` so no
-third writer is ever added without a re-plan. RESERVED sections are placeholders
-for later tasks (T2, T3) and must not be filled in from this lane.
+Status: skeleton created by T1.3.1 (provider-method section authored by T1.3.1);
+section 4 ("Invariants") authored by T2.
+This file has exactly two writers by design for sections 1-3 (see README.md's
+ownership note in `tests/GENERATOR-DECISION.md`): T1.3.1 owns "Envelope" and
+"Provider methods" below; T1.3.2 owns "Error model". Both live in lane
+`t1-contract-docs` so no third writer is ever added to those sections without
+a re-plan. The RESERVED section 5 is a placeholder for a later task (T3) and
+must not be filled in from this lane.
 
 Trust-relevant behavior is POINTED AT here, not restated: each pointer below
 names the invariant and where the enforcing code lives, and defers the full
-rule text to the RESERVED "Invariants (T2)" subsections that own it, or to
+rule text to the "Invariants" subsections that own it, or to
 `methods.json`/`INVENTORY.md` where the mechanism is already documented in
 full. Do not copy invariant prose between this file, `methods.json`, and
 `INVENTORY.md` -- one sentence, one home.
@@ -185,14 +187,12 @@ contradiction resolution). Those are answers this server really gives, and
 hiding them would misdescribe live behavior. The invariant rule text for the
 quarantine itself lives in "Directive quarantine" below (T2).
 
-## 4. Invariants (T2, RESERVED)
+## 4. Invariants
 
-Placeholder umbrella for the six sections named below. Each is the spec.md
-home that an `x-invariant` id in `schemas/*.json` (see
-`tests/GENERATOR-DECISION.md` section 4) or a `see_also` pointer in
-`methods.json` resolves to. T2 owns writing the actual invariant rule text into
-these subsections; this task creates them empty/titled only, per the hand-off
-list in `tests/GENERATOR-DECISION.md` section 4 ("no invariant points anywhere
+Six subsections, each the spec.md home that an `x-invariant` id in
+`schemas/*.json` (see `tests/GENERATOR-DECISION.md` section 4) or a
+`see_also` pointer in `methods.json` resolves to -- per the hand-off list in
+`tests/GENERATOR-DECISION.md` section 4 ("no invariant points anywhere
 else").
 
 ### 4.1 Scope resolution and repo aliasing
