@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "08ad5f1554e1a401d77320bf63f7f579c527387a",
-    "branch": "chore/kb-bible-reconcile",
-    "entry_count": 24
+    "commit": "aebc13413bc6d74478dd4c9cd91befd8fc2ede37",
+    "branch": "feat/azure-devops-vcs-auth-v3",
+    "entry_count": 41
   },
   "entries": [
     {
@@ -24,7 +24,7 @@
         "src/types.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:31:31.679Z"
+      "updated_at": "2026-09-02T06:28:02.867Z"
     },
     {
       "id": "0f432ed4-a1fa-4185-8a5f-d7d62fe8cc5d",
@@ -41,7 +41,25 @@
         "src/services/knowledge/sqlite-provider.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:24:37.838Z"
+      "updated_at": "2026-09-02T06:28:03.001Z"
+    },
+    {
+      "id": "107afe50-ec60-4e99-b6b7-09c549658518",
+      "type": "knowledge",
+      "title": "A missing-anchor freshness regression surfaces first as kb_list dropping entries, not as a stale-flag assertion",
+      "summary": "In tests/knowledge/kb-remote-member-e2e.test.ts the four remote-member assertions live in one it(), so removing SqliteProvider's anchorIsMissing guard fails at the SAME DATABASE read-back (line 165) and never reaches the raw stale-row check (line 181).",
+      "symbols": [
+        "anchorIsMissing",
+        "checkFreshness",
+        "kbStats"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-remote-member-e2e.test.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-stats.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T06:28:05.904Z"
     },
     {
       "id": "130bc73b-fade-4d3a-8254-2ad3b2e1bfef",
@@ -53,7 +71,7 @@
         "src/services/knowledge/kb-providers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-17T20:10:22.938Z"
+      "updated_at": "2026-09-02T06:28:03.143Z"
     },
     {
       "id": "16ba5328-63a9-4f98-8614-fa3137afe2f3",
@@ -69,7 +87,7 @@
         "src/tools/execute-command.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:32:34.285Z"
+      "updated_at": "2026-09-02T06:28:03.283Z"
     },
     {
       "id": "1be49eaa-30f9-4ae0-917e-5b98d3d37eeb",
@@ -85,7 +103,7 @@
         "tests/check-sandbox-sync-remote.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:32:37.012Z"
+      "updated_at": "2026-09-02T06:28:03.426Z"
     },
     {
       "id": "202cd324-f6d9-42d0-b0a2-a4aa8e1741ef",
@@ -99,7 +117,21 @@
         "src/tools/provision-auth.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:24:37.822Z"
+      "updated_at": "2026-09-02T06:28:03.628Z"
+    },
+    {
+      "id": "21547d39-10a6-4133-b497-d0f82aee5e2a",
+      "type": "knowledge",
+      "title": "A throw from a mocked execute_command is degraded, not propagated, under failSoft",
+      "summary": "WorkflowEngine._commandDispatch converts a transport-level rejection into { ok: false, error: <message> } when opts.failSoft is set, so a fail-closed throw inside the mock-sprint harness surfaces as a soft failure message rather than unwinding the sprint.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T06:41:23.008Z"
     },
     {
       "id": "22e52be3-d44c-4c71-ae51-9f25a498af40",
@@ -114,7 +146,7 @@
         "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:35:33.037Z"
+      "updated_at": "2026-09-02T06:28:03.761Z"
     },
     {
       "id": "256b2dc0-4d08-40e9-b3c6-0f79dd824b8e",
@@ -134,23 +166,34 @@
         "src/tools/kb-stats.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:24:37.901Z"
+      "updated_at": "2026-09-02T06:28:03.871Z"
     },
     {
-      "id": "4406ee08-d77d-44a5-a5d2-83c9d02ba092",
+      "id": "2d4ffb90-4bd2-4b84-a143-c2b84dc4cb21",
       "type": "knowledge",
-      "title": "A fallback message sharing the assertion's alternate keyword makes a test vacuous",
-      "summary": "checkDoltRemoteAbsent's bd-unavailable fallback messages all contain the word \"unavailable\", so the old combined assertion /Dolt-level remotes|unavailable/ was satisfied on any machine without bd without ever reaching the parser under test. Merged main closes this by probing bd --version first and asserting the two cases separately. The reusable trap: never OR an assertion's success keyword with its own fallback keyword.",
-      "symbols": [
-        "checkDoltRemoteAbsent",
-        "parseDoltRemoteList"
-      ],
+      "title": "The supervisor's dolt-orphan-sweep arms on a 5-minute interval with no immediate first pass",
+      "summary": "createDoltOrphanSweep().start() only arms a setInterval(DEFAULT_SWEEP_INTERVAL_MS = 5 min) and never runs sweepOnce() eagerly, so a supervisor process that lives under 5 minutes never sweeps at all -- the basis for any time-bounded mitigation of its machine-wide kill scope.",
+      "symbols": [],
       "source_files": [
-        "tests/check-sandbox-sync-remote.test.ts",
-        "scripts/check-sandbox-sync-remote.mjs"
+        "packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs",
+        "packages/apra-fleet-se/src/supervisor/server.mjs",
+        "packages/apra-fleet-se/bin/serve.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:31:45.629Z"
+      "updated_at": "2026-09-02T22:23:16.198Z"
+    },
+    {
+      "id": "321d9d10-a56e-4427-81c1-8eb3922b59ec",
+      "type": "knowledge",
+      "title": "sandbox-lock.mjs has no read-only ownership query, so ordering around release is load-bearing",
+      "summary": "authorizeAndReleaseLock both authorizes and unlinks in one call, and the CLI exposes only acquire/mark-server-started/release -- so any Teardown step placed BEFORE the release runs unconditionally, including against a sandbox owned by a different live run.",
+      "symbols": [],
+      "source_files": [
+        "scripts/sandbox-lock.mjs",
+        "regression-test-playbook.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T23:39:17.895Z"
     },
     {
       "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
@@ -164,7 +207,7 @@
         "src/services/knowledge/audn.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-04T04:04:51.757Z"
+      "updated_at": "2026-09-02T06:28:04.105Z"
     },
     {
       "id": "4844d64a-deee-4b5d-87d2-6fcd8c596f64",
@@ -181,7 +224,94 @@
         "packages/apra-fleet-se/test/helpers/scaled-timeout.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:24:37.879Z"
+      "updated_at": "2026-09-02T06:28:04.222Z"
+    },
+    {
+      "id": "4877b2e5-80f4-4759-b8f9-92742ff9adca",
+      "type": "knowledge",
+      "title": "raiseVcsPrForMember degrades every auth failure, including pre-PR provisioning, instead of throwing",
+      "summary": "As of the 5co8.15 fix, raiseVcsPrForMember catches a provisionPrCapableAuthForMember failure and returns authFailure:true rather than throwing, so both callers (Publish PR and finalizeAbort) skip the PR and let the sprint keep its computed verdict.",
+      "symbols": [
+        "raiseVcsPrForMember",
+        "provisionPrCapableAuthForMember",
+        "AUTH_REMEDY_HINT",
+        "finalizeAbort"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-azure-devops-vcs-preflight.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T08:14:20.158Z"
+    },
+    {
+      "id": "4e2a8e8b-b5a5-42cb-8657-1c7f157a6b53",
+      "type": "knowledge",
+      "title": "One anchor policy, three branches: verbatim for read tools, hard-fail for kb_export",
+      "summary": "kb_session_prime and kb_stats pass a supplied repo_path to getKbProviders verbatim so an unreachable remote anchor stays honestly missing; kb_export deliberately keeps throwing instead, because it writes into repo_path -- and it throws before getKbProviders, so it never anchors at the server cwd either.",
+      "symbols": [
+        "kbStats",
+        "kbExport",
+        "kbSessionPrime",
+        "getKbProviders",
+        "resolveRepoPath"
+      ],
+      "source_files": [
+        "src/tools/kb-stats.ts",
+        "src/tools/kb-export.ts",
+        "src/tools/kb-session-prime.ts",
+        "src/services/knowledge/kb-providers.ts",
+        "tests/knowledge/kb-anchor-never-cwd.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T06:28:06.051Z"
+    },
+    {
+      "id": "589cae8c-4b30-4561-bc80-6e5cb2fd77be",
+      "type": "knowledge",
+      "title": "The regression playbook 18300-series port claim came from a test-only base port, not a product constant",
+      "summary": "regression-test-playbook.md's old '18300-series fleet-sprint dashboard ports' rationale traces to packages/apra-fleet-se/test/spawner.test.mjs:629, which picks a random base port in 18300-18499 for test isolation. No product constant defines an 183xx range.",
+      "symbols": [
+        "DEFAULT_SPAWNER_BASE_PORT",
+        "DEFAULT_PORT_RANGE",
+        "SETTLE_PORT_RANGE"
+      ],
+      "source_files": [
+        "regression-test-playbook.md",
+        "packages/apra-fleet-se/test/spawner.test.mjs",
+        "packages/apra-fleet-se/src/supervisor/spawner.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T08:12:08.148Z"
+    },
+    {
+      "id": "59d17152-f1c3-483e-8b26-63487e5694eb",
+      "type": "learning",
+      "title": "Node's process.platform is win32 under Git Bash even though the invoking shell is POSIX-like",
+      "summary": "A Node script invoked from Git Bash on Windows sees process.platform === 'win32' (native node.exe), so platform-detection in a helper script should branch on process.platform, never on which shell/tools (lsof, pgrep) happen to be on PATH -- that lets a script correctly pick the Windows-native probe (netstat/taskkill, Get-CimInstance) even when run from a POSIX-shaped shell.",
+      "symbols": [],
+      "source_files": [
+        "scripts/kill-port.mjs",
+        "scripts/reap-sandbox-dolt.mjs",
+        "regression-test-playbook.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T21:57:15.642Z"
+    },
+    {
+      "id": "5e1d195c-cd15-41d8-9691-4b2636852be4",
+      "type": "knowledge",
+      "title": "kill-port.mjs owns the playbook's bounded-retry port-guard semantics, so playbook guards are one-liners",
+      "summary": "Every regression-playbook port guard (18700, 18701, 3001) is a single kill-port.mjs invocation; the 5s bounded retry, re-kill-each-pass, probe-tool hard-fail and fail-loud exit all live in waitPortFree(), not in the playbook's shell.",
+      "symbols": [],
+      "source_files": [
+        "scripts/kill-port.mjs",
+        "regression-test-playbook.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T23:39:17.865Z"
     },
     {
       "id": "6241ee4c-ceb3-4b58-b1b4-015a0d8d8ec1",
@@ -197,7 +327,40 @@
         "tests/knowledge/kb-remote-scope.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:24:37.888Z"
+      "updated_at": "2026-09-02T06:28:04.414Z"
+    },
+    {
+      "id": "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e",
+      "type": "knowledge",
+      "title": "kill-port netstat parsing depends on the colon-anchored port suffix",
+      "summary": "parseNetstatPids matches the local address with endsWith(':<port>'); the leading colon is what stops port 3001 from also matching netstat rows for 13001/23001/53001.",
+      "symbols": [
+        "parseNetstatPids",
+        "findPids",
+        "killPids",
+        "ProbeToolMissingError"
+      ],
+      "source_files": [
+        "scripts/kill-port.mjs",
+        "tests/kill-port.test.ts",
+        "regression-test-playbook.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T11:07:29.975Z"
+    },
+    {
+      "id": "6da788b6-8436-40ef-af6c-1a74768044c4",
+      "type": "knowledge",
+      "title": "The smoke test's supervisor uptime bound is enforced in Test scenario step 4, not in Teardown",
+      "summary": "Teardown's SUPERVISOR_UPTIME >= 300 check only prints a warning; the actual enforcement of the dolt-orphan-sweep mitigation is step 4's UPTIME_DEADLINE = SUPERVISOR_STARTED_AT + 280 hard-stop, so any regression test must assert on the 280s branch.",
+      "symbols": [],
+      "source_files": [
+        "regression-test-playbook.md",
+        "packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs",
+        "tests/regression-playbook-sandbox-lifecycle.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T23:39:17.848Z"
     },
     {
       "id": "7cc58351-c7f9-4f14-99b0-cdd04cf83d7c",
@@ -213,7 +376,7 @@
         "src/utils/agent-helpers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:24:37.927Z"
+      "updated_at": "2026-09-02T06:28:04.562Z"
     },
     {
       "id": "8997f326-d6e7-485f-ad84-782650030314",
@@ -227,28 +390,7 @@
         "src/services/preflight-check.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:24:37.934Z"
-    },
-    {
-      "id": "91cb711b-9ca0-4994-b73b-2d93cb8e47d8",
-      "type": "knowledge",
-      "title": "Four resolveRepoPath helpers exist in src/tools, but only prime and stats ever had the null-to-cwd shape",
-      "summary": "kb-session-prime.ts and kb-stats.ts returned string|null and degraded to process.cwd(); kb-export.ts and kb-import.ts have always returned string and thrown, so they were never part of the b4g.7 anchor defect despite the bead naming kb-export as a third instance.",
-      "symbols": [
-        "resolveRepoPath",
-        "kbImport",
-        "kbExport",
-        "getKbProviders"
-      ],
-      "source_files": [
-        "src/tools/kb-import.ts",
-        "src/tools/kb-export.ts",
-        "src/tools/kb-stats.ts",
-        "src/tools/kb-session-prime.ts",
-        "docs/knowledge-layer.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:24:37.855Z"
+      "updated_at": "2026-09-02T06:28:04.677Z"
     },
     {
       "id": "96a63862-eb7a-43f3-8352-4cd686412d43",
@@ -266,7 +408,21 @@
         "src/tools/execute-prompt.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:35:02.929Z"
+      "updated_at": "2026-09-02T06:28:04.933Z"
+    },
+    {
+      "id": "9d3e4d50-c047-4b98-becc-2fff7b8e27fa",
+      "type": "learning",
+      "title": "apra-fleet-client's createWorkflowEngine() is dead code -- workflow/ dir does not exist in that package",
+      "summary": "packages/apra-fleet-client/src/client/factory.mjs's createWorkflowEngine imports '../workflow/index.mjs' relative to itself, but apra-fleet-client's own src/ tree has no workflow/ directory in this repo state -- any caller must build the client manually (StdioTransport + McpClient + ApraFleet) instead.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-client/src/client/factory.mjs",
+        "packages/apra-fleet-se/test/azure-devops-real-e2e.test.mjs",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T05:36:24.565Z"
     },
     {
       "id": "a96e64d8-e304-4a46-baeb-d36fe1371a94",
@@ -280,7 +436,7 @@
         "packages/apra-fleet-se/fleet-sprint/runner.js"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:24:37.949Z"
+      "updated_at": "2026-09-02T06:28:05.048Z"
     },
     {
       "id": "b0f6be79-738c-491b-9ba5-7c7e5d69b805",
@@ -301,7 +457,7 @@
         "src/tools/code-intelligence-kb-enrich.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-17T21:58:44.645Z"
+      "updated_at": "2026-09-02T06:28:05.184Z"
     },
     {
       "id": "beb4faf7-40fa-4484-9cf5-b287df8f47d2",
@@ -314,7 +470,7 @@
         "src/services/knowledge/kb-scope-input.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-17T20:10:22.943Z"
+      "updated_at": "2026-09-02T06:28:05.331Z"
     },
     {
       "id": "c2899616-0cb1-41e8-b229-76e291a0cd81",
@@ -334,10 +490,146 @@
         "tests/knowledge/kb-remote-anchor-freshness.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-17T20:10:22.934Z"
+      "updated_at": "2026-09-02T06:28:05.478Z"
     },
     {
-      "id": "c2d3fa00-5f7f-408e-9bdd-0f49101173fc",
+      "id": "c791fcf0-48c2-4a17-a247-ea634fec70b3",
+      "type": "knowledge",
+      "title": "A fallback message sharing the assertion's alternate keyword makes a test vacuous",
+      "summary": "checkDoltRemoteAbsent's bd-unavailable fallback messages all contain the word \"unavailable\", so the old combined assertion /Dolt-level remotes|unavailable/ was satisfied on any machine without bd without ever reaching the parser under test. Merged main closes this by probing bd --version first and asserting the two cases separately. The reusable trap: never OR an assertion's success keyword with its own fallback keyword.",
+      "symbols": [
+        "checkDoltRemoteAbsent",
+        "parseDoltRemoteList"
+      ],
+      "source_files": [
+        "tests/check-sandbox-sync-remote.test.ts",
+        "scripts/check-sandbox-sync-remote.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T06:28:03.985Z"
+    },
+    {
+      "id": "c81bd0dc-f0d1-4403-9247-fc1edc329780",
+      "type": "knowledge",
+      "title": "An unguarded cat of a shell marker file degrades to a wrong diagnosis, not a loud failure",
+      "summary": "regression-test-playbook.md's poll loop computed UPTIME_DEADLINE=$(( SUPERVISOR_STARTED_AT + 280 )) from an uncheck-ed cat; a missing marker made it evaluate to a bare 280, exiting 1 with the dolt-orphan-sweep tick message and sending operators after a nonexistent timing bug.",
+      "symbols": [],
+      "source_files": [
+        "regression-test-playbook.md",
+        "tests/regression-playbook-sandbox-lifecycle.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T09:37:07.356Z"
+    },
+    {
+      "id": "c9908905-0938-4f8b-8804-04c5da21f168",
+      "type": "knowledge",
+      "title": "In Git Bash, a background job's $! is an MSYS pid that never equals the process's own process.pid",
+      "summary": "Under MSYS/MinGW bash on Windows, $! returns the MSYS-internal pid while a spawned native Node process reports a different native Windows pid via process.pid, so any script that proves identity by comparing $! against a pid the process reports about itself can never match.",
+      "symbols": [],
+      "source_files": [
+        "regression-test-playbook.md",
+        "packages/apra-fleet-se/src/supervisor/server.mjs",
+        "scripts/kill-port.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T22:23:16.182Z"
+    },
+    {
+      "id": "ce93654a-b7a2-4ccf-a9e2-2c166d11e6aa",
+      "type": "knowledge",
+      "title": "normalizeMsysPathForPlatform is the required seam before path.resolve on any env-sourced path",
+      "summary": "Node's path.resolve does not understand MSYS /c/... paths and on win32 prefixes them with the current drive, so any filesystem path arriving from a Git Bash environment variable must go through normalizeMsysPathForPlatform first.",
+      "symbols": [
+        "normalizeMsysPathForPlatform",
+        "serveMain",
+        "createDoltOrphanSweep"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/bin/serve.mjs",
+        "packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs",
+        "packages/apra-fleet-se/test/supervisor-dolt-orphan-sweep.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T10:44:57.236Z"
+    },
+    {
+      "id": "d3ec9cb9-285c-4e61-842b-c81393237c68",
+      "type": "knowledge",
+      "title": "StdioTransport.stop() is synchronous -- awaiting it with .catch() throws a TypeError",
+      "summary": "apra-fleet-client's StdioTransport.stop() returns undefined, so the common teardown idiom `await stop().catch(() => {})` throws TypeError inside a finally block and skips the cleanup after it.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-client/src/client/transport.mjs",
+        "packages/apra-fleet-se/test/azure-devops-real-e2e.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T06:41:22.991Z"
+    },
+    {
+      "id": "de1c60a9-b27f-411b-a23c-953e37207536",
+      "type": "learning",
+      "title": ".fleet/ mixes a tracked deliverable (kb-canonical.json) with per-round scratch (planner-output.json)",
+      "summary": "Before adding a .gitignore rule under .fleet/, check git ls-files first -- .fleet/kb-canonical.json is a tracked, checked-in KB export deliverable, so a blanket '.fleet/' ignore rule would silently shadow it exactly the way this repo's own sprint-logs/ note warns against for directory-level ignore rules.",
+      "symbols": [],
+      "source_files": [
+        ".gitignore"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T22:23:16.214Z"
+    },
+    {
+      "id": "deabf9ba-1c94-47c4-a212-e4c1460ec0e6",
+      "type": "knowledge",
+      "title": "Four resolveRepoPath helpers exist in src/tools, but only prime and stats ever had the null-to-cwd shape",
+      "summary": "kb-session-prime.ts and kb-stats.ts returned string|null and degraded to process.cwd(); kb-export.ts and kb-import.ts have always returned string and thrown, so they were never part of the b4g.7 anchor defect despite the bead naming kb-export as a third instance.",
+      "symbols": [
+        "resolveRepoPath",
+        "kbImport",
+        "kbExport",
+        "getKbProviders"
+      ],
+      "source_files": [
+        "src/tools/kb-import.ts",
+        "src/tools/kb-export.ts",
+        "src/tools/kb-stats.ts",
+        "src/tools/kb-session-prime.ts",
+        "docs/knowledge-layer.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T06:28:04.805Z"
+    },
+    {
+      "id": "ed89bdb6-31a4-40ca-9104-3a28f8508fc3",
+      "type": "knowledge",
+      "title": "regression-test-playbook.md's Setup/Reset/Teardown headings appear as backticked prose mentions elsewhere in the file, so naive string.split('## Setup') is unsafe",
+      "summary": "Any script or test that wants to isolate the Setup/Reset/Teardown sections of regression-test-playbook.md by splitting on the heading text must anchor to a whole line (e.g. /^## Setup$/m), not do a plain substring split -- the file's own intro and cross-reference prose repeatedly mentions `## Setup`, `## Reset`, `## Teardown` inside backticks well before the real headings, and a plain .split('## Setup')[1] picks up that prose fragment instead of the actual section body.",
+      "symbols": [],
+      "source_files": [
+        "regression-test-playbook.md",
+        "tests/regression-playbook-port3001-guard.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-02T23:39:17.880Z"
+    },
+    {
+      "id": "f80badf2-1b0c-4a2a-857f-c7cbd21786c2",
+      "type": "knowledge",
+      "title": "mock-sprint network guard misses absolute-path curl invocations",
+      "summary": "isNetworkShapedCommand() matches only a bare curl/wget token, so an absolute-path invocation like /usr/bin/curl reaches the real runCmd() fallback and the host network.",
+      "symbols": [
+        "CURL_WGET_TOKEN_RE",
+        "isNetworkShapedTokens",
+        "isNetworkShapedCommand"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T11:07:29.990Z"
+    },
+    {
+      "id": "fce10469-eaa2-497f-ad5d-ecc9353ce740",
       "type": "knowledge",
       "title": "kb_session_prime must pass an explicit repo_path to getKbProviders verbatim, never through resolveRepoPath",
       "summary": "Validating repo_path before handing it to getKbProviders converts a remote member's unreachable path into the fleet server's own cwd, silently staling healthy entries in the shared project KB; the anchor must stay honestly missing.",
@@ -354,66 +646,27 @@
         "tests/knowledge/kb-remote-anchor-freshness.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-17T21:02:37.675Z"
+      "updated_at": "2026-09-02T06:28:05.629Z"
     },
     {
-      "id": "f4bbc2aa-3e45-4112-860c-aab263e2736a",
-      "type": "learning",
-      "title": "Wrap getKbProviders with a delegating vi.mock to assert real provider anchoring",
-      "summary": "To assert which dbPath/repoPath a kb tool actually anchored at, vi.mock kb-providers.js with importOriginal, spread the actual module and replace only getKbProviders with a spy that delegates to the real one and records (cwd, remoteUrl, providers).",
-      "symbols": [
-        "getKbProviders",
-        "resetKbProviders",
-        "SqliteProvider"
-      ],
-      "source_files": [
-        "tests/knowledge/kb-anchor-never-cwd.test.ts",
-        "tests/knowledge/kb-remote-url-forwarding.test.ts",
-        "tests/knowledge/kb-import.test.ts",
-        "src/services/knowledge/kb-providers.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-17T21:02:37.669Z"
-    },
-    {
-      "id": "f92f896f-cc6d-4c1f-8144-f42ce2a3707f",
+      "id": "ff02b32b-5d77-4af5-ad6b-0d7288e2476f",
       "type": "knowledge",
-      "title": "A missing-anchor freshness regression surfaces first as kb_list dropping entries, not as a stale-flag assertion",
-      "summary": "In tests/knowledge/kb-remote-member-e2e.test.ts the four remote-member assertions live in one it(), so removing SqliteProvider's anchorIsMissing guard fails at the SAME DATABASE read-back (line 165) and never reaches the raw stale-row check (line 181).",
+      "title": "dolt-orphan-sweep owner scoping is opt-in via FLEET_SE_SWEEP_OWNER_DATA_DIR, and must stay opt-in",
+      "summary": "buildSweepCommand() accepts an owner data-dir prefix that both shell families enforce, wired by bin/serve.mjs from FLEET_SE_SWEEP_OWNER_DATA_DIR; it cannot be derived from FLEET_SE_DATA_DIR because the ephemeral --data-dir belongs to the member, not the supervisor.",
       "symbols": [
-        "anchorIsMissing",
-        "checkFreshness",
-        "kbStats"
+        "buildSweepCommand",
+        "createDoltOrphanSweep",
+        "normalizeOwnerDataDirPrefix",
+        "serveMain"
       ],
       "source_files": [
-        "tests/knowledge/kb-remote-member-e2e.test.ts",
-        "src/services/knowledge/sqlite-provider.ts",
-        "src/tools/kb-stats.ts"
+        "packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs",
+        "packages/apra-fleet-se/bin/serve.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs",
+        "packages/apra-fleet-se/test/supervisor-dolt-orphan-sweep.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-08-17T22:08:25.572Z"
-    },
-    {
-      "id": "ff6f9eff-1532-4e9a-85fb-f3b4778e4733",
-      "type": "knowledge",
-      "title": "One anchor policy, three branches: verbatim for read tools, hard-fail for kb_export",
-      "summary": "kb_session_prime and kb_stats pass a supplied repo_path to getKbProviders verbatim so an unreachable remote anchor stays honestly missing; kb_export deliberately keeps throwing instead, because it writes into repo_path -- and it throws before getKbProviders, so it never anchors at the server cwd either.",
-      "symbols": [
-        "kbStats",
-        "kbExport",
-        "kbSessionPrime",
-        "getKbProviders",
-        "resolveRepoPath"
-      ],
-      "source_files": [
-        "src/tools/kb-stats.ts",
-        "src/tools/kb-export.ts",
-        "src/tools/kb-session-prime.ts",
-        "src/services/knowledge/kb-providers.ts",
-        "tests/knowledge/kb-anchor-never-cwd.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-08-21T05:24:37.794Z"
+      "updated_at": "2026-09-03T09:37:07.340Z"
     }
   ]
 }
