@@ -105,6 +105,8 @@ runtime:
 - `Bash(node scripts/run-integ-suites.mjs *)` (for the
   "Run the apra-fleet-se suite against real bd" section only)
 - `Bash(npm run test:slow*)` (same section, the slow-lane run)
+- `Bash(tail:*)` (same section -- reading the persisted slow-lane verdict
+  after an interrupted shell, `apra-fleet-f28t.1`)
 - `Bash(bd *)` (for "Reporting failures" below -- `bd search` to dedupe and
   `bd create` to file the parent-less carry-over beads; also the sandbox
   `bd show`/`bd dolt` steps in `## Setup` and `## Test scenario`)
@@ -160,17 +162,24 @@ throwaway artifact under that path (`rm -f
 ```bash
 mkdir -p "$HOME/temp/.apra-fleet-tests"
 SLOW_LANE_LOG="$HOME/temp/.apra-fleet-tests/test-slow-lane.log"
-npm run test:slow --workspace=@apralabs/apra-fleet-se > "$SLOW_LANE_LOG" 2>&1
-echo "test:slow exit=$?"
+{ npm run test:slow --workspace=@apralabs/apra-fleet-se; echo "test:slow exit=$?"; } > "$SLOW_LANE_LOG" 2>&1
 ```
+
+apra-fleet-f28t.1 (reopen fix): the exit marker MUST be inside the same
+redirected group as the `npm run test:slow` command above -- if the `echo`
+is placed after a `> "$SLOW_LANE_LOG"` redirect that only wraps the `npm
+run` call, the marker is written to the terminal, not the file, and an
+interrupted shell (the exact scenario this recovery path exists for) never
+runs the `echo` at all, making the "recovered pass verdict" branch below
+undocumented-but-impossible. The `{ ...; echo ...; }` grouping above
+redirects both.
 
 If this command's shell is interrupted (session restart, killed background
 shell) before it completes, do NOT re-run the lane -- re-running risks
 piling up a second orphaned process on top of the first. Instead, read the
 verdict directly from the persisted log once the earlier process has
 actually stopped: `tail -n 80 "$HOME/temp/.apra-fleet-tests/test-slow-lane.log"`
-(no new permission entry needed -- `tail`/`grep` are already used unguarded
-elsewhere in this playbook, e.g. `## Setup`'s `LOG_PID` parsing) and treat
+(`tail` is covered by the `Bash(tail:*)` permissions entry above) and treat
 `test:slow exit=0` at the tail of the file as the recovered pass verdict, a
 nonzero value as a recovered failure verdict, and the file's absence (or a
 truncated file with no exit line) as "still running or was never
