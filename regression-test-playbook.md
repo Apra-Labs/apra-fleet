@@ -145,9 +145,47 @@ event-loop keep-alive and full retry-exhaustion timing for the dispatch
 watchdog, which cannot be faked with mock timers (see the file-level
 comments in each for why).
 
+apra-fleet-f28t.1: redirect combined stdout+stderr to a log file instead of
+piping through `tail` -- a bare pipe leaves nothing persisted if the
+background shell running this command is interrupted, so an ~8-minute lane's
+pass/fail verdict becomes unrecoverable. The log lives at
+`$HOME/temp/.apra-fleet-tests/test-slow-lane.log` -- deliberately the SAME
+throwaway root the smoke-test sandbox below uses (`$SANDBOX`, see `## Setup`)
+even though this lane itself needs no sandbox, so a later `## Teardown`'s
+`rm -rf "$SANDBOX"` sweeps this log up too as part of its normal cleanup; if
+this pass's smoke-test portion is skipped, remove it by hand like any other
+throwaway artifact under that path (`rm -f
+"$HOME/temp/.apra-fleet-tests/test-slow-lane.log"`).
+
 ```bash
-npm run test:slow --workspace=@apralabs/apra-fleet-se
+mkdir -p "$HOME/temp/.apra-fleet-tests"
+SLOW_LANE_LOG="$HOME/temp/.apra-fleet-tests/test-slow-lane.log"
+npm run test:slow --workspace=@apralabs/apra-fleet-se > "$SLOW_LANE_LOG" 2>&1
+echo "test:slow exit=$?"
 ```
+
+If this command's shell is interrupted (session restart, killed background
+shell) before it completes, do NOT re-run the lane -- re-running risks
+piling up a second orphaned process on top of the first. Instead, read the
+verdict directly from the persisted log once the earlier process has
+actually stopped: `tail -n 80 "$HOME/temp/.apra-fleet-tests/test-slow-lane.log"`
+(no new permission entry needed -- `tail`/`grep` are already used unguarded
+elsewhere in this playbook, e.g. `## Setup`'s `LOG_PID` parsing) and treat
+`test:slow exit=0` at the tail of the file as the recovered pass verdict, a
+nonzero value as a recovered failure verdict, and the file's absence (or a
+truncated file with no exit line) as "still running or was never
+recoverable -- report status, do not fabricate a verdict."
+
+An interrupted run's orphaned `npm run test:slow` / `node --test` child
+processes are a KNOWN harness gap (apra-fleet-f28t): `taskkill`, `kill -9`,
+and `wmic process ... delete` (and even the read-only `wmic process ...
+get`) have all been observed denied by the auto-mode permission classifier.
+Per this repo's CLAUDE.md, a permission block must be SURFACED, not routed
+around -- do NOT author a wrapper script, alternate binary, or any other
+workaround whose purpose is to reap those processes past the block. Report
+any such orphaned process to the operator as a surfaced permission block
+and leave the cleanup to them out of band; apra-fleet-f28t stays open for
+that half.
 
 To PROVE a before/after timing claim against a pre-fix commit (not just
 assert one from memory), see `packages/apra-fleet-se/test/INTEG-SUITE.md`'s
@@ -187,10 +225,11 @@ echo "$SETUP_STARTED_AT" > "$SANDBOX.setup_started_at"
 
 # Busy-check: claim the sandbox lock BEFORE touching anything below. Fails
 # loud ('sandbox busy', non-zero exit) if another live run already holds it,
-# instead of racing/clobbering it. Passes $$ (this Setup shell's own PID) --
-# see scripts/sandbox-lock.mjs's file header for why that is correct for the
-# early part of Setup even though it is a transient PID.
-node "<repo-root>/scripts/sandbox-lock.mjs" acquire "$SANDBOX" "$$" || exit 1
+# instead of racing/clobbering it. sandbox-lock.mjs records ITS OWN
+# process.ppid (this Setup shell's real, native OS pid) rather than reading
+# $$ -- see scripts/sandbox-lock.mjs's file header (apra-fleet-5co8.39) for
+# why $$ is unsafe under Git Bash on Windows.
+node "<repo-root>/scripts/sandbox-lock.mjs" acquire "$SANDBOX" || exit 1
 
 export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
