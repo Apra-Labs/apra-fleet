@@ -107,6 +107,11 @@ visible pull request at
 `https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e2e-toy/pullrequests`
 (apra-fleet-5co8.6.2's job, blocked by this task).
 
+The gated scenario itself -- provision, `git ls-remote` verify, then the
+publish path that opens the real pull request above -- lives in
+`../azure-devops-real-e2e.test.mjs` (same `test/` directory as this file's
+parent), enable it exactly as described in "Why this lane is opt-in" above.
+
 ## Rotation (any time, no code change)
 
 1. Mint a new PAT (same scopes, same org).
