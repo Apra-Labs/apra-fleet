@@ -310,6 +310,10 @@ describe('Azure DevOps provider', () => {
 
     const result = await azureDevOpsProvider.testConnectivity(member, exec);
     expect(result.success).toBe(true);
+    // apra-fleet-5co8.43: a REAL, actually-performed successful check must
+    // be distinguishable from a skipped one via `skipped`, not just message
+    // text -- a real success carries no `skipped` flag at all.
+    expect(result.skipped).toBeUndefined();
     expect(result.message).toContain('myrepo');
     expect(execCalls[0]).toBe('git ls-remote https://dev.azure.com/myorg/myproject/_git/myrepo HEAD');
     // The credential comes from the git credential helper deploy() already
@@ -347,6 +351,10 @@ describe('Azure DevOps provider', () => {
     );
     expect(execCalls).toHaveLength(0);
     expect(result.success).toBe(true);
+    // apra-fleet-5co8.43: `success: true` here means "nothing failed", not
+    // "verified" -- `skipped: true` is the machine-detectable signal a
+    // caller must check before presenting this as a passing check.
+    expect(result.skipped).toBe(true);
     expect(result.message).toContain('Skipped');
   });
 
@@ -379,6 +387,7 @@ describe('Azure DevOps provider', () => {
     );
     expect(execCalls).toHaveLength(0);
     expect(result.success).toBe(true);
+    expect(result.skipped).toBe(true);
     expect(result.message).toContain('Skipped');
   });
 
@@ -388,6 +397,9 @@ describe('Azure DevOps provider', () => {
 
     const result = await azureDevOpsProvider.testConnectivity(member, exec);
     expect(result.success).toBe(false);
+    // apra-fleet-5co8.43: a genuine failure is neither a success nor a skip
+    // -- `skipped` must not be set on this path.
+    expect(result.skipped).toBeUndefined();
   });
 
   it('testConnectivity: skips with a documented message when no repo is known', async () => {
@@ -398,6 +410,9 @@ describe('Azure DevOps provider', () => {
       makeAgent(), exec, 'https://dev.azure.com/myorg',
     );
     expect(result.success).toBe(true);
+    // apra-fleet-5co8.43: criterion 1 -- the skipped state must be
+    // machine-detectable WITHOUT string-matching `message`.
+    expect(result.skipped).toBe(true);
     expect(result.message).toContain('Skipped');
   });
 

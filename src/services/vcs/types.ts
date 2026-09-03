@@ -68,6 +68,17 @@ export interface VcsDeployResult {
   success: boolean;
   message: string;
   metadata?: Record<string, string>;
+  /**
+   * apra-fleet-5co8.43: set true ONLY by testConnectivity() when the check
+   * was not actually performed (e.g. no concrete repo URL could be derived
+   * to ls-remote against). Machine-detectable so a caller cannot mistake a
+   * skipped check for a verified credential merely because `success` is
+   * true -- see src/tools/provision-vcs-auth.ts's Verification line, which
+   * branches on this field rather than string-matching `message`. Absent
+   * (undefined) for every deploy()/revoke() result and for a testConnectivity
+   * result that actually ran the check (success or failure).
+   */
+  skipped?: boolean;
 }
 
 // ---------------------------------------------------------------------------

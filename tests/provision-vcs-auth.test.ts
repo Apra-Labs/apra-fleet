@@ -133,6 +133,14 @@ describe('provisionVcsAuth', () => {
     });
     expect(result).toContain('✅');
     expect(result).toContain('Azure DevOps');
+    // apra-fleet-5co8.43: this member has no gitRepos and only an org-level
+    // scope_url, so testConnectivity() cannot derive a concrete repo and
+    // skips -- the user-facing "Verification:" line must render that
+    // distinctly (the ⏭️ marker, driven by the `skipped` field), never as a
+    // bare passing check that merely happens to mention "Skipped" in its
+    // message text.
+    expect(result).toMatch(/Verification: ⏭️ Skipped:/);
+    expect(result).not.toMatch(/Verification: git ls-remote/);
   });
 
   // apra-fleet-5co8.5.4: azure-devops exposes no API to read a PAT's expiry
