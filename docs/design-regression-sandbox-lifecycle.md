@@ -84,9 +84,50 @@ that is the pre-versioning legacy case rather than a genuine mismatch.
 The mock-sprint test harness intercepts network-shaped commands (curl/wget
 building VCS provider requests) so tests never make real network calls.
 The guard matches on command *shape*, not a fixed wrapper allowlist, so a
-composed or differently-quoted curl/wget invocation is still caught. A
-known residual gap: the guard's shape-matching is anchored in a way that
-still misses an **absolute-path** invocation (e.g. `/usr/bin/curl ...`
-matches differently than a bare `curl ...`) -- treat this as an open gap
-in the interception surface, not a solved problem, when adding new
-network-shaped test coverage.
+composed or differently-quoted curl/wget invocation is still caught. The
+match is by command **basename** (everything after the last `/` or `\`),
+so a path-prefixed invocation (`/usr/bin/curl`, `./curl`, a Windows
+`curl.exe` path) is caught the same as a bare `curl`/`wget` token, while a
+basename that merely contains "curl"/"wget" as a substring (e.g.
+`curlybrace`, `wgetter`) is deliberately not treated as a match. When
+adding new network-shaped test coverage, prefer exercising the basename
+extraction directly rather than re-deriving a new anchoring regex.
+
+## Deploy's active-sprints gate: distinguishing a sprint's own reservation from a foreign one
+
+`install --force` restarts the shared singleton fleet server, which can
+collaterally kill every other live sprint's in-flight dispatches. The
+deploy runbook therefore checks the supervisor's live reservation list
+before running `install --force`, and must stop when a **foreign**
+reservation is live -- but a naive "any live reservation => stop" gate can
+never let a sprint deploy its own work, because a sprint that dispatches
+its own deployer is always present in that same reservation ledger. The
+gate resolves this by comparing each live reservation against the
+deploying sprint's own identity (sprint id, and optionally the dispatching
+child's pid): a reservation matching the caller's own identity is
+self and allowed to proceed; anything else is foreign and blocks.
+
+This only works if the deployer is actually told its own identity. A
+deployer dispatched without that self-identity has no way to distinguish
+"this is my own reservation" from "another sprint is running," and per the
+runbook must conservatively treat every live reservation as foreign --
+correctly refusing to deploy even when the only live reservation is its
+own. This failure mode is silent and looks identical, cycle after cycle,
+to a genuinely busy machine: the fix landing in the dispatching orchestrator's
+source tree is not sufficient by itself, because the process that dispatches
+the deployer must itself be relaunched from a build containing the fix
+before the self-identity line starts appearing in deploy dispatch prompts.
+When a deploy blocks on the active-sprints gate every cycle despite no other
+sprint plausibly still running, suspect a stale dispatching process/binary
+before suspecting the gate logic itself.
+
+A related blast-radius concern in the same deploy path: the preflight step
+that clears build-lock holders (stale processes with this checkout's
+`node_modules` open) kills every non-self, non-ancestor holder it finds,
+with no built-in exclusion for a live foreign sprint's own child process.
+In practice this has meant the preflight step killing several unrelated
+processes (including a system process that had merely loaded this
+checkout's native build addon) per run, and the deployer having to hand-
+verify after the fact that none of the killed pids was the foreign
+sprint's own child. Anyone tightening this preflight step should add that
+exclusion explicitly rather than relying on it being caught by luck.

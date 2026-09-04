@@ -110,7 +110,12 @@ seam every provider implements (`buildCredentials`, `missingCredential`,
   PAT through the git credential helper already written by `deploy()`, so
   the PAT never appears in the command string or a log line. When no
   concrete, validated repo is known, the check is skipped with an explicit
-  message rather than reporting a false success.
+  message rather than reporting a false success. `success: true` in that
+  skipped case means only "nothing failed," never "the credential was
+  verified" -- the result also carries a machine-detectable `skipped: true`
+  flag, and a caller must check that flag before presenting the result as a
+  passing connectivity check rather than treating every `success: true` as
+  equivalent to "verified."
 
 ## PAT lifetime and the setTimeout overflow guard
 
