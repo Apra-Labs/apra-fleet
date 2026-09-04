@@ -106,7 +106,7 @@ runtime:
   "Run the apra-fleet-se suite against real bd" section only)
 - `Bash(npm run test:slow*)` (same section, the slow-lane run)
 - `Bash(tail:*)` (same section -- reading the persisted slow-lane verdict
-  after an interrupted shell, `apra-fleet-f28t.1`)
+  after an interrupted shell)
 - `Bash(bd *)` (for "Reporting failures" below -- `bd search` to dedupe and
   `bd create` to file the parent-less carry-over beads; also the sandbox
   `bd show`/`bd dolt` steps in `## Setup` and `## Test scenario`)
@@ -165,7 +165,7 @@ SLOW_LANE_LOG="$HOME/temp/.apra-fleet-tests/test-slow-lane.log"
 { npm run test:slow --workspace=@apralabs/apra-fleet-se; echo "test:slow exit=$?"; } > "$SLOW_LANE_LOG" 2>&1
 ```
 
-apra-fleet-f28t.1 (reopen fix): the exit marker MUST be inside the same
+Reopen fix note: the exit marker MUST be inside the same
 redirected group as the `npm run test:slow` command above -- if the `echo`
 is placed after a `> "$SLOW_LANE_LOG"` redirect that only wraps the `npm
 run` call, the marker is written to the terminal, not the file, and an
