@@ -798,8 +798,20 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             //      already-exists response-mapping assertions for Azure
             //      DevOps belong to apra-fleet-lzfv.6 (same mutex file) -- do
             //      not build those out further here.
-            if (/^\$HOME\/\.fleet-git-credential-/.test(opts.command)) {
+            //      The match is an EXACT per-provider file -- the label
+            //      provision_vcs_auth deploys under is the provider name
+            //      ('github' from defaultMockCallTool(), 'azure-devops' for
+            //      the scenarios that override callTool with an Azure DevOps
+            //      member) -- never a bare `.fleet-git-credential-` prefix:
+            //      a prefix match hid a real label mismatch in runner.js
+            //      (the PR-raise reading the github file for an Azure DevOps
+            //      member). A read of any OTHER label falls through to the
+            //      real exec() and fails like the missing file it is.
+            if (/^\$HOME\/\.fleet-git-credential-github$/.test(opts.command)) {
                 return mockCmdResult(0, 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n', '');
+            }
+            if (/^\$HOME\/\.fleet-git-credential-azure-devops$/.test(opts.command)) {
+                return mockCmdResult(0, 'protocol=https\nhost=dev.azure.com\nusername=\npassword=mock-azure-devops-pat\n', '');
             }
             const isAzureDevOpsCreatePr = /\/pullrequests\?/.test(opts.command);
             if (/^curl(?:\.exe)? -sS -X POST\b/.test(opts.command) && (/\/pulls\b/.test(opts.command) || isAzureDevOpsCreatePr)) {

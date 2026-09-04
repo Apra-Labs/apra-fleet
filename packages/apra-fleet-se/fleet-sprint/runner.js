@@ -2488,6 +2488,22 @@ async function provisionPrCapableAuthForMember({ fleetApi, command, member, log 
 // (src/os/windows.ts:279-294).
 const GITHUB_VCS_CREDENTIAL_LABEL = 'github';
 
+// The credential-helper label provision_vcs_auth deploys a member's VCS
+// credential under, for the PR-raising call sites to read it back from:
+// `label = input.label ?? input.provider` server-side, and no fleet-sprint
+// caller (neither the shared GitHub-App-shaped arguments in
+// provisionVcsAuthForMember nor a provider's buildProvisionArgs hook) ever
+// sends an explicit `label`, so the label IS the provider name -- 'github'
+// -> $HOME/.fleet-git-credential-github, 'azure-devops' ->
+// $HOME/.fleet-git-credential-azure-devops, etc. A member with no
+// resolvable provider keeps the historical GitHub default.
+// @param {string|null|undefined} provider
+// @returns {string}
+export function vcsCredentialLabelForProvider(provider) {
+    const name = typeof provider === 'string' ? provider.trim() : '';
+    return name || GITHUB_VCS_CREDENTIAL_LABEL;
+}
+
 // Typed marker returned by finalizeAbort() (and logged by the Publish PR step)
 // when the callTool-absent graceful-degradation path is taken: PR creation was
 // intentionally skipped because no MCP client was wired to mint the push+pr
@@ -2792,7 +2808,29 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
     if (!repo) {
         throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
     }
-    let token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
+    // apra-fleet-lzfv.5: resolve the member's OWN registered VCS provider
+    // (VCSModule.resolveProvider(), never a hardcoded 'github' literal --
+    // same rule provisionVcsAuthForMember already follows) so
+    // buildCreatePrCommand dispatches to the right REST dialect for a
+    // dev.azure.com (or any other) remote, not just GitHub.
+    //
+    // Resolved BEFORE the credential read below because the read is keyed
+    // by provider too: provision_vcs_auth deploys the credential helper
+    // under `label = input.label ?? input.provider`
+    // (src/tools/provision-vcs-auth.ts), and neither the shared
+    // GitHub-App-shaped arguments nor a provider's buildProvisionArgs hook
+    // sends an explicit label -- so the file to read back is
+    // $HOME/.fleet-git-credential-<provider>. Reading the 'github'-labelled
+    // file unconditionally (the pre-fix default of
+    // readMemberVcsCredentialToken) made every Azure DevOps member's PR
+    // raise fail with "Failed to read VCS credential token ... from
+    // '$HOME/.fleet-git-credential-github'" (or, worse, silently reuse a
+    // stale GitHub token left over from an earlier provider and send it to
+    // dev.azure.com).
+    const { provider } = await resolveProvider(member, { fleetApi });
+    const credentialLabel = vcsCredentialLabelForProvider(provider);
+
+    let token = await readMemberVcsCredentialToken({ command, member, label: credentialLabel, fleetApi, log });
     // Both os AND shell feed the command builder: os picks the curl binary
     // token (curl.exe vs curl), shell picks the quoting dialect. A Windows
     // member whose registered shell is gitbash needs POSIX quoting, not
@@ -2801,13 +2839,6 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
     // (observed live: GitHub 400 "Problems parsing JSON" on the create-PR
     // endpoint for a windows+gitbash member).
     const { os, shell } = await resolveMemberTarget({ fleetApi, member, log });
-
-    // apra-fleet-lzfv.5: resolve the member's OWN registered VCS provider
-    // (VCSModule.resolveProvider(), never a hardcoded 'github' literal --
-    // same rule provisionVcsAuthForMember already follows) so
-    // buildCreatePrCommand dispatches to the right REST dialect for a
-    // dev.azure.com (or any other) remote, not just GitHub.
-    const { provider } = await resolveProvider(member, { fleetApi });
 
     // The provider's own coordinate shape (e.g. Azure DevOps' org/project/repo
     // -- see VCSModule.parseProviderRepoRef()/that provider's parseRepoRef
@@ -2885,7 +2916,7 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
             try {
                 const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
                 if (reprov.repo) repo = reprov.repo;
-                token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
+                token = await readMemberVcsCredentialToken({ command, member, label: credentialLabel, fleetApi, log });
             } catch (healErr) {
                 log(`${logPrefix}: PR auth self-heal failed for member '${member}'; not retrying further: ${healErr.message}`);
                 return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}`, authFailure: true };

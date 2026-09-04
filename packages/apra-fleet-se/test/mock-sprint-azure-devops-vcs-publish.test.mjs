@@ -35,7 +35,16 @@ const check = (cond, msg) => assert.ok(cond, msg);
 const AZ_ORIGIN = 'https://dev.azure.com/mock-org/mock-project/_git/mock-repo';
 const AZ_REPO_REF = { org: 'mock-org', project: 'mock-project', repo: 'mock-repo' };
 
-function buildMockCommand({ originUrl, credentialLine, prResponder }) {
+// `credentialFiles` maps the EXACT credential-helper file a member has on
+// disk (keyed by label, e.g. 'azure-devops') to the line that helper prints.
+// Any other `$HOME/.fleet-git-credential-<label>` read fails the way a
+// missing file fails on a real POSIX member (nonzero exit, "No such file").
+// This is deliberately NOT a prefix match on `.fleet-git-credential-`: the
+// label mismatch that shipped (runner.js reading the 'github' file for an
+// Azure DevOps member, whose credential provision_vcs_auth deploys under
+// `label = input.provider` = 'azure-devops') hid behind exactly such a
+// permissive mock match.
+function buildMockCommand({ originUrl, credentialFiles, prResponder }) {
     const log = [];
     const command = async (cmd, opts = {}) => {
         log.push(cmd);
@@ -49,7 +58,12 @@ function buildMockCommand({ originUrl, credentialLine, prResponder }) {
         if (/^git rev-list --count\b/.test(cmd)) return ok('2');
         if (/^git push\b/.test(cmd)) return ok('To mock-remote\n * [new branch] (mocked)');
         if (/^git remote get-url origin\b/.test(cmd)) return ok(originUrl);
-        if (/^\$HOME\/\.fleet-git-credential-/.test(cmd)) return ok(credentialLine);
+        const credRead = /^\$HOME\/\.fleet-git-credential-([A-Za-z0-9._-]+)$/.exec(cmd);
+        if (credRead) {
+            const line = credentialFiles[credRead[1]];
+            if (line === undefined) return fail(`bash: $HOME/.fleet-git-credential-${credRead[1]}: No such file or directory`);
+            return ok(line);
+        }
         if (/^curl(?:\.exe)? -sS -X POST\b/.test(cmd) && (/\/pulls\b/.test(cmd) || /\/pullrequests\?/.test(cmd))) {
             return ok(prResponder(cmd));
         }
@@ -72,8 +86,13 @@ function mockCallTool(vcsProvider, { availableSecrets = [] } = {}) {
     };
 }
 
-const ADO_CREDENTIAL_LINE = 'protocol=https\nhost=dev.azure.com\nusername=x-access-token\npassword=mock-ado-pat\n';
+const ADO_CREDENTIAL_LINE = 'protocol=https\nhost=dev.azure.com\nusername=\npassword=mock-ado-pat\n';
 const GH_CREDENTIAL_LINE = 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n';
+// What a real Azure DevOps member has on disk after provision_vcs_auth: ONLY
+// the azure-devops-labelled helper (src/tools/provision-vcs-auth.ts deploys
+// under `label = input.label ?? input.provider`).
+const ADO_ONLY_FILES = Object.freeze({ 'azure-devops': ADO_CREDENTIAL_LINE });
+const GH_ONLY_FILES = Object.freeze({ github: GH_CREDENTIAL_LINE });
 
 // -----------------------------------------------------------------------
 // (1) Azure DevOps 201: the reported PR URL is built by
@@ -85,7 +104,7 @@ test('finalizeAbort (Azure DevOps): a canned 201 body maps to a PR URL construct
     const branch = 'auto-sprint/abort-ado-201';
     const { command, log } = buildMockCommand({
         originUrl: AZ_ORIGIN,
-        credentialLine: ADO_CREDENTIAL_LINE,
+        credentialFiles: ADO_ONLY_FILES,
         prResponder: () => `${JSON.stringify({ pullRequestId: 555 })}\n201`,
     });
     const logs = [];
@@ -134,7 +153,7 @@ test('finalizeAbort (Azure DevOps): a canned 409 body carrying TF401179 is treat
     const branch = 'auto-sprint/abort-ado-409';
     const { command, log } = buildMockCommand({
         originUrl: AZ_ORIGIN,
-        credentialLine: ADO_CREDENTIAL_LINE,
+        credentialFiles: ADO_ONLY_FILES,
         prResponder: () => `${JSON.stringify({
             message: 'TF401179: An active pull request for the source and target branch already exists.',
         })}\n409`,
@@ -178,7 +197,7 @@ test('finalizeAbort (GitHub): a canned 201 body still reports its unchanged html
     const ghUrl = 'https://github.com/mock-org/mock-repo/pull/909';
     const { command } = buildMockCommand({
         originUrl: 'https://github.com/mock-org/mock-repo.git',
-        credentialLine: GH_CREDENTIAL_LINE,
+        credentialFiles: GH_ONLY_FILES,
         prResponder: () => `${JSON.stringify({ number: 909, html_url: ghUrl })}\n201`,
     });
     const logs = [];
@@ -196,6 +215,97 @@ test('finalizeAbort (GitHub): a canned 201 body still reports its unchanged html
 
     check(result.reason === 'aborted-pr-created', `Expected reason 'aborted-pr-created', got: ${JSON.stringify(result)}`);
     check(result.prUrl === ghUrl, `Expected the reported PR URL to be GitHub's own unchanged html_url, got: ${result.prUrl}`);
+});
+
+// -----------------------------------------------------------------------
+// (3b) REGRESSION: the credential-file label follows the member's PROVIDER.
+//
+// provision_vcs_auth deploys the credential helper under
+// `label = input.label ?? input.provider` (src/tools/provision-vcs-auth.ts),
+// so an Azure DevOps member has $HOME/.fleet-git-credential-azure-devops on
+// disk -- and, if it was ever a GitHub member before, possibly a STALE
+// $HOME/.fleet-git-credential-github next to it. runner.js's PR-raise path
+// used to read the 'github' file unconditionally (the historical default of
+// readMemberVcsCredentialToken), which on a real ADO member either threw
+// ("Failed to read VCS credential token ... from
+// '$HOME/.fleet-git-credential-github'") or, worse, silently sent the stale
+// GitHub token to dev.azure.com. The mock-command seams that let that ship
+// matched ANY `.fleet-git-credential-` prefix; buildMockCommand above now
+// serves exact files only, and this case additionally plants the stale
+// GitHub file so a wrong-label read cannot even fail loudly -- it must
+// produce the wrong token, which the -u assertion catches.
+//
+// Exercised through finalizeAbort() -> raiseVcsPrForMember() -> the real
+// readMemberVcsCredentialToken() call path, not the credential-read helper
+// in isolation: that path is exactly where the wrong label was applied.
+// -----------------------------------------------------------------------
+test('finalizeAbort (Azure DevOps): the PR-raise reads the azure-devops-labelled credential file and sends THAT token, even when a stale github-labelled file also exists', async () => {
+    const branch = 'auto-sprint/abort-ado-cred-label';
+    const { command, log } = buildMockCommand({
+        originUrl: AZ_ORIGIN,
+        credentialFiles: {
+            'azure-devops': ADO_CREDENTIAL_LINE,
+            github: 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=STALE-GITHUB-TOKEN\n',
+        },
+        prResponder: () => `${JSON.stringify({ pullRequestId: 556 })}\n201`,
+    });
+    const logs = [];
+    const error = new SprintPlanRejectedError('Plan rejected after 3 rounds', { notes: null });
+
+    const result = await finalizeAbort({
+        error,
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        log: (m) => logs.push(m),
+        callTool: mockCallTool('azure-devops', { availableSecrets: ['azdevops_pat'] }),
+    });
+
+    check(result.reason === 'aborted-pr-created', `Expected reason 'aborted-pr-created', got: ${JSON.stringify(result)} (logs: ${JSON.stringify(logs)})`);
+
+    const credReads = log.filter((c) => /^\$HOME\/\.fleet-git-credential-/.test(c));
+    check(credReads.length >= 1, `Expected at least one credential-helper read, command log: ${JSON.stringify(log)}`);
+    check(
+        credReads.every((c) => c === '$HOME/.fleet-git-credential-azure-devops'),
+        `Expected every credential read to target the azure-devops-labelled file, got: ${JSON.stringify(credReads)}`,
+    );
+    check(!credReads.includes('$HOME/.fleet-git-credential-github'), 'The PR-raise for an Azure DevOps member must never read the github-labelled credential file');
+
+    const prCmd = log.find((c) => c.startsWith('curl') && /\/pullrequests\?/.test(c));
+    check(!!prCmd, `Expected the Azure DevOps create-pull-request curl to be dispatched, command log: ${JSON.stringify(log)}`);
+    check(prCmd.includes("-u ':mock-ado-pat'"), `Expected the curl -u to carry the Azure DevOps PAT read from its own credential file, got: ${prCmd}`);
+    check(!prCmd.includes('STALE-GITHUB-TOKEN'), `The stale GitHub token must never reach the Azure DevOps REST call, got: ${prCmd}`);
+});
+
+test('finalizeAbort (GitHub control): a GitHub member still reads the github-labelled file (label follows provider both ways)', async () => {
+    const branch = 'auto-sprint/abort-gh-cred-label';
+    const ghUrl = 'https://github.com/mock-org/mock-repo/pull/910';
+    const { command, log } = buildMockCommand({
+        originUrl: 'https://github.com/mock-org/mock-repo.git',
+        credentialFiles: {
+            github: GH_CREDENTIAL_LINE,
+            'azure-devops': 'protocol=https\nhost=dev.azure.com\nusername=\npassword=UNRELATED-ADO-PAT\n',
+        },
+        prResponder: () => `${JSON.stringify({ number: 910, html_url: ghUrl })}\n201`,
+    });
+    const error = new SprintPlanRejectedError('Plan rejected after 3 rounds', { notes: null });
+
+    const result = await finalizeAbort({
+        error,
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        log: () => {},
+        callTool: mockCallTool('github'),
+    });
+
+    check(result.prUrl === ghUrl, `Expected the GitHub html_url, got: ${JSON.stringify(result)}`);
+    const credReads = log.filter((c) => /^\$HOME\/\.fleet-git-credential-/.test(c));
+    check(credReads.length >= 1 && credReads.every((c) => c === '$HOME/.fleet-git-credential-github'), `Expected only github-labelled credential reads, got: ${JSON.stringify(credReads)}`);
+    const prCmd = log.find((c) => c.startsWith('curl') && /\/pulls\b/.test(c));
+    check(!!prCmd && prCmd.includes('Bearer mock-vcs-module-token') && !prCmd.includes('UNRELATED-ADO-PAT'), `Expected the GitHub token in the Authorization header, got: ${prCmd}`);
 });
 
 // -----------------------------------------------------------------------
