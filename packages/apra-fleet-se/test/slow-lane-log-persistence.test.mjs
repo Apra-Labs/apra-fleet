@@ -24,7 +24,79 @@ import { spawn } from 'node:child_process';
 // - Asserting the log has pre-interrupt content AND lacks the exit marker
 //
 // Criterion 3 (command runs without permissions denial) is verified separately via agent Bash invocation.
+//
+// apra-fleet-5co8.46: the redirect shape asserted against below (via the
+// standalone shellScript/bareShellScript strings) was previously a hardcoded
+// copy of regression-test-playbook.md's fenced slow-lane command, with no
+// link back to the playbook text itself. That meant reverting the playbook
+// to the bare, unredirected `npm run test:slow --workspace=@apralabs/apra-fleet-se`
+// would not fail this file. The 'playbook redirect shape guards against
+// regression' test below reads the playbook's own fenced block and asserts
+// its actual current text still has the SLOW_LANE_LOG assignment, the
+// grouped exit-marker echo INSIDE the braces, and the file redirect (not a
+// pipe through tail), so a playbook regression is caught directly.
 // =============================================================================
+
+const PLAYBOOK_PATH = path.join(
+  path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')),
+  '..', '..', '..', 'regression-test-playbook.md'
+);
+
+// Extract the fenced ```bash ... ``` block that contains the SLOW_LANE_LOG
+// assignment -- the playbook has several fenced bash blocks, so anchor on
+// content, not position (positions shift as the playbook is edited).
+function extractSlowLaneBlock(playbookText) {
+  const fenceRe = /```bash\n([\s\S]*?)\n```/g;
+  let match;
+  while ((match = fenceRe.exec(playbookText)) !== null) {
+    if (match[1].includes('SLOW_LANE_LOG=')) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+test('playbook redirect shape guards against regression', () => {
+  const playbookText = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
+  const block = extractSlowLaneBlock(playbookText);
+
+  assert.ok(
+    block,
+    'regression-test-playbook.md should have a fenced bash block containing the SLOW_LANE_LOG assignment'
+  );
+
+  // The SLOW_LANE_LOG path assignment must still be present.
+  assert.match(
+    block,
+    /SLOW_LANE_LOG=/,
+    'playbook slow-lane block should assign SLOW_LANE_LOG'
+  );
+
+  // The exit-marker echo must be INSIDE the same command group as
+  // `npm run test:slow`, not appended after a redirect that only wraps the
+  // npm run call (see the "Reopen fix note" in the playbook: an echo outside
+  // the group is never reached on interruption).
+  assert.match(
+    block,
+    /\{\s*npm run test:slow[^}]*echo "test:slow exit=\$\?"[^}]*\}/,
+    'exit-marker echo must be grouped with npm run test:slow inside the same { ... } braces'
+  );
+
+  // The group must be redirected to the log file with both stdout and
+  // stderr captured, not piped through `tail` (a bare pipe loses everything
+  // if the background shell is interrupted).
+  assert.match(
+    block,
+    /\}\s*>\s*"\$SLOW_LANE_LOG"\s*2>&1/,
+    'command group must redirect to "$SLOW_LANE_LOG" with 2>&1, not a bare stdout redirect'
+  );
+
+  assert.doesNotMatch(
+    block,
+    /\|\s*tail/,
+    'command group must not pipe through tail as its primary invocation (that discards output on interruption)'
+  );
+});
 
 test('slow-lane log persistence', async (t) => {
   // Create a sandbox HOME directory for this test
