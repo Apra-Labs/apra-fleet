@@ -122,3 +122,8 @@ packages/apra-fleet-se/auto-sprint/logs/
 # Ad-hoc `bd` issue-dump scratch left at repo root (same class as /all.json
 # above, different name).
 /open.json
+
+# Sprint-runtime verdict/scratch output the orchestrator writes at repo root
+# (e.g. .fleet-out/plan-review-verdict.json) -- per-run, never commit. Its own
+# directory, so a directory rule shadows nothing tracked (unlike .fleet/).
+/.fleet-out/

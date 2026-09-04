@@ -168,6 +168,18 @@ export async function reapSandboxDolt({ sandboxPath, since, deadlineMs = 5000 },
     for (const m of matches) killPid(m.pid, deps);
     if (now() >= deadline) break;
     await sleep(1000);
+    // Always give the event loop one real turn between polls, independent
+    // of whatever `sleep` was injected. A killed process only stops being
+    // visible to kill(pid, 0) once it has been REAPED: on POSIX it sits as a
+    // zombie until its parent's SIGCHLD/waitpid handling runs, and in Node
+    // that handling (libuv's child watcher) runs on the event loop. A caller
+    // whose `sleep` resolves without yielding (a test's `async () => {}`)
+    // would otherwise spin every poll inside the same microtask turn, never
+    // let the zombie be reaped, and report the process as surviving the
+    // deadline -- the macOS CI failure of tests/regression-playbook-
+    // sandbox-lifecycle.test.ts's real-process reap case. Costs nothing on
+    // the CLI path, where the real 1000ms sleep already yields.
+    await new Promise((resolve) => setImmediate(resolve));
     matches = findMatches();
   }
   if (matches.length > 0) {

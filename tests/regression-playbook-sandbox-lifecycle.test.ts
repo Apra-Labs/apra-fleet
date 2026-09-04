@@ -328,7 +328,17 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
         platform: 'linux',
         execFileSync: (cmd: string) =>
           cmd === 'ps' && isProcessAlive(pid) ? `${pid} 5 sql-server --data-dir ${sandbox}\n` : '',
-        sleep: async () => {},
+        // A REAL (short) sleep, not `async () => {}`: this test's own
+        // process is the killed child's parent, and `kill(pid, 0)` keeps
+        // succeeding on the SIGKILLed child until libuv reaps the zombie --
+        // which only happens on an event-loop turn. A sleep that resolves
+        // without yielding spun the reap loop to its deadline with the
+        // zombie still "alive" (observed on the macos-latest CI runner;
+        // Linux/Windows happened not to hit it). reapSandboxDolt() now also
+        // yields a macrotask per poll on its own (see the script), so this
+        // is belt-and-braces; the unit case in tests/reap-sandbox-dolt.test.ts
+        // pins that script-side guarantee with a deterministic zombie model.
+        sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 20))),
         now: () => Date.now(),
       };
       const result = await reapSandboxDolt({ sandboxPath: sandbox, since, deadlineMs: 3000 }, deps);

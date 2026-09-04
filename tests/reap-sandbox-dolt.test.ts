@@ -167,6 +167,37 @@ describe('reapSandboxDolt', () => {
     expect(result.message).toMatch(/pid 4242/);
   });
 
+  it('succeeds against a killed process that only disappears once the event loop reaps it (zombie until waitpid), even when the injected sleep never yields', async () => {
+    // Deterministic model of the POSIX zombie rule that broke the real-
+    // process reap case on the macos-latest CI runner: after SIGKILL a child
+    // stays visible to kill(pid, 0) / ps until its parent's SIGCHLD handling
+    // runs, and in Node that runs on the event loop. So the process here is
+    // only "reaped" (dropped from the ps output) by a setImmediate callback
+    // scheduled at kill time -- i.e. it can never disappear unless the reap
+    // loop yields a macrotask between polls. The injected sleep resolves
+    // WITHOUT yielding (the exact shape the real-process test used), so the
+    // only way this passes is reapSandboxDolt()'s own per-poll yield.
+    let state: 'alive' | 'zombie' | 'reaped' = 'alive';
+    const deps = {
+      platform: 'linux',
+      execFileSync: (cmd: string) => (cmd === 'ps' && state !== 'reaped'
+        ? `4242   30   dolt sql-server --data-dir ${SANDBOX}/toy-repo/.beads/dolt`
+        : ''),
+      processKill: (pid: number) => {
+        expect(pid).toBe(4242);
+        if (state === 'alive') {
+          state = 'zombie';
+          setImmediate(() => { state = 'reaped'; });
+        }
+      },
+      sleep: async () => {},
+      now: (() => { let t = 0; return () => (t += 100); })(),
+    };
+    const result = await reapSandboxDolt({ sandboxPath: SANDBOX, since: 0, deadlineMs: 5000 }, deps);
+    expect(result.ok).toBe(true);
+    expect(state).toBe('reaped');
+  });
+
   it('never widens to a bare match: an unrelated dolt sql-server on the same host is left untouched', async () => {
     const deps = {
       platform: 'linux',
