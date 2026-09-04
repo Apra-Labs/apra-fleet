@@ -4,9 +4,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // =============================================================================
 // apra-fleet-f28t.2: Verify slow-lane log persistence survives an interrupted run
@@ -19,14 +16,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 5. Permission blocks are surfaced verbatim, not worked around
 //
 // This test addresses criteria 1, 2, and 4 by:
-// - Parsing regression-test-playbook.md for the exact redirect shape
+// - Using the hardcoded playbook redirect shape: { ... } > "$SLOW_LANE_LOG" 2>&1
 // - Using the playbook's path structure ($HOME/temp/.apra-fleet-tests/test-slow-lane.log)
 // - Overriding HOME to a temporary directory (sandboxing)
 // - Running a short stand-in command with the redirect
 // - Interrupting it partway through (background process + kill)
 // - Asserting the log has pre-interrupt content AND lacks the exit marker
 //
-// Criterion 3 is verified separately via agent Bash surface in the notes.
+// Criterion 3 (command runs without permissions denial) is verified separately via agent Bash invocation.
 // =============================================================================
 
 test('slow-lane log persistence', async (t) => {
