@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "aebc13413bc6d74478dd4c9cd91befd8fc2ede37",
+    "commit": "7bfde0d709dcc379207522e7c0f117027bafe9eb",
     "branch": "feat/azure-devops-vcs-auth-v3",
-    "entry_count": 41
+    "entry_count": 47
   },
   "entries": [
     {
@@ -330,6 +330,19 @@
       "updated_at": "2026-09-02T06:28:04.414Z"
     },
     {
+      "id": "6388f0cf-f6f4-4e2e-99d6-48b0f8711853",
+      "type": "knowledge",
+      "title": "apra-fleet-5co8.40's closed status does not reflect its acceptance criteria being met",
+      "summary": "Bead apra-fleet-5co8.40 (curl/wget basename matching for absolute-path invocations) is marked closed, but CURL_WGET_TOKEN_RE in mock-sprint-harness.mjs is still an exact-match regex with zero test cases for path-prefixed curl/wget invocations -- the described fix was never implemented despite the close.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-harness-network-shaped-command.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T22:04:44.339Z"
+    },
+    {
       "id": "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e",
       "type": "knowledge",
       "title": "kill-port netstat parsing depends on the colon-anchored port suffix",
@@ -379,6 +392,36 @@
       "updated_at": "2026-09-02T06:28:04.562Z"
     },
     {
+      "id": "7fe61086-2df7-44bf-9d40-a16d6081c1f5",
+      "type": "learning",
+      "title": "Setup shell's $$ is unsafe to record for liveness checks under Git Bash on Windows",
+      "summary": "scripts/sandbox-lock.mjs's acquire CLI previously recorded the Setup shell's self-reported $$, which under Git Bash on Windows is an MSYS-internal pid invisible to defaultDeps.isAlive's native process.kill(pid,0) check -- fixed by having the CLI record its own process.ppid instead, since the CLI process is itself a direct child of the Setup shell and process.ppid always resolves in the native OS pid namespace.",
+      "symbols": [
+        "acquireLock",
+        "checkLockState"
+      ],
+      "source_files": [
+        "scripts/sandbox-lock.mjs",
+        "tests/sandbox-lock.test.ts",
+        "regression-test-playbook.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T22:04:44.355Z"
+    },
+    {
+      "id": "83a65916-55ec-4851-8287-9d1dcf2d7c77",
+      "type": "learning",
+      "title": "Verbatim-invocation criteria are unsatisfiable for the slow lane",
+      "summary": "An acceptance criterion demanding verbatim invocation of the regression slow-lane command conflicts with the same bead's ban on running the 8-minute lane, so the reachable evidence is the redirect shape plus a sandboxed stand-in.",
+      "symbols": [],
+      "source_files": [
+        "regression-test-playbook.md",
+        "packages/apra-fleet-se/test/slow-lane-log-persistence.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-04T01:35:02.113Z"
+    },
+    {
       "id": "8997f326-d6e7-485f-ad84-782650030314",
       "type": "knowledge",
       "title": "Local vs remote member dispatch paths",
@@ -391,6 +434,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-02T06:28:04.677Z"
+    },
+    {
+      "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
+      "type": "knowledge",
+      "title": "A directly launched sprint's deployer self-id is the branch name, not a ledger uuid",
+      "summary": "runner.js derives the deployer's own reservation id as validated.runId || validated.branch, so a standalone (non-supervisor) launch hands the deployer a branch name rather than a supervisor sprintId.",
+      "symbols": [
+        "sprintSelfId",
+        "buildRunnerArgs",
+        "isSelfReservation",
+        "classifyActiveSprints",
+        "generateSprintId"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/bin/cli.mjs",
+        "packages/apra-fleet-se/src/supervisor/sprint-identity.mjs",
+        "packages/apra-fleet-se/src/supervisor/api.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-04T03:39:46.448Z"
     },
     {
       "id": "96a63862-eb7a-43f3-8352-4cd686412d43",
@@ -423,6 +487,45 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-03T05:36:24.565Z"
+    },
+    {
+      "id": "9f05685a-14ae-4aae-8771-92e2636d0113",
+      "type": "knowledge",
+      "title": "A sprint's own reservation is always in GET /api/sprints while it deploys",
+      "summary": "The supervisor reservation ledger always contains the deploying sprint's own entry, so any 'non-empty sprints array => stop' deploy gate blocks every sprint from deploying its own work; identity must be compared exactly on sprintId.",
+      "symbols": [
+        "listSprints",
+        "classifyActiveSprints",
+        "isSelfReservation"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/api.mjs",
+        "packages/apra-fleet-se/src/supervisor/sprint-identity.mjs",
+        "scripts/check-foreign-sprints.mjs",
+        "deploy.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T22:04:44.372Z"
+    },
+    {
+      "id": "a0b13797-60af-4c33-98b9-d204b482d1e5",
+      "type": "knowledge",
+      "title": "The sprint run id reaches runner.js only via buildRunnerArgs' run_id key",
+      "summary": "spawner --run-id -> cli.mjs effectiveRunId existed but was dropped at buildRunnerArgs, so runner.js had no reservation identity; run_id must be added to both buildRunnerArgs and runner.js KNOWN_ARG_KEYS/validateArgs.",
+      "symbols": [
+        "buildRunnerArgs",
+        "validateArgs",
+        "KNOWN_ARG_KEYS",
+        "buildSprintArgv"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/bin/cli.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/src/supervisor/spawner.mjs",
+        "packages/apra-fleet-se/test/fixtures/golden-transcript/mock-sprint-happy-path.jsonl"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-03T22:04:44.419Z"
     },
     {
       "id": "a96e64d8-e304-4a46-baeb-d36fe1371a94",
