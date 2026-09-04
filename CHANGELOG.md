@@ -72,47 +72,61 @@ What shipped:
   invariant future contributors must respect when adding any Windows
   liveness/lock check.
 
+Since the previous update to this entry, further cycles landed: a deploy
+active-sprints gate that distinguishes a sprint's own live reservation from
+a foreign one (closing the recurring deploy-blocked failure mode below, once
+the dispatching process itself is relaunched from a build containing the
+fix -- see `docs/design-regression-sandbox-lifecycle.md`); the mock-sprint
+unmocked-network-command guard now matches curl/wget by command basename, so
+a path-prefixed invocation no longer slips past it; the Azure DevOps
+`testConnectivity` skipped-check result now carries a machine-detectable
+`skipped: true` flag instead of being indistinguishable from a verified
+pass; and slow-lane log-persistence test hardening. Verdict is still FAIL.
+
 Carried forward (filed as open issues, not blocking further sprints from
 starting, but blocking these epics' own completion):
 
-- Deploy never completed in any cycle this sprint (halts at the active-
-  sprints precondition gate on its own reservation), so nothing landed here
-  has been verified against an installed build; a follow-up issue tracks
-  making the deploy runbook distinguish a sprint's own reservation from a
-  foreign one so this stops recurring.
+- Deploy still has not completed against an installed build this sprint.
+  The active-sprints gate itself now correctly distinguishes self from
+  foreign reservations, but every attempted cycle was dispatched from a
+  process that predated that fix landing in the tree, so the gate kept
+  blocking as if no self-identity check existed at all. Nothing landed in
+  this sprint has been verified against an installed build, and the
+  integration-test lane never ran.
 - Six verify-routed items are open and unverified end-to-end: the
-  `canOpenPullRequest` capability-table pin, the Azure DevOps
-  create-pull-request builder, server-reuse version-mismatch handling, the
-  sandbox lockfile, the port-3001 Setup guard, and the opt-in real
-  Azure DevOps end-to-end lane.
+  `canOpenPullRequest` capability-table pin (fixed in the diff, unverified
+  post-install), the Azure DevOps create-pull-request builder, server-reuse
+  version-mismatch handling, the sandbox lockfile, the port-3001 Setup
+  guard, and the opt-in real Azure DevOps end-to-end lane.
 - The sandbox lockfile's liveness check is not safely closable as-is: on
   Git Bash on Windows -- the platform this sprint runs on -- a pid captured
   from the shell's `$$` is an MSYS pid, but the liveness check uses a native
   `process.kill(pid, 0)`, so a live holder can read as stale or an unrelated
   native process can read as busy.
-- The mock-sprint unmocked-network-command guard still misses an
-  absolute-path curl/wget invocation.
 - `.claude/settings.json` now grants a blanket `Edit`/`Write` permission to
   every agent dispatch; this widening is not justified by any scope item
   here and should be reviewed.
 - `dolt-orphan-sweep`'s owner-scope filter is inert when the sweep's data
   directory falls back to a relative path -- a known, not-yet-test-pinned
   gap.
-- Azure DevOps `testConnectivity` reports a skipped check as success in
-  provisioning output rather than distinguishing "skipped" from "verified".
+- The build-lock preflight step run ahead of `install --force` kills every
+  non-self, non-ancestor holder of this checkout's build artifacts with no
+  built-in exclusion for a live foreign sprint's own child process --
+  deploy operators currently have to hand-verify this after the fact.
 - Regression-pass carryover from this sprint's full-suite run (a resumed,
-  not freshly re-run, real-bd functional pass; an unrecoverable slow-lane
-  verdict after an orphaned background process could not be reaped; and
-  known Part-2 smoke-test blockers) is tracked as standalone, parent-less
-  backlog and is unrelated to the Azure DevOps/sandbox scope itself.
+  not freshly re-run, real-bd functional pass; a slow-lane failure tied to
+  a pre-existing watchdog/recording-drift issue; and known Part-2
+  smoke-test credential-provisioning blockers) is tracked as standalone,
+  parent-less backlog and is unrelated to the Azure DevOps/sandbox scope
+  itself.
 
 ### Cost analysis
 
 Budget ceiling: not set (no --budget flag) -- unlimited for this run.
-Tracked spend (priced dispatches only): $19.9785.
+Tracked spend (priced dispatches only): $17.1504.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
-Pricing source: all 38 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Pricing source: all 58 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- Supervisor dashboard: live-refresh parity with the per-run viewer
