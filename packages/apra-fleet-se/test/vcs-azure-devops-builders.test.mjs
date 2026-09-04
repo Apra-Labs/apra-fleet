@@ -77,11 +77,25 @@ const POSIX_CREATE_PR = "curl -sS -X POST"
     + " -w '\n%{http_code}'"
     + ` ${API_BASE}/pullrequests?api-version=7.1`;
 
+// The PowerShell dialect carries THREE rewrites: the apostrophe is doubled
+// ('') for PowerShell's own single-quoted-string parser; every JSON double
+// quote is backslash-escaped (\") for the C-runtime argv parser of the
+// native curl.exe child -- Windows PowerShell 5.1's legacy native-argument
+// binder passes the string value through to the child's command line
+// UNESCAPED, so a bare `"` is eaten there as a quote toggle and the JSON
+// body arrives at curl.exe with every quote stripped (HTTP 400); and every
+// literal space inside the JSON becomes its equivalent JSON backslash-u0020
+// escape, because
+// that same binder counts `\"` toward its quote parity and so would leave a
+// whitespace-bearing value unwrapped for the CRT to split. Pinned as a
+// literal here; test/vcs-powershell-argv-roundtrip.test.mjs proves the form
+// against the documented binder + CRT rules and (on Windows) against a real
+// powershell.exe.
 const WINDOWS_CREATE_PR = "curl.exe -sS -X POST"
     + " -u ':PAT-TOKEN-abc123'"
     + " -H 'Content-Type: application/json'"
     + " -H 'Accept: application/json'"
-    + " -d '{\"sourceRefName\":\"refs/heads/auto-sprint/feat-x\",\"targetRefName\":\"refs/heads/main\",\"title\":\"Sprint''s PR\",\"description\":\"Body line\"}'"
+    + " -d '{\\\"sourceRefName\\\":\\\"refs/heads/auto-sprint/feat-x\\\",\\\"targetRefName\\\":\\\"refs/heads/main\\\",\\\"title\\\":\\\"Sprint''s\\u0020PR\\\",\\\"description\\\":\\\"Body\\u0020line\\\"}'"
     + " -w '\n%{http_code}'"
     + ` ${API_BASE}/pullrequests?api-version=7.1`;
 
@@ -92,7 +106,7 @@ test('azure-devops create-pull-request: exact POSIX curl command (endpoint, api-
     assert.equal(built.command, POSIX_CREATE_PR);
 });
 
-test('azure-devops create-pull-request: exact Windows curl.exe command (PowerShell doubles the embedded quote)', () => {
+test('azure-devops create-pull-request: exact Windows curl.exe command (PowerShell doubles the apostrophe, JSON double quotes are CRT-escaped as \\")', () => {
     const built = buildCreatePrCommand({ ...PR_PARAMS, os: 'windows' });
     assert.equal(built.command, WINDOWS_CREATE_PR);
 });
@@ -154,7 +168,7 @@ const WINDOWS_COMMENT = "curl.exe -sS -X POST"
     + " -u ':PAT-TOKEN-abc123'"
     + " -H 'Content-Type: application/json'"
     + " -H 'Accept: application/json'"
-    + " -d '{\"comments\":[{\"parentCommentId\":0,\"content\":\"Aborted: agent''s run failed\",\"commentType\":\"text\"}],\"status\":\"active\"}'"
+    + " -d '{\\\"comments\\\":[{\\\"parentCommentId\\\":0,\\\"content\\\":\\\"Aborted:\\u0020agent''s\\u0020run\\u0020failed\\\",\\\"commentType\\\":\\\"text\\\"}],\\\"status\\\":\\\"active\\\"}'"
     + " -w '\n%{http_code}'"
     + ` ${API_BASE}/pullrequests/42/threads?api-version=7.1`;
 

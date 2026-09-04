@@ -68,7 +68,7 @@
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
-import { shQuote, curlBinary, assertToken } from './shell-helpers.mjs';
+import { shQuote, shQuoteJson, curlBinary, assertToken } from './shell-helpers.mjs';
 
 /** Credential no longer good -- re-minting a PAT (skills/fleet/auth-azdevops.md
  *  "401 Unauthorized -> Create new PAT and re-deploy") is the remedy, so
@@ -505,7 +505,7 @@ function buildAzureDevOpsCreatePrCommand(params) {
         `-u ${shQuote(`:${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
-        `-d ${shQuote(payloadJson, os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
@@ -557,7 +557,7 @@ function buildAzureDevOpsCommentCommand(params) {
         `-u ${shQuote(`:${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
-        `-d ${shQuote(payloadJson, os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');

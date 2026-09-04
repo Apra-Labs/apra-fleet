@@ -59,11 +59,79 @@ function usesPowerShellQuoting(os, shell) {
     return os === 'windows';
 }
 
+/** Pre-escape `value` for the Windows C-runtime argv parser that a NATIVE
+ *  executable (curl.exe) applies to the command line PowerShell hands it.
+ *
+ *  Windows PowerShell 5.1's native-command argument binder (and pwsh before
+ *  7.3) passes a single-quoted argument's VALUE through to the child process
+ *  command line without escaping anything: the only thing it does is wrap
+ *  the value in double quotes when it finds whitespace OUTSIDE what it
+ *  counts as a double-quoted region. The child's CRT parser then eats every
+ *  embedded `"` as a quote toggle, so a JSON payload like {"title":"x y"}
+ *  reaches curl.exe as {title:x y} (measured live on powershell.exe
+ *  5.1.19041 with a node argv probe: every `"` stripped, spaces kept) and
+ *  Azure DevOps/GitHub answer HTTP 400 to the unparseable body. Same defect
+ *  class dolt-settle.mjs's nodeEval() already works around for its
+ *  PowerShell branch.
+ *
+ *  The CRT rules (CommandLineToArgvW / MSVC argv), which this function
+ *  inverts so the child reconstructs `value` byte-for-byte:
+ *    - 2n backslashes + `"`   -> n backslashes, `"` toggles quoting
+ *    - 2n+1 backslashes + `"` -> n backslashes, literal `"`
+ *    - backslashes NOT followed by `"` are literal (so a JSON `\n` escape
+ *      inside a string value is left alone)
+ *  So every run of n backslashes that precedes a `"` becomes 2n+1
+ *  backslashes + `"` (n=0: `"` -> `\"`).
+ *
+ *  LIMIT (measured, not assumed): the 5.1 binder counts a backslash-escaped
+ *  `\"` toward its quote parity exactly like a bare `"`, while the CRT does
+ *  NOT toggle on it -- so for a value carrying BOTH whitespace and quotes
+ *  the two parsers disagree about whether that whitespace is "inside
+ *  quotes", the binder skips its wrapping, and the CRT splits the argument
+ *  at the whitespace (observed: a JSON title 'Auto-sprint [PASS]: x'
+ *  arrived as two argv entries). There is no escape sequence both parsers
+ *  read the same way, so a caller must keep such a value whitespace-free --
+ *  see shQuoteJson() below, which does exactly that for JSON payloads (the
+ *  only quote-bearing arguments the VCS builders emit). A value with
+ *  whitespace but NO quotes (an `-H 'Content-Type: application/json'`
+ *  header) is wrapped by the binder and parsed back intact by the CRT.
+ *
+ *  NOTE pwsh 7.3+ defaults $PSNativeCommandArgumentPassing to 'Windows'
+ *  mode, which escapes embedded `"` itself; this pre-escaping is for the
+ *  legacy binder that every Windows member in this fleet is driven through
+ *  today (src/os/windows.ts cleanExec() spawns `powershell.exe`, and the
+ *  remote path sends raw PowerShell text to the member's default shell). */
+function escapeForWindowsArgv(value) {
+    return String(value).replace(/(\\*)"/g, (_m, backslashes) => `${backslashes}${backslashes}\\"`);
+}
+
 function shQuote(value, os, shell) {
     if (usesPowerShellQuoting(os, shell)) {
-        return `'${String(value).replace(/'/g, "''")}'`;
+        // Two layers, applied inside-out: first the CRT argv pre-escaping
+        // above (what the NATIVE child parses), then PowerShell's own
+        // single-quoted-string escape (what PowerShell parses to get the
+        // value it hands the binder) -- a lone `'` inside a `'...'` string
+        // is written as `''`.
+        return `'${escapeForWindowsArgv(value).replace(/'/g, "''")}'`;
     }
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+/** Quote a JSON document for a `-d` argument. POSIX: plain shQuote of the
+ *  JSON.stringify() text. PowerShell dialect: every literal whitespace code
+ *  point left in the JSON text (a space inside a string value; JSON.stringify
+ *  already escapes \n \t \r) is rewritten as its equivalent JSON `\uXXXX`
+ *  escape -- byte-different, semantically identical JSON -- so the argument
+ *  carries NO whitespace and the 5.1 binder-vs-CRT disagreement described on
+ *  escapeForWindowsArgv() can never arise: the binder leaves the value bare,
+ *  the CRT reads each `\"` as a literal quote, and curl.exe receives the
+ *  exact JSON the caller built. Whitespace cannot appear outside a string
+ *  in JSON.stringify() output, so the rewrite is always inside a string. */
+function shQuoteJson(json, os, shell) {
+    const text = String(json);
+    if (!usesPowerShellQuoting(os, shell)) return shQuote(text, os, shell);
+    const noWhitespace = text.replace(/\s/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    return shQuote(noWhitespace, os, shell);
 }
 
 /** Which curl binary token to emit for a given member OS. On Windows the bare
@@ -93,4 +161,4 @@ function assertToken(token) {
     return value;
 }
 
-export { shQuote, usesPowerShellQuoting, curlBinary, assertToken };
+export { shQuote, shQuoteJson, usesPowerShellQuoting, escapeForWindowsArgv, curlBinary, assertToken };

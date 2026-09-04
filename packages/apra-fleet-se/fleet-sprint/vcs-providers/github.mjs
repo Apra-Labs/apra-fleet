@@ -26,7 +26,7 @@
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
-import { shQuote, curlBinary, assertToken } from './shell-helpers.mjs';
+import { shQuote, shQuoteJson, curlBinary, assertToken } from './shell-helpers.mjs';
 
 const GITHUB_API = 'https://api.github.com';
 const REDACTED = '***REDACTED***';
@@ -61,7 +61,7 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os, 
         `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
-        `-d ${shQuote(payloadJson, os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
@@ -105,7 +105,7 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
         `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
-        `-d ${shQuote(payloadJson, os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');

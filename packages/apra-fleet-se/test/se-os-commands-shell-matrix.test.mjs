@@ -9,6 +9,7 @@ import {
 } from '../fleet-sprint/se-os-commands.mjs';
 import { buildCredentialReadCommand } from '../fleet-sprint/runner.js';
 import { buildCreatePrCommand } from '../fleet-sprint/vcs-module.mjs';
+import { crtParseCommandLine, legacyBinderCommandLine } from './helpers/windows-argv.mjs';
 
 // apra-fleet-7dir.3.4: getSeCommands() is the single place fleet-sprint and
 // the supervisor resolve "what does a command string look like for THIS
@@ -324,13 +325,23 @@ describe('VCS create-pull-request curl builders quote by member shell across the
         return { value: out, end: i };
     }
 
+    // For the PowerShell dialect the string literal is only stage 1: the
+    // value PowerShell parses out is then handed to the NATIVE curl.exe
+    // through Windows PowerShell 5.1's legacy argument binder and the child's
+    // C-runtime argv parser -- the stages that stripped every double quote
+    // out of the JSON on a live member. helpers/windows-argv.mjs models those
+    // (see test/vcs-powershell-argv-roundtrip.test.mjs for the real-
+    // powershell.exe proof), so this returns what curl.exe actually receives.
     function extractDashDPayload(command, dialect) {
         const marker = ' -d ';
         const markerIndex = command.indexOf(marker);
         assert.ok(markerIndex !== -1, `expected a ' -d ' flag in the built command: ${command}`);
         const argStart = markerIndex + marker.length;
-        const parser = dialect === 'posix' ? nextPosixArg : nextPowerShellArg;
-        return parser(command, argStart).value;
+        if (dialect === 'posix') return nextPosixArg(command, argStart).value;
+        const { value } = nextPowerShellArg(command, argStart);
+        const argv = crtParseCommandLine(legacyBinderCommandLine([value]));
+        assert.equal(argv.length, 1, `the -d word must reach curl.exe as exactly one argument, got ${JSON.stringify(argv)}`);
+        return argv[0];
     }
 
     for (const { label, os, shell, dialect } of SHELL_MATRIX) {
