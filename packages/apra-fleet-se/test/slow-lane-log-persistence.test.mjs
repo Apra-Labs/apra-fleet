@@ -34,13 +34,13 @@ test('slow-lane log persistence', async (t) => {
 
   // Snapshot the real HOME/temp directory before test (side-effect check)
   const realTempDir = path.join(os.homedir(), 'temp', '.apra-fleet-tests');
-  const realTempExistsBefore = fs.existsSync(realTempDir);
   let realTempContentBefore = null;
-  if (realTempExistsBefore) {
-    try {
-      realTempContentBefore = fs.readdirSync(realTempDir).sort();
-    } catch (e) {
-      // Directory might not be readable; that's fine for the check
+  try {
+    realTempContentBefore = fs.readdirSync(realTempDir).sort();
+  } catch (e) {
+    // Directory doesn't exist or is unreadable; record as null for comparison
+    if (e.code !== 'ENOENT') {
+      throw e; // Re-throw if it's not ENOENT (e.g., permission error)
     }
   }
 
@@ -181,33 +181,37 @@ test('slow-lane log persistence', async (t) => {
       );
     });
 
-    // Criterion 2 side-effect check: verify Teardown would clean this up
-    // and that the test didn't pollute the real HOME
+    // Criterion 2 side-effect check: verify test didn't pollute the real HOME
     await t.test('cleanup does not pollute real HOME temp directory', () => {
       // Check real HOME/temp hasn't changed
-      if (realTempExistsBefore) {
-        try {
-          const realTempContentAfter = fs.readdirSync(realTempDir).sort();
-          assert.deepStrictEqual(
-            realTempContentAfter,
-            realTempContentBefore,
-            'Real HOME/temp/.apra-fleet-tests should not have been modified by test'
-          );
-        } catch (e) {
-          // Directory may have been deleted; that's also fine
+      let realTempContentAfter = null;
+      try {
+        realTempContentAfter = fs.readdirSync(realTempDir).sort();
+      } catch (e) {
+        // Directory doesn't exist or is unreadable; record as null for comparison
+        if (e.code !== 'ENOENT') {
+          throw e; // Re-throw if it's not ENOENT (e.g., permission error)
         }
       }
 
-      // Sandbox should be cleanable (this mimics Teardown)
-      assert.ok(
-        fs.existsSync(sandboxHome),
-        'Sandbox home should exist (ready for cleanup)'
+      // Assert unconditionally: null === null (dir didn't exist before or after),
+      // or arrays match (dir existed and unchanged)
+      assert.deepStrictEqual(
+        realTempContentAfter,
+        realTempContentBefore,
+        'Real HOME/temp/.apra-fleet-tests should not have been modified by test'
       );
     });
   } finally {
     // Cleanup (mimics playbook's Teardown)
-    if (fs.existsSync(sandboxHome)) {
-      fs.rmSync(sandboxHome, { recursive: true, force: true });
-    }
+    // force: true tolerates absence, so no guard needed
+    fs.rmSync(sandboxHome, { recursive: true, force: true });
   }
+
+  // Criterion 2 final check: sandbox should be completely removed after Teardown
+  assert.strictEqual(
+    fs.existsSync(sandboxHome),
+    false,
+    'Sandbox home should be completely removed after Teardown rmSync'
+  );
 });
