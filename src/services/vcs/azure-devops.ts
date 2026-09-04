@@ -110,7 +110,15 @@ export const azureDevOpsProvider: VcsProviderService = {
       scopeUrl && isValidAzureRepoUrl(scopeUrl) ? scopeUrl : knownRepoRemoteUrl(agent);
     const repoUrl = candidate && isValidAzureRepoUrl(candidate) ? candidate : undefined;
     if (!repoUrl) {
-      return { success: true, message: 'Skipped (no specific Azure DevOps repo known to test)' };
+      // apra-fleet-5co8.43: `success: true` here means "nothing failed", NOT
+      // "the credential was verified" -- `skipped: true` is the machine-
+      // detectable signal a caller must check before presenting this as a
+      // passing connectivity check (see VcsDeployResult.skipped's doc).
+      return {
+        success: true,
+        skipped: true,
+        message: 'Skipped (no specific Azure DevOps repo known to test)',
+      };
     }
     try {
       await exec(`git ls-remote ${repoUrl} HEAD`);

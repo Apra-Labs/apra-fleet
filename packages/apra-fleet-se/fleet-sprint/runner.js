@@ -324,6 +324,13 @@ const KNOWN_ARG_KEYS = new Set([
     // and per-bead work-claiming. All three are no-ops without it -- a lone
     // sprint has no sibling to coordinate with.
     'serviceUrl',
+    // apra-fleet-5co8.37: this launch's incarnation-unique run identity -- the
+    // SAME string the supervisor's reservation ledger keys this sprint by
+    // (bin/cli.mjs forwards the supervisor's --run-id, falling back to the
+    // branch name for a direct/standalone launch, which is also what cli.mjs
+    // reserves members under). Threaded to the deployer so its active-sprints
+    // gate can tell this sprint's OWN reservation from a foreign one.
+    'run_id',
     // The assignee identity this sprint claims beads as and filters ready work
     // by (`bd update --claim` / `bd ready --assignee`). Nothing sets this
     // today; the claiming layer stays dormant and bead selection uses the
@@ -2364,9 +2371,9 @@ function selfHealResultText(result) {
 // the just-in-time credential-scoping ADR (docs/adr-server-never-acts-on-repo.md)
 // for the rogue-dispatch blast-radius rationale: widening this default would
 // give every member standing pull_requests:write for the whole sprint.
-// @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string }} opts
+// @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string, resolvedProvider?: { provider: string, authMode: string|null } }} opts
 // @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
-async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName, remoteUrlOverride }) {
+async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName, remoteUrlOverride, resolvedProvider }) {
     let repos;
     let derivedRepo = null;
     let derivedRef = null;
@@ -2417,7 +2424,11 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // providers: null, no separate mode axis) and is only forwarded as
     // `<provider>_mode` when non-null, matching provision_vcs_auth's own
     // `github_mode` field name for the one provider that has one today.
-    const { provider, authMode } = await resolveProvider(member, { fleetApi });
+    // apra-fleet-5co8.13: a caller that already resolved the provider (e.g.
+    // the self-heal callback's authRemedy hint lookup) can thread it through
+    // via `resolvedProvider`, saving a second member_detail round trip. Falls
+    // back to this function's own lookup when not supplied.
+    const { provider, authMode } = resolvedProvider || await resolveProvider(member, { fleetApi });
     // apra-fleet-5co8.2.1: the argument shape itself is now provider-owned.
     // What follows is the DEFAULT (GitHub-App) shape; a provider that declares
     // a buildProvisionArgs hook replaces it wholesale -- see
@@ -2476,6 +2487,22 @@ async function provisionPrCapableAuthForMember({ fleetApi, command, member, log 
 // $env:USERPROFILE\.fleet-git-credential-github.bat on Windows
 // (src/os/windows.ts:279-294).
 const GITHUB_VCS_CREDENTIAL_LABEL = 'github';
+
+// The credential-helper label provision_vcs_auth deploys a member's VCS
+// credential under, for the PR-raising call sites to read it back from:
+// `label = input.label ?? input.provider` server-side, and no fleet-sprint
+// caller (neither the shared GitHub-App-shaped arguments in
+// provisionVcsAuthForMember nor a provider's buildProvisionArgs hook) ever
+// sends an explicit `label`, so the label IS the provider name -- 'github'
+// -> $HOME/.fleet-git-credential-github, 'azure-devops' ->
+// $HOME/.fleet-git-credential-azure-devops, etc. A member with no
+// resolvable provider keeps the historical GitHub default.
+// @param {string|null|undefined} provider
+// @returns {string}
+export function vcsCredentialLabelForProvider(provider) {
+    const name = typeof provider === 'string' ? provider.trim() : '';
+    return name || GITHUB_VCS_CREDENTIAL_LABEL;
+}
 
 // Typed marker returned by finalizeAbort() (and logged by the Publish PR step)
 // when the callTool-absent graceful-degradation path is taken: PR creation was
@@ -2749,11 +2776,61 @@ function isPrAuthFailure(status, errorText) {
 // @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string }} opts
 // @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean }>}
 async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride }) {
-    let { repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
+    let repo;
+    try {
+        ({ repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride }));
+    } catch (provisionErr) {
+        // apra-fleet-5co8.15: provisionPrCapableAuthForMember has no failSoft
+        // of its own (by design -- see its doc comment above), so a
+        // provisioning failure that happens BEFORE any PR-creation attempt
+        // (e.g. a missing Azure DevOps PAT credential-store entry) used to
+        // escape here as the raw provision_vcs_auth failure text and abort
+        // the whole sprint. Degrade it the same way the reactive
+        // auth-self-heal retry below already degrades a mid-retry failure:
+        // log the provider's own authRemedy hint (never a wording duplicated
+        // here) and return authFailure:true instead of throwing, so a caller
+        // (Publish PR, finalizeAbort) can report clean, actionable guidance
+        // and keep going rather than aborting on this condition.
+        let remedyHint = null;
+        try {
+            const { provider } = await resolveProvider(member, { fleetApi });
+            const impl = getVcsProvider(provider);
+            if (impl && impl.authRemedy && impl.authRemedy.hint) remedyHint = impl.authRemedy.hint;
+        } catch (resolveErr) {
+            log(`${logPrefix}: could not resolve member '${member}'s VCS provider to look up an auth remedy hint (falling back to the raw provisioning error): ${resolveErr.message}`);
+        }
+        const message = remedyHint
+            ? `Could not provision a push+pr credential for member '${member}': ${remedyHint}`
+            : provisionErr.message;
+        log(`${logPrefix}: PR-capable credential provisioning failed for member '${member}'; degrading (not throwing): ${message}`);
+        return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true };
+    }
     if (!repo) {
         throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
     }
-    let token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
+    // apra-fleet-lzfv.5: resolve the member's OWN registered VCS provider
+    // (VCSModule.resolveProvider(), never a hardcoded 'github' literal --
+    // same rule provisionVcsAuthForMember already follows) so
+    // buildCreatePrCommand dispatches to the right REST dialect for a
+    // dev.azure.com (or any other) remote, not just GitHub.
+    //
+    // Resolved BEFORE the credential read below because the read is keyed
+    // by provider too: provision_vcs_auth deploys the credential helper
+    // under `label = input.label ?? input.provider`
+    // (src/tools/provision-vcs-auth.ts), and neither the shared
+    // GitHub-App-shaped arguments nor a provider's buildProvisionArgs hook
+    // sends an explicit label -- so the file to read back is
+    // $HOME/.fleet-git-credential-<provider>. Reading the 'github'-labelled
+    // file unconditionally (the pre-fix default of
+    // readMemberVcsCredentialToken) made every Azure DevOps member's PR
+    // raise fail with "Failed to read VCS credential token ... from
+    // '$HOME/.fleet-git-credential-github'" (or, worse, silently reuse a
+    // stale GitHub token left over from an earlier provider and send it to
+    // dev.azure.com).
+    const { provider } = await resolveProvider(member, { fleetApi });
+    const credentialLabel = vcsCredentialLabelForProvider(provider);
+
+    let token = await readMemberVcsCredentialToken({ command, member, label: credentialLabel, fleetApi, log });
     // Both os AND shell feed the command builder: os picks the curl binary
     // token (curl.exe vs curl), shell picks the quoting dialect. A Windows
     // member whose registered shell is gitbash needs POSIX quoting, not
@@ -2763,10 +2840,32 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
     // endpoint for a windows+gitbash member).
     const { os, shell } = await resolveMemberTarget({ fleetApi, member, log });
 
+    // The provider's own coordinate shape (e.g. Azure DevOps' org/project/repo
+    // -- see VCSModule.parseProviderRepoRef()/that provider's parseRepoRef
+    // hook) when one exists; null for a provider with no such hook (GitHub),
+    // which keeps using the two-part `repo` string above unchanged. Only ONE
+    // of `repo`/`repoRef` is ever sent below: passing both would let the
+    // (possibly provider-specific, e.g. 3-part) canonical `repo` string
+    // silently override repoRef's own coordinates and mis-encode the request
+    // URL (see azure-devops.mjs's assertRepoCoords doc comment). Both real
+    // call sites (Publish PR, [ABORTED] PR) already resolve and pass
+    // `remoteUrlOverride` themselves (see their own comments), so this never
+    // needs a git-remote read of its own; a caller that omits it simply gets
+    // no repoRef (falls back to `repo`, unchanged from before this task).
+    const providerRef = remoteUrlOverride ? parseProviderRepoRef(remoteUrlOverride) : null;
+    if (providerRef && providerRef.error) {
+        throw new Error(providerRef.error);
+    }
+    const repoRef = providerRef ? providerRef.ref : null;
+
     let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token, os, shell });
+        const built = buildCreatePrCommand({
+            provider,
+            ...(repoRef ? { repoRef } : { repo }),
+            base, head, title, body, token, os, shell,
+        });
 
         const res = await command(built.command, {
             member_name: member,
@@ -2781,8 +2880,19 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
         const { status, body: respBody, bodyText } = parseVcsCurlOutput(res.output);
         const [lo, hi] = built.interpret.successStatusRange;
         if (status !== null && status >= lo && status <= hi) {
-            const prUrl = respBody && typeof respBody.html_url === 'string' ? respBody.html_url : null;
-            return { ok: true, alreadyExists: false, prUrl, error: null, authFailure: false };
+            // apra-fleet-lzfv.5: read the created PR's id/url through the
+            // provider's OWN pullRequestResponse.map hook (declared on its
+            // descriptor -- see vcs-providers/github.mjs and
+            // vcs-providers/azure-devops.mjs) instead of a GitHub-dialect
+            // `html_url` field literal here. A provider with no mapping
+            // (should not happen for an auth-backend provider, but never
+            // throws) yields prUrl: null rather than crashing on an
+            // otherwise-successful PR.
+            const impl = getVcsProvider(provider);
+            const mapped = (impl && impl.pullRequestResponse && typeof impl.pullRequestResponse.map === 'function')
+                ? impl.pullRequestResponse.map(respBody, repoRef ? { repoRef } : { repo })
+                : { id: null, url: null };
+            return { ok: true, alreadyExists: false, prUrl: mapped.url, error: null, authFailure: false };
         }
 
         const errorMessages = [];
@@ -2806,7 +2916,7 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
             try {
                 const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
                 if (reprov.repo) repo = reprov.repo;
-                token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
+                token = await readMemberVcsCredentialToken({ command, member, label: credentialLabel, fleetApi, log });
             } catch (healErr) {
                 log(`${logPrefix}: PR auth self-heal failed for member '${member}'; not retrying further: ${healErr.message}`);
                 return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}`, authFailure: true };
@@ -3023,7 +3133,35 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
     return async function onAuthFailure({ member, label, error }) {
         log(`[Sync] self-heal: auth failure detected for member '${member}' (${label}); calling provision_vcs_auth to re-provision credentials: ${error}`);
 
-        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName });
+        // apra-fleet-5co8.4.2: some providers (e.g. Azure DevOps PATs) can
+        // never be fixed by this reactive re-provisioning call alone -- it
+        // only redeploys the SAME stored secret, it never mints a new one.
+        // Print that provider's own remedy hint via the generic
+        // `authRemedy` descriptor field (no provider-name conditional here,
+        // see vcs-providers/index.mjs) BEFORE attempting the self-heal below,
+        // so the operator has the real remedy even if that attempt also
+        // fails. A provider that declares no `authRemedy` (or
+        // `serverSideReMintable: true`, e.g. GitHub's App-minted token) prints
+        // nothing extra here -- unchanged from before this task.
+        // apra-fleet-5co8.13: resolve the provider ONCE here and thread it into
+        // provisionVcsAuthForMember below via `resolvedProvider`, so a single
+        // self-heal attempt makes exactly one member_detail round trip instead
+        // of two. A resolution failure here must NOT short-circuit the
+        // self-heal attempt -- `resolved` simply stays undefined and
+        // provisionVcsAuthForMember falls back to its own lookup.
+        let resolved;
+        try {
+            resolved = await resolveProvider(member, { fleetApi });
+            const { provider } = resolved;
+            const impl = getVcsProvider(provider);
+            if (impl && impl.authRemedy && impl.authRemedy.serverSideReMintable === false) {
+                log(`[Sync] self-heal: member '${member}' (${label}) uses '${provider}', whose credentials cannot be re-minted server-side. ${impl.authRemedy.hint}`);
+            }
+        } catch (resolveErr) {
+            log(`[Sync] self-heal: could not resolve member '${member}' (${label})'s VCS provider to check for an auth remedy hint (continuing with the self-heal attempt): ${resolveErr.message}`);
+        }
+
+        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName, resolvedProvider: resolved });
 
         log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
     };
@@ -3524,6 +3662,12 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid budget "${args.budget}": must be a non-negative finite number (USD ceiling).`);
     }
 
+    // --- run_id (optional) -------------------------------------------------
+    // Free-form supervisor-generated identity; only its shape is checked here.
+    if (args.run_id !== undefined && (typeof args.run_id !== 'string' || args.run_id.length === 0)) {
+        throw new Error('[Arg Contract] Invalid run_id: must be a non-empty string.');
+    }
+
     // --- serviceUrl (optional) --------------------------------------------
     // The always-on supervisor's base HTTP URL. Validated as an http(s) URL so
     // a malformed value fails fast rather than silently disabling the
@@ -3616,6 +3760,7 @@ export function validateArgs(args) {
         roleMap: normalizedRoleMap,
         budget: args.budget,
         serviceUrl: args.serviceUrl,
+        runId: args.run_id,
         assignee: args.assignee,
         dispatchTimeoutS,
         azdevopsPatSecretName: args.azdevops_pat_secret_name,
@@ -9703,6 +9848,22 @@ async function runSprintCycle(context) {
             // turn-exhaustion resume below: a source-build fallback deploy runs
             // npm ci plus two builds, comfortably beyond a small default budget.
             const DEPLOYER_MAX_TURNS = 500;
+            // apra-fleet-5co8.37: hand the deployer THIS sprint's own reservation
+            // identity so deploy.md's active-sprints gate can tell this sprint's
+            // OWN ledger entry (a sprint is always reserved while it runs, so the
+            // entry is ALWAYS there) from a genuinely foreign one. Without it the
+            // gate stopped on every deploy and no sprint could deploy its own
+            // work. `sprintSelfId` is the SAME string the supervisor keys the
+            // reservation by: the forwarded --run-id, or the branch name for a
+            // direct/standalone launch (bin/cli.mjs reserves under the branch
+            // name in that case).
+            const sprintSelfId = validated.runId || validated.branch;
+            const deployerPrompt =
+                'Deploy to test env using deploy.md.\n' +
+                `Your dispatching sprint's own supervisor reservation id (sprintId): ${sprintSelfId}\n` +
+                "Use it for deploy.md's active-sprints gate: a reservation whose sprintId is EXACTLY " +
+                'this string is your own sprint, not a foreign one, so the deploy proceeds. Stop only ' +
+                'for a reservation with a different sprintId.';
             const deployerDispatchOpts = {
                 member_name: getMemberForRole('deployer'),
                 agentType: 'deployer',
@@ -9720,7 +9881,7 @@ async function runSprintCycle(context) {
                 // diff, so it still gets the pre-dispatch G-pull.
                 try {
                     deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
-                        'Deploy to test env using deploy.md.',
+                        deployerPrompt,
                         { ...deployerDispatchOpts, member_name: getMemberForRole('deployer') }
                     ));
                 } catch (err) {
@@ -11184,12 +11345,23 @@ async function runSprintCycle(context) {
                 remoteUrlOverride: originUrl,
             });
             if (!prResult.ok) {
-                throw new CommandError(
-                    `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
-                    { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prResult.error } }
-                );
-            }
-            if (prResult.alreadyExists) {
+                if (prResult.authFailure) {
+                    // apra-fleet-5co8.15: an auth failure raiseVcsPrForMember
+                    // could not clear -- including one that never got past
+                    // credential provisioning, e.g. a missing Azure DevOps PAT
+                    // credential-store entry -- degrades the publish phase
+                    // instead of aborting the sprint, same policy
+                    // finalizeAbort() already applies to its own authFailure
+                    // outcome (see above). The branch is already pushed; only
+                    // the PR itself is skipped.
+                    log(`[Publish PR Skipped] could not raise a PR for branch '${validated.branch}' -> '${validated.baseBranch}' (branch is pushed) due to an unrecoverable VCS auth failure: ${prResult.error}`);
+                } else {
+                    throw new CommandError(
+                        `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
+                        { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prResult.error } }
+                    );
+                }
+            } else if (prResult.alreadyExists) {
                 log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success.`);
             }
         }

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { githubProvider } from '../src/services/vcs/github.js';
 import { bitbucketProvider } from '../src/services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../src/services/vcs/azure-devops.js';
@@ -308,6 +310,10 @@ describe('Azure DevOps provider', () => {
 
     const result = await azureDevOpsProvider.testConnectivity(member, exec);
     expect(result.success).toBe(true);
+    // apra-fleet-5co8.43: a REAL, actually-performed successful check must
+    // be distinguishable from a skipped one via `skipped`, not just message
+    // text -- a real success carries no `skipped` flag at all.
+    expect(result.skipped).toBeUndefined();
     expect(result.message).toContain('myrepo');
     expect(execCalls[0]).toBe('git ls-remote https://dev.azure.com/myorg/myproject/_git/myrepo HEAD');
     // The credential comes from the git credential helper deploy() already
@@ -345,6 +351,10 @@ describe('Azure DevOps provider', () => {
     );
     expect(execCalls).toHaveLength(0);
     expect(result.success).toBe(true);
+    // apra-fleet-5co8.43: `success: true` here means "nothing failed", not
+    // "verified" -- `skipped: true` is the machine-detectable signal a
+    // caller must check before presenting this as a passing check.
+    expect(result.skipped).toBe(true);
     expect(result.message).toContain('Skipped');
   });
 
@@ -377,6 +387,7 @@ describe('Azure DevOps provider', () => {
     );
     expect(execCalls).toHaveLength(0);
     expect(result.success).toBe(true);
+    expect(result.skipped).toBe(true);
     expect(result.message).toContain('Skipped');
   });
 
@@ -386,6 +397,9 @@ describe('Azure DevOps provider', () => {
 
     const result = await azureDevOpsProvider.testConnectivity(member, exec);
     expect(result.success).toBe(false);
+    // apra-fleet-5co8.43: a genuine failure is neither a success nor a skip
+    // -- `skipped` must not be set on this path.
+    expect(result.skipped).toBeUndefined();
   });
 
   it('testConnectivity: skips with a documented message when no repo is known', async () => {
@@ -396,6 +410,9 @@ describe('Azure DevOps provider', () => {
       makeAgent(), exec, 'https://dev.azure.com/myorg',
     );
     expect(result.success).toBe(true);
+    // apra-fleet-5co8.43: criterion 1 -- the skipped state must be
+    // machine-detectable WITHOUT string-matching `message`.
+    expect(result.skipped).toBe(true);
     expect(result.message).toContain('Skipped');
   });
 
@@ -463,6 +480,49 @@ describe('provider credential assembly (apra-fleet-5co8.3.1)', () => {
       expect(bitbucketProvider.buildCredentials!(input)).toBe('Bitbucket requires "email", "api_token", and "workspace" fields.');
     }
   });
+
+  // apra-fleet-5co8.3.3: azure-devops's buildCredentials had no dedicated
+  // unit coverage of its own -- only exercised indirectly through
+  // provisionVcsAuth() in tests/provision-vcs-auth.test.ts. Pinned here the
+  // same way as the github/bitbucket cases above: the `pat ?? token` alias,
+  // the exact missing-field error text, and the pat_expires_at parse guard
+  // (apra-fleet-5co8.5.1) that sits behind the zod schema refine.
+  it('azure-devops: returns the credential when org_url and pat are present', () => {
+    expect(azureDevOpsProvider.buildCredentials!({ provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-1' }))
+      .toEqual({ org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-1', expires_at: undefined });
+  });
+
+  it('azure-devops: accepts `token` as an alias for `pat`', () => {
+    expect(azureDevOpsProvider.buildCredentials!({ provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', token: 'az-pat-via-token' }))
+      .toEqual({ org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-via-token', expires_at: undefined });
+  });
+
+  it('azure-devops: `pat` takes precedence over `token` when both are present', () => {
+    expect(azureDevOpsProvider.buildCredentials!({
+      provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'from-pat', token: 'from-token',
+    })).toEqual({ org_url: 'https://dev.azure.com/myorg', pat: 'from-pat', expires_at: undefined });
+  });
+
+  it('azure-devops: returns the error string when org_url or both pat/token are missing', () => {
+    for (const input of [
+      { provider: 'azure-devops' as const, pat: 'az-pat-1' },
+      { provider: 'azure-devops' as const, org_url: 'https://dev.azure.com/myorg' },
+    ]) {
+      expect(azureDevOpsProvider.buildCredentials!(input)).toBe('Azure DevOps requires "org_url" and "pat" (or "token") fields.');
+    }
+  });
+
+  it('azure-devops: carries a valid pat_expires_at through as expires_at', () => {
+    expect(azureDevOpsProvider.buildCredentials!({
+      provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-1', pat_expires_at: '2027-08-20T00:00:00Z',
+    })).toEqual({ org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-1', expires_at: '2027-08-20T00:00:00Z' });
+  });
+
+  it('azure-devops: rejects an unparseable pat_expires_at with a dedicated error string', () => {
+    expect(azureDevOpsProvider.buildCredentials!({
+      provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-1', pat_expires_at: 'whenever',
+    })).toBe('Azure DevOps "pat_expires_at" is not a parseable date/time: whenever');
+  });
 });
 
 describe('provider missing-credential descriptors (apra-fleet-5co8.3.1)', () => {
@@ -483,6 +543,16 @@ describe('provider missing-credential descriptors (apra-fleet-5co8.3.1)', () => 
     expect(d.isMissing({ provider: 'bitbucket', email: 'd@co.com', workspace: 'ws' })).toBe(true);
     expect(d.isMissing({ provider: 'bitbucket', api_token: 't' })).toBe(false);
     expect(d.promptFor('bob')).toBe('Enter Bitbucket API token for bob');
+  });
+
+  it('azure-devops: prompts only when BOTH pat and token are absent; the collected secret lands in `pat`', () => {
+    const d = azureDevOpsProvider.missingCredential!;
+    expect(d.field).toBe('pat');
+    expect(d.isMissing({ provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg' })).toBe(true);
+    // Either field satisfies it -- buildCredentials prefers `pat` when both are present.
+    expect(d.isMissing({ provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'p' })).toBe(false);
+    expect(d.isMissing({ provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', token: 't' })).toBe(false);
+    expect(d.promptFor('carol')).toBe('Enter Azure DevOps personal access token for carol');
   });
 });
 
@@ -528,4 +598,92 @@ describe('provisionVcsAuthSchema git_access', () => {
     const result = provisionVcsAuthSchema.safeParse({ member_id: 'a', provider: 'github', git_access: 'bogus' });
     expect(result.success).toBe(false);
   });
+});
+
+// =============================================================================
+// apra-fleet-5co8.3.3 -- source-literal guard for design principle C0: no
+// VCS provider-name conditional outside registry wiring, in the three files
+// shared across every provider (src/tools/provision-vcs-auth.ts,
+// packages/apra-fleet-se/fleet-sprint/runner.js,
+// packages/apra-fleet-se/fleet-sprint/vcs-module.mjs). Each provider's own
+// behavior lives on ITS OWN descriptor (src/services/vcs/*.ts,
+// packages/apra-fleet-se/fleet-sprint/vcs-providers/*.mjs) -- see
+// apra-fleet-5co8.3.1/.2/.4 and apra-fleet-647.1.5.1 -- so a shared file
+// re-branching on the provider's name (`if (provider === 'azure-devops')`,
+// `switch (provider) { case 'github': ... }`) is exactly the regression this
+// task's de-branching removed. The registry TABLES that map a provider name
+// to its descriptor (provision-vcs-auth.ts's `providers` object, vcs-
+// providers/index.mjs's BUILT_IN_PROVIDERS import list) are the one place a
+// provider name is still allowed to appear "bare" -- they are not
+// conditionals, so this guard's regex is scoped to equality/switch tests
+// only and must never fire on them.
+//
+// Scoped to the CURRENT known VCS provider name vocabulary (github,
+// bitbucket, azure-devops) deliberately, not a bare `\bprovider\b\s*===`
+// pattern: runner.js separately documents an LLM-PROVIDER anti-pattern in a
+// comment ("There is deliberately no `provider === 'claude'`-style name test
+// anywhere" -- createRoundSessionRegistry's doc comment) that names a
+// different `provider` axis (agy/claude/opencode/codex/copilot/none, see
+// src/providers/provider.ts) entirely unrelated to VCS providers; a
+// blanket `provider\s*===` regex would false-positive on that comment
+// even though it contains no live code at all.
+// =============================================================================
+
+const REPO_ROOT = path.resolve(__dirname, '..');
+const GUARDED_FILES = [
+  'src/tools/provision-vcs-auth.ts',
+  'packages/apra-fleet-se/fleet-sprint/runner.js',
+  'packages/apra-fleet-se/fleet-sprint/vcs-module.mjs',
+];
+
+const VCS_PROVIDER_NAMES = ['github', 'bitbucket', 'azure-devops'];
+const NAME_ALT = VCS_PROVIDER_NAMES.join('|');
+
+// `provider === 'github'` / `provider == "azure-devops"` / reversed operand
+// order, and the same for any dotted/bracketed access ending in `provider`
+// (e.g. `input.provider === 'bitbucket'`).
+const EQUALITY_CONDITIONAL_RE = new RegExp(
+  `[\\w.\\[\\]'"]*\\bprovider\\b\\s*={2,3}\\s*(['"])(?:${NAME_ALT})\\1` +
+  `|(['"])(?:${NAME_ALT})\\2\\s*={2,3}\\s*[\\w.\\[\\]'"]*\\bprovider\\b`,
+);
+
+// `switch (provider)` / `switch (input.provider)` / `switch(x.provider)`.
+const SWITCH_ON_PROVIDER_RE = /\bswitch\s*\(\s*[\w.]*\bprovider\b\s*\)/;
+
+describe('design principle C0: no VCS provider-name conditional in the shared files (apra-fleet-5co8.3.3)', () => {
+  it('self-test: the equality-conditional regex actually matches a reintroduced provider switch (both operand orders)', () => {
+    expect(EQUALITY_CONDITIONAL_RE.test(`if (provider === 'azure-devops') { doThing(); }`)).toBe(true);
+    expect(EQUALITY_CONDITIONAL_RE.test(`if (input.provider === "github") { doThing(); }`)).toBe(true);
+    expect(EQUALITY_CONDITIONAL_RE.test(`if ('bitbucket' === provider) { doThing(); }`)).toBe(true);
+  });
+
+  it('self-test: the switch-on-provider regex actually matches a reintroduced switch statement', () => {
+    expect(SWITCH_ON_PROVIDER_RE.test(`switch (provider) { case 'github': break; }`)).toBe(true);
+    expect(SWITCH_ON_PROVIDER_RE.test(`switch (input.provider) { case 'github': break; }`)).toBe(true);
+  });
+
+  it('self-test: neither regex fires on registry wiring (an object literal / import list keyed by provider name)', () => {
+    const registryTable = `const providers: Record<string, VcsProviderService> = {\n  'github': githubProvider,\n  'bitbucket': bitbucketProvider,\n  'azure-devops': azureDevOpsProvider,\n};`;
+    expect(EQUALITY_CONDITIONAL_RE.test(registryTable)).toBe(false);
+    expect(SWITCH_ON_PROVIDER_RE.test(registryTable)).toBe(false);
+
+    const importList = `import { githubProvider } from '../services/vcs/github.js';\nimport { bitbucketProvider } from '../services/vcs/bitbucket.js';\nimport { azureDevOpsProvider } from '../services/vcs/azure-devops.js';`;
+    expect(EQUALITY_CONDITIONAL_RE.test(importList)).toBe(false);
+    expect(SWITCH_ON_PROVIDER_RE.test(importList)).toBe(false);
+  });
+
+  it('self-test: does not false-positive on runner.js\'s own LLM-provider anti-pattern comment', () => {
+    const comment = "There is deliberately no `provider === 'claude'`-style name test anywhere.";
+    expect(EQUALITY_CONDITIONAL_RE.test(comment)).toBe(false);
+  });
+
+  for (const relPath of GUARDED_FILES) {
+    it(`${relPath}: contains no VCS provider-name equality conditional or switch`, () => {
+      const src = fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf-8');
+      const equalityMatch = src.match(EQUALITY_CONDITIONAL_RE);
+      expect(equalityMatch, `found a provider-name equality conditional in ${relPath}: ${equalityMatch?.[0]}`).toBeNull();
+      const switchMatch = src.match(SWITCH_ON_PROVIDER_RE);
+      expect(switchMatch, `found a switch-on-provider in ${relPath}: ${switchMatch?.[0]}`).toBeNull();
+    });
+  }
 });

@@ -24,6 +24,10 @@ compose_permissions tool delivers); a broader prefix entry counts as coverage:
   active-sprints check below. Port 8787 is the supervisor's own API; the
   singleton MCP server `install --force` restarts is a separate process on
   7523, not what you're querying here.
+- `Bash(node scripts/check-foreign-sprints.mjs*)` -- the self-vs-foreign
+  classifier the active-sprints gate below runs against that same endpoint.
+- `Bash(curl * localhost:8787/api/reservations/*)` -- only for the documented
+  force-release of a stale reservation below.
 
 ## Deploy
 
@@ -34,9 +38,49 @@ the shared singleton MCP server (`localhost:7523`) that every live supervisor
 sprint's dispatches depend on, not just your own MCP connection. If a
 supervisor is running sprints when you deploy, the restart can collaterally
 kill their child processes. Before deploying onto a machine running the
-supervisor, check `GET /api/sprints` for active sprints; if any are running,
-either wait for them to finish or be ready to force-release their stale
-reservations and relaunch afterward.
+supervisor, check `GET /api/sprints` and stop only for a FOREIGN sprint --
+see "Active-sprints gate" immediately below.
+
+### Active-sprints gate: your own reservation vs. a foreign one
+
+`GET /api/sprints` lists the supervisor's reservation ledger. Every entry
+carries a `sprintId` (the incarnation-unique reservation key) and a
+`childPid`. A deploy dispatched BY a sprint always finds that sprint's OWN
+reservation in this list -- the sprint is live, that is what dispatched you --
+so "the list is non-empty" is NOT by itself a reason to stop. Stopping on it
+means no sprint can ever deploy its own work.
+
+**How you obtain your own sprint identity:** your dispatch prompt states it
+explicitly, as `Your dispatching sprint's own supervisor reservation id
+(sprintId): <id>`. That string is the ledger key for your dispatching sprint.
+If your dispatch prompt does NOT state one (a manual/human-triggered deploy),
+you have no self identity: treat EVERY live reservation as foreign and stop
+on any of them.
+
+**Classify, then decide** (exact-match comparison on `sprintId`, never a
+substring or prefix match against issue-root text -- two unrelated sprints can
+share an issue root):
+
+- Only your own reservation(s) present, or none at all -> PROCEED with the
+  deploy.
+- Any reservation with a different `sprintId` -> STOP. Do not run
+  `install --force`. Return `deployed: false` naming the foreign sprintId(s);
+  wait for them to finish, or ask the operator to force-release genuinely
+  stale ones and relaunch afterward.
+
+**Stale SELF-reservation (orchestrator-side force-release).** If the only
+matching reservation is your own but its child is gone (the sprint died and
+left the ledger entry behind), the entry is stale. You do not clear it -- it
+does not block your deploy anyway. Report it in `notes` so the orchestrator
+or operator can release it, which is done against the supervisor:
+
+```bash
+curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release
+```
+
+The same route is what the supervisor dashboard's Stop/Restart controls use.
+After a force-release the sprint must be relaunched (`POST /api/sprints`) --
+releasing the reservation does not restart anything.
 
 ```bash
 # Path-scoped pre-flight: clears any process still holding a lock on a file
@@ -72,10 +116,17 @@ npm ci
 npm run build
 npm run build:binary
 
-# Active-sprints check (see Caution above): if this returns a non-empty
-# "sprints" array, STOP -- wait for them to finish, or be ready to
-# force-release their stale reservations and relaunch afterward.
+# Active-sprints gate (see "Active-sprints gate" above). Substitute the
+# sprintId your dispatch prompt gave you for <your-sprint-id>. The script
+# classifies each live reservation against it with an EXACT id comparison:
+#   exit 0 -> proceed (no reservations, or only your own)
+#   exit 3 -> STOP: a foreign sprint is live; do not run install --force
+#   exit 1 -> usage error (fix the arguments, do not proceed)
+# An unreachable supervisor is exit 0 -- there is no live sprint to collide
+# with. Omit --self-sprint-id only when you were given no identity: then every
+# reservation counts as foreign.
 curl -s http://localhost:8787/api/sprints
+node scripts/check-foreign-sprints.mjs --self-sprint-id "<your-sprint-id>"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"

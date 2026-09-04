@@ -206,3 +206,76 @@ test('runDoltSql: POSIX target (linux) also has no leading call operator, matchi
     });
     check(!captured.startsWith('&'), 'POSIX must never carry the PowerShell call operator either');
 });
+
+// ---------------------------------------------------------------------------
+// 4. apra-fleet-ka1u bug #2: MSYS bash silently truncates any `bash -c
+//    <string>` over 8186 chars (bisected empirically), which resolveLwwTable()'s
+//    per-column UPDATE for a wide table (e.g. 53-column 'issues') can exceed by
+//    a wide margin (a live incident hit 14,064 chars). A short query must stay
+//    on the exact live-verified -q "<query>" path unchanged; a long one must
+//    route through a chunked scratch file + -f, with every single dispatched
+//    command staying safely under the limit.
+// ---------------------------------------------------------------------------
+
+function buildOversizedQuery(approxLength) {
+    const clause = () => 'SET col = CASE WHEN c.our_col <=> c.their_col THEN c.our_col ELSE c.their_col END, ';
+    let sql = 'UPDATE `issues` t JOIN dolt_conflicts_issues c ON t.`id` = c.our_id ';
+    while (sql.length < approxLength) sql += clause();
+    return `${sql}WHERE 1=1;`;
+}
+
+test('runDoltSql: a short query (below the inline limit) is byte-identical to the pre-existing -q "<query>" invocation -- no scratch file, one command() call', async () => {
+    const calls = [];
+    const command = async (cmd) => { calls.push(cmd); return { ok: true, output: '{}' }; };
+    await runDoltSql({
+        command, member: 'winbash-short', platform: 'win32', shell: 'gitbash',
+        doltPath: '"$HOME/.apra-fleet/bin/dolt.exe"', host: '127.0.0.1', port: 13300,
+        query: 'SELECT 1;',
+    });
+    check(calls.length === 1, `a short query must be exactly one command() call, got ${calls.length}`);
+    check(calls[0].includes(' -q "'), `a short query must still use -q, got: ${calls[0]}`);
+    check(!calls[0].includes(' -f '), 'a short query must never route through the scratch-file/-f path');
+});
+
+test('runDoltSql: an oversized query (past the inline limit, mirroring the live 14,064-char resolveLwwTable UPDATE) never dispatches a single command() call anywhere near bash\'s 8186-char -c truncation limit', async () => {
+    const calls = [];
+    const command = async (cmd) => {
+        calls.push(cmd);
+        if (cmd.includes(' -f ')) return { ok: true, output: '{}' };
+        return { ok: true, output: '', error: null }; // scratch-file create/append/cleanup
+    };
+    const bigQuery = buildOversizedQuery(14064);
+    check(bigQuery.length >= 14000, 'sanity: the constructed query must actually be large');
+
+    await runDoltSql({
+        command, member: 'orchestrator', platform: 'win32', shell: 'gitbash',
+        doltPath: '"$HOME/.apra-fleet/bin/dolt.exe"', host: '127.0.0.1', port: 13300,
+        query: bigQuery,
+    });
+
+    check(calls.length > 1, `an oversized query must be split across multiple command() calls, got ${calls.length}`);
+    const maxLen = Math.max(...calls.map((c) => c.length));
+    check(maxLen < 8186, `every single dispatched command must stay under bash's 8186-char -c truncation limit, got a max of ${maxLen}`);
+    check(calls.some((c) => c.includes(' -f "')), 'the final invocation must use -f <scratch file>, not -q "<query>"');
+    check(!calls.some((c) => / -q "/.test(c)), 'an oversized query must never fall back to -q "<query>" for any call in the sequence');
+});
+
+test('runDoltSql: an oversized query still throws DoltSyncError with the full original query text if the final -f invocation itself fails', async () => {
+    const command = async (cmd) => {
+        if (cmd.includes(' -f ')) return { ok: false, output: '', error: 'boom' };
+        return { ok: true, output: '', error: null };
+    };
+    const bigQuery = buildOversizedQuery(9000);
+    let threw = null;
+    try {
+        await runDoltSql({
+            command, member: 'orchestrator', platform: 'win32', shell: 'gitbash',
+            doltPath: '"$HOME/.apra-fleet/bin/dolt.exe"', host: '127.0.0.1', port: 13300,
+            query: bigQuery,
+        });
+    } catch (err) {
+        threw = err;
+    }
+    check(threw !== null, 'a failed -f invocation must still surface as a thrown error, exactly like a failed -q invocation does today');
+    check(threw && threw.message.includes(bigQuery), 'the thrown error must still carry the full original (un-chunked) query text for diagnosis');
+});

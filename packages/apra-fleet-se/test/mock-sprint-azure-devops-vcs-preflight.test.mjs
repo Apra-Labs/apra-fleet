@@ -66,6 +66,38 @@ test('mock sprint: an Azure DevOps member is provisioned unattended by the prefl
         // top-level dispatch error, never a silent stall.
         check(!scenario.error, `expected no sprint-level error from the unattended preflight path, got: ${scenario.error ? scenario.error.message : ''}`);
 
+        // apra-fleet-5co8.14.2 (revert-proofing for apra-fleet-5co8.14.1):
+        // this scenario's single task reaches Publish PR, whose
+        // raiseVcsPrForMember -> buildCreatePrCommand path shells VCSModule's
+        // Azure DevOps create-pull-request curl
+        // (.../pullrequests?api-version=...) via execute_command. Assert
+        // BOTH that this exact command was actually issued (proving there
+        // was something here to intercept -- a suite that never reaches this
+        // call would pass vacuously) AND that the run is HERMETIC: no
+        // command/log/error text anywhere in the scenario carries the
+        // signature of a real curl escaping this in-process mock and hitting
+        // the network for real ('curl: (6)' / 'Could not resolve host', the
+        // exact strings a real, offline curl against dev.azure.com prints).
+        //
+        // Exercised against the regression this guards: narrowing
+        // mock-sprint-harness.mjs's PR-curl predicate back to the GitHub
+        // '/pulls' shape (reverting apra-fleet-5co8.14.1's
+        // `isAzureDevOpsCreatePr` branch) makes the ADO create-PR curl above
+        // fall through to the harness's real-exec fallback, which spawns a
+        // genuine curl against the unreachable https://dev.azure.com host in
+        // this offline test environment and fails with exactly one of the
+        // two strings below -- confirmed by temporarily reverting that
+        // harness change locally and re-running this file (it failed on the
+        // hermeticity assertion, as intended; the revert was not committed).
+        const adoCreatePrCommands = scenario.commandLog.filter((c) => /\/pullrequests\?api-version=/.test(c));
+        check(
+            adoCreatePrCommands.length === 1,
+            `expected exactly one Azure DevOps create-pull-request curl to have been issued via VCSModule, got: ${JSON.stringify(scenario.commandLog)}`,
+        );
+        const haystack = [...scenario.commandLog, ...scenario.logs, scenario.error ? scenario.error.message : ''].join('\n');
+        check(!/curl: \(6\)/.test(haystack), `expected no real curl escape (curl: (6)) in the run output, got: ${haystack}`);
+        check(!/Could not resolve host/.test(haystack), `expected no real curl escape (Could not resolve host) in the run output, got: ${haystack}`);
+
         // THE acceptance criterion: provision_vcs_auth was invoked, unattended,
         // with the org_url derived from the member's own git remote and the
         // PAT passed as a secure placeholder -- never a raw value, never
@@ -79,6 +111,15 @@ test('mock sprint: an Azure DevOps member is provisioned unattended by the prefl
                 && !('git_access' in c)
                 && !('repos' in c)),
             `expected an unattended provision_vcs_auth call with a derived org_url and a secure PAT placeholder, got: ${JSON.stringify(vcsAuthCalls)}`,
+        );
+
+        // apra-fleet-5co8.19: happy-path control for the missing-secret
+        // scenario's authRemedy assertion below -- with the credential
+        // present, Publish PR must proceed normally and never emit the
+        // provider's degraded authRemedy guidance text.
+        check(
+            !scenario.logs.some((l) => /PATs cannot be re-minted server-side/.test(l)),
+            `expected no authRemedy guidance text when the Azure DevOps PAT credential is present, got logs: ${JSON.stringify(scenario.logs.filter((l) => /Publish PR/i.test(l)))}`,
         );
     });
 });
@@ -114,6 +155,19 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
         // withGitSync -- see createVcsAuthPreflightCallback's own doc
         // comment); the run must never stall waiting on an interactive
         // credential prompt.
+        //
+        // apra-fleet-5co8.15: with dev.azure.com's canOpenPullRequest now
+        // true, this scenario's single task also reaches the Publish PR
+        // phase, which calls provisionPrCapableAuthForMember ->
+        // provisionVcsAuthForMember directly (not through the preflight
+        // callback). raiseVcsPrForMember (runner.js) now catches that
+        // provisioning failure itself, logs the Azure DevOps provider's own
+        // authRemedy hint, and returns a degraded authFailure outcome instead
+        // of rethrowing the raw missing-secret text -- so the Publish PR
+        // phase no longer aborts the sprint on this condition (mirrored in
+        // runSprintCycle's Publish PR step). The strict assertion below was
+        // relaxed by e54fbdcd to tolerate the sprint-level abort that fix now
+        // removes; restored to its original, stricter form.
         check(!scenario.error, `expected no sprint-level error from a swallowed preflight failure, got: ${scenario.error ? scenario.error.message : ''}`);
 
         check(
@@ -126,6 +180,35 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
         check(
             scenario.logs.some((l) => /ERROR:.*credential_store_set name=azdevops_pat/.test(l)),
             `expected the preflight's swallowed failure log to name 'credential_store_set name=azdevops_pat', got logs: ${JSON.stringify(scenario.logs.filter((l) => /preflight/i.test(l)))}`,
+        );
+
+        // apra-fleet-5co8.15: the Publish PR phase reaches the same missing
+        // secret (dev.azure.com's canOpenPullRequest is now true), and must
+        // surface the Azure DevOps provider's own authRemedy guidance
+        // (vcs-providers/azure-devops.mjs's AUTH_REMEDY_HINT, naming the
+        // missing secret and the operator action) rather than aborting the
+        // sprint with the raw provision_vcs_auth failure text (already
+        // covered by the `!scenario.error` assertion above -- that raw text
+        // legitimately still appears in the preflight's OWN swallowed log
+        // checked just above, which is a different, non-aborting code path).
+        const publishPrLogs = scenario.logs.filter((l) => /Publish PR/i.test(l));
+        check(
+            publishPrLogs.some((l) => /\[Publish PR Skipped\]/.test(l) && /PATs cannot be re-minted server-side/.test(l) && /credential_store_set/.test(l)),
+            `expected a Publish PR log to carry the Azure DevOps provider's authRemedy guidance, got logs: ${JSON.stringify(publishPrLogs)}`,
+        );
+
+        // apra-fleet-5co8.19: the Publish PR phase must degrade to the
+        // provider's clean authRemedy guidance ONLY -- it must never also
+        // leak the raw provision_vcs_auth failure text ("the credential
+        // store has no entry named") that raiseVcsPrForMember's catch
+        // (apra-fleet-5co8.15) is supposed to have replaced with
+        // remedyHint. This is deliberately scoped to the Publish-PR-tagged
+        // logs, not the whole log stream: that raw text legitimately still
+        // appears in the PREFLIGHT's own swallowed log (asserted above),
+        // which is a different, non-Publish-PR code path.
+        check(
+            !publishPrLogs.some((l) => /the credential store has no entry named/.test(l)),
+            `expected no Publish PR log to leak the raw provision_vcs_auth failure text, got logs: ${JSON.stringify(publishPrLogs)}`,
         );
     });
 });

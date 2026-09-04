@@ -190,8 +190,20 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
     ? checkVcsTokenExpiry({ ...agent, vcsProvider: input.provider, vcsTokenExpiresAt: deployResult.metadata.expiresAt })
     : null;
 
+  // apra-fleet-5co8.43: a skipped connectivity check must never read as a
+  // verified credential just because `success` is also true on that result
+  // -- branch on the machine-detectable `skipped` field (never string-match
+  // `message`), kept generic here (no provider special-casing) since
+  // `skipped` lives on the shared VcsDeployResult contract every provider's
+  // testConnectivity() returns.
+  const verificationLine = connectivity.skipped
+    ? `⏭️ Skipped: ${connectivity.message}`
+    : connectivity.success
+      ? connectivity.message
+      : `⚠️ ${connectivity.message}`;
+
   return `✅ ${deployResult.message} on "${agent.friendlyName}"\n`
     + (meta ? meta + '\n' : '')
-    + `  Verification: ${connectivity.success ? connectivity.message : `⚠️ ${connectivity.message}`}`
+    + `  Verification: ${verificationLine}`
     + (expiryWarning ? `\n  ${expiryWarning}` : '');
 }

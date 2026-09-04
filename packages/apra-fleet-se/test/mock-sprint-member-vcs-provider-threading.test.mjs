@@ -117,5 +117,25 @@ test('mock sprint: a member whose provider resolves to azure-devops (via args.ca
             vcsAuthCalls.some((c) => c && c.member_name === 'local'),
             `expected a provision_vcs_auth self-heal call for member 'local', got: ${JSON.stringify(vcsAuthCalls)}`,
         );
+
+        // apra-fleet-5co8.8: retry-count-independent guard. Preflight
+        // (runner.js:3095) and each of the 3 bounded post-dispatch sync
+        // retry attempts (POST_DISPATCH_SYNC_RETRY_DELAYS_MS, runner.js:20)
+        // each record a provision_vcs_auth call for member 'local' into
+        // vcsAuthCalls, so an exactly-one count is unsatisfiable and must
+        // NOT be asserted here (withdrawn, see bead notes). Instead assert a
+        // property that holds across every recorded call regardless of how
+        // many attempts fired: each carries the resolved 'azure-devops'
+        // provider and an org_url derived by that provider's own
+        // buildProvisionArgs (vcs-providers/azure-devops.mjs:364).
+        const localCalls = vcsAuthCalls.filter((c) => c && c.member_name === 'local');
+        check(
+            localCalls.every((c) => c.provider === 'azure-devops'),
+            `expected every provision_vcs_auth call for member 'local' to carry provider 'azure-devops', got: ${JSON.stringify(localCalls)}`,
+        );
+        check(
+            localCalls.every((c) => typeof c.org_url === 'string' && /^https:\/\/dev\.azure\.com\//.test(c.org_url)),
+            `expected every provision_vcs_auth call for member 'local' to carry an org_url matching https://dev.azure.com/, got: ${JSON.stringify(localCalls)}`,
+        );
     });
 });

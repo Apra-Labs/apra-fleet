@@ -68,6 +68,17 @@ export interface VcsDeployResult {
   success: boolean;
   message: string;
   metadata?: Record<string, string>;
+  /**
+   * apra-fleet-5co8.43: set true ONLY by testConnectivity() when the check
+   * was not actually performed (e.g. no concrete repo URL could be derived
+   * to ls-remote against). Machine-detectable so a caller cannot mistake a
+   * skipped check for a verified credential merely because `success` is
+   * true -- see src/tools/provision-vcs-auth.ts's Verification line, which
+   * branches on this field rather than string-matching `message`. Absent
+   * (undefined) for every deploy()/revoke() result and for a testConnectivity
+   * result that actually ran the check (success or failure).
+   */
+  skipped?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +239,33 @@ export interface VcsCommandResult {
   };
 }
 
+/** Provider-owned mapping from a create-pull-request response body to
+ *  { id, url } (apra-fleet-lzfv.4). Mirrors the `pullRequestResponse`
+ *  descriptor hook field-for-field from packages/apra-fleet-se/fleet-sprint/
+ *  vcs-providers/index.mjs's REQUIRED EXPORT SHAPE, so the canonical
+ *  server-side contract and the fleet-sprint provider registry never drift.
+ *  `idField`/`webUrlField`/`webUrlTemplate` are the DECLARATION -- what a
+ *  consumer mirroring this contract restates; the executable `map(body, ctx)`
+ *  the JS descriptor also carries is deliberately NOT restated here (it must
+ *  read the declared fields, not repeat them, per index.mjs's own contract
+ *  comment) since this seam is not yet compiled against a JS caller.
+ *  Both provider dialects: GitHub reads `number` off the body plus the
+ *  browsable `html_url` it already carries (see ./github.mjs); Azure DevOps
+ *  reads `pullRequestId` and has no web-URL field at all -- its browsable URL
+ *  must be CONSTRUCTED from `webUrlTemplate` plus the request's own
+ *  org/project/repo (see ./azure-devops.mjs). A mapping must never throw and
+ *  must yield a null id/url rather than a guessed value when a field is
+ *  unreadable, so a successful PR is never turned into a crash by its own
+ *  reporting step. */
+export interface VcsPullRequestResponseMapping {
+  /** Body field carrying the PR identifier (GitHub: 'number', Azure DevOps: 'pullRequestId'). */
+  idField: string;
+  /** Body field carrying the browsable PR URL, or null when the body carries none (Azure DevOps). */
+  webUrlField: string | null;
+  /** Template to CONSTRUCT the browsable URL when webUrlField is null, or null when the URL is read straight from the body. */
+  webUrlTemplate: string | null;
+}
+
 /** Provider-dispatched PR/VCS-action command builder. Pure/deterministic:
  *  no network I/O. Implementations must throw an Error whose message starts
  *  with the ASCII marker "ERROR:" for an unsupported provider or missing
@@ -235,4 +273,10 @@ export interface VcsCommandResult {
 export interface VcsPrCommandBuilder {
   buildCreatePrCommand(request: VcsCreatePrRequest): VcsCommandResult;
   buildCommentCommand(request: VcsCommentRequest): VcsCommandResult;
+  /**
+   * This provider's create-pull-request response dialect (apra-fleet-lzfv.4).
+   * OPTIONAL, mirroring the JS descriptor's "response axis" hook -- a
+   * classification-only provider, or one with no PR builder, declares none.
+   */
+  pullRequestResponse?: VcsPullRequestResponseMapping;
 }

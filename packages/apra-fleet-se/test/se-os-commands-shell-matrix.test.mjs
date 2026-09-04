@@ -8,6 +8,8 @@ import {
     SeWindowsGitbashCommands,
 } from '../fleet-sprint/se-os-commands.mjs';
 import { buildCredentialReadCommand } from '../fleet-sprint/runner.js';
+import { buildCreatePrCommand } from '../fleet-sprint/vcs-module.mjs';
+import { crtParseCommandLine, legacyBinderCommandLine } from './helpers/windows-argv.mjs';
 
 // apra-fleet-7dir.3.4: getSeCommands() is the single place fleet-sprint and
 // the supervisor resolve "what does a command string look like for THIS
@@ -207,6 +209,190 @@ describe('wrapPowerShellScript: wraps a whole PowerShell script for invocation f
             const cmds = getSeCommands({ os, shell: '' });
             assert.throws(() => cmds.wrapPowerShellScript('Write-Output "hi"'), /PowerShell/i, `os=${os} must throw a clear error, not silently return the script`);
         }
+    });
+});
+
+describe('VCS create-pull-request curl builders quote by member shell across the shell matrix (apra-fleet-5co8.21)', () => {
+    // apra-fleet-5co8.17 threaded the member's registered shell (not just the
+    // bare OS) into buildCreatePrCommand()'s shQuote() calls for BOTH
+    // providers -- github.mjs already did this before 5co8.17; azure-devops.mjs
+    // was the gap that task closed. This block pins the same shell matrix
+    // se-os-commands.mjs's own resolution table uses (see the describe block
+    // at the top of this file) against BOTH providers' built curl commands, so
+    // a regression in either builder's shell-threading is caught here, at the
+    // string level, with no member, no network, and no credential store.
+
+    // A title carrying BOTH an apostrophe and a double quote: the apostrophe
+    // is the character whose escaping differs between the two shell dialects
+    // (POSIX closes/reopens the quote as '\''; PowerShell doubles it as ''),
+    // and the double quote must survive untouched since curl's -d payload is
+    // a JSON *string embedded inside the shell's own quoting* -- neither
+    // shell dialect treats a bare double quote specially inside a
+    // single-quoted argument, but a decoder that mishandled the argument
+    // boundary would corrupt it too.
+    const TITLE = `Sprint's "big" PR`;
+    const BODY = `It's a "test" body`;
+    const TOKEN = 'PAT-TOKEN-shell-matrix';
+
+    const GITHUB_PARAMS = Object.freeze({
+        provider: 'github',
+        repo: 'mock-org/mock-repo',
+        base: 'main',
+        head: 'auto-sprint/shell-matrix',
+        title: TITLE,
+        body: BODY,
+        token: TOKEN,
+    });
+
+    const ADO_REPO_REF = Object.freeze({ org: 'apralabs', project: 'e2e-fleet-testing', repo: 'fleet-e2e-toy' });
+    const ADO_PARAMS = Object.freeze({
+        provider: 'azure-devops',
+        repoRef: ADO_REPO_REF,
+        base: 'main',
+        head: 'auto-sprint/shell-matrix',
+        title: TITLE,
+        body: BODY,
+        token: TOKEN,
+    });
+
+    // The shell matrix, alongside the expected quoting DIALECT for each --
+    // mirrors usesPowerShellQuoting()'s own resolution table
+    // (shell-helpers.mjs) and se-os-commands.mjs's getSeCommands() matrix at
+    // the top of this file: gitbash -> POSIX even on Windows; pwsh7/
+    // powershell5 -> PowerShell doubling; an unresolved shell on Windows ->
+    // PowerShell doubling (the legacy fallback); any non-Windows os -> POSIX.
+    const SHELL_MATRIX = [
+        { label: 'windows+gitbash', os: 'windows', shell: 'gitbash', dialect: 'posix' },
+        { label: 'windows+pwsh7', os: 'windows', shell: 'pwsh7', dialect: 'powershell' },
+        { label: 'windows+powershell5', os: 'windows', shell: 'powershell5', dialect: 'powershell' },
+        { label: 'windows+unresolved-shell', os: 'windows', shell: '', dialect: 'powershell' },
+        { label: 'linux', os: 'linux', shell: '', dialect: 'posix' },
+        { label: 'darwin', os: 'darwin', shell: '', dialect: 'posix' },
+    ];
+
+    // Real POSIX shell argv-word parsing for a token that starts exactly at
+    // `start` (no leading whitespace): a `'...'` segment contributes its
+    // contents literally, a backslash outside any quoted segment escapes the
+    // single next character, and unquoted whitespace ends the word. This is
+    // the general POSIX quoting grammar, not a hand-inversion of shQuote's
+    // own regex -- it would decode ANY POSIX-quoted word this way, including
+    // ones shQuote never produces.
+    function nextPosixArg(str, start) {
+        let i = start;
+        let out = '';
+        while (i < str.length) {
+            const ch = str[i];
+            if (ch === "'") {
+                const close = str.indexOf("'", i + 1);
+                assert.ok(close !== -1, `unterminated single quote in POSIX argument starting at ${start}: ${str}`);
+                out += str.slice(i + 1, close);
+                i = close + 1;
+            } else if (ch === '\\' && i + 1 < str.length) {
+                out += str[i + 1];
+                i += 2;
+            } else if (/\s/.test(ch)) {
+                break;
+            } else {
+                out += ch;
+                i += 1;
+            }
+        }
+        return { value: out, end: i };
+    }
+
+    // Real PowerShell single-quoted-string parsing: the token starting at
+    // `start` MUST begin with `'`; a doubled quote `''` inside the string is
+    // the literal-quote escape, any other character (including whitespace)
+    // is taken literally until the closing (non-doubled) `'`.
+    function nextPowerShellArg(str, start) {
+        assert.equal(str[start], "'", `expected a PowerShell single-quoted argument to start at ${start}: ${str}`);
+        let i = start + 1;
+        let out = '';
+        while (i < str.length) {
+            if (str[i] === "'") {
+                if (str[i + 1] === "'") {
+                    out += "'";
+                    i += 2;
+                } else {
+                    i += 1;
+                    break;
+                }
+            } else {
+                out += str[i];
+                i += 1;
+            }
+        }
+        return { value: out, end: i };
+    }
+
+    // For the PowerShell dialect the string literal is only stage 1: the
+    // value PowerShell parses out is then handed to the NATIVE curl.exe
+    // through Windows PowerShell 5.1's legacy argument binder and the child's
+    // C-runtime argv parser -- the stages that stripped every double quote
+    // out of the JSON on a live member. helpers/windows-argv.mjs models those
+    // (see test/vcs-powershell-argv-roundtrip.test.mjs for the real-
+    // powershell.exe proof), so this returns what curl.exe actually receives.
+    function extractDashDPayload(command, dialect) {
+        const marker = ' -d ';
+        const markerIndex = command.indexOf(marker);
+        assert.ok(markerIndex !== -1, `expected a ' -d ' flag in the built command: ${command}`);
+        const argStart = markerIndex + marker.length;
+        if (dialect === 'posix') return nextPosixArg(command, argStart).value;
+        const { value } = nextPowerShellArg(command, argStart);
+        const argv = crtParseCommandLine(legacyBinderCommandLine([value]));
+        assert.equal(argv.length, 1, `the -d word must reach curl.exe as exactly one argument, got ${JSON.stringify(argv)}`);
+        return argv[0];
+    }
+
+    for (const { label, os, shell, dialect } of SHELL_MATRIX) {
+        test(`github: ${label} -> ${dialect} quoting, -d payload round-trips to the exact same JSON object`, () => {
+            const built = buildCreatePrCommand({ ...GITHUB_PARAMS, os, shell });
+            const payloadText = extractDashDPayload(built.command, dialect);
+            const payload = JSON.parse(payloadText);
+            assert.deepEqual(payload, { title: TITLE, head: GITHUB_PARAMS.head, base: GITHUB_PARAMS.base, body: BODY });
+        });
+
+        test(`azure-devops: ${label} -> ${dialect} quoting, -d payload round-trips to the exact same JSON object`, () => {
+            const built = buildCreatePrCommand({ ...ADO_PARAMS, os, shell });
+            const payloadText = extractDashDPayload(built.command, dialect);
+            const payload = JSON.parse(payloadText);
+            assert.deepEqual(payload, {
+                sourceRefName: `refs/heads/${ADO_PARAMS.head}`,
+                targetRefName: `refs/heads/${ADO_PARAMS.base}`,
+                title: TITLE,
+                description: BODY,
+            });
+        });
+
+        test(`curlBinary stays OS-keyed for ${label} (never shell-keyed): both providers agree`, () => {
+            const expectedBinary = os === 'windows' ? 'curl.exe' : 'curl';
+            const githubBuilt = buildCreatePrCommand({ ...GITHUB_PARAMS, os, shell });
+            const adoBuilt = buildCreatePrCommand({ ...ADO_PARAMS, os, shell });
+            assert.ok(githubBuilt.command.startsWith(`${expectedBinary} -sS -X POST`), `github: expected curl binary '${expectedBinary}' for os=${os}, got: ${githubBuilt.command}`);
+            assert.ok(adoBuilt.command.startsWith(`${expectedBinary} -sS -X POST`), `azure-devops: expected curl binary '${expectedBinary}' for os=${os}, got: ${adoBuilt.command}`);
+        });
+    }
+
+    // Revert-proofing anchor for apra-fleet-5co8.17: the windows+gitbash case
+    // above is the one that fails if azure-devops.mjs's shQuote calls drop
+    // back to two arguments (os only) -- usesPowerShellQuoting('windows',
+    // undefined) is true, so a reverted builder would emit PowerShell-doubled
+    // quoting ('' instead of '\'') for a gitbash member, corrupting the -d
+    // JSON payload exactly as the paired [impl] bead describes. Pin the
+    // DISTINCT string shapes directly (not just successful JSON.parse, which
+    // a sufficiently-simple payload could satisfy under either dialect) so a
+    // dialect mix-up is caught even when JSON.parse would not itself throw.
+    test('azure-devops: windows+gitbash produces POSIX close-reopen quoting, DISTINCT from windows+unresolved-shell PowerShell doubling', () => {
+        const gitbash = buildCreatePrCommand({ ...ADO_PARAMS, os: 'windows', shell: 'gitbash' });
+        const unresolved = buildCreatePrCommand({ ...ADO_PARAMS, os: 'windows', shell: '' });
+
+        assert.ok(gitbash.command.includes(`Sprint'\\''s`), `expected POSIX close-reopen quoting ('\\'') for the embedded apostrophe under gitbash, got: ${gitbash.command}`);
+        assert.ok(!gitbash.command.includes(`Sprint''s`), `gitbash must NOT use PowerShell doubling for the embedded apostrophe, got: ${gitbash.command}`);
+
+        assert.ok(unresolved.command.includes(`Sprint''s`), `expected PowerShell doubling ('') for the embedded apostrophe when shell is unresolved on windows, got: ${unresolved.command}`);
+        assert.ok(!unresolved.command.includes(`Sprint'\\''s`), `unresolved-shell windows must NOT use POSIX close-reopen quoting, got: ${unresolved.command}`);
+
+        assert.notEqual(gitbash.command, unresolved.command, 'the two dialects must not coincidentally produce byte-identical commands');
     });
 });
 

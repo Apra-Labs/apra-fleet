@@ -44,6 +44,90 @@ export const DEFAULT_MAX_AGE_MS = 10 * 60 * 1000;
  *  server bound inside this range can be settle residue. */
 export const SETTLE_PORT_RANGE = DEFAULT_PORT_RANGE;
 
+/**
+ * Owner scope (the cross-instance-kill fix). The probe/kill command below is
+ * otherwise a MACHINE-WIDE process scan bounded only by port range and process
+ * age -- so an isolated supervisor instance (e.g. the regression playbook's
+ * sandbox, whose HOME/FLEET_SE_DATA_DIR point inside the sandbox) could kill an
+ * aged ephemeral server belonging to a DIFFERENT, live supervisor on the same
+ * machine. Passing an owner data-dir prefix constrains candidates to processes
+ * whose `--data-dir` lives under that prefix.
+ *
+ * This is deliberately OPT-IN, wired at the deps level by bin/serve.mjs from
+ * FLEET_SE_SWEEP_OWNER_DATA_DIR: the ephemeral server's `--data-dir` is the
+ * MEMBER's beads data dir (dolt-settle.mjs's resolveDoltStatus reads it from
+ * `bd dolt status` on the member), which for a remote member has no relation to
+ * the sweeping supervisor's own data dir. Deriving the prefix from
+ * FLEET_SE_DATA_DIR unconditionally would therefore silently turn the sweep
+ * into a no-op for every remote member -- destroying the safety net to fix the
+ * isolation problem. An operator/test that KNOWS its members are confined to
+ * one root opts in; production keeps the machine-wide default.
+ *
+ * KNOWN LIMIT: resolveDoltStatus's `unknown` parse fallback yields the
+ * RELATIVE default data dir, so such a command line carries no absolute path
+ * and is excluded by ANY prefix. That direction is fail-safe (the sweep skips
+ * rather than kills a foreign process), but it means an owner-scoped sweep is
+ * inert for that fallback -- see scripts/reap-sandbox-dolt.mjs, which covers
+ * the same blind spot with a recency bound instead.
+ */
+export function normalizeOwnerDataDirPrefix(prefix) {
+    const text = String(prefix == null ? '' : prefix).trim();
+    return text ? text : null;
+}
+
+/**
+ * apra-fleet-5co8.36: Node's `path.resolve()` does NOT understand MSYS-style
+ * POSIX paths (e.g. `/c/Users/x/temp` -- what Git Bash reports as `$HOME` on
+ * Windows). On win32 it treats a leading `/c/...` as a root-relative path on
+ * the CURRENT drive and prefixes it with that drive, producing a nonexistent
+ * path like `C:\c\Users\x\temp` rather than `C:\Users\x\temp`. Since
+ * `FLEET_SE_SWEEP_OWNER_DATA_DIR` is commonly set from `$HOME` under Git
+ * Bash (see regression-test-playbook.md's `## Setup`), that mangling made the
+ * owner-scoped sweep match no real `--data-dir` and silently degrade to
+ * matching nothing while still logging a confident scope claim.
+ *
+ * Call this BEFORE `path.resolve()` on a raw env value: it rewrites a
+ * `/<drive>/...` MSYS path to its native Windows form (`<DRIVE>:\...`) when
+ * `platform` is `'win32'`, and returns the input unchanged for any other
+ * platform or any value that does not look like an MSYS path (e.g. one
+ * that is already native, like `C:\Users\x` or `C:/Users/x`).
+ *
+ * @param {string} value
+ * @param {string} [platform] defaults to `process.platform` (win32 under
+ *        Git Bash even though the invoking shell is POSIX-like -- Node's own
+ *        platform, never the shell, decides this).
+ * @returns {string}
+ */
+export function normalizeMsysPathForPlatform(value, platform = process.platform) {
+    const text = String(value == null ? '' : value);
+    if (platform !== 'win32' || !text) return text;
+    const match = /^\/([a-zA-Z])\/(.*)$/.exec(text);
+    if (!match) return text;
+    const [, drive, rest] = match;
+    return `${drive.toUpperCase()}:\\${rest.replace(/\//g, '\\')}`;
+}
+
+/** Quote a value for embedding in a PowerShell single-quoted string literal. */
+function psQuote(value) {
+    return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+/** Escape PowerShell -like wildcard metacharacters so a path is matched
+ *  LITERALLY. -like (not -match) is used deliberately: a regex operator would
+ *  clobber $Matches, which the port-range bound above reads, and a Windows
+ *  path's backslashes would be read as regex escapes. */
+function psLikeEscape(value) {
+    return String(value).replace(/([*?[\]`])/g, '`$1');
+}
+
+/** Quote a value for embedding in a POSIX shell single-quoted word. awk's -v
+ *  ALSO processes backslash escapes in the assigned value, so backslashes are
+ *  doubled first -- otherwise a `\U`/`\x` in a path would be mangled. */
+function awkVarQuote(value) {
+    const escaped = String(value).replace(/\\/g, '\\\\');
+    return `'${escaped.replace(/'/g, "'\\''")}'`;
+}
+
 /** Normalize a member registry `os` value to the shell family we must speak. */
 export function memberShellFamily(os) {
     // NOTE: a bare /win/ test is wrong -- 'darwin' contains 'win'.
@@ -58,10 +142,14 @@ export function memberShellFamily(os) {
  *
  * @param {'win32'|'posix'} family
  * @param {number} maxAgeMs
+ * @param {string|null} [ownerDataDirPrefix] when set, only a process whose
+ *        command line carries a `--data-dir` under this prefix is a candidate
+ *        (see normalizeOwnerDataDirPrefix above). Omitted -> machine-wide.
  * @returns {string}
  */
-export function buildSweepCommand(family, maxAgeMs = DEFAULT_MAX_AGE_MS) {
+export function buildSweepCommand(family, maxAgeMs = DEFAULT_MAX_AGE_MS, ownerDataDirPrefix = null) {
     const maxAgeSeconds = Math.floor(maxAgeMs / 1000);
+    const owner = normalizeOwnerDataDirPrefix(ownerDataDirPrefix);
     // Exact numeric bounds, never a hand-derived digit-prefix regex: matching
     // must be EXACT on [SETTLE_PORT_RANGE.start, SETTLE_PORT_RANGE.end) so an
     // operator's own long-lived server (e.g. --port 1337, or ANY 4-digit port,
@@ -85,7 +173,12 @@ export function buildSweepCommand(family, maxAgeMs = DEFAULT_MAX_AGE_MS) {
             '$procs = Get-CimInstance Win32_Process -Filter "Name=\'dolt.exe\'" -ErrorAction SilentlyContinue |'
             + ' Where-Object { $_.CommandLine -match \'sql-server\''
             + ` -and $_.CommandLine -match '--port (\\d+)' -and [int]$Matches[1] -ge ${portLo} -and [int]$Matches[1] -le ${portHi}`
-            + ' -and $_.CreationDate -lt $cutoff }',
+            + ' -and $_.CreationDate -lt $cutoff'
+            // Owner clause LAST, and -like rather than -match: $Matches still
+            // holds the --port capture the bound above compares, so any regex
+            // operator inserted here would silently break the port range.
+            + (owner ? ` -and $_.CommandLine -like ${psQuote(`*--data-dir*${psLikeEscape(owner)}*`)}` : '')
+            + ' }',
             'foreach ($p in $procs) { Write-Output "ORPHAN:$($p.ProcessId):$($p.CommandLine)"; Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }',
         ].join('; ');
         return seWindows.wrapForMember(rawScript);
@@ -94,8 +187,14 @@ export function buildSweepCommand(family, maxAgeMs = DEFAULT_MAX_AGE_MS) {
     // awk has no lookahead, so the port bound is an actual numeric range
     // check (match() + substr() to pull the digits, then compare) rather than
     // a digit-prefix regex -- exact, not "harmlessly overbroad".
+    // The owner clause is a literal SUBSTRING test (index()), never a regex:
+    // a path may contain regex metacharacters, and awk has no literal-match
+    // operator. The value is passed via -v so it is never spliced into the
+    // program text.
+    const ownerVar = owner ? `-v owner=${awkVarQuote(owner)} ` : '';
+    const ownerClause = owner ? ' && /--data-dir/ && index($0, owner) > 0' : '';
     return [
-        `ps -eo pid=,etimes=,args= | awk -v lo=${portLo} -v hi=${portHi} '$2 > ${maxAgeSeconds} && /sql-server/ && match($0, /--port [0-9]+/) {`
+        `ps -eo pid=,etimes=,args= | awk ${ownerVar}-v lo=${portLo} -v hi=${portHi} '$2 > ${maxAgeSeconds} && /sql-server/${ownerClause} && match($0, /--port [0-9]+/) {`
         + ' port = substr($0, RSTART + 7, RLENGTH - 7) + 0;'
         + ' if (port >= lo && port <= hi) { printf "ORPHAN:%s:", $1; for (i=3; i<=NF; i++) printf "%s ", $i; print "" }'
         + " }'",
@@ -125,6 +224,7 @@ export function parseSweepOutput(output) {
  *   execCommand: (opts: { member: string, command: string }) => Promise<{ ok: boolean, output?: string, error?: string }>,
  *   intervalMs?: number,
  *   maxAgeMs?: number,
+ *   ownerDataDirPrefix?: string|null,
  *   setInterval?: Function,
  *   clearInterval?: Function,
  *   logger?: { log?: Function, error?: Function },
@@ -136,10 +236,13 @@ export function createDoltOrphanSweep(deps = {}) {
         execCommand,
         intervalMs = DEFAULT_SWEEP_INTERVAL_MS,
         maxAgeMs = DEFAULT_MAX_AGE_MS,
+        ownerDataDirPrefix = null,
         setInterval: setIntervalFn = setInterval,
         clearInterval: clearIntervalFn = clearInterval,
         logger = console,
     } = deps;
+
+    const owner = normalizeOwnerDataDirPrefix(ownerDataDirPrefix);
 
     const log = (...a) => (logger.log ?? (() => {}))(...a);
     const logError = (...a) => (logger.error ?? logger.log ?? (() => {}))(...a);
@@ -172,7 +275,7 @@ export function createDoltOrphanSweep(deps = {}) {
             const name = member && (member.name || member.id);
             if (!name) continue;
             const family = memberShellFamily(member && member.os);
-            const command = buildSweepCommand(family, maxAgeMs);
+            const command = buildSweepCommand(family, maxAgeMs, owner);
             swept += 1;
             let res;
             try {
@@ -228,5 +331,6 @@ export function createDoltOrphanSweep(deps = {}) {
         },
         get intervalMs() { return intervalMs; },
         get maxAgeMs() { return maxAgeMs; },
+        get ownerDataDirPrefix() { return owner; },
     };
 }

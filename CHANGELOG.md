@@ -2,6 +2,133 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Azure DevOps VCS auth: credential assembly, PR publish path, and regression-sandbox hardening (sprint FAILED)
+
+Sprint goal: make `provision_vcs_auth` and the fleet-sprint VCS layer support
+Azure DevOps end-to-end -- guided PAT creation and storage, provisioning a
+user's existing PAT to local and remote members, clean actionable surfacing
+of Azure DevOps auth failure modes, and doing all of it through the existing
+provider-abstraction rather than ad hoc conditionals -- alongside hardening
+the regression-test-playbook's sandbox lifecycle so it cannot collide with a
+real, concurrently-running supervisor on the same machine.
+
+**Verdict: FAIL.** Full-suite tests pass at branch head and the code quality
+on the named scope is high, but: both scope issues remain open (Azure DevOps
+VCS auth, P0; regression-sandbox hardening, P1); Deploy halted at its
+documented active-sprints precondition in every attempted cycle, so nothing
+in this sprint was ever verified against an installed build and the
+integration-test lane never ran; and several verify-routed items are still
+open and unverified end-to-end. Treat everything below as landed-but-not-
+yet-proven-stable, not as a finished, user-facing integration.
+
+What shipped:
+
+- **Azure DevOps host/URL recognition and repo-reference parsing**, dispatched
+  from shared VCSModule code rather than hardcoded into the runner.
+- **Provider-owned credential assembly**: `buildCredentials`/
+  `missingCredential`/`testConnectivity` for Azure DevOps accept a PAT via
+  either of two field names, validate an optional expiry at assembly time
+  (rejecting an unparseable value instead of silently degrading), prefer the
+  exact URL the credential was scoped to when testing connectivity, and test
+  connectivity with an authenticated `git ls-remote` against a validated,
+  concrete repo URL instead of an unauthenticated call to the org root.
+- **A `setTimeout`-overflow guard on credential auto-cleanup**: a long-lived
+  Azure DevOps PAT's expiry can exceed what a 32-bit signed millisecond delay
+  can express; scheduling a raw timer for it would have silently fired
+  almost immediately and auto-revoked the credential just deployed. The
+  cleanup scheduler now skips scheduling entirely beyond that ceiling and
+  relies on day-scale expiry warnings and reactive failure classification
+  instead.
+- **Azure DevOps auth-failure classification**: TF-numbered error codes and
+  REST status codes are mapped to the same provider-neutral failure taxonomy
+  every other provider uses, distinguishing an expired/revoked PAT
+  (re-minting fixes it) from a missing-scope PAT (widening scopes fixes it)
+  from an ambiguous repo-not-found-or-no-access response (neither remedy
+  necessarily fixes it) -- and prints PAT-specific remedy text acknowledging
+  that, unlike a GitHub App token, an Azure DevOps PAT cannot be re-minted by
+  the fleet itself.
+- **Azure DevOps pull-request and comment REST builders**, with the
+  provider owning its own response-field mapping (Azure DevOps has no
+  web-URL field and uses `pullRequestId`, not GitHub's `number`/`html_url`)
+  and its own success/already-exists interpretation contract.
+- **The runner's publish path now consumes that provider-owned PR response
+  mapping** end to end, and mock-sprint gained hermetic coverage exercising
+  the publish path against canned Azure DevOps responses, plus an opt-in,
+  env-gated real end-to-end harness (provision, verify, publish) against a
+  live Azure DevOps org.
+- **Regression-test-playbook sandbox hardening**: a busy/stale/owner-release
+  sandbox lockfile guards the smoke-test sandbox against concurrent runs;
+  Setup now guards the toy dev server's port and a scripted, fail-loud
+  port-verification gate replaces a silent check; dolt-orphan-sweep kills
+  are scoped to the owning supervisor instance instead of a machine-wide
+  heuristic; and `start` now refuses to reuse an already-running server on a
+  version mismatch instead of silently continuing against a stale binary.
+- **Documentation**: `docs/design-azure-devops-vcs-auth.md` captures the
+  credential-assembly seam, classification rules, PAT-lifetime handling, and
+  a harness-vs-production quoting distinction worth knowing before assuming
+  an Azure DevOps test failure is a runtime bug;
+  `docs/design-regression-sandbox-lifecycle.md` (new) captures the sandbox's
+  cross-instance isolation design and the MSYS-vs-native pid mismatch
+  invariant future contributors must respect when adding any Windows
+  liveness/lock check.
+
+Since the previous update to this entry, further cycles landed: a deploy
+active-sprints gate that distinguishes a sprint's own live reservation from
+a foreign one (closing the recurring deploy-blocked failure mode below, once
+the dispatching process itself is relaunched from a build containing the
+fix -- see `docs/design-regression-sandbox-lifecycle.md`); the mock-sprint
+unmocked-network-command guard now matches curl/wget by command basename, so
+a path-prefixed invocation no longer slips past it; the Azure DevOps
+`testConnectivity` skipped-check result now carries a machine-detectable
+`skipped: true` flag instead of being indistinguishable from a verified
+pass; and slow-lane log-persistence test hardening. Verdict is still FAIL.
+
+Carried forward (filed as open issues, not blocking further sprints from
+starting, but blocking these epics' own completion):
+
+- Deploy still has not completed against an installed build this sprint.
+  The active-sprints gate itself now correctly distinguishes self from
+  foreign reservations, but every attempted cycle was dispatched from a
+  process that predated that fix landing in the tree, so the gate kept
+  blocking as if no self-identity check existed at all. Nothing landed in
+  this sprint has been verified against an installed build, and the
+  integration-test lane never ran.
+- Six verify-routed items are open and unverified end-to-end: the
+  `canOpenPullRequest` capability-table pin (fixed in the diff, unverified
+  post-install), the Azure DevOps create-pull-request builder, server-reuse
+  version-mismatch handling, the sandbox lockfile, the port-3001 Setup
+  guard, and the opt-in real Azure DevOps end-to-end lane.
+- The sandbox lockfile's liveness check is not safely closable as-is: on
+  Git Bash on Windows -- the platform this sprint runs on -- a pid captured
+  from the shell's `$$` is an MSYS pid, but the liveness check uses a native
+  `process.kill(pid, 0)`, so a live holder can read as stale or an unrelated
+  native process can read as busy.
+- `.claude/settings.json` now grants a blanket `Edit`/`Write` permission to
+  every agent dispatch; this widening is not justified by any scope item
+  here and should be reviewed.
+- `dolt-orphan-sweep`'s owner-scope filter is inert when the sweep's data
+  directory falls back to a relative path -- a known, not-yet-test-pinned
+  gap.
+- The build-lock preflight step run ahead of `install --force` kills every
+  non-self, non-ancestor holder of this checkout's build artifacts with no
+  built-in exclusion for a live foreign sprint's own child process --
+  deploy operators currently have to hand-verify this after the fact.
+- Regression-pass carryover from this sprint's full-suite run (a resumed,
+  not freshly re-run, real-bd functional pass; a slow-lane failure tied to
+  a pre-existing watchdog/recording-drift issue; and known Part-2
+  smoke-test credential-provisioning blockers) is tracked as standalone,
+  parent-less backlog and is unrelated to the Azure DevOps/sandbox scope
+  itself.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $17.1504.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 58 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Supervisor dashboard: live-refresh parity with the per-run viewer
 
 Sprint goal: bring the multi-sprint supervisor's own dashboard up to the same

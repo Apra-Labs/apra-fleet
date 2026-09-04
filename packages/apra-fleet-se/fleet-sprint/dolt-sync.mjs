@@ -227,8 +227,18 @@ export async function isMemberSyncRemoteConfigured(member, opts) {
 // instant re-issue -- the previous code retried with zero delay, which turned
 // the bound into "fail twice as fast". Delay is attempt-indexed and capped, and
 // `sleep` is injectable so unit suites never actually wait.
+//
+// apra-fleet-ka1u follow-up: a live Windows machine-wide git.exe spawn outage
+// (fork/exec ... "Not enough memory resources") was directly measured to last
+// 1-3 MINUTES per occurrence (fleet supervisor log analysis), during which
+// essentially every dolt-initiated git spawn fails -- not an isolated blip.
+// The original 8s cap meant even 5 retries covered at most ~15s of backoff,
+// structurally unable to span an outage an order of magnitude longer; the
+// sprint kept dying with retries correctly firing but exhausted. Raised to
+// 30s so a realistic retry budget (see maxTransientRetries below) can
+// actually outlast one of these windows instead of just softening it.
 const DOLT_BACKOFF_BASE_MS = 500;
-const DOLT_BACKOFF_MAX_MS = 8000;
+const DOLT_BACKOFF_MAX_MS = 30000;
 
 // apra-fleet-jxdf.2: every `bd dolt pull`/`bd dolt push` this module issues
 // used to inherit whatever generic default the injected command() primitive
@@ -405,7 +415,7 @@ async function attemptSettle({ settle, member, operation, error, log }) {
 }
 
 export async function doltPullBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle } = opts;
+    const { command, log = () => {}, maxTransientRetries = 8, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -619,7 +629,7 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote', recovered?: true, settledTables?: string[] }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 8, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
