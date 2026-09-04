@@ -147,7 +147,7 @@ event-loop keep-alive and full retry-exhaustion timing for the dispatch
 watchdog, which cannot be faked with mock timers (see the file-level
 comments in each for why).
 
-apra-fleet-f28t.1: redirect combined stdout+stderr to a log file instead of
+Redirect combined stdout+stderr to a log file instead of
 piping through `tail` -- a bare pipe leaves nothing persisted if the
 background shell running this command is interrupted, so an ~8-minute lane's
 pass/fail verdict becomes unrecoverable. The log lives at
@@ -186,15 +186,15 @@ truncated file with no exit line) as "still running or was never
 recoverable -- report status, do not fabricate a verdict."
 
 An interrupted run's orphaned `npm run test:slow` / `node --test` child
-processes are a KNOWN harness gap (apra-fleet-f28t): `taskkill`, `kill -9`,
+processes are a KNOWN harness gap: `taskkill`, `kill -9`,
 and `wmic process ... delete` (and even the read-only `wmic process ...
 get`) have all been observed denied by the auto-mode permission classifier.
 Per this repo's CLAUDE.md, a permission block must be SURFACED, not routed
 around -- do NOT author a wrapper script, alternate binary, or any other
 workaround whose purpose is to reap those processes past the block. Report
 any such orphaned process to the operator as a surfaced permission block
-and leave the cleanup to them out of band; apra-fleet-f28t stays open for
-that half.
+and leave the cleanup to them out of band; this harness gap remains open
+for that half.
 
 To PROVE a before/after timing claim against a pre-fix commit (not just
 assert one from memory), see `packages/apra-fleet-se/test/INTEG-SUITE.md`'s
@@ -236,8 +236,8 @@ echo "$SETUP_STARTED_AT" > "$SANDBOX.setup_started_at"
 # loud ('sandbox busy', non-zero exit) if another live run already holds it,
 # instead of racing/clobbering it. sandbox-lock.mjs records ITS OWN
 # process.ppid (this Setup shell's real, native OS pid) rather than reading
-# $$ -- see scripts/sandbox-lock.mjs's file header (apra-fleet-5co8.39) for
-# why $$ is unsafe under Git Bash on Windows.
+# $$ -- see scripts/sandbox-lock.mjs's file header for why $$ is unsafe
+# under Git Bash on Windows.
 node "<repo-root>/scripts/sandbox-lock.mjs" acquire "$SANDBOX" || exit 1
 
 export HOME="$SANDBOX"
