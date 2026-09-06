@@ -1,12 +1,25 @@
 /**
  * Azure DevOps VCS provider — deploys PAT credentials via git credential helper.
- * Auth pattern: empty username + PAT as password (matches Azure DevOps docs).
+ * Auth pattern: placeholder username + PAT as password (see PAT_USERNAME).
  */
 
 import type { VcsProviderService, VcsDeployResult, AzureDevOpsCredentials } from './types.js';
 import { knownRepoRemoteUrl } from '../member-remote-url.js';
 
 const HOST = 'dev.azure.com';
+
+// The username written into the git credential helper next to the PAT. It
+// MUST be non-empty: with `username=` (empty) git still sends an
+// `Authorization: Basic` header, but Azure DevOps' git endpoint answers 401
+// to it every time, even for a perfectly valid PAT -- reproduced with an A/B
+// of two helpers byte-identical except this one field against the real toy
+// repo (`git ls-remote`: empty -> 401/401/401 + "Authentication failed",
+// `pat` -> 200 with the HEAD sha). The REST API, by contrast, accepts
+// `-u :PAT` (which is why the fleet's own curl-based PR calls were never
+// affected). Azure DevOps ignores the username's VALUE for PAT auth; `pat`
+// is the customary placeholder. Mirrors src/services/vcs/github.ts's
+// `x-access-token` convention of a named constant, not an inline literal.
+const PAT_USERNAME = 'pat';
 
 function extractOrg(orgUrl: string): string {
   // org_url is e.g. "https://dev.azure.com/myorg" — extract "myorg"
@@ -65,7 +78,7 @@ export const azureDevOpsProvider: VcsProviderService = {
 
   async deploy(_agent, cmds, exec, credentials, label?, scopeUrl?) {
     const creds = credentials as AzureDevOpsCredentials;
-    await exec(cmds.gitCredentialHelperWrite(HOST, '', creds.pat, label, scopeUrl));
+    await exec(cmds.gitCredentialHelperWrite(HOST, PAT_USERNAME, creds.pat, label, scopeUrl));
     return {
       success: true,
       message: 'Azure DevOps credentials deployed',

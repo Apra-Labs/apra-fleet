@@ -5,6 +5,7 @@ import { githubProvider } from '../src/services/vcs/github.js';
 import { bitbucketProvider } from '../src/services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../src/services/vcs/azure-devops.js';
 import { LinuxCommands } from '../src/os/linux.js';
+import { getOsCommands } from '../src/os/index.js';
 import type { Agent } from '../src/types.js';
 
 // Mock github-app.ts to avoid real API calls
@@ -270,7 +271,7 @@ describe('Multi-label credential isolation', () => {
 });
 
 describe('Azure DevOps provider', () => {
-  it('deploy: writes credential helper with empty username and PAT', async () => {
+  it('deploy: writes credential helper with a placeholder username and the PAT', async () => {
     const execCalls: string[] = [];
     const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
 
@@ -283,6 +284,48 @@ describe('Azure DevOps provider', () => {
     expect(result.metadata?.org).toBe('myorg');
     expect(execCalls[0]).toContain('dev.azure.com');
     expect(execCalls[0]).toContain('az-pat-123');
+    expect(execCalls[0]).toContain('username=pat');
+  });
+
+  // REGRESSION: the helper's username field must never be empty. With
+  // `username=` git still sends an Authorization: Basic header, but Azure
+  // DevOps' git endpoint answers 401 to it every time even for a valid PAT
+  // (A/B against the real toy repo: two helpers byte-identical except this
+  // field -> 401 x3 + "Authentication failed" vs 200 + HEAD sha). Pinned on
+  // every OS command set's generated script, not just Linux: each writes the
+  // `username=` line in its own dialect (POSIX printf, PowerShell -join,
+  // gitbash printf), and any of them could regress independently.
+  it.each([
+    ['linux', getOsCommands('linux')],
+    ['macos', getOsCommands('macos')],
+    ['windows (PowerShell)', getOsCommands('windows')],
+    ['windows (gitbash)', getOsCommands('windows', 'gitbash')],
+  ] as const)('deploy: the generated %s helper script never carries an EMPTY username field', async (_label, osCmds) => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
+
+    await azureDevOpsProvider.deploy(
+      makeAgent(), osCmds, exec,
+      { org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-123' },
+      'azure-devops', 'https://dev.azure.com',
+    );
+
+    const script = execCalls.find((c) => c.includes('.fleet-git-credential-'));
+    expect(script, 'expected a credential-helper write command').toBeDefined();
+    // Two rendering styles exist: the value inline (`echo username=pat` /
+    // `echo "username=pat"`), or a printf template whose `username=%s` slot
+    // is filled by a positional argument that follows the host's. Either
+    // way the field must carry `pat`; an EMPTY field would show up as
+    // `username=` followed directly by a terminator (line end, quote,
+    // escaped newline) or as an empty positional argument right after the
+    // host argument in the printf form.
+    if (/username=%s/.test(script!)) {
+      expect(script!).toMatch(/dev\.azure\.com'? +'?pat'?(\s|$)/);
+      expect(script!).not.toMatch(/dev\.azure\.com'? +(?:''|"")(\s|$)/);
+    } else {
+      expect(script!).toMatch(/username=pat\b/);
+    }
+    expect(script!).not.toMatch(/username=(?:\\r\\n|\\n|\r?\n|['"]|\s|$)/);
   });
 
   it('deploy: extracts org from org_url', async () => {
