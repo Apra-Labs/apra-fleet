@@ -4,6 +4,8 @@ import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 import { stripAnsi } from '../utils/ansi.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
@@ -38,8 +40,16 @@ export class AgyProvider implements ProviderAdapter {
     return 'agy --version 2>&1';
   }
 
-  installCommand(os: 'linux' | 'macos' | 'windows'): string {
+  installCommand(os: 'linux' | 'macos' | 'windows', shell?: MemberShell): string {
     if (os === 'windows') {
+      // A gitbash member's command strings run in bash directly
+      // (apra-fleet-7dir.2.4/2.7) -- route through the same base64
+      // -EncodedCommand envelope every other Windows-targeting PowerShell
+      // invocation in this codebase uses, instead of the raw `powershell
+      // -Command "..."` form.
+      if (shell === 'gitbash') {
+        return wrapPowerShellEncoded('irm https://antigravity.google/cli/install.ps1 | iex');
+      }
       return 'powershell -Command "irm https://antigravity.google/cli/install.ps1 | iex"';
     }
     return 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
@@ -417,7 +427,7 @@ export class AgyProvider implements ProviderAdapter {
     };
   }
 
-  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40 provider trust matrix: AGY has NO per-project trust concept -- its
     // config is machine-global (live-verified, docs/member-onboarding-journey.md section
     // 3a). No-op.

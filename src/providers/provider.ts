@@ -4,6 +4,7 @@ import type { LlmProvider } from '../types.js';
 import type { SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
 
 export type { LlmProvider };
 
@@ -159,7 +160,12 @@ export interface ProviderAdapter {
   // CLI command building
   cliCommand(args: string): string;
   versionCommand(): string;
-  installCommand(os: 'linux' | 'macos' | 'windows'): string;
+  /** `shell` is the member's registered shell (only meaningful for
+   *  `os === 'windows'`). A gitbash Windows member gets a bash-invokable
+   *  install string; every other combination -- including a Windows member
+   *  with no shell recorded, or pwsh7/powershell5 -- resolves exactly as it
+   *  did before the shell parameter existed (apra-fleet-7dir.2.7). */
+  installCommand(os: 'linux' | 'macos' | 'windows', shell?: MemberShell): string;
   updateCommand(): string;
 
   // Prompt building
@@ -292,8 +298,11 @@ export interface ProviderAdapter {
    *  `execCommand` is the delivery channel (same one compose_permissions' deliverConfigFile
    *  uses), so this works uniformly for local and remote (SSH) members. Non-Claude
    *  providers no-op -- see each implementation's rationale comment (apra-fleet-eft.40
-   *  provider trust matrix). Callers should log distinctly on `seeded: true` vs `false`. */
-  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult>;
+   *  provider trust matrix). Callers should log distinctly on `seeded: true` vs `false`.
+   *  `shell` is the member's REGISTERED shell and is only meaningful when `agentOs` is
+   *  'windows': a member registered as Git-for-Windows bash needs POSIX command strings,
+   *  because the PowerShell ones are handed straight to bash.exe and fail (apra-fleet-7dir.2.8). */
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 

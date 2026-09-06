@@ -200,6 +200,33 @@ describe('updateMember', () => {
     expect(updated?.category).toBeUndefined();
   });
 
+  it('stores a valid shell value', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, shell: 'pwsh7' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.shell).toBe('pwsh7');
+  });
+
+  it('rejects an invalid shell value with a schema validation error', async () => {
+    const { updateMemberSchema } = await import('../src/tools/update-member.js');
+    const parsed = updateMemberSchema.safeParse({ member_id: 'x', shell: 'cmd' });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(JSON.stringify(parsed.error.issues)).toContain('shell');
+    }
+  });
+
+  it('leaves shell unset for a member updated without a shell value', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.shell).toBeUndefined();
+  });
+
   it('adds tags to a member', async () => {
     const member = makeTestLocalAgent();
     addAgent(member);
@@ -391,7 +418,9 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
 
     expect(result).toContain('Member "test-agent" updated.');
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os);
+    // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
+    // member records no shell, so seedWorkspaceTrust forwards undefined.
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os, member.shell);
     spy.mockRestore();
   });
 
@@ -421,7 +450,8 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
 
     expect(result).toContain('updated');
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os);
+    // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument.
+    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell);
     expect(mockTestConnection).not.toHaveBeenCalled();
     spy.mockRestore();
   });

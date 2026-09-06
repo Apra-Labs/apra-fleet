@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { githubProvider } from '../src/services/vcs/github.js';
 import { bitbucketProvider } from '../src/services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../src/services/vcs/azure-devops.js';
 import { LinuxCommands } from '../src/os/linux.js';
+import { getOsCommands } from '../src/os/index.js';
 import type { Agent } from '../src/types.js';
 
 // Mock github-app.ts to avoid real API calls
@@ -268,7 +271,7 @@ describe('Multi-label credential isolation', () => {
 });
 
 describe('Azure DevOps provider', () => {
-  it('deploy: writes credential helper with empty username and PAT', async () => {
+  it('deploy: writes credential helper with a placeholder username and the PAT', async () => {
     const execCalls: string[] = [];
     const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
 
@@ -281,6 +284,48 @@ describe('Azure DevOps provider', () => {
     expect(result.metadata?.org).toBe('myorg');
     expect(execCalls[0]).toContain('dev.azure.com');
     expect(execCalls[0]).toContain('az-pat-123');
+    expect(execCalls[0]).toContain('username=pat');
+  });
+
+  // REGRESSION: the helper's username field must never be empty. With
+  // `username=` git still sends an Authorization: Basic header, but Azure
+  // DevOps' git endpoint answers 401 to it every time even for a valid PAT
+  // (A/B against the real toy repo: two helpers byte-identical except this
+  // field -> 401 x3 + "Authentication failed" vs 200 + HEAD sha). Pinned on
+  // every OS command set's generated script, not just Linux: each writes the
+  // `username=` line in its own dialect (POSIX printf, PowerShell -join,
+  // gitbash printf), and any of them could regress independently.
+  it.each([
+    ['linux', getOsCommands('linux')],
+    ['macos', getOsCommands('macos')],
+    ['windows (PowerShell)', getOsCommands('windows')],
+    ['windows (gitbash)', getOsCommands('windows', 'gitbash')],
+  ] as const)('deploy: the generated %s helper script never carries an EMPTY username field', async (_label, osCmds) => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
+
+    await azureDevOpsProvider.deploy(
+      makeAgent(), osCmds, exec,
+      { org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-123' },
+      'azure-devops', 'https://dev.azure.com',
+    );
+
+    const script = execCalls.find((c) => c.includes('.fleet-git-credential-'));
+    expect(script, 'expected a credential-helper write command').toBeDefined();
+    // Two rendering styles exist: the value inline (`echo username=pat` /
+    // `echo "username=pat"`), or a printf template whose `username=%s` slot
+    // is filled by a positional argument that follows the host's. Either
+    // way the field must carry `pat`; an EMPTY field would show up as
+    // `username=` followed directly by a terminator (line end, quote,
+    // escaped newline) or as an empty positional argument right after the
+    // host argument in the printf form.
+    if (/username=%s/.test(script!)) {
+      expect(script!).toMatch(/dev\.azure\.com'? +'?pat'?(\s|$)/);
+      expect(script!).not.toMatch(/dev\.azure\.com'? +(?:''|"")(\s|$)/);
+    } else {
+      expect(script!).toMatch(/username=pat\b/);
+    }
+    expect(script!).not.toMatch(/username=(?:\\r\\n|\\n|\r?\n|['"]|\s|$)/);
   });
 
   it('deploy: extracts org from org_url', async () => {
@@ -301,16 +346,286 @@ describe('Azure DevOps provider', () => {
     expect(execCalls[0]).toContain('credential.https://dev.azure.com.helper');
   });
 
-  it('testConnectivity: succeeds when curl works', async () => {
+  it('testConnectivity: succeeds when git ls-remote works against a known gitRepos URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['https://dev.azure.com/myorg/myproject/_git/myrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(member, exec);
+    expect(result.success).toBe(true);
+    // apra-fleet-5co8.43: a REAL, actually-performed successful check must
+    // be distinguishable from a skipped one via `skipped`, not just message
+    // text -- a real success carries no `skipped` flag at all.
+    expect(result.skipped).toBeUndefined();
+    expect(result.message).toContain('myrepo');
+    expect(execCalls[0]).toBe('git ls-remote https://dev.azure.com/myorg/myproject/_git/myrepo HEAD');
+    // The credential comes from the git credential helper deploy() already
+    // configured -- never appears in the executed command string.
+    expect(execCalls[0]).not.toMatch(/az-pat|pat=|token=/);
+  });
+
+  it('testConnectivity: falls back to a repo-scoped scope_url when gitRepos has no usable URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['myorg/myproject/myrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg/myproject/_git/myrepo',
+    );
+    expect(result.success).toBe(true);
+    expect(execCalls[0]).toContain('_git/myrepo');
+  });
+
+  // apra-fleet-5co8.5.2 (review round 2): a cross-host gitRepos URL must
+  // never be reported as an Azure DevOps connectivity result. knownRepoRemoteUrl
+  // is host-agnostic (see member-remote-url.ts), so without an Azure-DevOps-
+  // shaped URL check, this repro would ls-remote github.com and report success
+  // as if it verified the Azure DevOps credential.
+  it('testConnectivity: skips rather than testing a cross-host gitRepos URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['https://github.com/foo/bar.git'] });
+
+    // No repo-scoped scope_url supplied -- only the org-level default, which
+    // is not itself a usable repo -- so the only candidate is the cross-host
+    // gitRepos entry, which must be rejected rather than tested.
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg',
+    );
+    expect(execCalls).toHaveLength(0);
+    expect(result.success).toBe(true);
+    // apra-fleet-5co8.43: `success: true` here means "nothing failed", not
+    // "verified" -- `skipped: true` is the machine-detectable signal a
+    // caller must check before presenting this as a passing check.
+    expect(result.skipped).toBe(true);
+    expect(result.message).toContain('Skipped');
+  });
+
+  // A repo-scoped scope_url is what deploy() actually scoped the credential
+  // to (gitCredentialHelperWrite writes credential.<scopeUrl>.helper -- see
+  // src/os/linux.ts), so it must win over a same-request gitRepos URL rather
+  // than being shadowed by it.
+  it('testConnectivity: prefers a repo-scoped scope_url over a gitRepos URL', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return 'abc123\tHEAD'; };
+    const member = makeAgent({ gitRepos: ['https://dev.azure.com/otherorg/otherproj/_git/otherrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg/myproject/_git/myrepo',
+    );
+    expect(result.success).toBe(true);
+    expect(execCalls[0]).toBe('git ls-remote https://dev.azure.com/myorg/myproject/_git/myrepo HEAD');
+  });
+
+  // A derived URL is interpolated into a command string executed on the
+  // member (`git ls-remote ${repoUrl} HEAD`); before this bead's validation,
+  // shell metacharacters in scope_url would inject an extra command.
+  it('testConnectivity: rejects a scope_url carrying shell metacharacters instead of executing it', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
+    const member = makeAgent();
+
+    const result = await azureDevOpsProvider.testConnectivity(
+      member, exec, 'https://dev.azure.com/myorg/proj/_git/x; echo pwned',
+    );
+    expect(execCalls).toHaveLength(0);
+    expect(result.success).toBe(true);
+    expect(result.skipped).toBe(true);
+    expect(result.message).toContain('Skipped');
+  });
+
+  it('testConnectivity: fails when git ls-remote throws', async () => {
+    const exec = async () => { throw new Error('connection refused'); };
+    const member = makeAgent({ gitRepos: ['https://dev.azure.com/myorg/myproject/_git/myrepo'] });
+
+    const result = await azureDevOpsProvider.testConnectivity(member, exec);
+    expect(result.success).toBe(false);
+    // apra-fleet-5co8.43: a genuine failure is neither a success nor a skip
+    // -- `skipped` must not be set on this path.
+    expect(result.skipped).toBeUndefined();
+  });
+
+  it('testConnectivity: skips with a documented message when no repo is known', async () => {
     const exec = async () => '';
-    const result = await azureDevOpsProvider.testConnectivity(makeAgent(), exec);
+    // No gitRepos entry and scope_url is only the org-level default -- there
+    // is no concrete repo to ls-remote against.
+    const result = await azureDevOpsProvider.testConnectivity(
+      makeAgent(), exec, 'https://dev.azure.com/myorg',
+    );
+    expect(result.success).toBe(true);
+    // apra-fleet-5co8.43: criterion 1 -- the skipped state must be
+    // machine-detectable WITHOUT string-matching `message`.
+    expect(result.skipped).toBe(true);
+    expect(result.message).toContain('Skipped');
+  });
+
+  // apra-fleet-5co8.5.1: the expiry is caller-supplied (Azure DevOps exposes
+  // no API to read a PAT's expiry back), so deploy metadata must carry it
+  // through when present and be BYTE-IDENTICAL to the old shape when absent --
+  // an `expiresAt: undefined` key would still flow into the registry write.
+  it('deploy: propagates a supplied expires_at into metadata.expiresAt', async () => {
+    const exec = async () => '';
+    const result = await azureDevOpsProvider.deploy(
+      makeAgent(), cmds, exec,
+      { org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-123', expires_at: '2027-08-20T00:00:00Z' },
+    );
+    expect(result.metadata?.expiresAt).toBe('2027-08-20T00:00:00Z');
+  });
+
+  it('deploy: omits expiresAt entirely when no expiry is supplied', async () => {
+    const exec = async () => '';
+    const result = await azureDevOpsProvider.deploy(
+      makeAgent(), cmds, exec,
+      { org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-123' },
+    );
+    expect(result.metadata && 'expiresAt' in result.metadata).toBe(false);
+  });
+});
+
+// apra-fleet-5co8.5.1: an unparseable pat_expires_at is NOT a harmless typo.
+// It is truthy, so it would reach vcsTokenExpiresAt verbatim, make every
+// checkVcsTokenExpiry comparison NaN (no warning at all) and make
+// scheduleCredentialCleanup fall back to DEFAULT_TTL_MS -- a 55-minute
+// auto-revoke of the PAT that was just deployed. Rejected at the boundary.
+// apra-fleet-5co8.3.1: the credential-assembly and missing-credential
+// descriptors are a VERBATIM move of the provider switch / out-of-band
+// if-blocks that still live in src/tools/provision-vcs-auth.ts (the call-site
+// rewrite is a separate task). These assertions therefore pin the MOVED logic
+// against the behaviour the tool has today -- same defaults, same error
+// strings, same prompt text -- so the later rewrite is provably a no-op.
+describe('provider credential assembly (apra-fleet-5co8.3.1)', () => {
+  it('github: defaults to github-app mode and passes access/repos through', () => {
+    expect(githubProvider.buildCredentials!({ provider: 'github', git_access: 'push', repos: ['acme/widgets'] }))
+      .toEqual({ type: 'github-app', git_access: 'push', repos: ['acme/widgets'] });
+  });
+
+  it('github: pat mode returns the pat credential', () => {
+    expect(githubProvider.buildCredentials!({ provider: 'github', github_mode: 'pat', token: 'ghp_x' }))
+      .toEqual({ type: 'pat', token: 'ghp_x' });
+  });
+
+  it('github: pat mode without a token returns the error string', () => {
+    expect(githubProvider.buildCredentials!({ provider: 'github', github_mode: 'pat' }))
+      .toBe('GitHub PAT mode requires "token" field.');
+  });
+
+  it('bitbucket: returns the credential when all three fields are present', () => {
+    expect(bitbucketProvider.buildCredentials!({ provider: 'bitbucket', email: 'd@co.com', api_token: 't', workspace: 'ws' }))
+      .toEqual({ email: 'd@co.com', api_token: 't', workspace: 'ws' });
+  });
+
+  it('bitbucket: returns the error string when any field is missing', () => {
+    for (const input of [
+      { provider: 'bitbucket' as const, api_token: 't', workspace: 'ws' },
+      { provider: 'bitbucket' as const, email: 'd@co.com', workspace: 'ws' },
+      { provider: 'bitbucket' as const, email: 'd@co.com', api_token: 't' },
+    ]) {
+      expect(bitbucketProvider.buildCredentials!(input)).toBe('Bitbucket requires "email", "api_token", and "workspace" fields.');
+    }
+  });
+
+  // apra-fleet-5co8.3.3: azure-devops's buildCredentials had no dedicated
+  // unit coverage of its own -- only exercised indirectly through
+  // provisionVcsAuth() in tests/provision-vcs-auth.test.ts. Pinned here the
+  // same way as the github/bitbucket cases above: the `pat ?? token` alias,
+  // the exact missing-field error text, and the pat_expires_at parse guard
+  // (apra-fleet-5co8.5.1) that sits behind the zod schema refine.
+  it('azure-devops: returns the credential when org_url and pat are present', () => {
+    expect(azureDevOpsProvider.buildCredentials!({ provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-1' }))
+      .toEqual({ org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-1', expires_at: undefined });
+  });
+
+  it('azure-devops: accepts `token` as an alias for `pat`', () => {
+    expect(azureDevOpsProvider.buildCredentials!({ provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', token: 'az-pat-via-token' }))
+      .toEqual({ org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-via-token', expires_at: undefined });
+  });
+
+  it('azure-devops: `pat` takes precedence over `token` when both are present', () => {
+    expect(azureDevOpsProvider.buildCredentials!({
+      provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'from-pat', token: 'from-token',
+    })).toEqual({ org_url: 'https://dev.azure.com/myorg', pat: 'from-pat', expires_at: undefined });
+  });
+
+  it('azure-devops: returns the error string when org_url or both pat/token are missing', () => {
+    for (const input of [
+      { provider: 'azure-devops' as const, pat: 'az-pat-1' },
+      { provider: 'azure-devops' as const, org_url: 'https://dev.azure.com/myorg' },
+    ]) {
+      expect(azureDevOpsProvider.buildCredentials!(input)).toBe('Azure DevOps requires "org_url" and "pat" (or "token") fields.');
+    }
+  });
+
+  it('azure-devops: carries a valid pat_expires_at through as expires_at', () => {
+    expect(azureDevOpsProvider.buildCredentials!({
+      provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-1', pat_expires_at: '2027-08-20T00:00:00Z',
+    })).toEqual({ org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-1', expires_at: '2027-08-20T00:00:00Z' });
+  });
+
+  it('azure-devops: rejects an unparseable pat_expires_at with a dedicated error string', () => {
+    expect(azureDevOpsProvider.buildCredentials!({
+      provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-1', pat_expires_at: 'whenever',
+    })).toBe('Azure DevOps "pat_expires_at" is not a parseable date/time: whenever');
+  });
+});
+
+describe('provider missing-credential descriptors (apra-fleet-5co8.3.1)', () => {
+  it('github: prompts only in pat mode with no token', () => {
+    const d = githubProvider.missingCredential!;
+    expect(d.field).toBe('token');
+    expect(d.isMissing({ provider: 'github', github_mode: 'pat' })).toBe(true);
+    expect(d.isMissing({ provider: 'github', github_mode: 'pat', token: 'ghp_x' })).toBe(false);
+    // github-app mode mints server-side and must never reach a prompt.
+    expect(d.isMissing({ provider: 'github' })).toBe(false);
+    expect(d.isMissing({ provider: 'github', github_mode: 'github-app' })).toBe(false);
+    expect(d.promptFor('alice')).toBe('Enter GitHub personal access token for alice');
+  });
+
+  it('bitbucket: prompts whenever api_token is absent', () => {
+    const d = bitbucketProvider.missingCredential!;
+    expect(d.field).toBe('api_token');
+    expect(d.isMissing({ provider: 'bitbucket', email: 'd@co.com', workspace: 'ws' })).toBe(true);
+    expect(d.isMissing({ provider: 'bitbucket', api_token: 't' })).toBe(false);
+    expect(d.promptFor('bob')).toBe('Enter Bitbucket API token for bob');
+  });
+
+  it('azure-devops: prompts only when BOTH pat and token are absent; the collected secret lands in `pat`', () => {
+    const d = azureDevOpsProvider.missingCredential!;
+    expect(d.field).toBe('pat');
+    expect(d.isMissing({ provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg' })).toBe(true);
+    // Either field satisfies it -- buildCredentials prefers `pat` when both are present.
+    expect(d.isMissing({ provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'p' })).toBe(false);
+    expect(d.isMissing({ provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', token: 't' })).toBe(false);
+    expect(d.promptFor('carol')).toBe('Enter Azure DevOps personal access token for carol');
+  });
+});
+
+describe('provisionVcsAuthSchema pat_expires_at', () => {
+  it('accepts a parseable ISO 8601 expiry', async () => {
+    const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');
+    const result = provisionVcsAuthSchema.safeParse({
+      member_id: 'a', provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg',
+      pat: 'p', pat_expires_at: '2027-08-20T00:00:00Z',
+    });
     expect(result.success).toBe(true);
   });
 
-  it('testConnectivity: fails when curl throws', async () => {
-    const exec = async () => { throw new Error('connection refused'); };
-    const result = await azureDevOpsProvider.testConnectivity(makeAgent(), exec);
-    expect(result.success).toBe(false);
+  it('accepts an omitted expiry', async () => {
+    const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');
+    const result = provisionVcsAuthSchema.safeParse({
+      member_id: 'a', provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: 'p',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an unparseable expiry', async () => {
+    const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');
+    for (const bad of ['not-a-date', '', '2027-13-45']) {
+      const result = provisionVcsAuthSchema.safeParse({
+        member_id: 'a', provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg',
+        pat: 'p', pat_expires_at: bad,
+      });
+      expect(result.success, `expected rejection for ${JSON.stringify(bad)}`).toBe(false);
+    }
   });
 });
 
@@ -326,4 +641,92 @@ describe('provisionVcsAuthSchema git_access', () => {
     const result = provisionVcsAuthSchema.safeParse({ member_id: 'a', provider: 'github', git_access: 'bogus' });
     expect(result.success).toBe(false);
   });
+});
+
+// =============================================================================
+// apra-fleet-5co8.3.3 -- source-literal guard for design principle C0: no
+// VCS provider-name conditional outside registry wiring, in the three files
+// shared across every provider (src/tools/provision-vcs-auth.ts,
+// packages/apra-fleet-se/fleet-sprint/runner.js,
+// packages/apra-fleet-se/fleet-sprint/vcs-module.mjs). Each provider's own
+// behavior lives on ITS OWN descriptor (src/services/vcs/*.ts,
+// packages/apra-fleet-se/fleet-sprint/vcs-providers/*.mjs) -- see
+// apra-fleet-5co8.3.1/.2/.4 and apra-fleet-647.1.5.1 -- so a shared file
+// re-branching on the provider's name (`if (provider === 'azure-devops')`,
+// `switch (provider) { case 'github': ... }`) is exactly the regression this
+// task's de-branching removed. The registry TABLES that map a provider name
+// to its descriptor (provision-vcs-auth.ts's `providers` object, vcs-
+// providers/index.mjs's BUILT_IN_PROVIDERS import list) are the one place a
+// provider name is still allowed to appear "bare" -- they are not
+// conditionals, so this guard's regex is scoped to equality/switch tests
+// only and must never fire on them.
+//
+// Scoped to the CURRENT known VCS provider name vocabulary (github,
+// bitbucket, azure-devops) deliberately, not a bare `\bprovider\b\s*===`
+// pattern: runner.js separately documents an LLM-PROVIDER anti-pattern in a
+// comment ("There is deliberately no `provider === 'claude'`-style name test
+// anywhere" -- createRoundSessionRegistry's doc comment) that names a
+// different `provider` axis (agy/claude/opencode/codex/copilot/none, see
+// src/providers/provider.ts) entirely unrelated to VCS providers; a
+// blanket `provider\s*===` regex would false-positive on that comment
+// even though it contains no live code at all.
+// =============================================================================
+
+const REPO_ROOT = path.resolve(__dirname, '..');
+const GUARDED_FILES = [
+  'src/tools/provision-vcs-auth.ts',
+  'packages/apra-fleet-se/fleet-sprint/runner.js',
+  'packages/apra-fleet-se/fleet-sprint/vcs-module.mjs',
+];
+
+const VCS_PROVIDER_NAMES = ['github', 'bitbucket', 'azure-devops'];
+const NAME_ALT = VCS_PROVIDER_NAMES.join('|');
+
+// `provider === 'github'` / `provider == "azure-devops"` / reversed operand
+// order, and the same for any dotted/bracketed access ending in `provider`
+// (e.g. `input.provider === 'bitbucket'`).
+const EQUALITY_CONDITIONAL_RE = new RegExp(
+  `[\\w.\\[\\]'"]*\\bprovider\\b\\s*={2,3}\\s*(['"])(?:${NAME_ALT})\\1` +
+  `|(['"])(?:${NAME_ALT})\\2\\s*={2,3}\\s*[\\w.\\[\\]'"]*\\bprovider\\b`,
+);
+
+// `switch (provider)` / `switch (input.provider)` / `switch(x.provider)`.
+const SWITCH_ON_PROVIDER_RE = /\bswitch\s*\(\s*[\w.]*\bprovider\b\s*\)/;
+
+describe('design principle C0: no VCS provider-name conditional in the shared files (apra-fleet-5co8.3.3)', () => {
+  it('self-test: the equality-conditional regex actually matches a reintroduced provider switch (both operand orders)', () => {
+    expect(EQUALITY_CONDITIONAL_RE.test(`if (provider === 'azure-devops') { doThing(); }`)).toBe(true);
+    expect(EQUALITY_CONDITIONAL_RE.test(`if (input.provider === "github") { doThing(); }`)).toBe(true);
+    expect(EQUALITY_CONDITIONAL_RE.test(`if ('bitbucket' === provider) { doThing(); }`)).toBe(true);
+  });
+
+  it('self-test: the switch-on-provider regex actually matches a reintroduced switch statement', () => {
+    expect(SWITCH_ON_PROVIDER_RE.test(`switch (provider) { case 'github': break; }`)).toBe(true);
+    expect(SWITCH_ON_PROVIDER_RE.test(`switch (input.provider) { case 'github': break; }`)).toBe(true);
+  });
+
+  it('self-test: neither regex fires on registry wiring (an object literal / import list keyed by provider name)', () => {
+    const registryTable = `const providers: Record<string, VcsProviderService> = {\n  'github': githubProvider,\n  'bitbucket': bitbucketProvider,\n  'azure-devops': azureDevOpsProvider,\n};`;
+    expect(EQUALITY_CONDITIONAL_RE.test(registryTable)).toBe(false);
+    expect(SWITCH_ON_PROVIDER_RE.test(registryTable)).toBe(false);
+
+    const importList = `import { githubProvider } from '../services/vcs/github.js';\nimport { bitbucketProvider } from '../services/vcs/bitbucket.js';\nimport { azureDevOpsProvider } from '../services/vcs/azure-devops.js';`;
+    expect(EQUALITY_CONDITIONAL_RE.test(importList)).toBe(false);
+    expect(SWITCH_ON_PROVIDER_RE.test(importList)).toBe(false);
+  });
+
+  it('self-test: does not false-positive on runner.js\'s own LLM-provider anti-pattern comment', () => {
+    const comment = "There is deliberately no `provider === 'claude'`-style name test anywhere.";
+    expect(EQUALITY_CONDITIONAL_RE.test(comment)).toBe(false);
+  });
+
+  for (const relPath of GUARDED_FILES) {
+    it(`${relPath}: contains no VCS provider-name equality conditional or switch`, () => {
+      const src = fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf-8');
+      const equalityMatch = src.match(EQUALITY_CONDITIONAL_RE);
+      expect(equalityMatch, `found a provider-name equality conditional in ${relPath}: ${equalityMatch?.[0]}`).toBeNull();
+      const switchMatch = src.match(SWITCH_ON_PROVIDER_RE);
+      expect(switchMatch, `found a switch-on-provider in ${relPath}: ${switchMatch?.[0]}`).toBeNull();
+    });
+  }
 });

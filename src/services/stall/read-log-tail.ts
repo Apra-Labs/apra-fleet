@@ -1,6 +1,6 @@
 import { getAgent } from '../registry.js';
 import { getStrategy } from '../strategy.js';
-import { getAgentOS } from '../../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShell } from '../../utils/agent-helpers.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
 
 export interface ReadLogResult {
@@ -16,10 +16,11 @@ export async function readLogTail(memberId: string, logFilePath: string): Promis
 
   logLine('stall_log_read', JSON.stringify({ event: 'stall_log_read', memberId, logFilePath }));
 
-  const isWindows = getAgentOS(agent) === 'windows';
-  const cmd = isWindows
-    ? `powershell -c "Get-Content -Tail 5 -Path '${logFilePath}'"`
-    : `tail -c 512 "${logFilePath}"`;
+  const os = getAgentOS(agent);
+  const shell = getAgentShell(agent);
+  const cmd = isPosixShell(os, shell)
+    ? `tail -c 512 "${logFilePath}"`
+    : `powershell -c "Get-Content -Tail 5 -Path '${logFilePath}'"`;
 
   try {
     const strategy = getStrategy(agent);

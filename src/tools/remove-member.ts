@@ -5,7 +5,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline, readMemberStatus } from '../services/statusline.js';
@@ -55,7 +55,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
     try {
       const conn = await strategy.testConnection();
       if (conn.ok) {
-        const cmds = getOsCommands(getAgentOS(agent));
+        const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
         const exec = async (cmd: string) => {
           const r = await strategy.execCommand(cmd, 15000);
           return r.stdout;

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import type { Agent } from '../types.js';
@@ -26,7 +26,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const agent = agentOrError as Agent;
 
   const os = getAgentOS(agent);
-  const cmds = getOsCommands(os);
+  const cmds = getOsCommands(os, getAgentShell(agent));
   const isLocal = agent.agentType === 'local';
   const strategy = getStrategy(agent);
 
@@ -39,6 +39,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     host: isLocal ? '(local)' : `${agent.host}:${agent.port}`,
     username: agent.username ?? undefined,
     os,
+    shell: agent.shell ?? undefined,
     folder: agent.workFolder,
     // The origin URL of the repo `folder` is a clone of, when the registration
     // record proves it (knownRepoRemoteUrl's single-genuine-URL rule). This is
@@ -268,7 +269,8 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   const icon = agent.icon ?? DEFAULT_ICON;
   const userStr = agent.username ? ` | user=${agent.username}` : '';
-  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}\n`;
+  const shellStr = agent.shell ? ` | shell=${agent.shell}` : '';
+  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os}${shellStr} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}\n`;
   const tokenStr = agent.llmProvider === 'none'
     ? ' | compute only'
     : agent.tokenUsage ? ` | tokens=in:${agent.tokenUsage.input} out:${agent.tokenUsage.output}` : '';

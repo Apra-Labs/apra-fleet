@@ -1,7 +1,7 @@
 import type { Agent } from '../../types.js';
 import { getStrategy } from '../strategy.js';
 import { getOsCommands } from '../../os/index.js';
-import { getAgentOS } from '../../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../../utils/agent-helpers.js';
 
 export type ActivityStatus = 'busy-gpu' | 'busy-process' | 'idle' | 'unknown';
 
@@ -27,7 +27,7 @@ export async function checkMemberActivity(agent: Agent): Promise<ActivityStatus>
     return 'unknown';
   }
 
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
 
   // GPU check — exit 2 (or any non-zero) means nvidia-smi unavailable, skip gracefully
   try {

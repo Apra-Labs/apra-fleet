@@ -540,23 +540,25 @@ describe('runner.js mock-level execution', () => {
         // hosted-remote PR-raise path is exercised unchanged, just with one
         // extra command in between.
         // apra-fleet-tfx.8/tfx.8.4: the reverted gh-based `gh pr create` path
-        // is gone. raiseVcsPrForMember() now (1) re-derives 'owner/repo' via
-        // its OWN `git remote get-url origin` call (a SECOND classification-
-        // shaped probe), (2) reads back the just-provisioned push+pr
-        // credential's token from the git-credential-helper script, then (3)
-        // dispatches VCSModule's `curl ... /pulls` create-pull-request
-        // command -- so the last 5 commandLog entries are: push, the
-        // classification probe, the repo-derivation probe, the credential-
-        // token read, and the curl POST itself.
-        const last5 = spy.commandLog.slice(-5);
-        assert.match(last5[0], /^git push -u origin auto-sprint\/reach-test/);
-        assert.match(last5[1], /^git remote get-url origin\b/);
-        assert.match(last5[2], /^git remote get-url origin\b/);
-        assert.match(last5[3], /^\$HOME\/\.fleet-git-credential-/);
-        assert.match(last5[4], /^curl -sS -X POST\b/);
-        assert.ok(last5[4].includes('/pulls'));
-        assert.ok(last5[4].includes('"base":"develop"'));
-        assert.ok(last5[4].includes('"head":"auto-sprint/reach-test"'));
+        // is gone. raiseVcsPrForMember() (1) reads back the just-provisioned
+        // push+pr credential's token from the git-credential-helper script,
+        // then (2) dispatches VCSModule's `curl ... /pulls` create-pull-
+        // request command -- so the last 4 commandLog entries are: push,
+        // the classification probe, the credential-token read, and the
+        // curl POST itself.
+        // raiseVcsPrForMember's `remoteUrlOverride` param (fed with the
+        // origin URL the Publish PR step already resolved) makes
+        // provisionVcsAuthForMember skip its own internal
+        // `git remote get-url origin` re-derivation -- eliminating what
+        // used to be a second, redundant classification-shaped probe here.
+        const last4 = spy.commandLog.slice(-4);
+        assert.match(last4[0], /^git push -u origin auto-sprint\/reach-test/);
+        assert.match(last4[1], /^git remote get-url origin\b/);
+        assert.match(last4[2], /^\$HOME\/\.fleet-git-credential-/);
+        assert.match(last4[3], /^curl -sS -X POST\b/);
+        assert.ok(last4[3].includes('/pulls'));
+        assert.ok(last4[3].includes('"base":"develop"'));
+        assert.ok(last4[3].includes('"head":"auto-sprint/reach-test"'));
     });
 
     test('a malicious issue id is rejected with a validation error and results in ZERO fleet dispatches', async () => {

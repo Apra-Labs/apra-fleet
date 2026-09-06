@@ -20,8 +20,10 @@ import {
 } from '../services/watch/fleet-log.js';
 import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
 import { getMemberPathContext } from '../services/member-home.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 import type { RemoteOS } from '../utils/platform.js';
+import type { MemberShell } from '../os/os-commands.js';
 import type { Agent } from '../types.js';
 
 const ACTIVE_WINDOW_MS = 90_000; // a member is "active" if it produced activity within this window
@@ -400,15 +402,28 @@ function pumpTranscript(f: Follower, single: boolean, tailN: number, verbose: bo
  * `$HOME` followed by a `/` operator and dies with a ParserError.
  *
  *  - POSIX: byte-identical to the pre-ot2z.3 string.
- *  - Windows: PowerShell, launched EXPLICITLY via `powershell -NoProfile
+ *  - Windows, shell unset/pwsh7/powershell5: byte-identical to the pre-7dir.5.2
+ *    string -- PowerShell, launched EXPLICITLY via `powershell -NoProfile
  *    -Command "..."` (member-home.ts's probe prefix), because a Windows
  *    member's default SSH exec shell is NOT guaranteed to be PowerShell and
  *    execCommand/execStream hand this string to that shell unwrapped.
  *    `-NoProfile` also keeps a chatty user profile out of stdout.
  *    `-ErrorAction SilentlyContinue` is the `2>/dev/null` equivalent: a project
  *    directory that does not exist yet must yield empty stdout, not an error.
+ *  - Windows, shell=gitbash (apra-fleet-7dir.5.2): a gitbash member's SSH
+ *    DefaultShell is bash.exe itself (that is what "gitbash" means for a
+ *    remote member -- see shell-probe.ts), so the raw inline
+ *    `powershell -NoProfile -Command "..."` string above would be tokenized
+ *    by bash BEFORE powershell.exe ever sees it. Bash performs its own `$` /
+ *    backtick expansion inside double quotes -- the SAME defect class the
+ *    inline comment below already calls out for a PowerShell exec shell, now
+ *    also true for a bash one. wrapPowerShellEncoded (member-home.ts's
+ *    probeCommandFor, shell-probe.ts's probes) sidesteps this by base64-ing
+ *    the whole script so no outer shell -- cmd.exe, bash, or PowerShell --
+ *    ever re-parses its content; only the gitbash branch changes, every other
+ *    member type keeps today's exact string.
  */
-export function buildNewestTranscriptCommand(targetOs: RemoteOS, dir: string): string {
+export function buildNewestTranscriptCommand(targetOs: RemoteOS, dir: string, shell?: MemberShell): string {
   if (targetOs === 'windows') {
     // The path goes in as a single-quoted PowerShell literal (quote-doubling
     // escape), so a directory name containing a quote or a space cannot break
@@ -419,10 +434,12 @@ export function buildNewestTranscriptCommand(targetOs: RemoteOS, dir: string): s
     // `[^a-zA-Z0-9] -> '-'` encoded (encodeClaudeProjectDir), so the only
     // possible source is the probed home directory, which is a real profile
     // path.)
-    return `powershell -NoProfile -Command "${
-      `Get-ChildItem -LiteralPath ${escapePowerShellArg(dir)} -Filter *.jsonl -File -ErrorAction SilentlyContinue ` +
-      `| Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName`
-    }"`;
+    const psScript = `Get-ChildItem -LiteralPath ${escapePowerShellArg(dir)} -Filter *.jsonl -File -ErrorAction SilentlyContinue `
+      + `| Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName`;
+    if (isPosixShell(targetOs, shell)) {
+      return wrapPowerShellEncoded(psScript);
+    }
+    return `powershell -NoProfile -Command "${psScript}"`;
   }
   return `ls -t "${dir}"/*.jsonl 2>/dev/null | head -1`;
 }
@@ -445,15 +462,26 @@ export function buildNewestTranscriptCommand(targetOs: RemoteOS, dir: string): s
  * PowerShell 5.1 would otherwise read it as ANSI.
  * Note the consumer contract: PowerShell writes CRLF, so the chunk splitter
  * (splitTranscriptChunk) must tolerate `\r\n` -- not just `\n`.
+ *
+ * Shell-awareness (apra-fleet-7dir.5.2): `shell` only changes the Windows
+ * output when it is `gitbash` -- that member's SSH DefaultShell is bash.exe,
+ * so the inline `powershell -NoProfile -Command "..."` form would be
+ * re-tokenized by bash first (same `$`/backtick-inside-double-quotes risk as
+ * buildNewestTranscriptCommand above, and `file` here is UNTRUSTED remote
+ * listing output, not a JS-resolved path). wrapPowerShellEncoded avoids that
+ * by base64-ing the whole script. Every other shell (unset/pwsh7/powershell5)
+ * and every POSIX target keep today's exact string.
  */
-export function buildTailCommand(startFlag: string, file: string, targetOs: RemoteOS = 'linux'): string {
+export function buildTailCommand(startFlag: string, file: string, targetOs: RemoteOS = 'linux', shell?: MemberShell): string {
   if (targetOs === 'windows') {
     // '-n +1' is the only "from the top" start position this module emits; any
     // other flag means "from the end" (today's `-n0` prime).
     const fromTop = startFlag.includes('+1');
-    return `powershell -NoProfile -Command "${
-      `Get-Content -LiteralPath ${escapePowerShellArg(file)} -Encoding UTF8 -Wait${fromTop ? '' : ' -Tail 0'}`
-    }"`;
+    const psScript = `Get-Content -LiteralPath ${escapePowerShellArg(file)} -Encoding UTF8 -Wait${fromTop ? '' : ' -Tail 0'}`;
+    if (isPosixShell(targetOs, shell)) {
+      return wrapPowerShellEncoded(psScript);
+    }
+    return `powershell -NoProfile -Command "${psScript}"`;
   }
   return `tail ${startFlag} -F ${escapeShellArg(file)}`;
 }
@@ -507,6 +535,7 @@ async function ensureRemoteTail(f: Follower, single: boolean, verbose: boolean):
   f.rtBusy = true;
   try {
     const targetOs = getAgentOS(f.agent);
+    const shell = getAgentShell(f.agent);
     let dir: string;
     if (targetOs === 'windows') {
       // Resolve the member's home in JS and interpolate the CONCRETE path --
@@ -525,7 +554,7 @@ async function ensureRemoteTail(f: Follower, single: boolean, verbose: boolean):
     } else {
       dir = `$HOME/.claude/projects/${f.rtEnc}`;
     }
-    const res = await execCommand(f.agent, buildNewestTranscriptCommand(targetOs, dir), 8000);
+    const res = await execCommand(f.agent, buildNewestTranscriptCommand(targetOs, dir, shell), 8000);
     // Windows: take the LAST non-empty line. `-NoProfile` should already keep
     // profile/banner noise out, but if any leaks it is emitted BEFORE the
     // command's own output, never after it -- the same defensive rule
@@ -546,7 +575,7 @@ async function ensureRemoteTail(f: Follower, single: boolean, verbose: boolean):
     const onEnd = () => { if (f.rtStream === stream) f.rtStream = null; }; // channel died -> next check reopens
     stream = await execStream(
       f.agent,
-      buildTailCommand(startFlag, newest, targetOs),
+      buildTailCommand(startFlag, newest, targetOs, shell),
       (chunk) => processRemoteChunk(f, chunk, single, verbose),
       onEnd,
     );

@@ -133,6 +133,76 @@ describe('provisionVcsAuth', () => {
     });
     expect(result).toContain('✅');
     expect(result).toContain('Azure DevOps');
+    // apra-fleet-5co8.43: this member has no gitRepos and only an org-level
+    // scope_url, so testConnectivity() cannot derive a concrete repo and
+    // skips -- the user-facing "Verification:" line must render that
+    // distinctly (the ⏭️ marker, driven by the `skipped` field), never as a
+    // bare passing check that merely happens to mention "Skipped" in its
+    // message text.
+    expect(result).toMatch(/Verification: ⏭️ Skipped:/);
+    expect(result).not.toMatch(/Verification: git ls-remote/);
+  });
+
+  // apra-fleet-5co8.5.4: azure-devops exposes no API to read a PAT's expiry
+  // back, so a caller that omits pat_expires_at must leave the registry
+  // exactly as it was before apra-fleet-5co8.5.1 added expiry propagation --
+  // same shape as the bitbucket "persists vcsProvider without expiresAt"
+  // case above, but pinned for azure-devops specifically since (unlike
+  // bitbucket) this provider DOES support an expiry and the omitted-vs-unset
+  // distinction (deployResult.metadata?.expiresAt undefined, never an
+  // "undefined" string or a stale prior value) matters here.
+  it('azure-devops: no-expiry provisioning leaves vcsTokenExpiresAt unset in the registry', async () => {
+    const member = makeTestAgent({ friendlyName: 'az-no-expiry' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionVcsAuth({
+      member_id: member.id, provider: 'azure-devops',
+      org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-999',
+    });
+
+    expect(result).toContain('✅');
+    const updated = getAgent(member.id)!;
+    expect(updated.vcsProvider).toBe('azure-devops');
+    expect(updated.vcsTokenExpiresAt).toBeUndefined();
+  });
+
+  // apra-fleet-5co8.5.1: tool-registry hands the MCP payload to
+  // provisionVcsAuth() with an `as any` cast, so the zod refine on
+  // pat_expires_at is not the only line of defence -- buildCredentials must
+  // also refuse an unparseable expiry rather than let it become a 55-minute
+  // auto-revoke of the PAT just deployed.
+  it('azure-devops: rejects an unparseable pat_expires_at before deploying', async () => {
+    const member = makeTestAgent({ friendlyName: 'az-bad-expiry' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionVcsAuth({
+      member_id: member.id, provider: 'azure-devops',
+      org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-999',
+      pat_expires_at: 'whenever',
+    } as any);
+    expect(result).toContain('❌');
+    expect(result).toContain('pat_expires_at');
+    expect(getAgent(member.id)!.vcsTokenExpiresAt).toBeUndefined();
+  });
+
+  it('azure-devops: records a valid pat_expires_at in the member registry', async () => {
+    const member = makeTestAgent({ friendlyName: 'az-expiry' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionVcsAuth({
+      member_id: member.id, provider: 'azure-devops',
+      org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-999',
+      pat_expires_at: '2027-08-20T00:00:00Z',
+    });
+    expect(result).toContain('✅');
+    expect(getAgent(member.id)!.vcsTokenExpiresAt).toBe('2027-08-20T00:00:00Z');
+    expect(getAgent(member.id)!.vcsProvider).toBe('azure-devops');
   });
 
   it('azure-devops: accepts token field as alias for pat', async () => {

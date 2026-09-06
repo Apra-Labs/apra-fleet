@@ -3,6 +3,7 @@ import { joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
 import { transformAgentForOpenCode } from '../cli/agent-transform.js';
@@ -25,7 +26,10 @@ export class OpenCodeProvider implements ProviderAdapter {
     return 'opencode --version 2>&1';
   }
 
-  installCommand(os: 'linux' | 'macos' | 'windows'): string {
+  // `shell` is intentionally unused: no windows branch exists here -- `npm
+  // install -g` runs unchanged from any shell (apra-fleet-7dir.2.7: named
+  // here as an adapter needing no per-shell variant, not skipped silently).
+  installCommand(os: 'linux' | 'macos' | 'windows', _shell?: MemberShell): string {
     if (os === 'linux') {
       return 'curl -fsSL https://opencode.ai/install | bash';
     }
@@ -302,7 +306,7 @@ export class OpenCodeProvider implements ProviderAdapter {
     };
   }
 
-  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40 provider trust matrix: OpenCode has a first-run trust/onboarding
     // gate too (docs/opencode-exploration.md:92-97), but it is ALREADY handled via the
     // validated --dangerously-skip-permissions flag on `opencode run` (same doc, checklist

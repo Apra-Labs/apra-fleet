@@ -4,6 +4,7 @@ import { AgentOutputError, AgentDispatchError, FleetTransportError, CommandError
 import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
+    validateCredentialStoreName,
 } from './contracts.mjs';
 import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, MemberReservationResumeError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
@@ -32,7 +33,8 @@ import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResol
 // hard-aborting the run at its readiness gate.
 import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict } from './vcs-module.mjs';
+import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider } from './vcs-module.mjs';
+import { getSeCommands } from './se-os-commands.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -322,6 +324,13 @@ const KNOWN_ARG_KEYS = new Set([
     // and per-bead work-claiming. All three are no-ops without it -- a lone
     // sprint has no sibling to coordinate with.
     'serviceUrl',
+    // apra-fleet-5co8.37: this launch's incarnation-unique run identity -- the
+    // SAME string the supervisor's reservation ledger keys this sprint by
+    // (bin/cli.mjs forwards the supervisor's --run-id, falling back to the
+    // branch name for a direct/standalone launch, which is also what cli.mjs
+    // reserves members under). Threaded to the deployer so its active-sprints
+    // gate can tell this sprint's OWN reservation from a foreign one.
+    'run_id',
     // The assignee identity this sprint claims beads as and filters ready work
     // by (`bd update --claim` / `bd ready --assignee`). Nothing sets this
     // today; the claiming layer stays dormant and bead selection uses the
@@ -355,6 +364,11 @@ const KNOWN_ARG_KEYS = new Set([
     // `import()`, never across a subprocess boundary). Absent for direct
     // runSprintCycle()/main() test calls, where the guard is a no-op.
     'callTool',
+    // Per-sprint override for the Azure DevOps PAT secret name. When provided, this
+    // credential store entry name is used instead of the documented default
+    // (azdevops_pat). No CLI flag sets this today; only test/programmatic callers
+    // pass it.
+    'azdevops_pat_secret_name',
 ]);
 
 /**
@@ -1098,6 +1112,7 @@ export {
  *   remote?: string, agent?: Function, resolveConflictModel?: string,
  *   onAuthFailure?: Function,
  *   resolveMemberProvider?: (member: string) => Promise<string|undefined>,
+ *   args?: { callTool?: Function },
  * }} opts
  * @returns {Promise<{ ok: true, member: string, gPush: object, dPush: object }>}
  */
@@ -1105,7 +1120,7 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     const {
         command, pushCode = true, pushBeads = true, log = () => {},
         mutex, sprintId, branch, maxTransientRetries = 1, remote = 'origin',
-        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider,
+        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider, args,
     } = opts;
 
     let gPush;
@@ -1138,7 +1153,12 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     // and re-bootstraps a clone, so an arbitrary multi-command dispatch's bead
     // mutations cannot be silently thrown away here. There is no pendingMutation
     // to capture and replay because nothing is ever dropped.
-    const settle = buildSettleCallback(member, { command, log });
+    // Thread this member's REGISTERED shell into dolt-settle the same way
+    // the pre-dispatch bracket does (apra-fleet-7dir.16/.24), guarded on
+    // `args.callTool` so a caller with no MCP client (mock-sprint scenarios)
+    // keeps the pre-shell-aware default.
+    const shell = await resolveSettleShell({ args, member, log });
+    const settle = buildSettleCallback(member, { command, log, shell });
     const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, settle });
     return { ok: true, member, gPush, dPush };
 }
@@ -2225,6 +2245,100 @@ export function parseOwnerRepoFromRemoteUrl(url) {
     return null;
 }
 
+/**
+ * Resolve the `repos` scope for a member's git remote (apra-fleet-5co8.1.2).
+ *
+ * The two-line-generic parse above cannot express every provider's repository
+ * identity: Azure DevOps' is org/project/repo behind a '_git' marker, which
+ * the owner/repo regexes score as "unrecognized" (null) and therefore silently
+ * drop the repos scope. So the URL is first offered to whichever registered
+ * provider CLAIMS its host, via VCSModule.parseProviderRepoRef() -> that
+ * provider's own parseRepoRef hook, and only falls back to the generic parse
+ * when no provider claims the host or the claiming one has no hook. Every
+ * provider-specific rule (legal URL shapes, coordinate names, remedy text)
+ * stays in the provider file: this function -- and runner.js as a whole --
+ * never names or branches on a provider.
+ *
+ * A host CLAIMED by a provider whose hook rejects the URL is a different
+ * failure from an unrecognized one: the remote is malformed, and proceeding
+ * with no scope would provision credentials against the wrong (or no) repo.
+ * That case returns a typed `error` naming the shape the provider expects, for
+ * the caller to raise as a PREFLIGHT failure -- not a stderr classification.
+ *
+ * `ref` carries the provider's full coordinate object when one was produced
+ * (null otherwise), so a caller can hand it back to that same provider's other
+ * hooks -- e.g. buildProvisionArgs, which derives an org URL from it
+ * (apra-fleet-5co8.2.1) -- without re-parsing or interpreting it here.
+ *
+ * @param {string|null|undefined} url
+ * @returns {{ repo: string|null, ref: object|null, error: string|null }}
+ */
+export function parseRepoScopeFromRemoteUrl(url) {
+    const text = String(url == null ? '' : url).trim();
+    if (!text) return { repo: null, ref: null, error: null };
+
+    const providerRef = parseProviderRepoRef(text);
+    if (providerRef && providerRef.error) return { repo: null, ref: null, error: providerRef.error };
+    if (providerRef && providerRef.canonical) return { repo: providerRef.canonical, ref: providerRef.ref, error: null };
+
+    return { repo: parseOwnerRepoFromRemoteUrl(text), ref: null, error: null };
+}
+
+/**
+ * Read the credential-store entry NAMES (never values) currently registered on
+ * the hub, for a provider hook that needs to fail fast when the secret it
+ * intends to reference as a {{secure.NAME}} placeholder does not exist
+ * (apra-fleet-5co8.2.1).
+ *
+ * Returns null -- not an empty list -- when the store cannot be read or its
+ * response cannot be parsed, so a hook can tell "the store definitely lacks
+ * this entry" apart from "unknown" and skip the check rather than emit a
+ * false, sprint-stopping ERROR. A genuinely missing secret still fails loudly
+ * hub-side when placeholder resolution runs.
+ *
+ * @param {object} fleetApi
+ * @returns {Promise<string[]|null>}
+ */
+async function listCredentialStoreNames(fleetApi) {
+    if (!fleetApi || typeof fleetApi.credentialStoreList !== 'function') return null;
+    try {
+        const parsed = JSON.parse(selfHealResultText(await fleetApi.credentialStoreList()));
+        if (!Array.isArray(parsed)) return null;
+        return parsed
+            .map((entry) => (entry && typeof entry.name === 'string' ? entry.name : null))
+            .filter((name) => name !== null);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Build the provision_vcs_auth arguments for a member, dispatched through the
+ * resolved provider's OPTIONAL buildProvisionArgs hook (apra-fleet-5co8.2.1).
+ *
+ * A provider with no hook gets `base` verbatim -- the GitHub-App-shaped
+ * `git_access`/`repos` arguments this function has always sent -- so nothing
+ * changes for GitHub or any other existing provider. A provider WITH a hook
+ * owns its own argument shape entirely, including which credential-store entry
+ * it references and what remedy text a missing one prints. No provider name,
+ * no auth-mode knowledge and no raw credential value appears here.
+ *
+ * @param {{ provider: string, base: object, repoRef: object|null, fleetApi: object }} ctx
+ * @returns {Promise<object>} the arguments to send
+ */
+async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi, secretName }) {
+    const impl = getVcsProvider(provider);
+    if (!impl || typeof impl.buildProvisionArgs !== 'function') return base;
+
+    const availableSecrets = await listCredentialStoreNames(fleetApi);
+    const built = impl.buildProvisionArgs({ base, repoRef, availableSecrets, secretName });
+    if (built && typeof built.error === 'string') throw new Error(built.error);
+    if (!built || !built.args || typeof built.args !== 'object') {
+        throw new Error(`ERROR: VCS provider '${provider}' returned no provision arguments for member '${base.member_name}'.`);
+    }
+    return built.args;
+}
+
 // Shared MCP tool-result-to-text extractor for the self-heal callbacks below.
 // The provision_* tools do not throw on failure: they return plain
 // human-readable text with a leading status emoji (check mark = success,
@@ -2257,23 +2371,49 @@ function selfHealResultText(result) {
 // the just-in-time credential-scoping ADR (docs/adr-server-never-acts-on-repo.md)
 // for the rogue-dispatch blast-radius rationale: widening this default would
 // give every member standing pull_requests:write for the whole sprint.
-// @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string }} opts
+// @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string, resolvedProvider?: { provider: string, authMode: string|null } }} opts
 // @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
-async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push' }) {
+async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName, remoteUrlOverride, resolvedProvider }) {
     let repos;
     let derivedRepo = null;
-    try {
-        const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
-        const url = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
-        const repo = parseOwnerRepoFromRemoteUrl(url);
-        if (repo) {
-            repos = [repo];
-            derivedRepo = repo;
-        } else {
-            log(`${logPrefix}: could not derive an owner/repo from member '${member}' git remote (raw: '${url}'); calling provision_vcs_auth without an explicit repos scope.`);
+    let derivedRef = null;
+    // Reading the remote is best-effort (a failure here just means no explicit
+    // repos scope), but PARSING it is not: a malformed remote on a host some
+    // provider claims is a preflight ERROR that must escape this function
+    // rather than be swallowed by the read's catch -- hence the parse sits
+    // outside the try. See parseRepoScopeFromRemoteUrl (apra-fleet-5co8.1.2).
+    let remoteUrl = '';
+    let remoteReadFailed = false;
+    // apra-fleet-8zr3-adjacent: a caller that already resolved the sprint's
+    // origin remote via a real git-capable member (e.g. Publish PR's
+    // publishGitMember) passes it here instead of making THIS function shell
+    // out its own 'git remote get-url origin' to `member` -- which matters
+    // when `member` is orchestratorMember and may be a git-less/shared member
+    // with no checkout to read a remote from at all. Skips the read entirely,
+    // never the parse below.
+    if (remoteUrlOverride) {
+        remoteUrl = String(remoteUrlOverride).trim();
+    } else {
+        try {
+            const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
+            remoteUrl = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
+        } catch (remoteErr) {
+            remoteReadFailed = true;
+            log(`${logPrefix}: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
         }
-    } catch (remoteErr) {
-        log(`${logPrefix}: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
+    }
+    if (!remoteReadFailed) {
+        const scope = parseRepoScopeFromRemoteUrl(remoteUrl);
+        if (scope.error) {
+            throw new Error(`${logPrefix}: cannot provision VCS auth for member '${member}': ${scope.error}`);
+        }
+        derivedRef = scope.ref;
+        if (scope.repo) {
+            repos = [scope.repo];
+            derivedRepo = scope.repo;
+        } else {
+            log(`${logPrefix}: could not derive an owner/repo from member '${member}' git remote (raw: '${remoteUrl}'); calling provision_vcs_auth without an explicit repos scope.`);
+        }
     }
 
     // apra-fleet-647.1.2.1: provider and auth-mode are resolved from the
@@ -2284,14 +2424,29 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // providers: null, no separate mode axis) and is only forwarded as
     // `<provider>_mode` when non-null, matching provision_vcs_auth's own
     // `github_mode` field name for the one provider that has one today.
-    const { provider, authMode } = await resolveProvider(member, { fleetApi });
-    const provisionRes = await fleetApi.provisionVcsAuth({
-        member_name: member,
+    // apra-fleet-5co8.13: a caller that already resolved the provider (e.g.
+    // the self-heal callback's authRemedy hint lookup) can thread it through
+    // via `resolvedProvider`, saving a second member_detail round trip. Falls
+    // back to this function's own lookup when not supplied.
+    const { provider, authMode } = resolvedProvider || await resolveProvider(member, { fleetApi });
+    // apra-fleet-5co8.2.1: the argument shape itself is now provider-owned.
+    // What follows is the DEFAULT (GitHub-App) shape; a provider that declares
+    // a buildProvisionArgs hook replaces it wholesale -- see
+    // buildProvisionArgsForProvider above.
+    const provisionArgs = await buildProvisionArgsForProvider({
         provider,
-        ...(authMode ? { [`${provider}_mode`]: authMode } : {}),
-        git_access: gitAccess,
-        ...(repos ? { repos } : {}),
+        base: {
+            member_name: member,
+            provider,
+            ...(authMode ? { [`${provider}_mode`]: authMode } : {}),
+            git_access: gitAccess,
+            ...(repos ? { repos } : {}),
+        },
+        repoRef: derivedRef,
+        fleetApi,
+        secretName: azdevopsPatSecretName,
     });
+    const provisionRes = await fleetApi.provisionVcsAuth(provisionArgs);
     const provisionText = selfHealResultText(provisionRes);
     // provision_vcs_auth NEVER throws on failure -- it returns a string
     // starting with the failure emoji. A failed provision must never be
@@ -2319,8 +2474,8 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
 // learn the repo VCSModule needs to build the PR-creation command.
 // @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string }} opts
 // @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
-async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix }) {
-    return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr' });
+async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, remoteUrlOverride }) {
+    return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr', remoteUrlOverride });
 }
 
 // Default credential label provision_vcs_auth deploys under when no explicit
@@ -2333,6 +2488,22 @@ async function provisionPrCapableAuthForMember({ fleetApi, command, member, log 
 // (src/os/windows.ts:279-294).
 const GITHUB_VCS_CREDENTIAL_LABEL = 'github';
 
+// The credential-helper label provision_vcs_auth deploys a member's VCS
+// credential under, for the PR-raising call sites to read it back from:
+// `label = input.label ?? input.provider` server-side, and no fleet-sprint
+// caller (neither the shared GitHub-App-shaped arguments in
+// provisionVcsAuthForMember nor a provider's buildProvisionArgs hook) ever
+// sends an explicit `label`, so the label IS the provider name -- 'github'
+// -> $HOME/.fleet-git-credential-github, 'azure-devops' ->
+// $HOME/.fleet-git-credential-azure-devops, etc. A member with no
+// resolvable provider keeps the historical GitHub default.
+// @param {string|null|undefined} provider
+// @returns {string}
+export function vcsCredentialLabelForProvider(provider) {
+    const name = typeof provider === 'string' ? provider.trim() : '';
+    return name || GITHUB_VCS_CREDENTIAL_LABEL;
+}
+
 // Typed marker returned by finalizeAbort() (and logged by the Publish PR step)
 // when the callTool-absent graceful-degradation path is taken: PR creation was
 // intentionally skipped because no MCP client was wired to mint the push+pr
@@ -2341,11 +2512,12 @@ const GITHUB_VCS_CREDENTIAL_LABEL = 'github';
 // this exact reason string. See apra-fleet-tfx.8.1.
 const PR_SKIPPED_NO_MCP_CLIENT = 'pr-skipped-no-mcp-client';
 
-// memberName -> resolved target OS ('windows' | 'linux' | 'darwin' | ...),
-// cached for the lifetime of the runner process: a member's OS never changes
-// mid-sprint, and member_detail performs a live connectivity check, so this
-// must not be re-dispatched per credential read (raiseVcsPrForMember can call
-// it twice on the auth-retry path alone).
+// memberName -> resolved { os, shell } ('windows' | 'linux' | 'darwin' | ...
+// and '' | 'gitbash' | ... respectively), cached for the lifetime of the
+// runner process: a member's OS/shell never changes mid-sprint, and
+// member_detail performs a live connectivity check, so this must not be
+// re-dispatched per credential read (raiseVcsPrForMember can call it twice
+// on the auth-retry path alone).
 const memberOsCache = new Map();
 
 // Test seam: the OS cache is process-lifetime state, so a test exercising two
@@ -2354,20 +2526,24 @@ export function clearMemberOsCache() {
     memberOsCache.clear();
 }
 
-// Resolves `member`'s OS from the fleet member registry via
+// Resolves `member`'s { os, shell } from the fleet member registry via
 // fleetApi.memberDetail() ('member_detail' is the only MCP surface exposing
-// Agent.os -- src/tools/member-detail.ts:40; it does NOT expose a homeDir).
-// Mirrors VCSModule.resolveProvider()'s member_detail JSON-parsing shape.
+// Agent.os/Agent's registered shell -- src/tools/member-detail.ts; it does
+// NOT expose a homeDir). Mirrors VCSModule.resolveProvider()'s member_detail
+// JSON-parsing shape.
 //
 // Unlike resolveProvider, an unresolvable OS is NOT a hard error here: the
 // ONLY behavioral difference it drives is which shell string the credential
 // read is built as, and the historical (POSIX) string must stay byte-identical
 // for every non-Windows member and for any caller that has no memberDetail
 // wired. So a missing/unparseable/absent-`os` response degrades to 'linux'
-// (the pre-existing behavior) and is logged, never thrown.
+// (the pre-existing behavior) and is logged, never thrown. A windows member
+// whose record carries no `shell` (or an unrecognized one) resolves to '' --
+// getSeCommands() treats that as the PowerShell implementation, matching what
+// every Windows member was assumed to be before shells were recorded.
 // @param {{ fleetApi?: object, member: string, log?: Function }} opts
-// @returns {Promise<string>}
-export async function resolveMemberOs({ fleetApi, member, log = () => {} }) {
+// @returns {Promise<{ os: string, shell: string }>}
+async function resolveMemberTarget({ fleetApi, member, log = () => {} }) {
     if (memberOsCache.has(member)) return memberOsCache.get(member);
     try {
         if (!fleetApi || typeof fleetApi.memberDetail !== 'function') {
@@ -2382,39 +2558,52 @@ export async function resolveMemberOs({ fleetApi, member, log = () => {} }) {
         const parsed = JSON.parse(text);
         if (parsed && typeof parsed.os === 'string' && parsed.os.trim()) {
             const os = parsed.os.trim().toLowerCase();
-            // Only a genuine member_detail-derived OS is cached. Caching the
-            // 'linux' fallback below would permanently pin a member that hit a
-            // transient failure (asleep, flaky SSH, MCP hiccup) to POSIX
-            // command construction for the rest of the runner process --
-            // including the auth-retry credential read at raiseVcsPrForMember,
-            // whose entire purpose is to recover from exactly this kind of
-            // transient failure. See apra-fleet-ot2z.13.
-            memberOsCache.set(member, os);
-            return os;
+            const shell = (parsed && typeof parsed.shell === 'string') ? parsed.shell.trim().toLowerCase() : '';
+            const target = { os, shell };
+            // Only a genuine member_detail-derived OS/shell is cached. Caching
+            // the 'linux' fallback below would permanently pin a member that
+            // hit a transient failure (asleep, flaky SSH, MCP hiccup) to
+            // POSIX command construction for the rest of the runner process
+            // -- including the auth-retry credential read at
+            // raiseVcsPrForMember, whose entire purpose is to recover from
+            // exactly this kind of transient failure. See apra-fleet-ot2z.13.
+            memberOsCache.set(member, target);
+            return target;
         }
         throw new Error('member_detail response carried no "os" field');
     } catch (err) {
         log(`Could not resolve OS for member '${member}' from member_detail (${err && err.message ? err.message : err}); assuming POSIX ('linux') for member-bound command construction.`);
-        return 'linux';
+        return { os: 'linux', shell: '' };
     }
 }
 
-// Wraps a PowerShell script the same way src/os/windows.ts
-// wrapPowerShellEncoded() does: the guard clause makes a non-terminating
-// PowerShell failure surface as a non-zero exit (apra-fleet-ot2z.9's fix),
-// -EncodedCommand (base64 UTF-16LE) removes every quoting question about
-// which shell the transport hands the string to, and the $LASTEXITCODE check
-// before the trailing `exit 0` preserves a native command's exit code (e.g.
-// this file's own credential-read `& "<helper>.bat"` invocation below) that
-// would otherwise be masked -- without it, a broken credential-helper .bat
-// silently reports success with no `password=` line. runner.js is a separate
-// package and cannot import src/os/windows.ts, so the shape is mirrored
-// here, not reused.
-// @param {string} psScript
-// @returns {string}
-function wrapPowerShellEncodedForMember(psScript) {
-    const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`;
-    return `powershell -EncodedCommand ${Buffer.from(guarded, 'utf16le').toString('base64')}`;
+// Back-compat wrapper: existing callers (and tests) that only need the OS
+// string keep working unchanged. Resolves and caches both os and shell (see
+// resolveMemberTarget above); callers that also need the shell (e.g. the VCS
+// credential-read path) should call resolveMemberTarget directly.
+// @param {{ fleetApi?: object, member: string, log?: Function }} opts
+// @returns {Promise<string>}
+export async function resolveMemberOs(opts) {
+    const { os } = await resolveMemberTarget(opts);
+    return os;
+}
+
+/**
+ * Resolve a member's registered shell for a buildSettleCallback call site,
+ * guarded on the presence of a callTool the same way the original
+ * pre-dispatch wiring at runSprintCycle's dispatch bracket is (apra-
+ * fleet-7dir.16) -- so a mock-sprint scenario with no MCP client wired keeps
+ * its pre-shell-aware default ('', PowerShell dialect on Windows) instead of
+ * throwing or hanging on a fleetApi call that has nothing to answer it.
+ * Shared by every remaining buildSettleCallback call site so each one does
+ * not have to re-implement the guard (apra-fleet-7dir.24).
+ * @param {{ args?: { callTool?: Function }, member: string, log?: Function }} opts
+ * @returns {Promise<string>}
+ */
+async function resolveSettleShell({ args, member, log = () => {} }) {
+    if (!(args && typeof args.callTool === 'function')) return '';
+    const target = await resolveMemberTarget({ fleetApi: new ApraFleet({ callTool: args.callTool }), member, log });
+    return target.shell;
 }
 
 // Builds the member-bound command that RUNS the deployed git-credential-helper
@@ -2461,38 +2650,29 @@ function wrapPowerShellEncodedForMember(psScript) {
 // occurrences in this file are all justified in place --
 //   - NOT_DONE_STATUSES (~line 278): quoting note about PowerShell's $OFS, a
 //     comment, not an expansion in the dispatched string;
-//   - wrapPowerShellEncodedForMember (~line 1761) and the Windows branch
-//     below: deliberately PowerShell, base64-encoded so no host shell ever
-//     re-parses them;
+//   - the Windows branch below: deliberately PowerShell, base64-encoded (via
+//     se-os-commands.mjs's SeWindowsCommands#wrapForMember) so no host shell
+//     ever re-parses it;
 //   - the POSIX branch below: `$HOME` expanded by the POSIX member's own
 //     shell, matching what src/os/linux.ts wrote.
 // Everything else dispatched to a member is plain `git`/`bd`/`node -e`
 // argv-shaped text (see stageCommandBodyMemberSide ~line 2195 and the
 // two-sequential-calls note at ~line 5685, which already document why they
 // avoid `&&` and `$`), inert across POSIX, PowerShell and cmd.exe.
-// @param {string} os
+//
+// `target` is whatever se-os-commands.mjs's getSeCommands() accepts: a bare
+// OS string (back-compat -- resolves to the PowerShell implementation for
+// 'windows', matching pre-shell-aware behavior) or a { os, shell } record
+// (resolveMemberTarget's shape), so a Windows member whose shell is
+// Git-for-Windows bash gets the bash-flavored credential-read command instead
+// of a PowerShell one. Label validation and byte-identical string shapes are
+// now owned by the SePosixCommands/SeWindowsCommands/SeWindowsGitbashCommands
+// classes themselves -- see se-os-commands.mjs.
+// @param {{ os?: string, shell?: string }|string} target
 // @param {string} label
 // @returns {{ command: string, descriptor: string }}
-export function buildCredentialReadCommand(os, label) {
-    if (os === 'windows') {
-        // The label is interpolated into a PowerShell double-quoted string and
-        // a filename; the POSIX branch below is unvalidated for byte-identical
-        // back-compat, but there is no reason to admit shell metacharacters on
-        // the branch being introduced here.
-        if (!/^[A-Za-z0-9._-]+$/.test(String(label))) {
-            throw new Error(`Refusing to build a Windows credential-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
-        }
-        const descriptor = `$env:USERPROFILE\\.fleet-git-credential-${label}.bat`;
-        // `& "<path>"` -- the call operator, so PowerShell EXECUTES the batch
-        // file (and its "password=<token>" line reaches stdout) instead of
-        // echoing the path as a string.
-        return { command: wrapPowerShellEncodedForMember(`& "$env:USERPROFILE\\.fleet-git-credential-${label}.bat"`), descriptor };
-    }
-    // POSIX (linux/darwin): byte-identical to the pre-apra-fleet-ot2z.1
-    // string. $HOME (not `~`) matches what src/os/linux.ts
-    // gitCredentialHelperWrite() wrote and chmod +x'd.
-    const credFile = `$HOME/.fleet-git-credential-${label}`;
-    return { command: credFile, descriptor: credFile };
+export function buildCredentialReadCommand(target, label) {
+    return getSeCommands(target).readCredentialHelper(label);
 }
 
 // Reads the raw token back out of the git-credential-helper script
@@ -2516,8 +2696,8 @@ export function buildCredentialReadCommand(os, label) {
 // @param {{ command: Function, member: string, label?: string, fleetApi?: object, log?: Function }} opts
 // @returns {Promise<string>}
 async function readMemberVcsCredentialToken({ command, member, label = GITHUB_VCS_CREDENTIAL_LABEL, fleetApi, log = () => {} }) {
-    const os = await resolveMemberOs({ fleetApi, member, log });
-    const { command: credCommand, descriptor: credFile } = buildCredentialReadCommand(os, label);
+    const target = await resolveMemberTarget({ fleetApi, member, log });
+    const { command: credCommand, descriptor: credFile } = buildCredentialReadCommand(target, label);
     const res = await command(credCommand, {
         member_name: member,
         silent: true,
@@ -2595,18 +2775,97 @@ function isPrAuthFailure(status, errorText) {
 // token is never logged, only `built.logSafeCommand`.
 // @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string }} opts
 // @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean }>}
-async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix }) {
-    let { repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix });
+async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride }) {
+    let repo;
+    try {
+        ({ repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride }));
+    } catch (provisionErr) {
+        // apra-fleet-5co8.15: provisionPrCapableAuthForMember has no failSoft
+        // of its own (by design -- see its doc comment above), so a
+        // provisioning failure that happens BEFORE any PR-creation attempt
+        // (e.g. a missing Azure DevOps PAT credential-store entry) used to
+        // escape here as the raw provision_vcs_auth failure text and abort
+        // the whole sprint. Degrade it the same way the reactive
+        // auth-self-heal retry below already degrades a mid-retry failure:
+        // log the provider's own authRemedy hint (never a wording duplicated
+        // here) and return authFailure:true instead of throwing, so a caller
+        // (Publish PR, finalizeAbort) can report clean, actionable guidance
+        // and keep going rather than aborting on this condition.
+        let remedyHint = null;
+        try {
+            const { provider } = await resolveProvider(member, { fleetApi });
+            const impl = getVcsProvider(provider);
+            if (impl && impl.authRemedy && impl.authRemedy.hint) remedyHint = impl.authRemedy.hint;
+        } catch (resolveErr) {
+            log(`${logPrefix}: could not resolve member '${member}'s VCS provider to look up an auth remedy hint (falling back to the raw provisioning error): ${resolveErr.message}`);
+        }
+        const message = remedyHint
+            ? `Could not provision a push+pr credential for member '${member}': ${remedyHint}`
+            : provisionErr.message;
+        log(`${logPrefix}: PR-capable credential provisioning failed for member '${member}'; degrading (not throwing): ${message}`);
+        return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true };
+    }
     if (!repo) {
         throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
     }
-    let token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
-    const os = await resolveMemberOs({ fleetApi, member, log });
+    // apra-fleet-lzfv.5: resolve the member's OWN registered VCS provider
+    // (VCSModule.resolveProvider(), never a hardcoded 'github' literal --
+    // same rule provisionVcsAuthForMember already follows) so
+    // buildCreatePrCommand dispatches to the right REST dialect for a
+    // dev.azure.com (or any other) remote, not just GitHub.
+    //
+    // Resolved BEFORE the credential read below because the read is keyed
+    // by provider too: provision_vcs_auth deploys the credential helper
+    // under `label = input.label ?? input.provider`
+    // (src/tools/provision-vcs-auth.ts), and neither the shared
+    // GitHub-App-shaped arguments nor a provider's buildProvisionArgs hook
+    // sends an explicit label -- so the file to read back is
+    // $HOME/.fleet-git-credential-<provider>. Reading the 'github'-labelled
+    // file unconditionally (the pre-fix default of
+    // readMemberVcsCredentialToken) made every Azure DevOps member's PR
+    // raise fail with "Failed to read VCS credential token ... from
+    // '$HOME/.fleet-git-credential-github'" (or, worse, silently reuse a
+    // stale GitHub token left over from an earlier provider and send it to
+    // dev.azure.com).
+    const { provider } = await resolveProvider(member, { fleetApi });
+    const credentialLabel = vcsCredentialLabelForProvider(provider);
+
+    let token = await readMemberVcsCredentialToken({ command, member, label: credentialLabel, fleetApi, log });
+    // Both os AND shell feed the command builder: os picks the curl binary
+    // token (curl.exe vs curl), shell picks the quoting dialect. A Windows
+    // member whose registered shell is gitbash needs POSIX quoting, not
+    // PowerShell doubled-quote escaping -- resolving only the OS here fed
+    // shell-less params to shQuote and corrupted the curl -d JSON payload
+    // (observed live: GitHub 400 "Problems parsing JSON" on the create-PR
+    // endpoint for a windows+gitbash member).
+    const { os, shell } = await resolveMemberTarget({ fleetApi, member, log });
+
+    // The provider's own coordinate shape (e.g. Azure DevOps' org/project/repo
+    // -- see VCSModule.parseProviderRepoRef()/that provider's parseRepoRef
+    // hook) when one exists; null for a provider with no such hook (GitHub),
+    // which keeps using the two-part `repo` string above unchanged. Only ONE
+    // of `repo`/`repoRef` is ever sent below: passing both would let the
+    // (possibly provider-specific, e.g. 3-part) canonical `repo` string
+    // silently override repoRef's own coordinates and mis-encode the request
+    // URL (see azure-devops.mjs's assertRepoCoords doc comment). Both real
+    // call sites (Publish PR, [ABORTED] PR) already resolve and pass
+    // `remoteUrlOverride` themselves (see their own comments), so this never
+    // needs a git-remote read of its own; a caller that omits it simply gets
+    // no repoRef (falls back to `repo`, unchanged from before this task).
+    const providerRef = remoteUrlOverride ? parseProviderRepoRef(remoteUrlOverride) : null;
+    if (providerRef && providerRef.error) {
+        throw new Error(providerRef.error);
+    }
+    const repoRef = providerRef ? providerRef.ref : null;
 
     let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token, os });
+        const built = buildCreatePrCommand({
+            provider,
+            ...(repoRef ? { repoRef } : { repo }),
+            base, head, title, body, token, os, shell,
+        });
 
         const res = await command(built.command, {
             member_name: member,
@@ -2621,8 +2880,19 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
         const { status, body: respBody, bodyText } = parseVcsCurlOutput(res.output);
         const [lo, hi] = built.interpret.successStatusRange;
         if (status !== null && status >= lo && status <= hi) {
-            const prUrl = respBody && typeof respBody.html_url === 'string' ? respBody.html_url : null;
-            return { ok: true, alreadyExists: false, prUrl, error: null, authFailure: false };
+            // apra-fleet-lzfv.5: read the created PR's id/url through the
+            // provider's OWN pullRequestResponse.map hook (declared on its
+            // descriptor -- see vcs-providers/github.mjs and
+            // vcs-providers/azure-devops.mjs) instead of a GitHub-dialect
+            // `html_url` field literal here. A provider with no mapping
+            // (should not happen for an auth-backend provider, but never
+            // throws) yields prUrl: null rather than crashing on an
+            // otherwise-successful PR.
+            const impl = getVcsProvider(provider);
+            const mapped = (impl && impl.pullRequestResponse && typeof impl.pullRequestResponse.map === 'function')
+                ? impl.pullRequestResponse.map(respBody, repoRef ? { repoRef } : { repo })
+                : { id: null, url: null };
+            return { ok: true, alreadyExists: false, prUrl: mapped.url, error: null, authFailure: false };
         }
 
         const errorMessages = [];
@@ -2644,9 +2914,9 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
             authHealAttempted = true;
             log(`${logPrefix}: PR creation returned an auth-classified failure (HTTP ${status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${built.logSafeCommand}): ${errorText}`);
             try {
-                const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix });
+                const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
                 if (reprov.repo) repo = reprov.repo;
-                token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
+                token = await readMemberVcsCredentialToken({ command, member, label: credentialLabel, fleetApi, log });
             } catch (healErr) {
                 log(`${logPrefix}: PR auth self-heal failed for member '${member}'; not retrying further: ${healErr.message}`);
                 return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}`, authFailure: true };
@@ -2857,13 +3127,41 @@ export function createDeployPermissionsProvisioner(opts = {}) {
  * @returns {(info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>}
  */
 export function createVcsAuthSelfHealCallback(opts = {}) {
-    const { callTool, command, log = () => {} } = opts;
+    const { callTool, command, log = () => {}, azdevopsPatSecretName } = opts;
     const fleetApi = new ApraFleet({ callTool });
 
     return async function onAuthFailure({ member, label, error }) {
         log(`[Sync] self-heal: auth failure detected for member '${member}' (${label}); calling provision_vcs_auth to re-provision credentials: ${error}`);
 
-        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal' });
+        // apra-fleet-5co8.4.2: some providers (e.g. Azure DevOps PATs) can
+        // never be fixed by this reactive re-provisioning call alone -- it
+        // only redeploys the SAME stored secret, it never mints a new one.
+        // Print that provider's own remedy hint via the generic
+        // `authRemedy` descriptor field (no provider-name conditional here,
+        // see vcs-providers/index.mjs) BEFORE attempting the self-heal below,
+        // so the operator has the real remedy even if that attempt also
+        // fails. A provider that declares no `authRemedy` (or
+        // `serverSideReMintable: true`, e.g. GitHub's App-minted token) prints
+        // nothing extra here -- unchanged from before this task.
+        // apra-fleet-5co8.13: resolve the provider ONCE here and thread it into
+        // provisionVcsAuthForMember below via `resolvedProvider`, so a single
+        // self-heal attempt makes exactly one member_detail round trip instead
+        // of two. A resolution failure here must NOT short-circuit the
+        // self-heal attempt -- `resolved` simply stays undefined and
+        // provisionVcsAuthForMember falls back to its own lookup.
+        let resolved;
+        try {
+            resolved = await resolveProvider(member, { fleetApi });
+            const { provider } = resolved;
+            const impl = getVcsProvider(provider);
+            if (impl && impl.authRemedy && impl.authRemedy.serverSideReMintable === false) {
+                log(`[Sync] self-heal: member '${member}' (${label}) uses '${provider}', whose credentials cannot be re-minted server-side. ${impl.authRemedy.hint}`);
+            }
+        } catch (resolveErr) {
+            log(`[Sync] self-heal: could not resolve member '${member}' (${label})'s VCS provider to check for an auth remedy hint (continuing with the self-heal attempt): ${resolveErr.message}`);
+        }
+
+        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName, resolvedProvider: resolved });
 
         log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
     };
@@ -2902,7 +3200,7 @@ const VCS_AUTH_EXPIRY_PREFLIGHT_MS = 10 * 60 * 1000; // 10 minutes
  * @returns {(member: string) => Promise<void>}
  */
 export function createVcsAuthPreflightCallback(opts = {}) {
-    const { callTool, command, log = () => {}, now = () => Date.now() } = opts;
+    const { callTool, command, log = () => {}, now = () => Date.now(), azdevopsPatSecretName } = opts;
     const fleetApi = new ApraFleet({ callTool });
     /** @type {Map<string, Date|null>} member -> last-known expiresAt (null = no expiry tracked, e.g. PAT mode). */
     const knownGoodUntil = new Map();
@@ -2919,7 +3217,7 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
         log(`[Sync] preflight: ensuring member '${member}' has a fresh VCS credential before dispatch; calling provision_vcs_auth.`);
         try {
-            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight' });
+            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName });
             knownGoodUntil.set(member, expiresAt);
             log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}'${expiresAt ? ` (expires ${expiresAt.toISOString()})` : ''}.`);
         } catch (err) {
@@ -3169,15 +3467,19 @@ export async function persistNewTaskBestEffort({ createFn, command, member, pare
  * Returns the ids that are NOT closed after the D-pull-then-read. An empty
  * array means the streak genuinely closed everything it was assigned.
  *
- * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function }} opts
+ * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function, args?: { callTool?: Function } }} opts
  * @returns {Promise<string[]>} the still-unclosed bead ids
  */
-export async function verifyDoerStreakClosed({ command, orchestratorMember, beadIds, log = () => {} }) {
+export async function verifyDoerStreakClosed({ command, orchestratorMember, beadIds, log = () => {}, args }) {
     // D-pull FIRST so the orchestrator's clone observes the doer's just-pushed
     // closes. Routed through the single dolt-sync module's purpose-based BEFORE
     // bracket (apra-fleet-417.2.1); behavior is identical to the previous
     // direct doltPullBefore() call.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
+    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // guarded on args.callTool the same way the pre-dispatch bracket is
+    // (apra-fleet-7dir.24).
+    const shell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell }) });
     const label = `bd show ${beadIds.join(' ')} --json`;
     const showRes = await command(label, { member_name: orchestratorMember, silent: true });
     const showBeads = parseBdJson(showRes, label);
@@ -3360,6 +3662,12 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid budget "${args.budget}": must be a non-negative finite number (USD ceiling).`);
     }
 
+    // --- run_id (optional) -------------------------------------------------
+    // Free-form supervisor-generated identity; only its shape is checked here.
+    if (args.run_id !== undefined && (typeof args.run_id !== 'string' || args.run_id.length === 0)) {
+        throw new Error('[Arg Contract] Invalid run_id: must be a non-empty string.');
+    }
+
     // --- serviceUrl (optional) --------------------------------------------
     // The always-on supervisor's base HTTP URL. Validated as an http(s) URL so
     // a malformed value fails fast rather than silently disabling the
@@ -3432,6 +3740,15 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid worklist_effort_budget "${args.worklist_effort_budget}": must be a positive finite number (effort points).`);
     }
 
+    // --- azdevops_pat_secret_name (optional) --------------------------------
+    // Override for the default Azure DevOps PAT secret name. When provided, this
+    // credential store entry name is used instead of the documented default
+    // (azdevops_pat). Validated as a credential-store name at contract-validation
+    // time, not mid-sprint, so invalid values fail fast and clearly.
+    if (args.azdevops_pat_secret_name !== undefined) {
+        validateCredentialStoreName(args.azdevops_pat_secret_name, 'azdevops_pat_secret_name');
+    }
+
     return {
         targetIssues,
         members: args.members,
@@ -3443,8 +3760,10 @@ export function validateArgs(args) {
         roleMap: normalizedRoleMap,
         budget: args.budget,
         serviceUrl: args.serviceUrl,
+        runId: args.run_id,
         assignee: args.assignee,
         dispatchTimeoutS,
+        azdevopsPatSecretName: args.azdevops_pat_secret_name,
         doerWorklistMode,
         resumeModelSwitch,
         worklistEffortBudget: args.worklist_effort_budget,
@@ -5695,6 +6014,11 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         body: prBody,
         log,
         logPrefix: '[Publish Abort PR]',
+        // Already resolved just above (the origin-remote PR-capability gate)
+        // via a real git-capable member -- skip re-deriving it a second time
+        // by shelling out to `member`, which may be orchestratorMember and
+        // have no git checkout of its own to read a remote from.
+        remoteUrlOverride: originUrl,
     });
 
     if (!prResult.ok) {
@@ -6001,6 +6325,11 @@ export async function resyncReacquiredMember(opts = {}) {
 async function runSprintCycle(context) {
     const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget, setPauseGuard } = context;
 
+    // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
+    // must result in zero fleet dispatches. This must happen early so the
+    // validated result is available to setup code that builds callbacks below.
+    const validated = validateArgs(args);
+
     // (apra-fleet-p2to.4.1) Clean-state pause guard: this is runner.js's OWN
     // pause-awareness -- the engine's cooperative pause primitive
     // (apra-fleet-p2to.1's requestPause()/setPauseGuard()) only ever engages
@@ -6249,7 +6578,7 @@ async function runSprintCycle(context) {
     //      'function'`.
     const onAuthFailure = context.onAuthFailure ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log })
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName })
             : undefined
     );
 
@@ -6301,7 +6630,7 @@ async function runSprintCycle(context) {
     //      auth-recovery path.
     const ensureVcsAuthFresh = context.ensureVcsAuthFresh ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthPreflightCallback({ callTool: args.callTool, command, log })
+            ? createVcsAuthPreflightCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName })
             : async () => {}
     );
 
@@ -6333,10 +6662,6 @@ async function runSprintCycle(context) {
             ? createUnattendedAutoProvisioner({ callTool: args.callTool, log })
             : async () => {}
     );
-
-    // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
-    // must result in zero fleet dispatches.
-    const validated = validateArgs(args);
 
     // The per-dispatch time budget used for BOTH timeout_s and max_total_s:
     // silent-until-done CLIs make inactivity indistinguishable from total
@@ -6614,7 +6939,19 @@ async function runSprintCycle(context) {
             // EXPLICITLY FATAL (apra-fleet-417.3.1): a pre-dispatch D-pull that
             // silently degraded would hand the agent a STALE beads clone and
             // let it act on it -- worse than not dispatching at all.
-            await DoltSync.syncBefore(member, { command, log, skipRefresh: skipPreDispatchDoltPull, onAuthFailure, fatal: true, settle: buildSettleCallback(member, { command, log }) });
+            //
+            // Thread this member's REGISTERED shell into dolt-settle
+            // (apra-fleet-7dir.16) so a settle triggered for a Windows member
+            // whose shell is Git-for-Windows bash gets bash-dialect dolt
+            // commands instead of being force-assumed PowerShell.
+            // resolveMemberTarget never throws (degrades to { os: 'linux',
+            // shell: '' } on any lookup failure), and is a no-op when no
+            // callTool is wired (e.g. a mock-sprint scenario with no MCP
+            // client), matching this call site's pre-existing behavior.
+            const settleTarget = (args && typeof args.callTool === 'function')
+                ? await resolveMemberTarget({ fleetApi: new ApraFleet({ callTool: args.callTool }), member, log })
+                : { os: 'linux', shell: '' };
+            await DoltSync.syncBefore(member, { command, log, skipRefresh: skipPreDispatchDoltPull, onAuthFailure, fatal: true, settle: buildSettleCallback(member, { command, log, shell: settleTarget.shell }) });
         }
         // The teardown is deliberately NOT a `finally`. A throw out of a
         // `finally` replaces the (successful) dispatch result and is
@@ -6660,7 +6997,7 @@ async function runSprintCycle(context) {
                         await syncMemberAfterOrdered(member, {
                             command, pushCode, pushBeads, log, branch: validated.branch,
                             mutex: doltPushMutex, sprintId: sprintMutexId, agent, onAuthFailure,
-                            resolveMemberProvider: resolveMemberVcsProvider,
+                            resolveMemberProvider: resolveMemberVcsProvider, args,
                         });
                         syncErr = null;
                         break;
@@ -7205,7 +7542,11 @@ async function runSprintCycle(context) {
     // readinessGate (apra-fleet-417.5 rename of healthGate) selects the
     // pre-flight variant of the BEFORE bracket.
     // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
+    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // guarded on args.callTool the same way the pre-dispatch bracket is
+    // (apra-fleet-7dir.24).
+    const preflightSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: preflightSettleShell }) }));
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
@@ -7517,7 +7858,11 @@ async function runSprintCycle(context) {
     // DoltSync.syncBefore() is a benign no-op when the clone is current and
     // when no dolt remote is configured at all.
     // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
+    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // guarded on args.callTool the same way the pre-dispatch bracket is
+    // (apra-fleet-7dir.24).
+    const verifyReadSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: verifyReadSettleShell }) }));
 
     await updateDashboard();
 
@@ -7959,6 +8304,20 @@ async function runSprintCycle(context) {
                     const skipPreDispatchDoltPull =
                         i === 0 && cycle === 1 && planningRounds === 1 && plannerSharesOrchestratorClone;
                     await dispatchPlanner({ skipPreDispatchSync: skipPreDispatchSyncNext, skipPreDispatchDoltPull });
+                    // apra-fleet-jxdf.1: when the planner runs on a DIFFERENT
+                    // clone than the orchestrator, its newly-created/mutated
+                    // beads are invisible to the orchestrator's own Dolt clone
+                    // until that clone is actually pulled -- invalidating the
+                    // JS-level cache below is not enough, since the cache's
+                    // NEXT read still hits stale on-disk data. Fatal on
+                    // failure: proceeding to Execution Prep against a plan the
+                    // orchestrator cannot actually see reproduces exactly the
+                    // "epic looks like a childless ready leaf" failure this
+                    // fix exists to close.
+                    if (!plannerSharesOrchestratorClone) {
+                        const postPlanSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+                        await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: postPlanSettleShell }) }));
+                    }
                     // apra-fleet-zmqm: the planner just created/mutated beads on
                     // its own clone via its own bd tool calls -- invisible to
                     // this orchestrator's command()-wrapper invalidation (see
@@ -8979,7 +9338,7 @@ async function runSprintCycle(context) {
                         // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
                         // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
                         const preResumeUnclosed = await withOpenSyncBracket(() => verifyDoerStreakClosed({
-                            command, orchestratorMember, beadIds: actualBeadIds, log,
+                            command, orchestratorMember, beadIds: actualBeadIds, log, args,
                         }));
                         if (preResumeUnclosed.length === 0) {
                             log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns), but all assigned bead id(s) are already closed -- WARNING: the doer missed the VERIFY checkpoint (kept running after its last bd close instead of stopping). Treating this streak as a successful completion, not a failure; issuing NO resume dispatch.`);
@@ -9078,7 +9437,7 @@ async function runSprintCycle(context) {
                     // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
                     // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
                     const unclosedIds = await withOpenSyncBracket(() => verifyDoerStreakClosed({
-                        command, orchestratorMember, beadIds: actualBeadIds, log,
+                        command, orchestratorMember, beadIds: actualBeadIds, log, args,
                     }));
                     const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
                     log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);
@@ -9133,7 +9492,7 @@ async function runSprintCycle(context) {
                 // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
                 // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
                 const unclosedIds = await withOpenSyncBracket(() => verifyDoerStreakClosed({
-                    command, orchestratorMember, beadIds: actualBeadIds, log,
+                    command, orchestratorMember, beadIds: actualBeadIds, log, args,
                 }));
                 const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
 
@@ -9489,6 +9848,22 @@ async function runSprintCycle(context) {
             // turn-exhaustion resume below: a source-build fallback deploy runs
             // npm ci plus two builds, comfortably beyond a small default budget.
             const DEPLOYER_MAX_TURNS = 500;
+            // apra-fleet-5co8.37: hand the deployer THIS sprint's own reservation
+            // identity so deploy.md's active-sprints gate can tell this sprint's
+            // OWN ledger entry (a sprint is always reserved while it runs, so the
+            // entry is ALWAYS there) from a genuinely foreign one. Without it the
+            // gate stopped on every deploy and no sprint could deploy its own
+            // work. `sprintSelfId` is the SAME string the supervisor keys the
+            // reservation by: the forwarded --run-id, or the branch name for a
+            // direct/standalone launch (bin/cli.mjs reserves under the branch
+            // name in that case).
+            const sprintSelfId = validated.runId || validated.branch;
+            const deployerPrompt =
+                'Deploy to test env using deploy.md.\n' +
+                `Your dispatching sprint's own supervisor reservation id (sprintId): ${sprintSelfId}\n` +
+                "Use it for deploy.md's active-sprints gate: a reservation whose sprintId is EXACTLY " +
+                'this string is your own sprint, not a foreign one, so the deploy proceeds. Stop only ' +
+                'for a reservation with a different sprintId.';
             const deployerDispatchOpts = {
                 member_name: getMemberForRole('deployer'),
                 agentType: 'deployer',
@@ -9506,7 +9881,7 @@ async function runSprintCycle(context) {
                 // diff, so it still gets the pre-dispatch G-pull.
                 try {
                     deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
-                        'Deploy to test env using deploy.md.',
+                        deployerPrompt,
                         { ...deployerDispatchOpts, member_name: getMemberForRole('deployer') }
                     ));
                 } catch (err) {
@@ -9877,7 +10252,11 @@ async function runSprintCycle(context) {
         // beads state (every member's D-pushed closes) rather than the
         // orchestrator's stale local copy.
         // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-        await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
+        // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+        // guarded on args.callTool the same way the pre-dispatch bracket is
+        // (apra-fleet-7dir.24).
+        const cycleEvalSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+        await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: cycleEvalSettleShell }) }));
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -10167,7 +10546,11 @@ async function runSprintCycle(context) {
     // reflects every member's D-pushed beads state, not the orchestrator's
     // stale local copy.
     // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) }));
+    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // guarded on args.callTool the same way the pre-dispatch bracket is
+    // (apra-fleet-7dir.24).
+    const finalReviewSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: finalReviewSettleShell }) }));
     const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
@@ -10952,14 +11335,33 @@ async function runSprintCycle(context) {
                 body: prBody,
                 log,
                 logPrefix: '[Publish PR]',
+                // Already resolved above via publishGitMember (a real
+                // git-capable member) for the PR-capability gate -- skip
+                // re-deriving it a second time by shelling out to
+                // orchestratorMember, which may have no git checkout of its
+                // own to read a remote from (docs/design-orchestrator-
+                // worktree-model-v2.md section 4.6: this call stays workspace-
+                // independent by design, credential-file-read + REST only).
+                remoteUrlOverride: originUrl,
             });
             if (!prResult.ok) {
-                throw new CommandError(
-                    `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
-                    { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prResult.error } }
-                );
-            }
-            if (prResult.alreadyExists) {
+                if (prResult.authFailure) {
+                    // apra-fleet-5co8.15: an auth failure raiseVcsPrForMember
+                    // could not clear -- including one that never got past
+                    // credential provisioning, e.g. a missing Azure DevOps PAT
+                    // credential-store entry -- degrades the publish phase
+                    // instead of aborting the sprint, same policy
+                    // finalizeAbort() already applies to its own authFailure
+                    // outcome (see above). The branch is already pushed; only
+                    // the PR itself is skipped.
+                    log(`[Publish PR Skipped] could not raise a PR for branch '${validated.branch}' -> '${validated.baseBranch}' (branch is pushed) due to an unrecoverable VCS auth failure: ${prResult.error}`);
+                } else {
+                    throw new CommandError(
+                        `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
+                        { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prResult.error } }
+                    );
+                }
+            } else if (prResult.alreadyExists) {
                 log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success.`);
             }
         }
@@ -11160,7 +11562,7 @@ export async function main(context) {
     //      through to finalizeAbort()'s existing throw-and-fall-back path.
     const abortOnAuthFailure = context.onAuthFailure ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log })
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validatedForLock.azdevopsPatSecretName })
             : undefined
     );
 

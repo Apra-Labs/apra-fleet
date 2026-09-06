@@ -1,5 +1,16 @@
 # Cross-shell command construction for member-bound commands
 
+> **Note on granularity**: this document frames every branch point as
+> `agent.os` (POSIX vs PowerShell), which was accurate when it was written.
+> A member now also carries a registered `shell` (`gitbash | pwsh7 |
+> powershell5` on Windows), which is finer-grained than `os` -- a Windows
+> member whose registered shell is `gitbash` is a POSIX command-construction
+> target, not a PowerShell one. New or updated call sites should branch on
+> the registered shell (via `isPosixShell(os, shell)`) rather than on `os`
+> alone. See
+> [docs/windows-shell-selection.md](windows-shell-selection.md) for the
+> probe design and the shell-vs-os distinction in full.
+
 ## The invariant
 
 Any command string sent to a fleet member over the exec transport
@@ -84,6 +95,20 @@ Every Windows-bound PowerShell script construction site should route through
 this helper rather than hand-rolling its own base64/`-EncodedCommand`
 wrapping, so the exit-code and quoting guarantees stay centralized in one
 place instead of drifting per call site.
+
+**This applies even to wrappers that exist to serve a `gitbash` member.** A
+member registered with `shell: 'gitbash'` still has some of its host-side
+work executed as a PowerShell script body -- for example, anything built on
+`Invoke-CimMethod`/`Win32_Process`, which is a Windows host-management
+mechanism with no POSIX equivalent, invoked in PowerShell regardless of
+which shell the target member itself runs. Any helper that emits such a
+script must still carry the full `$ErrorActionPreference = 'Stop'` +
+try/catch + `$LASTEXITCODE`/`exit 0` envelope described above. An unguarded
+`powershell -EncodedCommand <base64>` invocation runs under PowerShell's
+default `Continue` mode and can exit 0 on a non-terminating error --
+precisely the false-success class this pattern exists to eliminate,
+regardless of which member shell the surrounding feature is nominally
+"for."
 
 ## OS-detection caching pitfall
 

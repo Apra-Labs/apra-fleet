@@ -23,6 +23,8 @@ export interface RunningInstance {
   running: true;
   url: string;
   pid: number;
+  /** Version reported by the running server's server.json, or undefined if it predates this field. */
+  version?: string;
 }
 
 export type InstanceCheckResult = RunningInstance | { running: false };
@@ -46,7 +48,7 @@ function checkHealthEndpoint(url: string): Promise<boolean> {
 
 export async function checkRunningInstance(): Promise<InstanceCheckResult> {
   const serverInfoPath = getServerInfoPath();
-  let info: { pid?: number; url?: string };
+  let info: { pid?: number; url?: string; version?: string };
   try {
     const raw = fs.readFileSync(serverInfoPath, 'utf8');
     info = JSON.parse(raw);
@@ -67,7 +69,7 @@ export async function checkRunningInstance(): Promise<InstanceCheckResult> {
     return { running: false };
   }
 
-  return { running: true, url: info.url, pid: info.pid };
+  return { running: true, url: info.url, pid: info.pid, version: info.version };
 }
 
 export function claimStartupLock(): StartupLock {

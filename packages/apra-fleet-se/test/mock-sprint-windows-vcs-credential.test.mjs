@@ -222,6 +222,91 @@ test('finalizeAbort (Windows member): a failing credential read still throws the
 });
 
 // -----------------------------------------------------------------------
+// Shell-vs-OS quoting (windows + gitbash): raiseVcsPrForMember must resolve
+// the member's SHELL alongside its OS (resolveMemberTarget, not just
+// resolveMemberOs) and thread it into VCSModule's builders, so a Windows
+// member whose registered shell is Git-for-Windows bash gets POSIX-quoted
+// curl commands ('\'') instead of PowerShell doubled quotes ('') -- the
+// doubling corrupts the -d JSON payload under bash (confirmed live: GitHub
+// 400 "Problems parsing JSON"). Driven through finalizeAbort(), the exported
+// entry point that shares raiseVcsPrForMember's call chain.
+// -----------------------------------------------------------------------
+
+function buildMockGitbashCommand({ commitCount, prUrl, token = 'mock-gitbash-vcs-token' } = {}) {
+    const log = [];
+    const command = async (cmd, opts = {}) => {
+        log.push(cmd);
+        const failSoft = !!opts.failSoft;
+        const ok = (output) => (failSoft ? { ok: true, output, error: null } : output);
+        if (/^git fetch origin\b/.test(cmd)) return ok('');
+        if (/^git rev-list --count\b/.test(cmd)) return ok(String(commitCount));
+        if (/^git push\b/.test(cmd)) return ok('To mock-remote\n * [new branch] (mocked)');
+        if (/^git remote get-url origin\b/.test(cmd)) return ok('https://github.com/mock-org/mock-repo.git');
+        // The gitbash-shaped credential read (se-os-commands.mjs
+        // SeWindowsGitbashCommands#readCredentialHelper): a bare bash
+        // invocation of the deployed .bat rooted at $HOME -- NOT a
+        // powershell -EncodedCommand envelope.
+        if (/^\$HOME\/\.fleet-git-credential-github\.bat$/.test(cmd)) {
+            return ok(`protocol=https\nhost=github.com\nusername=x-access-token\npassword=${token}\n`);
+        }
+        if (/^curl.exe -sS -X POST\b/.test(cmd) && /\/pulls\b/.test(cmd)) {
+            const body = JSON.stringify({ number: 202, html_url: prUrl });
+            return ok(`${body}\n201`);
+        }
+        throw new Error(`buildMockGitbashCommand: unexpected command dispatched in this scenario: '${cmd}'`);
+    };
+    return { command, log };
+}
+
+function mockGitbashAbortCallTool() {
+    return async (name, toolArgs) => {
+        if (name === 'member_detail') {
+            return { content: [{ text: JSON.stringify({ os: 'windows', shell: 'gitbash', vcsProvider: 'github' }) }] };
+        }
+        if (name === 'provision_vcs_auth') {
+            const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+            return { content: [{ text: `Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+        }
+        return { content: [{ text: `mock ${name}` }] };
+    };
+}
+
+test('finalizeAbort (Windows gitbash member): PR curl uses POSIX quoting, not PowerShell doubling', async () => {
+    clearMemberOsCache();
+    const branch = 'auto-sprint/abort-gitbash-quoting';
+    const prUrl = 'https://github.com/mock-org/mock-repo/pull/402';
+    const { command, log } = buildMockGitbashCommand({ commitCount: 1, prUrl });
+    // The apostrophe is the real-world trigger: it survives sanitizePrText
+    // into the PR body, where the quoting dialect decides whether the -d
+    // JSON payload survives the member's shell intact.
+    const error = new SprintPlanRejectedError("Plan rejected -- the doer's plan failed", { notes: null });
+
+    const result = await finalizeAbort({
+        error,
+        branch,
+        baseBranch: 'main',
+        member: 'gitbash-member',
+        command,
+        callTool: mockGitbashAbortCallTool(),
+    });
+
+    check(result.reason === 'aborted-pr-created', `Expected the [ABORTED] PR to be created for a gitbash member, got: ${JSON.stringify(result)}`);
+
+    // The credential read took the bash form, never a PowerShell envelope.
+    check(log.some((c) => /^\$HOME\/\.fleet-git-credential-github\.bat$/.test(c)), `Expected the gitbash-shaped credential read, command log: ${JSON.stringify(log)}`);
+    check(!log.some((c) => /^powershell -EncodedCommand\b/.test(c)), `Expected NO PowerShell-enveloped dispatch for a gitbash member, command log: ${JSON.stringify(log)}`);
+
+    const prCmd = log.find((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls'));
+    check(!!prCmd, `Expected a create-pull-request command to be dispatched, command log: ${JSON.stringify(log)}`);
+    // POSIX close-escape-reopen around the apostrophe; the PowerShell
+    // doubled form (doer''s) must NOT appear -- bash would collapse it and
+    // corrupt the JSON payload.
+    check(prCmd.includes(`doer'\\''s`), `Expected POSIX '\\'' quoting of the apostrophe in the PR command, got: ${prCmd}`);
+    check(!prCmd.includes(`doer''s`), `Expected NO PowerShell doubled-quote escaping for a gitbash member, got: ${prCmd}`);
+    check(prCmd.startsWith('curl.exe '), `curl binary token stays OS-keyed (curl.exe on Windows), got: ${prCmd}`);
+});
+
+// -----------------------------------------------------------------------
 // Item 3: PUBLISH-PR PATH (the everyday path). raiseVcsPrForMember() is not
 // exported, so this is only reachable by driving a full mock sprint through
 // to runSprintCycle's Publish PR step. The shared buildMockFleetApi() is

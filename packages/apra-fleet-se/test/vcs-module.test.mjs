@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { VCSModule, buildCreatePrCommand, buildCommentCommand, resolveProvider } from '../fleet-sprint/vcs-module.mjs';
+import { nativeDashDPayload } from './helpers/windows-argv.mjs';
 
 // apra-fleet-tfx.7: orchestrator-side VCSModule -- provider-dispatched
 // PR-creation command builder. Pure/deterministic: no network calls in this
@@ -61,7 +62,7 @@ describe('VCSModule.buildCreatePrCommand', () => {
         // it (''), never via the POSIX '\'' close-reopen trick -- so the
         // JSON payload's apostrophe surfaces as "doer''s crash" and there is
         // no backslash-quote sequence anywhere in the built command.
-        assert.ok(result.command.includes(`"Fix doer''s crash"`));
+        assert.ok(result.command.includes(`Fix\\u0020doer''s\\u0020crash`), `expected the doubled apostrophe (and \\u0020 for the spaces), got: ${result.command}`);
         assert.ok(!result.command.includes(`\\'`));
     });
 
@@ -217,7 +218,7 @@ describe('VCSModule.buildCommentCommand', () => {
             token: 'ghs_tok',
             os: 'windows',
         });
-        assert.ok(result.command.includes(`"doer''s step failed`));
+        assert.ok(result.command.includes(`doer''s\\u0020step\\u0020failed`), `expected the doubled apostrophe (and \\u0020 for the spaces), got: ${result.command}`);
         assert.ok(!result.command.includes(`\\'`));
     });
 });
@@ -280,11 +281,21 @@ describe('VCSModule GitHub PR/comment builders: Windows-safe curl (apra-fleet-ot
         'https://api.github.com/repos/Apra-Labs/apra-fleet/issues/42/comments',
     ].join(' ');
 
-    // Golden strings, item 2: the Windows shape is identical except the curl
-    // token itself becomes `curl.exe` (the real curl.exe binary, not the
-    // PowerShell curl->Invoke-WebRequest alias).
-    const expectedPrWindows = expectedPrLinux.replace(/^curl /, 'curl.exe ');
-    const expectedCommentWindows = expectedCommentLinux.replace(/^curl /, 'curl.exe ');
+    // Golden strings, item 2: the Windows shape differs in the curl token
+    // (`curl.exe`, the real binary, not the PowerShell curl->Invoke-WebRequest
+    // alias) AND in the -d payload: the PowerShell dialect CRT-escapes every
+    // JSON double quote (\") and rewrites literal whitespace inside the JSON
+    // as \u0020 so Windows PowerShell 5.1's legacy native-argument binder
+    // cannot split or de-quote it (see shell-helpers.mjs shQuoteJson and
+    // test/vcs-powershell-argv-roundtrip.test.mjs). Headers carry no quotes
+    // and stay byte-identical.
+    const psJson = (json) => json.replace(/"/g, '\\"').replace(/ /g, '\\u0020');
+    const expectedPrWindows = expectedPrLinux
+        .replace(/^curl /, 'curl.exe ')
+        .replace(`-d '${prPayload}'`, `-d '${psJson(prPayload)}'`);
+    const expectedCommentWindows = expectedCommentLinux
+        .replace(/^curl /, 'curl.exe ')
+        .replace(`-d '${commentPayload}'`, `-d '${psJson(commentPayload)}'`);
 
     // A bare `curl` token (not followed by `.exe`) is exactly what PowerShell
     // aliases to Invoke-WebRequest -- assert it is categorically absent from
@@ -325,7 +336,7 @@ describe('VCSModule GitHub PR/comment builders: Windows-safe curl (apra-fleet-ot
                 os: 'windows',
             });
             assert.ok(result.command.startsWith('curl.exe '));
-            assert.ok(result.command.includes(`"Fix doer''s crash"`));
+            assert.ok(result.command.includes(`Fix\\u0020doer''s\\u0020crash`), `expected the doubled apostrophe (and \\u0020 for the spaces), got: ${result.command}`);
             assert.ok(!result.command.includes(`\\'`));
         });
 
@@ -378,7 +389,7 @@ describe('VCSModule GitHub PR/comment builders: Windows-safe curl (apra-fleet-ot
                 os: 'windows',
             });
             assert.ok(result.command.startsWith('curl.exe '));
-            assert.ok(result.command.includes(`"doer''s step failed`));
+            assert.ok(result.command.includes(`doer''s\\u0020step\\u0020failed`), `expected the doubled apostrophe (and \\u0020 for the spaces), got: ${result.command}`);
             assert.ok(!result.command.includes(`\\'`));
         });
 
@@ -390,6 +401,155 @@ describe('VCSModule GitHub PR/comment builders: Windows-safe curl (apra-fleet-ot
             assert.deepStrictEqual(windows.interpret, expectedInterpret);
             assert.ok(windows.command.includes(`-w '\n%{http_code}'`));
         });
+    });
+});
+
+// =============================================================================
+// Shell-vs-OS quoting matrix: shQuote must dispatch on the member's registered
+// SHELL, not the bare OS. A Windows member running Git-for-Windows bash needs
+// POSIX quoting ('\''); the PowerShell doubled-quote form ('') is read by bash
+// as close-then-reopen, silently deleting the apostrophe from the curl -d JSON
+// payload -- confirmed live as GitHub answering "HTTP 400: Problems parsing
+// JSON" on the create-PR endpoint. pwsh7/powershell5 and the unresolved-shell
+// ('') fallback on Windows must stay byte-identical to the historical os-only
+// behavior; non-Windows os must stay POSIX regardless of shell.
+// =============================================================================
+describe('VCSModule GitHub builders: quoting dialect follows the member shell, not the OS', () => {
+    const title = `Fix "it's broken"`;
+    const body = "the doer's step failed -- see run log";
+    const prParams = {
+        provider: 'github',
+        repo: 'Apra-Labs/apra-fleet',
+        base: 'main',
+        head: 'fix/quoting',
+        title,
+        body,
+        token: 'ghs_tok',
+    };
+    const commentParams = {
+        provider: 'github',
+        repo: 'Apra-Labs/apra-fleet',
+        issue_number: 7,
+        body,
+        token: 'ghs_tok',
+    };
+
+    // Recover the single argv word following ` -d ` under the given shell's
+    // single-quote rules, so the assertions below prove what the member's
+    // shell would actually hand to curl -- not just what substrings the
+    // command text contains.
+    //   posix:      '...' regions are literal; \x outside quotes escapes x
+    //               (covers the '\'' close-escape-reopen idiom).
+    //   powershell: inside a '...' region, '' is a literal single quote.
+    function parseShellWord(cmd, startIdx, dialect) {
+        let i = startIdx;
+        let out = '';
+        while (i < cmd.length && cmd[i] !== ' ') {
+            if (cmd[i] === "'") {
+                i += 1;
+                while (i < cmd.length) {
+                    if (cmd[i] === "'") {
+                        if (dialect === 'powershell' && cmd[i + 1] === "'") {
+                            out += "'";
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    out += cmd[i];
+                    i += 1;
+                }
+                i += 1; // consume the closing quote
+            } else if (dialect === 'posix' && cmd[i] === '\\') {
+                out += cmd[i + 1];
+                i += 2;
+            } else {
+                out += cmd[i];
+                i += 1;
+            }
+        }
+        return out;
+    }
+
+    function extractDashDArg(command, dialect) {
+        const idx = command.indexOf(' -d ');
+        assert.notEqual(idx, -1, `expected a -d flag in: ${command}`);
+        return parseShellWord(command, idx + 4, dialect);
+    }
+
+    test('windows + gitbash: POSIX quoting -- the -d payload survives bash parsing as the exact JSON', () => {
+        const result = buildCreatePrCommand({ ...prParams, os: 'windows', shell: 'gitbash' });
+        // curl binary token stays OS-keyed: still curl.exe on Windows.
+        assert.ok(result.command.startsWith('curl.exe '), `expected curl.exe for a windows member, got: ${result.command}`);
+        // POSIX close-escape-reopen idiom present, exactly the linux shape.
+        assert.ok(result.command.includes(`'\\''`), `expected POSIX '\\'' quoting for a gitbash member, got: ${result.command}`);
+        const linux = buildCreatePrCommand({ ...prParams, os: 'linux' });
+        assert.strictEqual(result.command, linux.command.replace(/^curl /, 'curl.exe '), 'windows+gitbash must be the POSIX command with only the curl token swapped');
+        // The real-world trigger: bash-parse the -d word back and confirm
+        // GitHub's JSON parser would accept it, apostrophe intact.
+        const payload = extractDashDArg(result.command, 'posix');
+        const parsed = JSON.parse(payload);
+        assert.strictEqual(parsed.title, title);
+        assert.strictEqual(parsed.body, body);
+    });
+
+    test('windows + gitbash: comment builder gets the same POSIX quoting', () => {
+        const result = buildCommentCommand({ ...commentParams, os: 'windows', shell: 'gitbash' });
+        assert.ok(result.command.startsWith('curl.exe '));
+        const linux = buildCommentCommand({ ...commentParams, os: 'linux' });
+        assert.strictEqual(result.command, linux.command.replace(/^curl /, 'curl.exe '));
+        const parsed = JSON.parse(extractDashDArg(result.command, 'posix'));
+        assert.strictEqual(parsed.body, body);
+    });
+
+    test('the pinned defect: bash-parsing the PowerShell-dialect payload corrupts the JSON', () => {
+        const legacy = buildCreatePrCommand({ ...prParams, os: 'windows' });
+        // What curl.exe receives from PowerShell (correct JSON) -- through
+        // the binder + CRT stages, not just PowerShell's own string parser...
+        const psView = nativeDashDPayload(legacy.command);
+        assert.strictEqual(JSON.parse(psView).title, title);
+        // ...is NOT what bash hands to curl from the same string: the doubled
+        // quote collapses to nothing under POSIX rules, losing the apostrophe.
+        const bashView = extractDashDArg(legacy.command, 'posix');
+        assert.notStrictEqual(bashView, psView);
+        let bashTitle = null;
+        try {
+            bashTitle = JSON.parse(bashView).title;
+        } catch {
+            bashTitle = null; // outright unparseable is the live 400 case
+        }
+        assert.notStrictEqual(bashTitle, title, 'bash-parsing the PowerShell-dialect payload must not reproduce the intended title');
+    });
+
+    test('windows + pwsh7/powershell5: byte-identical to the os-only windows output (doubled apostrophes, CRT-escaped double quotes)', () => {
+        const legacy = buildCreatePrCommand({ ...prParams, os: 'windows' });
+        assert.ok(legacy.command.includes(`it''s`), `expected PowerShell doubled-quote escaping, got: ${legacy.command}`);
+        assert.ok(legacy.command.includes(`\\"title\\"`), `expected CRT-escaped JSON double quotes, got: ${legacy.command}`);
+        for (const shell of ['pwsh7', 'powershell5']) {
+            const result = buildCreatePrCommand({ ...prParams, os: 'windows', shell });
+            assert.strictEqual(result.command, legacy.command, `shell=${shell} must keep the PowerShell shape byte-identical`);
+            const comment = buildCommentCommand({ ...commentParams, os: 'windows', shell });
+            assert.strictEqual(comment.command, buildCommentCommand({ ...commentParams, os: 'windows' }).command, `shell=${shell} comment builder must keep the PowerShell shape byte-identical`);
+        }
+        const parsed = JSON.parse(nativeDashDPayload(legacy.command));
+        assert.strictEqual(parsed.title, title);
+        assert.strictEqual(parsed.body, body);
+    });
+
+    test('windows + unresolved shell (empty string / undefined) keeps the PowerShell-dialect fallback unchanged', () => {
+        const legacy = buildCreatePrCommand({ ...prParams, os: 'windows' });
+        const withEmpty = buildCreatePrCommand({ ...prParams, os: 'windows', shell: '' });
+        assert.strictEqual(withEmpty.command, legacy.command, 'an unresolved shell on Windows must degrade to the PowerShell dialect, not to POSIX');
+        assert.ok(withEmpty.command.includes(`it''s`));
+        assert.strictEqual(buildCommentCommand({ ...commentParams, os: 'windows', shell: '' }).command, buildCommentCommand({ ...commentParams, os: 'windows' }).command);
+    });
+
+    test('non-windows os stays POSIX regardless of shell', () => {
+        const bare = buildCreatePrCommand({ ...prParams, os: 'linux' });
+        assert.ok(bare.command.includes(`'\\''`));
+        assert.strictEqual(buildCreatePrCommand({ ...prParams, os: 'linux', shell: '' }).command, bare.command);
+        const parsed = JSON.parse(extractDashDArg(bare.command, 'posix'));
+        assert.strictEqual(parsed.title, title);
     });
 });
 

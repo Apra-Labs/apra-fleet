@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { Agent } from '../../types.js';
 import { getAgent } from '../registry.js';
 import { getStrategy } from '../strategy.js';
-import { getAgentOS } from '../../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShell } from '../../utils/agent-helpers.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
 
 const RETRY_INTERVAL_MS = 10_000;
@@ -92,20 +92,22 @@ async function execLines(agent: Agent, cmd: string, timeoutMs: number): Promise<
 }
 
 async function findRemoteMtimeCandidates(agent: Agent, dir: string, t0: number): Promise<string[]> {
-  const isWindows = getAgentOS(agent) === 'windows';
-  const cmd = isWindows
-    ? `powershell -c "Get-ChildItem -Path '${dir}' -Filter '*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt [DateTime]::Parse('${toPsDateTime(t0)}') } | ForEach-Object { $_.FullName }"`
-    : `find "${dir}" -maxdepth 1 -name "*.jsonl" -newermt "${toFindNewermt(t0)}" 2>/dev/null`;
+  const os = getAgentOS(agent);
+  const shell = getAgentShell(agent);
+  const cmd = isPosixShell(os, shell)
+    ? `find "${dir}" -maxdepth 1 -name "*.jsonl" -newermt "${toFindNewermt(t0)}" 2>/dev/null`
+    : `powershell -c "Get-ChildItem -Path '${dir}' -Filter '*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt [DateTime]::Parse('${toPsDateTime(t0)}') } | ForEach-Object { $_.FullName }"`;
 
   const lines = await execLines(agent, cmd, 10_000);
   return lines.filter(l => l.endsWith('.jsonl'));
 }
 
 async function checkRemoteInvToken(agent: Agent, candidates: string[], inv: string): Promise<string | null> {
-  const isWindows = getAgentOS(agent) === 'windows';
-  const cmd = isWindows
-    ? `powershell -c "Select-String -Pattern '\\[${inv}\\]' -Path @(${candidates.map(c => `'${c}'`).join(',')}) -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -Unique"`
-    : `grep -l "\\[${inv}\\]" ${candidates.map(c => `"${c}"`).join(' ')} 2>/dev/null`;
+  const os = getAgentOS(agent);
+  const shell = getAgentShell(agent);
+  const cmd = isPosixShell(os, shell)
+    ? `grep -l "\\[${inv}\\]" ${candidates.map(c => `"${c}"`).join(' ')} 2>/dev/null`
+    : `powershell -c "Select-String -Pattern '\\[${inv}\\]' -Path @(${candidates.map(c => `'${c}'`).join(',')}) -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -Unique"`;
 
   const lines = await execLines(agent, cmd, 5_000);
   return lines.length > 0 ? lines[0] : null;
@@ -138,12 +140,14 @@ async function tryFindRemote(
 ): Promise<string | null> {
   // Case B Claude: direct file existence + mtime check
   if (provider === 'claude' && sessionId) {
-    const isWindows = getAgentOS(agent) === 'windows';
-    const sep = isWindows ? '\\' : '/';
+    const os = getAgentOS(agent);
+    const shell = getAgentShell(agent);
+    const posix = isPosixShell(os, shell);
+    const sep = posix ? '/' : '\\';
     const directPath = `${logDir}${sep}${sessionId}.jsonl`;
-    const cmd = isWindows
-      ? `powershell -c "Get-Item -Path '${directPath}' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt [DateTime]::Parse('${toPsDateTime(t0)}') } | ForEach-Object { $_.FullName }"`
-      : `find "${directPath}" -newermt "${toFindNewermt(t0)}" 2>/dev/null`;
+    const cmd = posix
+      ? `find "${directPath}" -newermt "${toFindNewermt(t0)}" 2>/dev/null`
+      : `powershell -c "Get-Item -Path '${directPath}' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt [DateTime]::Parse('${toPsDateTime(t0)}') } | ForEach-Object { $_.FullName }"`;
     const lines = await execLines(agent, cmd, 5_000);
     return lines.length > 0 ? lines[0] : null;
   }

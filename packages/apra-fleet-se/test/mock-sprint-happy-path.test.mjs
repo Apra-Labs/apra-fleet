@@ -128,31 +128,28 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // `originUrl` option), so the PR-raise path is still exercised, just
         // with this extra probe command in between.
         // apra-fleet-tfx.8/tfx.8.4: the reverted gh-based `gh pr create` path
-        // is gone. raiseVcsPrForMember() now (1) re-derives 'owner/repo' via
-        // its OWN `git remote get-url origin` call (provisionPrCapableAuthForMember
-        // -> provisionVcsAuthForMember), (2) reads back the just-provisioned
+        // is gone. raiseVcsPrForMember() (1) reads back the just-provisioned
         // push+pr credential's token from the git-credential-helper script,
-        // then (3) dispatches VCSModule's `curl ... /pulls` create-pull-
-        // request command -- so the last 5 commandLog entries are: push,
-        // the classification probe, the repo-derivation probe (a SECOND
-        // `git remote get-url origin`), the credential-token read, and the
+        // then (2) dispatches VCSModule's `curl ... /pulls` create-pull-
+        // request command -- so the last 4 commandLog entries are: push,
+        // the classification probe, the credential-token read, and the
         // curl POST itself.
-        const pushIdx = run1.commandLog.length - 5;
-        const originUrlIdx = run1.commandLog.length - 4;
-        const repoDerivationUrlIdx = run1.commandLog.length - 3;
+        // raiseVcsPrForMember's `remoteUrlOverride` param (fed with the
+        // origin URL the Publish PR step already resolved a few lines
+        // earlier) makes provisionVcsAuthForMember skip its own internal
+        // `git remote get-url origin` re-derivation -- eliminating what
+        // used to be a second, redundant classification-shaped probe here.
+        const pushIdx = run1.commandLog.length - 4;
+        const originUrlIdx = run1.commandLog.length - 3;
         const credReadIdx = run1.commandLog.length - 2;
         const prIdx = run1.commandLog.length - 1;
         check(
             run1.commandLog[pushIdx] && run1.commandLog[pushIdx].startsWith(`git push -u origin ${RUN1_BRANCH}`),
-            `Expected fifth-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
+            `Expected fourth-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
         );
         check(
             run1.commandLog[originUrlIdx] === 'git remote get-url origin',
-            `Expected fourth-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(run1.commandLog[originUrlIdx])}`
-        );
-        check(
-            run1.commandLog[repoDerivationUrlIdx] === 'git remote get-url origin',
-            `Expected third-to-last commandLog entry to be the JIT push+pr credential's own repo-derivation probe, got: ${JSON.stringify(run1.commandLog[repoDerivationUrlIdx])}`
+            `Expected third-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(run1.commandLog[originUrlIdx])}`
         );
         check(
             run1.commandLog[credReadIdx] && run1.commandLog[credReadIdx].startsWith('$HOME/.fleet-git-credential-'),

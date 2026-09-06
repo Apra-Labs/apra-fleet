@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
+import { createHash } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -193,6 +194,77 @@ export function realSyncSpawnCount(cwd, pattern) {
 }
 
 // ---------------------------------------------------------------------------
+// real-mode repeated-read caching (apra-fleet-u87n.1)
+// ---------------------------------------------------------------------------
+// Measured root cause of the real-bd timeouts on the heavier mock-sprint
+// files: essentially 100% of their wall clock is real `bd` process spawns.
+// mock-sprint-member-vcs-provider-threading.test.mjs issues 27 of them (one
+// `bd init` at ~10.7s, 26 more at ~1.1-2.6s each) for a total of ~47s of
+// child-process time out of a ~47s file duration -- the same file finishes in
+// ~0.3s in replay mode, i.e. the scenario's own JS costs nothing. Under
+// --test-concurrency=8 those spawns contend for one disk with 7 sibling
+// files' dolt engines and the file blows past its per-file timeout. Cutting
+// SPAWNS is therefore the only lever that moves the number; a timeout bump
+// would just relabel the contention.
+//
+// Seven of that file's spawns are re-reads of a command whose answer cannot
+// have changed: within one scenario the ONLY writer of the tempDir's beads
+// store is this same process, and every one of its `bd` calls flows through
+// runCmd() here. So a read (`bd list`/`bd show`/`bd stats`) may be served
+// from cache as long as no bd command that could mutate the store has been
+// issued for that SAME cwd since -- exactly the invariant that makes the
+// eft.17.1 D-pull/D-push and eft.54.5 sync.remote caches above safe, applied
+// to reads whose validity window ends at the next write instead of lasting
+// the whole scenario.
+//
+// Any non-read bd command (create/update/close/note/dep/import/...) drops the
+// whole cwd's read cache, both when it is dispatched and again when it
+// completes, so a read issued after a write never sees pre-write state. The
+// classification is a strict allowlist: anything not recognized as read-only
+// is treated as a writer, so an unfamiliar future subcommand fails safe.
+// Caching the Promise (not the value) also dedupes identical concurrent reads
+// from parallel doer streaks. Replay/record modes are untouched -- they never
+// consult this cache.
+const READ_ONLY_BD = /^\s*bd\s+(list|show|stats)\b/;
+
+const realReadCache = new Map(); // `${cwd} ${normalizedCmd}` -> Promise<{err,stdout,stderr}>
+let realReadServed = 0;
+
+function invalidateRealReadCache(cwd) {
+    const prefix = `${cwd} `;
+    for (const key of realReadCache.keys()) {
+        if (key.startsWith(prefix)) realReadCache.delete(key);
+    }
+}
+
+function realReadCached(cmd, cwd) {
+    const key = `${cwd} ${cmd.trim().replace(/\s+/g, ' ')}`;
+    const pending = realReadCache.get(key);
+    if (pending) {
+        realReadServed += 1;
+        return pending;
+    }
+    const fresh = execCmd(cmd, cwd);
+    realReadCache.set(key, fresh);
+    return fresh;
+}
+
+function realWriteThrough(cmd, cwd) {
+    invalidateRealReadCache(cwd);
+    return execCmd(cmd, cwd).then((res) => {
+        invalidateRealReadCache(cwd);
+        return res;
+    });
+}
+
+// Test-only introspection (same purpose as realSyncSpawnCount above): how
+// many read calls this cache answered WITHOUT spawning bd. Only meaningful
+// under real bd (`bdMode() === 'real'`).
+export function realReadServeCount() {
+    return realReadServed;
+}
+
+// ---------------------------------------------------------------------------
 // real-mode `bd init` templating (apra-fleet-3ei)
 // ---------------------------------------------------------------------------
 // Every heavy mock-sprint/golden-transcript/budget-live scenario's setup()/
@@ -217,27 +289,144 @@ export function realSyncSpawnCount(cwd, pattern) {
 // time and does not need to match the destination directory's name. No
 // scenario asserts on the literal issue-id prefix string, only on the ids
 // `bd create --silent` hands back at runtime, so this is behavior-neutral.
-let bdInitTemplatePromise = null;
-let bdInitTemplateSpawns = 0;
+// apra-fleet-u87n.1 widens that amortization from ONE PROCESS to one
+// TEST-RUNNER HOST. `node --test` runs every file in its own process, so the
+// per-process template still paid a full ~10.7s dolt bootstrap per file -- 70+
+// of them in the real-bd suite, eight of them firing SIMULTANEOUSLY at
+// concurrency=8 as the lane starts, which is precisely when the disk is most
+// contended. The template's content is identical for every process (a bare
+// `bd init` into an empty dir), so it is published to a fixed path in the OS
+// temp dir and reused by every later test-file process on the same host.
+//
+// Publication is atomic: the bootstrap runs into a `-staging-<random>`
+// sibling and is then rename()d onto the final path, so a concurrent reader
+// can only ever observe a COMPLETE template (a partially-bootstrapped dolt
+// store is never visible under the final name). If two processes race, the
+// loser's rename fails, it discards its staging copy and uses the winner's --
+// bounded worst case, never a corrupt template.
+//
+// The path is keyed by the `bd` binary's own size+mtime fingerprint, so
+// upgrading bd never reuses a template bootstrapped by the previous version;
+// it simply starts a new one. APRA_FLEET_BD_TEMPLATE_KEY overrides the key
+// outright, which is how bd-init-templating.test.mjs keeps asserting an
+// EXACTLY-one-spawn bootstrap for its own private namespace regardless of
+// what other files on this host have already published.
+const BD_INIT_TEMPLATE_VERSION = 'v2';
 
-function createBdInitTemplate() {
-    const templateDir = path.join(os.tmpdir(), `apra-fleet-bd-init-template-${process.pid}`);
-    bdInitTemplateSpawns += 1;
-    return fs.promises
-        .mkdir(templateDir, { recursive: true })
-        .then(() => execCmd('bd init', templateDir))
-        .then((res) => ({ ...res, templateDir }));
+// Fingerprint the `bd` binary WITHOUT spawning it (the whole point here is to
+// avoid spawns): resolve it off PATH the same way the OS would and stat it.
+// Unresolvable (or unstattable) degrades to a fixed 'unknown' key -- the
+// template is still correct, it just is not invalidated by a bd upgrade, and
+// the version constant above remains the manual escape hatch.
+function bdBinaryFingerprint() {
+    const exts = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
+    for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
+        if (!dir) continue;
+        for (const ext of exts) {
+            const candidate = path.join(dir, `bd${ext}`);
+            try {
+                const st = fs.statSync(candidate);
+                if (st.isFile()) return `${st.size}-${Math.trunc(st.mtimeMs)}`;
+            } catch {
+                // not here; keep looking
+            }
+        }
+    }
+    return 'unknown';
 }
 
-// Serves a real `bd init` call in real mode by copying a once-per-process
-// template directory onto the caller's already-created (empty) `cwd`,
-// instead of spawning `bd init` again. If the ONE real template spawn itself
-// failed, that same failure is surfaced to every caller -- a fresh real
-// spawn per scenario would just fail identically 25+ times, and fabricating
-// a misleading success would be worse.
+// The directory NAME matters to bd: `bd init` derives its database name from
+// it and rejects anything that does not survive that mapping -- notably a
+// long name ("produces an invalid database name ...", observed with a
+// 70+ char staging directory). So the key -- whatever its length -- is folded
+// into a short fixed-width hash, leaving room for mkdtemp's own suffix on the
+// staging sibling.
+let bdBinaryKey = null;
+function bdInitTemplateDir() {
+    // The env override is read on EVERY call (never memoized): a test that
+    // sets it mid-process must get its own namespace immediately. Only the
+    // binary fingerprint -- a stat sweep of PATH -- is memoized.
+    let raw = process.env.APRA_FLEET_BD_TEMPLATE_KEY;
+    if (!raw) {
+        if (!bdBinaryKey) bdBinaryKey = bdBinaryFingerprint();
+        raw = bdBinaryKey;
+    }
+    const key = createHash('sha1').update(String(raw)).digest('hex').slice(0, 12);
+    return path.join(os.tmpdir(), `bdtpl-${BD_INIT_TEMPLATE_VERSION}-${key}`);
+}
+
+const bdInitTemplatePromises = new Map(); // templateDir -> Promise<{ err, stdout, stderr, templateDir }>
+let bdInitTemplateSpawns = 0;
+
+// A template directory counts as usable only once it holds the `.beads` dir
+// `bd init` creates -- the marker bd-init-templating.test.mjs itself asserts
+// on. Anything less is a leftover/partial directory, not a template.
+const templateIsReady = (dir) => {
+    try {
+        return fs.statSync(path.join(dir, '.beads')).isDirectory();
+    } catch {
+        return false;
+    }
+};
+
+async function createBdInitTemplate(templateDir) {
+    if (templateIsReady(templateDir)) {
+        // Published by an earlier test-file process on this host: reuse it
+        // with no spawn at all.
+        return { err: null, stdout: '', stderr: '', templateDir };
+    }
+
+    await fs.promises.mkdir(os.tmpdir(), { recursive: true });
+    const staging = await fs.promises.mkdtemp(`${templateDir}-staging-`);
+    bdInitTemplateSpawns += 1;
+    const res = await execCmd('bd init', staging);
+    if (res.err) {
+        await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
+        return { ...res, templateDir };
+    }
+
+    // Publish. Two things can make the rename fail, and they need opposite
+    // handling:
+    //   - the destination already exists  -> another process won the race;
+    //     drop ours and use theirs.
+    //   - EBUSY/EPERM on the SOURCE       -> Windows only: the just-exited
+    //     `bd init` child (or a scanner) still holds a handle inside the
+    //     staging tree for a moment. Retry briefly; this is the same
+    //     transient the harness's own teardown rm already retries on.
+    // If publication never succeeds we still have a perfectly good bootstrapped
+    // directory in `staging`, so fall back to using it as THIS process's
+    // template rather than failing every scenario setup in the file.
+    let published = false;
+    for (let attempt = 0; attempt < 10 && !published; attempt += 1) {
+        if (templateIsReady(templateDir)) break;
+        try {
+            await fs.promises.rename(staging, templateDir);
+            published = true;
+        } catch {
+            await new Promise((r) => setTimeout(r, 200));
+        }
+    }
+    if (published || templateIsReady(templateDir)) {
+        if (!published) await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
+        return { err: null, stdout: res.stdout, stderr: res.stderr, templateDir };
+    }
+    return { err: null, stdout: res.stdout, stderr: res.stderr, templateDir: staging };
+}
+
+// Serves a real `bd init` call in real mode by copying the shared template
+// directory onto the caller's already-created (empty) `cwd`, instead of
+// spawning `bd init` again. If the template bootstrap itself failed, that
+// same failure is surfaced to every caller -- a fresh real spawn per scenario
+// would just fail identically 25+ times, and fabricating a misleading success
+// would be worse.
 async function realBdInitTemplated(cwd) {
-    if (!bdInitTemplatePromise) bdInitTemplatePromise = createBdInitTemplate();
-    const { err, stdout, stderr, templateDir } = await bdInitTemplatePromise;
+    const dir = bdInitTemplateDir();
+    let pending = bdInitTemplatePromises.get(dir);
+    if (!pending) {
+        pending = createBdInitTemplate(dir);
+        bdInitTemplatePromises.set(dir, pending);
+    }
+    const { err, stdout, stderr, templateDir } = await pending;
     if (err) return { err, stdout, stderr };
     await fs.promises.cp(templateDir, cwd, { recursive: true });
     return { err: null, stdout, stderr };
@@ -246,9 +435,17 @@ async function realBdInitTemplated(cwd) {
 // Test-only introspection (same purpose as realSyncSpawnCount above): how
 // many REAL `bd init` process spawns has this process actually performed,
 // however many logical `bd init` calls were served from the template copy
-// without spawning anything. Should never exceed 1 for the whole process.
+// without spawning anything. Never exceeds 1 per template key, and is 0 when
+// an earlier process on this host already published that key's template.
 export function bdInitTemplateSpawnCount() {
     return bdInitTemplateSpawns;
+}
+
+// Test-only: the shared template path currently in effect (honours
+// APRA_FLEET_BD_TEMPLATE_KEY), so a test that forces its own private template
+// key can clean the directory up afterwards instead of leaking it.
+export function bdInitTemplatePath() {
+    return bdInitTemplateDir();
 }
 
 const isBdInitCommand = (cmd) => /^\s*bd\s+init\s*$/.test(cmd);
@@ -417,10 +614,15 @@ export function runCmd(cmd, cwd) {
         // D-push brackets -- and the stable sync.remote pre-gate probe every
         // bracket consults -- from cache (see realDoltSyncCached above).
         if (isDoltSyncCommand(cmd) || isStableConfigProbe(cmd)) return realDoltSyncCached(cmd, cwd);
-        // Serve a bare `bd init` from the once-per-process template instead
-        // of re-running bd's own bootstrap (see realBdInitTemplated above).
+        // Serve a bare `bd init` from the shared template instead of
+        // re-running bd's own bootstrap (see realBdInitTemplated above).
         if (isBdInitCommand(cmd)) return realBdInitTemplated(cwd);
-        return execCmd(cmd, cwd);
+        // apra-fleet-u87n.1: repeated identical reads with no intervening
+        // write to this clone cannot have changed -- serve them from cache.
+        // Everything else is treated as a writer and drops the clone's read
+        // cache (see realReadCached/realWriteThrough above).
+        if (READ_ONLY_BD.test(cmd)) return realReadCached(cmd, cwd);
+        return realWriteThrough(cmd, cwd);
     }
     // Dolt sync brackets are mock-mode no-ops (see isDoltSyncCommand above):
     // synthesize a clean success WITHOUT recording or requiring a recording.

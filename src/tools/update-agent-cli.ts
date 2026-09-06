@@ -3,7 +3,7 @@ import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import type { Agent } from '../types.js';
 
@@ -24,7 +24,7 @@ interface UpdateResult {
 }
 
 async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promise<UpdateResult> {
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider(agent.llmProvider);
   const strategy = getStrategy(agent);
   const result: UpdateResult = {

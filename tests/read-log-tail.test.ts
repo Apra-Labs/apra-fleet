@@ -23,6 +23,10 @@ vi.mock('../src/utils/log-helpers.js', () => ({
 
 vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: () => 'linux',
+  // apra-fleet-7dir.2.5: readLogTail's command builder now also reads the
+  // member's registered shell; no shell recorded is the default here.
+  getAgentShell: () => undefined,
+  isPosixShell: (os: string, shell?: string) => os !== 'windows' || shell === 'gitbash',
 }));
 
 import { readLogTail } from '../src/services/stall/read-log-tail.js';

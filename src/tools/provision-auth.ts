@@ -6,7 +6,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { escapeDoubleQuoted } from '../utils/shell-escape.js';
-import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
 import { credentialResolve } from '../services/credential-store.js';
@@ -34,7 +34,7 @@ export type ProvisionAuthInput = z.infer<typeof provisionAuthSchema>;
  * Claude-only: other providers use a version check for verification.
  */
 async function verifyWithClaudePrompt(agent: Agent, envPrefix?: string): Promise<boolean> {
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider('claude');
   const strategy = getStrategy(agent);
   const escapedFolder = escapeDoubleQuoted(agent.workFolder);
@@ -53,7 +53,7 @@ async function verifyWithClaudePrompt(agent: Agent, envPrefix?: string): Promise
  * Used to verify non-Claude providers after API key provisioning.
  */
 async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, envPrefix?: string): Promise<boolean> {
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
   const prefix = envPrefix ? `${envPrefix} ` : '';
   const cmd = `${prefix}${cmds.agentVersion(provider)}`;
@@ -69,7 +69,7 @@ async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, envPre
 // Flow A: Copy OAuth credentials using the provider interface
 // ---------------------------------------------------------------------------
 async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Promise<string> {
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
 
   const credentialFiles = provider.oauthCredentialFiles();
@@ -157,7 +157,7 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
 // ---------------------------------------------------------------------------
 
 async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderAdapter): Promise<string> {
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
   const envVarName = provider.authEnvVarForToken(apiKey);
   const commands = cmds.setEnv(envVarName, apiKey);

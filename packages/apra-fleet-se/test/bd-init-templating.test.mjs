@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { runCmd, bdInitTemplateSpawnCount } from './helpers/bd-replay.mjs';
+import { runCmd, bdInitTemplateSpawnCount, bdInitTemplatePath } from './helpers/bd-replay.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // =============================================================================
@@ -30,6 +30,18 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 // dolt-sync-discipline.test.mjs. It forces APRA_FLEET_BD_MOCK=real for its
 // own duration (restored in `finally`) so it exercises the real templating
 // path regardless of which mode the ambient `npm test` invocation is using.
+//
+// apra-fleet-u87n.1 widened the template from once-per-PROCESS to once-per-
+// HOST (published atomically to a fixed OS-tmpdir path, keyed by the bd
+// binary's fingerprint), because eight test-file processes each paying their
+// own ~10.7s dolt bootstrap simultaneously is itself a major source of the
+// real-bd lane's contention. That makes the raw spawn count observed here
+// depend on whether some EARLIER file already published the shared template,
+// so this test pins the invariant inside its own private template namespace
+// (APRA_FLEET_BD_TEMPLATE_KEY, unique per run) and removes that namespace's
+// directory afterwards. The assertion is unchanged and still exact: within a
+// namespace that starts empty, exactly ONE real bootstrap serves every
+// subsequent `bd init`.
 // =============================================================================
 
 function resolveBdBinary() {
@@ -51,7 +63,14 @@ test(
     { skip: BD_SKIP, timeout: scaledTimeout(60000) },
     async () => {
         const prevMode = process.env.APRA_FLEET_BD_MOCK;
+        const prevTemplateKey = process.env.APRA_FLEET_BD_TEMPLATE_KEY;
         process.env.APRA_FLEET_BD_MOCK = 'real';
+        // Private, guaranteed-empty template namespace for this run (see the
+        // header note): the shared host template may already exist, which
+        // would legitimately make the real spawn count 0 and say nothing
+        // about the mechanism under test.
+        process.env.APRA_FLEET_BD_TEMPLATE_KEY = `templating-test-${Date.now()}-${process.pid}`;
+        const templateDir = bdInitTemplatePath();
         const dirs = [];
         try {
             const spawnsBefore = bdInitTemplateSpawnCount();
@@ -92,9 +111,14 @@ test(
         } finally {
             if (prevMode === undefined) delete process.env.APRA_FLEET_BD_MOCK;
             else process.env.APRA_FLEET_BD_MOCK = prevMode;
+            if (prevTemplateKey === undefined) delete process.env.APRA_FLEET_BD_TEMPLATE_KEY;
+            else process.env.APRA_FLEET_BD_TEMPLATE_KEY = prevTemplateKey;
             for (const dir of dirs) {
                 await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
             }
+            // This run's private template namespace is nobody else's to
+            // reuse -- do not leak it into the OS temp dir.
+            await fsp.rm(templateDir, { recursive: true, force: true }).catch(() => {});
         }
     },
 );
