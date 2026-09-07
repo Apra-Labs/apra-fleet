@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 import { encryptPassword } from '../src/utils/crypto.js';
@@ -57,6 +57,21 @@ describe('provisionAuth', () => {
 
   afterEach(() => {
     restoreRegistry();
+  });
+
+  it('still skips a local member with an unrecognised llmProvider instead of throwing', async () => {
+    const member = makeTestLocalAgent({
+      friendlyName: 'local-unknown-provider',
+      llmProvider: 'gemini' as any,
+    });
+    addAgent(member);
+
+    const { text: result, structuredContent } = await provisionAuth({ member_id: member.id });
+    expect(structuredContent.reason).toBe('skipped_local_member');
+    expect(structuredContent.ok).toBe(true);
+    expect(structuredContent.provider).toBe('gemini');
+    expect(result).toContain('Skipping');
+    expect(mockTestConnection).not.toHaveBeenCalled();
   });
 
   it('rejects offline agents before attempting either flow', async () => {

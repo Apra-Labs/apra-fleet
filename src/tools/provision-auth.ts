@@ -111,6 +111,24 @@ export interface ProvisionAuthResult {
 
 const OK_REASONS: ProvisionAuthReason[] = ['ok', 'deployed_unverified', 'deployed_with_errors', 'skipped_local_member'];
 
+/**
+ * Resolve a provider's display name for the structured payload without ever
+ * throwing (apra-fleet-3swo.9). getProvider() throws a TypeError for any
+ * llmProvider value outside the six registered adapters, and only defaults
+ * to claude when the value is null/undefined -- so a registry entry carrying
+ * a retired or hand-edited provider string would otherwise turn the
+ * local-member skip and offline early-returns below into a thrown MCP
+ * protocol error (wrapTool has no try/catch) instead of their intended clean
+ * message. Falls back to the raw stored value, or null when there is none.
+ */
+function safeProviderName(llmProvider: Agent['llmProvider']): string | null {
+  try {
+    return getProvider(llmProvider).name;
+  } catch {
+    return llmProvider ?? null;
+  }
+}
+
 function authResult(
   text: string,
   fields: Partial<ProvisionAuthFields> & { reason: ProvisionAuthReason },
@@ -386,14 +404,14 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<Provisio
 
   if (agent.agentType === 'local') {
     return authResult(`[SKIP] Skipping "${agent.friendlyName}" -- local members use this machine's credentials directly.`,
-      { ...who, reason: 'skipped_local_member', provider: getProvider(agent.llmProvider).name });
+      { ...who, reason: 'skipped_local_member', provider: safeProviderName(agent.llmProvider) });
   }
 
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
   if (!conn.ok) {
     return authResult(`[FAIL] Member "${agent.friendlyName}" is offline: ${conn.error}`,
-      { ...who, reason: 'member_offline', provider: getProvider(agent.llmProvider).name });
+      { ...who, reason: 'member_offline', provider: safeProviderName(agent.llmProvider) });
   }
 
   // getProvider() defaults to claude ONLY when llmProvider is null/undefined;
