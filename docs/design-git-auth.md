@@ -1,4 +1,4 @@
-<!-- llm-context: Design doc for fleet's git authentication system — scoped token provisioning via GitHub Apps, PATs, Bitbucket, and Azure DevOps. Read when a user asks how to give members git access, how tokens are scoped, or how credentials are managed. -->
+<!-- llm-context: Design doc for fleet's git authentication system -- scoped token provisioning via GitHub Apps, PATs, Bitbucket, and Azure DevOps. Read when a user asks how to give members git access, how tokens are scoped, or how credentials are managed. -->
 <!-- keywords: git auth, GitHub App, PAT, Bitbucket, Azure DevOps, token, scope, provision, revoke, credential, push, pull, clone -->
 <!-- see-also: ../README.md (step-by-step git auth setup), design-vcs-auth-onboarding.md (onboarding flow) -->
 
@@ -6,7 +6,7 @@
 
 ## Problem
 
-Fleet members need git access (clone, push, force-push, issue management) across multiple git hosts (GitHub, Azure DevOps, Bitbucket, GitLab). Today there's no standardized way to provision git credentials to members, and no way to scope permissions per member role.
+Fleet members need git access (clone, push, force-push, issue management) across multiple git hosts (GitHub, Azure DevOps, Bitbucket, GitLab). Without a standardized provisioning path, git credentials land on members ad hoc and cannot be scoped per member role.
 
 Key requirements:
 - **Multi-host**: Same abstraction across GitHub, Azure DevOps, Bitbucket, GitLab, self-hosted
@@ -63,25 +63,25 @@ members:
 For GitHub-hosted repos, use a **GitHub App** installed on the org.
 
 ```
-┌─────────────────────────────────────────────┐
-│  apra-fleet-app (GitHub App)                │
-│  Installed on: Apra-Labs org                │
-│  App private key stored on PM/master         │
-│                                             │
-│  Max permissions (app-level):               │
-│  - contents: write                          │
-│  - issues: write                            │
-│  - pull_requests: write                     │
-│  - actions: write                           │
-│  - administration: write                    │
-└──────────────┬──────────────────────────────┘
-               │
++---------------------------------------------+
+|  apra-fleet-app (GitHub App)                |
+|  Installed on: the org                      |
+|  App private key stored on PM/master        |
+|                                             |
+|  Max permissions (app-level):               |
+|  - contents: write                          |
+|  - issues: write                            |
+|  - pull_requests: write                     |
+|  - actions: write                           |
+|  - administration: write                    |
++--------------+------------------------------+
+               |
   PM mints scoped tokens per member at runtime:
-               │
-               ├──→ code-analyst:  { contents: read,  repos: [ApraPipes] }
-               ├──→ feature-dev:   { contents: write, repos: [ApraPipes] }
-               ├──→ release-bot:   { contents: write, admin: write, repos: [*] }
-               └──→ project-mgr:   { issues: write, pull_requests: write }
+               |
+               +--> code-analyst:  { contents: read,  repos: [ApraPipes] }
+               +--> feature-dev:   { contents: write, repos: [ApraPipes] }
+               +--> release-bot:   { contents: write, admin: write, repos: [*] }
+               +--> project-mgr:   { issues: write, pull_requests: write }
 ```
 
 **Token minting flow:**
@@ -169,53 +169,43 @@ Use a **Bitbucket OAuth Consumer** or **Repository Access Token**:
 ### Backend: Self-hosted / GitLab
 
 - GitLab: **Project Access Tokens** or **Group Access Tokens** via API
-- Self-hosted: SSH keys (fallback — no token API available)
+- Self-hosted: SSH keys (fallback -- no token API available)
 
 ### Token Lifecycle
 
 ```
 Member startup / first git operation
-        │
-        ▼
+        |
+        v
   PM mints scoped token (1hr TTL)
-        │
-        ▼
+        |
+        v
   Deploy credential to member via execute_command
-        │
-        ▼
+        |
+        v
   Member uses git normally (clone/push/etc)
-        │
-        ▼
+        |
+        v
   Token nearing expiry? Auto-refresh before next git operation
-        │
-        ▼
+        |
+        v
   Member deregistered? Token expires naturally (1hr max)
 ```
 
 ### MCP Tool Interface
 
-New tool: `provision_git_auth`
+The tool is `provision_vcs_auth` (`src/tools/provision-vcs-auth.ts`), with
+`revoke_vcs_auth` as its counterpart. Its input carries a member identifier
+plus a `provider` (`github` | `bitbucket` | `azure-devops`), an optional
+credential `label` and `scope_url`, and a per-provider credential group:
 
-```typescript
-// Input
-{
-  agent_name: "feature-dev",
-  // Optional overrides (defaults come from member config):
-  git_host?: "github" | "azure" | "bitbucket" | "gitlab",
-  access_level?: "read" | "push" | "admin" | "issues" | "full",
-  repos?: string[],
-}
+- **GitHub**: `github_mode` (`github-app` | `pat`), `token`, and the
+  `git_access` / `repos` overrides for the GitHub App path.
+- **Bitbucket**: `email`, `api_token`, `workspace`.
+- **Azure DevOps**: `org_url`, `pat`, `pat_expires_at`.
 
-// Output
-{
-  status: "ok",
-  host: "github.com",
-  access_level: "push",
-  repos: ["Apra-Labs/ApraPipes"],
-  expires_at: "2026-03-03T16:00:00Z",
-  token_prefix: "ghs_****"  // masked for audit
-}
-```
+Secret-bearing fields accept a `{{secure.NAME}}` token, resolved from the
+credential store server-side so no secret passes through a model's context.
 
 ### Security Properties
 
@@ -239,11 +229,11 @@ New tool: `provision_git_auth`
 | Revocation | Manual key removal | Manual token revocation | Auto-expires |
 | Audit | SSH logs | None built-in | Full mint log |
 
-## Implementation Plan
+## Delivery pieces
 
-1. **GitHub App setup** — create app, install on org, store private key in fleet config
-2. **`provision_git_auth` tool** — mints scoped token, deploys credential to member
-3. **Auto-provisioning** — mint token on member startup or first git operation
-4. **Auto-refresh** — check token expiry before git operations, refresh if needed
-5. **Multi-host backends** — Azure DevOps, Bitbucket, GitLab adapters (same `provision_git_auth` interface)
-6. **Member config** — add `git_access` and `git_repos` fields to member registration
+1. **GitHub App setup** -- create app, install on org, store private key in fleet config (`setup_git_app`, `src/services/github-app.ts`)
+2. **`provision_vcs_auth` tool** -- mints scoped token, deploys credential to member; `revoke_vcs_auth` tears it down
+3. **Auto-provisioning** -- mint token on member startup or first git operation
+4. **Auto-refresh** -- check token expiry before git operations, refresh if needed
+5. **Multi-host backends** -- GitHub, Bitbucket, and Azure DevOps adapters behind the same `provision_vcs_auth` interface (`src/services/vcs/`); GitLab is not implemented
+6. **Member config** -- `git_access` and `git_repos` fields on `register_member` / `update_member`

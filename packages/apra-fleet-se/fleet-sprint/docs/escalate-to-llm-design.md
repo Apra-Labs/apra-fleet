@@ -7,8 +7,8 @@ Status: design -- not yet implemented. Last updated: 2026-08-10.
 auto-repair, then resume) or a cleanly dead one (abort with a diagnosis report and, where needed,
 a specific human referral) -- never leave it wedged, silently burning tokens, or ambiguous.
 
-> **Supersedes `coach-role-design.md`** (the 2026-07-20 "coach role: just-in-time error
-> resolution" design note, now reduced to a pointer here). sprint-doctor is the same core idea --
+> **Supersedes the earlier "coach role" design note** ("coach role: just-in-time error
+> resolution"), which this doc replaces in full. sprint-doctor is the same core idea --
 > an in-workflow LLM layer for failures the deterministic engine did not foresee, positioned
 > strictly AFTER typed handlers/ladders, failing loudly when it cannot fix -- carried further.
 > Ideas incorporated directly from coach, credited inline where they appear: the three-layer

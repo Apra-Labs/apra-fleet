@@ -1,13 +1,15 @@
 # Stall Detector -- Redesign Design Document
 
-**Date:** 2026-05-05  
-**Status:** Implemented -- shipped in v0.1.9.0 (#241, PR #246)
+**Status:** Implemented
 
-> **Historical note:** Gemini was a supported provider at the time this design
-> document and its live experiments were written; it has since been fully
-> removed from apra-fleet. The Gemini-specific findings and code excerpts
-> below are retained as a point-in-time technical record and do not describe
-> a currently supported provider.
+> **Historical design record.** This document captures the redesign that
+> produced the shipped stall detector, including the live experiments that
+> established how session log files behave. It is not a current API
+> reference: the log-path resolution described here now lives behind each
+> provider adapter's `resolveSessionLogDir()` /
+> `resolveSessionLogPath()` (`src/services/stall/log-path-resolver.ts`
+> delegates to them), and timing constants have since been tuned. See
+> `docs/stall-detector-resilience.md` for current behavior.
 
 ---
 
@@ -17,18 +19,18 @@ The stall detector must fire when an `execute_prompt` session has produced no LL
 more than N seconds. This requires tracking the live session log file and checking whether the
 last-written timestamp has advanced.
 
-The current implementation (`feat/stall-detector`) is broken for 100% of sessions:
+The pre-redesign implementation was broken for essentially every session:
 
 - `fs.watch()` only works on the local filesystem -- useless for SSH-remote members
-- Path encoding is wrong (`%2F`/`%5C` instead of `-`) so even local watch fails silently
-- Every entry stays `provisional: true` forever -- stall fires on spawn time only
-- `toLocalISOString` appends offset string to UTC time without adjusting the hours
-- When `execute_prompt` is cancelled by MCP client disconnect, the `finally` block does not
-  run -- stall entries and `inFlightAgents` are permanently dirty
+- Path encoding was wrong (`%2F`/`%5C` instead of `-`) so even local watch failed silently
+- Every entry stayed `provisional: true` forever -- stall fired on spawn time only
+- `toLocalISOString` appended an offset string to UTC time without adjusting the hours
+- When `execute_prompt` was cancelled by MCP client disconnect, the `finally` block did not
+  run -- stall entries and `inFlightAgents` were left permanently dirty
 
 ---
 
-## Experiment Findings (2026-05-05)
+## Experiment Findings
 
 ### Log file locations (verified live)
 
@@ -36,7 +38,6 @@ The current implementation (`feat/stall-detector`) is broken for 100% of session
 |----------|----|---------------|-------------|
 | Claude | Windows local | `~/.claude/projects/<encoded>/` | `<sessionId>.jsonl` |
 | Claude | macOS remote | `~/.claude/projects/<encoded>/` | `<sessionId>.jsonl` |
-| Gemini | Windows local | `~/.gemini/tmp/<basename>/chats/` | `session-<ts>-<sid-prefix>.jsonl` |
 
 ### Path encoding (observed)
 
@@ -44,14 +45,12 @@ Claude encodes the work folder by replacing **every** `/`, `\`, and `:` with `-`
 - Windows: `C:\akhil\git\apra-fleet` -> `C--akhil-git-apra-fleet`
 - macOS: `/Users/akhil/git/apra-fleet` -> `-Users-akhil-git-apra-fleet`
 
-Current code uses `%2F`/`%5C` -- completely wrong.
+The pre-redesign code used `%2F`/`%5C`, which never matched.
 
 ### Activity timestamp fields
 
 - **Claude**: The `assistant` entry has a `timestamp` field. The final `last-prompt` entry has
   no timestamp. Poll must read the last line that has a `timestamp` field.
-- **Gemini**: `{"$set":{"lastUpdated":"..."}}` lines are written after every LLM turn.
-  These are the activity lines to read.
 
 ### resume=true behavior (verified live on fleet-dev)
 
@@ -67,23 +66,15 @@ Two calls (`resume=false` then `--resume <sessionId>`):
 **Implication**: For `resume=true`, no grep needed. We already have the session ID -> direct
 filename. Token approach only applies to `resume=false`.
 
-### Gemini resume behavior (verified live on fleet-dev2)
-
-`--resume latest` creates a **new file** per resume call with an updated timestamp component
-but the **same 8-char session ID prefix**: `session-<new-ts>-<same-prefix>.jsonl`.
-The previous session file is not modified. mtime filter after T0 correctly identifies the
-new file.
-
 ### File appearance timing
 
 - Claude: file created within ~30ms of session start (enqueue at T+0ms, first user entry T+26ms)
-- Gemini: file appears at session start (timestamp embedded in filename)
-- Both: mtime filter with T0 = PID-capture time reliably finds the file within the first
+- mtime filter with T0 = PID-capture time reliably finds the file within the first
   10s retry window
 
 ---
 
-## Proposed Design
+## Design
 
 ### 1. Token = inv ID
 
@@ -105,9 +96,6 @@ function sessionLogDir(provider: string, workFolder: string): string {
   }
   if (provider === 'agy') {
     throw new Error("Stall detection log polling not supported");
-  }
-  if (provider === 'gemini') {
-    return join(home, '.gemini', 'tmp', basename(workFolder), 'chats');
   }
   return null;
 }
@@ -140,18 +128,15 @@ Filter by `mtime > T0` instead of grepping content -- this narrows from hundreds
 - **Claude**: same file as prior session. Stored session ID -> `<logDir>/<sessionId>.jsonl`.
   Verify exists; if yes, use immediately. After server restart: session ID still in registry,
   same path. No scan needed.
-- **Gemini**: resume creates a new file with same session ID prefix but new timestamp component
-  (`session-<new-ts>-<sid-prefix>.jsonl`). Use mtime > T0 scan -- same as Case A.
 
-Verified by experiment: Claude resume appends to same file (same sessionId.jsonl, 1 file for
-both turns). Gemini resume creates a new file with the same 8-char session prefix but a new
-timestamp. mtime filter handles both correctly.
+Verified by experiment: Claude resume appends to the same file (same `<sessionId>.jsonl`, one
+file covering both turns), so the mtime filter handles it correctly.
 
 ### 4. Activity polling (both cases)
 
 Every **30 seconds** (soft-coded via `STALL_POLL_INTERVAL_MS` env var -- default 30000):
 - Read the last 500 bytes of the log file (tail)
-- Extract the last `timestamp` (Claude) or `lastUpdated` in a `$set` entry (Gemini)
+- Extract the last `timestamp` field (Claude)
 - If expected fields are missing: log `stall_poll_format_error {path, provider}` and skip cycle
 - If timestamp advanced since last poll: reset `stallReported`, update `lastActivityAt`
 - If not advanced and `now - lastActivityAt > STALL_THRESHOLD_MS`: fire `stall_detected`

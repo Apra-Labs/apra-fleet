@@ -1,35 +1,36 @@
 <!-- llm-context: Survey of each provider adapter's usage/quota-API reality for
-     execute_prompt budget awareness (apra-fleet-eft.80). Records, per
-     provider, whether a provider-NATIVE usage/cost signal exists that a
-     getUsage() adapter capability could read (per apra-fleet-eft.80's
-     "PRIMARY SOURCE: provider-native usage/quota APIs/SDKs, NOT fleet-side
-     self-metering" direction), vs. where only the fleet-side token-count
-     fallback (apra-fleet-eft.80.2/.80.3) will apply. Required first step of
-     apra-fleet-eft.80.1, ahead of any adapter code. Live-researched
-     2026-07-27 by fetching each provider's own docs/config-schema/source
-     where reachable (curl, GitHub API tree search) rather than inferring
-     from memory, mirroring docs/interactive-injection-provider-survey.md's
-     method; unreachable sources (platform.openai.com, antigravity.google)
-     are flagged as such rather than guessed. -->
+     execute_prompt budget awareness. Records, per provider, whether a
+     provider-NATIVE usage/cost signal exists that the optional getUsage()
+     adapter capability could read, vs. where only the fleet-side token-count
+     estimate applies. Researched by fetching each provider's own
+     docs/config-schema/source where reachable (curl, GitHub API tree search)
+     rather than inferring from memory, mirroring
+     docs/interactive-injection-provider-survey.md's method; unreachable
+     sources (platform.openai.com, antigravity.google) are flagged as such
+     rather than guessed. -->
 <!-- keywords: usage API, quota, budget, getUsage, Admin API, cost report,
      rate limit, execute_prompt, provider adapter, Anthropic Admin API,
-     OpenAI usage API, Gemini quota, Copilot premium requests, AGY,
-     OpenCode ACP usage, apra-fleet-eft.80 -->
+     OpenAI usage API, Copilot premium requests, AGY, OpenCode ACP usage -->
 
 # Provider Usage/Quota-API Survey (execute_prompt budget awareness)
 
-> **Historical note:** Gemini was a supported provider when this survey was
-> written (2026-07-27); it has since been fully removed from apra-fleet. The
-> Gemini section below is retained as a point-in-time technical record of the
-> `gemini-cli` quota/usage investigation and does not describe a currently
-> supported provider.
+A point-in-time research record (fieldwork done 2026-07-27) of which
+providers expose a usage/quota signal that `ProviderAdapter.getUsage()`
+(`src/providers/provider.ts`) could read as the PRIMARY "spent so far"
+source for `execute_prompt` budget awareness.
 
-Status: research document, 2026-07-27. Answers the first-implementation-step
-requirement of beads item apra-fleet-eft.80.1 (parent: apra-fleet-eft.80,
-"Usage/budget awareness in execute_prompt"). Mirrors
-docs/interactive-injection-provider-survey.md's method and confidence
-legend. Providers surveyed match `src/providers/*.ts`: claude, codex,
-gemini (removed, see historical note above), copilot, agy, opencode (`none` is out of scope -- see section 7).
+Current implementation state: `getUsage()` is declared as an OPTIONAL
+adapter capability and no adapter implements it, so every provider today
+runs on the fleet-side estimated fallback in
+`src/services/budget-awareness.ts` (`source: 'estimated'` -- accumulate each
+dispatch's own parsed token counts, priced via `getMemberModelPricing()` for
+a dollar budget). This document is the standing reference for anyone
+implementing a real `getUsage()`: it records which providers can actually
+answer, and which cannot.
+
+Mirrors docs/interactive-injection-provider-survey.md's method and
+confidence legend. Providers surveyed match `src/providers/*.ts`: claude,
+codex, copilot, agy, opencode (`none` is out of scope -- see section 7).
 
 Confidence legend (matches docs/interactive-injection-provider-survey.md):
 - [OK]   = confirmed by reading the provider's own docs/schema/source directly, today.
@@ -44,29 +45,27 @@ Confidence legend (matches docs/interactive-injection-provider-survey.md):
 | Claude (API-key members) | [OK] Anthropic Admin API: `GET /v1/organizations/usage_report/messages` and `GET /v1/organizations/cost_report`, both `group_by[]`-filterable, both require a separate **Admin API key** (not the member's own API key) | [OK] yes -- a plain authenticated REST call; the gap is credential plumbing (Admin key != member key), not API existence |
 | Claude (OAuth subscription members) | [DOC] Claude Code CLI's own `/usage` command shows plan-limit usage (rolling 5h + weekly windows) computed from local session history; hits an internal "usage endpoint" that can itself be rate-limited | [TBD] `/usage` is an interactive TUI command; whether it (or its underlying endpoint) is reachable/parseable from a headless `-p` dispatch was not confirmed. **Fallback signal that IS confirmed headless-safe:** the CLI's own error text ("You've hit your session limit" / "You've hit your weekly limit" / "You've hit your Opus limit") surfaces in `-p` output on exhaustion -- classifiable via `classifyError()`, same mechanism `PromptErrorCategory` already exists for |
 | Codex | [DOC]/[TBD] OpenAI platform Usage API (org-level, Admin-key-scoped) is public and well-documented in general OpenAI knowledge, but `platform.openai.com` returned HTTP 403 (bot-protected) in this pass -- not re-confirmed live. Codex's own config schema (`developers.openai.com/codex/config-reference`, fetched live) confirms an **internal** "rate-limit windows" / "remaining percentage" concept (`memories.min_rate_limit_remaining_percent` setting) exists in the CLI itself | [TBD] internal signal confirmed to exist, but no confirmed CLI flag/output surfaces it to an external caller; OpenAI's org Usage API is a plausible fallback source pending live re-verification |
-| Gemini CLI | [OK] `docs/resources/quota-and-pricing.md` (fetched live from google-gemini/gemini-cli) documents daily-request-count quotas per auth method, and the `/stats model` interactive command for in-session usage; source also confirms dedicated `googleQuotaErrors.ts` / `quotaErrorDetection.ts` modules for quota-error detection | [TBD] `/stats model` is interactive-only (same headless-reachability gap as Claude's `/usage`); no public REST endpoint for pulling remaining quota was found. The quota-error-detection source modules ARE a confirmed headless-safe fallback signal (error-text classification, same pattern as Claude's session-limit messages) |
 | GitHub Copilot CLI | [OK] GitHub REST API `GET /orgs/{org}/copilot/metrics/reports/organization-1-day` (docs.github.com, fetched live) returns org-level 28-day Copilot usage metrics via signed download links | [FAIL] for member/session scope -- this endpoint is **organization-admin-scoped**, not a per-user/per-session remaining-quota signal, and needs an org-owner token distinct from any individual member's credentials. The standalone `copilot-cli` binary's own repo (github/copilot-cli, tree fetched live) has no public source to inspect (thin installer-only repo, 19 files, matches the finding already on record in docs/interactive-injection-provider-survey.md section 4) -- no CLI-native usage signal confirmed |
 | AGY (Antigravity) | [TBD] -- unchanged from docs/interactive-injection-provider-survey.md section 5's finding. `antigravity.google/docs/quickstart` still returns 404/empty client app; no public GitHub repo found (GitHub code search for "antigravity google" surfaces unrelated third-party repos only) | [TBD] -- blocked on the same hands-on-investigation gap noted in the prior survey (apra-fleet-fnz.2's implementer is best positioned to also answer this) |
-| OpenCode | [OK] confirmed in TWO independent ways: (1) this repo's own docs/opencode-exploration.md (line ~360-387) already verified live that OpenCode's `step_finish` session event carries `part.tokens {total,input,output,reasoning,cache}` AND `part.cost` inline on every turn; (2) opencode's own source (`packages/opencode/src/acp/usage.ts`, fetched live from sst/opencode) defines a `totalSessionCost(messages)` aggregator and `buildUsage()`/`latestAssistantMessage()` helpers built on that same per-message `cost`/`tokens` data | [OK] yes, and uniquely so among all six providers -- no separate usage-API call is needed at all: cost/token usage is emitted inline with every response, matching the shape `ParsedResponse.usage` in `src/providers/provider.ts` already expects, so accumulation is just a matter of reading a field that's already present in the parsed output |
+| OpenCode | [OK] confirmed in TWO independent ways: (1) live verification in this repo that OpenCode's `step_finish` session event carries `part.tokens {total,input,output,reasoning,cache}` AND `part.cost` inline on every turn; (2) opencode's own source (`packages/opencode/src/acp/usage.ts`, fetched live from sst/opencode) defines a `totalSessionCost(messages)` aggregator and `buildUsage()`/`latestAssistantMessage()` helpers built on that same per-message `cost`/`tokens` data | [OK] yes, and uniquely so among every provider surveyed -- no separate usage-API call is needed at all: cost/token usage is emitted inline with every response, matching the shape `ParsedResponse.usage` in `src/providers/provider.ts` already expects, so accumulation is just a matter of reading a field that's already present in the parsed output |
 | none (`src/providers/none.ts`) | N/A | N/A -- `execute_prompt` rejects `llm_provider: "none"` members outright (plain command executor, no LLM concept at all); no usage/budget signal is meaningful here |
 
-**Bottom line for apra-fleet-eft.80.2's implementation order:** OpenCode is
-the only provider where a real `getUsage()`-shaped signal is BOTH confirmed
-to exist AND confirmed headless-readable today (it's already inline in
-every parsed response) -- cheapest to implement first as the reference
-`getUsage()` capability. Claude API-key members are the next-strongest case
-(a real, documented, callable REST API) but need Admin-key credential
-plumbing distinct from the member's own key. Every other row (Claude OAuth,
-Codex, Gemini) has a confirmed provider-side signal that is either
-interactive-only or org-scoped, so `apra-fleet-eft.80`'s FALLBACK path
-(fleet-side accumulation from dispatch-result token counts, `source:
-"estimated"`) is expected to be the operative path for those rows at
-launch, with error-text classification (session-limit / quota-exceeded
-messages) as a best-effort supplementary signal per the parent feature's
-"subscription-plan members without a priceable meter" clause. Copilot and
-AGY need further hands-on investigation (matching the disposition already
-on record for both in docs/interactive-injection-provider-survey.md) before
-either can move past [TBD]/[FAIL].
+**Bottom line for `getUsage()` implementation order:** OpenCode is the only
+provider where a real `getUsage()`-shaped signal is BOTH confirmed to exist
+AND confirmed headless-readable (it is already inline in every parsed
+response) -- cheapest to implement first as the reference `getUsage()`
+capability. Claude API-key members are the next-strongest case (a real,
+documented, callable REST API) but need Admin-key credential plumbing
+distinct from the member's own key. Every other row (Claude OAuth, Codex)
+has a confirmed provider-side signal that is either interactive-only or
+org-scoped, so the fleet-side fallback (accumulation from dispatch-result
+token counts, `source: "estimated"`) remains the operative path for those
+rows, with error-text classification (session-limit / quota-exceeded
+messages) as a best-effort supplementary signal for subscription-plan
+members without a priceable meter. Copilot and AGY need further hands-on
+investigation (matching the disposition already on record for both in
+docs/interactive-injection-provider-survey.md) before either can move past
+[TBD]/[FAIL].
 
 ## 1. Claude
 
@@ -165,40 +164,6 @@ reachable unlike the platform.openai.com doc site).
   implementation time) and/or run `codex` with a verbose/debug flag to see
   if the remaining-percentage value is logged anywhere parseable.
 
-## 3. Gemini CLI (google-gemini/gemini-cli)
-
-Source: `docs/resources/quota-and-pricing.md` fetched live 2026-07-27 from
-`raw.githubusercontent.com/google-gemini/gemini-cli/main/`, located via a
-full repo-tree search (GitHub API) for quota/usage-related paths.
-
-### 3.1 Provider-native quota signal -- [OK]
-
-- Documents per-auth-method daily request-count quotas (e.g. 1,000/day for
-  Gemini Code Assist Individual via Google-account login, 1,500/day
-  Google AI Pro, 250/day free-tier API key, etc.) -- a **request-count**
-  ceiling, not a token/dollar meter, for the subscription-style auth paths.
-- In-session usage: `/stats model` (interactive command) "provides a
-  snapshot of your current session's token usage, as well as information
-  about the limits associated with your current quota"; a summary also
-  prints on session exit. Same interactive-only shape as Claude's `/usage`
-  and the same [TBD]-for-headless caveat applies.
-- No public REST endpoint for pulling remaining quota programmatically was
-  found in the doc (pay-as-you-go paths point to Vertex AI /
-  ai.google.dev's own rate-limit docs, which describe request/token-per-
-  minute CEILINGS, not a query-current-remaining-quota API).
-
-### 3.2 Confirmed headless-safe fallback signal -- [OK]
-
-- The repo-tree search (GitHub API, fetched live) surfaced two
-  purpose-built source files: `packages/core/src/utils/googleQuotaErrors.ts`
-  and `packages/core/src/utils/quotaErrorDetection.ts` -- dedicated
-  quota-error-detection modules shipped in the CLI itself. This confirms
-  Gemini CLI already classifies quota-exhaustion errors internally, which
-  is exactly the "rate-limit/quota error sniffing" pattern the parent
-  feature's fallback clause anticipates, and (like Claude's session-limit
-  error strings) is a natural fit for `classifyError()` rather than a new
-  subsystem.
-
 ## 4. GitHub Copilot CLI (github/copilot-cli)
 
 ### 4.1 Org-level REST usage API -- [OK], but wrong scope for a member `getUsage()`
@@ -251,8 +216,7 @@ live 2026-07-27.
 
 ### 6.1 Provider-native usage/cost signal -- [OK], doubly confirmed
 
-- **This repo's own prior verified notes:** docs/opencode-exploration.md
-  (around line 360-387) already confirmed LIVE that OpenCode's streamed
+- **This repo's own prior live verification:** OpenCode's streamed
   `step_finish` session event carries `part.tokens
   {total,input,output,reasoning,cache:{write,read}}` AND `part.cost`
   inline on every turn -- explicitly correcting an earlier "usage
@@ -278,7 +242,7 @@ live 2026-07-27.
   fleet dispatch with no extra network round-trip: it is structurally the
   closest fit to `ParsedResponse.usage: { input_tokens, output_tokens }`
   already defined in `src/providers/provider.ts`, just needing the `cost`
-  field folded in alongside token counts. Among the six providers, this
+  field folded in alongside token counts. Among the providers surveyed, this
   is the only one confirmed OK on both axes (signal exists AND is
   headless-readable) without any open question.
 
@@ -289,7 +253,7 @@ command-executor members with no CLI/LLM concept at all;
 `execute_prompt` rejects these members outright (use `execute_command`
 instead, per that file's own doc comment). No usage/budget signal applies.
 
-## 8. Recommendations for apra-fleet-eft.80.2
+## 8. Recommendations for implementing `getUsage()`
 
 1. Implement OpenCode's `getUsage()` (or equivalent inline-usage read)
    FIRST -- it is the only provider with a fully-confirmed, headless-safe,
@@ -300,18 +264,16 @@ instead, per that file's own doc comment). No usage/budget signal applies.
    Admin API (section 1.1) -- real and well-documented, but explicitly
    flag the Admin-key-vs-member-key credential-plumbing gap as a
    configuration/secrets-management dependency, not a code-complexity one.
-3. For Claude OAuth, Codex, and Gemini (sections 1.2, 2, 3): treat the
-   FALLBACK path (fleet-side token-count accumulation, `source:
-   "estimated"`, per apra-fleet-eft.80's own fallback clause) as the
-   operative implementation for launch, layered with the already-shipped
+3. For Claude OAuth and Codex (sections 1.2, 2): keep the FALLBACK path
+   (fleet-side token-count accumulation, `source: "estimated"`) as the
+   operative implementation, layered with the already-shipped
    error-classification signals as best-effort supplementary warnings
    (session-limit / quota-error text -> `classifyError()`), rather than
    blocking on a headless usage query these providers may not offer.
 4. Copilot (section 4) and AGY (section 5) remain [TBD]/[FAIL] pending
    hands-on investigation with the live binaries -- do not build
    `getUsage()` for either until that investigation happens; both already
-   fall back cleanly to the estimated-source path per apra-fleet-eft.80's
-   design.
+   fall back cleanly to the estimated-source path.
 5. Before writing adapter code, re-verify OpenAI's Usage API shape
    (section 2.1) against a reachable source (authenticated session or
    OpenAPI spec) -- this survey could not get past `platform.openai.com`'s

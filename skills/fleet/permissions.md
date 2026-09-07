@@ -147,6 +147,6 @@ known equivalent gate.
 
 If `execute_prompt` fails with a `workspace_not_trusted` structured error, the CLI's own
 stderr will contain a `"...this workspace has not been trusted"` message - seed trust
-via `ensureWorkspaceTrusted(workFolder)` (invoked automatically at
-register_member/update_member, and on every `compose_permissions` call once that
-wiring lands), then retry.
+via `ensureWorkspaceTrusted(workFolder)` -- invoked automatically at
+`register_member`/`update_member`, on every `compose_permissions` call, and as a
+one-shot self-heal inside `execute_prompt` itself -- then retry.

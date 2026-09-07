@@ -2,8 +2,8 @@
 
 Source file (no captions): `gfx2-dashboard-story.gif` (27 frames, 4.8MB, 1568x717).
 Final file (captions burned in): `gfx2-dashboard-story-captioned.gif` (27 frames,
-4.7MB, 1568x717), rendered with `C:\Users\akhil\AppData\Local\Temp\claude\gfx2-caption.py`
-(Pillow -- no ffmpeg on this box). Both downloaded to `C:\Users\akhil\Downloads\`.
+4.7MB, 1568x717), rendered with a throwaway Pillow script (no ffmpeg was
+available on the capture machine).
 
 The captioned version is the one to wire into the README. The beat sheet below
 was used to time the captions frame-by-frame (verified against extracted PNGs,

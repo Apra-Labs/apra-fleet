@@ -2,11 +2,10 @@
 
 **Status:** Implemented
 **Date:** 2026-04-06
-**Issues:** #83, #84, #85, #87, #88
 
 ## Context
 
-The fleet server's public API (MCP tool names, parameter names, and output keys) originally reflected Claude-specific naming. As multi-provider support matured, the API started to look inconsistent and confusing to users -- `provision_llm_auth` only worked for LLM auth, `claude.version` appeared even for non-Claude members (at the time, this included Gemini members; Gemini has since been removed as a supported provider), and `work_folder` was used both as a member property and as a tool parameter for something entirely different.
+The fleet server's public API (MCP tool names, parameter names, and output keys) originally reflected Claude-specific naming. As multi-provider support matured, the API started to look inconsistent and confusing to users -- the auth-provisioning tool's name did not say it was LLM-specific, `claude.version` appeared even for non-Claude members, and `work_folder` was used both as a member property and as a tool parameter for something entirely different.
 
 Separately, the PM role was burdened with manually calling `update_task_tokens` to report token usage -- a fragile process that was easy to forget and produced incomplete data.
 
@@ -20,14 +19,14 @@ This ADR records the design decisions made to address these issues.
 
 | Old name | New name | Surface |
 |----------|----------|---------|
-| `provision_llm_auth` | `provision_llm_auth` | MCP tool name |
+| generic auth-provisioning name | `provision_llm_auth` | MCP tool name |
 | `claude.version` / `claude.auth` | `llm_cli.version` / `llm_cli.auth` | `member_detail` output key |
 | `work_folder` | `run_from` | `execute_command` parameter |
 
 ### Why
 
-- `provision_llm_auth` implied a general concept but was actually an LLM credential provisioning tool -- renaming to `provision_llm_auth` removes the ambiguity.
-- `claude` as an output key in `member_detail` was misleading when the member uses another provider (Codex, Copilot, and at the time Gemini -- since removed). The key `llm_cli` describes *what* the section covers (the LLM CLI on this member) rather than *which* provider it is.
+- The auth-provisioning tool's original name implied a general concept but the tool only ever provisioned LLM credentials -- `provision_llm_auth` removes the ambiguity.
+- `claude` as an output key in `member_detail` was misleading when the member uses another provider (Codex, Copilot, AGY, OpenCode). The key `llm_cli` describes *what* the section covers (the LLM CLI on this member) rather than *which* provider it is.
 - `work_folder` as an `execute_command` parameter conflicted conceptually with the `work_folder` member registration property. The new name `run_from` describes the intent (override directory) and its rarity -- the default (member's registered folder) is correct in almost all cases.
 
 ### Trade-offs

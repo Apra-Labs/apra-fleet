@@ -1,6 +1,6 @@
-<!-- llm-context: Deep-dive on the PM skill -- Fleet's reference software-development workflow (doer-reviewer sprints driven by /pm commands). Migrated out of README.md on 2026-07-24 to keep the README landing page short; content unchanged. -->
+<!-- llm-context: Deep-dive on the PM skill -- Fleet's reference software-development workflow (doer-reviewer sprints driven by /pm commands). -->
 <!-- keywords: PM skill, /pm, doer, reviewer, beads, sprint, cost accounting, cost.js, auto-sprint -->
-<!-- see-also: ../README.md (quickstart), ../skills/pm/SKILL.md (full command reference), beads.md (issue tracker), features/auto-sprint-install.md (cost accounting) -->
+<!-- see-also: ../README.md (quickstart), ../packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md (full command reference), beads.md (issue tracker), features/auto-sprint-install.md (cost accounting) -->
 
 # The PM skill
 

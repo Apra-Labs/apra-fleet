@@ -1,6 +1,6 @@
 # OOB Auth -- Terminal Mechanism and SSH/Headless Fallback
 
-Covers the design of the out-of-band credential collection system and the SSH/headless fix shipped in Sprint 1 (#106).
+Covers the design of the out-of-band credential collection system and its SSH/headless fallback.
 
 ---
 
@@ -27,7 +27,7 @@ The fleet server creates a socket at `~/.apra-fleet/data/auth.sock` (Linux/macOS
 
 ---
 
-## Display Detection -- The #106 Fix
+## Display Detection
 
 ### Problem
 

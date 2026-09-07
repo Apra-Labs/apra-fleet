@@ -1,8 +1,6 @@
 # npm Packaging -- As-Built Reference
 
-**Sprint:** feat/npm-packaging (bead apra-fleet-tmt.20)
-**Design doc (pre-build investigation):** docs/npm-packaging-plan.md
-**This doc:** what actually shipped -- authoritative for all future work
+Authoritative description of how apra-fleet is packaged and published.
 
 ---
 
@@ -182,22 +180,20 @@ in PATH, unexpected mode), `apra-fleet --version` is the correct first step.
 
 ---
 
-## 6. Descoped Work
+## 6. Not Implemented
 
-The pre-build design doc (docs/npm-packaging-plan.md, Sections 1.7, 14.2, 14.3)
-references:
+The following do not exist in the codebase, and packaging does not depend on
+them:
 
 - `src/services/service-manager/` with `windows.ts`, `linux.ts`, `macos.ts`
-- A `status` CLI command (`status.ts:53-86`)
+- A `status` CLI command
 - A `/health` endpoint
 
-**None of these exist in the codebase.** They were not implemented before this
-sprint and were not created during it. The plan scoped coexistence diagnostics
-to what was buildable: `getDeliveryMode()` / `getDeliveryInfo()` in
-`src/delivery-mode.ts`, surfaced via `--version`. A future `status` command
-would import `getDeliveryInfo()` from `./delivery-mode.js` as its foundation.
-Service overwrite warnings (S14.2) and cross-mode `/health` (S14.3) are
-deferred until the service-manager infrastructure exists.
+Coexistence diagnostics are limited to what `getDeliveryMode()` /
+`getDeliveryInfo()` in `src/delivery-mode.ts` expose via `--version`. A future
+`status` command would import `getDeliveryInfo()` from `./delivery-mode.js` as
+its foundation. Service overwrite warnings and cross-mode `/health` are deferred
+until service-manager infrastructure exists.
 
 There is also no `start`, `stop`, `restart` CLI subcommand in the current
 codebase. The `--help` text does not list them.
@@ -243,9 +239,8 @@ TypeScript output:
   shipped in `dist/`-copied form; this content ships only if copied into
   `dist/`.
 
-**apra-fleet-fyc.2 (post apra-fleet-kuh.5): the fleet-sprint engine now ships
-as source, not a bundle.** `scripts/bundle-se.mjs` and the `build:se` script
-have been retired -- there is no longer an esbuild step that produces
+**The fleet-sprint engine ships as source, not a bundle.** There is no
+`scripts/bundle-se.mjs` or `build:se` script -- no esbuild step produces
 `dist/fleet-sprint.mjs` or `dist/fleet-sprint-runner.mjs`, and the root
 `bin` field no longer has a `fleet-sprint` entry (see 7.2 below). Instead,
 `package.json`'s `files` allowlist ships the engine's source directories
@@ -348,7 +343,7 @@ on this checkout): 1.1 MB packed / 4.4 MB unpacked, 891 files.
 |-------|-------|-------|
 | `name` | `@apralabs/apra-fleet` | Scoped; requires `@apralabs` npm org |
 | `version` | matches `version.json` | Must match at publish time (CI's version lockstep guard) |
-| `bin` | `{ "apra-fleet": "dist/index.js" }` | npm sets the executable bit; the fleet-sprint engine is reached via `apra-fleet workflow fleet-sprint`, not a separate bin entry (apra-fleet-fyc.2, post apra-fleet-kuh.5) |
+| `bin` | `{ "apra-fleet": "dist/index.js" }` | npm sets the executable bit; the fleet-sprint engine is reached via `apra-fleet workflow fleet-sprint`, not a separate bin entry |
 | `engines.node` | `>=22.0.0` | Node 22 required for `node:sea` API + native `fetch` |
 | `publishConfig.access` | `public` | Required for scoped packages on public npm |
 | `prepublishOnly` | `npm run dist-pm && npm run build` | Copies the apra-pm package content into `dist/`, then runs tsc -- no bundling step remains |
@@ -368,8 +363,7 @@ on this checkout): 1.1 MB packed / 4.4 MB unpacked, 891 files.
 if: startsWith(github.ref, 'refs/tags/v')
 ```
 
-The job runs ONLY when a `v*` tag is pushed. No `v*` tag was pushed during this
-sprint. The job is authored and committed but has never been triggered.
+The job runs ONLY when a `v*` tag is pushed.
 
 ### 8.3 Job structure
 

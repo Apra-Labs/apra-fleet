@@ -1,30 +1,26 @@
 # Architecture & Safety Rationalization: Google Antigravity (agy) Integration
 
 > **Internal document** -- architectural rationale for contributors and reviewers, not user-facing guidance. For user setup instructions see [docs/install.md](install.md).
->
-> **Historical note:** this document records the state of the codebase at the time of the `feat/agy-support` integration, when the legacy Gemini provider adapter was still present (already being demoted in favor of AGY). Gemini has since been fully removed as a supported provider; references to it below are preserved as historical record, not current guidance.
 
-This document rationalizes the design decisions, safety mechanisms, and compatibility considerations implemented for the Google Antigravity CLI (provider key: "agy") support in apra-fleet.
+This document rationalizes the design decisions, safety mechanisms, and compatibility considerations behind Google Antigravity CLI (provider key: "agy") support in apra-fleet.
 
 ---
 
 ## 1. Executive Summary
 
-The "feat/agy-support" branch introduces Google Antigravity CLI ("agy") as a primary, PM-capable LLM provider alongside "claude", while demoting the slower legacy "gemini" provider adapter.
+Google Antigravity CLI ("agy") is a primary, PM-capable LLM provider alongside "claude".
 
-Integration safety was verified against the following criteria:
+Integration safety is held to the following criteria:
 - Isolation: Integration must not corrupt global configuration settings or conflict with other tool environments.
 - Security: Credentials must be encrypted at rest, transmitted securely, and never leaked in execution logs.
 - Stability: Unsupported options (such as live log tailing or model flags) must fail back gracefully without crashing execution pipelines.
-
-The integration has achieved 100% test pass rate across 1,290+ unit and integration tests.
 
 ---
 
 ## 2. Installation & Cleanup Safety (install.ts / uninstall.ts)
 
 ### Change Rationalization
-Unlike Claude or Gemini, the Antigravity CLI reads its global configurations (MCP servers and hooks) from separate JSON files located in a centralized config directory:
+Unlike Claude, the Antigravity CLI reads its global configurations (MCP servers and hooks) from separate JSON files located in a centralized config directory:
 - MCP Config: "~/.gemini/config/mcp_config.json"
 - Hooks Config: "~/.gemini/config/hooks.json"
 
@@ -92,7 +88,7 @@ Agy supports session resumption via the "--conversation <sessionId>" flag. Howev
 
 ---
 
-## 7. Verification Results
+## 7. Verification
 
-- All 1,290+ vitest tests pass successfully, confirming that the new "agy" adapter does not introduce regressions to Claude, Gemini, Codex, or Copilot.
-- The single-executable installer build ("npm run build:binary") successfully compiles with all multi-provider config modifications packaged.
+- The full vitest suite ("npm test") must pass, confirming the "agy" adapter introduces no regressions to Claude, Codex, Copilot, or OpenCode.
+- The single-executable installer build ("npm run build:binary") must compile with all multi-provider config modifications packaged.

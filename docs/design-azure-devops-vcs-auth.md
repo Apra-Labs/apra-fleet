@@ -11,8 +11,8 @@ parsing, credential assembly, failure classification, and pull-request/
 comment REST builders. What is documented here reflects the current, real
 state of the implementation -- some pieces described in the older
 `design-vcs-auth-onboarding.md` and `design-git-auth.md` documents predate
-this work and are superseded by this file where they conflict. As of this
-writing, end-to-end PR publishing through the fleet-sprint runner is wired
+this work and are superseded by this file where they conflict.
+End-to-end PR publishing through the fleet-sprint runner is wired
 and consumes the provider-owned PR response mapping, with mock-sprint
 coverage exercising that publish path against canned Azure DevOps
 responses, plus an opt-in, env-gated real end-to-end harness for

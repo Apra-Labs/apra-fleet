@@ -1,4 +1,4 @@
-<!-- llm-context: Describes the member category and tags feature added in sprint feat/member-tags-design. Read when working on member registration, display, or tag-aware dispatch/filtering. -->
+<!-- llm-context: Describes the member category and tags feature. Read when working on member registration, display, or tag-aware dispatch/filtering. -->
 <!-- keywords: tags, category, Agent, register_member, update_member, groupByCategory, check_status, list_members -->
 <!-- see-also: ../architecture.md (Agent data model), ../../src/types.ts (Agent interface), ../../src/utils/agent-helpers.ts (groupByCategory) -->
 
@@ -127,7 +127,7 @@ function getRequiredSkills(
 - Encodes the rules in `skills/fleet/skill-matrix.md` programmatically.
 - Members with no relevant tags return an empty array (not an error).
 - Currently used in tests and as a documentation companion; not yet wired into the
-  installer's onboarding path (integrate during a later sprint before it drifts).
+  installer's onboarding path.
 
 ## Architecture Invariants
 

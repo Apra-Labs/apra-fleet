@@ -6,19 +6,19 @@ Source doc path: `packages/apra-fleet-se/fleet-sprint/docs/shared-orchestrator-r
 
 ## Problem recap
 
-Every fleet-sprint launch resolves an `orchestrator` pseudo-role (runner.js:73
-`ROLE_ORCHESTRATOR`, runner.js:4938 `orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR)`)
+Every fleet-sprint launch resolves an `orchestrator` pseudo-role
+(`ROLE_ORCHESTRATOR` / `getMemberForRole(ROLE_ORCHESTRATOR)` in `runner.js`)
 whose beads clone is the sprint's ground truth for all scope reads and bd mutations. Absent an
 explicit `--role-map '{"orchestrator":[...]}'`, this silently defaults to
-`unmappedRoleFallbackPool[0]` (runner.js:4915-4920) -- for a single-member sprint, the dispatch
+`unmappedRoleFallbackPool[0]` -- for a single-member sprint, the dispatch
 member itself. Two production incidents followed: beads created on the interactive operator
 machine's clone were invisible to sprints whose accidental orchestrator was a different,
 never-synced member.
 
 The naive fix (role-map a hub member as orchestrator on every launch) deadlocks concurrency:
 the launch overlap guard unions `--members` with every roleMap value INCLUDING orchestrator
-(api.mjs:103-117 `memberUnion`, api.mjs:133-141), so a shared orchestrator member would 409
-every second concurrent launch (api.mjs:202-207). The operator's proposal: the supervisor holds
+(`memberUnion` in `src/supervisor/api.mjs`), so a shared orchestrator member would 409
+every second concurrent launch. The operator's proposal: the supervisor holds
 a standing, shared, orchestrator-role-only reservation on one designated member and injects it
 as the default orchestrator into every launch.
 
@@ -116,8 +116,8 @@ exclusivity was never what protected orchestrator-role dolt writes; the mutex wa
 
 - **Supervisor ledger** (src/supervisor/ledger.mjs): per-sprint entries
   `{ members, issueRoots, childPid, reservedAt, branch, base, goal, exit*, logPath }`
-  (ledger.mjs:65-108), claimed and released in exact lockstep with the sprint lifecycle
-  (ledger.mjs:21-29, claim at 461-477, release at 485-499), atomically persisted, PID-probe
+  -- claimed and released in exact lockstep with the sprint lifecycle
+  (`claim()`/`release()` in `ledger.mjs`), atomically persisted, PID-probe
   reconciled on restart. Everything about it is sprint-lifecycle-scoped.
 - **Launch overlap guard** (api.mjs:162-209): all-or-nothing 409 on any member of the incoming
   union (members + every roleMap value, orchestrator included) overlapping any live ledger
@@ -138,7 +138,7 @@ exclusivity was never what protected orchestrator-role dolt writes; the mutex wa
 
 ### A4. Interaction with in-flight work (pause/resume `apra-fleet-p2to`, sprint-doctor `apra-fleet-iiny`)
 
-Pause/resume's reservation logic (escalate-to-llm-design.md:520-533) releases each member via
+Pause/resume's reservation logic (escalate-to-llm-design.md) releases each member via
 owner-checked `member_reservation release` on pause and re-reserves on resume, failing resume
 cleanly when a member was taken. This operates on the sprint's OWN per-sprint reservation set.
 Under this design the pinned member is deliberately NOT in that set (D1), so pause/resume never
@@ -149,7 +149,7 @@ points**:
 
 1. **Sprint-doctor's wedged-reservation remedy is NOT orthogonal.** The doctor's remedy table
    allows `member_reservation force_release` when a member is "reserved by a sprint id whose
-   pid/ledger entry is dead" (escalate-to-llm-design.md:679). The pin sentinel has no pid and
+   pid/ledger entry is dead" (escalate-to-llm-design.md). The pin sentinel has no pid and
    no ledger entry -- to that heuristic it looks exactly like a wedged dead reservation, and a
    doctor run would strip the pin. The doctor rule must learn: a reservation whose owner
    matches the supervisor pin sentinel prefix is never force-releasable (and the supervisor
@@ -204,9 +204,9 @@ After D0, the orchestrator's entire command surface is `bd`/`bd dolt` via execut
 
 **Why not a shared/`exclusive:false` reservation TYPE in the ledger:** every ledger invariant
 is sprint-lifecycle-shaped -- claim/release in lockstep with one sprint's launch/terminal
-events (ledger.mjs:21-29), a `childPid` for restart PID-probe reconciliation (ledger.mjs:70-71),
+events, a `childPid` for restart PID-probe reconciliation,
 release driven by watchdog/reconcile/Stop (`POST /api/reservations/:sprintId/force-release`,
-dashboard.mjs:279-282 per escalate-to-llm-design.md:521). A permanent, sprint-less, shared
+`src/supervisor/dashboard.mjs`, per escalate-to-llm-design.md). A permanent, sprint-less, shared
 entry violates all of it: it has no pid to probe, must survive every reconciliation pass, must
 be skipped by the overlap guard, and must never be force-released by the Stop path. That is
 not a reservation with a flag -- it is a different object with a different lifecycle, and
@@ -286,7 +286,7 @@ is a documented follow-up, not a blocker.
   (`FLEET_SE_DATA_DIR`, default `~/.apra-fleet-se`, ledger.mjs:177-181), e.g.
   `supervisor-config.json`: `{ "pinnedRoles": { "orchestrator": ["memberA", "memberB"] } }`.
   Generic shape (role -> ordered member list); only `orchestrator` is honored initially.
-- **Flag**: `fleet-se serve --pin-orchestrator <member[,member...]>` overriding the file
+- **Flag**: `fleet-se-serve --pin-orchestrator <member[,member...]>` overriding the file
   (serve.mjs currently takes only `--port`, serve.mjs:52-62 -- room to grow).
 - **API**: `GET /api/config/pinned-roles` (consumed by dashboard, launch form, and the CLI
   follow-up) and `PUT` for runtime changes (re-runs sentinel reserve/release accordingly).

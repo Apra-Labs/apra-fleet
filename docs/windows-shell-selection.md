@@ -1,36 +1,31 @@
 # Windows shell selection: probing the real shell instead of assuming PowerShell
 
-## The problem this replaces
+## Why the OS field is not enough
 
-Prior to this feature, every Windows member was assumed to run PowerShell,
-both implicitly (the only Windows `OsCommands` implementation existed) and
-via ad-hoc raw-PowerShell strings scattered outside that abstraction
-(member-home path resolution, provider install commands, the fleet-sprint
-runner's own encoded-command wrapper). PowerShell's own semantics
-(false-success on non-terminating errors, `$OFS` array-splitting,
-CLIXML-wrapped stderr, alias collisions such as `curl`) made this assumption
-a disproportionate source of live-discovered bugs. A registered member's OS
-being `windows` was never actually evidence its interactive/login shell was
-PowerShell -- a large share of real-world Windows dev machines run
-Git-for-Windows Bash as the default shell.
+A registered member's OS being `windows` is not evidence that its
+interactive/login shell is PowerShell -- a large share of real-world Windows
+dev machines run Git-for-Windows Bash as the default shell. Assuming
+PowerShell for every Windows member is also expensive in its own right:
+PowerShell's semantics (false-success on non-terminating errors, `$OFS`
+array-splitting, CLIXML-wrapped stderr, alias collisions such as `curl`) are
+a disproportionate source of live-discovered bugs.
 
 ## The `shell` field: finer-grained than `os`
 
-The member schema now carries an optional `shell` field --
+The member schema carries an optional `shell` field --
 `'gitbash' | 'pwsh7' | 'powershell5'` -- alongside the existing `os` field.
 `os` answers "what platform is this," `shell` answers "what interpreter
 actually executes the command strings we send it." Code that branches
 command construction for a Windows member must branch on `shell` (via the
-`isPosixShell(os, shell)` predicate), not on `os === 'windows'` alone --
-`os === 'windows'` with `shell === 'gitbash'` is a POSIX command-construction
-target, byte-identical in shape to a Linux/macOS member. This is the key
-delta from the general cross-shell guidance in
+`isPosixShell(os, shell)` predicate in `src/utils/agent-helpers.ts`), not on
+`os === 'windows'` alone -- `os === 'windows'` with `shell === 'gitbash'` is a
+POSIX command-construction target, byte-identical in shape to a Linux/macOS
+member. This is the key delta from the general cross-shell guidance in
 [docs/cross-shell-command-construction.md](cross-shell-command-construction.md),
-which predates this feature and still frames every branch point as an
-`agent.os` check -- that guidance remains correct as a POSIX-vs-PowerShell
-framing, but any Windows-specific call site should now resolve through the
-registered `shell`, not `os`, wherever the member's actual shell has been
-probed and recorded.
+which frames every branch point as an `agent.os` check -- that guidance is
+correct as a POSIX-vs-PowerShell framing, but any Windows-specific call site
+should resolve through the registered `shell`, not `os`, wherever the
+member's actual shell has been probed and recorded.
 
 ## Probe order and trust rule
 
@@ -81,13 +76,13 @@ every actual command sent to it built against a bare, PATH-resolved
 `bash.exe` fallback -- silently reintroducing the WSL/System32 ambiguity the
 probe was built to close, for exactly the member the probe is supposed to
 protect. Both the probe's remote discovery script and the local resolver
-now consume one shared candidate-list literal (including the shared
-user-scope suffix), with the parity between the two test-asserted rather
-than left to be kept in sync by convention -- this is now a structurally
-enforced invariant, not just a documented expectation.
+consume one shared candidate-list literal (`src/os/git-bash-candidates.ts`,
+including the shared user-scope suffix), with the parity between the two
+test-asserted rather than left to be kept in sync by convention -- a
+structurally enforced invariant, not just a documented expectation.
 
 Consistent with the "no silent degradation" theme above: the local
-resolver no longer falls back to a bare, PATH-resolved `bash.exe` when none
+resolver does not fall back to a bare, PATH-resolved `bash.exe` when none
 of the known-good candidates check out -- it throws, surfacing the failure
 to its caller instead of quietly reintroducing the WSL/System32 ambiguity
 this section describes.
@@ -119,15 +114,13 @@ as listeners served directly by the core binary, unifying the two at that
 point is a mechanical merge of two structurally-identical implementations,
 not a redesign.
 
-**Current state**: both sides are wired into their real command-construction
-call sites, not just present as source. On the core side, the
-command-construction call sites listed above route through the registered
-shell. On the fleet-sprint side, dolt-settle's install/kill/spawn/teardown
-and node-eval command strings, and the runner's remaining
-`buildSettleCallback` call sites, now resolve and thread the member's
-registered shell through `se-os-commands` rather than building a fixed
-PowerShell string -- the module set is an active dependency, not dead
-source.
+Both sides are wired into their real command-construction call sites. On the
+core side, the command-construction call sites listed above route through the
+registered shell. On the fleet-sprint side, dolt-settle's
+install/kill/spawn/teardown and node-eval command strings, and the runner's
+`buildSettleCallback` call sites, resolve and thread the member's registered
+shell through `se-os-commands` rather than building a fixed PowerShell
+string.
 
 One import-path subtlety worth keeping in mind when extending this: any
 script body executed via WMI/`Win32_Process` (used to install, probe, and
@@ -146,13 +139,13 @@ of the string you are embedding it into," not "one value per member."
 ## `isPosixShell`: one exported helper, not several private copies
 
 The `isPosixShell(os, shell)` predicate that decides whether a member's
-outbound commands should be built as POSIX or PowerShell is now a single
-exported, overloaded helper (accepting either a raw OS value or a
-convenience `isWindows` boolean, plus the optional registered shell), with
-one call-site-facing wrapper (`isPosixShellMember(agent)`) that reads both
-fields off an `Agent` and delegates to it. Every call site that used to
-carry its own private copy of this predicate now imports the shared helper
-instead. The semantics are unchanged from before consolidation:
+outbound commands should be built as POSIX or PowerShell is a single
+exported, overloaded helper in `src/utils/agent-helpers.ts` (accepting either
+a raw OS value or a convenience `isWindows` boolean, plus the optional
+registered shell), with one call-site-facing wrapper
+(`isPosixShellMember(agent)`) that reads both fields off an `Agent` and
+delegates to it. Every call site imports the shared helper rather than
+carrying a private copy. The semantics are
 `!isWindows || shell === 'gitbash'`. New call sites should import the
 shared helper rather than reintroducing a private copy -- multiple
 independently-maintained copies of the same predicate is exactly the kind

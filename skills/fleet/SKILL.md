@@ -61,7 +61,7 @@ The `{{secure.NAME}}` pattern lets you reference stored secrets in any command w
 
 **How it works:**
 1. Store a secret with `credential_store_set`  -  Fleet opens an OOB terminal prompt, so the value never appears in chat
-2. Reference it as `{{secure.NAME}}` anywhere in a command string passed to `execute_command`, `register_member`, `update_member`, `provision_vcs_auth`, or `provision_auth`
+2. Reference it as `{{secure.NAME}}` anywhere in a command string passed to `execute_command`, `register_member`, `update_member`, `provision_vcs_auth`, `provision_llm_auth`, or `setup_git_app`
 3. Fleet resolves the token server-side before execution; LLM does not see the secret.
 
 **When to use:**
@@ -231,6 +231,7 @@ to `resume: true`; an explicit session-ID string never falls back this way (see 
 |----------|---------------|-------|
 | Claude | Full | `claude --resume <sessionId>` |
 | Antigravity (agy) | Full | `agy --conversation <sessionId>` |
+| OpenCode | Full | `opencode run --session <sessionId>` (`--continue` when no id is stored) |
 | Codex | Partial | `resume` command supported |
 | Copilot | None | Always starts fresh regardless of `resume` value |
 
@@ -253,6 +254,7 @@ Per-provider flag behaviour:
 |----------|--------------|-------------------|
 | Claude | `--permission-mode auto` | `--dangerously-skip-permissions` |
 | Antigravity (agy) | None (config-file only via `compose_permissions`) | `--dangerously-skip-permissions` |
+| OpenCode | `--auto` | `--dangerously-skip-permissions` |
 | Codex | `--ask-for-approval auto-edit` | `--sandbox danger-full-access --ask-for-approval never` |
 | Copilot | Not supported  -  warns and runs interactively | Not supported |
 
@@ -291,7 +293,7 @@ When you see this notice, surface it to the user verbatim before the rest of the
 
 | Concern | How to handle |
 |---------|---------------|
-| **Agent context file** | Use `member_detail` -> `llmProvider` to determine filename: CLAUDE.md (Claude), AGY.md (Antigravity), AGENTS.md (Codex), COPILOT.md (Copilot) |
+| **Agent context file** | Use `member_detail` -> `llmProvider` to determine filename: CLAUDE.md (Claude), AGY.md (Antigravity), AGENTS.md (Codex and OpenCode), COPILOT.md (Copilot) |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md)  -  skip for all other providers |
 | **Timeouts** | Antigravity members are slower -> use 2-3x timeout multiplier for `execute_prompt` dispatches to those members. Minimum `timeout_s: 900` for any non-trivial task. |
 

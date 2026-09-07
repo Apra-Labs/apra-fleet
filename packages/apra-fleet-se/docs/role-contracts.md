@@ -1,8 +1,9 @@
 # How the apra-pm Role Contracts Work
 
 Every AI agent role fleet-sprint dispatches (`planner`, `plan-reviewer`,
-`doer`, `reviewer`, `deployer`, `integ-test-runner`, `harvester`, plus
-`ci-watcher` which is defined but not currently dispatched by this runner)
+`doer`, `reviewer`, `deployer`, `integ-test-runner`,
+`regression-test-runner`, `harvester`, plus `ci-watcher` which is defined but
+not currently dispatched by this runner)
 has a canonical, prose behavioral definition at
 `packages/apra-fleet-se/apra-pm/agents/<role>.md` -- the apra-pm package in this monorepo.
 `fleet-sprint/contracts.mjs` is this package's
@@ -43,8 +44,12 @@ name strings, one per `name:` frontmatter field across
 
 ```js
 ['planner', 'plan-reviewer', 'doer', 'reviewer', 'deployer',
- 'integ-test-runner', 'ci-watcher', 'harvester']
+ 'integ-test-runner', 'regression-test-runner', 'ci-watcher', 'harvester']
 ```
+
+`integ-test-runner` (per-cycle feature closure) and `regression-test-runner`
+(the once-per-sprint full regression pass) are separate roles with separate
+apra-pm definitions and separate output schemas.
 
 `normalizeRole(role)` trims and lowercases any role string for comparison
 (fixing a historical "`Doer`/`doer`" casing-mismatch bug at the source);
@@ -65,6 +70,7 @@ export const reviewerVerdict = ...
 export const doerReport = ...
 export const deployerReport = ...
 export const integReport = ...
+export const regressionReport = ...
 export const ciReport = ...
 export const harvesterReport = ...
 ```
@@ -84,17 +90,21 @@ which:
    against each role's prose contract, and now serve purely as the
    degraded-but-correct fallback.
 
-`planner` has no output schema by design (its "output" is the beads DAG it
-creates, not a structured verdict) and is allow-listed in
-`ROLES_WITHOUT_OUTPUT_SCHEMA` so its absence never triggers a warning.
+`ROLES_WITHOUT_OUTPUT_SCHEMA` is the allow-list of roles that legitimately
+have no output schema file, so their absence never triggers a warning. It is
+currently **empty**: every role in `ROLES`, `planner` included, has an
+`agents/schemas/<role>-output.json`, so a missing one is always a real defect
+worth warning about. (The planner has an output contract because the engine
+reads structured fields from it, not just the beads DAG it creates.)
+
 `streakAssignment` (grouping ready beads into doer streaks) and
 `finalVerdict` (the sprint-level PASS/FAIL gate) are **application-owned**
 schemas with no apra-pm counterpart at all -- they exist only because this
 runner invented those two dispatch shapes itself; there is no
 `packages/apra-fleet-se/apra-pm/agents/streak-assignment.md` or `.../final-verdict.md`.
 
-**Schema directory resolution** (`resolveSchemasDir()` in `contracts.mjs`,
-apra-fleet-bun): layout-aware and bundled-location-first, so this package
+**Schema directory resolution** (`resolveSchemasDir()` in `contracts.mjs`):
+layout-aware and bundled-location-first, so this package
 resolves its role schemas correctly whether it's a full monorepo checkout, a
 standalone install, or bundled into the root `@apralabs/apra-fleet` package.
 In order: an `APRA_FLEET_SE_SCHEMAS_DIR` env override (used as-is, no
@@ -103,8 +113,8 @@ freshness lookup); if only one of the bundled `dist/agents/schemas` copy
 `packages/apra-fleet-se/apra-pm` package-local copy in this monorepo exists,
 that one; if **both** exist, the **newer** one, where freshness is the
 maximum mtime over the `.json` files each directory contains (recursive,
-not the directory's own mtime) -- a tie resolves to `dist`, preserving the
-pre-apra-fleet-ot2z.20 default. If none of those resolve,
+not the directory's own mtime) -- a tie resolves to `dist`. If none of those
+resolve,
 `loadVendorSchema()` returns `null` for every role and every schema falls
 back to its hand-written literal -- an expected, silent state, not an error.
 
@@ -182,8 +192,10 @@ success.
 `dist/agents/schemas` copy or the `packages/apra-fleet-se/apra-pm`
 package-local copy in this monorepo exists, that one; if both exist, the
 newer one by recursive max `.json` mtime (a tie resolves to `dist`). This
-package's tests point the loader
-at `test/fixtures/apra-pm-schemas/` (a snapshot of the real apra-pm
-schema files) via the `APRA_FLEET_SE_SCHEMAS_DIR` env override, so
-schema-loading behavior can be exercised deterministically regardless of
-which of those directories actually exist in the checkout running the test.
+package's tests set the `APRA_FLEET_SE_SCHEMAS_DIR` env override to pin the
+loader at a known directory (`apra-pm/agents/schemas`, the package-local
+copy) before importing `contracts.mjs`, so schema-loading behavior can be
+exercised deterministically regardless of which candidate directories
+actually exist in the checkout running the test. `resolveSchemasDir()` also
+takes an injectable `deps` object (`env`, `exists`, `newestJsonMtimeMs`) so
+every resolution branch can be unit-tested without real directories on disk.

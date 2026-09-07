@@ -79,7 +79,7 @@ Watch progress there rather than tailing raw stdout.
 
 | Flag | Short | Required | Default | Description |
 |---|---|---|---|---|
-| `--issue <ids>` | `-i` | yes | -- | Target issue ID(s), comma separated (e.g. `epic-1,epic-2`). Scope resolves via `bd list --parent <id>` -- see the epics section below. |
+| `--issue <ids>` | `-i` | yes | -- | Target issue ID(s), comma separated (e.g. `epic-1,epic-2`). Scope resolves to each id's full descendant subtree -- see the epics section below. |
 | `--members <ids>` | `-m` | yes | -- | Member IDs/names to use, comma separated. Members act as repo targets for parallelism. |
 | `--branch <name>` | `-b` | yes | -- | Sprint branch to develop on. Created from `--base` if it does not exist; reused as-is if it does. |
 | `--base <name>` | `-B` | yes | -- | Base branch the sprint branch is created from, and the branch the eventual PR targets. |
@@ -154,15 +154,19 @@ bead that used `blocks` instead had `dependency_count: 5` and, once
 children were also parented under it, deadlocked completely.
 
 This also matters for launching a sprint: `fleet-sprint`'s `--issue <id>`
-flag resolves the sprint's scope via `bd list --parent <id>` internally --
-it only ever understands the `parent-child` hierarchy. A `blocked-by`-only
-manifest bead is invisible to fleet-sprint's scope filter no matter what you
-pass to `--issue`; only true children are picked up.
+flag resolves the sprint's scope by walking the `parent-child` tree down from
+`<id>` -- `bdListScoped()` fetches the whole project's beads once and does
+the descendant walk in memory, so every descendant at any depth is in scope
+(not just direct children), but nothing outside the parent-child hierarchy
+ever is. A `blocked-by`-only manifest bead is invisible to fleet-sprint's
+scope filter no matter what you pass to `--issue`; only true children are
+picked up. See `packages/apra-fleet-se/docs/fleet-sprint-cli-contract.md` for
+the full algorithm and worked examples.
 
 ## Recovering a wedged member reservation (launched via the supervisor)
 
-If a sprint was launched through the supervisor (`fleet-se serve`, `POST
-/api/sprints`) and its child process crashes or is killed, the supervisor's
+If a sprint was launched through the supervisor (`bin/serve.mjs`, installed
+as `fleet-se-serve`; `POST /api/sprints`) and its child process crashes or is killed, the supervisor's
 reservation ledger does **not** release that sprint's claim on its own during
 normal runtime -- only a supervisor restart, or an explicit operator call,
 clears it. Symptom: relaunching against the same member(s) is rejected with

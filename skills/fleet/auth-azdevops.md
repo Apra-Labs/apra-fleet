@@ -14,7 +14,7 @@ Personal Access Tokens (PATs) with configurable scopes and expiration. Auth: emp
 
 ### Expiry Capture (Optional)
 
-When first registering a PAT, you can optionally capture its expiration date by responding to the out-of-band prompt with the expiry timestamp. The fleet stores this expiry date and checks it against two separate thresholds (see `src/utils/agent-helpers.ts`):
+When first registering a PAT, you can optionally capture its expiration date by passing `pat_expires_at` (ISO 8601, e.g. `2027-08-20T00:00:00Z`) to `provision_vcs_auth`. Azure DevOps exposes no API to read a PAT's expiry back, so this value must come from the operator -- the date chosen in the "Set expiration" step above. It is validated at the schema boundary and rejected if unparseable. The fleet stores this expiry date and checks it against two separate thresholds (see `src/utils/agent-helpers.ts`):
 
 - **Minute-scale warning** (`EXPIRY_WARNING_MS`, 10 minutes): fires for any provider once the credential is within 10 minutes of expiry. This threshold was sized for GitHub App tokens (~1hr lifetime).
 - **Day-scale warning** (`DAY_SCALE_WARNING_MS`, 7 days): fires only for providers listed in `DAY_SCALE_WARNING_PROVIDERS`, which currently includes `azure-devops`. Because Azure DevOps PATs run weeks to months (see "Set expiration" above), this gives a heads-up long before the minute-scale check would ever fire.
@@ -26,7 +26,7 @@ This step is optional; PATs function normally even without expiry tracking. Howe
 ## Deploy
 
 ```
-provision_vcs_auth(member_id, provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: '...')
+provision_vcs_auth(member_id, provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: '...', pat_expires_at: '2027-08-20T00:00:00Z')
 ```
 
 ## Secret-Name Convention

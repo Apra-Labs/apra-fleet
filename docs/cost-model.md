@@ -1,4 +1,4 @@
-<!-- llm-context: Deep-dive on how Fleet keeps multi-agent token spend down -- model-tier routing, shell-over-prompts, smart sessions, and how token usage is measured per member/role. Migrated out of README.md on 2026-07-24 to keep the README landing page short; content unchanged. -->
+<!-- llm-context: Deep-dive on how Fleet keeps multi-agent token spend down -- model-tier routing, shell-over-prompts, smart sessions, and how token usage is measured per member/role. -->
 <!-- keywords: cost, tokens, model tier, cheap, standard, premium, execute_command, smart sessions, token usage, spend -->
 <!-- see-also: ../README.md (quickstart), FAQ.md (cost FAQ discussion), install.md (customizing model tier mapping) -->
 

@@ -154,10 +154,15 @@ const result = await fleet.executeCommand({
 
 ## Cancelling an in-flight call
 
-Every `ApraFleet` method accepts an `AbortSignal`. Aborting stops the
-*local* wait -- it rejects the pending promise and frees client-side
-bookkeeping -- but it does not cancel a job the server has already
-accepted and started running.
+`executePrompt()` and `executeCommand()` accept `signal` (and `timeoutMs`)
+and consume them locally. The other `ApraFleet` methods forward their whole
+options object to the server, so passing `signal`/`timeoutMs` to them sends
+those keys as tool arguments rather than cancelling anything -- cancel those
+calls at a layer above instead.
+
+Aborting stops the *local* wait -- it rejects the pending promise and frees
+client-side bookkeeping -- but it does not cancel a job the server has
+already accepted and started running.
 
 ```js
 const controller = new AbortController();
@@ -237,6 +242,9 @@ Rejections carry a `.code` you can branch on:
 
 - `'TIMEOUT'` -- no response arrived within the client-side timeout window.
 - `'ABORTED'` -- the caller's `AbortSignal` fired before a response arrived.
+- `'TRANSPORT_CLOSED'` -- the underlying transport closed (a deliberate
+  `stop()`, or the SSE stream dying past its reconnect budget) while the
+  request was in flight. A connectivity event, not a request-level failure.
 - Anything else -- a plain `Error` whose message is the server's own
   JSON-RPC error message (e.g. an unknown member name, a malformed
   argument, or a failure that happened while the server ran the tool).
@@ -259,9 +267,16 @@ try {
 
 ## What this package will not do for you
 
-- It does not start, stop, or health-check the `apra-fleet` server
-  process itself (beyond spawning it as a child, for the stdio transport).
-- It does not retry failed or timed-out requests.
+- It does not manage the `apra-fleet` server's lifecycle. `connectFleet()`
+  will health-probe an existing HTTP singleton and self-spawn a stdio
+  server as a fallback, and `ApraFleet.shutdownServer()` asks a connected
+  server to terminate itself -- but nothing here supervises, restarts, or
+  installs the server.
+- It does not retry a request that produced a response or timed out. (The
+  HTTP transport does transparently retry a POST whose `fetch` rejected at
+  the connection level before any response was produced, and reopens its
+  persistent SSE stream on an idle/short read -- neither can duplicate work
+  the server already accepted.)
 - It does not provide idempotency keys, so retrying a call yourself after a
   client-side timeout can duplicate server-side work if the original
   request was in fact received and is still running.
