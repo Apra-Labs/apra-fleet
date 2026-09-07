@@ -2,7 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { checkDoltLiteralPath, findDoltLiteralViolations } from '../fleet-sprint/dolt-literal-guard.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import { checkDoltLiteralPath, checkDoltLiteralModules, findDoltLiteralViolations } from '../fleet-sprint/dolt-literal-guard.mjs';
+import { doltLiteralModulePaths } from '../fleet-sprint/guarded-modules.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -79,4 +82,104 @@ test('findDoltLiteralViolations: a live command() call carrying the literal is f
     const violations = findDoltLiteralViolations(src);
     check(violations.length === 1, `Expected exactly one violation, got: ${JSON.stringify(violations)}`);
     check(violations[0].line === 2, `Expected the violation on line 2, got: ${JSON.stringify(violations[0])}`);
+});
+
+// =============================================================================
+// SHARED GUARDED-MODULE LIST (fleet-sprint/guarded-modules.mjs).
+//
+// checkDoltLiteralPath() above is the single-file entry point, kept and
+// unchanged. What follows exercises checkDoltLiteralModules(), which reads the
+// SHARED list -- the single place a newly extracted fleet-sprint module is
+// registered -- and defines no list of its own, so a dolt command that moves
+// out of runner.js into a new module cannot silently fall out of coverage.
+// =============================================================================
+
+test('checkDoltLiteralModules() over the shared list is clean today and defines no list of its own', () => {
+    const { violations, files, skipped } = checkDoltLiteralModules();
+    assert.deepStrictEqual(files, ['runner.js'], 'the default scan set is the shared list, minus dolt-literal exemptions');
+    assert.deepStrictEqual(skipped, [], 'nothing exempt is registered in the shared list today');
+    assert.deepStrictEqual(violations, [], `Expected zero direct dolt literals across the guarded modules, got: ${JSON.stringify(violations, null, 2)}`);
+});
+
+test('dolt-sync.mjs is excluded from the dolt-literal list, while byte-identical content under another name is not', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dolt-literal-list-'));
+    try {
+        // The REAL sync module's source, copied verbatim under two names.
+        // dolt-sync.mjs legitimately builds `bd dolt pull`/`bd dolt push`
+        // command strings -- it is the single permitted dolt command surface --
+        // so the exemption must be by NAME, mechanically enforced, not by
+        // whoever happens to wire up the call.
+        const syncSrc = fs.readFileSync(path.join(__dirname, '../fleet-sprint/dolt-sync.mjs'), 'utf8');
+        const exempt = path.join(dir, 'dolt-sync.mjs');
+        const impostor = path.join(dir, 'not-the-sync-module.mjs');
+        fs.writeFileSync(exempt, syncSrc, 'utf8');
+        fs.writeFileSync(impostor, syncSrc, 'utf8');
+
+        // Sanity: the copied source really does contain dolt literals, so the
+        // exemption below is doing work rather than passing vacuously.
+        const rawFindings = findDoltLiteralViolations(syncSrc);
+        check(rawFindings.length > 0, 'dolt-sync.mjs must actually contain dolt literals for this test to mean anything');
+
+        const exemptRun = checkDoltLiteralModules(doltLiteralModulePaths([exempt]));
+        assert.deepStrictEqual(exemptRun.violations, [], `dolt-sync.mjs must be exempt, got: ${JSON.stringify(exemptRun.violations, null, 2)}`);
+        check(!exemptRun.files.includes('dolt-sync.mjs'), 'dolt-sync.mjs must never even be scanned');
+
+        const impostorRun = checkDoltLiteralModules(doltLiteralModulePaths([impostor]));
+        check(
+            impostorRun.violations.length === rawFindings.length,
+            `identical content under another name must still be flagged, got: ${JSON.stringify(impostorRun.violations, null, 2)}`
+        );
+        check(
+            impostorRun.violations.every((v) => v.startsWith('not-the-sync-module.mjs:')),
+            `each violation must be attributed to the fixture's own filename, got: ${JSON.stringify(impostorRun.violations, null, 2)}`
+        );
+
+        // Belt and braces: the exemption holds even if someone passes the
+        // exempt path straight through, bypassing doltLiteralModulePaths().
+        assert.deepStrictEqual(checkDoltLiteralModules([exempt]).violations, []);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('adding a newly extracted module to the shared list makes the dolt-literal guard scan it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dolt-literal-list-'));
+    const fixture = path.join(dir, 'extracted-module.mjs');
+    try {
+        fs.writeFileSync(
+            fixture,
+            [
+                "import { doltPushAfter } from './dolt-sync.mjs';",
+                '',
+                'export async function sync(command, member) {',
+                "    await command('bd dolt push', { member_name: member });",
+                '}',
+            ].join('\n'),
+            'utf8'
+        );
+        const { violations, files } = checkDoltLiteralModules(doltLiteralModulePaths([fixture]));
+        assert.deepStrictEqual(files, ['runner.js', 'extracted-module.mjs']);
+        check(violations.length === 1, `expected exactly one violation, got: ${JSON.stringify(violations, null, 2)}`);
+        check(violations[0].startsWith('extracted-module.mjs:4'), `violation must name the fixture's own file and line, got: ${violations[0]}`);
+
+        // Clear the seeded violation -> clean report.
+        fs.writeFileSync(
+            fixture,
+            [
+                "import { doltPushAfter } from './dolt-sync.mjs';",
+                '',
+                'export async function sync(command, member) {',
+                '    await doltPushAfter({ command, member });',
+                '}',
+            ].join('\n'),
+            'utf8'
+        );
+        assert.deepStrictEqual(checkDoltLiteralModules(doltLiteralModulePaths([fixture])).violations, []);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('checkDoltLiteralModules() rejects a non-array argument rather than silently scanning nothing', () => {
+    assert.throws(() => checkDoltLiteralModules(RUNNER_PATH), /must be an array/);
 });

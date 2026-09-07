@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { doltLiteralModulePaths, DOLT_LITERAL_EXEMPT } from './guarded-modules.mjs';
 
 // =============================================================================
 // apra-fleet-417.2.3 -- dolt-literal guard checker.
@@ -24,6 +25,15 @@ import path from 'path';
 // Anything else -- a live command()/template-literal/string containing the
 // literal substring -- is a violation: the sync module must be called by its
 // exported entry points, never re-inlined.
+//
+// MODULE-LIST GENERALIZATION: this guard is no longer pointed at a single
+// hard-coded file. checkDoltLiteralModules() below reads the SHARED
+// guarded-module list (./guarded-modules.mjs) -- the one place a newly
+// extracted fleet-sprint module is registered -- and defines no list of its
+// own. The dolt-sync.mjs carve-out described above is now MECHANICALLY
+// enforced there (DOLT_LITERAL_EXEMPT) rather than left to whoever wires up
+// the call. checkDoltLiteralPath() remains exported and behaves exactly as
+// before.
 // =============================================================================
 
 const DOLT_LITERAL_RE = /\bbd dolt (pull|push)\b/;
@@ -73,4 +83,45 @@ export function checkDoltLiteralPath(filePath) {
         `permitted dolt command surface.`
     );
     return { violations };
+}
+
+/**
+ * Aggregate entry point: scans every module in the SHARED guarded-module list
+ * (./guarded-modules.mjs), MINUS the dolt-literal exemptions, and returns the
+ * union of their violations. Follows checkModules() in
+ * dispatch-safety-guard.mjs -- the reference implementation -- so a dolt
+ * command that moves out of runner.js into a newly extracted module stays
+ * covered instead of silently falling out of scan scope.
+ *
+ * Each violation string already names the basename of the file it came from
+ * (checkDoltLiteralPath's `fileLabel`), so an aggregate run attributes every
+ * finding to the correct module.
+ *
+ * THE EXEMPTION IS ENFORCED HERE, NOT ASSUMED: dolt-sync.mjs is the single
+ * permitted dolt command surface -- it BUILDS the `bd dolt pull`/`bd dolt
+ * push` strings on purpose -- so it is filtered out by basename via
+ * DOLT_LITERAL_EXEMPT even if someone registers it in the shared list or
+ * passes it here explicitly. Byte-identical content under any OTHER name is
+ * still a violation. This guard defines no list of its own.
+ *
+ * @param {string[]} [paths]
+ * @returns {{ violations: string[], files: string[], skipped: string[] }}
+ */
+export function checkDoltLiteralModules(paths = doltLiteralModulePaths()) {
+    if (!Array.isArray(paths)) {
+        throw new TypeError('checkDoltLiteralModules(paths): paths must be an array of file paths');
+    }
+    const violations = [];
+    const files = [];
+    const skipped = [];
+    for (const p of paths) {
+        const file = path.basename(p);
+        if (DOLT_LITERAL_EXEMPT.includes(file)) {
+            skipped.push(file);
+            continue;
+        }
+        files.push(file);
+        violations.push(...checkDoltLiteralPath(p).violations);
+    }
+    return { violations, files, skipped };
 }
