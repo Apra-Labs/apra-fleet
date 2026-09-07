@@ -2,7 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { checkPath } from '../fleet-sprint/dispatch-safety-guard.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import { checkPath, checkModules } from '../fleet-sprint/dispatch-safety-guard.mjs';
+import { GUARDED_MODULES, guardedModulePaths } from '../fleet-sprint/guarded-modules.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -399,4 +402,77 @@ test('checker accepts a call site carrying member_id only (not a violation)', ()
 
     assert.strictEqual(sites.length, 1, 'expected exactly one call site in the fixture');
     assert.deepStrictEqual(violations, [], `expected no violations, got: ${JSON.stringify(violations)}`);
+});
+
+// =============================================================================
+// SHARED GUARDED-MODULE LIST (fleet-sprint/guarded-modules.mjs).
+//
+// checkPath() above is the single-file entry point, kept and unchanged. What
+// follows exercises the aggregate entry point checkModules(), which reads the
+// SHARED list -- the single place a newly extracted fleet-sprint module is
+// registered. The point of these tests is that the list is load-bearing:
+// registering a module there is what makes the guard scan it, so a guarded
+// construct that moves out of runner.js into a newly extracted module cannot
+// silently fall out of coverage.
+// =============================================================================
+
+test('the shared guarded-module list contains runner.js and resolves to real files', () => {
+    assert.ok(GUARDED_MODULES.includes('runner.js'), `expected runner.js in the shared list, got: ${JSON.stringify(GUARDED_MODULES)}`);
+    for (const p of guardedModulePaths()) {
+        assert.ok(fs.existsSync(p), `registered guarded module does not exist on disk: ${p}`);
+    }
+});
+
+test('checkModules() over the shared list reports zero dispatch-safety violations today', () => {
+    const { violations, files } = checkModules();
+    assert.deepStrictEqual(files, ['runner.js'], 'the default scan set is exactly the shared list');
+    assert.deepStrictEqual(violations, [], `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`);
+});
+
+test('adding a second path to the shared list makes the guard scan it and name it in the violation', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guarded-modules-'));
+    const fixture = path.join(dir, 'extracted-module.mjs');
+    try {
+        // A newly "extracted" module carrying one seeded violation: a
+        // command() dispatch with no member_name/member_id.
+        fs.writeFileSync(
+            fixture,
+            [
+                "import { thing } from './thing.mjs';",
+                '',
+                'export async function run(command) {',
+                "    await command('bd list --json', { timeout: 60 });",
+                '}',
+            ].join('\n'),
+            'utf8'
+        );
+
+        const { violations, files } = checkModules(guardedModulePaths([fixture]));
+
+        assert.deepStrictEqual(files, ['runner.js', 'extracted-module.mjs']);
+        assert.strictEqual(violations.length, 1, `expected exactly one violation, got: ${JSON.stringify(violations)}`);
+        // Attributed to the FIXTURE's own filename, not to runner.js -- an
+        // aggregate scan that mislabelled its findings would be useless.
+        assert.match(violations[0], /^extracted-module\.mjs:4 \(command\(\)\) is missing member_name\/member_id$/);
+
+        // Clearing the seeded violation clears the report.
+        fs.writeFileSync(
+            fixture,
+            [
+                "import { thing } from './thing.mjs';",
+                '',
+                'export async function run(command, member) {',
+                "    await command('bd list --json', { member_name: member, timeout: 60 });",
+                '}',
+            ].join('\n'),
+            'utf8'
+        );
+        assert.deepStrictEqual(checkModules(guardedModulePaths([fixture])).violations, []);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('checkModules() rejects a non-array argument rather than silently scanning nothing', () => {
+    assert.throws(() => checkModules(RUNNER_PATH), /must be an array/);
 });

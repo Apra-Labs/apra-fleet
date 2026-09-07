@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { guardedModulePaths } from './guarded-modules.mjs';
 
 // =============================================================================
 // apra-fleet-eft.3.3 -- dispatch-safety guard checker, extracted so it is
@@ -19,6 +20,16 @@ import path from 'path';
 // Invariant under test (unchanged from eft.3.1): EVERY `command(` / `agent(`
 // call site in a scanned source file must supply an explicit `member_name`
 // (or `member_id`) in its options object.
+//
+// MODULE-LIST GENERALIZATION: this guard is no longer pointed at a single
+// hard-coded file. checkModules() below reads the SHARED guarded-module list
+// (./guarded-modules.mjs) -- the one place a newly extracted fleet-sprint
+// module is registered -- so a dispatch that moves out of runner.js into a
+// new module stays covered instead of silently falling out of scan scope.
+// checkPath() remains exported and behaves exactly as before; it is still the
+// right entry point for scanning one specific file (a fixture, or a module
+// like dolt-sync.mjs that is deliberately not on the shared list). This
+// module is the reference implementation the sibling guards follow.
 // =============================================================================
 
 /**
@@ -174,4 +185,43 @@ export function checkPath(filePath) {
     const fileLabel = path.basename(filePath);
     const violations = findViolations(sites, fileLabel);
     return { sites, violations };
+}
+
+/**
+ * Aggregate entry point: scans EVERY module in the shared guarded-module list
+ * (fleet-sprint/guarded-modules.mjs -- runner.js today, plus whatever is
+ * extracted from it) and returns the union of their call sites and
+ * violations. This is the reference implementation the other mechanical
+ * guards in this directory follow.
+ *
+ * Each violation string already carries the basename of the file it came
+ * from (findViolations' `fileLabel`), so an aggregate run over several
+ * modules attributes every finding to the correct module rather than to a
+ * single hard-coded runner.js label. `sitesByFile` gives per-module call-site
+ * counts for baseline assertions that need them.
+ *
+ * `paths` defaults to the shared list; callers pass
+ * guardedModulePaths([fixture]) to prove the list -- not a hard-coded name --
+ * is what the guard actually reads.
+ *
+ * @param {string[]} [paths]
+ * @returns {{ sites: object[], violations: string[], files: string[], sitesByFile: Record<string, object[]> }}
+ */
+export function checkModules(paths = guardedModulePaths()) {
+    if (!Array.isArray(paths)) {
+        throw new TypeError('checkModules(paths): paths must be an array of file paths');
+    }
+    const sites = [];
+    const violations = [];
+    const files = [];
+    const sitesByFile = {};
+    for (const p of paths) {
+        const file = path.basename(p);
+        const result = checkPath(p);
+        files.push(file);
+        sitesByFile[file] = result.sites;
+        sites.push(...result.sites.map((s) => ({ ...s, file })));
+        violations.push(...result.violations);
+    }
+    return { sites, violations, files, sitesByFile };
 }
