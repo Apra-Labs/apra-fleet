@@ -366,6 +366,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `key_path` | `string?` | Path to SSH private key file. |
 | `git_access` | `"read" \| "push" \| "admin" \| "issues" \| "full"?` | Git access level for this member. |
 | `git_repos` | `string[]?` | Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"]). |
+| `vcs_provider` | `"github" \| "bitbucket" \| "azure-devops" \| "none"?` | VCS provider this member pushes to / opens PRs against. Omit to auto-detect from the member's git `origin` remote (registration warns loudly if detection fails); `"none"` declares the member deliberately has no VCS provider. |
 | `cloud_provider` | `"aws"?` | Cloud provider name (e.g. "aws"). When set, `cloud_instance_id` and `key_path` are required. |
 | `cloud_instance_id` | `string?` | EC2 instance ID (e.g. "i-0abc123def456789a"). Required when `cloud_provider` is set. |
 | `cloud_region` | `string?` | AWS region (default: "us-east-1"). |

@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Member VCS-provider registration and dispatch-time self-heal
+
+Umbrella context: apra-fleet-5oo ("member sprint-role readiness is never
+provisioned or preflight-verified -- gaps surface reactively mid-sprint").
+
+`register_member` could fully register a dispatch-capable member
+(`llm_provider: "claude"`) while leaving its `vcsProvider` completely unset --
+registration never asked for or detected it. The gap only surfaced hours
+later, mid-sprint, as fleet-sprint's `VCSModule.resolveProvider()` throwing
+"member has no registered VCS provider" on the member's first push or PR, on a
+path whose own self-heal died on the same lookup and so could never heal it.
+
+- **`register_member` now takes `vcs_provider`** (`github` | `bitbucket` |
+  `azure-devops` | `none`), and `apra-fleet register-member` takes the matching
+  `--vcs-provider` flag. An explicit value always wins and skips all probing.
+- **Best-effort auto-detection at registration time.** With no explicit value,
+  the member's git `origin` remote is read and its host mapped to a provider
+  (`src/utils/vcs-provider-detect.ts`, covering https / ssh / scp-like URL
+  forms with anchored host matching). Modelled on the existing Windows
+  shell probe: it never blocks registration, and the result reports
+  `VCS Provider: <provider> (auto-detected from origin)`.
+- **A loud warning when detection fails.** Registering before cloning is a
+  normal flow, so registration still succeeds -- but a dispatch-capable member
+  with no resolvable provider now says so at registration time instead of
+  failing hours into an unattended sprint. `llm_provider: "none"` members and
+  an explicit `vcs_provider: "none"` are exempt.
+- **Dispatch-time self-heal for members already in that state**
+  (`provisionVcsAuthForMember`, fleet-sprint runner). When `resolveProvider`
+  throws, the provider is resolved from the git remote the function has
+  ALREADY read for its repos scope -- through the same provider registry every
+  other host decision uses, never a provider literal -- and the subsequent
+  `provision_vcs_auth` call persists it server-side as an existing side
+  effect. An unreadable or unrecognized remote still raises the original
+  error: there is nothing to detect, so nothing is guessed. Benefits both the
+  reactive self-heal and the proactive preflight, which share the call site.
+- **`BitbucketVCS` now declares `matchesHost`** (anchored to `bitbucket.org` /
+  `altssh.bitbucket.org`), so the host registry names it for a Bitbucket
+  remote instead of falling through to the `generic-git` catch-all. Required
+  for the fallback above to detect Bitbucket at all; behaviour-neutral for
+  `VCSModule.capabilities()`.
+
 ## [Unreleased] -- Azure DevOps VCS auth: credential assembly, PR publish path, and regression-sandbox hardening (sprint FAILED)
 
 Sprint goal: make `provision_vcs_auth` and the fleet-sprint VCS layer support

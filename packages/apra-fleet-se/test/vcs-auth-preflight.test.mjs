@@ -243,7 +243,18 @@ describe('createVcsAuthPreflightCallback', () => {
         );
     });
 
-    test('a member with NO registered VCS provider degrades silently (typed error logged, never thrown) and never calls provision_vcs_auth -- no silent GitHub default', async () => {
+    // apra-fleet-5oo NARROWED THIS CASE. "No silent GitHub default" means no
+    // provider assumed with no evidence. provisionVcsAuthForMember now has ONE
+    // evidence-based fallback: the member's own git remote, already read for
+    // its repos scope. A remote no registered auth provider claims is still
+    // evidence of nothing, so this case now uses such a remote -- the
+    // healed-from-a-real-remote counterpart lives in
+    // test/vcs-provider-missing-selfheal.test.mjs.
+    const unclaimedRemoteCommand = async (cmd) => (cmd === 'git remote get-url origin'
+        ? { ok: true, output: 'https://gitlab.example.com/acme/widgets.git', error: null }
+        : { ok: true, output: '', error: null });
+
+    test('a member with NO registered VCS provider AND a remote no provider claims degrades silently (typed error logged, never thrown) and never calls provision_vcs_auth -- no silent GitHub default', async () => {
         const calls = [];
         const callTool = async (name, args) => {
             if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: undefined }) }] };
@@ -251,7 +262,7 @@ describe('createVcsAuthPreflightCallback', () => {
             return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
         };
         const logs = [];
-        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand, log: (m) => logs.push(m) });
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: unclaimedRemoteCommand, log: (m) => logs.push(m) });
 
         await assert.doesNotReject(() => ensureVcsAuthFresh('unprovisioned-member'));
 

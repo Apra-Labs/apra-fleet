@@ -86,6 +86,7 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 | `tags` | string[] | no | Free-form labels, max 10 tags of max 64 chars each. Used by `list_members` filtering and `compose_permissions` |
 | `git_access` | `"read"` \| `"push"` \| `"admin"` \| `"issues"` \| `"full"` | no | Git access level for this member |
 | `git_repos` | string[] | no | Repositories this member may access (e.g. `["Apra-Labs/ApraPipes"]`) |
+| `vcs_provider` | `"github"` \| `"bitbucket"` \| `"azure-devops"` \| `"none"` | no | VCS provider this member pushes to and opens PRs against. Omit to auto-detect it from the member's git `origin` remote (see step 8b below); pass `"none"` to declare the member deliberately has no VCS provider and suppress the warning |
 | `code_intel_provider` | `"codebase-memory"` \| `"gitnexus"` \| `"none"` | no | Code-intelligence provider. Defaults to the fleet-wide config |
 | `shell` | `"gitbash"` \| `"pwsh7"` \| `"powershell5"` | no | Override the probed Windows shell. Ignored for non-Windows members. See [windows-shell-selection.md](windows-shell-selection.md) |
 | `unreservable` | boolean | no | Mark the member as never exclusively reservable so several sprints can share it |
@@ -106,14 +107,16 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 6. **Auth test (remote only)** -- for Claude members, runs a quick `claude -p "hello"` to verify authentication. For non-Claude providers, the version check from step 5 serves as the CLI availability check; auth is verified separately via `provision_llm_auth`. Skipped for local members since they inherit the current session's auth.
 7. **Creates working folder** -- `mkdir -p` (or equivalent) on the target.
 8. **Provisions role-agent files (remote only)** -- hashes the canonical set of PM role-agent files (planner, doer, reviewer, etc., plus `_shared/` and `schemas/`) against what is already on the remote box and uploads anything missing or stale. Skipped for local members (they share the operator's home directory) and for providers with no agents directory (codex, copilot). A provisioning failure is reported as a warning but never blocks registration.
-9. **Persists** -- saves the member to `~/.apra-fleet/data/registry.json` with a generated UUID, including the `llmProvider` field.
+8b. **Resolves the VCS provider** -- an explicit `vcs_provider` always wins and skips this step entirely. Otherwise the member's git `origin` remote is read (best effort) and its host mapped to a provider: `github.com` -> `github`, `bitbucket.org` -> `bitbucket`, `dev.azure.com` / `*.visualstudio.com` -> `azure-devops`. On success the result carries `VCS Provider: <provider> (auto-detected from origin)`. On failure (no git repo in the work folder yet, or an unrecognized host) registration still SUCCEEDS -- the common flow is to register a member and clone into its work folder afterwards -- but a loud warning is emitted saying the member will be UNABLE to push or open a PR until a provider is set. Members with `llm_provider: "none"` never dispatch an agent and are exempt. A GitHub Enterprise host has no fixed domain and is never auto-detected: register those with an explicit `vcs_provider`.
+9. **Persists** -- saves the member to `~/.apra-fleet/data/registry.json` with a generated UUID, including the `llmProvider` and `vcsProvider` fields.
 
-**Output:** Member ID, name, type, OS, folder, auth method, provider, latency, agent-file provisioning result, and any warnings (e.g. CLI not found, auth failed).
+**Output:** Member ID, name, type, OS, folder, auth method, LLM provider, VCS provider, latency, agent-file provisioning result, and any warnings (e.g. CLI not found, auth failed, VCS provider undetermined).
 
 **Failure modes:**
 - SSH connection fails: member is NOT registered, error returned
 - Duplicate folder: member is NOT registered
 - Claude CLI missing: member IS registered, but with a warning
+- VCS provider undetermined: member IS registered, but with a loud warning (it cannot push or open a PR until one is set -- re-register with an explicit `vcs_provider`, or let `provision_vcs_auth` / fleet-sprint's dispatch-time fallback set it once a git remote exists)
 
 ### `list_members`
 

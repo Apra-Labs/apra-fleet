@@ -469,6 +469,7 @@ export const VCSModule = {
     listVcsProviders,
     listVcsAuthProviders,
     getVcsProvider,
+    resolveVcsProviderForHost,
     DEFAULT_VCS_PROVIDER,
 };
 
@@ -481,6 +482,11 @@ export {
     listVcsProviders,
     listVcsAuthProviders,
     getVcsProvider,
+    // apra-fleet-5oo: re-exported so runner.js can ask "which registered
+    // provider claims this remote host?" without reaching past this module
+    // into ./vcs-providers/index.mjs directly -- same seam every other
+    // provider-registry helper above is reached through.
+    resolveVcsProviderForHost,
 };
 
 export default VCSModule;

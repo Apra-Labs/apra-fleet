@@ -33,7 +33,7 @@ import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResol
 // hard-aborting the run at its readiness gate.
 import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider } from './vcs-module.mjs';
+import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider, resolveVcsProviderForHost, listVcsAuthProviders } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
@@ -2373,6 +2373,28 @@ function selfHealResultText(result) {
 // give every member standing pull_requests:write for the whole sprint.
 // @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string, resolvedProvider?: { provider: string, authMode: string|null } }} opts
 // @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
+/**
+ * apra-fleet-5oo: map a member's git remote URL onto the VCS provider that
+ * hosts it, using the SAME registry that answers every other host question
+ * (vcs-module.mjs's capabilities() for the host parse, then
+ * resolveVcsProviderForHost() for the claim). Returns the provider NAME, or
+ * null when the URL has no host, or the claiming provider is not a
+ * member-facing auth backend -- resolveVcsProviderForHost() falls back to the
+ * 'generic-git' catch-all for an unclaimed host, and provisioning credentials
+ * against that would be a guess, not a detection.
+ *
+ * @param {unknown} remoteUrl
+ * @returns {string|null}
+ */
+function detectVcsProviderFromRemote(remoteUrl) {
+    const { host } = vcsCapabilities(remoteUrl);
+    if (!host) return null;
+    const impl = resolveVcsProviderForHost(host);
+    const name = impl && impl.name;
+    if (!name || !listVcsAuthProviders().includes(name)) return null;
+    return name;
+}
+
 async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName, remoteUrlOverride, resolvedProvider }) {
     let repos;
     let derivedRepo = null;
@@ -2428,7 +2450,46 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // the self-heal callback's authRemedy hint lookup) can thread it through
     // via `resolvedProvider`, saving a second member_detail round trip. Falls
     // back to this function's own lookup when not supplied.
-    const { provider, authMode } = resolvedProvider || await resolveProvider(member, { fleetApi });
+    //
+    // apra-fleet-5oo (LAYER 2 -- dispatch-time self-heal). resolveProvider()
+    // throws for a member registered with NO vcsProvider at all, which is
+    // exactly the state register_member could leave a fully dispatch-capable
+    // member in before apra-fleet-5oo's registration-time detection landed.
+    // For every such member ALREADY registered, that throw arrives reactively
+    // -- typically hours into an unattended sprint, on the first push -- and
+    // no amount of retrying can heal it, because the self-heal path itself
+    // dies on the same lookup.
+    //
+    // So: when the registry has nothing, fall back to the member's OWN git
+    // remote, which this function has already read above for the repos scope
+    // (never a second dispatch). The host is mapped through the SAME provider
+    // registry every other host decision goes through
+    // (resolveVcsProviderForHost), so no provider literal appears here, and a
+    // host claimed only by the generic-git catch-all is deliberately NOT
+    // accepted -- listVcsAuthProviders() is the vocabulary resolveProvider
+    // itself validates against.
+    //
+    // No separate persistence call is needed: fleetApi.provisionVcsAuth()
+    // below already writes vcsProvider back to the member registry as an
+    // existing side effect (src/tools/provision-vcs-auth.ts), so the very
+    // next lookup for this member resolves normally.
+    //
+    // An unreadable or unrecognized remote re-throws the ORIGINAL error --
+    // that is a real failure with nothing to detect, and must stay loud.
+    let provider;
+    let authMode;
+    try {
+        ({ provider, authMode } = resolvedProvider || await resolveProvider(member, { fleetApi }));
+    } catch (resolveErr) {
+        const detected = (!remoteReadFailed && remoteUrl)
+            ? detectVcsProviderFromRemote(remoteUrl)
+            : null;
+        if (!detected) throw resolveErr;
+        provider = detected;
+        const impl = getVcsProvider(provider);
+        authMode = (impl && Object.prototype.hasOwnProperty.call(impl, 'defaultAuthMode')) ? impl.defaultAuthMode : null;
+        log(`${logPrefix}: member '${member}' had no registered VCS provider; detected '${provider}' from its git remote and will provision it now`);
+    }
     // apra-fleet-5co8.2.1: the argument shape itself is now provider-owned.
     // What follows is the DEFAULT (GitHub-App) shape; a provider that declares
     // a buildProvisionArgs hook replaces it wholesale -- see

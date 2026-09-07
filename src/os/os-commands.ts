@@ -86,6 +86,16 @@ export interface OsCommands {
   // --- Git ---
   gitCurrentBranch(folder: string): string;
 
+  /**
+   * Print the `origin` remote's URL for a checkout at `folder`, or NOTHING at
+   * all when there is no git repo / no `origin` (an expected, common case --
+   * e.g. a member registered before anything was cloned into its work folder).
+   * Never fails the command: callers treat empty output as "unknown", not as
+   * an error. Falls back to `git config --get remote.origin.url` for the older
+   * git builds that predate `remote get-url`.
+   */
+  gitRemoteOrigin(folder: string): string;
+
   // --- GPU activity ---
   gpuProcessCheck(): string;  // outputs "busy"|"idle", exits 2 if nvidia-smi not available
   gpuUtilization(): string;   // outputs GPU utilization 0-100 (integer), or empty if unavailable
