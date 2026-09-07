@@ -35,6 +35,7 @@ describe('detectVcsProviderFromRemoteUrl', () => {
   describe('bitbucket', () => {
     const urls = [
       'https://bitbucket.org/team/repo.git',
+      'https://www.bitbucket.org/team/repo.git',
       'https://user@bitbucket.org/team/repo.git',
       'ssh://git@bitbucket.org/team/repo.git',
       'ssh://git@altssh.bitbucket.org:443/team/repo.git',
@@ -77,6 +78,7 @@ describe('detectVcsProviderFromRemoteUrl', () => {
       ['a bare local path', '/srv/bare/repo.git'],
       ['a Windows local path', 'C:\\src\\repo'],
       ['a lookalike github host', 'https://github.com.evil.example/Apra-Labs/apra-fleet.git'],
+      ['a github lookalike mirror (substring, not a suffix)', 'https://mygithubmirror.attacker.io/Apra-Labs/apra-fleet.git'],
       ['a lookalike azure host', 'https://dev.azure.com.attacker.test/org/project/_git/repo'],
       ['a lookalike bitbucket host', 'git@bitbucket.org.evil.example:team/repo.git'],
       ['a lookalike visualstudio host', 'https://visualstudio.com.evil.example/project/_git/repo'],

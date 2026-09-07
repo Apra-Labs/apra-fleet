@@ -116,7 +116,7 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 - SSH connection fails: member is NOT registered, error returned
 - Duplicate folder: member is NOT registered
 - Claude CLI missing: member IS registered, but with a warning
-- VCS provider undetermined: member IS registered, but with a loud warning (it cannot push or open a PR until one is set -- re-register with an explicit `vcs_provider`, or let `provision_vcs_auth` / fleet-sprint's dispatch-time fallback set it once a git remote exists)
+- VCS provider undetermined: member IS registered, but with a loud warning (it cannot push or open a PR until one is set -- re-register with an explicit `vcs_provider`, or call `provision_vcs_auth` with an explicit `provider` -- that tool requires one and never detects it. fleet-sprint's dispatch-time fallback can also heal it automatically once a git remote exists)
 
 ### `list_members`
 

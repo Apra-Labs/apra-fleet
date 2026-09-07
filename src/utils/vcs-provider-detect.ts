@@ -18,8 +18,12 @@
  * under packages/apra-fleet-se/fleet-sprint/vcs-providers/. That code is a
  * separate package with its own registry and cannot be imported from the
  * server's src/ tree. The host rules below are kept deliberately in step with
- * those descriptors -- in particular azure-devops.mjs's anchored HOST_RE -- so
- * the two halves never disagree about who owns a host.
+ * those descriptors -- azure-devops.mjs's and bitbucket.mjs's anchored
+ * HOST_REs, and github.mjs's anchored matchesHostForAuth() -- so the two
+ * halves never disagree about who owns a host. Note that github.mjs ALSO
+ * exports a deliberately wider substring matchesHost(); that one answers the
+ * capabilities axis ("could a PR be opened here?", where GitHub Enterprise
+ * Server must say yes) and is NOT the matcher any credential decision uses.
  *
  * URL SHAPES. Every form git itself accepts for a hosted remote:
  *   - https://host/owner/repo(.git)          scheme'd, optional userinfo/port

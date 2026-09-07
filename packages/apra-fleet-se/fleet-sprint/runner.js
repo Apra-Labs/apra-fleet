@@ -33,7 +33,7 @@ import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResol
 // hard-aborting the run at its readiness gate.
 import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider, resolveVcsProviderForHost, listVcsAuthProviders } from './vcs-module.mjs';
+import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
@@ -2377,11 +2377,19 @@ function selfHealResultText(result) {
  * apra-fleet-5oo: map a member's git remote URL onto the VCS provider that
  * hosts it, using the SAME registry that answers every other host question
  * (vcs-module.mjs's capabilities() for the host parse, then
- * resolveVcsProviderForHost() for the claim). Returns the provider NAME, or
- * null when the URL has no host, or the claiming provider is not a
- * member-facing auth backend -- resolveVcsProviderForHost() falls back to the
- * 'generic-git' catch-all for an unclaimed host, and provisioning credentials
- * against that would be a guess, not a detection.
+ * resolveVcsAuthProviderForHost() for the claim). Returns the provider NAME,
+ * or null when the URL has no host or no registered AUTH BACKEND claims it --
+ * provisioning credentials against an unclaimed host would be a guess, not a
+ * detection.
+ *
+ * Note which resolver this uses. resolveVcsAuthProviderForHost() (not the
+ * capabilities-axis resolveVcsProviderForHost()) asks each provider its
+ * ANCHORED auth matcher and never falls back to the 'generic-git' catch-all.
+ * That distinction is the whole point here: the caller below mints a real push
+ * credential from whatever this returns, and GitHub's capabilities-axis
+ * matchesHost() is a deliberate substring test for GitHub Enterprise Server,
+ * which would otherwise let 'mygithubmirror.attacker.io' claim the credential.
+ * See vcs-providers/github.mjs's matchesHostForAuth().
  *
  * @param {unknown} remoteUrl
  * @returns {string|null}
@@ -2389,10 +2397,8 @@ function selfHealResultText(result) {
 function detectVcsProviderFromRemote(remoteUrl) {
     const { host } = vcsCapabilities(remoteUrl);
     if (!host) return null;
-    const impl = resolveVcsProviderForHost(host);
-    const name = impl && impl.name;
-    if (!name || !listVcsAuthProviders().includes(name)) return null;
-    return name;
+    const impl = resolveVcsAuthProviderForHost(host);
+    return (impl && impl.name) || null;
 }
 
 async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName, remoteUrlOverride, resolvedProvider }) {
@@ -2476,18 +2482,27 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     //
     // An unreadable or unrecognized remote re-throws the ORIGINAL error --
     // that is a real failure with nothing to detect, and must stay loud.
+    //
+    // So does every OTHER way resolveProvider() can fail. It throws for a
+    // member_detail RPC/network failure, for a member name that resolves to
+    // nothing, and for a malformed registry response, none of which the git
+    // remote can heal: falling back there would paper over a real fault with a
+    // provider guess. Only the one failure that carries
+    // VCS_NO_REGISTERED_PROVIDER (see vcs-module.mjs) is self-healable, and it
+    // is matched by that stable code rather than by its message text.
     let provider;
     let authMode;
     try {
         ({ provider, authMode } = resolvedProvider || await resolveProvider(member, { fleetApi }));
     } catch (resolveErr) {
+        if (!resolveErr || resolveErr.code !== VCS_NO_REGISTERED_PROVIDER) throw resolveErr;
         const detected = (!remoteReadFailed && remoteUrl)
             ? detectVcsProviderFromRemote(remoteUrl)
             : null;
         if (!detected) throw resolveErr;
         provider = detected;
         const impl = getVcsProvider(provider);
-        authMode = (impl && Object.prototype.hasOwnProperty.call(impl, 'defaultAuthMode')) ? impl.defaultAuthMode : null;
+        authMode = isAuthBackend(impl) ? impl.defaultAuthMode : null;
         log(`${logPrefix}: member '${member}' had no registered VCS provider; detected '${provider}' from its git remote and will provision it now`);
     }
     // apra-fleet-5co8.2.1: the argument shape itself is now provider-owned.

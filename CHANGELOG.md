@@ -38,10 +38,31 @@ path whose own self-heal died on the same lookup and so could never heal it.
   error: there is nothing to detect, so nothing is guessed. Benefits both the
   reactive self-heal and the proactive preflight, which share the call site.
 - **`BitbucketVCS` now declares `matchesHost`** (anchored to `bitbucket.org` /
-  `altssh.bitbucket.org`), so the host registry names it for a Bitbucket
+  `www.bitbucket.org` / `altssh.bitbucket.org`, character-for-character in step
+  with `vcs-provider-detect.ts`), so the host registry names it for a Bitbucket
   remote instead of falling through to the `generic-git` catch-all. Required
   for the fallback above to detect Bitbucket at all; behaviour-neutral for
   `VCSModule.capabilities()`.
+- **Credential provisioning now resolves hosts through an ANCHORED matcher**
+  (security). `GitHubVCS.matchesHost()` is deliberately a substring test -- a
+  GitHub Enterprise Server install has no fixed domain, and that matcher
+  answers `capabilities()`'s "could a PR be opened here?", where a wrong yes
+  costs only a failed PR attempt. Auto-PROVISIONING is a different risk class:
+  it mints a real push credential, and a substring test would hand it to
+  `mygithubmirror.attacker.io`. GitHub now also declares
+  `matchesHostForAuth()` (`/^(?:www\.|ssh\.)?github\.com$/i`), and the
+  dispatch-time fallback resolves through a new
+  `resolveVcsAuthProviderForHost()` that asks that matcher, considers only
+  registered auth backends, and returns `null` -- never the `generic-git`
+  catch-all -- for an unclaimed host. GitHub Enterprise is therefore not
+  auto-provisioned on either layer; register those members with an explicit
+  `vcs_provider`.
+- **The dispatch-time fallback's catch is narrow.** `resolveProvider()` also
+  throws for a `member_detail` RPC failure, an unresolvable member name, and a
+  malformed registry response -- none of which a git remote can heal. It now
+  stamps `code: VCS_NO_REGISTERED_PROVIDER` on the one self-healable failure,
+  and the fallback triggers on that code alone; every other error propagates
+  unchanged instead of being papered over with a provider guess.
 
 ## [Unreleased] -- Azure DevOps VCS auth: credential assembly, PR publish path, and regression-sandbox hardening (sprint FAILED)
 

@@ -215,6 +215,34 @@ function matchesHost(host) {
     return typeof host === 'string' && /github/i.test(host);
 }
 
+/** github.com and its ssh/www aliases -- ANCHORED. Kept character-for-
+ *  character in step with src/utils/vcs-provider-detect.ts's
+ *  GITHUB_HOST_RE (the registration-time half of the same decision). */
+const AUTH_HOST_RE = /^(?:www\.|ssh\.)?github\.com$/i;
+
+/** Host-recognition for the CREDENTIAL-PROVISIONING axis
+ *  (resolveVcsAuthProviderForHost() in ./index.mjs), deliberately NARROWER
+ *  than matchesHost() above.
+ *
+ *  matchesHost() is a substring test on purpose: it answers "can this host
+ *  open a pull request?" for capabilities(), and a GitHub Enterprise Server
+ *  install has no fixed domain, so the vendor name in the hostname is the
+ *  only portable signal (pinned by test/vcs-capabilities-table.test.mjs).
+ *  Answering YES there costs nothing -- the worst case is a PR attempt that
+ *  fails.
+ *
+ *  Auto-PROVISIONING is a different risk class entirely: it mints a real
+ *  GitHub App push credential and points it at the host. A substring test
+ *  would let a lookalike domain ("mygithubmirror.attacker.io",
+ *  "github.com.evil.example") claim this provider and receive that
+ *  credential -- exactly the leak src/utils/vcs-provider-detect.ts anchors
+ *  against on the registration-time path. So GitHub Enterprise is NOT
+ *  auto-detected for auth on either side: an operator registers a GHE
+ *  member with an explicit `vcs_provider`. */
+function matchesHostForAuth(host) {
+    return typeof host === 'string' && AUTH_HOST_RE.test(host.trim());
+}
+
 /** Every host this provider matches can open a PR via the REST call
  *  buildGitHubCreatePrCommand() builds -- github.com and GitHub Enterprise
  *  Server alike speak the same `/repos/{owner}/{repo}/pulls` shape. */
@@ -230,6 +258,7 @@ export const GitHubVCS = Object.freeze({
     }),
     extractProviderCode,
     matchesHost,
+    matchesHostForAuth,
     capabilitiesForHost,
     // apra-fleet-647.1.5.1: GitHub's own default auth mode (App, never PAT --
     // see vcs-module.mjs resolveProvider()'s header note on why this must stay

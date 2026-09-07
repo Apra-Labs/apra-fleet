@@ -401,8 +401,6 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       : strategy.execCommand(cmds.mkdir(input.work_folder), 10000)
           .catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); });
 
-    await Promise.all([versionCheck, authCheck, mkdirCheck]);
-
     // Step 3b: best-effort VCS-provider detection (apra-fleet-5oo).
     //
     // Registration could previously mint a fully dispatch-capable member with
@@ -417,22 +415,31 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     // fails registration -- a work folder with no git repo in it yet is the
     // common "register before clone" case, not an error. It degrades to a
     // loud warning below instead.
-    if (!input.vcs_provider) {
-      try {
-        const remoteRes = await strategy.execCommand(cmds.gitRemoteOrigin(input.work_folder), 15000);
-        // Take stdout regardless of exit code: both OS builders swallow the
-        // failure ("|| true" / "try {} catch {}") so an absent repo yields
-        // empty output rather than a non-zero code, and stderr is never a URL.
-        const remoteUrl = String(remoteRes.stdout ?? '').trim().split(/\r?\n/)[0].trim();
-        const detected = detectVcsProviderFromRemoteUrl(remoteUrl);
-        if (detected) {
-          tempAgent.vcsProvider = detected;
-          vcsProviderAutoDetected = true;
-        }
-      } catch {
-        // Best effort -- fall through to the warning below.
-      }
-    }
+    //
+    // Runs INSIDE the Promise.all below rather than after it: the probe is
+    // independent of the CLI/auth/mkdir checks, so sequencing it behind them
+    // would add a whole extra SSH round trip to every registration for no
+    // ordering reason. Racing mkdirCheck is harmless in particular: a folder
+    // mkdir had to CREATE cannot contain a git repo, so the probe's answer is
+    // the same ("no remote") whichever of the two lands first.
+    const vcsProviderCheck = input.vcs_provider
+      ? Promise.resolve()
+      : strategy.execCommand(cmds.gitRemoteOrigin(input.work_folder), 15000)
+          .then(remoteRes => {
+            // Take stdout regardless of exit code: both OS builders swallow
+            // the failure ("|| true" / "try {} catch {}") so an absent repo
+            // yields empty output rather than a non-zero code, and stderr is
+            // never a URL.
+            const remoteUrl = String(remoteRes.stdout ?? '').trim().split(/\r?\n/)[0].trim();
+            const detected = detectVcsProviderFromRemoteUrl(remoteUrl);
+            if (detected) {
+              tempAgent.vcsProvider = detected;
+              vcsProviderAutoDetected = true;
+            }
+          })
+          .catch(() => { /* Best effort -- fall through to the warning below. */ });
+
+    await Promise.all([versionCheck, authCheck, mkdirCheck, vcsProviderCheck]);
 
     // --- Provision role-agent definition files (planner.md, doer.md, ...) ---
     // Remote members have their own home dir and never receive these via install() --
@@ -470,7 +477,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   // llm_provider 'none' never dispatches an agent and never pushes, so it is
   // exempt; so is an explicit vcs_provider (including 'none').
   if (!tempAgent.vcsProvider && !input.vcs_provider && (input.llm_provider ?? 'claude') !== 'none') {
-    warnings.push('VCS provider could not be determined (no git remote found, or vcs_provider not supplied) -- this member will be UNABLE to push or open a PR until provisioned. Set vcs_provider explicitly, or run provision_vcs_auth once a git remote exists.');
+    warnings.push('VCS provider could not be determined (no git remote found, or vcs_provider not supplied) -- this member will be UNABLE to push or open a PR until provisioned. Register this member again with vcs_provider set, or run provision_vcs_auth with an explicit provider (github/bitbucket/azure-devops) -- provision_vcs_auth requires the provider, it does not detect one.');
   }
 
   // OS support warning for cloud members: cloud features are designed for Linux
