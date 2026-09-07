@@ -2,6 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,16 +21,46 @@ const fleetSprintDir = path.join(packageRoot, 'fleet-sprint');
 const runnerPath = path.join(fleetSprintDir, 'runner.js');
 const goldenFixtureDir = path.join(__dirname, 'fixtures', 'golden-transcript');
 
+/**
+ * Walk up from `startDir` to find the workspace's hoisted node_modules (the
+ * one holding @apralabs packages). runner.js imports workspace packages
+ * (e.g. @apralabs/apra-fleet-workflow) via a bare specifier that Node
+ * resolves by walking up node_modules directories from the importing file;
+ * a sandbox copy under os.tmpdir() has no such chain to the repo root, so
+ * the caller symlinks this directory in to restore it.
+ */
+function findWorkspaceNodeModules(startDir) {
+    let dir = startDir;
+    for (;;) {
+        const candidate = path.join(dir, 'node_modules', '@apralabs');
+        if (fs.existsSync(candidate)) return path.join(dir, 'node_modules');
+        const parent = path.dirname(dir);
+        if (parent === dir) {
+            throw new Error(`could not locate a node_modules/@apralabs directory above ${startDir}`);
+        }
+        dir = parent;
+    }
+}
+
 describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour and the facade (apra-fleet-3swo.2.6)', () => {
     test('both golden transcript tests pass without UPDATE_GOLDEN, and the fixture directory stays clean', () => {
         const env = { ...process.env };
         delete env.UPDATE_GOLDEN;
 
+        // This duplicates the execution the package's own test/*.test.mjs
+        // glob already gives golden-transcript.test.mjs and
+        // golden-transcript-3bead.test.mjs -- worth the extra ~1-2s because
+        // it is the only place UPDATE_GOLDEN is guaranteed stripped: an
+        // outer `UPDATE_GOLDEN=1 npm test` legitimately updates the fixtures
+        // for the ambient run, which would make the git-status check below a
+        // false failure if it depended on that run instead. An explicit
+        // timeout caps the risk called out in apra-fleet-3swo.10 of an
+        // untimed spawn silently hanging the whole suite.
         // Must not throw (node --test exits non-zero on any failing subtest).
         execFileSync(
             process.execPath,
             ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
-            { cwd: packageRoot, env, stdio: 'pipe' },
+            { cwd: packageRoot, env, stdio: 'pipe', timeout: 60_000 },
         );
 
         const dirty = execFileSync('git', ['status', '--porcelain', '--', goldenFixtureDir], {
@@ -77,10 +108,24 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
         // and is fully cleaned up afterward -- "no artifacts left outside
         // the test sandbox" per this task's acceptance criteria.
         const realRunnerContentBefore = fs.readFileSync(runnerPath, 'utf-8');
-        const sandboxDir = fs.mkdtempSync(path.join(packageRoot, '.tmp-phase0-seam-facade-'));
+        // Under os.tmpdir(), not the repo working tree -- matching the
+        // sandbox convention every sibling guard test uses (guarded-modules-
+        // coverage, shell-command-guard, dolt-literal-guard), so a hard kill
+        // between mkdtemp and the finally below cannot leave an untracked,
+        // un-.gitignore'd directory that dirties `git status`.
+        const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'phase0-seam-facade-'));
+        assert.ok(
+            fs.realpathSync(sandboxDir).startsWith(fs.realpathSync(os.tmpdir())),
+            'the sandbox must live under os.tmpdir(), not the repo tree',
+        );
         try {
             const sandboxFleetSprint = path.join(sandboxDir, 'fleet-sprint');
             fs.cpSync(fleetSprintDir, sandboxFleetSprint, { recursive: true });
+            // Restore workspace package resolution for the copy (see
+            // findWorkspaceNodeModules doc comment above). rmSync on
+            // sandboxDir at cleanup only unlinks this symlink, never
+            // recurses into the real node_modules it points at.
+            fs.symlinkSync(findWorkspaceNodeModules(packageRoot), path.join(sandboxDir, 'node_modules'), 'dir');
             const sandboxRunnerPath = path.join(sandboxFleetSprint, 'runner.js');
             const originalContent = fs.readFileSync(sandboxRunnerPath, 'utf-8');
 
@@ -121,8 +166,7 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
         const realRunnerContentAfter = fs.readFileSync(runnerPath, 'utf-8');
         assert.equal(realRunnerContentAfter, realRunnerContentBefore, 'the real fleet-sprint/runner.js must be byte-identical before and after this test');
 
-        // No sandbox directories left behind under the package root either.
-        const leftoverSandboxes = fs.readdirSync(packageRoot).filter((name) => name.startsWith('.tmp-phase0-seam-facade-'));
-        assert.deepEqual(leftoverSandboxes, [], 'no sandbox directories may survive this test');
+        // No sandbox directory left behind under os.tmpdir() either.
+        assert.equal(fs.existsSync(sandboxDir), false, 'no sandbox directory may survive this test');
     });
 });
