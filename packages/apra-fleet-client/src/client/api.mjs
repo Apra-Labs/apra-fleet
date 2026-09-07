@@ -193,6 +193,37 @@
  */
 
 /**
+ * @typedef {Object} MemberReservationOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {"reserve" | "release" | "force_release"} action - "reserve" claims the member for
+ *   sprint_id (fails if already reserved by someone else); "release" clears it only if sprint_id
+ *   matches the current holder; "force_release" clears it regardless of owner.
+ * @property {string} [sprint_id] - Sprint/session id claiming or releasing the reservation.
+ *   Required for "reserve" and "release", ignored for "force_release".
+ */
+
+/**
+ * @typedef {Object} MemberReservationStructured
+ * @property {"reserved" | "reservation_refreshed" | "released" | "force_released" |
+ *   "already_reserved_by_other" | "not_reserved" | "unreservable" | "invalid_input" |
+ *   "member_not_found" | "failed"} outcome - Machine-readable outcome discriminator. Branch on
+ *   this field; never string-match the human-readable summary text.
+ * @property {boolean} ok - True when the requested operation took effect (or was already true).
+ * @property {"reserve" | "release" | "force_release"} action - The action that was requested.
+ * @property {string|null} memberId - Registry id of the resolved member, null when none resolved.
+ * @property {string|null} memberName - Friendly name of the resolved member, null when none resolved.
+ * @property {string|null} sprintId - The sprint id supplied by the caller, null when none.
+ * @property {string|null} ownerSprintId - The sprint that held the reservation when the call
+ *   arrived, null when the member was unreserved. On "already_reserved_by_other" this is the
+ *   blocking owner.
+ *
+ * Mirrors src/tools/member-reservation.ts's MemberReservationStructured field-for-field
+ * (apra-fleet-3swo.7.1). The tool still returns the same human-readable summary in
+ * `content[0].text`; this shape is the machine-readable half of the same response.
+ */
+
+/**
  * @typedef {Object} ProvisionLlmAuthOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -466,6 +497,24 @@ export class ApraFleet {
      */
     async removeMember(options) {
         return this.mcpClient.callTool('remove_member', options);
+    }
+
+    /**
+     * Reserve, release or force-release exclusive ownership of a member for a
+     * sprint (src/tools/member-reservation.ts).
+     *
+     * The MCP result carries BOTH halves: `content[0].text` is the unchanged
+     * human-readable summary, and `structuredContent` is a
+     * MemberReservationStructured. Programmatic callers must branch on
+     * `structuredContent.outcome` -- string-matching the prose is exactly what
+     * apra-fleet-3swo.7.1 removed the need for.
+     *
+     * @param {MemberReservationOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: MemberReservationStructured }>}
+     */
+    async memberReservation(options) {
+        return this.mcpClient.callTool('member_reservation', options);
     }
 
     /**
