@@ -65,6 +65,49 @@ function payloadContains(payload: unknown, secret: string): boolean {
   return false;
 }
 
+/**
+ * Minimal POSIX word-splitter -- handles single-quoted segments and bare-word
+ * segments concatenated with no separating whitespace. That concatenation
+ * rule is exactly the mechanism shQuote()/escapeShellArg() rely on (see
+ * fleet-sprint/vcs-providers/shell-helpers.mjs): a caller-supplied single
+ * -quoted segment can be closed and immediately reopened by the server's own
+ * single-quoted substitution, and a real POSIX shell splices the two into one
+ * word. This is NOT a general shell parser (no double quotes, backslashes or
+ * expansion) -- it is only precise enough to pin the one composition rule
+ * this suite exists to prove, verified against real bash in the doer's repro.
+ */
+function posixSplit(command: string): string[] {
+  const words: string[] = [];
+  let current = '';
+  let inWord = false;
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === "'") {
+      inWord = true;
+      const end = command.indexOf("'", i + 1);
+      if (end === -1) throw new Error(`unterminated single quote at index ${i} in: ${command}`);
+      current += command.slice(i + 1, end);
+      i = end + 1;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (inWord) {
+        words.push(current);
+        current = '';
+        inWord = false;
+      }
+      i++;
+      continue;
+    }
+    inWord = true;
+    current += ch;
+    i++;
+  }
+  if (inWord) words.push(current);
+  return words;
+}
+
 beforeEach(() => {
   backupAndResetRegistry();
   vi.clearAllMocks();
@@ -486,10 +529,20 @@ describe('check 5: vcs_credential_exec never returns the plaintext credential', 
       return { stdout: `sent header: ${FIXTURE_TOKEN}`, stderr: `retrying with ${FIXTURE_TOKEN}`, code: 0 };
     });
 
+    // Placeholder is referenced inside the CALLER'S OWN single quotes here,
+    // which is the shape the real consumer builds (vcs-providers/github.mjs
+    // and azure-devops.mjs, both via shell-helpers.mjs shQuote -- also
+    // single-quote dialect). This is deliberately NOT wrapped in double
+    // quotes: escapeShellArg's substituted value is itself single-quoted, and
+    // POSIX quote-concatenation only closes-and-reopens correctly against a
+    // matching single-quoted caller segment. A double-quoted caller segment
+    // leaks the substituted value's literal quote characters into the header
+    // (verified against real bash: `-H "...{{vcs_token}}..."` parses to
+    // `Authorization: Bearer 'ghp_...'`, a false 401 against a real server).
     const result = await vcsCredentialExec({
       member_id: member.id,
       label: 'github',
-      command: 'curl -H "Authorization: Bearer {{vcs_token}}" https://api.github.com/repos/o/r/pulls',
+      command: "curl -H 'Authorization: Bearer {{vcs_token}}' https://api.github.com/repos/o/r/pulls",
     });
 
     expect(result.structuredContent.reason).toBe('ok');
@@ -510,6 +563,15 @@ describe('check 5: vcs_credential_exec never returns the plaintext credential', 
     const dispatched = mockExecCommand.mock.calls.map((c) => c[0]).find((c) => c.includes('curl'))!;
     expect(dispatched).toContain(FIXTURE_TOKEN);
     expect(dispatched).not.toContain('{{vcs_token}}');
+
+    // THE composition assertion: tokenize the substituted command with a real
+    // POSIX quote-splitting rule (not a substring match) and confirm the
+    // resulting -H argument is the exact intended header value, with no
+    // leaked literal quote characters from the substitution.
+    const words = posixSplit(dispatched);
+    const headerFlagIdx = words.indexOf('-H');
+    expect(headerFlagIdx).toBeGreaterThanOrEqual(0);
+    expect(words[headerFlagIdx + 1]).toBe(`Authorization: Bearer ${FIXTURE_TOKEN}`);
   });
 
   it('refuses a command with no {{vcs_token}} placeholder and never reads a credential', async () => {
