@@ -233,6 +233,57 @@
  */
 
 /**
+ * @typedef {Object} ProvisionAuthStructured
+ * @property {boolean} ok - True when credentials were deployed (verified or not).
+ * @property {"ok" | "deployed_unverified" | "deployed_with_errors" | "skipped_local_member" |
+ *   "member_not_found" | "member_offline" | "secure_credential_not_found" |
+ *   "secure_credential_denied" | "secure_credential_expired" | "oauth_not_supported" |
+ *   "oauth_token_expired_no_refresh" | "oauth_credential_file_missing" |
+ *   "oauth_credential_write_failed" | "oauth_settings_merge_failed" | "oauth_copy_failed" |
+ *   "oob_cancelled"} reason - Machine-readable outcome code. Branch on this, never on the text.
+ * @property {string|null} provider - The resolved ProviderAdapter's own name (claude, codex,
+ *   copilot, agy, opencode or none -- there is no gemini adapter), null when unresolved.
+ * @property {string|null} credentialLabel - What was deployed, never the secret: the env var
+ *   name for the API-key flow (e.g. ANTHROPIC_API_KEY) or "oauth" for the file-copy flow.
+ * @property {string|null} expiresAt - Credential expiry as an ISO timestamp, or null meaning
+ *   "no expiry tracked -> OK".
+ * @property {boolean} verified - True when the post-deploy auth check confirmed working auth.
+ * @property {string|null} memberId - Registry id of the resolved member, or null.
+ * @property {string|null} memberName - Friendly name of the resolved member, or null.
+ *
+ * Mirrors src/tools/provision-auth.ts's ProvisionAuthStructured field-for-field
+ * (apra-fleet-3swo.7.2). Carries no plaintext credential of any kind.
+ */
+
+/**
+ * @typedef {Object} ProvisionVcsAuthStructured
+ * @property {boolean} ok - True when the credential was actually deployed onto the member.
+ * @property {"ok" | "deployed_unverified" | "deployed_verification_skipped" |
+ *   "member_not_found" | "member_offline" | "secure_credential_not_found" |
+ *   "secure_credential_denied" | "secure_credential_expired" | "oob_cancelled" |
+ *   "credential_assembly_unsupported" | "credential_assembly_failed" | "deploy_threw" |
+ *   "deploy_failed"} reason - Machine-readable outcome code. Branch on this, never on the text.
+ * @property {string} provider - The VCS provider requested.
+ * @property {string} credentialLabel - Credential label the helper was deployed under
+ *   (defaults to the provider name).
+ * @property {string|null} scopeUrl - Git credential scope URL the helper was registered for.
+ * @property {string|null} expiresAt - Token expiry as an ISO timestamp, or null meaning "no
+ *   expiry tracked -> OK" (the reading checkVcsTokenExpiry applies server-side). Read this
+ *   instead of scraping an "expiresAt:" line out of the summary text.
+ * @property {boolean} verified - True only when testConnectivity() actually ran AND succeeded.
+ * @property {boolean} verificationSkipped - True when the connectivity check was not performed.
+ * @property {Record<string, string>|null} metadata - The provider's own deploy metadata,
+ *   verbatim. Providers mask the token here to its first four characters plus asterisks, so
+ *   this never carries the plaintext token.
+ * @property {string|null} expiryWarning - Near-expiry warning text when one applies, else null.
+ * @property {string|null} memberId - Registry id of the resolved member, or null.
+ * @property {string|null} memberName - Friendly name of the resolved member, or null.
+ *
+ * Mirrors src/tools/provision-vcs-auth.ts's ProvisionVcsAuthStructured field-for-field
+ * (apra-fleet-3swo.7.2).
+ */
+
+/**
  * @typedef {Object} ProvisionVcsAuthOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -519,7 +570,15 @@ export class ApraFleet {
 
     /**
      * Provision LLM auth (OAuth session copy or API key) onto a member.
+     *
+     * The MCP result carries both halves: `content[0].text` is the
+     * human-readable summary (ASCII markers -- [OK]/[WARN]/[FAIL]/[SKIP], no
+     * emoji) and `structuredContent` is a ProvisionAuthStructured. Branch on
+     * `structuredContent.ok` / `.reason`, never on the summary text.
+     *
      * @param {ProvisionLlmAuthOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: ProvisionAuthStructured }>}
      */
     async provisionLlmAuth(options) {
         return this.mcpClient.callTool('provision_llm_auth', options);
@@ -528,7 +587,15 @@ export class ApraFleet {
     /**
      * Provision VCS (git host) auth -- GitHub App token / PAT, Bitbucket API
      * token, or Azure DevOps PAT -- onto a member.
+     *
+     * Same two-halves result shape as provisionLlmAuth: read
+     * `structuredContent.ok`/`.reason` for the outcome and
+     * `structuredContent.expiresAt` for the token expiry, instead of parsing
+     * an "expiresAt:" line out of the prose.
+     *
      * @param {ProvisionVcsAuthOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: ProvisionVcsAuthStructured }>}
      */
     async provisionVcsAuth(options) {
         return this.mcpClient.callTool('provision_vcs_auth', options);

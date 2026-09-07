@@ -54,7 +54,7 @@ describe('provisionVcsAuth', () => {
   beforeEach(() => {
     backupAndResetRegistry();
     vi.clearAllMocks();
-    mockCollectOobApiKey.mockResolvedValue({ fallback: '❌ OOB cancelled in test.' });
+    mockCollectOobApiKey.mockResolvedValue({ fallback: '[FAIL] OOB cancelled in test.' });
     if (fs.existsSync(GIT_CONFIG_PATH)) {
       gitConfigBackup = fs.readFileSync(GIT_CONFIG_PATH, 'utf-8');
     }
@@ -71,7 +71,7 @@ describe('provisionVcsAuth', () => {
   });
 
   it('returns not found for invalid member ID', async () => {
-    const result = await provisionVcsAuth({ member_id: 'nonexistent', provider: 'github' });
+    const { text: result } = await provisionVcsAuth({ member_id: 'nonexistent', provider: 'github' });
     expect(result).toContain('not found');
   });
 
@@ -80,11 +80,11 @@ describe('provisionVcsAuth', () => {
     addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'Timeout' });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'bitbucket',
       email: 'a@b.com', api_token: 'tok', workspace: 'ws',
     });
-    expect(result).toContain('❌');
+    expect(result).toContain('[FAIL]');
     expect(result).toContain('offline');
   });
 
@@ -93,8 +93,8 @@ describe('provisionVcsAuth', () => {
   it('bitbucket: OOB cancellation returns error when api_token is absent', async () => {
     const member = makeTestAgent({ friendlyName: 'bb-missing' });
     addAgent(member);
-    const result = await provisionVcsAuth({ member_id: member.id, provider: 'bitbucket' });
-    expect(result).toContain('❌');
+    const { text: result } = await provisionVcsAuth({ member_id: member.id, provider: 'bitbucket' });
+    expect(result).toContain('[FAIL]');
   });
 
   it('bitbucket: deploys credentials successfully', async () => {
@@ -103,11 +103,11 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'bitbucket',
       email: 'dev@co.com', api_token: 'ATBB_xyz', workspace: 'my-ws',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     expect(result).toContain('Bitbucket');
     expect(result).toContain('my-ws');
   });
@@ -117,8 +117,8 @@ describe('provisionVcsAuth', () => {
   it('azure-devops: OOB cancellation returns error when pat is absent', async () => {
     const member = makeTestAgent({ friendlyName: 'az-missing' });
     addAgent(member);
-    const result = await provisionVcsAuth({ member_id: member.id, provider: 'azure-devops' });
-    expect(result).toContain('❌');
+    const { text: result } = await provisionVcsAuth({ member_id: member.id, provider: 'azure-devops' });
+    expect(result).toContain('[FAIL]');
   });
 
   it('azure-devops: deploys credentials successfully', async () => {
@@ -127,19 +127,19 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'azure-devops',
       org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-999',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     expect(result).toContain('Azure DevOps');
     // apra-fleet-5co8.43: this member has no gitRepos and only an org-level
     // scope_url, so testConnectivity() cannot derive a concrete repo and
     // skips -- the user-facing "Verification:" line must render that
-    // distinctly (the ⏭️ marker, driven by the `skipped` field), never as a
+    // distinctly (the [SKIP] marker, driven by the `skipped` field), never as a
     // bare passing check that merely happens to mention "Skipped" in its
     // message text.
-    expect(result).toMatch(/Verification: ⏭️ Skipped:/);
+    expect(result).toMatch(/Verification: \[SKIP\] Skipped:/);
     expect(result).not.toMatch(/Verification: git ls-remote/);
   });
 
@@ -157,12 +157,12 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'azure-devops',
       org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-999',
     });
 
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     const updated = getAgent(member.id)!;
     expect(updated.vcsProvider).toBe('azure-devops');
     expect(updated.vcsTokenExpiresAt).toBeUndefined();
@@ -179,12 +179,12 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'azure-devops',
       org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-999',
       pat_expires_at: 'whenever',
     } as any);
-    expect(result).toContain('❌');
+    expect(result).toContain('[FAIL]');
     expect(result).toContain('pat_expires_at');
     expect(getAgent(member.id)!.vcsTokenExpiresAt).toBeUndefined();
   });
@@ -195,12 +195,12 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'azure-devops',
       org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-999',
       pat_expires_at: '2027-08-20T00:00:00Z',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     expect(getAgent(member.id)!.vcsTokenExpiresAt).toBe('2027-08-20T00:00:00Z');
     expect(getAgent(member.id)!.vcsProvider).toBe('azure-devops');
   });
@@ -211,11 +211,11 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'azure-devops',
       org_url: 'https://dev.azure.com/myorg', token: 'az-pat-via-token',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
   });
 
   // --- GitHub ---
@@ -226,21 +226,21 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'github',
       github_mode: 'pat', token: 'ghp_testtoken123',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     expect(result).toContain('PAT');
   });
 
   it('github: pat mode OOB cancellation returns error when token is absent', async () => {
     const member = makeTestAgent({ friendlyName: 'gh-pat-notoken' });
     addAgent(member);
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'github', github_mode: 'pat',
     });
-    expect(result).toContain('❌');
+    expect(result).toContain('[FAIL]');
   });
 
   it('github: github-app mode deploys successfully', async () => {
@@ -251,10 +251,10 @@ describe('provisionVcsAuth', () => {
     mockMint.mockResolvedValue({ token: 'ghs_minted123', expiresAt: '2026-03-04T12:00:00Z' });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'github',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     expect(result).toContain('GitHub App');
     expect(result).toContain('ghs_****');
     expect(result).not.toContain('ghs_minted123');
@@ -458,11 +458,11 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'github',
       github_mode: 'pat', token: '{{secure.GH_PAT}}',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     credentialDelete('GH_PAT');
   });
 
@@ -470,11 +470,11 @@ describe('provisionVcsAuth', () => {
     const member = makeTestAgent({ friendlyName: 'gh-missing-secure' });
     addAgent(member);
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'github',
       github_mode: 'pat', token: '{{secure.MISSING_CRED}}',
     });
-    expect(result).toContain('❌');
+    expect(result).toContain('[FAIL]');
     expect(result).toContain('MISSING_CRED');
     expect(result).toContain('not found');
   });
@@ -486,11 +486,11 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'bitbucket',
       email: 'dev@co.com', api_token: '{{secure.BB_TOKEN}}', workspace: 'ws',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     credentialDelete('BB_TOKEN');
   });
 
@@ -501,11 +501,11 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'azure-devops',
       org_url: 'https://dev.azure.com/myorg', pat: '{{secure.AZ_PAT}}',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     credentialDelete('AZ_PAT');
   });
 
@@ -518,10 +518,10 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'github', github_mode: 'pat',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     expect(mockCollectOobApiKey).toHaveBeenCalledWith(
       'gh-oob', 'provision_vcs_auth',
       expect.objectContaining({ prompt: 'Enter GitHub personal access token for gh-oob' }),
@@ -535,11 +535,11 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'bitbucket',
       email: 'dev@co.com', workspace: 'my-ws',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     expect(mockCollectOobApiKey).toHaveBeenCalledWith(
       'bb-oob', 'provision_vcs_auth',
       expect.objectContaining({ prompt: 'Enter Bitbucket API token for bb-oob' }),
@@ -553,11 +553,11 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'azure-devops',
       org_url: 'https://dev.azure.com/myorg',
     });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
     expect(mockCollectOobApiKey).toHaveBeenCalledWith(
       'az-oob', 'provision_vcs_auth',
       expect.objectContaining({ prompt: 'Enter Azure DevOps personal access token for az-oob' }),
@@ -570,11 +570,11 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockRejectedValue(new Error('permission denied'));
 
-    const result = await provisionVcsAuth({
+    const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'bitbucket',
       email: 'a@b.com', api_token: 'tok', workspace: 'ws',
     });
-    expect(result).toContain('❌');
+    expect(result).toContain('[FAIL]');
     expect(result).toContain('permission denied');
   });
 });

@@ -18,7 +18,15 @@ import type { VcsProviderService } from '../services/vcs/types.js';
 
 const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
 
-function resolveSecureField(value: string, callingMember: string): { resolved: string } | { error: string } {
+/**
+ * The three distinct {{secure.NAME}} resolution failures. Previously all three
+ * collapsed into one emoji-prefixed prose string, so a caller could not tell
+ * "no such credential" from "this member may not use it" from "it expired"
+ * without matching the wording (apra-fleet-3swo.7.2).
+ */
+type SecureFieldFailure = 'secure_credential_not_found' | 'secure_credential_denied' | 'secure_credential_expired';
+
+function resolveSecureField(value: string, callingMember: string): { resolved: string } | { error: string; code: SecureFieldFailure } {
   const tokenNames = new Set<string>();
   let match: RegExpExecArray | null;
   TOKEN_RE.lastIndex = 0;
@@ -26,9 +34,9 @@ function resolveSecureField(value: string, callingMember: string): { resolved: s
   let resolved = value;
   for (const name of tokenNames) {
     const entry = credentialResolve(name, callingMember);
-    if (!entry) return { error: `Credential "${name}" not found. Run credential_store_set first.` };
-    if ('denied' in entry) return { error: entry.denied };
-    if ('expired' in entry) return { error: entry.expired };
+    if (!entry) return { error: `Credential "${name}" not found. Run credential_store_set first.`, code: 'secure_credential_not_found' };
+    if ('denied' in entry) return { error: entry.denied, code: 'secure_credential_denied' };
+    if ('expired' in entry) return { error: entry.expired, code: 'secure_credential_expired' };
     resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
   }
   return { resolved };
@@ -48,18 +56,18 @@ export const provisionVcsAuthSchema = z.object({
 
   // GitHub fields
   github_mode: z.enum(['github-app', 'pat']).optional().describe('GitHub auth mode: github-app (mint via configured app) or pat (personal access token)'),
-  token: z.string().optional().describe('Personal access token (GitHub PAT or Azure DevOps PAT). Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
+  token: z.string().optional().describe('Personal access token (GitHub PAT or Azure DevOps PAT). Supports {{secure.NAME}} token -- value is resolved from the credential store before use.'),
   git_access: z.enum(['read', 'push', 'push+pr', 'admin', 'issues', 'full']).optional().describe('GitHub App access level override'),
   repos: z.array(z.string()).optional().describe('GitHub App repository list override'),
 
   // Bitbucket fields
   email: z.string().optional().describe('Bitbucket account email'),
-  api_token: z.string().optional().describe('Bitbucket API token. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
+  api_token: z.string().optional().describe('Bitbucket API token. Supports {{secure.NAME}} token -- value is resolved from the credential store before use.'),
   workspace: z.string().optional().describe('Bitbucket workspace slug'),
 
   // Azure DevOps fields
   org_url: z.string().optional().describe('Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)'),
-  pat: z.string().optional().describe('Azure DevOps personal access token. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
+  pat: z.string().optional().describe('Azure DevOps personal access token. Supports {{secure.NAME}} token -- value is resolved from the credential store before use.'),
   // apra-fleet-5co8.5.1: OPTIONAL, caller-supplied -- Azure DevOps exposes no
   // API to query a PAT's expiry back, so this must come from the operator
   // (the date they picked in the "Set expiration" step when creating the
@@ -84,10 +92,118 @@ export const provisionVcsAuthSchema = z.object({
 
 export type ProvisionVcsAuthInput = z.infer<typeof provisionVcsAuthSchema>;
 
-export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<string> {
+/**
+ * Machine-readable reason code for every outcome provision_vcs_auth previously
+ * expressed only as prose (apra-fleet-3swo.7.2). Callers branch on
+ * `structuredContent.reason`, never on the human summary in `text`.
+ */
+export type ProvisionVcsAuthReason =
+  /** Credentials deployed and connectivity verified. */
+  | 'ok'
+  /** Deployed, but the connectivity check failed. ok=true -- the credential IS on the member. */
+  | 'deployed_unverified'
+  /** Deployed, but the connectivity check was not performed (no concrete repo URL). ok=true. */
+  | 'deployed_verification_skipped'
+  /** No member matched member_id/member_name. */
+  | 'member_not_found'
+  /** The member is unreachable. */
+  | 'member_offline'
+  /** A {{secure.NAME}} token names no stored credential. */
+  | 'secure_credential_not_found'
+  /** A {{secure.NAME}} token resolved to a credential this member may not use. */
+  | 'secure_credential_denied'
+  /** A {{secure.NAME}} token resolved to an expired credential. */
+  | 'secure_credential_expired'
+  /** Out-of-band credential collection was cancelled or returned nothing. */
+  | 'oob_cancelled'
+  /** The resolved provider implements no buildCredentials hook (a wiring bug). */
+  | 'credential_assembly_unsupported'
+  /** The provider rejected the supplied fields (e.g. a required field is absent). */
+  | 'credential_assembly_failed'
+  /** service.deploy() threw. */
+  | 'deploy_threw'
+  /** service.deploy() returned success:false. */
+  | 'deploy_failed';
+
+interface ProvisionVcsAuthFields {
+  /** True when the credential was actually deployed onto the member. */
+  ok: boolean;
+  /** Machine-readable outcome code. Branch on this, never on `text`. */
+  reason: ProvisionVcsAuthReason;
+  /** The VCS provider requested ('github' | 'bitbucket' | 'azure-devops'). */
+  provider: string;
+  /** Credential label the helper was deployed under (defaults to the provider name). */
+  credentialLabel: string;
+  /** Git credential scope URL the helper was registered for, or null pre-resolution. */
+  scopeUrl: string | null;
+  /**
+   * Token expiry as an ISO timestamp, or null meaning "no expiry tracked ->
+   * OK" -- the same reading checkVcsTokenExpiry already applies server-side.
+   */
+  expiresAt: string | null;
+  /** True only when testConnectivity() actually ran AND succeeded. */
+  verified: boolean;
+  /** True when testConnectivity() reported it did not perform the check. */
+  verificationSkipped: boolean;
+  /**
+   * The provider's own deploy metadata, verbatim. Providers mask the token
+   * here to its first four characters plus asterisks (see
+   * src/services/vcs/github.ts) -- this payload therefore never carries the
+   * plaintext token, and that mask is deliberately left unchanged.
+   */
+  metadata: Record<string, string> | null;
+  /** Near-expiry warning text when one applies, else null. */
+  expiryWarning: string | null;
+  /** Registry id of the resolved member, or null. */
+  memberId: string | null;
+  /** Friendly name of the resolved member, or null. */
+  memberName: string | null;
+}
+
+export interface ProvisionVcsAuthStructured extends ProvisionVcsAuthFields {
+  [key: string]: unknown;
+}
+
+export interface ProvisionVcsAuthResult {
+  text: string;
+  structuredContent: ProvisionVcsAuthStructured;
+}
+
+const VCS_OK_REASONS: ProvisionVcsAuthReason[] = ['ok', 'deployed_unverified', 'deployed_verification_skipped'];
+
+export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<ProvisionVcsAuthResult> {
+  const label = input.label ?? input.provider;
+  const vcsResult = (
+    text: string,
+    fields: Partial<ProvisionVcsAuthFields> & { reason: ProvisionVcsAuthReason },
+  ): ProvisionVcsAuthResult => ({
+    text,
+    structuredContent: {
+      ok: fields.ok ?? VCS_OK_REASONS.includes(fields.reason),
+      reason: fields.reason,
+      provider: input.provider,
+      credentialLabel: label,
+      scopeUrl: fields.scopeUrl ?? null,
+      expiresAt: fields.expiresAt ?? null,
+      verified: fields.verified ?? false,
+      verificationSkipped: fields.verificationSkipped ?? false,
+      metadata: fields.metadata ?? null,
+      expiryWarning: fields.expiryWarning ?? null,
+      memberId: fields.memberId ?? null,
+      memberName: fields.memberName ?? null,
+    },
+  });
+
   const agentOrError = resolveMember(input.member_id, input.member_name);
-  if (typeof agentOrError === 'string') return agentOrError;
+  if (typeof agentOrError === 'string') {
+    return vcsResult(agentOrError, {
+      reason: 'member_not_found',
+      memberId: input.member_id ?? null,
+      memberName: input.member_name ?? null,
+    });
+  }
   const agent = agentOrError as Agent;
+  const who = { memberId: agent.id, memberName: agent.friendlyName };
 
   const service = providers[input.provider];
 
@@ -96,7 +212,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   for (const field of ['token', 'api_token', 'pat'] as const) {
     if (resolvedInput[field]) {
       const r = resolveSecureField(resolvedInput[field]!, agent.friendlyName);
-      if ('error' in r) return `❌ ${r.error}`;
+      if ('error' in r) return vcsResult(`[FAIL] ${r.error}`, { ...who, reason: r.code });
       resolvedInput[field] = r.resolved;
     }
   }
@@ -113,7 +229,9 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
     const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
       prompt: missing.promptFor(agent.friendlyName),
     });
-    if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
+    if ('fallback' in oob) {
+      return vcsResult(oob.fallback ?? 'Error: OOB operation cancelled.', { ...who, reason: 'oob_cancelled' });
+    }
     resolvedInput[missing.field] = decryptPassword(oob.password!);
   }
 
@@ -121,12 +239,17 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   // being adopted; every provider registered above implements it, so an absent
   // implementation is a wiring bug, reported rather than silently deploying
   // undefined credentials.
+  const assemblyUnsupported = !service.buildCredentials;
   const creds = service.buildCredentials
     ? service.buildCredentials(resolvedInput)
     : `Provider "${input.provider}" does not support credential assembly.`;
-  if (typeof creds === 'string') return `❌ ${creds}`;
+  if (typeof creds === 'string') {
+    return vcsResult(`[FAIL] ${creds}`, {
+      ...who,
+      reason: assemblyUnsupported ? 'credential_assembly_unsupported' : 'credential_assembly_failed',
+    });
+  }
 
-  const label = input.label ?? input.provider;
   const host = PROVIDER_HOSTS[input.provider];
   const scopeUrl = input.scope_url ?? `https://${host}`;
 
@@ -135,7 +258,10 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
 
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
-  if (!conn.ok) return `❌ Member "${agent.friendlyName}" is offline: ${conn.error}`;
+  if (!conn.ok) {
+    return vcsResult(`[FAIL] Member "${agent.friendlyName}" is offline: ${conn.error}`,
+      { ...who, reason: 'member_offline', scopeUrl });
+  }
 
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const exec = async (cmd: string): Promise<string> => {
@@ -199,10 +325,13 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   try {
     deployResult = await service.deploy(agent, cmds, exec, creds, label, scopeUrl);
   } catch (err: any) {
-    return `❌ Failed to deploy ${input.provider} credentials on "${agent.friendlyName}": ${err.message}`;
+    return vcsResult(`[FAIL] Failed to deploy ${input.provider} credentials on "${agent.friendlyName}": ${err.message}`,
+      { ...who, reason: 'deploy_threw', scopeUrl });
   }
 
-  if (!deployResult.success) return `❌ ${deployResult.message}`;
+  if (!deployResult.success) {
+    return vcsResult(`[FAIL] ${deployResult.message}`, { ...who, reason: 'deploy_failed', scopeUrl });
+  }
 
   // Persist VCS provider, token expiry, and the exact label/scopeUrl this
   // deploy used, so a later cleanup timer (credential-cleanup.ts) revokes the
@@ -249,13 +378,35 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   // `skipped` lives on the shared VcsDeployResult contract every provider's
   // testConnectivity() returns.
   const verificationLine = connectivity.skipped
-    ? `⏭️ Skipped: ${connectivity.message}`
+    ? `[SKIP] Skipped: ${connectivity.message}`
     : connectivity.success
       ? connectivity.message
-      : `⚠️ ${connectivity.message}`;
+      : `[WARN] ${connectivity.message}`;
 
-  return `✅ ${deployResult.message} on "${agent.friendlyName}"\n`
+  // The credential IS deployed on all three branches below -- ok stays true
+  // and `reason` distinguishes verified / unverified / not-checked, which is
+  // exactly the distinction apra-fleet-5co8.43 established must never be
+  // inferred from the message text.
+  const reason: ProvisionVcsAuthReason = connectivity.skipped
+    ? 'deployed_verification_skipped'
+    : connectivity.success
+      ? 'ok'
+      : 'deployed_unverified';
+
+  return vcsResult(
+    `[OK] ${deployResult.message} on "${agent.friendlyName}"\n`
     + (meta ? meta + '\n' : '')
     + `  Verification: ${verificationLine}`
-    + (expiryWarning ? `\n  ${expiryWarning}` : '');
+    + (expiryWarning ? `\n  ${expiryWarning}` : ''),
+    {
+      ...who,
+      reason,
+      scopeUrl,
+      expiresAt: deployResult.metadata?.expiresAt ?? null,
+      verified: !connectivity.skipped && connectivity.success === true,
+      verificationSkipped: connectivity.skipped === true,
+      metadata: deployResult.metadata ?? null,
+      expiryWarning: expiryWarning ?? null,
+    },
+  );
 }

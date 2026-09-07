@@ -36,9 +36,13 @@ async function waitForSsh(host: string, port: number): Promise<void> {
 async function reProvisionAuth(agent: Agent): Promise<void> {
   // F5: Re-provision Claude OAuth credentials from PM machine (best-effort)
   try {
+    // apra-fleet-3swo.7.2: branch on the structured ok discriminator instead
+    // of testing whether the summary text starts with the success emoji --
+    // the tools no longer emit emoji at all, and `ok` is the field that
+    // survives any future wording change.
     const result = await provisionAuth({ member_id: agent.id });
-    if (!result.startsWith('\u2705')) {
-      log('provision_llm_auth warning for ' + agent.friendlyName + ': ' + result.split('\n')[0]);
+    if (!result.structuredContent.ok) {
+      log('provision_llm_auth warning for ' + agent.friendlyName + ': ' + result.text.split('\n')[0]);
     }
   } catch (e) {
     // Truncate error message to prevent accidental credential leakage in log output
@@ -56,8 +60,8 @@ async function reProvisionAuth(agent: Agent): Promise<void> {
         git_access: agent.gitAccess,
         repos: agent.gitRepos,
       });
-      if (!result.startsWith('\u2705')) {
-        log('provision_vcs_auth warning for ' + agent.friendlyName + ': ' + result.split('\n')[0]);
+      if (!result.structuredContent.ok) {
+        log('provision_vcs_auth warning for ' + agent.friendlyName + ': ' + result.text.split('\n')[0]);
       }
     } catch (e) {
       // Truncate error message to prevent accidental credential leakage in log output
