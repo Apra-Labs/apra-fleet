@@ -213,6 +213,16 @@ export class WindowsGitBashCommands extends LinuxCommands {
     return `rm -f "$HOME/.fleet-git-credential.bat"`;
   }
 
+  override gitCredentialHelperRead(label?: string): { command: string; path: string } {
+    // The inherited POSIX read would look for an extensionless helper, but
+    // this member's gitCredentialHelperWrite above deploys a native Windows
+    // `.bat` (git.exe execs the helper itself). The SHELL is still bash, so
+    // the invocation stays POSIX -- only the filename differs.
+    const credFileName = label ? `.fleet-git-credential-${escapeDoubleQuoted(label)}` : '.fleet-git-credential';
+    const credFile = `$HOME/${credFileName}.bat`;
+    return { command: `"${credFile}"`, path: credFile };
+  }
+
   override gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const credFileName = label ? `.fleet-git-credential-${escapeDoubleQuoted(label)}` : '.fleet-git-credential';
     const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapeDoubleQuoted(host)}`;

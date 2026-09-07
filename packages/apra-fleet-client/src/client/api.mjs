@@ -233,6 +233,40 @@
  */
 
 /**
+ * @typedef {Object} VcsCredentialExecOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {string} command - The credential-requiring command to run on the member. MUST
+ *   contain the literal placeholder {{vcs_token}} where the credential belongs, referenced
+ *   BARE -- the server substitutes it with the value ALREADY escaped for that member's shell,
+ *   so wrapping it in your own quotes double-escapes it and surfaces as a false 401.
+ * @property {string} [label] - Credential label provision_vcs_auth deployed the helper under
+ *   (it defaults to the provider name there, e.g. "github" or "azure-devops"). Omit for the
+ *   unlabelled helper.
+ * @property {number} [timeout_s] - Timeout in seconds for the command (default: 120).
+ */
+
+/**
+ * @typedef {Object} VcsCredentialExecStructured
+ * @property {boolean} ok - True when the credential-requiring command was dispatched. Read
+ *   exitCode for the command's own outcome.
+ * @property {"ok" | "member_not_found" | "placeholder_missing" | "unsupported_member_os" |
+ *   "credential_read_failed" | "credential_empty" | "dispatch_failed"} reason - Machine-readable
+ *   outcome code. Branch on this, never on the text.
+ * @property {number|null} exitCode - Exit code of the dispatched command, null if it never ran.
+ * @property {string} stdout - Command stdout, with every occurrence of the credential redacted.
+ * @property {string} stderr - Command stderr, with every occurrence of the credential redacted.
+ * @property {number} tokenRedactions - How many times the credential had to be redacted out of
+ *   stdout+stderr. Normally 0; nonzero means the command echoed its own credential back.
+ * @property {string|null} credentialLabel - Credential label used, or null for the unlabelled helper.
+ * @property {string|null} memberId - Registry id of the resolved member, or null.
+ * @property {string|null} memberName - Friendly name of the resolved member, or null.
+ *
+ * Mirrors src/tools/vcs-credential-exec.ts's VcsCredentialExecStructured field-for-field
+ * (apra-fleet-3swo.7.3). The plaintext credential appears in NO field of this payload.
+ */
+
+/**
  * @typedef {Object} ProvisionAuthStructured
  * @property {boolean} ok - True when credentials were deployed (verified or not).
  * @property {"ok" | "deployed_unverified" | "deployed_with_errors" | "skipped_local_member" |
@@ -599,6 +633,24 @@ export class ApraFleet {
      */
     async provisionVcsAuth(options) {
         return this.mcpClient.callTool('provision_vcs_auth', options);
+    }
+
+    /**
+     * Run a credential-requiring git/VCS command on a member WITHOUT the
+     * caller ever learning the credential (src/tools/vcs-credential-exec.ts).
+     *
+     * This is the server-side replacement for reading a token back out of the
+     * deployed git-credential-helper: the server reads the credential
+     * in-process, substitutes {{vcs_token}} with it already escaped for the
+     * member's shell, dispatches the command, and redacts the value from the
+     * returned stdout/stderr. The plaintext appears in no field of the result.
+     *
+     * @param {VcsCredentialExecOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: VcsCredentialExecStructured }>}
+     */
+    async vcsCredentialExec(options) {
+        return this.mcpClient.callTool('vcs_credential_exec', options);
     }
 
     /**
