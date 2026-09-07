@@ -35,10 +35,15 @@ import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
 import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
+import { resultText, toolErrorText } from './mcp-result.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
 export { parseUnmergedPaths };
+// Re-exported so importers of the MCP result-text/tool-error-text helpers
+// from runner.js keep working; mcp-result.mjs is the single source of truth
+// for their implementation (apra-fleet-3swo.2.4).
+export { resultText, toolErrorText };
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
@@ -1771,12 +1776,6 @@ function isToolError(res) {
     return !!(res && typeof res === 'object' && res.isError === true);
 }
 
-/** Best-effort human-readable text out of an MCP error result, for logging. */
-function toolErrorText(res) {
-    const first = res && Array.isArray(res.content) ? res.content[0] : null;
-    return (first && typeof first.text === 'string' && first.text) || 'no error text returned';
-}
-
 export function vetKbWork(role, result) {
     const captures = [];
     const promotions = [];
@@ -2066,14 +2065,6 @@ export function createMemberReservationClient(opts = {}) {
     const { callTool, members = [], sprintId, log = () => {} } = opts;
     const active = typeof callTool === 'function' && typeof sprintId === 'string' && sprintId.length > 0 && members.length > 0;
 
-    function resultText(result) {
-        if (typeof result === 'string') return result;
-        if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
-            return result.content[0].text;
-        }
-        return '';
-    }
-
     // Returns { ok, text } rather than throwing so BOTH the best-effort callers
     // (reserveAll/releaseAll, which ignore the outcome) and the owner-checked
     // resume caller (reReserveForResume, which MUST know per-member whether the
@@ -2198,14 +2189,6 @@ export function createMemberReservationClient(opts = {}) {
 export function createMemberSessionGuard(opts = {}) {
     const { callTool, log = () => {} } = opts;
     const active = typeof callTool === 'function';
-
-    function resultText(result) {
-        if (typeof result === 'string') return result;
-        if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
-            return result.content[0].text;
-        }
-        return '';
-    }
 
     return {
         async killIfAlive(member) {
