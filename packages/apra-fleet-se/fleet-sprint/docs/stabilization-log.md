@@ -1,9 +1,19 @@
 # Auto-Sprint Stabilization Log
 
-Running log of issues found while driving the real `apra-fleet-eft` sprint
-(member: fleet-rev, branch `auto-sprint/eft-service`, base `feat/fleet-reorg`)
-per `docs/README.md`, and the fixes made for each. Newest entries at the
-bottom. Each entry: symptom -> root cause -> fix -> evidence.
+A closed historical log from the stabilization push that first drove
+fleet-sprint against a real sprint end to end. Each numbered entry records
+one defect as symptom -> root cause -> fix -> evidence, and most carry a
+**Lesson** paragraph -- that is the durable part.
+
+Read it as an archive, not as current documentation: entries name the
+branches, commits and beads of the run they were written during, and the code
+they describe has moved on since. It is kept for two reasons -- those Lesson
+paragraphs, and the fact that regression tests elsewhere in this repo cite
+these entries by number as the reason they exist (for example
+`packages/apra-fleet-client/test/transport-idle-timeout-guard.test.mjs` cites
+Issue 8). **The Issue numbering is therefore load-bearing: do not renumber or
+remove entries.** New findings belong in the relevant design doc or a bead,
+not appended here.
 
 ## Loop iteration 1 (2026-07-19)
 

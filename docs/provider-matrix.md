@@ -1,12 +1,16 @@
-<!-- llm-context: This is the reference table comparing LLM provider capabilities in apra-fleet (Claude, Codex, Copilot, AGY). Consult when a user asks which provider supports a feature, what the limitations are, or which provider to choose for a role (PM, doer, reviewer). -->
-<!-- keywords: provider, Claude, Codex, Copilot, AGY, capabilities, max_turns, timeout, permissions, NDJSON, truncation, comparison -->
+<!-- llm-context: This is the reference table comparing LLM provider capabilities in apra-fleet (Claude, Codex, Copilot, AGY, OpenCode). Consult when a user asks which provider supports a feature, what the limitations are, or which provider to choose for a role (PM, doer, reviewer). -->
+<!-- keywords: provider, Claude, Codex, Copilot, AGY, OpenCode, capabilities, max_turns, timeout, permissions, NDJSON, truncation, comparison -->
 <!-- see-also: ../README.md (provider setup instructions), FAQ.md (common provider questions) -->
 
 # Provider Matrix
 
-Reference tables for all LLM providers supported by Apra Fleet. Extracted from `docs/multi-provider-plan.md`.
+Reference tables for all LLM providers supported by Apra Fleet. The adapters
+themselves live in `src/providers/*.ts`; this page is the flattened comparison.
 
-> Tracking issues: #27 (OpenAI Codex), #35 (GitHub Copilot)
+Fleet also accepts `llm_provider: "none"` for members that are plain command
+executors with no LLM CLI at all -- `execute_prompt` is rejected for those
+members, and only `execute_command` applies. `none` is omitted from the
+provider tables below because none of the columns are meaningful for it.
 
 ---
 
@@ -34,19 +38,50 @@ Reference tables for all LLM providers supported by Apra Fleet. Extracted from `
 | **Agentic capabilities** | File edit, shell, MCP tools | File edit, shell, MCP tools, web search, beads | File edit, shell, MCP tools, subagents | File edit, shell, MCP tools, custom agents |
 | **Context window** | 200K (Sonnet) / 1M (Opus 4.7) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) |
 
+### OpenCode
+
+OpenCode is model-agnostic -- it fronts any OpenAI-compatible endpoint
+(Ollama, vLLM, hosted APIs), so its capabilities depend on the model behind
+it rather than on the CLI.
+
+| Aspect | Value |
+|--------|-------|
+| **Install (Linux)** | `curl -fsSL https://opencode.ai/install \| bash` |
+| **Install (macOS/Windows)** | `npm install -g opencode-ai` |
+| **Update** | `npm update -g opencode-ai` |
+| **Version check** | `opencode --version` |
+| **Headless prompt** | `opencode run` |
+| **Session resume** | `--session <id>`, or `--continue` for the most recent |
+| **Skip permissions** | `--dangerously-skip-permissions` |
+| **Auth env var** | none -- the `opencode` CLI owns its own auth |
+| **Credential path** | `~/.config/opencode/` |
+| **Role-agent files** | `~/.config/opencode/agents/` |
+| **Instruction file** | `AGENTS.md` |
+| **Configuration** | `opencode.json` (provider, base URL, MCP servers) |
+
+Set `model_tiers` per member at registration -- see
+[opencode-getting-started.md](opencode-getting-started.md).
+
 ---
 
 ## Model Tier Equivalents
 
 Used by the PM for model escalation (`cheap -> mid -> premium`).
 
-| Tier | Purpose | Claude | Antigravity | OpenAI Codex | Copilot |
-|------|---------|--------|-------------|--------------|---------|
-| **cheap** | Execution, status, tests, deploys | `haiku` | `gemini-3.5-flash-lite` | `gpt-5.4-mini` | `claude-haiku-4-5` |
-| **mid** | Construction, code, config | `sonnet` | `gemini-3.5-flash` | `gpt-5.4` | `claude-sonnet-4-5` |
-| **premium** | Planning, review, architecture | `opus` | `claude-sonnet-4.6` | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) |
+The three tier names are `cheap`, `standard`, and `premium`. Defaults come from
+each adapter's `modelTiers()`; override them per provider in
+`~/.apra-fleet/data/config.json` or per member with `update_member`.
 
-**Note:** Codex currently lacks a distinct premium tier beyond its best model. Copilot exposes Anthropic's Claude models directly, so it uses the same tier names.
+| Tier | Purpose | Claude | Antigravity | OpenAI Codex | Copilot | OpenCode |
+|------|---------|--------|-------------|--------------|---------|----------|
+| **cheap** | Execution, status, tests, deploys | `haiku` | `gemini-3.5-flash-lite` | `gpt-5.4-mini` | `claude-haiku-4-5` | `opencode/north-mini-code-free` |
+| **standard** | Construction, code, config | `sonnet` | `gemini-3.5-flash` | `gpt-5.4` | `claude-sonnet-4-5` | `opencode/deepseek-v4-flash-free` |
+| **premium** | Planning, review, architecture | `opus` | `claude-sonnet-4.6` | `gpt-5.4` (no separate tier) | `claude-opus-4-5` | `opencode/nemotron-3-ultra-free` |
+
+**Note:** Codex lacks a distinct premium tier beyond its best model. Copilot
+exposes Anthropic's Claude models directly, so it uses the same tier names.
+OpenCode's defaults are placeholders: an OpenCode member normally sets
+`model_tiers` at registration to whatever its own endpoint serves.
 
 ---
 
@@ -88,6 +123,7 @@ Known limitations when using non-Claude providers in a fleet.
 |----------|---------|--------|
 | Claude | `ANTHROPIC_API_KEY` | console.anthropic.com |
 | Antigravity (agy) | `ANTIGRAVITY_API_KEY` | aistudio.google.com |
+| OpenCode | none -- auth is handled by the `opencode` CLI itself | n/a |
 | Codex | `OPENAI_API_KEY` | platform.openai.com |
 | Copilot | `COPILOT_GITHUB_TOKEN` | github.com/settings/tokens (fine-grained PAT with "Copilot Requests" permission) |
 
@@ -103,5 +139,6 @@ Each provider auto-loads a provider-specific instruction file from the working d
 | Antigravity (agy) | `AGY.md` |
 | Codex | `AGENTS.md` |
 | Copilot | `COPILOT.md` |
+| OpenCode | `AGENTS.md` |
 
 When the PM sends task harness files via `send_files`, it renames `tpl-agent.md` to the correct filename per provider.

@@ -19,7 +19,7 @@ Going forward, the architecture will unify these components into a highly cohesi
 ### 2.2 Domain-Specific Editions
 By decoupling the core from the skills, we publish specialized "editions" of Apra Fleet tailored to specific industries. Each edition depends on `apra-fleet-core`.
 
-- **`apra-fleet-se` (Software Engineering):** Automated software engineering capabilities (essentially what "today's apra-fleet" and `apra-pm` do combined). Includes SE-focused hooks (git, testing), skills (planner, doer, reviewer), and workflows (`auto-sprint`).
+- **`apra-fleet-se` (Software Engineering):** Automated software engineering capabilities (what the core fleet server and `apra-pm` do, combined). Includes SE-focused hooks (git, testing), skills (planner, doer, reviewer), and workflows (`fleet-sprint`).
 - **`apra-fleet-retail`:** Skills/agents for inventory management, CRM integration, supply chain querying.
 - **`apra-fleet-logistics`:** Route planning agents, fleet tracking hooks, dynamic re-routing workflows.
 - **`apra-fleet-legal`:** Contract analysis agents, compliance checking hooks, document drafting workflows.

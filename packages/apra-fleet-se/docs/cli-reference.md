@@ -17,12 +17,17 @@ instead (see docs/overview.md and parent README.md). The service API manages
 reservations correctly and is the only supported way for users to launch
 sprints.
 
-Entry point: `packages/apra-fleet-se/bin/cli.mjs` (installed as the
-`fleet-se sprint` command; also runnable directly with `node bin/cli.mjs`).
+Entry point: `packages/apra-fleet-se/bin/cli.mjs` (this package declares it as
+the `fleet-sprint` bin; also runnable directly with `node bin/cli.mjs`, and
+reachable through the root package's `apra-fleet workflow fleet-sprint`
+launcher).
 
 ```
-Usage: fleet-se sprint [options]
+Usage: fleet-sprint [options]
 ```
+
+There are no subcommands and no positional arguments -- every input is a
+flag.
 
 Flags are parsed with Node's built-in `node:util parseArgs` in `strict: true`
 mode (see `buildOptionsSpec()`/`parseCliArgs()` in `bin/cli.mjs`): an
@@ -34,7 +39,7 @@ allowed.
 
 | Flag | Short | Required | Type | Default | Description |
 |---|---|---|---|---|---|
-| `--issue <ids>` | `-i` | yes | comma-separated string | -- | Target beads issue id(s) that scope the sprint (e.g. `epic-1,epic-2`). Every dispatch in the run filters beads by `--parent <these ids>`. |
+| `--issue <ids>` | `-i` | yes | comma-separated string | -- | Target beads issue id(s) that scope the sprint (e.g. `epic-1,epic-2`). Split on commas, trimmed, and forwarded to the runner as `target_issues`. Scope is the full descendant subtree of every id, resolved in memory by `bdListScoped()` -- see `docs/fleet-sprint-cli-contract.md`. |
 | `--members <ids>` | `-m` | yes | comma-separated string | -- | Fleet member id(s)/name(s) available to the sprint. Members are the pool doers/reviewer round-robin across (see `docs/architecture.md` "Role -> member resolution"). |
 | `--branch <name>` | `-b` | yes | string | -- | Sprint branch to develop on. Created from `--base` if it does not already exist. |
 | `--base <name>` | `-B` | yes | string | -- | Base branch the sprint branch is created from, and the branch the eventual PR targets. |
@@ -45,11 +50,47 @@ allowed.
 | `--role-map <json\|@file>` | | no | JSON object or `@path/to/file.json` | -- | Maps role name -> array of member names, e.g. `'{"doer":["m1","m2"]}'`. Overrides the default member-pool resolution for that role (see `docs/architecture.md`). Also accepts the application-level pseudo-role key `orchestrator` (which member issues the sprint's own `bd`/`git` commands). Keys are normalized (trimmed + lowercased) on load; two keys that normalize to the same value are rejected as ambiguous. |
 | `--viewer-port <port>` | | no | integer 1-65535 | `8080` | Port for the local dashboard viewer HTTP server. |
 | `--budget <usd>` | | no | non-negative finite number | unset (unlimited) | USD ceiling for this run's total *estimated* spend. When set, `agent()` dispatches abort the run with a budget-exceeded error once tracked spend reaches the ceiling. Omitted means unlimited -- identical to not having this flag at all. See the budget-tracking caveats in `docs/architecture.md`. |
+| `--dispatch-timeout-s <s>` | | no | integer >= 60 | `9000` (applied by the runner) | Per-dispatch time budget in seconds, used as both the inactivity timeout and the hard elapsed-time ceiling on every agent dispatch. The integ-test dispatch ceiling is 2x this value and the regression-test ceiling is 3x. Omitting the flag leaves it unset at the CLI; `runner.js` then applies its own `9000` default. |
+| `--sync` | | no | boolean flag | off | Selects `synced` topology mode (orchestrator-bracketed git + Dolt sync brackets) instead of the default shared-workspace/`legacy` mode. See `docs/architecture.md` "Multi-member topology". |
+| `--service-url <url>` | | no | string | -- | Base HTTP URL of the supervisor that launched this sprint. Forwarded as `serviceUrl`, which switches the dolt-push mutex and the child-id allocator over to their HTTP clients. Set by the supervisor's spawner; not normally passed by hand. |
+| `--run-id <id>` | | no | string | `--branch`'s value | Identifier used for this run's state/viewer keying. Defaults to the branch name when omitted. |
 | `--help` | `-h` | no | boolean flag | -- | Prints usage text and exits 0. |
 
 All four of `--issue`, `--members`, `--branch`, `--base` are required; if any
 is missing the CLI prints `Error: Missing required flags: ...` (listing every
 missing one) and exits 1.
+
+No flag is declared repeatable, so passing one twice keeps only the last
+value; use the comma-separated form for `--issue`/`--members` instead.
+
+### Runner arguments with no CLI flag
+
+`runner.js`'s `validateArgs()` allow-list (`KNOWN_ARG_KEYS`) recognizes
+several keys `bin/cli.mjs` never sets, so they stay at their defaults for
+every CLI-launched sprint: the legacy singular `target_issue`, `assignee`,
+`doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`,
+`azdevops_pat_secret_name`, and the engine-injected `callTool`. See
+`docs/fleet-sprint-cli-contract.md` for that contract.
+
+### Environment variables
+
+- `AUTO_SPRINT_FAILURE_GRACE_MS` (default `300000`, i.e. 5 minutes) -- how
+  long the CLI keeps the dashboard alive after a failed sprint so the run can
+  still be inspected. `0` skips the wait entirely.
+- `APRA_FLEET_TRANSPORT`, `APRA_FLEET_SERVER_CMD`, `APRA_FLEET_SERVER_BIN`,
+  `APRA_FLEET_DATA_DIR` -- fleet-server connection resolution, see below.
+- `APRA_FLEET_SE_SCHEMAS_DIR` -- role-schema directory override, see
+  "Role schema resolution" below.
+
+### Exit codes
+
+- `0` -- `--help`, or a sprint that finished successfully.
+- `1` -- any precondition or validation failure (missing required flags,
+  malformed issue id/branch/role-map, out-of-range `--max-cycles`/
+  `--viewer-port`/`--dispatch-timeout-s`/`--budget`, unreachable fleet
+  server, member validation failure, missing target issue, topology
+  mismatch, viewer `listen` failure), and any sprint failure.
+- `130` -- SIGINT received while a sprint was in flight.
 
 ## Validation performed before any dispatch
 
@@ -71,11 +112,16 @@ In order, `main()` in `bin/cli.mjs` performs:
    65535]`.
 6. **`--budget` range check** -- if present, must be a non-negative finite
    number.
-7. **Fleet transport startup** -- the CLI starts the stdio MCP transport to
-   the fleet server (`resolveFleetServerCommand()`, see below) and performs
-   the `initialize`/`notifications/initialized` handshake *before* any
-   further precondition check, so every subsequent check runs against a live
-   connection.
+7. **Fleet transport startup** -- the CLI calls
+   `resolveFleetServerConnection()` and **requires** it to resolve to
+   `mode: 'http'`, then attaches to that existing fleet singleton over
+   `StreamableHttpTransport` *before* any further precondition check, so
+   every subsequent check runs against a live connection. It never
+   self-spawns a stdio MCP server: as the supervisor's execution vehicle it
+   runs one child per concurrent sprint, and each spawning its own private
+   fleet-server would defeat sharing one connection. Anything other than a
+   healthy HTTP singleton is a hard failure -- `FleetServerUnreachableError`
+   (`code: 'FLEET_SERVER_UNREACHABLE'`) printed as `Error: ...`, exit 1.
 8. **Member existence check** -- calls the fleet's `list_members` tool and
    validates every `--members` entry is registered (`resolveMemberValidation()`).
    Any missing member aborts the sprint unless `--allow-missing-members` was
@@ -133,12 +179,16 @@ stdio-only view. It is now one branch of a larger, shared resolution order
 `docs/authoring-workflows.md` and `docs/adr-workflow-server-resolution.md`)
 call:
 
-1. **`APRA_FLEET_TRANSPORT`** (`http` | `stdio`, default `http`) -- forces
-   the mode. `stdio` goes straight to tier 3 below; `http` requires a
-   healthy HTTP singleton or fails loudly (no silent stdio fallback).
-   `APRA_FLEET_SERVER_CMD`/`APRA_FLEET_SERVER_BIN` remain stdio-only escape
-   hatches: setting either (with `APRA_FLEET_TRANSPORT` unset or not
-   `http`) is treated as an explicit stdio request.
+1. **`APRA_FLEET_TRANSPORT`** (`http` | `stdio`; unset means HTTP-first) --
+   forces the mode. `stdio` goes straight to tier 3 below; an explicit
+   `http` requires a healthy HTTP singleton or throws (no silent stdio
+   fallback). Unset probes for the singleton first and only then falls back
+   to tier 3. Any other value throws. `APRA_FLEET_SERVER_CMD`/
+   `APRA_FLEET_SERVER_BIN` remain stdio-only escape hatches: setting either
+   (with `APRA_FLEET_TRANSPORT` unset or not `http`) is treated as an
+   explicit stdio request. Note that `bin/cli.mjs` itself rejects any
+   resolution that is not `mode: 'http'`, so in practice only the HTTP
+   singleton path works for a sprint launch.
 2. **HTTP singleton probe (default path)** -- `checkRunningInstance()`
    (`src/services/singleton.ts`) checks `~/.apra-fleet/data/server.json`
    for a live pid + a passing `/health` GET; on success, attach via
@@ -159,34 +209,34 @@ sibling asset `dist/fleet-sprint-runner.mjs`; a dev monorepo checkout resolves
 
 ### Role schema resolution (contracts.mjs)
 
-Separately, `contracts.mjs`'s `resolveSchemasDir()` (apra-fleet-bun) resolves
-where the eight sprint roles' verdict/input JSON schemas are loaded from,
-independent of the server-command resolution above:
+Separately, `contracts.mjs`'s `resolveSchemasDir()` resolves where the sprint
+roles' verdict/input JSON schemas are loaded from, independent of the
+server-command resolution above. It has three inputs:
 
-1. `APRA_FLEET_SE_SCHEMAS_DIR` env override, if set. In the installed SEA
-   binary's `apra-fleet workflow <name>` launcher, this is tier 1 in
-   practice: the launcher sets it to `~/.apra-fleet/schemas` whenever it is
-   unset (see `docs/authoring-workflows.md` Section 4/7), so `contracts.mjs`
-   itself requires no code change for the installed-binary case.
-2. `dist/agents/schemas/` -- populated by the root package's `scripts/dist-pm.mjs`
-   at `prepublishOnly` (the same artifact `dist/fleet-sprint.mjs` ships next to).
-3. `packages/apra-fleet-se/vendor/schemas/` -- a package-local copy inside
-   this package's own directory tree. Legacy layout: nothing populates it now
-   that apra-pm lives in this monorepo, so it normally does not exist.
-4. `packages/apra-fleet-se/apra-pm/agents/schemas/`, three levels up -- the
-   apra-pm package in this monorepo.
+1. `APRA_FLEET_SE_SCHEMAS_DIR` env override, if set -- used as-is, with no
+   existence or freshness check and no further fallback. In the installed SEA
+   binary's `apra-fleet workflow <name>` launcher, this is the operative tier:
+   the launcher sets it to `~/.apra-fleet/schemas` whenever it is unset (see
+   `docs/authoring-workflows.md` Section 4/7), so `contracts.mjs` itself
+   requires no code change for the installed-binary case. Tests use it to pin
+   the loader at a known directory.
+2. `DIST_BUNDLED_SCHEMAS_DIR` -- `<repoRoot>/dist/agents/schemas`, populated
+   by the root package's `scripts/dist-pm.mjs` at `prepublishOnly` (a
+   `cpSync` of `packages/apra-fleet-se/apra-pm/agents` into `dist/agents`,
+   schemas subdirectory included).
+3. `PACKAGE_LOCAL_SCHEMAS_DIR` -- `packages/apra-fleet-se/apra-pm/agents/schemas`,
+   the apra-pm package in this monorepo.
 
-Tiers 2 and 4 are NOT a strict "dist always wins" order (apra-fleet-ot2z.20):
-if only one of the two exists, that one resolves, same as before. If BOTH
-exist, `resolveSchemasDir()` picks the NEWER one -- freshness is the maximum
-mtime over the `.json` files each directory contains, found by a recursive
-walk (not the directory's own mtime, which does not move on an in-place
-edit to an existing schema file). A tie resolves to `dist`, preserving the
-pre-apra-fleet-ot2z.20 default. Whichever directory resolves, a `console.warn`
-still fires if that directory exists but is missing an individual role's
-schema file (see `warnIfVendorFileUnexpectedlyMissing` in `docs/role-contracts.md`).
+Tiers 2 and 3 are NOT a strict "dist always wins" order: if only one of the
+two exists, that one resolves. If BOTH exist, `resolveSchemasDir()` picks the
+NEWER one -- freshness is the maximum mtime over the `.json` files each
+directory contains, found by a recursive walk (not the directory's own mtime,
+which does not move on an in-place edit to an existing schema file). A tie
+resolves to `dist`. Whichever directory resolves, a `console.warn` still
+fires if that directory exists but is missing an individual role's schema
+file (see `warnIfVendorFileUnexpectedlyMissing` in `docs/role-contracts.md`).
 
-If none of the four resolve, every role falls back to a hand-written literal
+If none of the three resolve, every role falls back to a hand-written literal
 schema shipped inside `contracts.mjs` itself (a deliberate, permanent
 last-resort safety net, not a temporary state) -- see `docs/role-contracts.md`.
 

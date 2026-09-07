@@ -114,15 +114,12 @@ concurrently without reservation conflicts (see
 your checkout, or the "Multi-member topology" section of `architecture.md`,
 for why the orchestrator role is deliberately non-exclusive).
 
-**Gotcha -- this is not auto-wired.** As of this writing, registering a
-member with an `orchestrator` tag does *not* automatically make
-fleet-sprint use it: you must pass `roleMap: {"orchestrator":
-["orchestrator"]}` explicitly on every sprint launch (Step 5). Omitting it
-silently falls back to treating one of your regular dev members as the
-orchestrator, which defeats the point of this setup -- there is a known,
-not-yet-landed fix to make an unmapped orchestrator a hard launch-time
-failure instead of a silent fallback; until then, double-check your launch
-payload.
+**Gotcha -- this is not auto-wired.** Registering a member with an
+`orchestrator` tag does *not* automatically make fleet-sprint use it: you
+must pass `roleMap: {"orchestrator": ["orchestrator"]}` explicitly on every
+sprint launch (Step 5). Omitting it is not an error -- the runner silently
+falls back to one of your regular dev members as the orchestrator, which
+defeats the point of this setup. Double-check your launch payload.
 
 ## Step 4 -- Launch the supervisor
 
@@ -135,9 +132,10 @@ Default port 8787. Smoke test:
 curl -s http://localhost:8787/api/sprints    # expect {"sprints":[],...}
 curl -s http://localhost:8787/api/members    # expect your registered fleet, non-empty
 ```
-See the `fleet-supervisor` skill (or `docs/supervisor-api.md` in this
-folder) for start/stop/restart/auto-start-on-login procedures -- they are
-fully generic, nothing there is apra-fleet-specific either.
+See the `fleet-supervisor` skill for the full
+start/stop/restart/auto-start-on-login procedures, and `docs/supervisor-api.md`
+in this folder for the API's operational semantics -- both are fully generic,
+nothing there is apra-fleet-specific either.
 
 ## Step 5 -- Launch your first sprint
 

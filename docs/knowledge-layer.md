@@ -18,13 +18,14 @@ The layer has two planes:
 |  - SqliteProvider (local) |      |  - symbol definitions     |
 |  - HttpKbProvider (http)  |      |  - call graphs            |
 |                           |      |  - file impact analysis   |
-|  16 MCP tools, incl:      |      |  MCP server: npx gitnexus |
-|  kb_capture  kb_query     |      |  16 tools: context,       |
-|  kb_context  kb_invalidate|      |  impact, detect_changes,  |
-|  kb_session_prime         |      |  query, cypher, ...       |
-|  kb_promote  kb_harvest   |      |                           |
-|  kb_setup    kb_export    |      |                           |
-|  kb_import                |      |                           |
+|  16 kb_* MCP tools:       |      |  MCP server: npx gitnexus |
+|  kb_capture  kb_query     |      |  Fleet proxies 7 of its   |
+|  kb_context  kb_invalidate|      |  tools: code_graph,       |
+|  kb_session_prime         |      |  code_impact, code_query, |
+|  kb_promote  kb_harvest   |      |  code_context, code_map,  |
+|  kb_setup    kb_export    |      |  code_flow, code_tests    |
+|  kb_import   kb_list      |      |                           |
+|  kb_stats    kb_feedback  |      |                           |
 |  kb_freshness_sweep       |      |                           |
 |  kb_reconcile_prefilter   |      |                           |
 |  kb_resolve_contradiction |      |                           |

@@ -3,7 +3,7 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Apra-Labs/apra-pm)
 
 A project management package for AI coding harnesses. It ships two complementary
-surfaces that share the same eight agents:
+surfaces that share the same agent definitions in `agents/`:
 
 | Surface | Provider | Entry point | State store |
 |---|---|---|---|
@@ -14,7 +14,9 @@ The `pm` skill is the provider-agnostic path: invoke it in any harness and it
 drives the full plan -> develop -> harvest lifecycle via natural language.
 
 The `auto-sprint` workflow is Claude-only and fully deterministic: a JavaScript
-loop drives eight agents through repeating cycles until a user-defined quality
+loop drives nine agents (planner, plan-reviewer, doer, reviewer, deployer,
+integ-test-runner, regression-test-runner, ci-watcher, harvester) through
+repeating cycles until a user-defined quality
 bar (zero P1 issues, zero P1/P2 issues, etc.) is met or the cycle limit is reached.
 No agent ever decides whether to continue -- all routing is in the workflow script.
 
@@ -33,6 +35,9 @@ while (open issues above goal threshold > 0 AND cycles < max):
                teardown); closes passing features, files bugs for failures
   Exit check -- beads query: are open issues above threshold? same set as last cycle?
 
+Finalization (once): regression-test-runner runs regression-test-playbook.md --
+                     failures carry over as [regression][carry-over] beads, they
+                     never gate this sprint's verdict
 CI check (haiku, non-blocking): polls after PR is created; annotates PR when not green
 Harvest (once): harvester writes sprint analysis, updates docs/CHANGELOG, raises PR
 ```
@@ -50,10 +55,15 @@ the quote and written to CHANGELOG. The harvester then updates
 sprint produces tighter estimates. The calibration loop targets +-50% accuracy;
 500%+ deviation triggers a calibration failure flag.
 
-Model prices used for estimation: haiku $5/M, sonnet $15/M, opus $25/M output tokens.
+Models are referred to by provider-agnostic tier name (`cheap` / `standard` /
+`premium`); `TIER_TO_MODEL` in `auto-sprint.js` is the only place a tier maps to a
+concrete model family. Default prices used for estimation: cheap $5/M,
+standard $15/M, premium $25/M output tokens.
 
 Sprint logs are durable per-branch outputs named
-`sprint-logs/<branch>-<yyyymmdd_hhmmss>.jsonl` and are never deleted.
+`sprint-logs/<branch>-<yyyymmdd_hhmmss>.jsonl` and are never deleted. The `.jsonl`
+ledgers stay local (gitignored); the committed deliverables are `calibration.json`
+and the `<timestamp>.analysis.md` summary.
 
 ### Harvest: dolt push and execution summary
 
@@ -62,7 +72,7 @@ automatically runs `bd dolt push` to sync the Dolt remote. Failure is non-fatal
 -- a missing remote or network error logs a warning and harvest continues.
 
 The sprint analysis artifact (`sprint-logs/<branch>-<timestamp>.analysis.md`)
-now includes a **Sprint Execution Summary** section: cycles run (with develop
+includes a **Sprint Execution Summary** section: cycles run (with develop
 iteration count, reviewer CHANGES NEEDED rounds, and plan re-rounds), per-phase
 dispatch/token/cost breakdown, failures/retries, and remaining risks at close.
 The summary is generated even when `goalMet=false`.
@@ -120,7 +130,7 @@ See `skills/pm/SKILL.md` and its sub-docs for the full workflow.
 ### Fleet member selection: tag-based dispatch
 
 When running in fleet mode, the pm skill selects members by tags
-(`tags: ['doer']` / `tags: ['reviewer']`) rather than the legacy `role`
+(`tags: ['doer']` / `tags: ['reviewer']`); `list_members` has no `role`
 parameter. Multi-tag queries narrow selection by capability (e.g.
 `list_members(tags: ['reviewer', 'bitbucket'])`); fall back to the single-tag
 query when no member matches. `compose_permissions` must be called before every
@@ -132,16 +142,23 @@ invariants.
 
 ```
 skills/pm/               the pm skill (SKILL.md + sub-docs)
-agents/                  eight sprint agent definitions (shared by both surfaces)
+agents/                  agent definitions (shared by both surfaces)
+agents/schemas/          machine-readable input/output contracts per role
+agents/_shared/          prompt fragments included by several agents
 .claude/workflows/       auto-sprint.js -- deterministic Claude Code workflow
-lib/                     sprint-cost.mjs -- testable cost arithmetic module
-test/                    sprint-cost.test.mjs -- 45 unit tests (npm test)
+lib/                     parse-sprint-args.mjs, vet-kb-work.mjs -- standalone helpers
+test/                    node --test suites (npm test)
 sprint-logs/             calibration.json + per-sprint JSONL cost logs (durable)
 install.mjs              installer: copies skill + agents + workflow into provider config dir
 e2e/                     end-to-end suite: drive the skill headless on the toy repo
 docs/                    sprint-workflow.md user guide + design intent; dispatch-patterns.md
 .githooks/               pre-commit (ASCII-only guard)
 ```
+
+The cost arithmetic lives in the `PURE_FUNCTIONS_BEGIN`/`PURE_FUNCTIONS_END` block
+inside `.claude/workflows/auto-sprint.js`. `install.mjs` extracts that block verbatim
+to `<configDir>/skills/pm/cost.js` so the pm skill can use the same functions on any
+provider; `test/sprint-cost.test.mjs` evaluates the same block directly.
 
 ## Install
 
@@ -152,10 +169,14 @@ node install.mjs --llm claude     # or: agy | opencode   (default: claude)
 ```
 
 This writes:
-- `<configDir>/skills/pm/` -- the pm skill
-- `<configDir>/agents/*.md` -- eight agents
-- `<configDir>/settings.json` -- minimal permissions (merged, non-destructive)
+- `<configDir>/skills/pm/` -- the pm skill, plus the generated `cost.js`
+- `<configDir>/agents/*.md` -- every agent definition in `agents/`
+- `<configDir>/agents/schemas/` and `<configDir>/agents/_shared/` -- role contracts
+  and shared prompt fragments
+- `<configDir>/settings.json` (`opencode.json` for OpenCode) -- minimal permissions
+  (merged, non-destructive)
 - `~/.claude/workflows/auto-sprint.js` -- the auto-sprint workflow (claude only)
+- `<configDir>/skills/auto-sprint-args/` -- the args-contract helper skill (claude only)
 
 Requires `git`, `gh` (GitHub CLI), and beads (`bd`) on PATH.
 
@@ -175,6 +196,9 @@ Requires `git`, `gh` (GitHub CLI), and beads (`bd`) on PATH.
 | `max_cycles` | no | `5` | Hard ceiling on sprint cycles. |
 | `requirementsFile` | no | -- | Additional context file for the planner. |
 | `base_branch` | no | `main` | PR target branch. |
+| `skip_dolt_push` | no | `false` | Skip the Harvest `bd dolt push` (used by CI/e2e). |
+
+See `.claude/skills/auto-sprint-args/SKILL.md` for the full argument contract.
 
 Deploy and integration test phases require `deploy.md` and `integ-test-playbook.md`
 in the project root; without them the workflow skips those phases and proceeds
@@ -196,28 +220,37 @@ runner closes that PR and deletes the branch afterward (use `--keep-pr` to retai
 
 ```
 node install.mjs --llm claude
-node e2e/run-e2e.mjs --provider claude          # all claude suites for this host OS
-node e2e/run-e2e.mjs --suite s1.2               # one suite
+node e2e/run-e2e.mjs --provider claude          # all claude suites
+node e2e/run-e2e.mjs --suite s1                 # one suite
 ```
 
-Suites are grouped by provider: `s1`=Claude, `s8`=AGY, with `.1/.2/.3`
-as the Windows/Linux/macOS matrix (`e2e/suites.json`). CLI flags vary by tool;
-override a provider's command with e.g.
+Suites are defined in `e2e/suites.json` and are OS-independent (the runner is chosen
+by the CI workflow's `runner` input):
+
+| Suite | Provider | Scenario |
+|---|---|---|
+| `s1` | Claude | `e2e/scenario.md` (pm skill) |
+| `s8` | AGY | `e2e/scenario.md` (pm skill) |
+| `s9` | OpenCode | `e2e/scenario-opencode.md` (pm skill) |
+| `s10` | Claude | `e2e/scenario-auto-sprint.md` (auto-sprint workflow) |
+
+CLI flags vary by tool; override a provider's command with e.g.
 `PMLITE_E2E_CMD_CLAUDE="claude -p {PROMPT} --permission-mode acceptEdits"`.
 
 Pushing the branch and opening the PR needs write access to the toy: set
 `GH_TOKEN` / `E2E_GH_TOKEN`, or rely on the runner's ambient git + gh credentials.
 
-CI: `.github/workflows/pm-e2e.yml` (manual trigger; needs a self-hosted runner
-with the provider CLI authenticated, plus node 20+, `bd`, and `secrets.E2E_GH_TOKEN`).
+CI: the monorepo's `.github/workflows/pm-e2e.yml` (manual trigger, one suite per run;
+needs a runner with the provider CLI authenticated, plus node 20+, `bd`, and
+`secrets.E2E_GH_TOKEN`).
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Enable the ASCII pre-commit guard once after
-cloning:
+cloning (run from the repository root -- `core.hooksPath` is repo-wide):
 
 ```
-git config core.hooksPath .githooks
+git config core.hooksPath packages/apra-fleet-se/apra-pm/.githooks
 ```
 
 Please also read the [Code of Conduct](CODE_OF_CONDUCT.md). Report security issues

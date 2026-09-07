@@ -1,5 +1,6 @@
-<!-- Landing page draft for apra-fleet. Source of truth for claims: Apra-Labs/apra-fleet origin/main @ v0.4.0.
-     Local source: C:\Users\akhil\.claude\scratchpad\fleet-site\template.html (built to apra-fleet-landing-v2.html) -->
+<!-- Landing page for apra-fleet, deployed by .github/workflows/pages.yml.
+     Source of truth for every claim on this page: the Apra-Labs/apra-fleet
+     repository itself -- README.md, ROADMAP.md, docs/, and src/. -->
 <title>apra-fleet -- run a fleet of AI agents across your machines</title>
 <style>
   @font-face {
@@ -339,7 +340,7 @@
 
 <div class="hero" id="top">
   <div>
-    <p class="eyebrow">Open source -- Apache-2.0 -- v0.4.0</p>
+    <p class="eyebrow">Open source -- Apache-2.0</p>
     <h1>Run a fleet of AI agents across <em>your</em> machines</h1>
     <p class="sub">What Kubernetes did for containers, apra-fleet does for AI
     agents: scheduling, credentials, isolation, and observability for an
@@ -417,7 +418,7 @@ another called reviewer. Pair them."</span></pre>
   <p class="eyebrow">What it is</p>
   <h2>One control plane. Any device. Any model.</h2>
   <p class="lede">apra-fleet is an MCP server + CLI. Any MCP-capable agent --
-  Claude Code, Gemini, Codex, Copilot, OpenCode, Antigravity -- becomes the
+  Claude Code, Codex, Copilot, OpenCode, Antigravity -- becomes the
   orchestrator of a fleet: it registers machines as members, dispatches
   commands and prompts to them, moves files, and brokers credentials. You
   drive it in plain language: <em>"Register a local member called doer.
@@ -454,7 +455,7 @@ another called reviewer. Pair them."</span></pre>
   <div class="diff">
     <article>
       <h3>Across machines and vendors</h3>
-      <p>Agent frameworks compose agents inside one process. apra-fleet's unit of execution is a <strong>member</strong>: a machine plus a provider CLI, swappable at registration. Every provider sits behind one strategy interface, which is what makes mixing Claude, Gemini, Codex, Copilot, Antigravity, and local models genuinely work.</p>
+      <p>Agent frameworks compose agents inside one process. apra-fleet's unit of execution is a <strong>member</strong>: a machine plus a provider CLI, swappable at registration. Every provider sits behind one strategy interface, which is what makes mixing Claude, Codex, Copilot, Antigravity, and local models genuinely work.</p>
       <span class="ref">src/providers/ -- AgentStrategy</span>
     </article>
     <article>
@@ -540,9 +541,9 @@ another called reviewer. Pair them."</span></pre>
     them. Captions are burned into the recording.</figcaption>
   </figure>
   <div class="stats">
-    <div class="stat"><div class="n">2,300+</div><div class="l">unit tests in the codebase the fleet maintains</div></div>
-    <div class="stat"><div class="n">81</div><div class="l">files in the integration suite run against real backends</div></div>
-    <div class="stat"><div class="n">6</div><div class="l">provider CLIs: Claude, Gemini, Codex, Copilot, Antigravity, OpenCode (local models)</div></div>
+    <div class="stat"><div class="n">6,000+</div><div class="l">test cases in the codebase the fleet maintains</div></div>
+    <div class="stat"><div class="n">200+</div><div class="l">files in the sprint-engine suite run against a real issue-tracker backend</div></div>
+    <div class="stat"><div class="n">5</div><div class="l">provider CLIs: Claude, Codex, Copilot, Antigravity, OpenCode (local models)</div></div>
   </div>
 </div>
 </section>
@@ -591,7 +592,7 @@ apra-fleet workflow fleet-sprint \
   commands work with any supported provider. For Antigravity/AGY:
   <code>apra-fleet --llm agy</code>, then restart Antigravity to load the
   fleet MCP server. For OpenCode: <code>apra-fleet --llm opencode</code>.
-  Codex, Copilot, and Gemini are also supported -- see
+  Codex and Copilot are also supported -- see
   <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/install.md">docs/install.md</a>
   for the full provider list.</p>
 </div>
@@ -599,10 +600,11 @@ apra-fleet workflow fleet-sprint \
 
 <section>
 <div class="wrap">
-  <p class="eyebrow">Current state -- v0.4.0</p>
+  <p class="eyebrow">Current state</p>
   <h2>What works today, and what's still rough</h2>
   <p class="lede">An honest status page beats a surprised user. This list
-  comes from the v0.4.0 release notes, unedited in substance.</p>
+  comes from the project's own release notes and roadmap, unedited in
+  substance.</p>
   <div class="state">
     <div class="works">
       <h3>Daily-driver solid</h3>
@@ -691,7 +693,7 @@ apra-fleet workflow fleet-sprint \
     </div>
   </div>
   <p class="trace">Every claim on this page traces to the repository's
-  <code>main</code> branch at v0.4.0 -- README, release notes, docs, and
+  <code>main</code> branch -- README, release notes, docs, and
   source. The dashboard imagery is from real runs; the cost figures are a
   single measured example, not a benchmark; and the preview labels above are
   the project's own.</p>

@@ -1,13 +1,18 @@
 # Dolt sync redesign: from a 3-tier recovery ladder to one deterministic settle step
 
-Status: BEING IMPLEMENTED on branch `fix/dolt-settle-recovery` (written
-2026-08-13). Per-part implementation status is tracked in "Implementation
-status" immediately below; Part 4's verification table is the live-run record.
+Status: IMPLEMENTED. Every part of this design has landed. The document is
+retained as the reference for WHY the system is shaped this way, and the
+source cites its Part numbers directly (`dolt-settle.mjs`, `dolt-sync.mjs`,
+`runner.js`, `bin/serve.mjs`, `src/supervisor/server.mjs`,
+`dolt-orphan-sweep.mjs`, `dolt-mutex.mjs`, `fleet-members.mjs`, and several
+tests), so **the Part numbering here is load-bearing -- do not renumber it.**
+Part 4's table is the live-run verification record.
+
 See `dolt-manual-recovery-verified.md` for the live-verified mechanical spec
 (exact flags, exact commands, exact OS-specific detachment technique) this
 design's `settle()` step is built from.
 
-### Implementation status
+### What landed, part by part
 
 | Part | Item | Status |
 |------|------|--------|

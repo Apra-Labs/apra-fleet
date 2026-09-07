@@ -4,10 +4,7 @@ Companion doc for `azure-devops-real-e2e.mjs` (same directory). That module
 is the opt-in GATE only -- it never provisions anything or touches the
 network. This runbook covers everything a human needs to arm the lane: the
 target, PAT scopes, how the secret gets into the fleet, rotation, and the
-two required negative passes. It restates (does not replace) the canonical
-recall copy kept in apra-fleet-5co8's own notes ("E4 INTEGRATION-TEST
-RUNBOOK") -- if the two ever disagree, apra-fleet-5co8's notes are the
-source of truth; update this file to match.
+two required negative passes. This file is the source of truth for the lane.
 
 No token value is ever recorded here or anywhere else in this repo. Every
 reference below is either a secure placeholder (`{{secure.<name>}}`) or a
@@ -104,8 +101,7 @@ wrapped in an extra layer of quotes.
 
 Run the toy sprint against the target repo above; success is a real,
 visible pull request at
-`https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e2e-toy/pullrequests`
-(apra-fleet-5co8.6.2's job, blocked by this task).
+`https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e2e-toy/pullrequests`.
 
 The gated scenario itself -- provision, `git ls-remote` verify, then the
 publish path that opens the real pull request above -- lives in
@@ -128,7 +124,7 @@ parent), enable it exactly as described in "Why this lane is opt-in" above.
   unset today: current credential-store semantics delete an expired entry
   on resolve, which is not the desired "warn, don't delete" behavior for
   this lane -- revisit once that lands (see design item C6 on apra-fleet-5co8).
-- An older credential-store entry from before this runbook existed may
-  still be lying around under a different name; it is not canonical for
-  this lane. Only the name recorded in `APRA_FLEET_ADO_E2E_SECRET_NAME` at
-  invocation time is used -- there is no implicit fallback.
+- There is no implicit fallback secret name. Only the credential-store entry
+  named by `APRA_FLEET_ADO_E2E_SECRET_NAME` at invocation time is used, so an
+  unrelated ADO entry sitting in the store under some other name is never
+  picked up by this lane.

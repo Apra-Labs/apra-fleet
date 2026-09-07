@@ -7,7 +7,7 @@ API tokens (app passwords) tied to a user account. Long-lived, no auto-expire.
 1. Go to `https://id.atlassian.com/manage-profile/security/api-tokens`
    (or Bitbucket: Settings > Personal Bitbucket settings > App passwords)
 2. Create app password with required scopes (see below)
-3. Copy token — shown only once
+3. Copy token - shown only once
 4. Provide token, email, and workspace slug when prompted
 
 ## Deploy
@@ -38,7 +38,7 @@ git ls-remote https://bitbucket.org/{workspace}/{repo}.git HEAD
 
 ## Storing tokens for reuse
 
-After provisioning VCS auth, you can store the Bitbucket API token in the credential store for direct use in `execute_command` — for example, calling the Bitbucket REST API or authenticating git operations manually.
+After provisioning VCS auth, you can store the Bitbucket API token in the credential store for direct use in `execute_command` - for example, calling the Bitbucket REST API or authenticating git operations manually.
 
 **Store a Bitbucket token for reuse:**
 
@@ -53,7 +53,7 @@ execute_command  command="curl -sf -u me@example.com:{{secure.bitbucket_token}} 
 execute_command  command="git remote set-url origin https://me@example.com:{{secure.bitbucket_token}}@bitbucket.org/workspace/repo.git"
 ```
 
-The token is resolved server-side and redacted in output (`[REDACTED:bitbucket_token]`) — it never appears in the LLM conversation or command logs.
+The token is resolved server-side and redacted in output (`[REDACTED:bitbucket_token]`) - it never appears in the LLM conversation or command logs.
 
 ## Troubleshooting
 

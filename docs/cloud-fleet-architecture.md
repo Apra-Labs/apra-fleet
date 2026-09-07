@@ -1067,19 +1067,29 @@ A member cannot request a role elevation via any fleet API.
 
 ## 14. Migration Path from Current Model
 
-Migration is phased so that no capability is lost before a replacement is ready, and
-so that the mandatory change (Claude `-p` restriction) is addressed before its deadline.
+> **Historical.** The staged plan below was written against a Claude `-p`
+> pricing deadline and against the 2-tier topology this document assumed.
+> Only Phase 1 landed: interactive routing is live as an opt-in path
+> (`execute_prompt` -> `send_message` + wait-for-response, section 6), with
+> the subprocess path still the default. Phases 2-4 were overtaken by the
+> hub-and-spoke work and then by the tier-3 ownership decision
+> (`docs/adr-tier3-ownership.md`); `fleets.apralabs.com` was never deployed.
+> The phases are kept as a record of the sequencing rationale, not as a
+> current plan.
 
-### Phase 1 -- Now (current sprint)
+Migration was phased so that no capability would be lost before a replacement
+was ready, and so that the mandatory change (Claude `-p` restriction) was
+addressed before its deadline.
+
+### Phase 1 -- landed
 
 The current model is unchanged for AGY, Codex, and Copilot. Claude members can optionally use
 the interactive session model as an opt-in -- the installer configures MCP connection
 and hooks, but `execute_prompt` still works in subprocess mode as a fallback.
 fleets.apralabs.com is not required. The local fleet server at `127.0.0.1:7523` remains
-the default. Task 6 in this sprint validates the interactive session path end-to-end
-on at least one Claude member.
+the default.
 
-### Phase 2 -- Before 2026-06-15
+### Phase 2 -- not taken
 
 Interactive sessions become the production-ready default for Claude members.
 `execute_prompt` for Claude routes via `send_message` + wait-for-response on the local
@@ -1091,14 +1101,14 @@ session management is not worth the overhead. AGY interactive sessions can also 
 enabled in Phase 2. All existing `execute_prompt` call sites continue to work without
 modification -- the routing change is internal.
 
-### Phase 3 -- Post-2026-06-15
+### Phase 3 -- not taken
 
 fleets.apralabs.com is deployed. Multi-tenant project support goes live. Members can
 connect to the cloud server in addition to the local server. The credential vault
 migrates from the local encrypted file to the cloud vault. PM gains the ability to
 orchestrate members across machines without SSH.
 
-### Phase 4 -- Later
+### Phase 4 -- not taken
 
 No-LLM member support via the fleet-service daemon goes live. Remote members connect to
 fleets.apralabs.com over the internet without requiring inbound SSH. The PM-as-member

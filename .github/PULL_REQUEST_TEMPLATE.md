@@ -13,8 +13,8 @@
 
 <!-- Describe the tests you ran and how to reproduce them. -->
 
-- [ ] Ran `npm test` — all tests pass
-- [ ] Ran `npm run build` — build succeeds
+- [ ] Ran `npm test` -- all tests pass
+- [ ] Ran `npm run build` -- build succeeds
 - [ ] Manually tested the affected functionality
 
 ## Checklist

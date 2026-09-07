@@ -2,7 +2,7 @@
 
 ## Why it exists
 
-Running `apra-fleet install --llm gemini` (historical: Gemini has since been removed as a supported provider) on a machine where only Claude was intended caused a split-brain problem: Gemini CLI sessions would spawn a second fleet server process sharing the same `FLEET_DIR`, resulting in `execute_prompt` sessions routing to the wrong server instance. There was no clean way to reverse an install -- users had to manually edit provider config files with no guidance on what was installed or where.
+Installing for a second provider (`apra-fleet install --llm <other>`) on a machine where only Claude was intended causes a split-brain problem: that provider's CLI sessions spawn a second fleet server process sharing the same `FLEET_DIR`, so `execute_prompt` sessions route to the wrong server instance. Without an uninstall path there is no clean way to reverse an install -- users would have to hand-edit provider config files with no record of what was installed or where.
 
 ## Design
 

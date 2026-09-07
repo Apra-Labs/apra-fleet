@@ -19,21 +19,26 @@ covers only:
 
 ## 1. `--issue` is comma-separated at the CLI, an array at the runner
 
-`bin/cli.mjs` (`parseCliArgs()`, around line 468):
+`bin/cli.mjs` (in `parseCliArgs()`):
 
 ```js
 const targetIssues = values.issue.split(',').map(s => s.trim()).filter(Boolean);
 ```
 
 So `--issue epic-1,epic-2` becomes `['epic-1', 'epic-2']`, and this array is
-forwarded to the runner as `target_issues` (`buildRunnerArgs()`, line ~306-308).
-**The CLI supports multiple target issues.** This is a different contract
-from the supervisor's `POST /api/sprints` HTTP endpoint, whose `issue` field
-is a single string passed straight to `validateIssueId()` (which rejects a
-comma as an invalid character) -- see `packages/apra-fleet-se/docs/supervisor-api.md`
-and the filed gap `apra-fleet-ymf`. If you need multi-issue scope over HTTP
-today, there is no supported field for it; only the CLI (`--issue a,b`) and
-the raw runner arg (`target_issues: ['a','b']`) accept more than one id.
+forwarded to the runner as `target_issues` by `buildRunnerArgs()`.
+**The CLI supports multiple target issues.** `--issue` is not a repeatable
+flag (nothing in the option spec is declared `multiple: true`), so a second
+`--issue` overwrites the first -- the comma-separated form is the only way to
+pass more than one id.
+
+The supervisor's `POST /api/sprints` endpoint takes the same shape: its
+`issue` field is a string that `splitIssueIds()` comma-splits, trims and
+filters before validating **each** id individually with `validateIssueId()`.
+Because `ISSUE_ID_PATTERN` does not include a comma, that split has to happen
+first -- handing the un-split `"a,b"` to `validateIssueId()` would 400. See
+`packages/apra-fleet-se/docs/supervisor-api.md`. The raw runner arg
+(`target_issues: ['a','b']`) is the third equivalent form.
 
 ## 2. Two validation layers, one set of regexes
 
@@ -54,7 +59,7 @@ final gate before any `command()`/`agent()` dispatch). Both layers throw the
 same `[Arg Contract] Invalid issue id "..."` / `[Arg Contract] Invalid ...
 branch name "..."` message shape.
 
-### Runner's own `validateArgs()` contract (`fleet-sprint/runner.js`, ~line 2421)
+### Runner's own `validateArgs()` contract (`fleet-sprint/runner.js`)
 
 Called once, at the top of `main(context)`, on the raw `args` object passed
 in (by the CLI's `engine.executeFile()` call, or directly by a test/other
@@ -71,11 +76,11 @@ Required:
 
 Optional (defaults applied inside `validateArgs()`):
 - `goal` -- default `'P1/P2'`; must match `GOAL_PATTERN`.
-- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `serviceUrl`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only.
+- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `serviceUrl`, `run_id`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only.
 
 An unknown key throws `[Arg Contract] Unknown arg(s): <keys>. Known args: <allowlist>.` immediately -- this is the fastest way to discover whether a given engine feature (e.g. `assignee`, `doer_worklist_mode`) is wired to a CLI flag yet: if `bin/cli.mjs` never sets it, it stays at its default forever for CLI-launched sprints.
 
-## 3. `--issue` scope resolution (`bdListScoped()`, `fleet-sprint/runner.js` ~line 5099)
+## 3. `--issue` scope resolution (`bdListScoped()`, `fleet-sprint/runner.js`)
 
 This is the algorithm that turns the sprint's target issue id(s) into the
 set of beads every dispatch (planner, doer, reviewer) is allowed to see and

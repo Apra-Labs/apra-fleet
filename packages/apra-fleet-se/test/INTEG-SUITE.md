@@ -30,8 +30,8 @@ Procedure (all commands from the repo root):
    anything else. `--fresh` starts a new measured pass -- NEVER use it to
    erase a recorded failure.
 7. Any single file over ~5 minutes (`durationMs` in the status file) is the
-   long pole of the concurrent run: file a bug bead to split it (precedent:
-   commit 72a929e). Run `node scripts/check-integ-suite-budget.mjs` after
+   long pole of the concurrent run: file a bug bead to split it. Run
+   `node scripts/check-integ-suite-budget.mjs` after
    step 4 to check this automatically instead of eyeballing durationMs by
    hand -- it reads `integ-suite-status.json` and reports/exits non-zero
    with the offending file(s) named. Exit 2 means no completed run was
@@ -85,39 +85,26 @@ cd packages/apra-fleet-se
 APRA_FLEET_BD_MOCK=0 node scripts/run-tests.mjs real test/<file>.test.mjs [test/<file2>.test.mjs ...]
 ```
 
-Verified on this tree (2026-08-20, Windows Git Bash) for
-apra-fleet-u87n.1's fix parent (`4634858b^`, i.e. `07e64037`): a plain
-`git clone` of the local primary checkout carries every tracked file
-including `packages/apra-fleet-se/apra-pm` (not a submodule, so no
-`--recurse-submodules` needed), `npm install` populates
-`node_modules/@apralabs/{apra-fleet-client,apra-fleet-se,apra-fleet-workflow,fleet-api-contract}`,
-and `node scripts/run-tests.mjs real test/mock-sprint-publish-push-failure.test.mjs`
-then runs to a real verdict (2 pass, 113973ms) instead of failing at module
-resolution.
+Notes on why each step is what it is:
 
-Running the same narrow 7-file concurrent repro apra-fleet-u87n.1/.2 used
-(this file plus 6 bd-touching siblings, `--test-concurrency=8`) against
-that pre-fix commit reproduced the ORIGINAL symptom byte-for-byte: 9 pass,
-1 fail (cancelled at the runner's own hard cap), with
-`mock-sprint-publish-push-failure.test.mjs` failing at
-`180003.2ms -- Error [ERR_TEST_FAILURE]: test timed out after 180000ms`,
-matching apra-fleet-u87n.1's recorded pre-fix figure of `180004ms FAIL`
-almost exactly. Five of the other six files' pre-fix durations also lined
-up closely with u87n.1's recorded "before" numbers: develop-reopen 231.3s
-vs recorded 233.0s, exit-explicit-fail 209.4s vs 212.5s,
-finalization-gh-failure 209.5s vs 210.8s, develop-doer-lies 200.8s vs
-201.8s, member-vcs-provider-threading 161.5s vs 160.0s. The sixth,
-doer-max-turns, does NOT line up: this run's three subtests summed to
-328.6s (189.2 + 91.7 + 47.6), well above u87n.1's recorded 191.9s "before"
-figure for that file -- flagged here as an open discrepancy rather than
-smoothed over; it does not affect the conclusion (this file, like the
-others, is unambiguously in "before" territory: its own apra-fleet-u87n.2
-post-fix figure was 126.2s, so 328.6s pre-fix is still far worse). The
-post-fix tree (branch HEAD) does not reproduce this timeout under the
-identical repro (see apra-fleet-u87n.2's close note). Only verified on
-Windows Git Bash; the recipe is POSIX-shell-only (no Windows-specific
-commands), so it should be symmetric on macOS/Linux, but that has not been
-separately run.
+- A plain `git clone` of the local primary checkout carries every tracked
+  file including `packages/apra-fleet-se/apra-pm` (not a submodule, so no
+  `--recurse-submodules` is needed).
+- `npm install` in the scratch clone is what populates
+  `node_modules/@apralabs/{apra-fleet-client,apra-fleet-se,apra-fleet-workflow,fleet-api-contract}`;
+  without it every apra-fleet-se test dies at module resolution.
+- When you need to reproduce a concurrency-dependent timeout rather than a
+  single file's runtime, run the same narrow set of bd-touching files
+  together at the same `--test-concurrency` the real pass uses. A file that
+  passes alone can still be cancelled at the runner's hard cap under
+  concurrent load, and that contention is usually the thing being measured.
+- Expect measured "before" numbers to land close to, but not exactly on, any
+  previously recorded figure; report the discrepancy rather than smoothing it
+  over. Machine load and concurrency both move these numbers.
+
+The recipe has been exercised on Windows Git Bash. It is POSIX-shell-only
+(no Windows-specific commands), so it should be symmetric on macOS/Linux,
+but that has not been separately run.
 
 This does NOT need (and must not use) `regression-test-playbook.md`'s
 `## Setup`/`## Reset`/`## Teardown` sandbox -- that stands up an installed

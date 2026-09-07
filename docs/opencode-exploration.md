@@ -1,7 +1,14 @@
 # OpenCode Exploration
 
-Living notes on what works / does not work with **OpenCode** (https://opencode.ai,
-repo sst/opencode), based on REAL observations. Goal: add OpenCode as another
+> Historical investigation record. OpenCode is now a shipped provider
+> (`src/providers/opencode.ts`); the user-facing guide is
+> [opencode-getting-started.md](opencode-getting-started.md). This file is
+> retained because `src/providers/opencode.ts` cites its findings by section
+> and line as the rationale for specific integration decisions. Do not treat
+> the `[TBD]`/`[DOC]` items below as open work.
+
+Notes on what works / does not work with **OpenCode** (https://opencode.ai,
+repo sst/opencode), based on real observations made while adding OpenCode as a
 supported LLM provider in apra-fleet (alongside claude, codex, copilot, agy).
 
 Status legend:

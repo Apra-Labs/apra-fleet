@@ -12,7 +12,7 @@ Use the [Feature Request](https://github.com/Apra-Labs/apra-fleet/issues/new/cho
 
 ## Development Setup
 
-**Prerequisites:** Node.js 20+, npm
+**Prerequisites:** Node.js 22.16+, npm
 
 ```bash
 git clone https://github.com/Apra-Labs/apra-fleet.git
@@ -39,7 +39,7 @@ npm run test:watch
 
 | Type | Pattern | Example |
 |------|---------|---------|
-| Feature | `feature/<short-description>` | `feature/ec2-support` |
+| Feature | `feat/<short-description>` | `feat/ec2-support` |
 | Bug fix | `fix/<short-description>` | `fix/ssh-timeout` |
 | Docs | `docs/<short-description>` | `docs/contributing-guide` |
 
@@ -97,14 +97,14 @@ This registers the MCP server from your local `dist/` build. Skill files are rea
 |------|-----------------|
 | `src/` | TypeScript source for the MCP server, CLI commands, and providers |
 | `skills/fleet/` | Fleet skill -- tools for managing members, tasks, and files |
-| `skills/pm/` | PM skill -- orchestration patterns, doer-reviewer loop, deploy flows |
+| `packages/apra-fleet-se/apra-pm/skills/pm/` | PM skill -- orchestration patterns, doer-reviewer loop, deploy flows |
+| `packages/apra-fleet-se/apra-pm/agents/` | Role agent definitions (planner, doer, reviewer, deployer, ...) |
 | `hooks/` | Shell hooks that run on Claude Code events (statusline, pre-push, etc.) |
-| `CLAUDE.md` | Role-specific instructions (not committed -- each agent has its own) |
-| `AGENTS.md` | Shared project context for all agents |
+| `CLAUDE.md` | Shared project context; the source AGENTS.md and AGY.md are generated from by `node scripts/sync-agent-docs.mjs` |
 
 ### Testing skill changes
 
-Skills are Markdown files -- edits take effect immediately without a rebuild. After editing `skills/fleet/` or `skills/pm/`:
+Skills are Markdown files -- edits take effect immediately without a rebuild. After editing a skill under `skills/` or `packages/apra-fleet-se/apra-pm/skills/`:
 
 1. Save the file.
 2. In Claude Code, run `/mcp` to reload the MCP server.
@@ -116,8 +116,9 @@ Run `npm test` before committing to catch any regressions in the TypeScript laye
 
 The PM agent delegates tasks to doer members and assigns a separate reviewer. Code is never self-reviewed. When implementing multi-step work:
 
-- The PM reads the plan (typically `PLAN.md`) and delegates one task at a time.
-- Each doer commits and marks the task done in `progress.json`.
+- All task state lives in the beads (`bd`) task DB -- there is no `PLAN.md` and no `progress.json`.
+- The PM reads `bd ready` and hands the doer explicit bead ids, one task at a time.
+- Each doer commits and closes its bead.
 - A reviewer member inspects the diff before the PM proceeds.
 
 ### Sprint branch naming

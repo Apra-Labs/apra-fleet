@@ -28,8 +28,7 @@ This ADR equalizes that asymmetry. It is a design artifact only: it changes no
 code, and in particular does not edit `runner.js`.
 
 **Filename note (read this before implementing).** apra-fleet-417's notes propose
-`task-db-sync.mjs` exporting `createTaskDbSync(deps)`. What actually landed
-(commits 1734bfb, 4d39090) is `packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs`
+`task-db-sync.mjs` exporting `createTaskDbSync(deps)`. What actually landed is `packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs`
 exporting the `DoltSync` object. The real path is `dolt-sync.mjs`; 417.2.x should
 follow the file that exists, not the file the notes predicted. Under the decision
 below, that file is understood as *the Dolt/beads adapter*, and the neutral

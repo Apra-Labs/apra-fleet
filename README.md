@@ -106,8 +106,8 @@ double-click it (installation is the default action):
 
 ```bash
 npm install -g @apralabs/apra-fleet
-apra-fleet                   # installs for Claude Code (default)
-apra-fleet --llm agy         # or OpenCode/Codex/Copilot
+apra-fleet install           # installs for Claude Code (default)
+apra-fleet install --llm agy # or --llm opencode / codex / copilot
 cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
@@ -448,7 +448,6 @@ third-party verticals.
 | Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
 | Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
 | fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
-| fleet-supervisor packaging self-containment audit | [packages/apra-fleet-se/docs/supervisor-selfcontainment-audit.md](packages/apra-fleet-se/docs/supervisor-selfcontainment-audit.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
 | MCP client SDK getting started | [packages/apra-fleet-client/docs/getting-started.md](packages/apra-fleet-client/docs/getting-started.md) |
