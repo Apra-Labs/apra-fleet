@@ -271,7 +271,16 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // The two bumps above are independent (different commits, different
 // history) and both land in this rebase, so the deltas combine:
 // 40 - 3 + 1 + 1 = 39.
-const EXPECTED_COMMAND_COUNT = 39;
+// 39 -> 36 (apra-fleet-3swo.3.1, the vcs-auth.mjs extraction): the three
+// VCS-auth command() call sites MOVED out of runner.js into ./vcs-auth.mjs --
+// (1) provisionVcsAuthForMember()'s `git remote get-url origin` read used to
+// derive the repos scope, (2) readMemberVcsCredentialToken()'s read of the
+// just-provisioned git-credential-helper script, and (3) raiseVcsPrForMember()'s
+// VCSModule-built create-pull-request dispatch. Move-only: no call site was
+// added, removed or rewritten. Same precedent as the 417.2.1 dolt-sync.mjs
+// extraction above, and likewise NOT left unguarded -- vcs-auth.mjs is asserted
+// by its own test below, so all three remain covered by this invariant.
+const EXPECTED_COMMAND_COUNT = 36;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -369,6 +378,42 @@ test('every command() call site in dolt-sync.mjs passes member_name or member_id
         sites.filter((s) => s.fnName === 'agent').length,
         0,
         'dolt-sync.mjs must never dispatch an agent() -- it is a command-only sync module.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// apra-fleet-3swo.3.1: the VCS/LLM auth region moved out of runner.js into
+// ./vcs-auth.mjs, taking three command() call sites with it. Guard that module
+// with the SAME invariant -- same reasoning as dolt-sync.mjs above: the moved
+// sites cannot silently lose their explicit member_name, and a future
+// credential/PR dispatch added there is caught by this suite rather than at
+// runtime on a real fleet dispatch.
+const VCS_AUTH_PATH = path.join(__dirname, '../fleet-sprint/vcs-auth.mjs');
+// provisionVcsAuthForMember()'s `git remote get-url origin` read,
+// readMemberVcsCredentialToken()'s git-credential-helper read, and
+// raiseVcsPrForMember()'s VCSModule create-pull-request dispatch -- exactly the
+// three that left runner.js.
+const EXPECTED_VCS_AUTH_COMMAND_COUNT = 3;
+
+test('every command() call site in vcs-auth.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(VCS_AUTH_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_VCS_AUTH_COMMAND_COUNT,
+        `Expected ${EXPECTED_VCS_AUTH_COMMAND_COUNT} command() call site(s) in vcs-auth.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_VCS_AUTH_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'vcs-auth.mjs must never dispatch an agent() -- it is a credential/PR command surface only.'
     );
     assert.deepStrictEqual(
         violations,
