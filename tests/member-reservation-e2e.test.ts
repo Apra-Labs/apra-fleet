@@ -68,7 +68,7 @@ describe('member reservation end-to-end (apra-fleet-eft.10.4)', () => {
     addAgent(member);
 
     // Reserve for sprint-a via the real tool (not a direct registry write).
-    const reserveResult = await memberReservation({ member_id: memberId, action: 'reserve', sprint_id: 'sprint-a' });
+    const { text: reserveResult } = await memberReservation({ member_id: memberId, action: 'reserve', sprint_id: 'sprint-a' });
     expect(reserveResult).toContain('reserved for "sprint-a"');
 
     // (1) Cross-sprint dispatch from sprint-b is rejected, naming sprint-a as owner.
@@ -96,7 +96,7 @@ describe('member reservation end-to-end (apra-fleet-eft.10.4)', () => {
     expect(listed.reservedBy).toBe('sprint-a');
 
     // (4) force_release clears a wedged reservation regardless of owner...
-    const forceReleaseResult = await memberReservation({ member_id: memberId, action: 'force_release' });
+    const { text: forceReleaseResult } = await memberReservation({ member_id: memberId, action: 'force_release' });
     expect(forceReleaseResult).toContain('forcibly cleared');
     expect(getAgent(memberId)?.reservedBy ?? null).toBeNull();
 

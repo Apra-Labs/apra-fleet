@@ -30,7 +30,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent();
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
 
       expect(result).toContain('reserved for "sprint-1"');
       expect(getAgent(member.id)?.reservedBy).toBe('sprint-1');
@@ -40,7 +40,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent();
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'reserve' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'reserve' });
 
       expect(result).toContain('sprint_id is required');
       expect(getAgent(member.id)?.reservedBy ?? null).toBeNull();
@@ -50,7 +50,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent({ reservedBy: 'sprint-1' });
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-2' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-2' });
 
       expect(result).toContain('already reserved by "sprint-1"');
       expect(getAgent(member.id)?.reservedBy).toBe('sprint-1');
@@ -60,7 +60,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent({ reservedBy: 'sprint-1' });
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
 
       expect(result).toContain('already held by this sprint');
       expect(getAgent(member.id)?.reservedBy).toBe('sprint-1');
@@ -79,7 +79,7 @@ describe('memberReservation', () => {
 
       vi.mocked(updateAgent).mockReturnValueOnce(undefined);
 
-      const result = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
 
       expect(result.startsWith('[-]')).toBe(true);
       expect(result).toContain('Failed to reserve');
@@ -93,7 +93,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent({ reservedBy: 'sprint-1' });
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'release', sprint_id: 'sprint-1' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'release', sprint_id: 'sprint-1' });
 
       expect(result).toContain('reservation released');
       expect(getAgent(member.id)?.reservedBy ?? null).toBeNull();
@@ -103,7 +103,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent({ reservedBy: 'sprint-1' });
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'release' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'release' });
 
       expect(result).toContain('sprint_id is required');
       expect(getAgent(member.id)?.reservedBy).toBe('sprint-1');
@@ -113,7 +113,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent({ reservedBy: 'sprint-1' });
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'release', sprint_id: 'sprint-2' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'release', sprint_id: 'sprint-2' });
 
       expect(result).toContain('reserved by "sprint-1"');
       expect(result).toContain('force_release');
@@ -124,7 +124,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent();
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'release', sprint_id: 'sprint-1' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'release', sprint_id: 'sprint-1' });
 
       expect(result).toContain('Nothing to release');
       expect(getAgent(member.id)?.reservedBy ?? null).toBeNull();
@@ -136,7 +136,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent({ reservedBy: 'sprint-1' });
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'force_release' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'force_release' });
 
       expect(result).toContain('forcibly cleared');
       expect(result).toContain('sprint-1');
@@ -147,7 +147,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent();
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'force_release' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'force_release' });
 
       expect(result).toContain('Nothing to force-release');
       expect(getAgent(member.id)?.reservedBy ?? null).toBeNull();
@@ -155,7 +155,7 @@ describe('memberReservation', () => {
   });
 
   it('returns an error for an unknown member', async () => {
-    const result = await memberReservation({ member_name: 'does-not-exist', action: 'reserve', sprint_id: 'sprint-1' });
+    const { text: result } = await memberReservation({ member_name: 'does-not-exist', action: 'reserve', sprint_id: 'sprint-1' });
     expect(result).toMatch(/not found|Error/i);
   });
 
@@ -170,7 +170,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent({ unreservable: true });
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
 
       expect(result).toContain('shared/unreservable');
       expect(getAgent(member.id)?.reservedBy ?? null).toBeNull();
@@ -180,7 +180,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent({ unreservable: true });
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'release' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'release' });
 
       expect(result).toContain('shared/unreservable');
     });
@@ -189,7 +189,7 @@ describe('memberReservation', () => {
       const member = makeTestAgent({ unreservable: true });
       addAgent(member);
 
-      const result = await memberReservation({ member_id: member.id, action: 'force_release' });
+      const { text: result } = await memberReservation({ member_id: member.id, action: 'force_release' });
 
       expect(result).toContain('shared/unreservable');
     });
