@@ -46,7 +46,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * mechanical guards must scan. Add a newly extracted module here -- this is
  * the single registration point.
  */
-export const GUARDED_MODULES = ['runner.js', 'vcs-auth.mjs', 'mcp-result.mjs', 'member-target.mjs'];
+export const GUARDED_MODULES = [
+    'runner.js',
+    'vcs-auth.mjs',
+    'mcp-result.mjs',
+    'member-target.mjs',
+    'abort.mjs',
+    'branch-ensure.mjs',
+    'prompts.mjs',
+    'worklists.mjs',
+    'sprint-args.mjs',
+];
 
 /**
  * Modules the dolt-literal guard must NEVER scan, by basename. dolt-sync.mjs
