@@ -334,6 +334,119 @@ test('every fixture lives in a sandbox outside the repo tree and is removed on t
     assert.ok(!fs.existsSync(fixture), 'teardown must remove every fixture inside it');
 });
 
+// -----------------------------------------------------------------------------
+// (5) apra-fleet-3swo.12: end-to-end coverage proof for the three modules
+// extracted out of runner.js so far (vcs-auth.mjs, mcp-result.mjs,
+// member-target.mjs, registered via apra-fleet-3swo.8).
+//
+// The positive assertion below reads GUARDED_MODULES/guardedModulePaths()
+// directly rather than restating their current contents as a literal path
+// array, so it stays correct as more modules are extracted. It is proven
+// non-vacuous by folding the SAME seeded-violation fixture technique tests
+// (1)/(3) above already established into the SAME guardedModulePaths() call
+// that resolves the three real modules: since checkModules()/
+// checkDoltLiteralModules()/checkFullDbFetchModules()/checkShellCommandPaths()
+// each scan every path they are handed in one pass, a fixture with an
+// injected violation sitting alongside vcs-auth.mjs/mcp-result.mjs/
+// member-target.mjs in the SAME scanned set is the most direct possible proof
+// that "zero violations for these three" is a real finding and not a check
+// that could never fail.
+// -----------------------------------------------------------------------------
+
+const EXTRACTED_MODULE_NAMES = ['vcs-auth.mjs', 'mcp-result.mjs', 'member-target.mjs'];
+
+test('vcs-auth.mjs, mcp-result.mjs and member-target.mjs are each registered in GUARDED_MODULES and scanned clean by all four guards', () => {
+    for (const name of EXTRACTED_MODULE_NAMES) {
+        assert.ok(GUARDED_MODULES.includes(name), `${name} must be registered in GUARDED_MODULES (apra-fleet-3swo.8)`);
+    }
+
+    // Reads the shared list itself -- not a restated literal path array.
+    const paths = guardedModulePaths();
+    for (const name of EXTRACTED_MODULE_NAMES) {
+        assert.ok(paths.some((p) => path.basename(p) === name), `guardedModulePaths() must resolve a real path for ${name}`);
+    }
+
+    const found = runAllGuards(paths);
+    for (const [guardName, violations] of Object.entries(found)) {
+        const attributedToExtracted = violations.filter((v) => EXTRACTED_MODULE_NAMES.some((name) => v.startsWith(`${name}:`)));
+        assert.deepEqual(
+            attributedToExtracted,
+            [],
+            `${guardName} reported violation(s) against an extracted module: ${JSON.stringify(attributedToExtracted, null, 2)}`
+        );
+    }
+});
+
+test('falsification: a seeded violation registered alongside the three extracted modules (same guardedModulePaths() call) is found by every guard, and disappears once dropped from the scanned set', () => {
+    const sandbox = createSandbox();
+    try {
+        const fixture = sandbox.write(FIXTURE_NAME, SEEDED_SRC);
+
+        // The fixture rides in the SAME guardedModulePaths() call the
+        // positive test above uses to resolve vcs-auth.mjs/mcp-result.mjs/
+        // member-target.mjs -- proving the zero-violations check just above
+        // is capable of catching something, not vacuously green.
+        const withFixture = runAllGuards(guardedModulePaths([fixture]));
+        assert.equal(withFixture.dispatchSafety.length, 1, 'seeded dispatch-safety violation must be found while the fixture is registered');
+        assert.equal(withFixture.doltLiteral.length, 1, 'seeded dolt-literal violation must be found while the fixture is registered');
+        assert.equal(withFixture.fullDbFetch.length, 1, 'seeded full-db-fetch violation must be found while the fixture is registered');
+        assert.equal(withFixture.shellCommand.length, 1, 'seeded shell-command violation must be found while the fixture is registered');
+        // Still nothing attributed to the three real extracted modules --
+        // the fixture's violations and theirs are disjoint.
+        for (const violations of Object.values(withFixture)) {
+            assert.deepEqual(violations.filter((v) => EXTRACTED_MODULE_NAMES.some((name) => v.startsWith(`${name}:`))), []);
+        }
+
+        // Dropped from the scanned set (the fixture is simply not passed):
+        // its violations vanish, exactly as they would for a real module
+        // whose GUARDED_MODULES entry was removed.
+        const withoutFixture = runAllGuards(guardedModulePaths());
+        assert.deepEqual(withoutFixture.dispatchSafety.filter((v) => v.startsWith(`${FIXTURE_NAME}:`)), []);
+        assert.deepEqual(withoutFixture.doltLiteral.filter((v) => v.startsWith(`${FIXTURE_NAME}:`)), []);
+        assert.deepEqual(withoutFixture.fullDbFetch.filter((v) => v.startsWith(`${FIXTURE_NAME}:`)), []);
+        assert.deepEqual(withoutFixture.shellCommand.filter((v) => v.startsWith(`${FIXTURE_NAME}:`)), []);
+
+        // Restored: registering it again (extraPaths, same mechanism) finds
+        // it again.
+        const restored = runAllGuards(guardedModulePaths([fixture]));
+        assert.equal(restored.dispatchSafety.length, 1, 'restoring the registration must make the seeded violation detected again');
+        assert.equal(restored.doltLiteral.length, 1, 'restoring the registration must make the seeded violation detected again');
+        assert.equal(restored.fullDbFetch.length, 1, 'restoring the registration must make the seeded violation detected again');
+        assert.equal(restored.shellCommand.length, 1, 'restoring the registration must make the seeded violation detected again');
+    } finally {
+        sandbox.cleanup();
+    }
+});
+
+test('falsification: re-pointing a guard at a private hard-coded path array (not guardedModulePaths()) loses the seeded violation', () => {
+    const sandbox = createSandbox();
+    try {
+        const fixture = sandbox.write(FIXTURE_NAME, SEEDED_SRC);
+
+        // Correctly wired: the guard is handed paths DERIVED from the shared
+        // list (guardedModulePaths([fixture])) and finds the seeded
+        // violation -- this is how every guard is actually called in
+        // production (checkModules() defaults to guardedModulePaths()).
+        const viaSharedList = checkModules(guardedModulePaths([fixture])).violations;
+        assert.equal(viaSharedList.length, 1, 'dispatch-safety must find the seeded violation when scanning paths derived from the shared list');
+
+        // Simulates the regression this whole mechanism exists to prevent:
+        // one guard re-pointed at a private hard-coded path array instead of
+        // the shared list (here, literally RUNNER_PATH alone -- the exact
+        // pre-generalization wiring every one of these guards used to have).
+        // The fixture is on disk and registered nowhere this private array
+        // looks, so its seeded violation is silently lost.
+        const viaPrivateHardcodedArray = checkModules([RUNNER_PATH]).violations;
+        assert.deepEqual(
+            viaPrivateHardcodedArray.filter((v) => v.startsWith(`${FIXTURE_NAME}:`)),
+            [],
+            'a guard re-pointed at a private hard-coded path array must NOT see a violation registered only through the shared list'
+        );
+    } finally {
+        sandbox.cleanup();
+    }
+});
+
 test('the shared list registers real, on-disk modules only -- a fixture is never left registered', () => {
     // A registration leak (a fixture path accidentally committed into
     // GUARDED_MODULES) would make the guards scan a file that does not exist
