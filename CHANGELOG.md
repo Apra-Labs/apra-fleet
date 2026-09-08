@@ -66,6 +66,20 @@ spawns, and turn a multi-minute pre-launch guard into a single bulk query.
   `origin`, since the two can legitimately differ on a member. Disable per
   call site with `remoteTipFingerprint: false`.
 
+- **The supervisor dashboard had the same `--all` gap, with a worse
+  consequence.** `dashboard.mjs`'s progress bars and `decomposedParentIds`
+  check reused `backlog.mjs`'s `bdListAllBeads()` -- the same fetcher that
+  deliberately omits `--all` for the visible Backlog board (which intentionally
+  shows open work only). Reused for progress computation, that omission meant
+  every sprint's `closed` count was silently always `0` (`bd list` excludes
+  closed issues entirely, and `computeSprintProgress()` derives `closed` by
+  filtering for `status === 'closed'`), on top of the same closed-parent-
+  hides-open-subtree hole. The dashboard's default `listAllBeads` now uses
+  `scope-overlap.mjs`'s `bdListAllBeadsWithClosed()` (`--all`) instead, with
+  `buildSprintViews()` normalizing the raw rows itself. The Backlog board's
+  own fetch (`bdListAllBeadsRaw()`/`bdListAllBeads()`) is unchanged by design
+  -- it intentionally excludes closed work from that view.
+
 This deliberately does NOT include the two larger items from the same review:
 squashing Dolt history plus a fleet-wide re-bootstrap (a destructive
 operational change needing a quiescent window and its own runbook), and moving
