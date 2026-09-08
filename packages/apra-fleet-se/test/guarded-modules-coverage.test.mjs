@@ -9,7 +9,8 @@ import { checkModules } from '../fleet-sprint/dispatch-safety-guard.mjs';
 import { checkDoltLiteralModules } from '../fleet-sprint/dolt-literal-guard.mjs';
 import { checkFullDbFetchModules } from '../fleet-sprint/full-db-fetch-guard.mjs';
 import { checkShellCommandPaths, formatShellCommandViolation } from '../fleet-sprint/shell-command-guard.mjs';
-import { guardedModulePaths, GUARDED_MODULES, guardedModuleBasenames } from '../fleet-sprint/guarded-modules.mjs';
+import { checkUnbracketedPushModules } from '../fleet-sprint/unbracketed-push-guard.mjs';
+import { guardedModulePaths, GUARDED_MODULES, guardedModuleBasenames, UNBRACKETED_PUSH_EXEMPT } from '../fleet-sprint/guarded-modules.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -116,6 +117,19 @@ function runAllGuards(paths) {
         doltLiteral: checkDoltLiteralModules(paths).violations,
         fullDbFetch: checkFullDbFetchModules(paths).violations,
         shellCommand: checkShellCommandPaths(paths).violations.map(formatShellCommandViolation),
+        // apra-fleet-3swo.4.2: fifth guard, wired the same way as the other
+        // four -- reads paths derived from the shared list and applies its
+        // own exemption (UNBRACKETED_PUSH_EXEMPT, git-sync.mjs) internally,
+        // exactly like checkDoltLiteralModules() applies DOLT_LITERAL_EXEMPT.
+        // Not asserted against the SEEDED_FIXTURE/CLEARED_FIXTURE pair above:
+        // CLEARED_FIXTURE's `await doltPushAfter({ command, member });` fix
+        // for the dolt-literal violation is itself a bare, unsanctioned
+        // primitive call under THIS guard's invariant (only git-sync.mjs may
+        // call the raw primitive directly) -- a real module fixing the
+        // dolt-literal hole would route through gitSync.pushBeadsAfter()
+        // instead. That is a property of the shared fixture, not a defect in
+        // this wiring; see the dedicated unbracketedPush coverage below.
+        unbracketedPush: checkUnbracketedPushModules(paths).violations,
     };
 }
 
@@ -428,6 +442,72 @@ test('falsification: re-pointing a guard at a private hard-coded path array (not
             viaPrivateHardcodedArray.filter((v) => v.startsWith(`${FIXTURE_NAME}:`)),
             [],
             'a guard re-pointed at a private hard-coded path array must NOT see a violation registered only through the shared list'
+        );
+    } finally {
+        sandbox.cleanup();
+    }
+});
+
+// -----------------------------------------------------------------------------
+// (6) apra-fleet-3swo.4.2: the fifth guard, checkUnbracketedPushModules(), is
+// registered via runAllGuards() and reads the shared list with its OWN
+// exemption applied, mirroring the dolt-literal guard's dolt-sync.mjs
+// precedent.
+// -----------------------------------------------------------------------------
+
+test('git-sync.mjs is registered in UNBRACKETED_PUSH_EXEMPT and skipped by checkUnbracketedPushModules over the real shared list', () => {
+    assert.ok(UNBRACKETED_PUSH_EXEMPT.includes('git-sync.mjs'), 'git-sync.mjs must be exempt -- it owns the bracketed primitive calls');
+    const { violations, files, skipped } = checkUnbracketedPushModules(guardedModulePaths());
+    assert.ok(skipped.includes('git-sync.mjs'), 'git-sync.mjs must be skipped, not scanned');
+    assert.ok(!files.includes('git-sync.mjs'), 'git-sync.mjs must not appear in the scanned files list');
+    assert.deepEqual(violations, [], `expected zero unbracketed-push violations across the real registered module set today, got: ${JSON.stringify(violations, null, 2)}`);
+});
+
+test('falsification: a fixture with a bare doltPushAfter() call registered via the shared list is flagged, and disappears once dropped', () => {
+    const sandbox = createSandbox();
+    try {
+        const fixture = sandbox.write('unbracketed-push-fixture.mjs', [
+            "import { doltPushAfter } from './dolt-sync.mjs';",
+            'export async function run(orchestratorMember, opts) {',
+            '    // bare call, no gitSync.pushBeadsAfter bracket -- exactly the hole',
+            '    // apra-fleet-3swo.4.1 closed for the two named sites.',
+            '    await doltPushAfter(orchestratorMember, opts);',
+            '}',
+            '',
+        ]);
+
+        const withFixture = checkUnbracketedPushModules(guardedModulePaths([fixture])).violations;
+        assert.equal(withFixture.length, 1, `expected exactly the seeded bare doltPushAfter() call to be flagged, got: ${JSON.stringify(withFixture, null, 2)}`);
+        assert.match(withFixture[0], /^unbracketed-push-fixture\.mjs:5 bare doltPushAfter\(\) call site/);
+
+        const withoutFixture = checkUnbracketedPushModules(guardedModulePaths()).violations;
+        assert.deepEqual(withoutFixture.filter((v) => v.startsWith('unbracketed-push-fixture.mjs:')), []);
+    } finally {
+        sandbox.cleanup();
+    }
+});
+
+test('a bare syncMemberAfter() call inside a function literally named syncMemberAfterOrdered is sanctioned by SCOPE, not by filename or variable name', () => {
+    const sandbox = createSandbox();
+    try {
+        // Proves the per-site exemption is structural (which FUNCTION BODY the
+        // call sits in) rather than tied to runner.js by name or to a specific
+        // local variable name (the prior version's brittle `gPush = await
+        // syncMemberAfter(...)` regex) -- the same wrapper name in an
+        // unrelated fixture module is exempted identically.
+        const fixture = sandbox.write('sanctioned-wrapper-fixture.mjs', [
+            "import { syncMemberAfter } from './runner.js';",
+            'export async function syncMemberAfterOrdered(member, opts) {',
+            '    const result = await syncMemberAfter(member, opts);',
+            '    return result;',
+            '}',
+            '',
+        ]);
+        const violations = checkUnbracketedPushModules(guardedModulePaths([fixture])).violations;
+        assert.deepEqual(
+            violations.filter((v) => v.startsWith('sanctioned-wrapper-fixture.mjs:')),
+            [],
+            `expected the call inside syncMemberAfterOrdered's own body to be sanctioned, got: ${JSON.stringify(violations, null, 2)}`
         );
     } finally {
         sandbox.cleanup();

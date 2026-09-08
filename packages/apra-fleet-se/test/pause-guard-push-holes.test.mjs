@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createSyncBrackets, createGitSync } from '../fleet-sprint/git-sync.mjs';
 import { syncMemberAfter } from '../fleet-sprint/runner.js';
 import { guardedModulePath } from '../fleet-sprint/guarded-modules.mjs';
+import { findUnbracketedPushViolations, checkUnbracketedPushPath } from '../fleet-sprint/unbracketed-push-guard.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,18 +27,31 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 //        sprint) with an injected SLOW command(), and prove the clean-state
 //        pause guard reads false for the WHOLE duration of the push -- not
 //        just "eventually true" -- and true again only once it resolves.
+//        NOTE: these two tests exercise git-sync.mjs's entry points
+//        directly, not runner.js's actual Final Review / Publish-PR code
+//        paths; the link back to runner.js is the by-name source pins in the
+//        second describe block below (`gitSync.pushBeadsAfter(` /
+//        `gitSync.pushGitAfter(publishGitMember,`). This is a real chain --
+//        both the entry points' bracket behaviour AND runner.js's use of
+//        them by name are pinned -- but it is not, by itself, an end-to-end
+//        test of the Final Review/Publish-PR branches through a live sprint.
 //   3.   A source-level scan of runner.js (read via the shared guarded-module
 //        list, guarded-modules.mjs, per apra-fleet-3swo.8's registration
-//        convention) proving there is no bare, unbracketed call site left for
-//        either hole -- both go through `gitSync.pushBeadsAfter(`/
-//        `gitSync.pushGitAfter(` by name, and there is no OTHER real call
-//        site of the raw `doltPushAfter(`/`syncMemberAfter(` primitives
-//        outside their one sanctioned internal use (syncMemberAfterOrdered's
-//        own G-push step, itself only ever reached through a bracket).
+//        convention), factored into fleet-sprint/unbracketed-push-guard.mjs
+//        and registered in the shared guard module list (wired into
+//        runAllGuards() in guarded-modules-coverage.test.mjs) so it stays
+//        covered the same way the other three mechanical guards do. It
+//        proves there is no bare, unbracketed call site left for any of the
+//        four raw sync/push primitives (doltPushAfter, syncMemberAfter,
+//        DoltSync.syncBefore, DoltSync.syncAfter) outside the two
+//        structurally-sanctioned wrapper functions (syncMemberAfterOrdered,
+//        verifyDoerStreakClosed) that are themselves only ever reached from
+//        inside an open bracket.
 //   4.   Falsification: a fixture reproducing the pre-3swo.4.1 shape (a bare
-//        doltPushAfter()/syncMemberAfter() call sitting outside any bracket)
-//        must make the scan report a violation -- proving the scan can
-//        actually fail, not just vacuously pass against clean source.
+//        doltPushAfter()/syncMemberAfter()/DoltSync.syncBefore()/
+//        DoltSync.syncAfter() call sitting outside any bracket) must make the
+//        scan report a violation -- proving the scan can actually fail, not
+//        just vacuously pass against clean source.
 // =============================================================================
 
 function deferred() {
@@ -131,99 +145,11 @@ describe('apra-fleet-3swo.4.2: the pause guard is false for the FULL duration of
     });
 });
 
-// =============================================================================
-// Source-level invariant: runner.js contains no bare doltPushAfter(),
-// syncMemberAfter() or push call outside a bracket.
-//
-// Method mirrors dispatch-safety-guard.mjs / dispatch-sync-bracket-coverage.
-// test.mjs: a real (non-comment) call-site scan, not a naive substring grep,
-// so a mention inside a comment or the `export { ... } from './dolt-sync.mjs'`
-// re-export list is never mistaken for a call. Exported so the falsification
-// tests below can point it at a deliberately non-compliant fixture instead of
-// mutating runner.js itself.
-// =============================================================================
-
-/** True when `col` sits inside a same-line `"..."`/`'...'` string. */
-function isInsideSameLineString(lineText, col) {
-    let quote = null;
-    for (let i = 0; i < col; i++) {
-        const ch = lineText[i];
-        if (ch === '\\') { i++; continue; }
-        if (quote) {
-            if (ch === quote) quote = null;
-        } else if (ch === '"' || ch === "'") {
-            quote = ch;
-        }
-    }
-    return quote !== null;
-}
-
-/**
- * Finds every real (non-comment, non-same-line-string, non-declaration) call
- * site of `fnName(` in `src`. Returns `{ line, lineText }` for each.
- */
-function findRealCallSites(src, fnName) {
-    const lines = src.split('\n');
-    const escaped = fnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const callRe = new RegExp(`(?<![.\\w])${escaped}\\(`, 'g');
-    const sites = [];
-    let m;
-    while ((m = callRe.exec(src)) !== null) {
-        const lineStart = src.lastIndexOf('\n', m.index) + 1;
-        const lineEnd = src.indexOf('\n', m.index);
-        const lineNo = src.slice(0, m.index).split('\n').length;
-        const lineText = src.slice(lineStart, lineEnd === -1 ? src.length : lineEnd);
-        const trimmed = lineText.trim();
-        if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) continue;
-        if (/^(export\s+)?(async\s+)?function\b/.test(trimmed)) continue; // the function's own declaration
-        const col = m.index - lineStart;
-        if (isInsideSameLineString(lineText, col)) continue;
-        sites.push({ line: lineNo, lineText: trimmed });
-    }
-    return sites;
-}
-
-/**
- * The mechanical scan itself: given a source string, returns every violation
- * -- a real call site of the raw `doltPushAfter(`/`syncMemberAfter(`
- * primitives that is NOT the one sanctioned internal use (syncMemberAfter
- * called from inside syncMemberAfterOrdered, itself only ever reached through
- * a bracket -- see git-sync.mjs's withGitSync and pushGitAfter). A bare
- * `doltPushAfter(` call site is ALWAYS a violation: after apra-fleet-3swo.4.1
- * there is no sanctioned direct caller left in runner.js at all -- the sole
- * bracketed entry point is gitSync.pushBeadsAfter() in git-sync.mjs.
- */
-export function findUnbracketedPushViolations(src, fileLabel = 'source') {
-    const violations = [];
-
-    for (const site of findRealCallSites(src, 'doltPushAfter')) {
-        violations.push(`${fileLabel}:${site.line} bare doltPushAfter() call site outside any bracket: ${site.lineText}`);
-    }
-
-    const syncMemberAfterSites = findRealCallSites(src, 'syncMemberAfter');
-    // Exactly one sanctioned internal call is expected: syncMemberAfterOrdered's
-    // own `gPush = await syncMemberAfter(...)` step. Anything else -- in
-    // particular a DIRECT call from a dispatch/publish site that bypasses
-    // gitSync.pushGitAfter() -- is the exact regression apra-fleet-3swo.4.1
-    // fixed and this scan exists to catch.
-    const sanctioned = syncMemberAfterSites.filter((s) => /gPush\s*=\s*await\s+syncMemberAfter\(/.test(s.lineText));
-    const unsanctioned = syncMemberAfterSites.filter((s) => !sanctioned.includes(s));
-    for (const site of unsanctioned) {
-        violations.push(`${fileLabel}:${site.line} bare syncMemberAfter() call site outside any bracket: ${site.lineText}`);
-    }
-    if (sanctioned.length !== 1) {
-        violations.push(`${fileLabel}: expected exactly ONE sanctioned internal syncMemberAfter() call (syncMemberAfterOrdered's own G-push step), found ${sanctioned.length}`);
-    }
-
-    return violations;
-}
-
 describe('apra-fleet-3swo.4.2: source-level scan -- runner.js has zero unbracketed push sites', () => {
     const RUNNER_PATH = guardedModulePath('runner.js');
 
-    test('runner.js reports zero unbracketed doltPushAfter()/syncMemberAfter() call sites', () => {
-        const src = fs.readFileSync(RUNNER_PATH, 'utf8');
-        const violations = findUnbracketedPushViolations(src, 'runner.js');
+    test('runner.js reports zero unbracketed doltPushAfter()/syncMemberAfter()/DoltSync.syncBefore()/DoltSync.syncAfter() call sites', () => {
+        const { violations } = checkUnbracketedPushPath(RUNNER_PATH);
         assert.deepEqual(violations, [], `expected no unbracketed push call sites, got: ${JSON.stringify(violations, null, 2)}`);
     });
 
@@ -247,11 +173,15 @@ describe('apra-fleet-3swo.4.2: source-level scan -- runner.js has zero unbracket
 });
 
 // =============================================================================
-// Falsification: prove findUnbracketedPushViolations() can actually FAIL,
-// against a fixture reproducing the pre-apra-fleet-3swo.4.1 shape (a BARE
-// doltPushAfter()/syncMemberAfter() call, exactly what the Final Review/
-// Publish-PR sites used to do before the git-sync.mjs extraction). Written to
-// a throwaway temp file rather than mutating runner.js itself.
+// Falsification: prove findUnbracketedPushViolations() (fleet-sprint/
+// unbracketed-push-guard.mjs) can actually FAIL, against fixtures reproducing
+// the pre-apra-fleet-3swo.4.1 shape (a BARE doltPushAfter()/syncMemberAfter()/
+// DoltSync.syncBefore()/DoltSync.syncAfter() call, exactly what the Final
+// Review/Publish-PR sites -- and, per the reviewed false negative this round
+// fixes, any hand-rolled DoltSync.syncAfter()/syncBefore() call -- used to do
+// before routing through the bracketed entry points). Written to throwaway
+// temp files, or reasoned about directly against the real runner.js source,
+// rather than mutating runner.js on disk.
 // =============================================================================
 describe('apra-fleet-3swo.4.2: falsification -- the scan detects a reverted (bare, unbracketed) push site', () => {
     test('a fixture with a bare doltPushAfter() call (no gitSync.pushBeadsAfter wrapper) is flagged', () => {
@@ -308,7 +238,55 @@ describe('apra-fleet-3swo.4.2: falsification -- the scan detects a reverted (bar
         }
     });
 
-    test('a clean fixture with the correct ONE sanctioned syncMemberAfter() call (syncMemberAfterOrdered\'s own G-push step) reports zero violations -- proves the scan is not vacuously strict', () => {
+    // -------------------------------------------------------------------
+    // Blocker 2 fix (prior review round): the earlier scan only looked for
+    // `doltPushAfter(`/`syncMemberAfter(`, so a bare DoltSync.syncAfter()/
+    // syncBefore() call -- the dominant unbracketed-sync shape 8 of the 9
+    // hand-rolled sites apra-fleet-3swo.4.1 actually routed through the
+    // module used before that fix -- was invisible to it. These two tests
+    // reproduce that exact false negative against the REAL runner.js source
+    // (mutated in memory only) and prove the current scan catches it.
+    // -------------------------------------------------------------------
+
+    test('mutating the real runner.js Final Review D-push back to a bare DoltSync.syncAfter() call is flagged (prior false negative)', () => {
+        const cleanSrc = fs.readFileSync(guardedModulePath('runner.js'), 'utf8');
+        assert.deepEqual(findUnbracketedPushViolations(cleanSrc, 'runner.js'), [], 'sanity: the real, unmutated source must be clean');
+
+        const sanctioned = 'await gitSync.pushBeadsAfter(orchestratorMember, { pushBeads: true });';
+        assert.ok(cleanSrc.includes(sanctioned), 'the Final Review D-push call text must still match this pin -- re-anchor if it drifted');
+
+        const mutated = cleanSrc.replace(
+            sanctioned,
+            'await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });',
+        );
+        assert.notEqual(mutated, cleanSrc, 'the replacement must actually have changed the source');
+
+        const violations = findUnbracketedPushViolations(mutated, 'runner.js');
+        assert.ok(
+            violations.some((v) => v.includes('bare DoltSync.syncAfter() call site')),
+            `expected the reverted Final Review site to be flagged as a bare DoltSync.syncAfter() call, got: ${JSON.stringify(violations, null, 2)}`,
+        );
+    });
+
+    test('mutating the real runner.js Publish-PR G-push back to a bare DoltSync.syncBefore() call is flagged (prior false negative)', () => {
+        const cleanSrc = fs.readFileSync(guardedModulePath('runner.js'), 'utf8');
+        const sanctioned = "await gitSync.pushGitAfter(publishGitMember, { remote: 'origin', setUpstream: true });";
+        assert.ok(cleanSrc.includes(sanctioned), 'the Publish-PR G-push call text must still match this pin -- re-anchor if it drifted');
+
+        const mutated = cleanSrc.replace(
+            sanctioned,
+            "await DoltSync.syncBefore(publishGitMember, { command, log, fatal: true });",
+        );
+        assert.notEqual(mutated, cleanSrc, 'the replacement must actually have changed the source');
+
+        const violations = findUnbracketedPushViolations(mutated, 'runner.js');
+        assert.ok(
+            violations.some((v) => v.includes('bare DoltSync.syncBefore() call site')),
+            `expected the reverted Publish-PR site to be flagged as a bare DoltSync.syncBefore() call, got: ${JSON.stringify(violations, null, 2)}`,
+        );
+    });
+
+    test('a fixture using the sanctioned wrapper function name (syncMemberAfterOrdered) for its ONE call reports zero violations -- proves the exemption is structural, not vacuously strict', () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-bracket-hole-'));
         try {
             const fixturePath = path.join(dir, 'clean-ordered.mjs');
@@ -317,8 +295,7 @@ describe('apra-fleet-3swo.4.2: falsification -- the scan detects a reverted (bar
                 [
                     "import { syncMemberAfter } from './runner.js';",
                     'export async function syncMemberAfterOrdered(member, opts) {',
-                    '    let gPush;',
-                    '    gPush = await syncMemberAfter(member, opts);',
+                    '    const gPush = await syncMemberAfter(member, opts);',
                     '    return gPush;',
                     '}',
                     '',
@@ -326,7 +303,33 @@ describe('apra-fleet-3swo.4.2: falsification -- the scan detects a reverted (bar
             );
             const src = fs.readFileSync(fixturePath, 'utf8');
             const violations = findUnbracketedPushViolations(src, 'clean-ordered.mjs');
-            assert.deepEqual(violations, [], `expected the one sanctioned internal call to be accepted, got: ${JSON.stringify(violations)}`);
+            assert.deepEqual(violations, [], `expected the call inside the sanctioned wrapper's own body to be accepted, got: ${JSON.stringify(violations)}`);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('the SAME call outside any sanctioned wrapper function is flagged -- the exemption is scoped to the wrapper body, not global', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-bracket-hole-'));
+        try {
+            const fixturePath = path.join(dir, 'not-ordered.mjs');
+            fs.writeFileSync(
+                fixturePath,
+                [
+                    "import { syncMemberAfter } from './runner.js';",
+                    'export async function someOtherFunction(member, opts) {',
+                    '    const gPush = await syncMemberAfter(member, opts);',
+                    '    return gPush;',
+                    '}',
+                    '',
+                ].join('\n'),
+            );
+            const src = fs.readFileSync(fixturePath, 'utf8');
+            const violations = findUnbracketedPushViolations(src, 'not-ordered.mjs');
+            assert.ok(
+                violations.some((v) => v.includes('bare syncMemberAfter() call site')),
+                `expected the call outside the sanctioned wrapper to be flagged, got: ${JSON.stringify(violations)}`,
+            );
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }
