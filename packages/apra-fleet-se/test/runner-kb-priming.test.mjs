@@ -563,6 +563,22 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
         assert.deepEqual(await client.relevantKnowledge('/srv/a', ['x']), []);
     });
 
+    // apra-fleet-3swo.4.4 rework: this was the one uncovered cell of the
+    // "throwing and rejecting callTool for both kb_query and kb_capture"
+    // criterion -- kb_capture's rejecting path is covered above ("an MCP
+    // isError result counts as a failure, not a capture"), but relevantKnowledge
+    // (kb_query) had only ever been exercised with a THROWING callTool, never a
+    // RESOLVING-with-isError one. The call is still attempted and the dispatch
+    // still completes with no knowledge, matching the non-fatal contract every
+    // other kb_* site here already proves.
+    test('a rejecting kb_query degrades to no knowledge, never throws', async () => {
+        const { calls, callTool } = errorRecorder('kb query rejected: cold store');
+        const client = createKbWorkClient({ callTool, log: () => {} });
+
+        assert.deepEqual(await client.relevantKnowledge('/srv/a', ['x']), []);
+        assert.equal(calls.length, 1, 'the call is still attempted');
+    });
+
     test('exportBible writes the canonical bible for the repo it is given', async () => {
         const { calls, callTool } = recorder();
         const client = createKbWorkClient({ callTool, log: () => {} });
