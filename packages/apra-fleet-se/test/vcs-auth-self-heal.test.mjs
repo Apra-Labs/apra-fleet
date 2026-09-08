@@ -382,4 +382,55 @@ describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch o
 
         assert.equal(healed, true, 'expected structuredContent.ok === true (non-skip reason) to be treated as healed');
     });
+
+    // =========================================================================
+    // apra-fleet-3swo.13 (review round 2): provisionOutcome()'s prose fallback
+    // (used ONLY when a result carries no structuredContent at all, e.g. a
+    // test double or a very old server) used to match the RETIRED mojibake
+    // cross-mark/star bytes, which can never match real ASCII prose -- making
+    // the fallback's `ok` expression a constant `true` and silently
+    // classifying every structuredContent-less result as a success. These
+    // cases pin that the fallback now matches the real ASCII prefixes
+    // ([FAIL]/[SKIP]) the server actually emits, and would FAIL against the
+    // old mojibake regexes (confirmed by reverting the fix locally before
+    // writing this test).
+    // =========================================================================
+    test('createVcsAuthSelfHealCallback: a [FAIL] prose result with NO structuredContent at all is still treated as a failed provision (prose fallback)', async () => {
+        const command = async () => ({ ok: true, output: 'https://github.com/acme/widgets.git', error: null });
+        const callTool = async (name) => {
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+            if (name === 'provision_vcs_auth') {
+                // No `structuredContent` key at all -- e.g. a bare-{content}
+                // test double or a server that predates the structured half.
+                return { content: [{ text: '[FAIL] member not found' }] };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await assert.rejects(
+            () => onAuthFailure({ member: 'fleet-mac', label: 'G-push', error: 'auth failure' }),
+            /provision_vcs_auth failed for member 'fleet-mac'.*\[FAIL\] member not found/,
+        );
+    });
+
+    test('createLlmAuthSelfHealCallback: a [SKIP] prose result with NO structuredContent at all is still treated as a skip (prose fallback)', async () => {
+        const callTool = async (name) => {
+            if (name === 'provision_llm_auth') {
+                // No `structuredContent` key at all.
+                return { content: [{ text: '[SKIP] local member' }] };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const logs = [];
+        const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool, log: (m) => logs.push(m) });
+
+        const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
+
+        assert.equal(healed, false, 'expected a [SKIP] prose result with no structuredContent to NOT be treated as healed');
+        assert.ok(
+            logs.some((l) => /provision_llm_auth skipped for local member 'fleet-mac'/.test(l)),
+            `expected a skip log entry, got: ${JSON.stringify(logs)}`,
+        );
+    });
 });
