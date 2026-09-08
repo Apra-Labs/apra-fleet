@@ -20,6 +20,14 @@ import { fileURLToPath } from 'url';
 // individual guard at its own private array of paths -- a guard that does not
 // consume this list is a guard whose coverage silently rots.
 //
+// STANDING RULE (from apra-fleet-3swo.8): registering a newly extracted module
+// is part of the extraction bead itself, not a follow-up bead. guarded-modules.mjs
+// and the four guard test files (dispatch-safety-guard.test.mjs,
+// dolt-literal-guard.test.mjs, full-db-fetch-tripwire.test.mjs,
+// guarded-modules-coverage.test.mjs) are a single mutex resource; any future
+// bead that adds a line here MUST belong to the same streak as, or run after,
+// whatever else is editing them.
+//
 // WHAT DOES *NOT* BELONG HERE: the per-shell command builders --
 // se-posix.mjs, se-windows.mjs, se-windows-gitbash.mjs, se-os-commands.mjs and
 // dolt-settle.mjs. They deliberately emit `$HOME`, `$env:USERPROFILE`,
@@ -38,7 +46,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * mechanical guards must scan. Add a newly extracted module here -- this is
  * the single registration point.
  */
-export const GUARDED_MODULES = ['runner.js'];
+export const GUARDED_MODULES = ['runner.js', 'vcs-auth.mjs', 'mcp-result.mjs', 'member-target.mjs'];
 
 /**
  * Modules the dolt-literal guard must NEVER scan, by basename. dolt-sync.mjs
