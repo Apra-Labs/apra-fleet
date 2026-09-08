@@ -233,8 +233,21 @@ export async function isMemberSyncRemoteConfigured(member, opts) {
 /** member -> { configured: boolean, url: string|null } (positively parsed only) */
 const syncRemoteCache = new Map();
 
-/** Commands whose success can change a member's bd-level sync.remote wiring. */
-const SYNC_REMOTE_INVALIDATING_COMMAND_RE = /^\s*bd\s+(?:config\s+set|dolt\s+remote|init|bootstrap)\b/i;
+/** Commands whose success can change a member's bd-level sync.remote wiring.
+ *
+ *  Deliberately NOT left-anchored (dolt sync budget review round 2, item 5):
+ *  member-bound command strings are routinely COMPOUND, because a member's cwd
+ *  has to be established in the same string (its shell may be PowerShell or a
+ *  POSIX shell). scripts/dolt-settle-integration.mjs already issues exactly
+ *  that shape --
+ *    cd "<dir>" && bd dolt remote add origin "<url>" && bd config set sync.remote "<url>"
+ *    Set-Location "<dir>"; bd dolt remote add origin "<url>"; bd config set ...
+ *  -- both of which the old `^\s*bd` anchor silently failed to recognize,
+ *  leaving a rewired member answering from a stale memo. The leading
+ *  `(?:^|[\s;&|(])` keeps the match word-bounded (so `abd bootstrap` or
+ *  `--bd init` never match) while allowing anything to precede the invocation.
+ */
+const SYNC_REMOTE_INVALIDATING_COMMAND_RE = /(?:^|[\s;&|(])bd\s+(?:config\s+set|dolt\s+remote|init|bootstrap)\b/i;
 
 /**
  * Drop the memoized sync.remote answer for `member` (or for every member when
@@ -258,6 +271,13 @@ export function invalidateSyncRemoteCache(member) {
  * command could have rewired that member's remote. A non-matching command (the
  * overwhelming majority) is a cheap regex test and no cache change.
  *
+ * The recorded remote-tip fingerprint is dropped alongside the memo (dolt sync
+ * budget review round 2, item 4): `bd init` / `bd bootstrap` can REPLACE the
+ * member's local Dolt clone outright, and a freshly recreated (empty) clone is
+ * not current with anything -- yet the remote tip it is compared against has
+ * not moved, so a surviving fingerprint would match and skip the very pull that
+ * clone needs most. Forgetting it only ever costs one real pull.
+ *
  * @param {string} member
  * @param {string} cmd
  * @returns {boolean} whether the command invalidated the memo
@@ -267,6 +287,7 @@ export function noteMemberCommand(member, cmd) {
     if (typeof cmd !== 'string') return false;
     if (!SYNC_REMOTE_INVALIDATING_COMMAND_RE.test(cmd)) return false;
     invalidateSyncRemoteCache(member);
+    clearLastSyncedTip(member);
     return true;
 }
 
@@ -359,13 +380,23 @@ export async function readMemberSyncRemote(member, opts) {
 //     long timeout -- the old count-based bound multiplied out to a worst case
 //     of 9 attempts x the 600s step timeout.
 //   * EVERY OTHER TRANSIENT (network blip, busy server, held row lock) keeps
-//     the short ladder it always had before the widening: 2 retries, 8s cap.
+//     the short ladder it always had before the widening: 5 retries, 8s cap.
 //     These were never the failure the long budget was bought for, and giving
 //     them the long one is exactly what caused the suite regression.
 //
 // `maxTransientRetries` still bounds the generic class and is still honored
 // when a caller passes it explicitly, so every existing test seam keeps
-// working; only the DEFAULT drops back from 8 to 2.
+// working; only the DEFAULT drops back from 8 to the pre-widening 5.
+//
+// ROUND-2 CORRECTION (dolt sync budget review round 2, item 3): the first cut
+// of this split set the generic default to 2, describing it as "the ladder it
+// always had before the widening". That was wrong -- `git show 3f49419b`
+// (bump D-pull/D-push transient-retry budget from 1 to 5) shows the
+// pre-widening default was 5 (~15.5s of backoff), not 2 (~1.5s). The suite
+// regression that motivated the reduction came from the SPAWN-OUTAGE class's
+// 3-minute wall-clock budget, a test-fixture problem (fixtures sleeping
+// through real backoff), not from this ladder -- so the generic class is back
+// at 5 and any slow test injects its own `sleep`/`backoffBaseMs` instead.
 const DOLT_BACKOFF_BASE_MS = 500;
 const DOLT_BACKOFF_MAX_MS = 30000;
 
@@ -373,8 +404,9 @@ const DOLT_BACKOFF_MAX_MS = 30000;
 const DOLT_GENERIC_BACKOFF_MAX_MS = 8000;
 
 /** Retry count for the ordinary transient class (the default for
- *  `maxTransientRetries`). Short on purpose -- see the note above. */
-export const DOLT_GENERIC_TRANSIENT_MAX_RETRIES = 2;
+ *  `maxTransientRetries`). The pre-widening baseline -- see the note above,
+ *  including why the round-1 value of 2 was a mis-restoration. */
+export const DOLT_GENERIC_TRANSIENT_MAX_RETRIES = 5;
 
 /** Total wall-clock retry budget for the spawn-outage class, sized to the
  *  measured 1-3 minute Windows git.exe spawn outage with headroom. */
@@ -1070,6 +1102,14 @@ export async function doltPushAfter(member, opts = {}) {
         return { ok: true, member, pushed: false, reconciled: false, skipped: true, reason: 'no-remote' };
     }
 
+    // Resolve the ls-remote URL once per doltPushAfter() call (the sync.remote
+    // memo makes the underlying probe free, but this also avoids re-deriving
+    // it for the pre- and post-push reads of the same push). Declared HERE,
+    // above the try/finally that calls doltPushGuarded(), because the hoisted
+    // helpers below close over it -- a `let` declared after that call site is
+    // still in its temporal dead zone when they run.
+    let tipProbeUrlResolved;
+
     // Serialize this push behind the global mutex: acquire (waiting our FIFO
     // turn) before touching the remote; release on every exit.
     //
@@ -1136,34 +1176,94 @@ export async function doltPushAfter(member, opts = {}) {
         throw divergedError;
     }
 
+    async function tipProbeUrl() {
+        if (tipProbeUrlResolved === undefined) {
+            tipProbeUrlResolved = await resolveTipProbeUrl(member, { command, log });
+        }
+        return tipProbeUrlResolved;
+    }
+
     /**
-     * After a successful push, read the tip this member just published and
-     * record it, so this member's NEXT D-pull can be skipped while it remains
-     * the last writer. Runs while the push mutex is still held, so no other
-     * writer can advance the ref between the push and this read.
-     *
-     * Best-effort only: if the tip cannot be read, the fingerprint is simply
-     * forgotten and the next pull is real.
+     * Read the remote tip IMMEDIATELY BEFORE a push attempt, under the push
+     * mutex. Its only purpose is to tell a real push from a no-op one (see
+     * recordTipAfterPush). Null means "unknown", which is treated as no-op.
+     * @returns {Promise<string|null>}
      */
-    async function recordTipAfterPush() {
+    async function readTipBeforePush() {
+        if (!remoteTipFingerprint) return null;
+        const probeUrl = await tipProbeUrl();
+        if (!probeUrl) return null;
+        return await readRemoteDoltTip(member, { command, log, url: probeUrl });
+    }
+
+    /**
+     * After a successful push, record the tip this member is now synchronized
+     * with -- but ONLY when that is actually true.
+     *
+     * ROUND-2 FIX (dolt sync budget review round 2, item 2). A `bd dolt push`
+     * with nothing local to publish still exits 0. The first cut recorded the
+     * observed remote tip after ANY successful push, which silently broke the
+     * feature's core invariant for this race:
+     *   1. member M pulls, is current at T0.
+     *   2. another machine pushes; the remote advances to T1. M does not pull.
+     *   3. M pushes with nothing new -- a no-op success. The remote is still
+     *      T1, which M's clone does NOT contain.
+     *   4. the old code recorded T1 as M's lastSyncedTip, so M's next D-pull
+     *      saw observedTip === recorded and skipped a pull it genuinely needed.
+     * `bd dolt push` output carries no "up to date" vs "pushed N commits"
+     * signal (verified: it prints "Pushing to Dolt remote... / Push complete."
+     * either way), so the distinction is drawn from the ref itself instead:
+     *
+     *   * the ref ADVANCED (post !== pre): the push published local commits.
+     *     A push that publishes can only succeed from a clone that already
+     *     contained the remote's pre-push tip -- otherwise it is rejected as
+     *     a non-fast-forward and goes down the reconcile path -- so this clone
+     *     is provably current with the new tip. Record it.
+     *   * the ref did NOT advance, but the pre-push tip is exactly what this
+     *     member was already recorded as synchronized with: nothing moved and
+     *     nothing was published, so the existing fingerprint still holds.
+     *     Record (re-record) it.
+     *   * anything else -- a no-op push from a possibly-behind clone, an
+     *     unreadable tip, no URL: FORGET the fingerprint, so the next D-pull
+     *     is real. Costing one redundant pull is the safe error; skipping a
+     *     needed one is not.
+     *
+     * Both reads happen while the push mutex is still held, so no other writer
+     * can advance the ref between them.
+     *
+     * @param {string|null} prePushTip - the tip read immediately before the push
+     */
+    async function recordTipAfterPush(prePushTip) {
         if (!remoteTipFingerprint) return;
-        const probeUrl = await resolveTipProbeUrl(member, { command, log });
+        const probeUrl = await tipProbeUrl();
         if (!probeUrl) {
             clearLastSyncedTip(member);
             return;
         }
+        const recordedBefore = getLastSyncedTip(member);
         const sha = await readRemoteDoltTip(member, { command, log, url: probeUrl });
-        if (sha) setLastSyncedTip(member, sha);
-        else clearLastSyncedTip(member);
+        if (!sha) {
+            clearLastSyncedTip(member);
+            return;
+        }
+        const advanced = prePushTip !== null && sha !== prePushTip;
+        const alreadyCurrent = prePushTip !== null && recordedBefore !== undefined && prePushTip === recordedBefore;
+        if (advanced || alreadyCurrent) {
+            setLastSyncedTip(member, sha);
+            return;
+        }
+        log(`[Dolt] D-push for member '${member}' published nothing (remote ${DOLT_DATA_REF} unchanged at ${sha}) and this clone was not known to be current with it -- forgetting the remote-tip fingerprint so the next D-pull is real.`);
+        clearLastSyncedTip(member);
     }
 
     async function doltPushGuarded() {
+    const prePushTip = await readTipBeforePush();
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
         label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
     });
     if (push.ok) {
-        await recordTipAfterPush();
+        await recordTipAfterPush(prePushTip);
         return { ok: true, member, pushed: true, reconciled: false };
     }
 
@@ -1237,12 +1337,17 @@ export async function doltPushAfter(member, opts = {}) {
         );
     }
 
+    // Re-read the tip AFTER the reconcile pull: the pre-push read above is
+    // stale by now (the reconcile pull exists precisely because another writer
+    // advanced the ref), and the re-push's advanced/no-op verdict must be made
+    // against the ref as it stands immediately before that re-push.
+    const preRepushTip = await readTipBeforePush();
     push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
         label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
     });
     if (push.ok) {
-        await recordTipAfterPush();
+        await recordTipAfterPush(preRepushTip);
         return { ok: true, member, pushed: true, reconciled: true };
     }
 

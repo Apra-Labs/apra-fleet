@@ -150,6 +150,16 @@ test('memo: noteMemberCommand invalidates on the remote-rewiring command family 
         'bd init --database beads',
         'bd bootstrap',
         '  BD CONFIG SET sync.remote x',
+        // Round-2 fix (item 5): COMPOUND command strings. A member's cwd must
+        // be established in the same string, so the bd invocation is routinely
+        // NOT at the start -- scripts/dolt-settle-integration.mjs issues both
+        // of these shapes verbatim, and the old left-anchored regex missed
+        // every one of them.
+        'cd "/tmp/sandbox" && bd dolt remote add origin "https://example.com/x.git" && bd config set sync.remote "https://example.com/x.git"',
+        'Set-Location "C:\\sandbox"; bd dolt remote add origin "https://example.com/x.git"; bd config set sync.remote "https://example.com/x.git"',
+        'cd /tmp/x && bd bootstrap',
+        'true; bd init --database beads',
+        '(bd bootstrap)',
     ]) {
         assert.equal(noteMemberCommand('m1', cmd), true, `expected '${cmd}' to invalidate`);
     }
@@ -161,6 +171,11 @@ test('memo: noteMemberCommand invalidates on the remote-rewiring command family 
         'bd dolt push',
         'bd update x --status open',
         'git remote set-url origin https://example.com/x.git',
+        // Still word-bounded: a longer token that merely CONTAINS the command
+        // shape must not match.
+        'abd bootstrap',
+        'echo --bd init',
+        'cd /tmp && bd list --all --json',
     ]) {
         assert.equal(noteMemberCommand('m1', cmd), false, `expected '${cmd}' NOT to invalidate`);
     }
@@ -176,6 +191,32 @@ test('memo: noteMemberCommand only drops the named member, not the whole cache',
     await isMemberSyncRemoteConfigured('m1', { command }); // re-probes
     await isMemberSyncRemoteConfigured('m2', { command }); // still cached
     assert.equal(countOf(PROBE), 3);
+});
+
+test('memo: noteMemberCommand also FORGETS the recorded remote tip (round-2 item 4)', async () => {
+    // A `bd init`/`bd bootstrap` can replace the member's local Dolt clone
+    // outright. The remote tip has not moved, so a surviving fingerprint would
+    // match and skip the pull the freshly-recreated (empty) clone needs most.
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_A)],
+        [PULL]: [OK],
+    });
+    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m2', SHA_A);
+    assert.equal(noteMemberCommand('m1', 'cd /tmp/x && bd bootstrap'), true);
+    assert.equal(getLastSyncedTip('m1'), undefined, 'a re-bootstrapped clone must not keep its fingerprint');
+    assert.equal(getLastSyncedTip('m2'), SHA_A, 'only the named member is affected');
+    // ...and the next D-pull for that member is real, not remote-unchanged.
+    const res = await doltPullBefore('m1', { command });
+    assert.deepEqual(res, { ok: true, member: 'm1' });
+    assert.equal(countOf(PULL), 1);
+});
+
+test('memo: a non-invalidating command leaves the recorded tip alone', async () => {
+    setLastSyncedTip('m1', SHA_A);
+    assert.equal(noteMemberCommand('m1', 'bd list --all --json'), false);
+    assert.equal(getLastSyncedTip('m1'), SHA_A);
 });
 
 test('memo: the auth self-heal path invalidates the member memo', async () => {
@@ -222,8 +263,12 @@ test('retry: the spawn-outage class is recognized; ordinary transients are not',
     assert.equal(isSpawnOutageFailure(null), false);
 });
 
-test('retry: an ordinary transient keeps the SHORT count-based ladder (2 retries by default)', async () => {
-    assert.equal(DOLT_GENERIC_TRANSIENT_MAX_RETRIES, 2);
+test('retry: an ordinary transient keeps the pre-widening count-based ladder (5 retries by default)', async () => {
+    // Round-2 fix: the round-1 value of 2 (~1.5s of backoff) was described as
+    // "the pre-widening ladder" but the actual pre-widening default was 5
+    // (~15.5s) -- see the constants block in dolt-sync.mjs. Production must not
+    // under-retry to keep a test suite fast; a slow test injects `sleep`.
+    assert.equal(DOLT_GENERIC_TRANSIENT_MAX_RETRIES, 5);
     const { command, countOf } = makeCommandMock({
         [PROBE]: [REMOTE_JSON],
         [PULL]: [fail('connection refused')],
@@ -234,9 +279,10 @@ test('retry: an ordinary transient keeps the SHORT count-based ladder (2 retries
         remoteTipFingerprint: false,
         sleep: async (ms) => { slept.push(ms); },
     }));
-    assert.equal(countOf(PULL), 3, 'initial attempt plus exactly 2 retries');
+    assert.equal(countOf(PULL), 6, 'initial attempt plus exactly 5 retries');
     // ...and at the SHORT 8s backoff cap, not the 30s spawn-outage cap.
-    assert.deepEqual(slept, [500, 1000]);
+    assert.deepEqual(slept, [500, 1000, 2000, 4000, 8000]);
+    assert.equal(slept.reduce((a, b) => a + b, 0), 15500, 'the pre-widening ~15.5s total backoff budget');
 });
 
 test('retry: an ordinary transient is bounded by COUNT even when wall-clock time is trivial', async () => {
@@ -499,10 +545,12 @@ test('fingerprint: a FAILED pull does not record the observed tip', async () => 
     assert.equal(getLastSyncedTip('m1'), undefined, 'only a SUCCESSFUL pull may record a tip');
 });
 
-test('fingerprint: a successful push records the post-push tip, so the next pull skips', async () => {
+test('fingerprint: a push that ADVANCES the remote records the post-push tip, so the next pull skips', async () => {
+    // The ls-remote queue: SHA_A immediately before the push, SHA_B for every
+    // read after it -- i.e. this push actually published something.
     const { command, countOf } = makeCommandMock({
         [PROBE]: [REMOTE_JSON],
-        [LS_REMOTE]: [lsRemote(SHA_B)],
+        [LS_REMOTE]: [lsRemote(SHA_A), lsRemote(SHA_B)],
         [PUSH]: [OK],
         [PULL]: [OK],
     });
@@ -512,6 +560,73 @@ test('fingerprint: a successful push records the post-push tip, so the next pull
     const pullRes = await doltPullBefore('m1', { command });
     assert.equal(pullRes.reason, 'remote-unchanged');
     assert.equal(countOf(PULL), 0, 'the pusher is the last writer, so its next pull is a provable no-op');
+});
+
+test('fingerprint: a NO-OP push from a possibly-behind clone must NOT record a tip (round-2 race)', async () => {
+    // The exact race the round-2 review found:
+    //   1. another machine pushed; the remote is at SHA_B.
+    //   2. this member never pulled that, and has no recorded tip for it.
+    //   3. this member pushes with nothing local to publish -- `bd dolt push`
+    //      still exits 0 and the ref does not move.
+    // Recording SHA_B here would claim a freshness this clone does not have,
+    // and the next D-pull would skip a pull it genuinely needs.
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_B)], // unchanged before AND after the push
+        [PUSH]: [OK],
+        [PULL]: [OK],
+    });
+    const res = await doltPushAfter('m1', { command, pushBeads: true });
+    assert.equal(res.pushed, true);
+    assert.equal(getLastSyncedTip('m1'), undefined, 'a no-op push must never mint a fingerprint');
+    const pullRes = await doltPullBefore('m1', { command });
+    assert.equal(pullRes.skipped, undefined, 'the next D-pull must be REAL, not remote-unchanged');
+    assert.equal(countOf(PULL), 1);
+});
+
+test('fingerprint: a no-op push STALE-tip case forgets the old tip rather than re-confirming it', async () => {
+    // Same shape, but this member does carry a recorded tip -- an OLD one
+    // (SHA_A) that no longer matches the remote (SHA_B). The push publishes
+    // nothing, so nothing about this clone became current with SHA_B.
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_B)],
+        [PUSH]: [OK],
+        [PULL]: [OK],
+    });
+    setLastSyncedTip('m1', SHA_A);
+    await doltPushAfter('m1', { command, pushBeads: true });
+    assert.equal(getLastSyncedTip('m1'), undefined);
+    await doltPullBefore('m1', { command });
+    assert.equal(countOf(PULL), 1, 'the stale tip must not survive into a skip');
+});
+
+test('fingerprint: a no-op push by a clone ALREADY current keeps its fingerprint (no needless pull)', async () => {
+    // The benign no-op: this member is recorded as current with the remote tip
+    // and the push publishes nothing, so the fingerprint still holds and the
+    // next pull may still be skipped.
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_A)],
+        [PUSH]: [OK],
+        [PULL]: [OK],
+    });
+    setLastSyncedTip('m1', SHA_A);
+    await doltPushAfter('m1', { command, pushBeads: true });
+    assert.equal(getLastSyncedTip('m1'), SHA_A);
+    const pullRes = await doltPullBefore('m1', { command });
+    assert.equal(pullRes.reason, 'remote-unchanged');
+    assert.equal(countOf(PULL), 0);
+});
+
+test('fingerprint: the pre-push tip read is skipped entirely when remoteTipFingerprint is off', async () => {
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_A)],
+        [PUSH]: [OK],
+    });
+    await doltPushAfter('m1', { command, pushBeads: true, remoteTipFingerprint: false });
+    assert.equal(countOf(LS_REMOTE), 0, 'no probe at all -- neither before nor after the push');
 });
 
 test('fingerprint: a push whose post-push probe fails forgets the tip (next pull is real)', async () => {
