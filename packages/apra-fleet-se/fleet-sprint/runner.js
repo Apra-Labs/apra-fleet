@@ -52,7 +52,10 @@ import {
     computeLaneEffort, streakRequiredTier, streakMinPriority, streakEffortPoints, beadBlocksDependencyIds,
     resolveWorklistTierPolicy, hasContextHeadroomForResume, assignDoerWorklists,
 } from './worklists.mjs';
-import { isTypedAbortError, finalizeAbort, persistNewTaskBestEffort, validateNewTask, appendRejectedFindingToParentNotes } from './abort.mjs';
+import {
+    isTypedAbortError, finalizeAbort, persistNewTaskBestEffort, validateNewTask,
+    appendRejectedFindingToParentNotes, sanitizeNewTaskTitle, sanitizeNewTaskDescription,
+} from './abort.mjs';
 import { decideEnsureBranchAction } from './branch-ensure.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
@@ -99,7 +102,10 @@ export {
 // abort-path PR publish helper and the newTask validation/persistence
 // helpers from runner.js keep working; abort.mjs is the single source of
 // truth for their implementation (apra-fleet-3swo.3.6).
-export { isTypedAbortError, finalizeAbort, persistNewTaskBestEffort, validateNewTask, appendRejectedFindingToParentNotes };
+export {
+    isTypedAbortError, finalizeAbort, persistNewTaskBestEffort, validateNewTask,
+    appendRejectedFindingToParentNotes, sanitizeNewTaskTitle, sanitizeNewTaskDescription,
+};
 // Re-exported so importers of the pure Ensure Sprint Branch decision helper
 // from runner.js keep working; branch-ensure.mjs is the single source of
 // truth for its implementation (apra-fleet-3swo.3.6).
