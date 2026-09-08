@@ -579,6 +579,22 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
         assert.equal(calls.length, 1, 'the call is still attempted');
     });
 
+    // apra-fleet-3swo.16: kb_query is the one kb_* failure path that logged
+    // nothing for an isError envelope -- parseResult() returns null for it, so
+    // the code took the `if (!parsed) return [];` branch and never reached the
+    // catch that every other kb_* site here uses to report a rejection. A cold
+    // or misconfigured KB must degrade VISIBLY, matching the wording of the
+    // kb_capture/kb_promote/kb_export rejected branches.
+    test('a rejecting kb_query logs the rejection, non-fatal, matching every other kb_* site', async () => {
+        const logs = [];
+        const { callTool } = errorRecorder('kb query rejected: cold store');
+        const client = createKbWorkClient({ callTool, log: (m) => logs.push(m) });
+
+        assert.deepEqual(await client.relevantKnowledge('/srv/a', ['x']), []);
+        assert.equal(logs.length, 1, 'the rejection must be logged, not silently swallowed');
+        assert.match(logs[0], /^\[kb-work\] kb_query rejected for \/srv\/a \(non-fatal\): kb query rejected: cold store$/);
+    });
+
     test('exportBible writes the canonical bible for the repo it is given', async () => {
         const { calls, callTool } = recorder();
         const client = createKbWorkClient({ callTool, log: () => {} });
