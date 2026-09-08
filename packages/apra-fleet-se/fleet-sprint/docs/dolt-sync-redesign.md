@@ -1485,3 +1485,128 @@ so the list below reads as history rather than as a pending action:
   integrity bug (a filed bead reference vanished), but not a sync/conflict
   issue and not something settle() affects. Left open, unrelated.
 
+## Part 9 -- sync COST: fewer and cheaper syncs per sprint
+
+Parts 1-8 are about sync CORRECTNESS (what happens when a sync conflicts).
+This part is about sync COST, from a separate read-only review of where a
+fleet-sprint actually spends its `bd dolt pull` / `bd dolt push` minutes. The
+measured shape on the reference machine: about 20 D-pull/D-push pairs per
+sprint, each bracketed by 1-2 uncached `bd config get sync.remote` probes
+(0.6s each), against a 548 MB embedded Dolt store whose full open-and-walk
+cost is paid on every invocation regardless of how little changed.
+
+Three changes landed in `dolt-sync.mjs` (a fourth, in the supervisor's
+pre-launch scope guard, is described in `src/supervisor/scope-overlap.mjs`).
+
+### 9.1 The `sync.remote` probe is memoized per member
+
+`isMemberSyncRemoteConfigured()` spawned a fresh `bd config get sync.remote
+--json` on every call -- the D-pull pre-gate, the D-push pre-gate, and
+`status()` -- which totals roughly 90-160 spawns per sprint for a value that
+never changes mid-run. A codebase search confirmed no production path in this
+package writes `sync.remote` during a live sprint; only test fixtures and
+one-time setup scripts do.
+
+The result is now cached per member for the process lifetime (one runner
+process per sprint). Two properties matter:
+
+- **Only a positively parsed answer is cached.** Every fail-safe path (the
+  command threw, a `failSoft` error result, no output, unparseable output)
+  still reports "configured" and is deliberately NOT cached, so one transient
+  probe failure cannot pin the fail-safe answer for the rest of the run. The
+  fail-CLOSED contract is unchanged.
+- **Explicit invalidation, not a TTL.** A TTL re-adds spawns for no real
+  safety. Three seams drop the memo: `noteMemberCommand()`, called from the
+  runner's central `command()` wrapper for any `bd config set` / `bd dolt
+  remote` / `bd init` / `bd bootstrap` on that member; the auth self-heal
+  firing inside `runDoltStep`; and `repair()`.
+
+### 9.2 The transient retry ladder is time-boxed, not count-boxed
+
+The ladder was widened to 8 retries with a 30s backoff cap to survive a live
+Windows machine-wide `git.exe` spawn outage (`fork/exec ... "Not enough memory
+resources"`), measured at 1-3 minutes. That was the right diagnosis but the
+wrong bound: it applied the long budget to EVERY transient kind, and the unit
+suite went from 80s to 6m15s because ordinary transients in fixtures now
+walked the full ladder (91.5s of pure sleep in one exhausted ladder, before
+counting the 600s per-attempt timeout).
+
+The budget was never really about a count -- it was about spanning a
+wall-clock outage window. So the ladder is split by error class:
+
+| class | bound | backoff cap |
+|---|---|---|
+| spawn outage (`fork/exec`, "Not enough memory resources") | 3 min WALL CLOCK | 30s |
+| every other transient | 2 retries (`maxTransientRetries`) | 8s |
+
+A wall-clock bound is the same 3 minutes whether each attempt returns
+instantly or sits on the 600s step timeout; the old count-based bound
+multiplied out to a worst case of 9 attempts x 600s. An explicitly passed
+`maxTransientRetries` is still honored for the generic class, so every test
+seam keeps working; only the default changed (8 -> 2). A `diverged`
+classification is still never retried, under either ladder.
+
+### 9.3 Remote-tip fingerprint: skip a D-pull only when it is provably a no-op
+
+**The correctness anchor.** The shared remote's `refs/dolt/data` is the ONLY
+channel through which beads state moves between machines. A member's clone can
+therefore be stale in exactly one way: that ref advanced since the member last
+pulled or pushed. "Is a D-pull needed?" then has a cheap, EXACT answer --
+compare the remote SHA now against the SHA this member last synchronized to --
+rather than a policy bet about who else might be writing.
+
+This is why the alternatives were rejected. "Skip for read-only roles" and
+"skip within N seconds of the last pull" both trade real staleness for speed:
+a reviewer reads acceptance criteria a remote doer just pushed, and a
+plan-reviewer reads the planner's freshly pushed DAG. Any fixed bound is a
+guess about other writers, and a wrong guess produces exactly the
+false-FAILED-streak failure the post-streak verify pull exists to prevent. A
+tip-equal skip removes only pulls that are provably no-ops, so no operator has
+to pick a risk bound at all.
+
+**Mechanism.** Before a real `bd dolt pull`, one `git ls-remote <sync.remote>
+refs/dolt/data` -- one network round trip, no Dolt engine startup, no 548 MB
+chunk store to open (0.35s measured, against multi-minute real pulls). On a
+match the pull is not spawned and the step returns `{ ok: true, member,
+skipped: true, reason: 'remote-unchanged', remoteTip }`.
+
+**The recorded tip is conservative in both directions:**
+
+- after a successful PULL, record the SHA observed IMMEDIATELY BEFORE it --
+  never one read afterwards. A push racing in during the pull is not in what
+  was fetched, so recording the later SHA would claim freshness the clone does
+  not have. Recording the earlier one can only cost one redundant future pull.
+- after a successful PUSH by this member, record the SHA read AFTER the push,
+  while the push mutex is still held so no other writer can interleave.
+
+**Fail-open, always.** Every uncertainty falls through to a REAL pull: no
+recorded tip yet, an `ls-remote` failure or timeout, unparseable output, a
+`sync.remote` that could not be positively read, or a URL that fails the
+strict safe-charset gate. A divergence, a settle, and a failed post-push probe
+all FORGET the recorded tip rather than leave a stale one. There is
+deliberately no path in which doubt produces a skip.
+
+**Two implementation constraints worth restating:**
+
+- The probe target is resolved from `sync.remote` (through the 9.1 memo, so it
+  costs no extra `bd config get`), NEVER from git's `origin`. The two can
+  legitimately differ on a member, and probing `origin` would compare this
+  member's freshness against the wrong ref. bd spells a git-transport remote
+  `git+https://...`; the `git+` prefix is bd's own scheme marker and is
+  stripped before `ls-remote`.
+- The probe string reaches the member's own shell, which may be PowerShell or
+  a POSIX shell. Rather than trying to quote correctly for both, any remote URL
+  containing a character outside a conservative safe charset (no whitespace,
+  no quote, no metacharacter of either dialect) is REFUSED -- which yields no
+  fingerprint and a real pull, the safe direction.
+
+Disable per call site with `remoteTipFingerprint: false`.
+
+### 9.4 Not done here, on purpose
+
+Two larger items from the same review are deliberately out of scope: squashing
+the Dolt history and re-bootstrapping every member clone (the largest per-op
+win, but a destructive operational change needing a quiescent window and its
+own runbook), and moving `sync.remote` off the git transport onto a native
+Dolt bucket remote.
+

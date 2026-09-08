@@ -6526,6 +6526,16 @@ async function runSprintCycle(context) {
             if (/^bd\b/i.test(trimmed) && !BD_READ_ONLY_RE.test(trimmed)) {
                 invalidateAllBeadsCache();
             }
+            // DoltSync memoizes each member's `bd config get sync.remote`
+            // answer for the process lifetime (it was being re-spawned 90-160
+            // times per sprint for a value that never changes mid-run). This
+            // is the invalidation seam: the handful of commands that CAN
+            // rewire a member's remote (`bd config set`, `bd dolt remote`,
+            // `bd init`, `bd bootstrap`) drop that member's memo here, at the
+            // one wrapper every orchestrator-side member command passes
+            // through. Non-matching commands are a cheap regex test.
+            const memberName = opts && opts.member_name;
+            if (memberName) DoltSync.noteMemberCommand(memberName, trimmed);
         }
         return result;
     };

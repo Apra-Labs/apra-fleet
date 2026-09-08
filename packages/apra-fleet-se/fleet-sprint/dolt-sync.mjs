@@ -194,32 +194,132 @@ export function classifyDoltFailure(output) {
  * @returns {Promise<boolean>}
  */
 export async function isMemberSyncRemoteConfigured(member, opts) {
+    return (await readMemberSyncRemote(member, opts)).configured;
+}
+
+// ---------------------------------------------------------------------------
+// sync.remote probe memoization (apra-fleet-akuv)
+// ---------------------------------------------------------------------------
+//
+// `bd config get sync.remote --json` used to be spawned FRESH on every call --
+// once per D-pull pre-gate, once per D-push pre-gate, once per status() probe,
+// and every dispatch is bracketed -- which measured out at roughly 90-160
+// spawns (about 0.6s each) per sprint re-reading a value that never changes
+// mid-run. A codebase-wide search confirmed no production path in this package
+// writes sync.remote during a live sprint; only test fixtures and one-time
+// setup/seed scripts do. So the result is memoized PER MEMBER for the process
+// lifetime, with explicit invalidation rather than a TTL (a TTL would re-add
+// spawns for no real safety).
+//
+// WHAT IS CACHED, deliberately narrow: ONLY a positively parsed answer -- a
+// clean JSON parse of the command's output. Every fail-safe path (command()
+// threw, a failSoft error result, no output at all, unparseable output) reports
+// "configured" WITHOUT caching, so a transient probe failure can never pin the
+// fail-safe answer for the rest of the run; the next call re-probes. This
+// preserves isMemberSyncRemoteConfigured's fail-CLOSED contract exactly.
+//
+// INVALIDATION (three seams, all wired):
+//   1. noteMemberCommand() -- called from the runner's central command()
+//      wrapper; drops the entry for any `bd config set` / `bd dolt remote` /
+//      `bd init` / `bd bootstrap` issued against that member.
+//   2. the auth self-heal path in runDoltStep(), when onAuthFailure fires for
+//      a member (re-provisioning credentials can rewire the remote).
+//   3. repair(), the operator/tool remediation entry point.
+//
+// The same cache entry carries the remote URL, which the remote-tip
+// fingerprint (see readRemoteDoltTip below) needs -- one probe answers both
+// questions, so the fingerprint costs no extra `bd config get`.
+
+/** member -> { configured: boolean, url: string|null } (positively parsed only) */
+const syncRemoteCache = new Map();
+
+/** Commands whose success can change a member's bd-level sync.remote wiring. */
+const SYNC_REMOTE_INVALIDATING_COMMAND_RE = /^\s*bd\s+(?:config\s+set|dolt\s+remote|init|bootstrap)\b/i;
+
+/**
+ * Drop the memoized sync.remote answer for `member` (or for every member when
+ * called with no argument -- test hygiene, and the operator-repair path).
+ *
+ * @param {string} [member]
+ * @returns {number} how many cache entries were dropped
+ */
+export function invalidateSyncRemoteCache(member) {
+    if (member === undefined) {
+        const n = syncRemoteCache.size;
+        syncRemoteCache.clear();
+        return n;
+    }
+    return syncRemoteCache.delete(member) ? 1 : 0;
+}
+
+/**
+ * Invalidation seam for the runner's central command() wrapper: hand every
+ * member-bound command string here and the sync.remote memo is dropped when the
+ * command could have rewired that member's remote. A non-matching command (the
+ * overwhelming majority) is a cheap regex test and no cache change.
+ *
+ * @param {string} member
+ * @param {string} cmd
+ * @returns {boolean} whether the command invalidated the memo
+ */
+export function noteMemberCommand(member, cmd) {
+    if (typeof member !== 'string' || member.length === 0) return false;
+    if (typeof cmd !== 'string') return false;
+    if (!SYNC_REMOTE_INVALIDATING_COMMAND_RE.test(cmd)) return false;
+    invalidateSyncRemoteCache(member);
+    return true;
+}
+
+/**
+ * Read `member`'s bd-level sync.remote, memoized per member (see the section
+ * comment above). Returns both the fail-closed boolean the pre-gates consult
+ * and the remote URL string the tip fingerprint needs.
+ *
+ * `configured: true` with `url: null` means "could not be positively read, so
+ * treated as configured" -- the fail-safe answer, never cached.
+ *
+ * @param {string} member
+ * @param {{ command: Function, log?: Function }} opts
+ * @returns {Promise<{ configured: boolean, url: string|null }>}
+ */
+export async function readMemberSyncRemote(member, opts) {
     const { command, log = () => {} } = opts;
+    const cached = syncRemoteCache.get(member);
+    if (cached) return { ...cached };
+
     let res;
     try {
         res = await command('bd config get sync.remote --json', { member_name: member, silent: true, failSoft: true });
     } catch (err) {
         log(`[Dolt] could not query bd-level sync.remote for member '${member}' (fail-safe: treating as configured): ${err.message}`);
-        return true;
+        return { configured: true, url: null };
     }
     if (res && typeof res === 'object' && res.ok === false) {
         log(`[Dolt] 'bd config get sync.remote' failed for member '${member}' (fail-safe: treating as configured): ${res.error}`);
-        return true;
+        return { configured: true, url: null };
     }
     const output = res && typeof res === 'object' ? res.output : res;
     if (!output) {
         // No output to positively parse (e.g. a no-op/unmocked command()):
         // sync.remote cannot be confirmed absent, so do not treat it as
-        // neutralized.
-        return true;
+        // neutralized -- and do not cache a non-answer.
+        return { configured: true, url: null };
     }
+    let parsed;
     try {
-        const parsed = JSON.parse(output);
-        return !(typeof parsed.value === 'string' && parsed.value.trim().length === 0);
+        parsed = JSON.parse(output);
     } catch (err) {
         log(`[Dolt] could not parse 'bd config get sync.remote --json' output for member '${member}' (fail-safe: treating as configured): ${err.message}`);
-        return true;
+        return { configured: true, url: null };
     }
+    const value = typeof parsed.value === 'string' ? parsed.value.trim() : null;
+    const entry = {
+        configured: !(value !== null && value.length === 0),
+        url: value !== null && value.length > 0 ? value : null,
+    };
+    // Only a positively parsed answer is memoized.
+    syncRemoteCache.set(member, entry);
+    return { ...entry };
 }
 
 // Bounded exponential backoff between TRANSIENT retries (apra-fleet-417.3.1).
@@ -235,10 +335,80 @@ export async function isMemberSyncRemoteConfigured(member, opts) {
 // The original 8s cap meant even 5 retries covered at most ~15s of backoff,
 // structurally unable to span an outage an order of magnitude longer; the
 // sprint kept dying with retries correctly firing but exhausted. Raised to
-// 30s so a realistic retry budget (see maxTransientRetries below) can
-// actually outlast one of these windows instead of just softening it.
+// 30s so a realistic retry budget can actually outlast one of these windows
+// instead of just softening it.
+//
+// TIME-BOXED, NOT COUNT-BOXED (dolt sync budget review, section A.3)
+// -------------------------------------------------------------------------
+// Widening the ladder to `maxTransientRetries = 8` with a 30s cap fixed the
+// spawn-outage case but applied that budget to EVERY transient kind, and the
+// cost was demonstrated immediately: the unit suite went from 80s to 6m15s,
+// because an ordinary transient in a test fixture now walked the full 8-retry
+// x 30s-cap ladder (91.5s of pure sleep in one exhausted ladder, before
+// counting the 600s per-attempt timeout). The retry budget was never really
+// about a COUNT -- it was about spanning a wall-clock outage window.
+//
+// So the ladder is split by error CLASS, and only the class that motivated the
+// widening gets the long budget:
+//
+//   * SPAWN OUTAGE (`fork/exec ...`, "Not enough memory resources") -- the OS
+//     refused to start git.exe at all. Retried against a WALL-CLOCK budget
+//     (DOLT_SPAWN_OUTAGE_BUDGET_MS, 3 min, matching the measured 1-3 min
+//     window) with the 30s backoff cap. The bound is elapsed time, so it is
+//     the same 3 minutes whether each attempt returns instantly or sits on a
+//     long timeout -- the old count-based bound multiplied out to a worst case
+//     of 9 attempts x the 600s step timeout.
+//   * EVERY OTHER TRANSIENT (network blip, busy server, held row lock) keeps
+//     the short ladder it always had before the widening: 2 retries, 8s cap.
+//     These were never the failure the long budget was bought for, and giving
+//     them the long one is exactly what caused the suite regression.
+//
+// `maxTransientRetries` still bounds the generic class and is still honored
+// when a caller passes it explicitly, so every existing test seam keeps
+// working; only the DEFAULT drops back from 8 to 2.
 const DOLT_BACKOFF_BASE_MS = 500;
 const DOLT_BACKOFF_MAX_MS = 30000;
+
+/** Backoff cap for the ordinary transient class -- the pre-widening value. */
+const DOLT_GENERIC_BACKOFF_MAX_MS = 8000;
+
+/** Retry count for the ordinary transient class (the default for
+ *  `maxTransientRetries`). Short on purpose -- see the note above. */
+export const DOLT_GENERIC_TRANSIENT_MAX_RETRIES = 2;
+
+/** Total wall-clock retry budget for the spawn-outage class, sized to the
+ *  measured 1-3 minute Windows git.exe spawn outage with headroom. */
+export const DOLT_SPAWN_OUTAGE_BUDGET_MS = 180000;
+
+/** Hard attempt backstop for the spawn-outage ladder. The real bound is the
+ *  wall-clock budget above (~10 retries at the 30s cap); this only keeps a
+ *  non-advancing clock from spinning. */
+const DOLT_SPAWN_OUTAGE_MAX_RETRIES = 30;
+
+/** The spawn-outage class: the OS refused to START the git subprocess, as
+ *  opposed to anything that happened once it was running. Kept deliberately
+ *  broad on the `fork/exec` line (any process-spawn refusal is the same class
+ *  regardless of the OS's phrasing) and matched on the observed Windows
+ *  desktop-heap/process-count wording as its other half, for a failure text
+ *  that carries the wording without the fork/exec prefix. */
+const DOLT_SPAWN_OUTAGE_PATTERNS = [
+    /fork\/exec /i,
+    /not enough memory resources/i,
+];
+
+/**
+ * Is this failure text the spawn-outage class that earns the long wall-clock
+ * retry budget? Callers must already have classified the failure as
+ * 'transient'; this only sub-classifies WITHIN that verdict and never widens
+ * what counts as retryable.
+ *
+ * @param {string} output - raw stderr/stdout of the failed command
+ * @returns {boolean}
+ */
+export function isSpawnOutageFailure(output) {
+    const text = String(output == null ? '' : output);
+    return DOLT_SPAWN_OUTAGE_PATTERNS.some((re) => re.test(text));
+}
 
 // apra-fleet-jxdf.2: every `bd dolt pull`/`bd dolt push` this module issues
 // used to inherit whatever generic default the injected command() primitive
@@ -301,24 +471,48 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown' }>}
  */
-async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S }) {
+async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S, spawnOutageBudgetMs = DOLT_SPAWN_OUTAGE_BUDGET_MS, now = Date.now }) {
     let attempt = 0;
     let authHealAttempted = false;
+    const startedAt = now();
     // eslint-disable-next-line no-constant-condition
     while (true) {
         const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS });
         if (res && res.ok) return res;
         const error = res ? res.error : 'unknown command failure';
         const kind = classifyDoltFailure(error);
-        if (kind === 'transient' && attempt < maxTransientRetries) {
-            attempt += 1;
-            const delayMs = doltBackoffDelayMs(attempt, backoffBaseMs);
-            log(`[Dolt] transient failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries} after ${delayMs}ms backoff: ${error}`);
-            if (delayMs > 0 && typeof sleep === 'function') await sleep(delayMs);
-            continue;
+        if (kind === 'transient') {
+            // Sub-classify WITHIN the transient verdict: only the spawn-outage
+            // class gets the long wall-clock budget (see the constants block
+            // above for why the count-based ladder was replaced).
+            if (isSpawnOutageFailure(error)) {
+                const elapsedMs = now() - startedAt;
+                // The attempt ceiling is a backstop, not the policy: at the 30s
+                // backoff cap a 3-minute budget spends itself in ~10 retries, so
+                // this can only ever fire if the injected clock does not
+                // advance. It exists so a broken clock degrades to the old
+                // bounded ladder rather than spinning forever.
+                if (elapsedMs < spawnOutageBudgetMs && attempt < DOLT_SPAWN_OUTAGE_MAX_RETRIES) {
+                    attempt += 1;
+                    const delayMs = doltBackoffDelayMs(attempt, backoffBaseMs, DOLT_BACKOFF_MAX_MS);
+                    log(`[Dolt] transient SPAWN-OUTAGE failure for member '${member}' (${label}); retry ${attempt} after ${delayMs}ms backoff (${Math.round(elapsedMs / 1000)}s of a ${Math.round(spawnOutageBudgetMs / 1000)}s wall-clock budget used): ${error}`);
+                    if (delayMs > 0 && typeof sleep === 'function') await sleep(delayMs);
+                    continue;
+                }
+                log(`[Dolt] spawn-outage retry budget (${Math.round(spawnOutageBudgetMs / 1000)}s wall clock) EXHAUSTED for member '${member}' (${label}) after ${attempt} retries; giving up: ${error}`);
+            } else if (attempt < maxTransientRetries) {
+                attempt += 1;
+                const delayMs = doltBackoffDelayMs(attempt, backoffBaseMs, DOLT_GENERIC_BACKOFF_MAX_MS);
+                log(`[Dolt] transient failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries} after ${delayMs}ms backoff: ${error}`);
+                if (delayMs > 0 && typeof sleep === 'function') await sleep(delayMs);
+                continue;
+            }
         }
         if ((kind === 'auth' || kind === 'unknown') && typeof onAuthFailure === 'function' && !authHealAttempted) {
             authHealAttempted = true;
+            // Re-provisioning a member's VCS auth can rewire its remote, so the
+            // memoized sync.remote answer must not survive a self-heal.
+            invalidateSyncRemoteCache(member);
             log(`[Dolt] ${kind} failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
             try {
                 await onAuthFailure({ member, label, cmd, error, kind: 'dolt' });
@@ -363,7 +557,14 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
  * is never suppressed. Override the check with
  * `opts.checkSyncRemoteConfigured` (same test hook doltPushAfter exposes).
  *
- * Two distinct benign no-op skips return `{ ok: true, skipped: true }` rather
+ * A further benign skip is the REMOTE-TIP FINGERPRINT: `reason:
+ * 'remote-unchanged'` means `git ls-remote <sync.remote> refs/dolt/data`
+ * returned the exact SHA this member last synchronized to, so the pull is a
+ * provable no-op and is not spawned. See the section comment above this
+ * function for the correctness argument and the fail-open rules; disable it
+ * with `opts.remoteTipFingerprint: false`.
+ *
+ * Two further benign no-op skips return `{ ok: true, skipped: true }` rather
  * than throwing: `reason: 'no-remote'` (no dolt remote configured -- nothing
  * to pull) and `reason: 'empty-remote'` (a configured remote that has never
  * had anything pushed into it, i.e. Dolt's "no branches found in remote"
@@ -378,7 +579,7 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
  *
  * @param {string} member
  * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, skipPull?: boolean, onAuthFailure?: Function }} opts
- * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote'|'already-fresh' }>}
+ * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote'|'already-fresh'|'remote-unchanged' }>}
  */
 /**
  * Invoke the injected settle callback at a divergence terminal, if one is
@@ -414,8 +615,191 @@ async function attemptSettle({ settle, member, operation, error, log }) {
     return null;
 }
 
+// ---------------------------------------------------------------------------
+// Remote-tip fingerprint: skip a D-pull only when the remote provably has not
+// moved (dolt sync budget review, section B.1)
+// ---------------------------------------------------------------------------
+//
+// THE CORRECTNESS ANCHOR. The shared remote's `refs/dolt/data` ref is the ONLY
+// channel through which beads state moves between machines. A member's clone
+// can therefore be stale in exactly one way: that ref advanced since the member
+// last pulled or pushed. "Is a D-pull needed?" is then a question with a cheap,
+// EXACT answer -- compare the remote SHA now against the SHA this member last
+// synchronized to -- rather than a policy bet about who else might be writing.
+// That is why this supersedes the role-based and time-based skip policies that
+// were considered: those trade real staleness for speed (a reviewer reading
+// acceptance criteria a remote doer just pushed is the exact false-FAILED-streak
+// failure the post-streak verify pull exists to prevent), whereas a tip-equal
+// skip removes only pulls that are provably no-ops.
+//
+// The probe is `git ls-remote <sync.remote> refs/dolt/data`: one network round
+// trip, no Dolt engine startup, no 548MB chunk store to open (~0.35s measured,
+// against multi-minute real pulls).
+//
+// THE RECORDED TIP is conservative in both directions:
+//   * after a successful PULL, record the SHA observed IMMEDIATELY BEFORE the
+//     pull -- never one read afterwards. A push racing in during the pull then
+//     simply forces the NEXT pull to be real, which is the safe error.
+//   * after a successful PUSH by this member, record the SHA read AFTER the
+//     push (still under the push mutex, so no other writer can interleave).
+//
+// FAIL-OPEN, ALWAYS. Every uncertainty -- no recorded tip yet, ls-remote failed
+// or timed out, unparseable output, a sync.remote that could not be positively
+// read, a URL outside the strict safe charset -- falls through to a REAL pull.
+// The skip is only ever taken on a positive SHA match. There is deliberately no
+// path in which doubt produces a skip.
+
+/** member -> the remote refs/dolt/data SHA this member is known to be current
+ *  with. Process-lifetime, same scope as the sync.remote memo. */
+const lastSyncedTips = new Map();
+
+/** Short timeout for the tip probe: it is one ls-remote round trip, and must
+ *  never inherit the 600s budget sized for a real Dolt sync -- a probe that
+ *  hangs has to fall through to the real pull quickly, not stall the bracket. */
+const DOLT_TIP_PROBE_TIMEOUT_S = 30;
+
+/** The ref every `bd dolt push` advances on a git-transport Dolt remote. */
+const DOLT_DATA_REF = 'refs/dolt/data';
+
+/**
+ * Strict safe-charset URL gate. The probe command string is handed to the
+ * member's own shell, which may be PowerShell OR a POSIX shell, so rather than
+ * trying to quote correctly for both this REFUSES any remote URL containing a
+ * character outside a conservative set (no whitespace, no quote, no shell
+ * metacharacter of either dialect). A rejected URL yields no fingerprint and a
+ * real pull -- the safe direction.
+ */
+const SAFE_REMOTE_URL_RE = /^[A-Za-z0-9._~:/@+-]+$/;
+
+/**
+ * Convert a bd `sync.remote` value into the URL `git ls-remote` should be
+ * pointed at, or null when it cannot be used safely.
+ *
+ * bd spells a git-transport Dolt remote `git+https://host/org/repo.git`; the
+ * `git+` scheme prefix is bd's own marker and is NOT part of the git URL, so it
+ * is stripped. Anything failing the safe-charset gate returns null.
+ *
+ * NOTE: this deliberately derives the probe target from sync.remote and NEVER
+ * from git's `origin`. The two can legitimately differ on a member, and probing
+ * origin would compare this member's freshness against the wrong ref.
+ *
+ * @param {string|null|undefined} syncRemote
+ * @returns {string|null}
+ */
+export function toGitLsRemoteUrl(syncRemote) {
+    if (typeof syncRemote !== 'string') return null;
+    const trimmed = syncRemote.trim();
+    if (trimmed.length === 0) return null;
+    const url = trimmed.startsWith('git+') ? trimmed.slice(4) : trimmed;
+    if (url.length === 0) return null;
+    if (!SAFE_REMOTE_URL_RE.test(url)) return null;
+    return url;
+}
+
+/**
+ * Parse `git ls-remote` output for the refs/dolt/data SHA. Output lines are
+ * `<sha>\t<ref>`. Returns null on anything unrecognized -- an empty result, a
+ * malformed line, or a ref that is not exactly refs/dolt/data -- so the caller
+ * falls through to a real pull.
+ *
+ * @param {string|null|undefined} output
+ * @returns {string|null}
+ */
+export function parseLsRemoteTip(output) {
+    const text = String(output == null ? '' : output);
+    for (const line of text.split(/\r?\n/)) {
+        const m = line.match(/^([0-9a-f]{7,64})\s+(\S+)\s*$/i);
+        if (m && m[2] === DOLT_DATA_REF) return m[1].toLowerCase();
+    }
+    return null;
+}
+
+/**
+ * Read the shared remote's current refs/dolt/data SHA for `member`, via one
+ * `git ls-remote` on that member. Never throws: any failure returns null and
+ * the caller treats that as "unknown", i.e. do the real thing.
+ *
+ * @param {string} member
+ * @param {{ command: Function, log?: Function, url: string }} ctx
+ * @returns {Promise<string|null>}
+ */
+async function readRemoteDoltTip(member, { command, log = () => {}, url }) {
+    let res;
+    try {
+        res = await command(`git ls-remote ${url} ${DOLT_DATA_REF}`, {
+            member_name: member,
+            silent: true,
+            failSoft: true,
+            label: `Dolt remote-tip probe for '${member}'`,
+            timeout_s: DOLT_TIP_PROBE_TIMEOUT_S,
+        });
+    } catch (err) {
+        log(`[Dolt] remote-tip probe for member '${member}' threw (falling through to a real pull): ${(err && err.message) || err}`);
+        return null;
+    }
+    if (!res || res.ok === false) {
+        log(`[Dolt] remote-tip probe for member '${member}' failed (falling through to a real pull): ${res ? res.error : 'no result'}`);
+        return null;
+    }
+    const sha = parseLsRemoteTip(typeof res === 'object' ? res.output : res);
+    if (!sha) {
+        log(`[Dolt] remote-tip probe for member '${member}' returned no parseable ${DOLT_DATA_REF} SHA (falling through to a real pull).`);
+        return null;
+    }
+    return sha;
+}
+
+/**
+ * Resolve the ls-remote URL for `member` from the MEMOIZED sync.remote probe,
+ * or null when it cannot be positively read / is not safely usable. Returns
+ * null without probing when `command` is missing.
+ *
+ * @param {string} member
+ * @param {{ command: Function, log?: Function }} ctx
+ * @returns {Promise<string|null>}
+ */
+async function resolveTipProbeUrl(member, { command, log }) {
+    if (typeof command !== 'function') return null;
+    const { url } = await readMemberSyncRemote(member, { command, log });
+    return toGitLsRemoteUrl(url);
+}
+
+/**
+ * The SHA `member` is currently known to be synchronized with, or undefined.
+ * @param {string} member
+ * @returns {string|undefined}
+ */
+export function getLastSyncedTip(member) {
+    return lastSyncedTips.get(member);
+}
+
+/**
+ * Record the SHA `member` is now synchronized with. Exported for the tests and
+ * for any future call site that learns the tip out of band.
+ * @param {string} member
+ * @param {string} sha
+ */
+export function setLastSyncedTip(member, sha) {
+    if (typeof sha === 'string' && sha.length > 0) lastSyncedTips.set(member, sha);
+}
+
+/**
+ * Forget `member`'s recorded tip (or every member's -- test hygiene). A
+ * forgotten tip means the next D-pull is real, never skipped.
+ * @param {string} [member]
+ * @returns {number} how many entries were dropped
+ */
+export function clearLastSyncedTip(member) {
+    if (member === undefined) {
+        const n = lastSyncedTips.size;
+        lastSyncedTips.clear();
+        return n;
+    }
+    return lastSyncedTips.delete(member) ? 1 : 0;
+}
+
 export async function doltPullBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 8, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle } = opts;
+    const { command, log = () => {}, maxTransientRetries = DOLT_GENERIC_TRANSIENT_MAX_RETRIES, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, remoteTipFingerprint = true, spawnOutageBudgetMs, now } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -436,9 +820,25 @@ export async function doltPullBefore(member, opts = {}) {
         return { ok: true, member, skipped: true, reason: 'already-fresh' };
     }
 
+    // Remote-tip fingerprint (see the section comment above doltPullBefore).
+    // `observedTip` is the SHA read BEFORE the pull; it is only committed to
+    // lastSyncedTips once the pull below actually succeeds.
+    let observedTip = null;
+    if (remoteTipFingerprint) {
+        const probeUrl = await resolveTipProbeUrl(member, { command, log });
+        if (probeUrl) {
+            observedTip = await readRemoteDoltTip(member, { command, log, url: probeUrl });
+            const recorded = lastSyncedTips.get(member);
+            if (observedTip && recorded && observedTip === recorded) {
+                log(`[Dolt] D-pull for member '${member}' skipped: remote ${DOLT_DATA_REF} is unchanged at ${observedTip} since this member last synchronized -- the shared remote is the only cross-machine channel, so the clone is provably current.`);
+                return { ok: true, member, skipped: true, reason: 'remote-unchanged', remoteTip: observedTip };
+            }
+        }
+    }
+
     const pull = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS,
+        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
     });
     if (!pull.ok) {
         if (pull.kind === 'no-remote') {
@@ -462,6 +862,11 @@ export async function doltPullBefore(member, opts = {}) {
                 `[Dolt] D-pull for member '${member}' hit an unmergeable beads conflict and must not be auto-resolved by judgment: ${pull.error}`,
                 { member, doltOutput: pull.error, operation: 'pull' },
             );
+            // A divergence (and any settle that republishes to resolve it)
+            // leaves this clone at a tip we did not observe -- forget the
+            // recorded fingerprint so the next D-pull is unconditionally real
+            // rather than skipped against a stale SHA.
+            clearLastSyncedTip(member);
             const settled = await attemptSettle({ settle, member, operation: 'D-pull', error: diverged, log });
             if (settled) {
                 // settle ends with its own `bd dolt pull` + `bd dolt push`, so
@@ -493,6 +898,13 @@ export async function doltPullBefore(member, opts = {}) {
             { member, doltOutput: pull.error },
         );
     }
+
+    // The pull landed, so this clone is current with the remote AS OF the SHA
+    // read BEFORE it. Deliberately not a post-pull read: a push that raced in
+    // during the pull is not included in what we just fetched, and recording
+    // the later SHA would claim freshness this clone does not have. Recording
+    // the earlier one can only cost one redundant future pull.
+    if (observedTip) setLastSyncedTip(member, observedTip);
 
     return { ok: true, member };
 }
@@ -546,7 +958,7 @@ export function extractConflictingTables(doltOutput) {
  *
  * @param {string} member
  * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function }} opts
- * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote'|'already-fresh' }>}
+ * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote'|'already-fresh'|'remote-unchanged' }>}
  */
 export async function preflightBeadsHealthGate(member, opts = {}) {
     const { command, log = () => {} } = opts;
@@ -629,7 +1041,7 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote', recovered?: true, settledTables?: string[] }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 8, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = DOLT_GENERIC_TRANSIENT_MAX_RETRIES, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, remoteTipFingerprint = true, spawnOutageBudgetMs, now } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -713,6 +1125,10 @@ export async function doltPushAfter(member, opts = {}) {
     // before returning. With no settle callback wired the behavior is
     // unchanged: the DoltDivergedError propagates immediately.
     async function surfaceDivergence(divergedError, operation) {
+        // Either terminal leaves the remote at a SHA this member never
+        // observed (settle republishes; an unrecovered divergence leaves the
+        // clone wedged), so drop the fingerprint and force a real next pull.
+        clearLastSyncedTip(member);
         const settled = await attemptSettle({ settle, member, operation: `D-push (${operation})`, error: divergedError, log });
         if (settled) {
             return { ok: true, member, pushed: true, reconciled: true, recovered: true, settledTables: settled.resolvedTables || [] };
@@ -720,12 +1136,34 @@ export async function doltPushAfter(member, opts = {}) {
         throw divergedError;
     }
 
+    /**
+     * After a successful push, read the tip this member just published and
+     * record it, so this member's NEXT D-pull can be skipped while it remains
+     * the last writer. Runs while the push mutex is still held, so no other
+     * writer can advance the ref between the push and this read.
+     *
+     * Best-effort only: if the tip cannot be read, the fingerprint is simply
+     * forgotten and the next pull is real.
+     */
+    async function recordTipAfterPush() {
+        if (!remoteTipFingerprint) return;
+        const probeUrl = await resolveTipProbeUrl(member, { command, log });
+        if (!probeUrl) {
+            clearLastSyncedTip(member);
+            return;
+        }
+        const sha = await readRemoteDoltTip(member, { command, log, url: probeUrl });
+        if (sha) setLastSyncedTip(member, sha);
+        else clearLastSyncedTip(member);
+    }
+
     async function doltPushGuarded() {
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS,
+        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
     });
     if (push.ok) {
+        await recordTipAfterPush();
         return { ok: true, member, pushed: true, reconciled: false };
     }
 
@@ -781,7 +1219,7 @@ export async function doltPushAfter(member, opts = {}) {
     log(`[Dolt] D-push for member '${member}' was rejected (another writer pushed first); reconciling with a single D-pull then one re-push (first-successful-pusher-wins).`);
     const reconcile = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS,
+        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
     });
     if (!reconcile.ok) {
         if (reconcile.kind === 'diverged') {
@@ -801,9 +1239,10 @@ export async function doltPushAfter(member, opts = {}) {
 
     push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS,
+        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
     });
     if (push.ok) {
+        await recordTipAfterPush();
         return { ok: true, member, pushed: true, reconciled: true };
     }
 
@@ -852,8 +1291,8 @@ export async function doltPushAfter(member, opts = {}) {
 //
 //   ok        -- did the sync do what it was asked to do (a benign skip is ok)
 //   kind      -- 'synced' | 'no-remote' | 'empty-remote' | 'already-fresh'
-//                | 'diverged' | 'auth' | 'transient' | 'remote-unreachable'
-//                | 'unknown'
+//                | 'remote-unchanged' | 'diverged' | 'auth' | 'transient'
+//                | 'remote-unreachable' | 'unknown'
 //   degraded  -- true when the sync FAILED and the sprint is continuing anyway
 //   detail    -- one human-readable line (the underlying error's message)
 //   error     -- the underlying typed error, retained for later escalation
@@ -1327,6 +1766,11 @@ export async function repair(member, opts = {}) {
     if (typeof command !== 'function') {
         return { repaired: false, escalation: 'not-configured: repair() requires an injected command() to run settle' };
     }
+    // An operator/tool remediation can rewire this clone's remote and always
+    // moves it off whatever tip we last observed, so drop both memos up front
+    // (a repair must never be decided against, or leave behind, cached state).
+    invalidateSyncRemoteCache(member);
+    clearLastSyncedTip(member);
     const settle = typeof opts.settle === 'function'
         ? opts.settle
         : buildSettleCallback(member, { command, log, platform, arch, shell });
@@ -1356,6 +1800,14 @@ export const DoltSync = {
     capabilities,
     getDegradedSyncRecords,
     clearDegradedSyncRecords,
+    // sync.remote memo (apra-fleet-akuv) -- noteMemberCommand() is the seam the
+    // runner's central command() wrapper calls on every member-bound command.
+    noteMemberCommand,
+    invalidateSyncRemoteCache,
+    // Remote-tip fingerprint state, exposed for tests and operator tooling.
+    getLastSyncedTip,
+    setLastSyncedTip,
+    clearLastSyncedTip,
 };
 
 export default DoltSync;
