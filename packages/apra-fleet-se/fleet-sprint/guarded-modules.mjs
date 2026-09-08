@@ -70,6 +70,18 @@ export const GUARDED_MODULES = [
  */
 export const DOLT_LITERAL_EXEMPT = ['dolt-sync.mjs'];
 
+/**
+ * Modules the unbracketed-push guard (unbracketed-push-guard.mjs) must NEVER
+ * scan, by basename. git-sync.mjs is the single module allowed to call the
+ * raw doltPushAfter()/syncMemberAfter()/DoltSync.syncBefore()/
+ * DoltSync.syncAfter() primitives directly: that IS the bracketed-entry-point
+ * implementation the guard exists to protect (apra-fleet-3swo.4.1/.4.2), so
+ * pointing the guard at git-sync.mjs itself would flag the module for being
+ * the module. Mirrors DOLT_LITERAL_EXEMPT's precedent for dolt-sync.mjs
+ * above.
+ */
+export const UNBRACKETED_PUSH_EXEMPT = ['git-sync.mjs'];
+
 /** Absolute path to a fleet-sprint module by filename. */
 export function guardedModulePath(fileName) {
     return path.join(__dirname, fileName);
@@ -115,4 +127,13 @@ export function guardedModuleBasenames(extraPaths = []) {
  */
 export function doltLiteralModulePaths(extraPaths = []) {
     return guardedModulePaths(extraPaths).filter((p) => !DOLT_LITERAL_EXEMPT.includes(path.basename(p)));
+}
+
+/**
+ * The guarded-module list as the unbracketed-push guard must see it: the
+ * shared list with UNBRACKETED_PUSH_EXEMPT basenames filtered out. Same
+ * `extraPaths` contract as guardedModulePaths/doltLiteralModulePaths.
+ */
+export function unbracketedPushModulePaths(extraPaths = []) {
+    return guardedModulePaths(extraPaths).filter((p) => !UNBRACKETED_PUSH_EXEMPT.includes(path.basename(p)));
 }
