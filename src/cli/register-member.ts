@@ -42,6 +42,9 @@ Remote members:
 Git access:
   --git-access <level>     read|push|admin|issues|full
   --git-repos <a,b>        Comma-separated repos (e.g. "Apra-Labs/ApraPipes")
+  --vcs-provider <p>       github|bitbucket|azure-devops|none. Omit to auto-detect
+                           from the member's git "origin" remote; "none" declares
+                           the member deliberately has no VCS provider.
 
 Models:
   --model-cheap <id>       Curated cheap model
@@ -55,7 +58,7 @@ Models:
 const VALUE_FLAGS = new Set([
   '--name', '--path', '--type', '--llm', '--category', '--tags', '--unattended',
   '--host', '--port', '--username', '--auth', '--password', '--key-path',
-  '--git-access', '--git-repos',
+  '--git-access', '--git-repos', '--vcs-provider',
   '--model-cheap', '--model-standard', '--model-premium', '--model-tier',
 ]);
 
@@ -109,6 +112,7 @@ function buildRawInput(parsed: ParsedFlags): Record<string, unknown> {
     '--password': 'password',
     '--key-path': 'key_path',
     '--git-access': 'git_access',
+    '--vcs-provider': 'vcs_provider',
     '--model-cheap': 'model_cheap',
     '--model-standard': 'model_standard',
     '--model-premium': 'model_premium',

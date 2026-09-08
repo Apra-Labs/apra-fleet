@@ -102,6 +102,7 @@
  * @property {string} [key_path] - Path to SSH private key
  * @property {"read" | "push" | "admin" | "issues" | "full"} [git_access] - Git access level for this member
  * @property {string[]} [git_repos] - Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])
+ * @property {"github" | "bitbucket" | "azure-devops" | "none"} [vcs_provider] - VCS provider this member pushes to and opens pull requests against. Omit to auto-detect it from the member's git "origin" remote; "none" declares the member deliberately has no VCS provider.
  * @property {"aws"} [cloud_provider] - Cloud provider. When set, cloud_instance_id and key_path are required.
  * @property {string} [cloud_instance_id] - EC2 instance ID (e.g. "i-0abc123def456789a"). Required when cloud_provider is set.
  * @property {string} [cloud_region] - AWS region (default: "us-east-1")
@@ -152,6 +153,7 @@
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode
  * @property {boolean} [unreservable] - Mark/unmark this member as shared/never exclusively reservable
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
+ * @property {"github" | "bitbucket" | "azure-devops" | "none"} [vcs_provider] - Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use this to correct a wrong auto-detect from register_member, or to set the provider without provisioning credentials. "none" clears it.
  */
 
 /**

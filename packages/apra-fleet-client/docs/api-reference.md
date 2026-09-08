@@ -366,6 +366,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `key_path` | `string?` | Path to SSH private key file. |
 | `git_access` | `"read" \| "push" \| "admin" \| "issues" \| "full"?` | Git access level for this member. |
 | `git_repos` | `string[]?` | Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"]). |
+| `vcs_provider` | `"github" \| "bitbucket" \| "azure-devops" \| "none"?` | VCS provider this member pushes to / opens PRs against. Omit to auto-detect from the member's git `origin` remote (registration warns loudly if detection fails); `"none"` declares the member deliberately has no VCS provider. |
 | `cloud_provider` | `"aws"?` | Cloud provider name (e.g. "aws"). When set, `cloud_instance_id` and `key_path` are required. |
 | `cloud_instance_id` | `string?` | EC2 instance ID (e.g. "i-0abc123def456789a"). Required when `cloud_provider` is set. |
 | `cloud_region` | `string?` | AWS region (default: "us-east-1"). |
@@ -422,6 +423,7 @@ and means "new value for this field". Identifies the target member via
 | `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Change the code-intelligence provider for this member. |
 | `unreservable` | `boolean?` | Mark/unmark this member as shared or never exclusively reservable. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
+| `vcs_provider` | `"github" \| "bitbucket" \| "azure-devops" \| "none"?` | Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use to correct a wrong auto-detect from `register_member`, or to set the provider without provisioning credentials. `"none"` clears it. |
 
 #### `removeMember(options: RemoveMemberOptions)`
 

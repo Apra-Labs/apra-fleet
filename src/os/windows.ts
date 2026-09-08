@@ -359,6 +359,11 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `try { git -C "${escapeWindowsArg(folder)}" branch --show-current 2>$null } catch {}`;
   }
 
+  gitRemoteOrigin(folder: string): string {
+    const f = escapeWindowsArg(folder);
+    return `try { $u = git -C "${f}" remote get-url origin 2>$null; if (-not $u) { $u = git -C "${f}" config --get remote.origin.url 2>$null }; if ($u) { Write-Output $u } } catch {}`;
+  }
+
   // --- Process management ---
 
   killPid(pid: number): string {

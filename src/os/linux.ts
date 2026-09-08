@@ -317,6 +317,11 @@ export class LinuxCommands implements OsCommands {
     return `git -C "${escapeDoubleQuoted(folder)}" branch --show-current 2>/dev/null || true`;
   }
 
+  gitRemoteOrigin(folder: string): string {
+    const f = escapeDoubleQuoted(folder);
+    return `git -C "${f}" remote get-url origin 2>/dev/null || git -C "${f}" config --get remote.origin.url 2>/dev/null || true`;
+  }
+
   // --- Process management ---
 
   // apra-fleet-eft.13.3: `kill -9 <pid>` alone only signals that single

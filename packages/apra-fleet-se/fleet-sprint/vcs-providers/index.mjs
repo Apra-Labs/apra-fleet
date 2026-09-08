@@ -30,6 +30,19 @@
  *                                          // never owns a host (dolt), and
  *                                          // for the generic-git catch-all
  *                                          // it returns true unconditionally.
+ *     matchesHostForAuth: (host) => boolean // OPTIONAL; the CREDENTIAL-
+ *                                          // PROVISIONING axis, for
+ *                                          // resolveVcsAuthProviderForHost()
+ *                                          // below. Declare it ONLY when a
+ *                                          // provider's matchesHost() is
+ *                                          // deliberately wider than the set
+ *                                          // of hosts it is safe to auto-mint
+ *                                          // a push credential for (see
+ *                                          // ./github.mjs). Omitted means
+ *                                          // "matchesHost is already exactly
+ *                                          // right for auth too", which is
+ *                                          // the case for every anchored
+ *                                          // matcher.
  *     capabilitiesForHost: (host) => { canOpenPullRequest: boolean }  // OPTIONAL;
  *                                          // capabilities() axis. What a
  *                                          // claimed host supports. MUST stay
@@ -244,7 +257,7 @@ export function registerVcsProvider(impl) {
     // front for the same reason as `extractProviderCode` above -- a malformed
     // hook must fail at registration, not inside resolveVcsProviderForHost()
     // or a remote-URL preflight where the error would mask the real failure.
-    for (const hook of ['matchesHost', 'capabilitiesForHost', 'parseRepoRef', 'buildProvisionArgs']) {
+    for (const hook of ['matchesHost', 'matchesHostForAuth', 'capabilitiesForHost', 'parseRepoRef', 'buildProvisionArgs']) {
         if (impl[hook] != null && typeof impl[hook] !== 'function') {
             throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`${hook}\`.`);
         }
@@ -414,6 +427,39 @@ export function resolveVcsProviderForHost(host) {
         }
     }
     return registry.get('generic-git') || GenericGitVCS;
+}
+
+/**
+ * The CREDENTIAL-PROVISIONING sibling of resolveVcsProviderForHost().
+ *
+ * Same dispatch, one deliberate difference: a provider that declares
+ * `matchesHostForAuth` is asked THAT instead of `matchesHost`. Recognizing a
+ * host for capabilities() ("could a PR be opened here?") is cheap to get
+ * wrong -- the worst case is a PR attempt that fails. Recognizing it for auth
+ * is not: the caller mints a real push credential and points it at the host,
+ * so a substring matcher (see ./github.mjs's matchesHost, deliberately wide
+ * for GitHub Enterprise Server) would hand that credential to any lookalike
+ * domain containing the vendor name. Providers whose matcher is already
+ * anchored (bitbucket, azure-devops) declare no separate hook and are
+ * unaffected.
+ *
+ * Returns null rather than the generic-git catch-all: "no registered auth
+ * backend claims this host" is the answer a provisioning caller needs, and a
+ * catch-all descriptor there would read as a detection when it is a guess.
+ *
+ * @param {string|null} host
+ * @returns {object|null} an auth-backend provider descriptor, or null.
+ */
+export function resolveVcsAuthProviderForHost(host) {
+    for (const provider of [...registry.values()].reverse()) {
+        if (provider.name === 'generic-git') continue;
+        if (!isAuthBackend(provider)) continue;
+        const matcher = typeof provider.matchesHostForAuth === 'function'
+            ? provider.matchesHostForAuth
+            : provider.matchesHost;
+        if (typeof matcher === 'function' && matcher(host)) return provider;
+    }
+    return null;
 }
 
 for (const impl of BUILT_IN_PROVIDERS) registerVcsProvider(impl);

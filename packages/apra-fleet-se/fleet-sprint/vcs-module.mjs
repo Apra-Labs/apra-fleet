@@ -37,6 +37,8 @@ import {
     getVcsProvider,
     resolveVcsProviderChain,
     resolveVcsProviderForHost,
+    resolveVcsAuthProviderForHost,
+    isAuthBackend,
 } from './vcs-providers/index.mjs';
 
 /**
@@ -117,6 +119,21 @@ export function buildCreatePrCommand(params) {
  * @param {{ fleetApi: { memberDetail: (opts: { member_name: string, format?: string }) => Promise<any> } }} opts
  * @returns {Promise<{ provider: string, authMode: string|null }>}
  */
+/**
+ * The `code` resolveProvider() stamps on the ONE failure that means "this
+ * member simply has no usable registered VCS provider" -- as opposed to a
+ * member_detail RPC failure, an unresolvable member name, or a malformed
+ * response, all of which resolveProvider() also throws for.
+ *
+ * A caller that wants to self-heal ONLY that case (runner.js's dispatch-time
+ * VCS-provider fallback) must be able to tell them apart: applying a
+ * git-remote-derived guess after a network blip would paper over a real
+ * failure with a possibly-wrong provider. Matching on the message text would
+ * make that wording load-bearing, so the signal is a stable property instead.
+ * @type {string}
+ */
+export const VCS_NO_REGISTERED_PROVIDER = 'VCS_NO_REGISTERED_PROVIDER';
+
 export async function resolveProvider(member, { fleetApi } = {}) {
     if (!fleetApi || typeof fleetApi.memberDetail !== 'function') {
         throw new Error(`ERROR: VCSModule: resolveProvider requires an injected fleetApi.memberDetail() -- cannot resolve a VCS provider for member '${member}' without one.`);
@@ -149,7 +166,11 @@ export async function resolveProvider(member, { fleetApi } = {}) {
 
     const provider = parsed && typeof parsed.vcsProvider === 'string' ? parsed.vcsProvider : null;
     if (!provider || !known.includes(provider)) {
-        throw new Error(`ERROR: VCSModule: resolveProvider: member '${member}' has no registered VCS provider (vcsProvider: ${provider ? `"${provider}"` : '(absent)'}) -- known providers: ${known.join(', ')}. Provision one via provision_vcs_auth with an explicit 'provider' before relying on resolveProvider.`);
+        const err = new Error(`ERROR: VCSModule: resolveProvider: member '${member}' has no registered VCS provider (vcsProvider: ${provider ? `"${provider}"` : '(absent)'}) -- known providers: ${known.join(', ')}. Provision one via provision_vcs_auth with an explicit 'provider' before relying on resolveProvider.`);
+        // See VCS_NO_REGISTERED_PROVIDER above: this is the only failure a
+        // caller may self-heal from, so it is the only one that carries a code.
+        err.code = VCS_NO_REGISTERED_PROVIDER;
+        throw err;
     }
 
     const impl = getVcsProvider(provider);
@@ -469,6 +490,10 @@ export const VCSModule = {
     listVcsProviders,
     listVcsAuthProviders,
     getVcsProvider,
+    resolveVcsProviderForHost,
+    resolveVcsAuthProviderForHost,
+    isAuthBackend,
+    VCS_NO_REGISTERED_PROVIDER,
     DEFAULT_VCS_PROVIDER,
 };
 
@@ -481,6 +506,19 @@ export {
     listVcsProviders,
     listVcsAuthProviders,
     getVcsProvider,
+    // apra-fleet-5oo: re-exported so runner.js can ask "which registered
+    // provider claims this remote host?" without reaching past this module
+    // into ./vcs-providers/index.mjs directly -- same seam every other
+    // provider-registry helper above is reached through.
+    resolveVcsProviderForHost,
+    // apra-fleet-5oo review fix: the credential-provisioning sibling of the
+    // above (anchored host matching, auth backends only), plus the predicate
+    // that defines "auth backend" -- reached through this same seam rather
+    // than runner.js reaching past it into ./vcs-providers/index.mjs.
+    resolveVcsAuthProviderForHost,
+    isAuthBackend,
+    // VCS_NO_REGISTERED_PROVIDER is already exported at its `export const`
+    // declaration above -- listing it again here is a duplicate-export error.
 };
 
 export default VCSModule;

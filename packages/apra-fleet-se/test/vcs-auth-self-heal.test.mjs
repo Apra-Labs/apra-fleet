@@ -177,9 +177,18 @@ describe('createVcsAuthSelfHealCallback', () => {
         );
     });
 
-    test('a member with NO registered VCS provider throws a typed ASCII "ERROR:" naming the member and never calls provision_vcs_auth (no silent GitHub default)', async () => {
+    // apra-fleet-5oo NARROWED THIS CASE. The rule pinned here has always been
+    // "no silent GitHub DEFAULT" -- a provider assumed with no evidence.
+    // provisionVcsAuthForMember now has ONE evidence-based fallback: the
+    // member's own git remote, which it already reads for its repos scope. A
+    // remote whose host no registered auth provider claims (or one that cannot
+    // be read at all) is still evidence of nothing, and must still raise
+    // resolveProvider's typed ERROR rather than default to GitHub. The
+    // healed-from-a-real-remote counterpart lives in
+    // test/vcs-provider-missing-selfheal.test.mjs.
+    test('a member with NO registered VCS provider AND a remote no provider claims throws a typed ASCII "ERROR:" naming the member and never calls provision_vcs_auth (no silent GitHub default)', async () => {
         const calls = [];
-        const command = async () => ({ ok: true, output: 'https://github.com/acme/widgets.git', error: null });
+        const command = async () => ({ ok: true, output: 'https://gitlab.example.com/acme/widgets.git', error: null });
         const callTool = async (name, args) => {
             if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: undefined }) }] };
             calls.push({ name, args });
