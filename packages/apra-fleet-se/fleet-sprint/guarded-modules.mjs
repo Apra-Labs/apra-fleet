@@ -77,6 +77,25 @@ export function guardedModulePaths(extraPaths = []) {
 }
 
 /**
+ * Basenames of every registered guarded module, plus any `extraPaths`'
+ * basenames appended -- same `extraPaths` contract as guardedModulePaths().
+ *
+ * apra-fleet-3swo.14: every guard's aggregate entry point (checkModules(),
+ * checkDoltLiteralModules(), checkFullDbFetchModules(), checkShellCommandPaths())
+ * labels each scanned file by `path.basename(p)`, both in its `files` return
+ * value and in every violation string it emits -- so a nested GUARDED_MODULES
+ * entry (e.g. 'phases/plan.mjs', legal per guardedModulePath()'s path.join)
+ * resolves and scans correctly but is always reported as just 'plan.mjs'.
+ * Comparing a guard's `files` output against GUARDED_MODULES verbatim only
+ * holds while every entry is a bare filename with no directory component.
+ * Baseline tests must compare against THIS function's output instead of
+ * GUARDED_MODULES directly.
+ */
+export function guardedModuleBasenames(extraPaths = []) {
+    return guardedModulePaths(extraPaths).map((p) => path.basename(p));
+}
+
+/**
  * The guarded-module list as the dolt-literal guard must see it: the shared
  * list with DOLT_LITERAL_EXEMPT basenames filtered out. Takes the same
  * `extraPaths` as guardedModulePaths so the exemption applies to caller-

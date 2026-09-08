@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import fs from 'node:fs';
 import os from 'node:os';
 import { checkDoltLiteralPath, checkDoltLiteralModules, findDoltLiteralViolations } from '../fleet-sprint/dolt-literal-guard.mjs';
-import { doltLiteralModulePaths, GUARDED_MODULES, DOLT_LITERAL_EXEMPT } from '../fleet-sprint/guarded-modules.mjs';
+import { doltLiteralModulePaths, DOLT_LITERAL_EXEMPT, guardedModuleBasenames } from '../fleet-sprint/guarded-modules.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,9 +96,11 @@ test('findDoltLiteralViolations: a live command() call carrying the literal is f
 
 test('checkDoltLiteralModules() over the shared list is clean today and defines no list of its own', () => {
     const { violations, files, skipped } = checkDoltLiteralModules();
+    // Compared against basenames, not GUARDED_MODULES verbatim -- see
+    // guardedModuleBasenames()'s doc comment (apra-fleet-3swo.14).
     assert.deepStrictEqual(
         files,
-        GUARDED_MODULES.filter((name) => !DOLT_LITERAL_EXEMPT.includes(name)),
+        guardedModuleBasenames().filter((name) => !DOLT_LITERAL_EXEMPT.includes(name)),
         'the default scan set is the shared list, minus dolt-literal exemptions'
     );
     assert.deepStrictEqual(skipped, [], 'nothing exempt is registered in the shared list today');
@@ -163,7 +165,7 @@ test('adding a newly extracted module to the shared list makes the dolt-literal 
         );
         const { violations, files } = checkDoltLiteralModules(doltLiteralModulePaths([fixture]));
         assert.deepStrictEqual(files, [
-            ...GUARDED_MODULES.filter((name) => !DOLT_LITERAL_EXEMPT.includes(name)),
+            ...guardedModuleBasenames().filter((name) => !DOLT_LITERAL_EXEMPT.includes(name)),
             'extracted-module.mjs',
         ]);
         check(violations.length === 1, `expected exactly one violation, got: ${JSON.stringify(violations, null, 2)}`);
