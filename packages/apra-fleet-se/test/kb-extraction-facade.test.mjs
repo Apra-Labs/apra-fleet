@@ -6,10 +6,17 @@ import assert from 'node:assert/strict';
 // kb_export), extracted move-only out of runner.js. Imported directly from
 // kb.mjs (not the runner.js facade) so this suite proves the new module --
 // not just runner.js's re-export -- actually holds the implementation.
-// test/runner-kb-priming.test.mjs already covers the full non-fatal-failure
-// and scopeOf/repo_path behavioural contract (throwing/rejecting callTool for
-// both kb_query and kb_capture, recorded call payloads); this file only adds
-// the facade-identity proof that was not there before the move.
+// test/runner-kb-priming.test.mjs covers the full non-fatal-failure and
+// scopeOf/repo_path behavioural contract: throwing AND rejecting callTool for
+// both kb_query ('a failing kb_query degrades to no knowledge, never throws',
+// 'a rejecting kb_query degrades to no knowledge, never throws') and
+// kb_capture ('a failing kb_capture is non-fatal and later entries still
+// run', 'an MCP isError result counts as a failure, not a capture'), plus
+// recorded call payloads. (Correction, apra-fleet-3swo.4.4 rework: an earlier
+// version of this comment named the file but not these specific tests, and
+// the kb_query-rejecting cell it implied was covered did not actually exist
+// yet -- it landed in this rework.) This file only adds the facade-identity
+// proof that was not there before the move.
 import { vetKbWork, createKbWorkClient, kbScope, KB_PROMOTER_ROLES } from '../fleet-sprint/kb.mjs';
 import * as runner from '../fleet-sprint/runner.js';
 
