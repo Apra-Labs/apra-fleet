@@ -62,6 +62,13 @@ short-circuits before anything downstream runs:
    rejects the whole launch; a launch overlapping on neither succeeds.
    (`expandScope()` from the same module is also used live for rendering --
    the Backlog tree's partial-claim overlay in `backlog.mjs`.)
+   `checkLaunch()` costs ONE bulk `bd list --all --limit 0 --json` and an
+   in-memory tree walk, regardless of how many nodes the request's scope has
+   or how many sprints are active -- it used to be one `bd list --parent`
+   subprocess per node, awaited sequentially and repeated per active sprint,
+   which is why a large epic could stall this endpoint for minutes before it
+   answered. The `--all` is required for correctness, not speed: without it a
+   closed intermediate parent hides its open subtree from the overlap check.
 5. **`ledger.claim()`** -- atomically reserves both axes (member set AND
    issue-scope root) in one disk write, so they always claim/release
    together. The generated `sprintId` (`<issue>-<uuid>`) is minted BEFORE
