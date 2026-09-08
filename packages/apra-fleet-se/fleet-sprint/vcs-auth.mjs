@@ -165,7 +165,7 @@ function provisionOutcome(result, text) {
         return { ok: structured.ok, reason: typeof structured.reason === 'string' ? structured.reason : null };
     }
     return {
-        ok: !((result && result.isError) || /^âŒ/.test(String(text == null ? '' : text).trim())),
+        ok: !((result && result.isError) || /^\[FAIL\]/.test(String(text == null ? '' : text).trim())),
         reason: null,
     };
 }
@@ -960,7 +960,7 @@ export function createLlmAuthSelfHealCallback(opts = {}) {
         // only matters for the legacy prose fallback (no structuredContent
         // on the result at all), where the skip marker must still be read
         // off the text since there is no structured reason to check.
-        if (outcome.reason === 'skipped_local_member' || (outcome.reason === null && /^â­/.test(text))) {
+        if (outcome.reason === 'skipped_local_member' || (outcome.reason === null && /^\[SKIP\]/.test(text))) {
             // Skip marker (local member): provision_llm_auth is a no-op here,
             // so retrying would just reproduce the same failure.
             log(`[Dispatch] self-heal: provision_llm_auth skipped for local member '${member}': ${text || '(no detail)'}. This member's credentials can only be refreshed via an interactive /login on this machine.`);
