@@ -22,11 +22,11 @@ import { fileURLToPath } from 'url';
 //
 // STANDING RULE (from apra-fleet-3swo.8): registering a newly extracted module
 // is part of the extraction bead itself, not a follow-up bead. guarded-modules.mjs
-// and the four guard test files (dispatch-safety-guard.test.mjs,
+// and the guard test files that consume it (dispatch-safety-guard.test.mjs,
 // dolt-literal-guard.test.mjs, full-db-fetch-tripwire.test.mjs,
-// guarded-modules-coverage.test.mjs) are a single mutex resource; any future
-// bead that adds a line here MUST belong to the same streak as, or run after,
-// whatever else is editing them.
+// guarded-modules-coverage.test.mjs, pause-guard-push-holes.test.mjs) are a
+// single mutex resource; any future bead that adds a line here MUST belong to
+// the same streak as, or run after, whatever else is editing them.
 //
 // WHAT DOES *NOT* BELONG HERE: the per-shell command builders --
 // se-posix.mjs, se-windows.mjs, se-windows-gitbash.mjs, se-os-commands.mjs and
@@ -57,6 +57,8 @@ export const GUARDED_MODULES = [
     'worklists.mjs',
     'sprint-args.mjs',
     'git-sync.mjs',
+    'coordination.mjs',
+    'kb.mjs',
 ];
 
 /**
