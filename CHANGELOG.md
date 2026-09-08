@@ -63,6 +63,23 @@ path whose own self-heal died on the same lookup and so could never heal it.
   stamps `code: VCS_NO_REGISTERED_PROVIDER` on the one self-healable failure,
   and the fallback triggers on that code alone; every other error propagates
   unchanged instead of being papered over with a provider guess.
+- **`update_member` now takes `vcs_provider`** too -- an explicit operator
+  override (never auto-detected) to correct a wrong auto-detect or set the
+  provider directly without provisioning credentials. `apra-fleet-client`'s
+  `UpdateMemberOptions` and both `docs/mcp-tools.md` /
+  `packages/apra-fleet-client/docs/api-reference.md` are updated to match.
+- **Fixed the "register this member again" remedy text.** Re-registering a
+  member's folder is rejected as a duplicate, so it was never an actual fix
+  for an undetermined `vcs_provider`. `register_member`'s warning (and the
+  matching `docs/mcp-tools.md` text) now points at `provision_vcs_auth`
+  (which already sets `vcsProvider` as a side effect of provisioning
+  credentials) and the new `update_member --vcs-provider` override.
+- **Clarified `remoteUrlOverride` provenance in fleet-sprint's runner.js.**
+  Several logs/comments claimed a detected provider came from "the member's
+  own git remote" even when `remoteUrlOverride` was supplied -- which can
+  carry a DIFFERENT member's origin (e.g. provisioning `orchestratorMember`
+  for a repo it has no checkout of). Reworded to state the URL's real
+  provenance without changing behavior.
 
 ## [Unreleased] -- Azure DevOps VCS auth: credential assembly, PR publish path, and regression-sandbox hardening (sprint FAILED)
 

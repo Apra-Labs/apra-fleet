@@ -477,7 +477,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   // llm_provider 'none' never dispatches an agent and never pushes, so it is
   // exempt; so is an explicit vcs_provider (including 'none').
   if (!tempAgent.vcsProvider && !input.vcs_provider && (input.llm_provider ?? 'claude') !== 'none') {
-    warnings.push('VCS provider could not be determined (no git remote found, or vcs_provider not supplied) -- this member will be UNABLE to push or open a PR until provisioned. Register this member again with vcs_provider set, or run provision_vcs_auth with an explicit provider (github/bitbucket/azure-devops) -- provision_vcs_auth requires the provider, it does not detect one.');
+    warnings.push('VCS provider could not be determined (no git remote found, or vcs_provider not supplied) -- this member will be UNABLE to push or open a PR until provisioned. Run provision_vcs_auth with an explicit provider (github/bitbucket/azure-devops) -- it requires the provider, it does not detect one, and sets vcsProvider as a side effect of provisioning credentials. Or run update_member with vcs_provider set to record the provider directly, without provisioning credentials. Re-registering this member is NOT a remedy -- the same folder path is rejected as a duplicate registration.');
   }
 
   // OS support warning for cloud members: cloud features are designed for Linux

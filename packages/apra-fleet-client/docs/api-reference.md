@@ -423,6 +423,7 @@ and means "new value for this field". Identifies the target member via
 | `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Change the code-intelligence provider for this member. |
 | `unreservable` | `boolean?` | Mark/unmark this member as shared or never exclusively reservable. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
+| `vcs_provider` | `"github" \| "bitbucket" \| "azure-devops" \| "none"?` | Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use to correct a wrong auto-detect from `register_member`, or to set the provider without provisioning credentials. `"none"` clears it. |
 
 #### `removeMember(options: RemoveMemberOptions)`
 

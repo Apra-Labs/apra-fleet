@@ -116,7 +116,7 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 - SSH connection fails: member is NOT registered, error returned
 - Duplicate folder: member is NOT registered
 - Claude CLI missing: member IS registered, but with a warning
-- VCS provider undetermined: member IS registered, but with a loud warning (it cannot push or open a PR until one is set -- re-register with an explicit `vcs_provider`, or call `provision_vcs_auth` with an explicit `provider` -- that tool requires one and never detects it. fleet-sprint's dispatch-time fallback can also heal it automatically once a git remote exists)
+- VCS provider undetermined: member IS registered, but with a loud warning (it cannot push or open a PR until one is set -- call `provision_vcs_auth` with an explicit `provider` (this also records `vcsProvider` as a side effect of provisioning credentials), or call `update_member` with `vcs_provider` set to record the provider directly without provisioning credentials. Re-registering the same folder path is rejected as a duplicate registration, so it is NOT a remedy. fleet-sprint's dispatch-time fallback can also heal it automatically once a git remote exists)
 
 ### `list_members`
 
@@ -159,6 +159,7 @@ Modifies an existing member's registration. All fields except `member_id` are op
 | `category` | string | no | Group label; empty string clears it |
 | `tags` | string[] | no | Replaces existing tags; empty array clears them (max 10 tags, 64 chars each) |
 | `git_access`, `git_repos` | - | no | Same shape as `register_member` |
+| `vcs_provider` | `"github"` \| `"bitbucket"` \| `"azure-devops"` \| `"none"` | no | Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use to correct a wrong auto-detect from `register_member`, or to set the provider without provisioning credentials. `"none"` clears it |
 | `model_cheap` / `model_standard` / `model_premium` / `model_tiers` | - | no | Same shape as `register_member` |
 | `code_intel_provider` | `"codebase-memory"` \| `"gitnexus"` \| `"none"` | no | Switch code-intelligence provider |
 | `shell` | `"gitbash"` \| `"pwsh7"` \| `"powershell5"` | no | Override the probed Windows shell |

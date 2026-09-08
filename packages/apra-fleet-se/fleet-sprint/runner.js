@@ -2440,7 +2440,11 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
             repos = [scope.repo];
             derivedRepo = scope.repo;
         } else {
-            log(`${logPrefix}: could not derive an owner/repo from member '${member}' git remote (raw: '${remoteUrl}'); calling provision_vcs_auth without an explicit repos scope.`);
+            // remoteUrlOverride, when supplied, may belong to a DIFFERENT
+            // member/repo than `member` -- see the caller-note above -- so
+            // this log deliberately does not claim the URL is `member`'s own.
+            const remoteSource = remoteUrlOverride ? 'the supplied remote URL' : `member '${member}' git remote`;
+            log(`${logPrefix}: could not derive an owner/repo from ${remoteSource} (raw: '${remoteUrl}'); calling provision_vcs_auth without an explicit repos scope.`);
         }
     }
 
@@ -2466,9 +2470,14 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // no amount of retrying can heal it, because the self-heal path itself
     // dies on the same lookup.
     //
-    // So: when the registry has nothing, fall back to the member's OWN git
-    // remote, which this function has already read above for the repos scope
-    // (never a second dispatch). The host is mapped through the SAME provider
+    // So: when the registry has nothing, fall back to `remoteUrl` -- the
+    // remote this function already read/received above for the repos scope
+    // (never a second dispatch). That URL is `member`'s own git remote ONLY
+    // when no `remoteUrlOverride` was supplied; when it was (the [ABORTED]
+    // PR / Publish PR call sites can pass a different member's origin -- see
+    // their own comments), the detected provider is still correct for
+    // provisioning `member` against that URL's host, but the URL itself may
+    // not be `member`'s own remote. The host is mapped through the SAME provider
     // registry every other host decision goes through
     // (resolveVcsProviderForHost), so no provider literal appears here, and a
     // host claimed only by the generic-git catch-all is deliberately NOT
@@ -2503,7 +2512,8 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         provider = detected;
         const impl = getVcsProvider(provider);
         authMode = isAuthBackend(impl) ? impl.defaultAuthMode : null;
-        log(`${logPrefix}: member '${member}' had no registered VCS provider; detected '${provider}' from its git remote and will provision it now`);
+        const remoteSource = remoteUrlOverride ? 'the supplied remote URL' : 'its git remote';
+        log(`${logPrefix}: member '${member}' had no registered VCS provider; detected '${provider}' from ${remoteSource} and will provision it now`);
     }
     // apra-fleet-5co8.2.1: the argument shape itself is now provider-owned.
     // What follows is the DEFAULT (GitHub-App) shape; a provider that declares
@@ -2882,7 +2892,8 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
         return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true };
     }
     if (!repo) {
-        throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
+        const remoteSource = remoteUrlOverride ? 'the supplied remote URL' : `member '${member}' git remote`;
+        throw new Error(`Could not derive an owner/repo from ${remoteSource} -- cannot build a VCSModule create-pull-request command without one.`);
     }
     // apra-fleet-lzfv.5: resolve the member's OWN registered VCS provider
     // (VCSModule.resolveProvider(), never a hardcoded 'github' literal --

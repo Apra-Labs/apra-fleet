@@ -153,6 +153,7 @@
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode
  * @property {boolean} [unreservable] - Mark/unmark this member as shared/never exclusively reservable
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
+ * @property {"github" | "bitbucket" | "azure-devops" | "none"} [vcs_provider] - Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use this to correct a wrong auto-detect from register_member, or to set the provider without provisioning credentials. "none" clears it.
  */
 
 /**
