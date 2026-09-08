@@ -114,25 +114,29 @@ test('syncMemberBefore: resetToRemoteTip defaults false, so a non-retry (or non-
 // (skipPreDispatchSync, which skips the ENTIRE pre-dispatch sync rather than
 // resuming onto the remote tip) must still exist and stay mutually exclusive
 // with the new resumeOntoRemoteTip path -- apra-fleet-eft.87.1 must not have
-// blanket-removed it. withGitSync itself is a closure private to
-// runSprintCycle (not exported), so this is asserted at the source level
-// against the exact code introduced by eft.54.1 / kept by eft.87.1.
+// blanket-removed it. withGitSync moved out of runSprintCycle into
+// git-sync.mjs (apra-fleet-3swo.4.1) and is exported now, but the branch
+// ordering inside its body is still what this guard is about, so it stays a
+// source-level assertion against the exact code introduced by eft.54.1 /
+// kept by eft.87.1 -- read from git-sync.mjs, with the doer-streak call site
+// still read from runner.js.
 // =============================================================================
 test('guard: withGitSync source still has a skipPreDispatchSync short-circuit distinct from (and preceding) the resumeOntoRemoteTip resync path', async () => {
     const runnerSource = await fs.readFile(path.join(__dirname, '../fleet-sprint/runner.js'), 'utf-8');
+    const gitSyncSource = await fs.readFile(path.join(__dirname, '../fleet-sprint/git-sync.mjs'), 'utf-8');
 
     check(
-        /async function withGitSync\(member, pushCode, dispatchFn, \{[^}]*skipPreDispatchSync = false[^}]*resumeOntoRemoteTip = false[^}]*\}/.test(runnerSource),
+        /async function withGitSync\(ctx, member, pushCode, dispatchFn, \{[^}]*skipPreDispatchSync = false[^}]*resumeOntoRemoteTip = false[^}]*\}/.test(gitSyncSource),
         'withGitSync must declare BOTH skipPreDispatchSync and resumeOntoRemoteTip as distinct opts (neither replaced the other)'
     );
 
-    const skipIdx = runnerSource.indexOf('if (skipPreDispatchSync) {');
+    const skipIdx = gitSyncSource.indexOf('if (skipPreDispatchSync) {');
     check(skipIdx !== -1, 'the eft.54.1 skipPreDispatchSync short-circuit branch must still be present');
 
-    const skipLogIdx = runnerSource.indexOf('Skipping pre-dispatch G-pull/D-pull for member', skipIdx);
+    const skipLogIdx = gitSyncSource.indexOf('Skipping pre-dispatch G-pull/D-pull for member', skipIdx);
     check(skipLogIdx !== -1 && skipLogIdx > skipIdx, 'the skip branch must still log that it skipped the redundant pre-dispatch G-pull/D-pull (terminal no-mutation failure case)');
 
-    const resetThreadIdx = runnerSource.indexOf('resetToRemoteTip: resumeOntoRemoteTip', skipIdx);
+    const resetThreadIdx = gitSyncSource.indexOf('resetToRemoteTip: resumeOntoRemoteTip', skipIdx);
     check(resetThreadIdx !== -1, 'syncMemberBefore must still be called with resetToRemoteTip: resumeOntoRemoteTip on the non-skip path');
     check(resetThreadIdx > skipLogIdx, 'the resumeOntoRemoteTip resync must live in the ELSE branch, after (mutually exclusive with) the skipPreDispatchSync short-circuit');
 
