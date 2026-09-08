@@ -250,6 +250,21 @@ export function createScopeGuard(deps = {}) {
         }
         const excludeSprintId = opts.excludeSprintId;
 
+        // Validate the REQUEST's root ids before they are used (dolt sync
+        // budget review round 2, item 6). The old per-node path validated
+        // every root inside bdListChildren(); the bulk in-memory path never
+        // calls it, so a malformed root id silently expanded to just itself
+        // and was then reported as non-overlapping -- an invalid launch
+        // request accepted rather than rejected. This is a correctness/UX
+        // restoration, not an injection guard (the bulk fetch passes no root
+        // id to `bd` at all). Only the request's own roots are validated:
+        // ledger roots were validated when their sprint launched, and
+        // re-rejecting them here would turn one bad historical record into a
+        // hard failure of every subsequent launch.
+        if (!explicitListChildren) {
+            for (const root of roots) validateIssueId(root);
+        }
+
         // Build the child index ONCE per checkLaunch() call (bulk path only)
         // -- one `bd` subprocess spawn total, however many roots/ledger
         // sprints there are to expand. The explicit-listChildren seam has no

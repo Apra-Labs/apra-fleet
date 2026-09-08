@@ -184,6 +184,53 @@ describe('scope-overlap -- apra-fleet-72o0 bulk fetch', () => {
         await assert.rejects(() => guard.checkLaunch([]), TypeError);
     });
 
+    // -------------------------------------------------------------------------
+    // Round-2 review item 6: the bulk path lost the per-root id validation the
+    // old per-node path did inside bdListChildren(). A malformed root then
+    // expanded to just itself and was reported as NON-overlapping -- an invalid
+    // launch request quietly accepted instead of rejected.
+    // -------------------------------------------------------------------------
+
+    test('a malformed request root is REJECTED on the bulk path, not silently expanded to itself', async () => {
+        const { listAllBeads, callCount } = stubListAllBeads([{ id: 'R', parent: null }]);
+        const ledger = stubLedger([]);
+        const guard = createScopeGuard({ ledger, listAllBeads });
+
+        for (const bad of ['R; rm -rf /', 'a b', 'x$(whoami)', '', 'a/b', 'a,b']) {
+            // eslint-disable-next-line no-await-in-loop
+            await assert.rejects(
+                () => guard.checkLaunch([bad]),
+                /Invalid issue id/,
+                `expected root ${JSON.stringify(bad)} to be rejected`,
+            );
+        }
+        assert.equal(callCount(), 0, 'validation must reject BEFORE the bulk bd fetch is spawned');
+    });
+
+    test('a malformed root among otherwise valid roots still rejects the whole launch', async () => {
+        const { listAllBeads } = stubListAllBeads([{ id: 'R', parent: null }]);
+        const ledger = stubLedger([]);
+        const guard = createScopeGuard({ ledger, listAllBeads });
+        await assert.rejects(() => guard.checkLaunch(['R', 'not a valid id']), /Invalid issue id/);
+    });
+
+    test('well-formed roots (letters, digits, dot, underscore, dash) are unaffected', async () => {
+        const { listAllBeads } = stubListAllBeads([{ id: 'apra-fleet-72o0.1_v2', parent: null }]);
+        const ledger = stubLedger([]);
+        const guard = createScopeGuard({ ledger, listAllBeads });
+        const result = await guard.checkLaunch(['apra-fleet-72o0.1_v2']);
+        assert.equal(result.ok, true);
+        assert.deepEqual(result.requestScope, ['apra-fleet-72o0.1_v2']);
+    });
+
+    test('ledger roots are NOT re-validated -- one bad historical record cannot block every future launch', async () => {
+        const { listAllBeads } = stubListAllBeads([{ id: 'R', parent: null }]);
+        const ledger = stubLedger([{ sprintId: 'sprint-legacy', issueRoots: ['bad id with spaces'] }]);
+        const guard = createScopeGuard({ ledger, listAllBeads });
+        const result = await guard.checkLaunch(['R']);
+        assert.equal(result.ok, true);
+    });
+
     test('the standalone guard.expandScope(roots) also uses the bulk path with a fresh fetch', async () => {
         const rows = [
             { id: 'root', parent: null },
