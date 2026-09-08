@@ -56,6 +56,7 @@ export const GUARDED_MODULES = [
     'prompts.mjs',
     'worklists.mjs',
     'sprint-args.mjs',
+    'git-sync.mjs',
 ];
 
 /**

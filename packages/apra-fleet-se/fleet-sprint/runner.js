@@ -5,23 +5,13 @@ import {
     ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, MemberReservationResumeError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PlanReviewDispatchFailedError, MemberReservationResumeError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
 // runner.js call site uses the purpose-based entry points on DoltSync
 // (apra-fleet-417.2.2); the named primitives are imported here only to be
 // re-exported below for the existing unit suites that drive them directly.
 import { DoltSync, doltPullBefore, doltPushAfter, preflightBeadsHealthGate } from './dolt-sync.mjs';
 
-// Backoff for retrying ONLY the post-dispatch sync step of a bracket whose
-// dispatch already completed. Short and bounded: this is a git/dolt push round
-// trip, not an LLM turn, and letting the failure escape the bracket would
-// redispatch the whole turn.
-const POST_DISPATCH_SYNC_RETRY_DELAYS_MS = [0, 5000, 15000];
-
-/** True when the hermetic mock harness has opted into zero-wait backoffs
- *  (APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF=1, set by mock-sprint-harness.mjs).
- *  Production behavior -- real timed sleeps -- is unaffected. */
-const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF === '1';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
 // The deterministic dolt conflict settlement callback (docs/dolt-sync-
@@ -57,6 +47,12 @@ import {
     appendRejectedFindingToParentNotes, sanitizeNewTaskTitle, sanitizeNewTaskDescription,
 } from './abort.mjs';
 import { decideEnsureBranchAction } from './branch-ensure.mjs';
+// The git/dolt sync brackets: withGitSync (the full dispatch bracket), the
+// standalone bracket helpers every other sync/push site here goes through,
+// and the openSyncBracketCount clean-state pause-guard counter they share.
+// POST_DISPATCH_SYNC_RETRY_DELAYS_MS and the mock instant-backoff switch
+// moved with them (apra-fleet-3swo.4.1).
+import { createSyncBrackets, createGitSync } from './git-sync.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -3590,66 +3586,18 @@ async function runSprintCycle(context) {
     // validated result is available to setup code that builds callbacks below.
     const validated = validateArgs(args);
 
-    // (apra-fleet-p2to.4.1) Clean-state pause guard: this is runner.js's OWN
-    // pause-awareness -- the engine's cooperative pause primitive
-    // (apra-fleet-p2to.1's requestPause()/setPauseGuard()) only ever engages
-    // a pending pause at a zero-in-flight-activity boundary that ALSO passes
-    // this predicate, so registering it here is what keeps a pause from
-    // landing mid-git/mid-dolt-sync (e.g. between a pull and its matching
-    // push, or mid-D-push) and leaving the workspace/beads clone in an
-    // inconsistent state to resume from. `openSyncBracketCount` counts every
-    // currently-open "bracket": withGitSync()'s FULL body (pre-dispatch sync
-    // through post-dispatch sync, wrapped as a single bracket below) and
-    // every standalone DoltSync.syncBefore()/syncAfter() call elsewhere in
-    // this file that is NOT already nested inside a withGitSync bracket (a
-    // nested one is harmless double-counting, never a leak, since
-    // withOpenSyncBracket()'s increment/decrement is always paired). The
-    // guard itself is trivial and adds NO behavior when no pause is pending
-    // -- the engine only ever consults it while a pause is deferred (see
-    // FleetWorkflow._guardPermitsPause(), packages/apra-fleet-workflow/src/
-    // workflow/index.mjs), so a clean run with setPauseGuard registered but
-    // no pause ever requested behaves identically to one with no guard at
-    // all. `setPauseGuard` is only present on `context` when this script
-    // runs through WorkflowEngine.executeFile() (see that module's
-    // _bindPrimitives()) -- guarded so direct/legacy callers of
-    // runSprintCycle() that never go through the engine (existing tests)
-    // keep working unchanged.
-    let openSyncBracketCount = 0;
-    if (typeof setPauseGuard === 'function') {
-        setPauseGuard(() => openSyncBracketCount === 0);
-    }
-    /**
-     * Runs `fn` with the open-sync-bracket counter incremented for its
-     * duration, decrementing again on EVERY exit path (success or throw) via
-     * `finally` -- never leaves a stale increment behind on an error.
-     * @template T
-     * @param {() => Promise<T>} fn
-     * @returns {Promise<T>}
-     */
-    async function withOpenSyncBracket(fn) {
-        openSyncBracketCount += 1;
-        try {
-            return await fn();
-        } finally {
-            openSyncBracketCount -= 1;
-            // (apra-fleet-p2to.4.4.1) Closing the LAST open sync bracket is
-            // itself a clean-state boundary a deferred pause may complete at,
-            // but the engine only re-checks its pause-engage condition
-            // (WorkflowEngine._maybeEngagePause()) at specific trigger points
-            // -- requestPause(), an in-flight activity draining to zero, the
-            // gate at the next agent()/command() dispatch, or setPauseGuard()
-            // itself (which re-checks as a side effect of registering). None
-            // of those necessarily fire here: this bracket can close with no
-            // further dispatch immediately following. Re-registering the SAME
-            // guard predicate is a deliberate poke -- it engages a pause
-            // requested while sync brackets were open the instant this guard
-            // opens, rather than leaving it stranded until some later
-            // dispatch happens to hit the gate.
-            if (openSyncBracketCount === 0 && typeof setPauseGuard === 'function') {
-                setPauseGuard(() => openSyncBracketCount === 0);
-            }
-        }
-    }
+    // (apra-fleet-p2to.4.1 / apra-fleet-3swo.4.1) Clean-state pause guard.
+    // The openSyncBracketCount counter, its withOpenSyncBracket() wrapper and
+    // this setPauseGuard registration all live in git-sync.mjs now, so this
+    // file holds NO counter arithmetic and hand-rolls NO bracket of its own --
+    // a sync or push site here cannot forget one. Created HERE, at the same
+    // point in runSprintCycle() the counter was always declared, so the guard
+    // is registered with the engine before any dispatch can happen. See
+    // createSyncBrackets() in git-sync.mjs for the full rationale: why the
+    // guard exists, why it costs nothing when no pause is pending, and why
+    // `setPauseGuard` is optional (direct/legacy callers of runSprintCycle()
+    // that never go through WorkflowEngine.executeFile() supply none).
+    const syncBrackets = createSyncBrackets({ setPauseGuard });
 
     // The shared full-DB beads snapshot served by fetchAllBeadsShared(), plus
     // the two choke points that keep it correct. Both wrappers are installed
@@ -4161,194 +4109,28 @@ async function runSprintCycle(context) {
             : async () => {}
     );
 
-    // ONE shared bracket wrapping EVERY role-identified agent() dispatch below
-    // -- planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner,
-    // harvester. No phase-based exemptions: a deployer or integ-test-runner
-    // running against a stale checkout/beads clone is exactly as damaging as a
-    // stale doer/reviewer diff. Bracket order: VCS-auth preflight gate, G-pull,
-    // D-pull, dispatch, G-push, D-push.
+    // ONE shared bracket wrapping EVERY role-identified agent() dispatch
+    // below, plus every standalone sync/push site in this file. The bracket
+    // implementation -- withGitSync, the standalone bracket helpers and the
+    // openSyncBracketCount counter they all share -- lives in git-sync.mjs
+    // (apra-fleet-3swo.4.1). See that module for the full Plan 3.3
+    // insertion-point table and the pushCode/pushBeads axis rationale.
     //
-    // Two orthogonal sync axes, each pulled before and (optionally) pushed
-    // after:
-    //   - CODE (git): `pushCode` is true ONLY for the code-writing roles (doer,
-    //     harvester); every other role is read-side (G-pull before, a no-op
-    //     G-push after -- see syncMemberAfter's short-circuit).
-    //   - BEADS (dolt): `pushBeads` is true for every role that MUTATES beads
-    //     -- planner (creates tasks), doer (closes them), integ-test-runner
-    //     (closes features / files bugs), harvester (defers issues). The pure
-    //     read-side roles (reviewer, plan-reviewer, deployer) D-pull before and
-    //     no-op D-push after. integ-test-runner D-pushes WITHOUT a git push: it
-    //     never touches code, only beads.
-    //
-    // The orchestrator's OWN beads mutations/reads are NOT dispatches and are
-    // bracketed separately at their own call sites below. Deliberately NOT
-    // applied to the Streak Assignment call: that dispatch carries no
-    // `agentType`/persona of its own and is not one of the seven types.
-    //
-    // Option flags:
-    //   - needsVcsAuth: gates the proactive ensureVcsAuthFresh preflight,
-    //     independently of `pushCode` (apra-fleet-647.1.1.2). Defaults to
-    //     `pushCode || pushBeads`: a code-writing role always needed it
-    //     already, and this extends the same proactive preflight to read-side
-    //     roles whose bracket still D-pushes beads (planner, integ-test-
-    //     runner, regression-test-runner) -- `bd dolt push` hits the same
-    //     credential surface as `git push`. Explicitly pass `needsVcsAuth:
-    //     true` for a bracket that will raise a PR (or otherwise needs a
-    //     fresh credential) even with pushCode:false and pushBeads:false.
-    //   - skipPreDispatchSync: the prior attempt failed TERMINALLY with nothing
-    //     published, so the local G/D workspace is unchanged since that
-    //     attempt's pull -- skip the pre-dispatch sync entirely.
-    //   - skipPreDispatchDoltPull: skip only the `bd dolt pull` spawn while
-    //     still running doltPullBefore's sync.remote pre-gate probe and the
-    //     G-side pull; for a dispatch whose beads clone was provably just
-    //     freshened.
-    //   - resumeOntoRemoteTip: the prior attempt was NOT provably a no-mutation
-    //     failure (it may have committed and/or pushed), so run the full
-    //     pre-dispatch sync in syncMemberBefore's resetToRemoteTip mode -- fetch
-    //     and reset onto the remote tip BEFORE the doer can commit, resuming on
-    //     published work instead of re-implementing it and diverging.
-    //   skipPreDispatchSync and resumeOntoRemoteTip encode opposite assumptions
-    //   about whether the prior attempt published anything and MUST never be
-    //   passed together. Nothing in the code enforces this today.
-    //
-    // Post-dispatch: when the dispatch COMPLETED, only the SYNC step is retried
-    // on failure -- the turn is never re-dispatched. A push failure is
-    // frequently transient (a racing writer, a momentarily unreachable remote,
-    // a credential refresh in flight) and re-running the sync costs nothing,
-    // whereas re-running the LLM turn costs a full dispatch and risks duplicate
-    // beads/commit mutations. `agent` is threaded to syncMemberAfterOrdered so
-    // a G-push hitting a real content conflict can attempt exactly one
-    // agent-with-runbook resolution before failing the streak (a no-op for
-    // non-code-writing roles; never fires for a plain divergence).
-    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, needsVcsAuth = pushCode || pushBeads, skipPreDispatchSync = false, skipPreDispatchDoltPull = false, resumeOntoRemoteTip = false } = {}) {
-      // (apra-fleet-p2to.4.1) The WHOLE withGitSync bracket -- pre-dispatch
-      // G-pull/D-pull, the dispatch itself, and post-dispatch G-push/D-push
-      // -- counts as ONE open sync bracket for the clean-state pause guard
-      // above: a pause must never land between, say, a pre-dispatch pull and
-      // its matching post-dispatch push, which would leave the workspace/
-      // beads clone mid-cycle. `finally` guarantees the decrement fires on
-      // every exit path (the normal return, or any of the throws below),
-      // never leaving a stale increment behind.
-      openSyncBracketCount += 1;
-      try {
-        if (skipPreDispatchSync) {
-            log(`[Sync] Skipping pre-dispatch G-pull/D-pull for member '${member}' on a retry after a terminal no-mutation dispatch failure (prior attempt published nothing -- workspace unchanged since the last pull).`);
-        } else {
-            // Proactively refresh this member's VCS credentials before the
-            // G-pull/D-push, gated on `needsVcsAuth` rather than directly on
-            // `pushCode`: a code-writing role always needs it (pushCode implies
-            // needsVcsAuth by the default above), but so does any read-side
-            // role whose bracket still D-pushes beads (planner, integ-test-
-            // runner, regression-test-runner) or will raise a PR -- `bd dolt
-            // push` shells out to git under the hood and hits the exact same
-            // credential surface a `git push` does (apra-fleet-647.1.1.2). A
-            // pure read-only role (reviewer, plan-reviewer, deployer -- no
-            // push of either kind) passes needsVcsAuth:false (the computed
-            // default) and gets no preflight, since it has nothing to
-            // preflight for. ensureVcsAuthFresh is itself a no-op when a
-            // still-fresh credential is cached, and NEVER throws -- a
-            // preflight failure degrades silently and never aborts a
-            // dispatch.
-            if (needsVcsAuth) {
-                log(`[Sync] preflight: member '${member}' needs a fresh VCS credential before this dispatch (pushCode=${pushCode}, pushBeads=${pushBeads}, needsVcsAuth=${needsVcsAuth}).`);
-                await ensureVcsAuthFresh(member);
-            }
-            await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure, resetToRemoteTip: resumeOntoRemoteTip, resolveMemberProvider: resolveMemberVcsProvider });
-            // EXPLICITLY FATAL (apra-fleet-417.3.1): a pre-dispatch D-pull that
-            // silently degraded would hand the agent a STALE beads clone and
-            // let it act on it -- worse than not dispatching at all.
-            //
-            // Thread this member's REGISTERED shell into dolt-settle
-            // (apra-fleet-7dir.16) so a settle triggered for a Windows member
-            // whose shell is Git-for-Windows bash gets bash-dialect dolt
-            // commands instead of being force-assumed PowerShell.
-            // resolveMemberTarget never throws (degrades to { os: 'linux',
-            // shell: '' } on any lookup failure), and is a no-op when no
-            // callTool is wired (e.g. a mock-sprint scenario with no MCP
-            // client), matching this call site's pre-existing behavior.
-            const settleTarget = (args && typeof args.callTool === 'function')
-                ? await resolveMemberTarget({ fleetApi: new ApraFleet({ callTool: args.callTool }), member, log })
-                : { os: 'linux', shell: '' };
-            await DoltSync.syncBefore(member, { command, log, skipRefresh: skipPreDispatchDoltPull, onAuthFailure, fatal: true, settle: buildSettleCallback(member, { command, log, shell: settleTarget.shell }) });
-        }
-        // The teardown is deliberately NOT a `finally`. A throw out of a
-        // `finally` replaces the (successful) dispatch result and is
-        // indistinguishable, to the caller's retry ladder, from "the dispatch
-        // itself failed" -- which would let a pure sync failure trigger a brand
-        // new LLM turn over work already committed locally. Splitting the two
-        // lets the sync be retried on its own and, if it still fails, surfaced
-        // as a typed PostDispatchSyncError no retry caller may answer by
-        // redispatching.
-        let dispatchThrew = null;
-        let dispatchResult;
-        try {
-            dispatchResult = await dispatchFn();
-        } catch (err) {
-            dispatchThrew = err;
-        }
-        {
-            // On a TERMINAL dispatch failure the agent never delivered a usable
-            // result, so there is provably nothing new to publish -- skip the
-            // G-push/D-push teardown entirely. This deliberately EXCLUDES
-            // every case where the agent DID run and may have committed code/
-            // beads that still must be published: max_turns_exhausted and
-            // watchdog_timeout dispatch failures, and an AgentOutputError
-            // (the LLM answered, only its output was unusable).
-            if (dispatchThrew && isNoMutationDispatchFailure(dispatchThrew)) {
-                log(`[Sync] Skipping post-dispatch G-push/D-push for member '${member}' after a terminal dispatch failure (nothing to publish): ${dispatchThrew.message}`);
-            } else {
-                // G-push (code) before D-push (beads) -- see
-                // syncMemberAfterOrdered() for the unreachable-close rationale
-                // behind that ordering. When the dispatch already threw, the
-                // teardown keeps a single-attempt shape: the dispatch error is
-                // what surfaces either way, so retrying the sync buys nothing.
-                const syncAttemptDelaysMs = dispatchThrew ? [0] : POST_DISPATCH_SYNC_RETRY_DELAYS_MS;
-                let syncErr = null;
-                for (let attempt = 0; attempt < syncAttemptDelaysMs.length; attempt++) {
-                    if (syncAttemptDelaysMs[attempt] > 0) {
-                        log(`[Sync] Post-dispatch sync for member '${member}' failed; retrying ONLY the sync step in ${syncAttemptDelaysMs[attempt] / 1000}s (attempt ${attempt + 1}/${syncAttemptDelaysMs.length}) -- the dispatch already completed and must NOT be re-run.`);
-                        if (!mockInstantRetryBackoff()) {
-                            await new Promise((resolve) => setTimeout(resolve, syncAttemptDelaysMs[attempt]));
-                        }
-                    }
-                    try {
-                        await syncMemberAfterOrdered(member, {
-                            command, pushCode, pushBeads, log, branch: validated.branch,
-                            mutex: doltPushMutex, sprintId: sprintMutexId, agent, onAuthFailure,
-                            resolveMemberProvider: resolveMemberVcsProvider, args,
-                        });
-                        syncErr = null;
-                        break;
-                    } catch (err) {
-                        syncErr = err;
-                    }
-                }
-                if (syncErr) {
-                    // A dispatch error always wins over a sync error: it is the
-                    // more fundamental failure.
-                    if (dispatchThrew) throw dispatchThrew;
-                    throw new PostDispatchSyncError(
-                        `Post-dispatch sync (G-push/D-push) failed for member '${member}' AFTER the dispatch completed successfully: ${syncErr.message}. The dispatch's work is already committed locally -- it must NOT be re-dispatched; fix the sync (credentials/remote) and re-run.`,
-                        { member, dispatchResult, syncAttempts: syncAttemptDelaysMs.length, cause: syncErr },
-                    );
-                }
-            }
-        }
-        if (dispatchThrew) throw dispatchThrew;
-        return dispatchResult;
-      } finally {
-        openSyncBracketCount -= 1;
-        // (apra-fleet-p2to.4.4.1) See withOpenSyncBracket()'s matching
-        // comment above: poke the engine's pause-engage check by
-        // re-registering the same guard predicate the instant this bracket
-        // -- the whole pre-dispatch sync/dispatch/post-dispatch sync unit --
-        // closes, so a pause deferred for its duration engages right away
-        // rather than waiting on whatever dispatch happens to come next.
-        if (openSyncBracketCount === 0 && typeof setPauseGuard === 'function') {
-          setPauseGuard(() => openSyncBracketCount === 0);
-        }
-      }
-    }
+    // Everything the bracket used to close over lexically is injected here
+    // once. git-sync.mjs deliberately never imports runner.js back, so this
+    // file's own sync helpers (syncMemberBefore, syncMemberAfter,
+    // syncMemberAfterOrdered) and isNoMutationDispatchFailure are passed in
+    // rather than imported -- importing them there would be a module cycle.
+    const gitSync = createGitSync({
+        brackets: syncBrackets,
+        command, log, branch: validated.branch, args, agent,
+        doltPushMutex, sprintId: sprintMutexId,
+        onAuthFailure, resolveMemberProvider: resolveMemberVcsProvider, ensureVcsAuthFresh,
+        syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure,
+    });
+    // Local alias so this file's dispatch brackets keep their existing shape:
+    // withGitSync member, pushCode, dispatch thunk, options.
+    const withGitSync = (member, pushCode, dispatchFn, options) => gitSync.withGitSync(member, pushCode, dispatchFn, options);
 
     // Scope discovery cannot be built on `bd list --parent`: it accepts exactly
     // one id per invocation (a comma-joined list is treated as one nonexistent
@@ -4859,12 +4641,11 @@ async function runSprintCycle(context) {
     // Routed through the single dolt-sync module (apra-fleet-417.2.1):
     // readinessGate (apra-fleet-417.5 rename of healthGate) selects the
     // pre-flight variant of the BEFORE bracket.
-    // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
     // Thread the orchestrator member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
     const preflightSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
-    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: preflightSettleShell }) }));
+    await gitSync.syncBeadsBefore(orchestratorMember, { readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: preflightSettleShell }) });
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
@@ -5175,12 +4956,11 @@ async function runSprintCycle(context) {
     // doer's work, so pull again immediately before the verification read.
     // DoltSync.syncBefore() is a benign no-op when the clone is current and
     // when no dolt remote is configured at all.
-    // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
     // Thread the orchestrator member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
     const verifyReadSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
-    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: verifyReadSettleShell }) }));
+    await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: verifyReadSettleShell }) });
 
     await updateDashboard();
 
@@ -5634,7 +5414,7 @@ async function runSprintCycle(context) {
                     // fix exists to close.
                     if (!plannerSharesOrchestratorClone) {
                         const postPlanSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
-                        await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: postPlanSettleShell }) }));
+                        await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: postPlanSettleShell }) });
                     }
                     // apra-fleet-zmqm: the planner just created/mutated beads on
                     // its own clone via its own bd tool calls -- invisible to
@@ -5892,8 +5672,7 @@ async function runSprintCycle(context) {
                     { member_name: orchestratorMember, silent: true, label: `Attach plan-cap deferral finding to ${id}` }
                 );
             }
-            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
+            await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
             planCapDeferredIds = contestedIds;
         }
 
@@ -6168,8 +5947,7 @@ async function runSprintCycle(context) {
                 // and refresh the dashboard before re-evaluating the loop top.
                 // Routed through the single dolt-sync module's AFTER bracket
                 // (apra-fleet-417.2.1); behavior is identical.
-                // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-                await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
+                await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
                 await updateDashboard();
                 continue;
             }
@@ -6655,7 +6433,7 @@ async function runSprintCycle(context) {
                         // falsely re-lane already-completed work.
                         // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
                         // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
-                        const preResumeUnclosed = await withOpenSyncBracket(() => verifyDoerStreakClosed({
+                        const preResumeUnclosed = await gitSync.withOpenSyncBracket(() => verifyDoerStreakClosed({
                             command, orchestratorMember, beadIds: actualBeadIds, log, args,
                         }));
                         if (preResumeUnclosed.length === 0) {
@@ -6754,7 +6532,7 @@ async function runSprintCycle(context) {
                     // same streak was never reached.
                     // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
                     // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
-                    const unclosedIds = await withOpenSyncBracket(() => verifyDoerStreakClosed({
+                    const unclosedIds = await gitSync.withOpenSyncBracket(() => verifyDoerStreakClosed({
                         command, orchestratorMember, beadIds: actualBeadIds, log, args,
                     }));
                     const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
@@ -6809,7 +6587,7 @@ async function runSprintCycle(context) {
                 // divergence-sensitive read in the file.
                 // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
                 // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
-                const unclosedIds = await withOpenSyncBracket(() => verifyDoerStreakClosed({
+                const unclosedIds = await gitSync.withOpenSyncBracket(() => verifyDoerStreakClosed({
                     command, orchestratorMember, beadIds: actualBeadIds, log, args,
                 }));
                 const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
@@ -7113,8 +6891,7 @@ async function runSprintCycle(context) {
             // The orchestrator just MUTATED beads (reopens + newTask creates) in
             // its own clone -- D-push so members observe them on their next
             // dispatch's D-pull.
-            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
+            await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
             } // end assignedBeadIds.length > 0 (Review dispatch + orchestrator-applied transitions)
 
             await updateDashboard();
@@ -7589,12 +7366,11 @@ async function runSprintCycle(context) {
         // counts so the completion/stall math reads the current cross-member
         // beads state (every member's D-pushed closes) rather than the
         // orchestrator's stale local copy.
-        // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
         // Thread the orchestrator member's REGISTERED shell into dolt-settle,
         // guarded on args.callTool the same way the pre-dispatch bracket is
         // (apra-fleet-7dir.24).
         const cycleEvalSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
-        await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: cycleEvalSettleShell }) }));
+        await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: cycleEvalSettleShell }) });
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -7823,8 +7599,7 @@ async function runSprintCycle(context) {
 
             // D-push the orchestrator's applied re-review reopens/newTask
             // creates, same as the Develop/Review transition site above.
-            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
+            await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
         }
 
         // apra-fleet-jfo.2: verify-routed beads are decomposed parents, so
@@ -7883,12 +7658,11 @@ async function runSprintCycle(context) {
     // the sprint's closing evidence (finalOpenAtGoal / finalClosedCount)
     // reflects every member's D-pushed beads state, not the orchestrator's
     // stale local copy.
-    // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
     // Thread the orchestrator member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
     const finalReviewSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
-    await withOpenSyncBracket(() => DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: finalReviewSettleShell }) }));
+    await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: finalReviewSettleShell }) });
     const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
@@ -8200,7 +7974,12 @@ async function runSprintCycle(context) {
         }
     }
     if (dPushNeededAfterFinalFindings) {
-        await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+        // (apra-fleet-3swo.4.1) This D-push used to be a BARE doltPushAfter()
+        // outside every bracket, so the clean-state pause guard reported
+        // "safe to pause" while the Final Review findings were mid-push.
+        // pushBeadsAfter() is the bracketed entry point -- there is no
+        // unbracketed way to reach doltPushAfter() from this file any more.
+        await gitSync.pushBeadsAfter(orchestratorMember, { pushBeads: true });
     }
 
     // =======================
@@ -8542,11 +8321,13 @@ async function runSprintCycle(context) {
     // GitDivergedError directly rather than getting syncMemberAfter's
     // optional Tier 2 conflict-resolution-agent dispatch -- same as the old
     // loop, which had no Tier 2 either; not a regression.
+    // (apra-fleet-3swo.4.1) ... and this G-push, unlike the Publish-PR D-push
+    // just below, was never inside a sync bracket either -- a pause could land
+    // mid-`git push` of the sprint branch. pushGitAfter() is the bracketed
+    // syncMemberAfter() entry point; it threads the same command/log/branch/
+    // onAuthFailure/provider-resolver state the bare call passed by hand.
     try {
-        await syncMemberAfter(publishGitMember, {
-            command, log, branch: validated.branch, remote: 'origin', setUpstream: true,
-            onAuthFailure, resolveMemberProvider: resolveMemberVcsProvider,
-        });
+        await gitSync.pushGitAfter(publishGitMember, { remote: 'origin', setUpstream: true });
         pushed = true;
     } catch (pushErr) {
         lastPushError = pushErr.message;
@@ -8614,8 +8395,7 @@ async function runSprintCycle(context) {
                     log(`Publish PR: failed to close target issue '${id}' directly (non-fatal, continuing): ${closeRes.error}`);
                 }
             }
-            // (apra-fleet-p2to.4.1) standalone sync bracket -- see openSyncBracketCount's doc comment above.
-            await withOpenSyncBracket(() => DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId }));
+            await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
         } else {
             log('Publish PR: final verdict is FAIL -- leaving target issue(s) open (not closing on a non-PASS verdict).');
         }

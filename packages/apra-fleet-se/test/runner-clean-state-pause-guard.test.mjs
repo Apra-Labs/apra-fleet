@@ -1,14 +1,16 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { runCmd, setupMinimal, buildMockFleetApi, teardown, defaultMockCallTool, uniqueMockBranch } from './helpers/mock-sprint-harness.mjs';
 import { createMemberReservationClient } from '../fleet-sprint/runner.js';
+import { createSyncBrackets } from '../fleet-sprint/git-sync.mjs';
 
-// apra-fleet-p2to.4.1 -- runner.js's clean-state pause guard: an
+// apra-fleet-p2to.4.1 -- fleet-sprint's clean-state pause guard (owned by
+// git-sync.mjs since apra-fleet-3swo.4.1, previously a runSprintCycle()
+// closure in runner.js): an
 // `openSyncBracketCount` counter registered with the engine's
 // setPauseGuard() so a deferred pause (apra-fleet-p2to.1's cooperative
 // requestPause()) only ever takes effect once every open git/dolt sync
@@ -19,15 +21,13 @@ import { createMemberReservationClient } from '../fleet-sprint/runner.js';
 // no regression test -- confirmed by grep that the wrapping is complete, but
 // never exercised. Two layers of coverage here:
 //
-//   1. A verbatim EXTRACTION of the real openSyncBracketCount/
-//      withOpenSyncBracket()/setPauseGuard-registration source out of
-//      runner.js (same technique the viewer package's DOM tests use for
-//      client-side code that only exists inside a template string --
-//      runSprintCycle()'s internals are a non-exported closure, so this is
-//      the only way to unit-test the ACTUAL current source rather than a
-//      reimplementation that could silently drift out of sync with it).
-//      Fast, deterministic, covers the increment/decrement-on-throw and
-//      nested-bracket cases precisely.
+//   1. The real openSyncBracketCount/withOpenSyncBracket()/setPauseGuard-
+//      registration unit, driven straight through git-sync.mjs's exported
+//      createSyncBrackets() factory (before apra-fleet-3swo.4.1 it was a
+//      non-exported closure in runSprintCycle() and this suite had to slice
+//      the block verbatim out of runner.js and eval it). Fast, deterministic,
+//      covers the increment/decrement-on-throw and nested-bracket cases
+//      precisely.
 //   2. One end-to-end mock-sprint integration test proving the guard is
 //      actually WIRED to a live withGitSync bracket: a pause requested
 //      mid-doer-dispatch must not engage until the bracket's post-dispatch
@@ -39,38 +39,32 @@ const __dirname = path.dirname(__filename);
 const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 
 /**
- * Extracts the exact `let openSyncBracketCount = 0; ... async function
- * withOpenSyncBracket(fn) { ... }` block out of runner.js's runSprintCycle()
- * (verbatim, via known start/end markers unique to this block) and evaluates
- * it standalone via `new Function`, with a fake `setPauseGuard` supplied as
- * a parameter (mirroring how runSprintCycle() destructures it off `context`).
- * Returns `{ withOpenSyncBracket, getOpenSyncBracketCount }`; the caller
- * supplies its own `setPauseGuard` spy to capture the registered predicate.
+ * Builds the REAL openSyncBracketCount / withOpenSyncBracket() /
+ * setPauseGuard-registration unit under test by calling git-sync.mjs's
+ * exported createSyncBrackets() factory, with a fake `setPauseGuard` supplied
+ * the same way runSprintCycle() supplies the one it destructures off
+ * `context`. Returns `{ withOpenSyncBracket, getOpenSyncBracketCount }`; the
+ * caller supplies its own `setPauseGuard` spy to capture the registered
+ * predicate.
+ *
+ * This used to slice the block verbatim out of runner.js and eval it via
+ * `new Function`, because the counter and its wrapper were non-exported
+ * closures inside runSprintCycle() and there was no other way to drive the
+ * ACTUAL current source. apra-fleet-3swo.4.1 moved both into git-sync.mjs as
+ * a real exported factory, so the test now drives the real implementation
+ * directly -- strictly stronger than the extraction (it exercises the shipped
+ * module, imports and all, not a re-evaluated copy of its text) and it can no
+ * longer silently drift out of sync with the source.
  */
 function loadRealOpenSyncBracketInternals(setPauseGuardSpy) {
-    const src = fs.readFileSync(RUNNER_PATH, 'utf-8');
-    const startMarker = 'let openSyncBracketCount = 0;';
-    const start = src.indexOf(startMarker);
-    assert.ok(start !== -1, 'runner.js must still define openSyncBracketCount inside runSprintCycle() (apra-fleet-p2to.4.1)');
-    const endMarker = '\n    // The shared full-DB beads snapshot served by fetchAllBeadsShared()';
-    const end = src.indexOf(endMarker, start);
-    assert.ok(end !== -1, 'could not find the end of the openSyncBracketCount/withOpenSyncBracket block -- runner.js must have changed shape near it');
-    const body = src.slice(start, end);
-    // Sanity: the slice must actually contain both pieces under test, not
-    // just the counter declaration (guards against the end marker silently
-    // matching too early after some future refactor).
-    assert.ok(body.includes('async function withOpenSyncBracket(fn)'), 'extracted block must include withOpenSyncBracket()');
-    assert.ok(body.includes('setPauseGuard(() => openSyncBracketCount === 0)'), 'extracted block must include the guard registration');
-
-    // eslint-disable-next-line no-new-func
-    const factory = new Function('setPauseGuard', `
-        ${body}
-        return { withOpenSyncBracket, getOpenSyncBracketCount: () => openSyncBracketCount };
-    `);
-    return factory(setPauseGuardSpy);
+    const brackets = createSyncBrackets({ setPauseGuard: setPauseGuardSpy });
+    return {
+        withOpenSyncBracket: brackets.withOpenSyncBracket,
+        getOpenSyncBracketCount: () => brackets.openBracketCount(),
+    };
 }
 
-describe('apra-fleet-p2to.4.1: openSyncBracketCount / withOpenSyncBracket() (extracted from the real runner.js source)', () => {
+describe('apra-fleet-p2to.4.1: openSyncBracketCount / withOpenSyncBracket() (the real git-sync.mjs implementation)', () => {
     test('setPauseGuard is registered with a predicate reading openSyncBracketCount === 0, true while idle', () => {
         let capturedGuard = null;
         const internals = loadRealOpenSyncBracketInternals((fn) => { capturedGuard = fn; });
@@ -279,10 +273,10 @@ describe('apra-fleet-p2to.4.1: clean-state pause guard wiring (mock-sprint integ
 // so a pause requested while a bracket was open stayed stranded until some
 // later dispatch happened to hit the gate -- and a sprint that ends right
 // after the last bracket closes never emitted 'paused' at all, silently
-// skipping the reservation hand-back. These use the SAME verbatim source
-// extraction as the apra-fleet-p2to.4.1 suite above (a real FleetWorkflow
-// instance wired to the real, unmodified withOpenSyncBracket()/setPauseGuard
-// registration out of runner.js), but drive it directly -- no full mock
+// skipping the reservation hand-back. These use the SAME real
+// createSyncBrackets() unit as the apra-fleet-p2to.4.1 suite above (a real
+// FleetWorkflow instance wired to the real withOpenSyncBracket()/setPauseGuard
+// registration out of git-sync.mjs), but drive it directly -- no full mock
 // sprint -- so the assertion is precisely "the bracket closing alone is
 // what engages the pause", not "some dispatch after it happened to".
 // ============================================================================
