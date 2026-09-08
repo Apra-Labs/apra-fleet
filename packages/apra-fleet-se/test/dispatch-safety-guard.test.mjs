@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import fs from 'node:fs';
 import os from 'node:os';
 import { checkPath, checkModules } from '../fleet-sprint/dispatch-safety-guard.mjs';
-import { GUARDED_MODULES, guardedModulePaths } from '../fleet-sprint/guarded-modules.mjs';
+import { GUARDED_MODULES, guardedModulePaths, guardedModuleBasenames } from '../fleet-sprint/guarded-modules.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -515,7 +515,11 @@ test('the shared guarded-module list contains runner.js and resolves to real fil
 
 test('checkModules() over the shared list reports zero dispatch-safety violations today', () => {
     const { violations, files } = checkModules();
-    assert.deepStrictEqual(files, GUARDED_MODULES, 'the default scan set is exactly the shared list');
+    // Compared against basenames, not GUARDED_MODULES verbatim: `files` is
+    // built from path.basename(p) for every scanned module, which only
+    // equals a GUARDED_MODULES entry byte-for-byte while that entry has no
+    // directory component (apra-fleet-3swo.14).
+    assert.deepStrictEqual(files, guardedModuleBasenames(), 'the default scan set is exactly the shared list');
     assert.deepStrictEqual(violations, [], `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`);
 });
 
@@ -539,7 +543,7 @@ test('adding a second path to the shared list makes the guard scan it and name i
 
         const { violations, files } = checkModules(guardedModulePaths([fixture]));
 
-        assert.deepStrictEqual(files, [...GUARDED_MODULES, 'extracted-module.mjs']);
+        assert.deepStrictEqual(files, [...guardedModuleBasenames(), 'extracted-module.mjs']);
         assert.strictEqual(violations.length, 1, `expected exactly one violation, got: ${JSON.stringify(violations)}`);
         // Attributed to the FIXTURE's own filename, not to runner.js -- an
         // aggregate scan that mislabelled its findings would be useless.
