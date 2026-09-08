@@ -265,13 +265,26 @@ export function createKbWorkClient(opts = {}) {
             const query = terms.filter((t) => typeof t === 'string' && t.trim()).join(' ');
             if (!query) return [];
             try {
-                const parsed = parseResult(await callTool('kb_query', {
+                const res = await callTool('kb_query', {
                     repo_path: repoPath,
                     ...scopeOf(repoPath),
                     query,
                     limit: KB_MAX_KNOWLEDGE_ENTRIES,
                     expand_related: true,
-                }));
+                });
+                // apra-fleet-23c: an MCP callTool RESOLVES with {isError:true}
+                // for a tool-level failure rather than throwing, so this was
+                // the one kb_* failure path in this module that stayed
+                // silent -- parseResult() returns null for that envelope,
+                // taking the `if (!parsed) return [];` branch below and never
+                // reaching the catch. Detect it explicitly so a cold or
+                // misconfigured KB degrades visibly, like every other kb_*
+                // call here.
+                if (isToolError(res)) {
+                    log(`[kb-work] kb_query rejected for ${repoPath} (non-fatal): ${toolErrorText(res)}`);
+                    return [];
+                }
+                const parsed = parseResult(res);
                 if (!parsed) return [];
                 const hits = Array.isArray(parsed.l1_results) ? parsed.l1_results : [];
                 const related = Array.isArray(parsed.related_claims) ? parsed.related_claims : [];
