@@ -1,11 +1,24 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "7bfde0d709dcc379207522e7c0f117027bafe9eb",
-    "branch": "feat/azure-devops-vcs-auth-v3",
-    "entry_count": 47
+    "commit": "ea98881fb238d7255a16b9236eebbbdafa173136",
+    "branch": "feat/runner-refactor-standalone",
+    "entry_count": 76
   },
   "entries": [
+    {
+      "id": "0c864109-fb10-49de-8ecb-867a2c1b0c04",
+      "type": "knowledge",
+      "title": "The checked-in .beads/issues.jsonl export is stale and must not be used to answer bead-state questions",
+      "summary": "issues.jsonl in this repo is a passive export last committed 2026-08-18 and contains none of the current sprint's beads, so grepping it for bead state yields silently wrong answers.",
+      "symbols": [],
+      "source_files": [
+        ".beads/issues.jsonl",
+        "CLAUDE.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-07T20:03:09.678Z"
+    },
     {
       "id": "0e10e4ea-5c23-4fc9-bd7a-baf1af522a3e",
       "type": "knowledge",
@@ -24,7 +37,25 @@
         "src/types.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:02.867Z"
+      "updated_at": "2026-09-07T16:36:38.709Z"
+    },
+    {
+      "id": "0ee42346-ce6b-4988-9a0e-325115dce8ad",
+      "type": "learning",
+      "title": "OK_REASONS classifies skipped_local_member as ok:true, so callers must check reason before the generic ok/fail branch",
+      "summary": "src/tools/provision-auth.ts's OK_REASONS array includes 'skipped_local_member' alongside 'ok'/'deployed_unverified'/'deployed_with_errors', so structuredContent.ok is TRUE for a local-member skip. Any consumer branching on structuredContent.ok alone will misclassify a skip as a genuine successful provision.",
+      "symbols": [
+        "OK_REASONS",
+        "authResult",
+        "createLlmAuthSelfHealCallback",
+        "provisionOutcome"
+      ],
+      "source_files": [
+        "src/tools/provision-auth.ts",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T03:19:52.242Z"
     },
     {
       "id": "0f432ed4-a1fa-4185-8a5f-d7d62fe8cc5d",
@@ -41,7 +72,7 @@
         "src/services/knowledge/sqlite-provider.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:03.001Z"
+      "updated_at": "2026-09-07T16:36:38.734Z"
     },
     {
       "id": "107afe50-ec60-4e99-b6b7-09c549658518",
@@ -59,7 +90,27 @@
         "src/tools/kb-stats.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:05.904Z"
+      "updated_at": "2026-09-07T16:36:38.757Z"
+    },
+    {
+      "id": "11cfda55-7d77-4e5d-bd7a-8f928091a1c9",
+      "type": "learning",
+      "title": "runSprintCycle's sync-bracket extraction needs TWO construction points, not one",
+      "summary": "openSyncBracketCount is declared at the top of runSprintCycle before command/doltPushMutex/agent exist, so createSyncBrackets must be called there and createGitSync only later, where withGitSync used to be defined.",
+      "symbols": [
+        "runSprintCycle",
+        "createSyncBrackets",
+        "createGitSync",
+        "withOpenSyncBracket",
+        "verifyDoerStreakClosed"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/test/full-db-fetch-tripwire.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T06:00:15.649Z"
     },
     {
       "id": "130bc73b-fade-4d3a-8254-2ad3b2e1bfef",
@@ -71,7 +122,23 @@
         "src/services/knowledge/kb-providers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:03.143Z"
+      "updated_at": "2026-09-07T16:36:38.781Z"
+    },
+    {
+      "id": "15de38c4-256b-4d8c-8b0a-c7dddd41672d",
+      "type": "knowledge",
+      "title": "A vcs_token or secure.NAME placeholder survives single quotes but breaks inside double quotes",
+      "summary": "Both placeholder substitutions inject an ALREADY-quoted value, so a placeholder inside the caller's single quotes still composes correctly by POSIX quote-concatenation, while the same placeholder inside double quotes leaks literal quote characters into the argument and causes a false 401.",
+      "symbols": [],
+      "source_files": [
+        "src/tools/vcs-credential-exec.ts",
+        "src/tools/execute-command.ts",
+        "src/utils/shell-escape.ts",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/shell-helpers.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T00:08:13.322Z"
     },
     {
       "id": "16ba5328-63a9-4f98-8614-fa3137afe2f3",
@@ -87,7 +154,23 @@
         "src/tools/execute-command.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:03.283Z"
+      "updated_at": "2026-09-07T16:36:38.806Z"
+    },
+    {
+      "id": "1b1fce3f-039a-40fb-8020-406275e25441",
+      "type": "learning",
+      "title": "A node --test child spawned via execFileSync inside another node --test run silently no-ops unless NODE_TEST_CONTEXT is stripped",
+      "summary": "node --test sets NODE_TEST_CONTEXT=child-v8 in its own process env (even standalone, not just nested). A node --test <files> child spawned via execFileSync while that var is inherited returns empty stdout and exit 0 in well under a second instead of actually running the requested files -- a false pass that looks identical to a genuine fast-passing run unless you check elapsed time or the TAP pass/fail counts.",
+      "symbols": [
+        "NODE_TEST_CONTEXT"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs",
+        "packages/apra-fleet-se/test/phase0-seams-facade.test.mjs",
+        "packages/apra-fleet-se/test/vcs-auth-extraction-facade.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T05:00:14.843Z"
     },
     {
       "id": "1be49eaa-30f9-4ae0-917e-5b98d3d37eeb",
@@ -103,7 +186,26 @@
         "tests/check-sandbox-sync-remote.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:03.426Z"
+      "updated_at": "2026-09-07T16:36:38.829Z"
+    },
+    {
+      "id": "1c40559a-d468-4da4-b986-c92e91a18f0a",
+      "type": "knowledge",
+      "title": "GUARDED_MODULES literal-['runner.js']-baseline KB entry is stale; guard tests derive dynamically",
+      "summary": "A KB entry claims four guard test files deepStrictEqual GUARDED_MODULES against a hardcoded ['runner.js'] array, but on the current tree GUARDED_MODULES already lists 9+ non-runner modules and every guard test (dispatch-safety-guard, dolt-literal-guard, guarded-modules-coverage, full-db-fetch-tripwire, pause-guard-push-holes) asserts against guardedModuleBasenames()/GUARDED_MODULES read dynamically, not a literal array.",
+      "symbols": [
+        "GUARDED_MODULES",
+        "guardedModuleBasenames"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs",
+        "packages/apra-fleet-se/test/dolt-literal-guard.test.mjs",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
+        "packages/apra-fleet-se/test/pause-guard-push-holes.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T08:45:09.646Z"
     },
     {
       "id": "202cd324-f6d9-42d0-b0a2-a4aa8e1741ef",
@@ -117,7 +219,7 @@
         "src/tools/provision-auth.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:03.628Z"
+      "updated_at": "2026-09-07T16:36:38.854Z"
     },
     {
       "id": "21547d39-10a6-4133-b497-d0f82aee5e2a",
@@ -131,7 +233,29 @@
         "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T06:41:23.008Z"
+      "updated_at": "2026-09-07T16:36:38.877Z"
+    },
+    {
+      "id": "215d81cc-3e1c-49b1-9667-155e2f7dbe86",
+      "type": "knowledge",
+      "title": "One anchor policy, three branches: verbatim for read tools, hard-fail for kb_export",
+      "summary": "kb_session_prime and kb_stats pass a supplied repo_path to getKbProviders verbatim so an unreachable remote anchor stays honestly missing; kb_export deliberately keeps throwing instead, because it writes into repo_path -- and it throws before getKbProviders, so it never anchors at the server cwd either.",
+      "symbols": [
+        "kbStats",
+        "kbExport",
+        "kbSessionPrime",
+        "getKbProviders",
+        "resolveRepoPath"
+      ],
+      "source_files": [
+        "src/tools/kb-stats.ts",
+        "src/tools/kb-export.ts",
+        "src/tools/kb-session-prime.ts",
+        "src/services/knowledge/kb-providers.ts",
+        "tests/knowledge/kb-anchor-never-cwd.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-07T16:36:39.088Z"
     },
     {
       "id": "22e52be3-d44c-4c71-ae51-9f25a498af40",
@@ -146,7 +270,7 @@
         "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:03.761Z"
+      "updated_at": "2026-09-07T16:36:38.905Z"
     },
     {
       "id": "256b2dc0-4d08-40e9-b3c6-0f79dd824b8e",
@@ -166,7 +290,40 @@
         "src/tools/kb-stats.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:03.871Z"
+      "updated_at": "2026-09-07T16:36:38.930Z"
+    },
+    {
+      "id": "29441ce7-a2fd-41aa-b437-1a758ea23b6c",
+      "type": "knowledge",
+      "title": "kb_session_prime must pass an explicit repo_path to getKbProviders verbatim, never through resolveRepoPath",
+      "summary": "Validating repo_path before handing it to getKbProviders converts a remote member's unreachable path into the fleet server's own cwd, silently staling healthy entries in the shared project KB; the anchor must stay honestly missing.",
+      "symbols": [
+        "kbSessionPrime",
+        "resolveRepoPath",
+        "getKbProviders",
+        "anchorIsMissing"
+      ],
+      "source_files": [
+        "src/tools/kb-session-prime.ts",
+        "src/services/knowledge/kb-providers.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "tests/knowledge/kb-remote-anchor-freshness.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-07T16:36:39.862Z"
+    },
+    {
+      "id": "2bdd3084-be9f-4433-8525-dc32eac82784",
+      "type": "knowledge",
+      "title": "shell-command-guard misses shell expansions inside multi-line template literals",
+      "summary": "segmentLine() in fleet-sprint/shell-command-guard.mjs classifies quoting context one line at a time, so any $VAR, ~/ or $( ) sitting on a continuation line of a multi-line template literal is treated as plain code and never reported.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/shell-command-guard.mjs",
+        "packages/apra-fleet-se/test/shell-command-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-07T22:40:14.322Z"
     },
     {
       "id": "2d4ffb90-4bd2-4b84-a143-c2b84dc4cb21",
@@ -180,7 +337,7 @@
         "packages/apra-fleet-se/bin/serve.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T22:23:16.198Z"
+      "updated_at": "2026-09-07T16:36:38.955Z"
     },
     {
       "id": "321d9d10-a56e-4427-81c1-8eb3922b59ec",
@@ -193,7 +350,44 @@
         "regression-test-playbook.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T23:39:17.895Z"
+      "updated_at": "2026-09-07T16:36:38.978Z"
+    },
+    {
+      "id": "333098bf-ed77-4ae2-8cfd-7c48de91969d",
+      "type": "learning",
+      "title": "Mutate GUARDED_MODULES via a node --import preload to test guard registration without editing files",
+      "summary": "GUARDED_MODULES is a const binding but a mutable array, so a preload can append to it and exercise the guard tests against a larger registry with the working tree untouched.",
+      "symbols": [
+        "GUARDED_MODULES",
+        "guardedModulePaths",
+        "doltLiteralModulePaths"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T03:19:52.245Z"
+    },
+    {
+      "id": "36f2b30b-4379-4cbc-970d-db0ae39ee7f5",
+      "type": "knowledge",
+      "title": "The KB scope selector is kbScope(remoteUrl), not scopeOf(repoPath) as bead texts claim",
+      "summary": "Planning documents describe a repoPath-keyed scopeOf helper, but the real helper keys on the git remote URL and emits repo_remote_url alongside a separately passed repo_path.",
+      "symbols": [
+        "kbScope",
+        "scopeOf",
+        "createKbWorkClient",
+        "remoteUrlFor"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/runner-kb-priming.test.mjs",
+        "packages/apra-fleet-se/test/kb-extraction-facade.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T09:28:31.785Z"
     },
     {
       "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
@@ -207,7 +401,7 @@
         "src/services/knowledge/audn.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:04.105Z"
+      "updated_at": "2026-09-07T16:36:39.001Z"
     },
     {
       "id": "4844d64a-deee-4b5d-87d2-6fcd8c596f64",
@@ -224,7 +418,7 @@
         "packages/apra-fleet-se/test/helpers/scaled-timeout.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:04.222Z"
+      "updated_at": "2026-09-07T16:36:39.027Z"
     },
     {
       "id": "4877b2e5-80f4-4759-b8f9-92742ff9adca",
@@ -243,29 +437,28 @@
         "packages/apra-fleet-se/test/mock-sprint-azure-devops-vcs-preflight.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T08:14:20.158Z"
+      "updated_at": "2026-09-07T16:36:39.055Z"
     },
     {
-      "id": "4e2a8e8b-b5a5-42cb-8657-1c7f157a6b53",
+      "id": "4eeda6e1-c08b-4cad-b035-50c2fcd143cc",
       "type": "knowledge",
-      "title": "One anchor policy, three branches: verbatim for read tools, hard-fail for kb_export",
-      "summary": "kb_session_prime and kb_stats pass a supplied repo_path to getKbProviders verbatim so an unreachable remote anchor stays honestly missing; kb_export deliberately keeps throwing instead, because it writes into repo_path -- and it throws before getKbProviders, so it never anchors at the server cwd either.",
+      "title": "Four resolveRepoPath helpers exist in src/tools, but only prime and stats ever had the null-to-cwd shape",
+      "summary": "kb-session-prime.ts and kb-stats.ts returned string|null and degraded to process.cwd(); kb-export.ts and kb-import.ts have always returned string and thrown, so they were never part of the b4g.7 anchor defect despite the bead naming kb-export as a third instance.",
       "symbols": [
-        "kbStats",
+        "resolveRepoPath",
+        "kbImport",
         "kbExport",
-        "kbSessionPrime",
-        "getKbProviders",
-        "resolveRepoPath"
+        "getKbProviders"
       ],
       "source_files": [
-        "src/tools/kb-stats.ts",
+        "src/tools/kb-import.ts",
         "src/tools/kb-export.ts",
+        "src/tools/kb-stats.ts",
         "src/tools/kb-session-prime.ts",
-        "src/services/knowledge/kb-providers.ts",
-        "tests/knowledge/kb-anchor-never-cwd.test.ts"
+        "docs/knowledge-layer.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:06.051Z"
+      "updated_at": "2026-09-07T16:36:39.786Z"
     },
     {
       "id": "589cae8c-4b30-4561-bc80-6e5cb2fd77be",
@@ -284,7 +477,7 @@
         "packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T08:12:08.148Z"
+      "updated_at": "2026-09-07T16:36:39.113Z"
     },
     {
       "id": "59d17152-f1c3-483e-8b26-63487e5694eb",
@@ -298,7 +491,39 @@
         "regression-test-playbook.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T21:57:15.642Z"
+      "updated_at": "2026-09-07T16:36:39.138Z"
+    },
+    {
+      "id": "5ba01ca7-8c09-4e2c-ae3d-26d914e87acf",
+      "type": "learning",
+      "title": "guarded-modules.mjs's GUARDED_MODULES baseline is hard-asserted to ['runner.js'] by four tests",
+      "summary": "Adding a newly extracted fleet-sprint module (e.g. mcp-result.mjs) to GUARDED_MODULES breaks dispatch-safety-guard.test.mjs, dolt-literal-guard.test.mjs, and guarded-modules-coverage.test.mjs, which deepStrictEqual the shared list against the literal array ['runner.js'] in multiple 'today' baseline assertions.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs",
+        "packages/apra-fleet-se/test/dolt-literal-guard.test.mjs",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-07T22:40:14.327Z"
+    },
+    {
+      "id": "5bd2bf04-67d0-4289-95b3-679e3e13fe45",
+      "type": "learning",
+      "title": "A facade re-export test must use namespace imports, or a dropped export fails as a SyntaxError",
+      "summary": "A test that asserts runner.js still re-exports moved symbols must read them off a namespace import; a static named import turns a dropped re-export into a module-load SyntaxError that kills the file before any assertion runs.",
+      "symbols": [
+        "MOVED_PUBLIC_SYMBOLS",
+        "MOVED_PRIVATE_SYMBOLS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/vcs-auth-extraction-facade.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T00:08:13.314Z"
     },
     {
       "id": "5e1d195c-cd15-41d8-9691-4b2636852be4",
@@ -311,7 +536,7 @@
         "regression-test-playbook.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T23:39:17.865Z"
+      "updated_at": "2026-09-07T16:36:39.162Z"
     },
     {
       "id": "6241ee4c-ceb3-4b58-b1b4-015a0d8d8ec1",
@@ -327,7 +552,7 @@
         "tests/knowledge/kb-remote-scope.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:04.414Z"
+      "updated_at": "2026-09-07T16:36:39.186Z"
     },
     {
       "id": "6388f0cf-f6f4-4e2e-99d6-48b0f8711853",
@@ -340,7 +565,36 @@
         "packages/apra-fleet-se/test/mock-sprint-harness-network-shaped-command.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T22:04:44.339Z"
+      "updated_at": "2026-09-07T16:36:39.210Z"
+    },
+    {
+      "id": "6737011f-a42a-4342-b7ac-9a0c987d7b8d",
+      "type": "knowledge",
+      "title": "provision_llm_auth and provision_vcs_auth ok flags reproduce the old cross-mark prefix test exactly",
+      "summary": "The OK_REASONS and VCS_OK_REASONS allowlists were chosen so structuredContent.ok is true for precisely the outcomes whose prose did not start with the failure emoji, which is why the logLine and preflight-cache side effects did not shift when the emoji were retired.",
+      "symbols": [],
+      "source_files": [
+        "src/tools/provision-auth.ts",
+        "src/tools/provision-vcs-auth.ts",
+        "src/services/cloud/lifecycle.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T00:08:13.329Z"
+    },
+    {
+      "id": "69336d0b-82d8-43c6-b7e3-49540ca4e9a7",
+      "type": "knowledge",
+      "title": "shell-command-guard false-positives on nested templates and on any dollar-word in prose strings",
+      "summary": "The guard flags constructs in ANY JS string, not just member-bound command strings, and segmentLine() mis-tracks nested template literals -- so registering existing fleet-sprint siblings in GUARDED_MODULES fails on non-violations today.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/shell-command-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-07T22:40:14.331Z"
     },
     {
       "id": "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e",
@@ -359,7 +613,25 @@
         "regression-test-playbook.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T11:07:29.975Z"
+      "updated_at": "2026-09-07T16:36:39.234Z"
+    },
+    {
+      "id": "6bff5eaa-5bfd-4f80-a745-d69146942554",
+      "type": "learning",
+      "title": "dolt-sync-brackets.test.mjs blows the suite's own 5-minute per-file budget via real backoff sleeps",
+      "summary": "packages/apra-fleet-se/test/dolt-sync-brackets.test.mjs runs about 6 minutes because retry-exhaustion tests use the real default sleep with 8 retries capped at 30s, not injected fake timers.",
+      "symbols": [
+        "runDoltStep",
+        "doltBackoffDelayMs",
+        "DOLT_BACKOFF_MAX_MS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/dolt-sync-brackets.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/test/INTEG-SUITE.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-07T20:03:09.682Z"
     },
     {
       "id": "6da788b6-8436-40ef-af6c-1a74768044c4",
@@ -373,7 +645,25 @@
         "tests/regression-playbook-sandbox-lifecycle.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T23:39:17.848Z"
+      "updated_at": "2026-09-07T16:36:39.257Z"
+    },
+    {
+      "id": "752f5120-f6fc-4947-8348-f6e7ebc90dc0",
+      "type": "knowledge",
+      "title": "Extracting finalizeAbort/appendRejectedFindingToParentNotes out of runner.js also breaks vcs-capabilities-table.test.mjs's vcsCapabilities() call-site count, not just dispatch-safety-guard",
+      "summary": "Beyond the already-documented dispatch-safety-guard.test.mjs EXPECTED_COMMAND_COUNT breakage, moving finalizeAbort out of runner.js drops vcs-capabilities-table.test.mjs's source-scan below its hardcoded 'at least 2 vcsCapabilities(...) call sites (Publish-PR + finalizeAbort)' assertion, since that test only ever read runner.js.",
+      "symbols": [
+        "vcsCapabilities",
+        "finalizeAbort"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/vcs-capabilities-table.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T02:23:21.230Z"
     },
     {
       "id": "7cc58351-c7f9-4f14-99b0-cdd04cf83d7c",
@@ -389,7 +679,7 @@
         "src/utils/agent-helpers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:04.562Z"
+      "updated_at": "2026-09-07T16:36:39.281Z"
     },
     {
       "id": "7fe61086-2df7-44bf-9d40-a16d6081c1f5",
@@ -406,7 +696,25 @@
         "regression-test-playbook.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T22:04:44.355Z"
+      "updated_at": "2026-09-07T16:36:39.305Z"
+    },
+    {
+      "id": "82e238a4-4954-4b14-a3d2-de7b3fd337fa",
+      "type": "runbook",
+      "title": "Check a move-only runner.js extraction with a runtime export-surface diff against the base branch",
+      "summary": "No test in this repo enumerates runner.js's full export surface, so an extraction can silently drop a previously exported symbol; a side-by-side Object.keys diff catches it in seconds.",
+      "symbols": [
+        "sanitizeNewTaskTitle",
+        "sanitizeNewTaskDescription"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
+        "packages/apra-fleet-se/test/vcs-auth-extraction-facade.test.mjs",
+        "packages/apra-fleet-se/test/phase0-seams-facade.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T03:19:52.249Z"
     },
     {
       "id": "83a65916-55ec-4851-8287-9d1dcf2d7c77",
@@ -419,7 +727,7 @@
         "packages/apra-fleet-se/test/slow-lane-log-persistence.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-04T01:35:02.113Z"
+      "updated_at": "2026-09-07T16:36:39.329Z"
     },
     {
       "id": "8997f326-d6e7-485f-ad84-782650030314",
@@ -433,7 +741,43 @@
         "src/services/preflight-check.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:04.677Z"
+      "updated_at": "2026-09-07T16:36:39.353Z"
+    },
+    {
+      "id": "89c4ba0e-344e-4955-a1cb-355c9bd90d5e",
+      "type": "runbook",
+      "title": "Verify a move-only runner.js extraction by normalized line-set diff plus a runtime export-surface diff",
+      "summary": "Two mechanical checks prove a fleet-sprint move-only extraction without reading the moved code: set-compare the removed lines against the new module after normalizing comment prefixes and the export keyword, then import the old and new runner.js side by side and diff Object.keys.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-safety-guard.mjs",
+        "packages/apra-fleet-se/test/vcs-auth-extraction-facade.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T02:23:21.237Z"
+    },
+    {
+      "id": "8fdf21fa-e64c-43d2-a22a-edfd21bd6791",
+      "type": "knowledge",
+      "title": "Four distinct git-credential-helper file shapes exist across member OS/shell combinations",
+      "summary": "The deployed credential helper differs by member OS AND shell: POSIX writes an extensionless $HOME script, windows-powershell writes $env:USERPROFILE\\...bat, and windows-gitbash writes a .bat but is invoked through bash -- so any read-side builder needs all three forms plus the PowerShell call operator.",
+      "symbols": [
+        "gitCredentialHelperWrite",
+        "gitCredentialHelperRead",
+        "WindowsGitBashCommands"
+      ],
+      "source_files": [
+        "src/os/linux.ts",
+        "src/os/windows.ts",
+        "src/os/windows-gitbash.ts",
+        "src/os/os-commands.ts",
+        "src/tools/vcs-credential-exec.ts",
+        "packages/apra-fleet-se/fleet-sprint/se-windows-gitbash.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-07T22:40:14.339Z"
     },
     {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
@@ -454,7 +798,7 @@
         "packages/apra-fleet-se/src/supervisor/api.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-04T03:39:46.448Z"
+      "updated_at": "2026-09-07T16:36:39.376Z"
     },
     {
       "id": "96a63862-eb7a-43f3-8352-4cd686412d43",
@@ -472,7 +816,27 @@
         "src/tools/execute-prompt.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:04.933Z"
+      "updated_at": "2026-09-07T16:36:39.404Z"
+    },
+    {
+      "id": "9accad02-cd4e-407b-9440-ddc016066fbe",
+      "type": "learning",
+      "title": "A nested extraPaths fixture cannot pin the guard-baseline basename bug -- only a nested GUARDED_MODULES entry can",
+      "summary": "Comparing a guard's files output against GUARDED_MODULES versus guardedModuleBasenames() gives identical results while every registered entry is flat, so a regression test that nests only a caller-supplied fixture is vacuous.",
+      "symbols": [
+        "guardedModuleBasenames",
+        "guardedModulePaths",
+        "GUARDED_MODULES",
+        "checkModules"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-safety-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/full-db-fetch-guard.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T05:00:14.856Z"
     },
     {
       "id": "9d3e4d50-c047-4b98-becc-2fff7b8e27fa",
@@ -486,10 +850,10 @@
         "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T05:36:24.565Z"
+      "updated_at": "2026-09-07T16:36:39.430Z"
     },
     {
-      "id": "9f05685a-14ae-4aae-8771-92e2636d0113",
+      "id": "a2eec90a-dd1b-4606-af90-685179e6e471",
       "type": "knowledge",
       "title": "A sprint's own reservation is always in GET /api/sprints while it deploys",
       "summary": "The supervisor reservation ledger always contains the deploying sprint's own entry, so any 'non-empty sprints array => stop' deploy gate blocks every sprint from deploying its own work; identity must be compared exactly on sprintId.",
@@ -505,27 +869,21 @@
         "deploy.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T22:04:44.372Z"
+      "updated_at": "2026-09-07T16:36:39.456Z"
     },
     {
-      "id": "a0b13797-60af-4c33-98b9-d204b482d1e5",
+      "id": "a9487fa3-a5e3-4086-a1d7-29c1e770ced7",
       "type": "knowledge",
-      "title": "The sprint run id reaches runner.js only via buildRunnerArgs' run_id key",
-      "summary": "spawner --run-id -> cli.mjs effectiveRunId existed but was dropped at buildRunnerArgs, so runner.js had no reservation identity; run_id must be added to both buildRunnerArgs and runner.js KNOWN_ARG_KEYS/validateArgs.",
-      "symbols": [
-        "buildRunnerArgs",
-        "validateArgs",
-        "KNOWN_ARG_KEYS",
-        "buildSprintArgv"
-      ],
+      "title": "Do not dynamically import every runner.js importer -- scripts/dolt-settle-integration.mjs runs main() at module scope",
+      "summary": "A test that imports each importer of fleet-sprint/runner.js to prove resolution will fire a live MCP connection and real dolt operations from that one file.",
+      "symbols": [],
       "source_files": [
-        "packages/apra-fleet-se/bin/cli.mjs",
-        "packages/apra-fleet-se/fleet-sprint/runner.js",
-        "packages/apra-fleet-se/src/supervisor/spawner.mjs",
-        "packages/apra-fleet-se/test/fixtures/golden-transcript/mock-sprint-happy-path.jsonl"
+        "packages/apra-fleet-se/scripts/dolt-settle-integration.mjs",
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T22:04:44.419Z"
+      "updated_at": "2026-09-08T09:48:50.352Z"
     },
     {
       "id": "a96e64d8-e304-4a46-baeb-d36fe1371a94",
@@ -539,7 +897,7 @@
         "packages/apra-fleet-se/fleet-sprint/runner.js"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:05.048Z"
+      "updated_at": "2026-09-07T16:36:39.527Z"
     },
     {
       "id": "b0f6be79-738c-491b-9ba5-7c7e5d69b805",
@@ -560,7 +918,63 @@
         "src/tools/code-intelligence-kb-enrich.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:05.184Z"
+      "updated_at": "2026-09-07T16:36:39.570Z"
+    },
+    {
+      "id": "b3879aa4-7d81-4dff-843c-ced977cf7993",
+      "type": "learning",
+      "title": "Node ESM circular imports between runner.js and its extracted fleet-sprint siblings are safe when confined to function bodies",
+      "summary": "Verified directly (a standalone a.mjs<->b.mjs repro, then live in prompts.mjs/worklists.mjs/abort.mjs) that a module split out of runner.js can import a still-runner.js-resident helper back, and vice versa, without any load-order failure, as long as neither side references the other's binding at top-level module-evaluation time.",
+      "symbols": [
+        "buildPlannerPrompt",
+        "buildRejectedNewTaskResurfaceLines",
+        "hasContextHeadroomForResume",
+        "DEFAULT_CONTEXT_CEILING",
+        "validateNewTask",
+        "SAFE_TEXT_RE"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/prompts.mjs",
+        "packages/apra-fleet-se/fleet-sprint/worklists.mjs",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T02:23:21.233Z"
+    },
+    {
+      "id": "b57704a3-f7a8-4260-a069-21ec0a0e54d5",
+      "type": "knowledge",
+      "title": "phase0-seams-facade and vcs-auth-extraction-facade never actually run their nested golden-transcript checks",
+      "summary": "Both spawn a nested node --test with the inherited NODE_TEST_CONTEXT, so the child no-ops, and both assert nothing beyond execFileSync not throwing.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase0-seams-facade.test.mjs",
+        "packages/apra-fleet-se/test/vcs-auth-extraction-facade.test.mjs",
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs",
+        "packages/apra-fleet-se/test/golden-transcript.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T09:48:50.346Z"
+    },
+    {
+      "id": "bb190ec4-0529-4d48-aa8e-3fe5fe7cff22",
+      "type": "knowledge",
+      "title": "runner.js keeps a withGitSync alias so the two bracket source-guards survive the git-sync.mjs extraction",
+      "summary": "dispatch-sync-bracket-coverage and git-sync-brackets both scan runner.js with a lookbehind regex that skips gitSync.withGitSync(, so the local alias at runner.js:4075 is load-bearing, not cosmetic.",
+      "symbols": [
+        "withGitSync",
+        "withGitSyncRanges",
+        "findCallSites"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/test/dispatch-sync-bracket-coverage.test.mjs",
+        "packages/apra-fleet-se/test/git-sync-brackets.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T06:25:00.988Z"
     },
     {
       "id": "beb4faf7-40fa-4484-9cf5-b287df8f47d2",
@@ -573,7 +987,7 @@
         "src/services/knowledge/kb-scope-input.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:05.331Z"
+      "updated_at": "2026-09-07T16:36:39.597Z"
     },
     {
       "id": "c2899616-0cb1-41e8-b229-76e291a0cd81",
@@ -593,7 +1007,7 @@
         "tests/knowledge/kb-remote-anchor-freshness.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:05.478Z"
+      "updated_at": "2026-09-07T16:36:39.620Z"
     },
     {
       "id": "c791fcf0-48c2-4a17-a247-ea634fec70b3",
@@ -609,7 +1023,7 @@
         "scripts/check-sandbox-sync-remote.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:03.985Z"
+      "updated_at": "2026-09-07T16:36:39.645Z"
     },
     {
       "id": "c81bd0dc-f0d1-4403-9247-fc1edc329780",
@@ -622,7 +1036,7 @@
         "tests/regression-playbook-sandbox-lifecycle.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T09:37:07.356Z"
+      "updated_at": "2026-09-07T16:36:39.668Z"
     },
     {
       "id": "c9908905-0938-4f8b-8804-04c5da21f168",
@@ -636,7 +1050,46 @@
         "scripts/kill-port.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T22:23:16.182Z"
+      "updated_at": "2026-09-07T16:36:39.692Z"
+    },
+    {
+      "id": "cbf627c7-21cc-498f-9012-3ffa829b762c",
+      "type": "knowledge",
+      "title": "fleet-sprint runner.js's three provision-result emoji regexes are mojibake and never match",
+      "summary": "runner.js lines 2443, 3171 and 3178 test provision_vcs_auth / provision_llm_auth response text against regexes whose bytes are the UTF-8 encoding of the emoji reinterpreted as Windows-1252, so they can never match a real response and the orchestrator's provision-failure detection is silently dead.",
+      "symbols": [
+        "provisionVcsAuthForMember",
+        "parseExpiresAtFromProvisionText",
+        "wrapTool"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "src/tools/provision-auth.ts",
+        "src/tools/provision-vcs-auth.ts",
+        "src/services/tool-registry.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-07T22:40:14.345Z"
+    },
+    {
+      "id": "ce77f60f-7377-46e2-94f4-348c7b04c8f0",
+      "type": "knowledge",
+      "title": "The sync-bracket guarantee is now mechanically scanned by a fifth guard, not just a convention",
+      "summary": "As of e9e585c4 a fifth guard scans every guarded module for bare sync primitives, superseding the earlier claim that nothing enforced the bracket rule.",
+      "symbols": [
+        "checkUnbracketedPushModules",
+        "unbracketedPushModulePaths",
+        "UNBRACKETED_PUSH_EXEMPT",
+        "runAllGuards"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/unbracketed-push-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T08:45:09.650Z"
     },
     {
       "id": "ce93654a-b7a2-4ccf-a9e2-2c166d11e6aa",
@@ -654,7 +1107,7 @@
         "packages/apra-fleet-se/test/supervisor-dolt-orphan-sweep.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T10:44:57.236Z"
+      "updated_at": "2026-09-07T16:36:39.717Z"
     },
     {
       "id": "d3ec9cb9-285c-4e61-842b-c81393237c68",
@@ -667,7 +1120,25 @@
         "packages/apra-fleet-se/test/azure-devops-real-e2e.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T06:41:22.991Z"
+      "updated_at": "2026-09-07T16:36:39.740Z"
+    },
+    {
+      "id": "d3fbf4e5-4213-442e-b0f3-49655906f570",
+      "type": "knowledge",
+      "title": "wrapTool already accepts { text, structuredContent }, so adding a structured MCP response needs no tool-registry change",
+      "summary": "src/services/tool-registry.ts's wrapTool is typed to accept string | { text, structuredContent }, so converting an existing tool from a plain-string return to a structured one requires no edit at the registration site -- only the tool file and its direct consumers.",
+      "symbols": [
+        "wrapTool",
+        "reProvisionAuth"
+      ],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "src/services/cloud/lifecycle.ts",
+        "src/tools/execute-prompt.ts",
+        "src/tools/execute-command.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-07T22:40:14.351Z"
     },
     {
       "id": "de1c60a9-b27f-411b-a23c-953e37207536",
@@ -679,28 +1150,64 @@
         ".gitignore"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T22:23:16.214Z"
+      "updated_at": "2026-09-07T16:36:39.763Z"
     },
     {
-      "id": "deabf9ba-1c94-47c4-a212-e4c1460ec0e6",
+      "id": "e6df1a2a-9088-4e71-8f9a-86be4cb5b4f7",
       "type": "knowledge",
-      "title": "Four resolveRepoPath helpers exist in src/tools, but only prime and stats ever had the null-to-cwd shape",
-      "summary": "kb-session-prime.ts and kb-stats.ts returned string|null and degraded to process.cwd(); kb-export.ts and kb-import.ts have always returned string and thrown, so they were never part of the b4g.7 anchor defect despite the bead naming kb-export as a third instance.",
-      "symbols": [
-        "resolveRepoPath",
-        "kbImport",
-        "kbExport",
-        "getKbProviders"
-      ],
+      "title": "A fleet-sprint sandbox copy under os.tmpdir needs a node_modules symlink, and rmSync will not follow it",
+      "summary": "Copying fleet-sprint/ outside the repo breaks bare-specifier resolution for @apralabs workspace packages, so the sandbox must symlink the hoisted node_modules back in; fs.rmSync recursive cleanup unlinks that symlink without recursing into the real directory.",
+      "symbols": [],
       "source_files": [
-        "src/tools/kb-import.ts",
-        "src/tools/kb-export.ts",
-        "src/tools/kb-stats.ts",
-        "src/tools/kb-session-prime.ts",
-        "docs/knowledge-layer.md"
+        "packages/apra-fleet-se/test/phase0-seams-facade.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        ".gitignore"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:04.805Z"
+      "updated_at": "2026-09-08T05:00:14.861Z"
+    },
+    {
+      "id": "e7149551-e22a-475b-8382-153ab877662a",
+      "type": "knowledge",
+      "title": "Extracting a fleet-sprint module out of runner.js breaks dispatch-safety-guard's EXPECTED_COMMAND_COUNT",
+      "summary": "test/dispatch-safety-guard.test.mjs hard-asserts the number of command()/agent() call sites in runner.js, so any move-only extraction that carries a command() call site out of runner.js fails that test even though every site stays compliant.",
+      "symbols": [
+        "EXPECTED_COMMAND_COUNT",
+        "EXPECTED_VCS_AUTH_COMMAND_COUNT",
+        "checkPath",
+        "GUARDED_MODULES"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-safety-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T00:08:13.319Z"
+    },
+    {
+      "id": "e8e72068-36be-4d2c-8a4a-b49023ecfd06",
+      "type": "knowledge",
+      "title": "Three source-pinning tests read withGitSync's body out of runner.js, not just the two bracket-count guards",
+      "summary": "Beyond dispatch-safety-guard/dispatch-sync-bracket-coverage, moving withGitSync out of runner.js breaks vcs-auth-preflight.test.mjs's needsVcsAuth default regex, mock-sprint-retry-resume-remote-tip.test.mjs's skipPreDispatchSync ordering guard, and runner-clean-state-pause-guard.test.mjs's new Function source slice.",
+      "symbols": [
+        "withGitSync",
+        "openSyncBracketCount",
+        "createSyncBrackets",
+        "createGitSync"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/vcs-auth-preflight.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-retry-resume-remote-tip.test.mjs",
+        "packages/apra-fleet-se/test/runner-clean-state-pause-guard.test.mjs",
+        "packages/apra-fleet-se/test/dispatch-sync-bracket-coverage.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-08T07:55:59.240Z"
     },
     {
       "id": "ed89bdb6-31a4-40ca-9104-3a28f8508fc3",
@@ -713,7 +1220,7 @@
         "tests/regression-playbook-port3001-guard.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T23:39:17.880Z"
+      "updated_at": "2026-09-07T16:36:39.813Z"
     },
     {
       "id": "f80badf2-1b0c-4a2a-857f-c7cbd21786c2",
@@ -729,27 +1236,7 @@
         "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T11:07:29.990Z"
-    },
-    {
-      "id": "fce10469-eaa2-497f-ad5d-ecc9353ce740",
-      "type": "knowledge",
-      "title": "kb_session_prime must pass an explicit repo_path to getKbProviders verbatim, never through resolveRepoPath",
-      "summary": "Validating repo_path before handing it to getKbProviders converts a remote member's unreachable path into the fleet server's own cwd, silently staling healthy entries in the shared project KB; the anchor must stay honestly missing.",
-      "symbols": [
-        "kbSessionPrime",
-        "resolveRepoPath",
-        "getKbProviders",
-        "anchorIsMissing"
-      ],
-      "source_files": [
-        "src/tools/kb-session-prime.ts",
-        "src/services/knowledge/kb-providers.ts",
-        "src/services/knowledge/sqlite-provider.ts",
-        "tests/knowledge/kb-remote-anchor-freshness.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-02T06:28:05.629Z"
+      "updated_at": "2026-09-07T16:36:39.838Z"
     },
     {
       "id": "ff02b32b-5d77-4af5-ad6b-0d7288e2476f",
@@ -769,7 +1256,27 @@
         "packages/apra-fleet-se/test/supervisor-dolt-orphan-sweep.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-03T09:37:07.340Z"
+      "updated_at": "2026-09-07T16:36:39.887Z"
+    },
+    {
+      "id": "ffdd2115-d20d-4187-9071-8a37d94237f5",
+      "type": "knowledge",
+      "title": "The sprint run id reaches runner.js only via buildRunnerArgs' run_id key",
+      "summary": "spawner --run-id -> cli.mjs effectiveRunId existed but was dropped at buildRunnerArgs, so runner.js had no reservation identity; run_id must be added to both buildRunnerArgs and runner.js KNOWN_ARG_KEYS/validateArgs.",
+      "symbols": [
+        "buildRunnerArgs",
+        "validateArgs",
+        "KNOWN_ARG_KEYS",
+        "buildSprintArgv"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/bin/cli.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/src/supervisor/spawner.mjs",
+        "packages/apra-fleet-se/test/fixtures/golden-transcript/mock-sprint-happy-path.jsonl"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-07T16:36:39.484Z"
     }
   ]
 }
