@@ -280,7 +280,16 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // added, removed or rewritten. Same precedent as the 417.2.1 dolt-sync.mjs
 // extraction above, and likewise NOT left unguarded -- vcs-auth.mjs is asserted
 // by its own test below, so all three remain covered by this invariant.
-const EXPECTED_COMMAND_COUNT = 36;
+// 36 -> 34 (apra-fleet-3swo.3.6, the abort.mjs extraction): the typed
+// sprint-abort predicate, the abort-path PR publish helper and the newTask
+// validation/persistence helpers moved out of runner.js into ./abort.mjs,
+// taking finalizeAbort()'s `git remote get-url origin` PR-capability probe and
+// appendRejectedFindingToParentNotes()'s `bd note <id> --file ...` call with
+// them -- the same two sites the 647.1.4.1/eft.3.1 history above already
+// accounted for inside runner.js. Move-only: no call site was added, removed
+// or rewritten. Same precedent as the vcs-auth.mjs extraction above, and
+// likewise NOT left unguarded -- abort.mjs is asserted by its own test below.
+const EXPECTED_COMMAND_COUNT = 34;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -414,6 +423,42 @@ test('every command() call site in vcs-auth.mjs passes member_name or member_id'
         sites.filter((s) => s.fnName === 'agent').length,
         0,
         'vcs-auth.mjs must never dispatch an agent() -- it is a credential/PR command surface only.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// apra-fleet-3swo.3.6: the typed sprint-abort predicate, the abort-path PR
+// publish helper and the newTask validation/persistence helpers moved out of
+// runner.js into ./abort.mjs, taking two command() call sites with them.
+// Guard that module with the SAME invariant -- same reasoning as vcs-auth.mjs
+// above: the moved sites cannot silently lose their explicit member_name, and
+// a future command()/agent() dispatch added there is caught by this suite
+// rather than at runtime on a real fleet dispatch.
+const ABORT_PATH = path.join(__dirname, '../fleet-sprint/abort.mjs');
+// finalizeAbort()'s `git remote get-url origin` PR-capability probe and
+// appendRejectedFindingToParentNotes()'s `bd note <id> --file ...` call --
+// exactly the two that left runner.js.
+const EXPECTED_ABORT_COMMAND_COUNT = 2;
+
+test('every command() call site in abort.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(ABORT_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_ABORT_COMMAND_COUNT,
+        `Expected ${EXPECTED_ABORT_COMMAND_COUNT} command() call site(s) in abort.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_ABORT_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'abort.mjs must never dispatch an agent() -- it is an abort-handling/newTask command surface only.'
     );
     assert.deepStrictEqual(
         violations,

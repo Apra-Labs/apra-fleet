@@ -9,6 +9,11 @@ import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
+// apra-fleet-3swo.3.6 moved finalizeAbort() (and its vcsCapabilities() call
+// site) out of runner.js into abort.mjs -- the source assertion below reads
+// both files so the "Publish-PR + finalizeAbort" invariant still covers the
+// moved call site.
+const ABORT_PATH = path.join(__dirname, '../fleet-sprint/abort.mjs');
 
 // =============================================================================
 // apra-fleet-647.1.4.2 -- VCS capability decisions come from the provider, not
@@ -177,8 +182,14 @@ test('source: runner.js contains no quoted github.com (or other VCS host) litera
 });
 
 test('source: both Publish-PR and finalizeAbort call sites resolve capabilities via the imported vcsCapabilities (VCSModule.capabilities), not a local reimplementation', () => {
-    const src = fs.readFileSync(RUNNER_PATH, 'utf8');
-    assert.match(src, /capabilities as vcsCapabilities.*from '\.\/vcs-module\.mjs'/, 'runner.js must import capabilities as vcsCapabilities from vcs-module.mjs');
-    const callSites = src.match(/vcsCapabilities\([^)]*\)/g) || [];
-    assert.ok(callSites.length >= 2, `expected at least 2 vcsCapabilities(...) call sites (Publish-PR + finalizeAbort), found ${callSites.length}`);
+    const runnerSrc = fs.readFileSync(RUNNER_PATH, 'utf8');
+    const abortSrc = fs.readFileSync(ABORT_PATH, 'utf8');
+    assert.match(runnerSrc, /capabilities as vcsCapabilities.*from '\.\/vcs-module\.mjs'/, 'runner.js must import capabilities as vcsCapabilities from vcs-module.mjs');
+    assert.match(abortSrc, /capabilities as vcsCapabilities.*from '\.\/vcs-module\.mjs'/, 'abort.mjs must import capabilities as vcsCapabilities from vcs-module.mjs');
+    // Publish-PR's call site stayed in runner.js; finalizeAbort()'s moved to
+    // abort.mjs (apra-fleet-3swo.3.6) -- one real call site in each file now.
+    const runnerCallSites = runnerSrc.match(/vcsCapabilities\([^)]*\)/g) || [];
+    const abortCallSites = abortSrc.match(/vcsCapabilities\([^)]*\)/g) || [];
+    const totalCallSites = runnerCallSites.length + abortCallSites.length;
+    assert.ok(totalCallSites >= 2, `expected at least 2 vcsCapabilities(...) call sites across runner.js + abort.mjs (Publish-PR + finalizeAbort), found ${totalCallSites}`);
 });
