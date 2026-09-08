@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import fs from 'node:fs';
 import os from 'node:os';
 import { checkDoltLiteralPath, checkDoltLiteralModules, findDoltLiteralViolations } from '../fleet-sprint/dolt-literal-guard.mjs';
-import { doltLiteralModulePaths } from '../fleet-sprint/guarded-modules.mjs';
+import { doltLiteralModulePaths, GUARDED_MODULES, DOLT_LITERAL_EXEMPT } from '../fleet-sprint/guarded-modules.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,7 +96,11 @@ test('findDoltLiteralViolations: a live command() call carrying the literal is f
 
 test('checkDoltLiteralModules() over the shared list is clean today and defines no list of its own', () => {
     const { violations, files, skipped } = checkDoltLiteralModules();
-    assert.deepStrictEqual(files, ['runner.js'], 'the default scan set is the shared list, minus dolt-literal exemptions');
+    assert.deepStrictEqual(
+        files,
+        GUARDED_MODULES.filter((name) => !DOLT_LITERAL_EXEMPT.includes(name)),
+        'the default scan set is the shared list, minus dolt-literal exemptions'
+    );
     assert.deepStrictEqual(skipped, [], 'nothing exempt is registered in the shared list today');
     assert.deepStrictEqual(violations, [], `Expected zero direct dolt literals across the guarded modules, got: ${JSON.stringify(violations, null, 2)}`);
 });
@@ -158,7 +162,10 @@ test('adding a newly extracted module to the shared list makes the dolt-literal 
             'utf8'
         );
         const { violations, files } = checkDoltLiteralModules(doltLiteralModulePaths([fixture]));
-        assert.deepStrictEqual(files, ['runner.js', 'extracted-module.mjs']);
+        assert.deepStrictEqual(files, [
+            ...GUARDED_MODULES.filter((name) => !DOLT_LITERAL_EXEMPT.includes(name)),
+            'extracted-module.mjs',
+        ]);
         check(violations.length === 1, `expected exactly one violation, got: ${JSON.stringify(violations, null, 2)}`);
         check(violations[0].startsWith('extracted-module.mjs:4'), `violation must name the fixture's own file and line, got: ${violations[0]}`);
 

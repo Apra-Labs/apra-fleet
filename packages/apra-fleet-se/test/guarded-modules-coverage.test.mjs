@@ -132,7 +132,7 @@ test('all four guards flag their seeded violation in a fixture module registered
 
         // The fixture is reachable only because the shared list was extended
         // with it -- nothing here names it directly to a guard.
-        assert.deepEqual(paths.map((p) => path.basename(p)), ['runner.js', FIXTURE_NAME]);
+        assert.deepEqual(paths.map((p) => path.basename(p)), [...GUARDED_MODULES, FIXTURE_NAME]);
 
         const found = runAllGuards(paths);
 
@@ -258,8 +258,16 @@ test('every fixture lives in a sandbox outside the repo tree and is removed on t
 test('the shared list registers real, on-disk modules only -- a fixture is never left registered', () => {
     // A registration leak (a fixture path accidentally committed into
     // GUARDED_MODULES) would make the guards scan a file that does not exist
-    // on a fresh clone, so the suite would fail for everyone else. Pin it.
-    assert.deepEqual(GUARDED_MODULES, ['runner.js']);
+    // on a fresh clone, so the suite would fail for everyone else. Pin the
+    // registry's structural invariants -- not a hard-coded snapshot of its
+    // contents, since a legitimate extraction is expected to append entries
+    // here (that is the whole point of the shared list).
+    assert.ok(Array.isArray(GUARDED_MODULES) && GUARDED_MODULES.length > 0, 'GUARDED_MODULES must be a non-empty array');
+    assert.deepEqual(
+        new Set(GUARDED_MODULES).size,
+        GUARDED_MODULES.length,
+        `GUARDED_MODULES must not contain duplicate entries, got: ${JSON.stringify(GUARDED_MODULES)}`
+    );
     for (const p of guardedModulePaths()) {
         assert.ok(fs.existsSync(p), `registered guarded module missing on disk: ${p}`);
         assert.ok(fs.realpathSync(p).startsWith(fs.realpathSync(REPO_ROOT) + path.sep), 'registered modules live in the repo');
