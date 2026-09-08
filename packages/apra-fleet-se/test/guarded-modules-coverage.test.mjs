@@ -174,80 +174,67 @@ test('all four guards flag their seeded violation in a fixture module registered
 });
 
 // -----------------------------------------------------------------------------
-// (1b) apra-fleet-3swo.14 regression pin: a NESTED registered path (e.g. the
-// parent epic's planned 'phases/plan.mjs' module group) must still be scanned
-// and attributed correctly by all four guards.
+// (1b) apra-fleet-3swo.14 regression pin: a NESTED GUARDED_MODULES entry (e.g.
+// the parent epic's planned 'phases/plan.mjs' module group) must be reported
+// under its bare filename by guardedModuleBasenames() -- the function every
+// rewritten baseline compares a guard's `files` output against -- never under
+// its full registered relative path.
 //
-// guardedModulePath()/guardedModulePaths() resolve a nested GUARDED_MODULES
-// entry (documented as "filenames relative to this directory", joined via
-// path.join()) to a real, correct absolute path today -- that part was never
-// broken. What broke is every guard's `files` aggregate and violation-string
-// attribution: both are built from path.basename(p) (dispatch-safety-
-// guard.mjs:219, dolt-literal-guard.mjs:114/75, full-db-fetch-guard.mjs:216/
-// 190, shell-command-guard.mjs:276/291), so a nested entry is always reported
-// under its bare filename ('plan.mjs'), never its registered relative path
-// ('phases/plan.mjs'). A baseline test that compares a guard's `files` output
-// against GUARDED_MODULES (or an extraPaths list) VERBATIM breaks the moment
-// a nested entry is registered, even though the guard itself scanned it
-// correctly.
+// WHY THIS NEEDS NO DISK WRITE OR FIXTURE: guardedModuleBasenames() is a pure
+// derivation of GUARDED_MODULES; it never touches disk. GUARDED_MODULES is a
+// `const` BINDING but a mutable array, so this test pushes a nested entry
+// directly onto the real, shared list -- in a try/finally that always pops it,
+// so no other test in this file (or process) ever observes the mutation --
+// and asserts guardedModuleBasenames() reports it as 'plan.mjs', never
+// 'phases/plan.mjs'.
 //
-// This test exercises exactly that mismatch through guardedModulePaths()'s
-// public extraPaths contract (no need to mutate the real, on-disk
-// GUARDED_MODULES/fleet-sprint tree to prove it): a fixture is written one
-// directory level DEEPER than the sandbox root passed to
-// guardedModulePaths([nestedFixture]) -- structurally identical to what a
-// 'phases/plan.mjs' GUARDED_MODULES registration would produce, since every
-// guard only ever sees the resolved absolute path, never how it was
-// registered. Pins two things: (a) the guards' own attribution stays
-// basename-only and unambiguous ('newly-extracted-module.mjs:N', never a
-// 'phases/newly-extracted-module.mjs:N' path), and (b) comparing `files`
-// against guardedModuleBasenames() -- not GUARDED_MODULES/extraPaths verbatim
-// -- is what a baseline assertion must do to keep working once a nested
-// module is registered.
+// WHY THE PRIOR VERSION OF THIS PIN WAS VACUOUS: it registered a nested path
+// only through guardedModulePaths()'s `extraPaths` parameter, never through
+// GUARDED_MODULES itself. With every REAL entry in GUARDED_MODULES flat today,
+// `[...GUARDED_MODULES, extra]` and `[...guardedModuleBasenames(), extra]` are
+// byte-identical regardless of extra's own nesting, so that assertion passed
+// identically whether or not guardedModuleBasenames() existed at all
+// (confirmed: reverting all four baselines to compare a guard's `files`
+// against raw GUARDED_MODULES breaks no test today). Only nesting the entry
+// INSIDE GUARDED_MODULES itself makes the divergence real, which this version
+// does.
 // -----------------------------------------------------------------------------
 
-test('a nested fixture path registered through guardedModulePaths is scanned and attributed by basename by all four guards', () => {
-    const sandbox = createSandbox();
+test('a nested GUARDED_MODULES entry is reported under its bare filename by guardedModuleBasenames(), never its registered relative path', () => {
+    const NESTED_ENTRY = 'phases/plan.mjs';
+    const before = guardedModuleBasenames();
+    GUARDED_MODULES.push(NESTED_ENTRY);
     try {
-        const nestedDir = path.join(sandbox.dir, 'phases');
-        fs.mkdirSync(nestedDir, { recursive: true });
-        const nestedFixture = path.join(nestedDir, FIXTURE_NAME);
-        fs.writeFileSync(nestedFixture, SEEDED_SRC.join('\n'), 'utf8');
+        const after = guardedModuleBasenames();
 
-        const paths = guardedModulePaths([nestedFixture]);
+        // Correct behaviour: the nested entry is appended under its bare
+        // filename, matching exactly what every guard's own path.basename(p)
+        // attribution reports.
+        assert.deepEqual(after, [...before, 'plan.mjs']);
+        assert.ok(
+            !after.includes(NESTED_ENTRY),
+            `guardedModuleBasenames() must never report the full registered relative path, got: ${JSON.stringify(after)}`
+        );
 
-        // The registered path is nested (mirrors a 'phases/plan.mjs'-style
-        // GUARDED_MODULES entry), but guardedModuleBasenames() -- what a
-        // baseline assertion must compare `files` against -- strips the
-        // directory component just like every guard's own attribution does.
-        assert.deepEqual(guardedModuleBasenames([nestedFixture]), [...guardedModuleBasenames(), FIXTURE_NAME]);
-
-        const found = runAllGuards(paths);
-
-        // Same seeded violations as test (1) above, still attributed to the
-        // fixture's bare filename -- never the nested path it was registered
-        // under.
-        assert.equal(found.dispatchSafety.length, 1, `dispatch-safety: expected exactly the seeded violation, got: ${JSON.stringify(found.dispatchSafety, null, 2)}`);
-        assert.match(found.dispatchSafety[0], /^newly-extracted-module\.mjs:5 /);
-
-        assert.equal(found.doltLiteral.length, 1, `dolt-literal: expected exactly the seeded violation, got: ${JSON.stringify(found.doltLiteral, null, 2)}`);
-        assert.match(found.doltLiteral[0], /^newly-extracted-module\.mjs:6 /);
-
-        assert.equal(found.fullDbFetch.length, 1, `full-db-fetch: expected exactly the seeded violation, got: ${JSON.stringify(found.fullDbFetch, null, 2)}`);
-        assert.match(found.fullDbFetch[0], /^newly-extracted-module\.mjs:7 /);
-
-        assert.equal(found.shellCommand.length, 1, `shell-command: expected exactly the seeded violation, got: ${JSON.stringify(found.shellCommand, null, 2)}`);
-        assert.match(found.shellCommand[0], /^newly-extracted-module\.mjs:8:/);
-
-        // The aggregate `files` output of each guard -- the exact value the
-        // four rewritten baselines assert against -- matches
-        // guardedModuleBasenames(), not a raw path/extraPaths comparison.
-        assert.deepEqual(checkModules(paths).files, [...guardedModuleBasenames(), FIXTURE_NAME]);
-        assert.deepEqual(checkDoltLiteralModules(paths).files, [...guardedModuleBasenames(), FIXTURE_NAME]);
-        assert.deepEqual(checkFullDbFetchModules(paths).files, [...guardedModuleBasenames(), FIXTURE_NAME]);
+        // The regression this pins: comparing a guard's `files` output
+        // (basename-only) against GUARDED_MODULES verbatim -- what all four
+        // baselines did before apra-fleet-3swo.14 -- diverges the instant a
+        // nested entry is registered, even though nothing is actually wrong.
+        // This assertion is what fails against a raw-GUARDED_MODULES
+        // comparison and passes only once baselines compare against
+        // guardedModuleBasenames() instead.
+        assert.notDeepEqual(
+            after,
+            GUARDED_MODULES,
+            'a basename-derived list must diverge from raw GUARDED_MODULES once a nested entry is registered -- this is exactly why the baselines must compare against guardedModuleBasenames(), not GUARDED_MODULES directly'
+        );
     } finally {
-        sandbox.cleanup();
+        GUARDED_MODULES.pop();
     }
+
+    // Popped cleanly: the shared list (and therefore every other test in this
+    // process importing it) sees no trace of the nested entry afterward.
+    assert.deepEqual(guardedModuleBasenames(), before, 'GUARDED_MODULES must be restored to its pre-test state');
 });
 
 // -----------------------------------------------------------------------------
