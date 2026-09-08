@@ -2,10 +2,13 @@
 // PR raising, and the reactive/proactive auth self-heal callbacks
 // (apra-fleet-3swo.3.1). Moved verbatim out of runner.js -- runner.js re-exports
 // every symbol it previously exported from this region, so existing importers of
-// fleet-sprint/runner.js resolve unchanged. Behaviour is deliberately identical to
-// the pre-move code: this is a move-only extraction, so anything that looks wrong
-// here (including the mojibake provision-result regexes) is preserved as-is and
-// must be changed by a separate, separately-reviewed behaviour PR.
+// fleet-sprint/runner.js resolve unchanged. Behaviour was originally kept
+// deliberately identical to the pre-move code (a move-only extraction), but
+// apra-fleet-3swo.13 is exactly the "separately-reviewed behaviour PR" that
+// note used to point at: it replaced the mojibake provision-result regexes'
+// role as the source of truth with structuredContent.ok/.reason
+// (provisionOutcome below), keeping the prose regexes only as a fallback for
+// a result with no structuredContent at all.
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
@@ -131,16 +134,40 @@ async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi
 }
 
 // Shared MCP tool-result-to-text extractor for the self-heal callbacks below.
-// The provision_* tools do not throw on failure: they return plain
-// human-readable text with a leading status emoji (check mark = success,
-// warning sign = warning, cross mark = failure), and some failure strings
-// carry no prefix at all -- so the callbacks must inspect the text.
+// Still used for logging the human-readable summary. Classification
+// decisions must use provisionOutcome() below, not this text.
 function selfHealResultText(result) {
     if (typeof result === 'string') return result;
     if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
         return result.content[0].text;
     }
     return '';
+}
+
+// apra-fleet-3swo.13: provision_vcs_auth / provision_llm_auth used to be
+// classified by matching a leading status emoji on the prose summary above
+// (check mark = success, cross mark = failure, star = the LLM-auth
+// local-member skip marker). The server retired those emoji -- src/tools/
+// provision-auth.ts and src/tools/provision-vcs-auth.ts now emit ASCII
+// [OK]/[FAIL]/[SKIP] prose -- and wrapTool() (src/services/tool-registry.ts)
+// never sets `isError` on any path, so that prose/isError test had gone
+// permanently false: a FAILED provision silently read as a success. Both
+// tools now also return a `structuredContent` half (ProvisionAuthStructured
+// / ProvisionVcsAuthStructured -- see packages/apra-fleet-client/src/client/
+// api.mjs) with a machine-readable `ok`/`reason` pair that stays safe to
+// branch on regardless of any future prose wording change. Read THAT when
+// present; only fall back to the old prose/isError heuristic for a result
+// that carries no structuredContent at all (e.g. a test double that mocks a
+// bare `{ content }` shape).
+function provisionOutcome(result, text) {
+    const structured = result && result.structuredContent;
+    if (structured && typeof structured.ok === 'boolean') {
+        return { ok: structured.ok, reason: typeof structured.reason === 'string' ? structured.reason : null };
+    }
+    return {
+        ok: !((result && result.isError) || /^âŒ/.test(String(text == null ? '' : text).trim())),
+        reason: null,
+    };
 }
 
 // Shared provisioning core used by BOTH the REACTIVE onAuthFailure self-heal
@@ -315,11 +342,11 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     });
     const provisionRes = await fleetApi.provisionVcsAuth(provisionArgs);
     const provisionText = selfHealResultText(provisionRes);
-    // provision_vcs_auth NEVER throws on failure -- it returns a string
-    // starting with the failure emoji. A failed provision must never be
-    // allowed to report success: doing so burns the one-shot self-heal and
-    // logs a lie.
-    if ((provisionRes && provisionRes.isError) || /^âŒ/.test(provisionText.trim())) {
+    // provision_vcs_auth NEVER throws on failure -- it reports failure via
+    // structuredContent.ok === false (apra-fleet-3swo.13; see
+    // provisionOutcome above). A failed provision must never be allowed to
+    // report success: doing so burns the one-shot self-heal and logs a lie.
+    if (!provisionOutcome(provisionRes, provisionText).ok) {
         throw new Error(`provision_vcs_auth failed for member '${member}': ${provisionText || '(no detail)'}`);
     }
 
@@ -922,15 +949,25 @@ export function createLlmAuthSelfHealCallback(opts = {}) {
         }
 
         const text = selfHealResultText(provisionRes).trim();
+        const outcome = provisionOutcome(provisionRes, text);
 
-        if (/^â­/.test(text)) {
+        // apra-fleet-3swo.13: src/tools/provision-auth.ts's OK_REASONS
+        // classifies 'skipped_local_member' as ok:true (it IS a well-formed,
+        // non-erroring outcome), so this check must run BEFORE the generic
+        // ok/fail branch below -- otherwise a local member's skip would be
+        // misread as a genuine credential refresh and the (pointless) retry
+        // would fire anyway. The 'outcome.reason === null' half of the OR
+        // only matters for the legacy prose fallback (no structuredContent
+        // on the result at all), where the skip marker must still be read
+        // off the text since there is no structured reason to check.
+        if (outcome.reason === 'skipped_local_member' || (outcome.reason === null && /^â­/.test(text))) {
             // Skip marker (local member): provision_llm_auth is a no-op here,
             // so retrying would just reproduce the same failure.
             log(`[Dispatch] self-heal: provision_llm_auth skipped for local member '${member}': ${text || '(no detail)'}. This member's credentials can only be refreshed via an interactive /login on this machine.`);
             return false;
         }
 
-        if ((provisionRes && provisionRes.isError) || /^âŒ/.test(text)) {
+        if (!outcome.ok) {
             log(`[Dispatch] self-heal: provision_llm_auth failed for member '${member}': ${text || '(no detail)'}. Not retrying.`);
             return false;
         }

@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
-import { createVcsAuthSelfHealCallback, parseOwnerRepoFromRemoteUrl } from '../fleet-sprint/runner.js';
+import { createVcsAuthSelfHealCallback, createLlmAuthSelfHealCallback, parseOwnerRepoFromRemoteUrl } from '../fleet-sprint/runner.js';
 
 // apra-fleet-fmu: unit coverage for the real end-to-end onAuthFailure
 // self-heal wiring -- createVcsAuthSelfHealCallback() builds the callback
@@ -270,5 +270,116 @@ describe('createVcsAuthSelfHealCallback', () => {
             `expected a hint-lookup-failure log entry that still proceeds, got: ${JSON.stringify(logs)}`,
         );
         assert.ok(logs.some((l) => /provision_vcs_auth succeeded/.test(l)), `expected the self-heal to still succeed, got: ${JSON.stringify(logs)}`);
+    });
+});
+
+// =============================================================================
+// apra-fleet-3swo.13: provision_vcs_auth / provision_llm_auth used to be
+// classified by matching the RETIRED prose failure/skip emoji, which the
+// server no longer emits (ASCII [OK]/[FAIL]/[SKIP] now) and which wrapTool()
+// never backs with `isError` either -- so a failed provision silently read
+// as a success. Both self-heal callbacks now branch on
+// structuredContent.ok/.reason instead. These cases pin that fix: a [FAIL]
+// prose response carrying structuredContent.ok === false must still be
+// treated as a failure even though its text no longer starts with the old
+// failure emoji.
+// =============================================================================
+describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch on structuredContent, not retired emoji prose', () => {
+    test('createVcsAuthSelfHealCallback: a [FAIL] prose result with structuredContent.ok === false is still treated as a failed provision (throws)', async () => {
+        const command = async () => ({ ok: true, output: 'https://github.com/acme/widgets.git', error: null });
+        const callTool = async (name) => {
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+            if (name === 'provision_vcs_auth') {
+                return {
+                    content: [{ text: '[FAIL] member not found' }],
+                    structuredContent: { ok: false, reason: 'member_not_found' },
+                };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await assert.rejects(
+            () => onAuthFailure({ member: 'fleet-mac', label: 'G-push', error: 'auth failure' }),
+            /provision_vcs_auth failed for member 'fleet-mac'.*\[FAIL\] member not found/,
+        );
+    });
+
+    test('createVcsAuthSelfHealCallback: an [OK] ASCII prose result with structuredContent.ok === true is treated as a successful provision (no throw)', async () => {
+        const command = async () => ({ ok: true, output: 'https://github.com/acme/widgets.git', error: null });
+        const callTool = async (name) => {
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+            if (name === 'provision_vcs_auth') {
+                return {
+                    content: [{ text: '[OK] provisioned' }],
+                    structuredContent: { ok: true, reason: 'ok', expiresAt: null },
+                };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await onAuthFailure({ member: 'fleet-mac', label: 'G-push', error: 'auth failure' });
+    });
+
+    test('createLlmAuthSelfHealCallback: a [FAIL] prose result with structuredContent.ok === false returns false (no retry)', async () => {
+        const callTool = async (name) => {
+            if (name === 'provision_llm_auth') {
+                return {
+                    content: [{ text: '[FAIL] secure credential denied' }],
+                    structuredContent: { ok: false, reason: 'secure_credential_denied' },
+                };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const logs = [];
+        const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool, log: (m) => logs.push(m) });
+
+        const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
+
+        assert.equal(healed, false, 'expected a structuredContent.ok === false result to NOT be treated as healed');
+        assert.ok(
+            logs.some((l) => /provision_llm_auth failed for member 'fleet-mac'/.test(l) && /Not retrying/.test(l)),
+            `expected a failure log entry, got: ${JSON.stringify(logs)}`,
+        );
+    });
+
+    test('createLlmAuthSelfHealCallback: structuredContent.reason === "skipped_local_member" (ok: true) is still treated as a skip (no retry), not a success', async () => {
+        const callTool = async (name) => {
+            if (name === 'provision_llm_auth') {
+                return {
+                    content: [{ text: '[SKIP] local member' }],
+                    structuredContent: { ok: true, reason: 'skipped_local_member' },
+                };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const logs = [];
+        const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool, log: (m) => logs.push(m) });
+
+        const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
+
+        assert.equal(healed, false, 'expected skipped_local_member to NOT be treated as healed even though structuredContent.ok is true');
+        assert.ok(
+            logs.some((l) => /provision_llm_auth skipped for local member 'fleet-mac'/.test(l)),
+            `expected a skip log entry, got: ${JSON.stringify(logs)}`,
+        );
+    });
+
+    test('createLlmAuthSelfHealCallback: structuredContent.ok === true with a non-skip reason returns true (retry)', async () => {
+        const callTool = async (name) => {
+            if (name === 'provision_llm_auth') {
+                return {
+                    content: [{ text: '[OK] provisioned' }],
+                    structuredContent: { ok: true, reason: 'ok' },
+                };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool });
+
+        const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
+
+        assert.equal(healed, true, 'expected structuredContent.ok === true (non-skip reason) to be treated as healed');
     });
 });
