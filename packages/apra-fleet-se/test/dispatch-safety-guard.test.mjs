@@ -515,7 +515,7 @@ test('the shared guarded-module list contains runner.js and resolves to real fil
 
 test('checkModules() over the shared list reports zero dispatch-safety violations today', () => {
     const { violations, files } = checkModules();
-    assert.deepStrictEqual(files, ['runner.js'], 'the default scan set is exactly the shared list');
+    assert.deepStrictEqual(files, GUARDED_MODULES, 'the default scan set is exactly the shared list');
     assert.deepStrictEqual(violations, [], `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`);
 });
 
@@ -539,7 +539,7 @@ test('adding a second path to the shared list makes the guard scan it and name i
 
         const { violations, files } = checkModules(guardedModulePaths([fixture]));
 
-        assert.deepStrictEqual(files, ['runner.js', 'extracted-module.mjs']);
+        assert.deepStrictEqual(files, [...GUARDED_MODULES, 'extracted-module.mjs']);
         assert.strictEqual(violations.length, 1, `expected exactly one violation, got: ${JSON.stringify(violations)}`);
         // Attributed to the FIXTURE's own filename, not to runner.js -- an
         // aggregate scan that mislabelled its findings would be useless.

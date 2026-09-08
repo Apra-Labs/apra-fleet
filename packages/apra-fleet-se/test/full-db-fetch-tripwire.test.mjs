@@ -10,7 +10,7 @@ import {
     countFullDbFetches,
     FULL_DB_FETCH_CMD,
 } from '../fleet-sprint/full-db-fetch-guard.mjs';
-import { guardedModulePaths } from '../fleet-sprint/guarded-modules.mjs';
+import { guardedModulePaths, GUARDED_MODULES } from '../fleet-sprint/guarded-modules.mjs';
 import { runOnce, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 // =============================================================================
@@ -135,7 +135,7 @@ test('mock sprint: command log has no duplicate full-DB fetch per phase and no u
 
 test('source mode: the shared guarded-module list is clean today', () => {
     const { violations, files } = checkFullDbFetchModules();
-    assert.deepEqual(files, ['runner.js'], 'the default scan set is exactly the shared list');
+    assert.deepEqual(files, GUARDED_MODULES, 'the default scan set is exactly the shared list');
     assert.deepEqual(violations, [], `expected no source-mode violations, got: ${JSON.stringify(violations, null, 2)}`);
 });
 
@@ -159,7 +159,7 @@ test('source mode: adding a newly extracted module to the shared list makes the 
         );
 
         const { violations, files } = checkFullDbFetchModules(guardedModulePaths([fixture]));
-        assert.deepEqual(files, ['runner.js', 'extracted-module.mjs']);
+        assert.deepEqual(files, [...GUARDED_MODULES, 'extracted-module.mjs']);
         assert.equal(violations.length, 1, `expected exactly one violation, got: ${JSON.stringify(violations, null, 2)}`);
         assert.match(violations[0], /^extracted-module\.mjs:4 /, 'the violation must name the fixture\'s own file and line');
         assert.match(violations[0], /"bd list --limit 0 --all"/, 'the violation must quote the offending command text');
