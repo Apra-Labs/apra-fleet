@@ -10,12 +10,19 @@ import { checkDoltLiteralModules } from '../fleet-sprint/dolt-literal-guard.mjs'
 import { checkFullDbFetchModules } from '../fleet-sprint/full-db-fetch-guard.mjs';
 import { checkShellCommandPaths, formatShellCommandViolation } from '../fleet-sprint/shell-command-guard.mjs';
 import { checkUnbracketedPushModules } from '../fleet-sprint/unbracketed-push-guard.mjs';
-import { guardedModulePaths, GUARDED_MODULES, guardedModuleBasenames, UNBRACKETED_PUSH_EXEMPT } from '../fleet-sprint/guarded-modules.mjs';
+import {
+    guardedModulePaths,
+    GUARDED_MODULES,
+    guardedModuleBasenames,
+    UNBRACKETED_PUSH_EXEMPT,
+    GUARD_REGISTRATION_EXEMPT,
+} from '../fleet-sprint/guarded-modules.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
+const FLEET_SPRINT_DIR = path.join(__dirname, '../fleet-sprint');
 
 // =============================================================================
 // The shared guarded-module list is LOAD-BEARING, not decorative.
@@ -530,5 +537,185 @@ test('the shared list registers real, on-disk modules only -- a fixture is never
     for (const p of guardedModulePaths()) {
         assert.ok(fs.existsSync(p), `registered guarded module missing on disk: ${p}`);
         assert.ok(fs.realpathSync(p).startsWith(fs.realpathSync(REPO_ROOT) + path.sep), 'registered modules live in the repo');
+    }
+});
+
+// =============================================================================
+// (7) apra-fleet-3swo.25: REGISTRATION COMPLETENESS -- the shared list proves
+// it is READ by the guards ((1)-(6) above), but until now nothing proved the
+// list itself is COMPLETE. A newly extracted module that is never added to
+// GUARDED_MODULES (or the new GUARD_REGISTRATION_EXEMPT map below) silently
+// escapes every guard while all of them keep reporting green -- exactly the
+// hole this bead closes.
+//
+// The enumeration below is a RECURSIVE walk of fleet-sprint/, built
+// independently in this test file (not re-exported from guarded-modules.mjs),
+// so a bug in the walk itself cannot also hide in the code under test.
+// =============================================================================
+
+/** Recursively lists every *.mjs/*.js file under `dir`, relative-path sorted. */
+function walkFleetSprintRecursive(dir, base = '') {
+    let out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const rel = base ? `${base}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+            out = out.concat(walkFleetSprintRecursive(path.join(dir, entry.name), rel));
+        } else if (/\.(mjs|js)$/.test(entry.name)) {
+            out.push(rel);
+        }
+    }
+    return out.sort();
+}
+
+/**
+ * Every file the RECURSIVE walk must find one level down, under
+ * vcs-providers/ -- the concrete proof that the enumeration is not a flat
+ * `fs.readdirSync(fleetSprintDir)` (which would never see them, and would
+ * also never see a future `phases/*` directory -- the exact case
+ * apra-fleet-3swo.6.1's Phase 4 introduces right after this bead).
+ */
+const KNOWN_NESTED_FILES = [
+    'vcs-providers/azure-devops.mjs',
+    'vcs-providers/bitbucket.mjs',
+    'vcs-providers/dolt.mjs',
+    'vcs-providers/generic-git.mjs',
+    'vcs-providers/github.mjs',
+    'vcs-providers/index.mjs',
+    'vcs-providers/shell-helpers.mjs',
+];
+
+/**
+ * True if `relPath` (relative to fleet-sprint/) is accounted for: either
+ * registered in GUARDED_MODULES or present in GUARD_REGISTRATION_EXEMPT,
+ * compared by BASENAME -- same convention as guardedModuleBasenames()
+ * (apra-fleet-3swo.14): a nested GUARDED_MODULES/GUARD_REGISTRATION_EXEMPT
+ * entry is legal and resolves correctly, but is always attributed by its
+ * bare filename.
+ */
+function isAccountedFor(relPath, registered = GUARDED_MODULES, exempt = GUARD_REGISTRATION_EXEMPT) {
+    const base = path.basename(relPath);
+    const registeredBasenames = registered.map((f) => path.basename(f));
+    const exemptBasenames = Object.keys(exempt).map((f) => path.basename(f));
+    return registeredBasenames.includes(base) || exemptBasenames.includes(base);
+}
+
+test('recursion is real: the walk finds vcs-providers/ files one level down, which a flat listing would miss', () => {
+    const all = walkFleetSprintRecursive(FLEET_SPRINT_DIR);
+    for (const nested of KNOWN_NESTED_FILES) {
+        assert.ok(all.includes(nested), `recursive walk must find nested file ${nested}, got: ${JSON.stringify(all)}`);
+    }
+
+    // The differential control: a FLAT listing of the same directory (the
+    // regression this test pins -- someone "simplifying" the walk back to
+    // fs.readdirSync(fleetSprintDir) with no recursion) sees none of them.
+    const flat = fs.readdirSync(FLEET_SPRINT_DIR, { withFileTypes: true }).filter((e) => e.isFile() && /\.(mjs|js)$/.test(e.name)).map((e) => e.name);
+    for (const nested of KNOWN_NESTED_FILES) {
+        assert.ok(!flat.includes(nested), `a flat listing must NOT see nested file ${nested} -- if it does, the control below is meaningless`);
+    }
+});
+
+test('every *.mjs/*.js file under fleet-sprint/ (recursive) is registered in GUARDED_MODULES or present in GUARD_REGISTRATION_EXEMPT', () => {
+    const all = walkFleetSprintRecursive(FLEET_SPRINT_DIR);
+    assert.ok(all.length > 30, `sanity: expected more than 30 files under fleet-sprint/, found ${all.length}`);
+
+    const unaccounted = all.filter((f) => !isAccountedFor(f));
+    assert.deepEqual(
+        unaccounted,
+        [],
+        `every fleet-sprint module must be registered in GUARDED_MODULES or exempted in GUARD_REGISTRATION_EXEMPT with a reason; unaccounted: ${JSON.stringify(unaccounted)}`
+    );
+});
+
+test('falsifiability: dropping a currently-registered module (kb.mjs) from GUARDED_MODULES makes it unaccounted for', () => {
+    assert.ok(GUARDED_MODULES.includes('kb.mjs'), 'this pin assumes kb.mjs is registered today -- update the pinned filename if it is ever removed');
+    const withoutKb = GUARDED_MODULES.filter((f) => f !== 'kb.mjs');
+
+    assert.equal(isAccountedFor('kb.mjs', withoutKb), false, 'kb.mjs must become unaccounted for once dropped from GUARDED_MODULES (and it carries no exemption)');
+    // Restated as the real completeness test above would see it: kb.mjs
+    // would show up in the unaccounted-for list.
+    const all = walkFleetSprintRecursive(FLEET_SPRINT_DIR);
+    const unaccounted = all.filter((f) => !isAccountedFor(f, withoutKb));
+    assert.ok(unaccounted.includes('kb.mjs'), `dropping kb.mjs from GUARDED_MODULES must surface it as unaccounted, got: ${JSON.stringify(unaccounted)}`);
+
+    // GUARDED_MODULES itself is untouched by this test -- `withoutKb` is a
+    // derived copy, never assigned back.
+    assert.ok(GUARDED_MODULES.includes('kb.mjs'), 'GUARDED_MODULES must be unmodified after this test');
+});
+
+test('GUARD_REGISTRATION_EXEMPT: every entry carries a non-empty reason, no file is both registered and exempt, and every exempted file exists on disk', () => {
+    const exemptEntries = Object.entries(GUARD_REGISTRATION_EXEMPT);
+    assert.ok(exemptEntries.length > 0, 'GUARD_REGISTRATION_EXEMPT must not be empty');
+
+    const registeredBasenames = new Set(GUARDED_MODULES.map((f) => path.basename(f)));
+    for (const [file, reason] of exemptEntries) {
+        assert.equal(typeof reason, 'string', `exemption reason for ${file} must be a string`);
+        assert.ok(reason.trim().length > 0, `exemption reason for ${file} must be non-empty`);
+
+        assert.ok(
+            !registeredBasenames.has(path.basename(file)),
+            `${file} is both registered in GUARDED_MODULES and present in GUARD_REGISTRATION_EXEMPT -- a file must be exactly one of the two`
+        );
+
+        const abs = path.join(FLEET_SPRINT_DIR, file);
+        assert.ok(fs.existsSync(abs), `exempted file does not exist on disk: ${abs} (a stale exemption entry hides nothing real)`);
+    }
+});
+
+test('the five shell builders and dolt-sync.mjs reuse the reasons already written verbatim in this file\'s header, not new prose', () => {
+    const SHELL_BUILDER_REASON =
+        'deliberately emits `$HOME`, `$env:USERPROFILE`, `$env:TEMP` and `$( )` because it IS the ' +
+        'OS-branched command surface the shell-command invariant tells everyone else to route ' +
+        'through; scanning it would report its entire reason for existing as violations.';
+    for (const file of ['se-posix.mjs', 'se-windows.mjs', 'se-windows-gitbash.mjs', 'se-os-commands.mjs', 'dolt-settle.mjs']) {
+        assert.equal(
+            GUARD_REGISTRATION_EXEMPT[file],
+            SHELL_BUILDER_REASON,
+            `${file}'s exemption reason must reuse the shell-builder header reason verbatim, not re-derived prose`
+        );
+    }
+    assert.match(
+        GUARD_REGISTRATION_EXEMPT['dolt-sync.mjs'],
+        /bd dolt pull.*bd dolt push/,
+        'dolt-sync.mjs\'s exemption reason must reuse the header\'s dolt-sync rationale'
+    );
+});
+
+test('all 26 fleet-sprint files unregistered before apra-fleet-3swo.25 are now accounted for', () => {
+    // The bead's own audit (25 files) plus dolt-sync.mjs, which the same
+    // audit separately called out for exemption-reason reuse but omitted
+    // from its enumerated count -- 26 total, verified against a fresh
+    // recursive walk this pass.
+    const PREVIOUSLY_UNREGISTERED = [
+        'conflict-ladder.mjs',
+        'contracts.mjs',
+        'dispatch-safety-guard.mjs',
+        'dolt-literal-guard.mjs',
+        'dolt-settle.mjs',
+        'dolt-sync.mjs',
+        'errors.mjs',
+        'full-db-fetch-guard.mjs',
+        'guarded-modules.mjs',
+        'se-os-commands.mjs',
+        'se-posix.mjs',
+        'se-windows-gitbash.mjs',
+        'se-windows.mjs',
+        'shell-command-guard.mjs',
+        'sprint-lock.mjs',
+        'sprint-progress.mjs',
+        'unbracketed-push-guard.mjs',
+        'vcs-module.mjs',
+        'vcs-providers/azure-devops.mjs',
+        'vcs-providers/bitbucket.mjs',
+        'vcs-providers/dolt.mjs',
+        'vcs-providers/generic-git.mjs',
+        'vcs-providers/github.mjs',
+        'vcs-providers/index.mjs',
+        'vcs-providers/shell-helpers.mjs',
+        'viewer-extensions.mjs',
+    ];
+    assert.equal(PREVIOUSLY_UNREGISTERED.length, 26);
+
+    for (const f of PREVIOUSLY_UNREGISTERED) {
+        assert.ok(isAccountedFor(f), `${f} must now be registered in GUARDED_MODULES or exempted in GUARD_REGISTRATION_EXEMPT, got neither`);
     }
 });

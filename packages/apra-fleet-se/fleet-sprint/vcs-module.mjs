@@ -166,6 +166,7 @@ export async function resolveProvider(member, { fleetApi } = {}) {
 
     const provider = parsed && typeof parsed.vcsProvider === 'string' ? parsed.vcsProvider : null;
     if (!provider || !known.includes(provider)) {
+        // shell-guard-allow: nested backtick template (${provider ? `"${provider}"` : ...}) is JS interpolation resolved before this Error is thrown, never dispatched as a command string -- shell-command-guard's segment tracker mis-classifies the nested backtick as surviving expansion.
         const err = new Error(`ERROR: VCSModule: resolveProvider: member '${member}' has no registered VCS provider (vcsProvider: ${provider ? `"${provider}"` : '(absent)'}) -- known providers: ${known.join(', ')}. Provision one via provision_vcs_auth with an explicit 'provider' before relying on resolveProvider.`);
         // See VCS_NO_REGISTERED_PROVIDER above: this is the only failure a
         // caller may self-heal from, so it is the only one that carries a code.

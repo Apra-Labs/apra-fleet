@@ -102,6 +102,7 @@ function usesPowerShellQuoting(os, shell) {
  *  today (src/os/windows.ts cleanExec() spawns `powershell.exe`, and the
  *  remote path sends raw PowerShell text to the member's default shell). */
 function escapeForWindowsArgv(value) {
+    // shell-guard-allow: ${backslashes} is a JS template interpolation of the regex-replace callback's own parameter, resolved entirely in JavaScript before the escaped string is ever assembled into a command -- not a shell-side expansion.
     return String(value).replace(/(\\*)"/g, (_m, backslashes) => `${backslashes}${backslashes}\\"`);
 }
 
