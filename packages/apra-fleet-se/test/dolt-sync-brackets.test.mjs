@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -14,7 +14,20 @@ import {
     preflightBeadsHealthGate,
     verifyDoerStreakClosed,
 } from '../fleet-sprint/runner.js';
+import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
+
+// The sync.remote probe memo and the remote-tip fingerprint are both
+// module-level, process-lifetime caches keyed by member name (apra-fleet-akuv,
+// dolt sync budget review section B.1). This file reuses member names like
+// 'memberA' across many independently-scripted command() mocks, so a
+// positively-parsed answer cached by one test would otherwise leak into every
+// later test for that member. Reset both caches before every test.
+beforeEach(() => {
+    invalidateSyncRemoteCache();
+    clearLastSyncedTip();
+    clearTipProbeFailures();
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -471,6 +484,13 @@ test('doltPushAfter: default isMemberSyncRemoteConfigured check (no override) is
     assert.ok(configCallAbsent, 'doltPushAfter consulted bd-level sync.remote via command()');
     assert.equal(configCallAbsent.opts.member_name, 'memberA', 'sync.remote query carries an explicit member_name (3.2)');
 
+    // The sync.remote probe is memoized per member (apra-fleet-akuv), and the
+    // 'absent' phase above just cached a POSITIVE (configured:false) answer
+    // for 'memberA'. This test deliberately re-probes the SAME member with a
+    // different mocked answer within a single test, so the memo must be
+    // dropped here or the 'configured' phase below would silently reuse the
+    // stale 'absent' answer instead of exercising a fresh probe.
+    invalidateSyncRemoteCache('memberA');
     const configured = makeCommandMock({
         'bd dolt push': [fail(CREDENTIALS_ERROR)],
         'bd config get sync.remote': [{ ok: true, output: JSON.stringify({ value: 'git+https://github.com/Apra-Labs/fleet-e2e-toy' }), error: null }],

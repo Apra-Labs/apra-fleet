@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -9,8 +9,19 @@ import {
     syncMemberAfterOrdered,
     finalizeAbort,
 } from '../fleet-sprint/runner.js';
-import { DoltSync } from '../fleet-sprint/dolt-sync.mjs';
+import { DoltSync, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { checkDoltLiteralPath } from '../fleet-sprint/dolt-literal-guard.mjs';
+
+// The sync.remote probe memo and the remote-tip fingerprint are module-level,
+// process-lifetime caches keyed by member name (apra-fleet-akuv). This file
+// reuses member name 'm1' across many independently-scripted command() mocks,
+// so a positively-parsed answer cached by one test would otherwise leak into
+// the next test for that member. Reset both caches before every test.
+beforeEach(() => {
+    DoltSync.invalidateSyncRemoteCache();
+    DoltSync.clearLastSyncedTip();
+    clearTipProbeFailures();
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

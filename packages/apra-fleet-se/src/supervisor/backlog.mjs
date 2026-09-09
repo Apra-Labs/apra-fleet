@@ -85,7 +85,7 @@ export function parentIdOf(raw) {
 export function normalizeBead(raw) {
     const b = raw || {};
     const rawPriority = b.priority;
-    return {
+    const normalized = {
         id: typeof b.id === 'string' ? b.id : '',
         title: typeof b.title === 'string' ? b.title : '',
         issueType: b.issueType ?? b.issue_type ?? 'task',
@@ -93,6 +93,13 @@ export function normalizeBead(raw) {
         parentId: parentIdOf(b),
         priority: typeof rawPriority === 'number' && Number.isFinite(rawPriority) ? rawPriority : null,
     };
+    // A server-computed `placement` ('sprint' | 'backlog', runner.js's
+    // partitionByGoalMembership) is passed through when present: sprint-
+    // progress.mjs's computeSprintProgress() branches on it BEFORE the numeric
+    // priority filter, so dropping it here would silently change a
+    // placement-carrying row's membership. Raw `bd list` rows never carry it.
+    if (typeof b.placement === 'string') normalized.placement = b.placement;
+    return normalized;
 }
 
 /**

@@ -346,7 +346,10 @@ const DOLT_SYNC_PATH = path.join(__dirname, '../fleet-sprint/dolt-sync.mjs');
 // runDoltStep()'s single `bd dolt` spawn, isMemberSyncRemoteConfigured()'s
 // `bd config get sync.remote --json` gate, and preflightBeadsHealthGate()'s
 // best-effort `pwd` diagnostic -- exactly the three that left runner.js.
-const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 3;
+// 3 -> 4 (apra-fleet-akuv, remote-tip fingerprint): readRemoteDoltTip() gained
+// one new `git ls-remote <url> refs/dolt/data` call site (member_name:
+// member, confirmed present) used to skip a provably no-op D-pull/D-push.
+const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 4;
 
 test('every command() call site in dolt-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(DOLT_SYNC_PATH);

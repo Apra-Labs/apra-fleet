@@ -901,10 +901,25 @@ The check runs strictly before `ledger.claim()`, so a rejected launch never
 touches the ledger.
 
 **Issue-scope overlap** (`src/supervisor/scope-overlap.mjs`): re-expands each
-sprint's live parent-child subtree (via `bd list --parent`, one id at a time,
-walked breadth-first) at every launch attempt rather than trusting a
-launch-time snapshot, so a bead created mid-sprint under an already-claimed
-root is still detected.
+sprint's live parent-child subtree at every launch attempt rather than
+trusting a launch-time snapshot, so a bead created mid-sprint under an
+already-claimed root is still detected.
+
+Expansion is done from ONE bulk `bd list --all --limit 0 --json` per
+`checkLaunch()`, with the child index built in memory and both the request's
+roots and every ledger sprint's roots walked from that same index -- the same
+pattern `backlog.mjs` and `runner.js`'s `bdListScoped` use. It previously
+spawned one `bd list --parent <id>` subprocess per discovered node,
+sequentially, and then repeated the whole walk per active sprint, which turned
+a ~45-bead epic into minutes of pre-response latency (this guard is awaited
+before `POST /api/sprints` answers). The per-node walk survives only as an
+injectable test seam.
+
+The `--all` is load-bearing, not an optimization: `bd list` hides closed
+issues by default, so a CLOSED intermediate parent silently dropped its OPEN
+subtree from the overlap check, and two sprints with genuinely overlapping
+open work could both launch. The bulk version is strictly more complete than
+the per-node walk it replaced.
 
 **Known best-effort limitation -- scope freshness.** Both overlap checks above
 reason over the supervisor process's OWN service-local view of `bd` state.

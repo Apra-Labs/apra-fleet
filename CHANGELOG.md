@@ -2,6 +2,141 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Dolt sync budget: fewer, cheaper beads syncs per sprint
+
+A read-only investigation into where a fleet-sprint spends its `bd dolt pull` /
+`bd dolt push` minutes found four cheap wins, all landed here. Together they
+remove essentially all of the `sync.remote` probe spawns, most of the D-pull
+spawns, and turn a multi-minute pre-launch guard into a single bulk query.
+
+- **Pre-launch scope guard: one bulk fetch instead of one subprocess per bead**
+  (apra-fleet-72o0). `POST /api/sprints` awaits the issue-scope overlap guard
+  before it answers, and that guard walked the scope tree by spawning one
+  `bd list --parent <id> --json` per discovered node, sequentially -- then
+  repeated the whole walk for every already-active sprint's roots. A ~45-bead
+  epic took minutes and timed the launch client out. `createScopeGuard` now
+  accepts a `listAllBeads` dependency (default: one bulk fetch per
+  `checkLaunch`), builds a child index once, and expands both the request's
+  roots and every ledger sprint's roots from that same in-memory index -- the
+  pattern `backlog.mjs` and `runner.js`'s `bdListScoped` already used. The old
+  per-node walk is kept as an explicit test seam.
+  - **Correctness fix in the same path:** the bulk fetch passes `--all`.
+    `bd list` hides closed issues by default, so a CLOSED intermediate parent
+    silently dropped its OPEN subtree from the overlap check -- two sprints
+    with genuinely overlapping open work could both launch. The new guard is
+    strictly more complete than the one it replaces, not just faster.
+- **The `sync.remote` probe is memoized per member** (apra-fleet-akuv).
+  `bd config get sync.remote --json` was re-spawned on every D-pull pre-gate,
+  every D-push pre-gate and every `status()` probe -- measured at roughly
+  90-160 spawns (about 0.6s each) per sprint, re-reading a value that never
+  changes mid-run. It is now cached for the process lifetime, and ONLY when
+  the answer was positively parsed: every fail-safe path (command threw,
+  failSoft error, empty or unparseable output) still reports "configured"
+  and is deliberately NOT cached, so a transient probe failure can never pin
+  the fail-safe answer. Invalidated explicitly -- no TTL -- on any
+  `bd config set` / `bd dolt remote` / `bd init` / `bd bootstrap` the
+  orchestrator issues for that member (via the runner's central `command()`
+  wrapper), on the auth self-heal firing, and on `repair()`. Every one of
+  those seams drops the remote-tip fingerprint below alongside the memo.
+  - **A settled dispatch MARKS the member rather than wiping it.** An
+    agent's own `bd` commands never pass through `command()`, so the central
+    `agent()` wrapper tells DoltSync when a dispatch settles. An earlier cut
+    made that an unconditional wipe of both memos, which emptied the
+    fingerprint before every dispatch bracket and re-spawned the probe once
+    per dispatch (the golden mock-sprint transcript went from 1 probe to
+    14) -- the primary path then paid an extra `ls-remote` and skipped
+    nothing. The hazards do not warrant it: `bd bootstrap` (the one
+    self-heal this repo's agent instructions prescribe) is non-destructive
+    and, where it creates a DB, clones it from `sync.remote` -- a surviving
+    fingerprint stays TRUE; a forced `bd init` yields an unrelated history no
+    pull can fix, and its next push diverges into the terminals that already
+    forget the tip. The one event a surviving fingerprint would get wrong --
+    an agent-side `bd config set sync.remote <other>` -- is handled: the
+    fingerprint is bound to the URL it was minted against, and a member
+    dispatched-to since its memo was last read has `sync.remote` RE-READ (one
+    `bd config get`, a plain config.yaml read) before any pull is skipped on
+    it; a changed or unreadable answer forces a real pull. A member memoized
+    as having NO remote is the one case that never reaches that check (both
+    pre-gates exit on it first), so its memo is re-read once after any
+    dispatch too -- otherwise an agent wiring a remote mid-dispatch would
+    leave every later D-push of that member reporting a benign no-remote
+    skip while its bead closes never left the clone. So the re-read is paid
+    once per skip-after-dispatch for a member with a remote (one probe per
+    process when the remote is quiet) and once per dispatch only for a member
+    without one (sandboxes; the no-remote mock sprint's golden transcript
+    shows exactly that shape).
+  - **The tip probe cannot hang on a credential prompt and disables itself
+    after two consecutive failures.** The probe runs with
+    `-c credential.interactive=never -c core.askPass=` so a member without a
+    usable credential helper fails at once instead of sitting on the 30s
+    probe timeout; and after two consecutive failed probes the member's probe
+    is switched off for the process (re-armed by the same hard seams that
+    drop the memos), so a member that cannot list the remote pays nothing
+    further and every pull is simply real, as before the feature.
+- **The transient retry ladder is time-boxed, not count-boxed.** Widening the
+  ladder to 8 retries with a 30s backoff cap fixed a real Windows `git.exe`
+  spawn outage (measured 1-3 minutes) but applied that budget to every
+  transient kind, and took the unit suite from 80s to 6m15s. The ladder is now
+  split by error class: a SPAWN OUTAGE (`fork/exec ...`, "Not enough memory
+  resources") is retried against a 3-minute WALL-CLOCK budget with the 30s cap
+  -- so the bound is the same 3 minutes whether attempts return instantly or
+  sit on the 600s step timeout -- while every other transient keeps the short
+  pre-widening ladder (5 retries, 8s cap). An explicitly passed
+  `maxTransientRetries` is honored by BOTH ladders (a hard attempt cap on the
+  spawn-outage ladder as well, with the wall-clock budget still underneath);
+  only the default changed.
+- **Remote-tip fingerprint: a D-pull is skipped only when the remote provably
+  has not moved.** The shared remote's `refs/dolt/data` is the only channel
+  through which beads state moves between machines, so "is a pull needed?" has
+  a cheap exact answer. Before a real `bd dolt pull`, one
+  `git ls-remote <sync.remote> refs/dolt/data` (one round trip, no Dolt engine
+  startup) is compared against the SHA that member last synchronized to; on a
+  match the pull is not spawned and the step reports
+  `{ skipped: true, reason: 'remote-unchanged' }`. The recorded tip is minted
+  in exactly one place: the SHA observed immediately BEFORE a successful pull
+  (a push racing in merely forces the next pull to be real). A successful
+  push FORGETS the member's tip and never records one -- the push mutex only
+  serializes this fleet's own pushes, so a post-push read of the remote can
+  observe an unrelated machine's later commit and would record a SHA this
+  clone has never seen; and for bd's git-backed remote the pushed SHA is a
+  git commit minted inside the push itself, with no stable local ref to read
+  it from. The pusher pays one real pull at its next bracket, after which the
+  skip is re-armed. No `ls-remote` is issued inside the D-push bracket at
+  all. Every uncertainty -- no recorded tip, an `ls-remote` failure or
+  timeout, unparseable output, a `sync.remote` that could not be positively
+  read or whose URL fails a strict safe-charset check -- falls through to a
+  REAL pull. There is no path in which doubt produces a skip. The probe target
+  is always resolved from `sync.remote` (via the memo above), never from git's
+  `origin`, since the two can legitimately differ on a member -- which is why
+  a scheme-less `sync.remote` (a bare Dolt remote NAME such as `origin`, or a
+  bare path) yields no probe at all: `git ls-remote origin` would silently
+  resolve against git's origin. An http(s) userinfo (`user:token@`) is
+  stripped from the URL before it becomes part of the probe command, because
+  the workflow journals every command string verbatim into the persisted,
+  dashboard-visible transcript; the stripped URL authenticates through the
+  git credential helper every provisioned member carries, and a member
+  without one gets a failed probe, i.e. a real pull. Disable per call site
+  with `remoteTipFingerprint: false`.
+
+- **The supervisor dashboard had the same `--all` gap, with a worse
+  consequence.** `dashboard.mjs`'s progress bars and `decomposedParentIds`
+  check reused `backlog.mjs`'s `bdListAllBeads()` -- the same fetcher that
+  deliberately omits `--all` for the visible Backlog board (which intentionally
+  shows open work only). Reused for progress computation, that omission meant
+  every sprint's `closed` count was silently always `0` (`bd list` excludes
+  closed issues entirely, and `computeSprintProgress()` derives `closed` by
+  filtering for `status === 'closed'`), on top of the same closed-parent-
+  hides-open-subtree hole. The dashboard's default `listAllBeads` now uses
+  `scope-overlap.mjs`'s `bdListAllBeadsWithClosed()` (`--all`) instead, with
+  `buildSprintViews()` normalizing the raw rows itself. The Backlog board's
+  own fetch (`bdListAllBeadsRaw()`/`bdListAllBeads()`) is unchanged by design
+  -- it intentionally excludes closed work from that view.
+
+This deliberately does NOT include the two larger items from the same review:
+squashing Dolt history plus a fleet-wide re-bootstrap (a destructive
+operational change needing a quiescent window and its own runbook), and moving
+the Dolt remote off the git transport onto a bucket.
+
 ## [Unreleased] -- Member VCS-provider registration and dispatch-time self-heal
 
 Umbrella context: apra-fleet-5oo ("member sprint-role readiness is never

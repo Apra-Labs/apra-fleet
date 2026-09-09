@@ -233,8 +233,25 @@ describe('apra-fleet-p2to.4.1: clean-state pause guard wiring (mock-sprint integ
 
             assert.equal(pausedDuringDispatch, false, 'the pause must not engage while still mid-dispatch inside the open withGitSync bracket');
             assert.ok(pausedEventFired, 'the pause must eventually engage once the bracket (and any other in-flight activity) has fully closed');
+            // apra-fleet-akuv: this scenario's clone has no configured dolt
+            // remote, so doltPushAfter's sync.remote pre-gate has always
+            // skipped the actual 'bd dolt push' spawn here -- the only
+            // post-dispatch bracket activity was ever the git push plus the
+            // 'bd config get sync.remote --json' pre-gate PROBE itself. That
+            // probe is now memoized per member for the process lifetime (see
+            // dolt-sync.mjs's sync.remote probe memoization section), and by
+            // this point in the sprint the memo for 'local' is already warm
+            // from an earlier bracket -- so the probe is served from cache
+            // and no longer emits its own activity:start. The post-dispatch
+            // bracket now contributes exactly one further activity (the git
+            // push) instead of two, so the strongest bound this scenario can
+            // still prove is "at least one more activity", not "more than
+            // one more" -- weakening the threshold, not the assertion's
+            // purpose: it still proves the guard deferred past the git push
+            // that follows the in-flight dispatch, not just past the dispatch
+            // itself.
             assert.ok(
-                pausedAtActivity > pauseRequestedAtActivity + 1,
+                pausedAtActivity > pauseRequestedAtActivity,
                 `expected at least one more activity (the post-dispatch git/dolt sync) to start between the pause request (activity #${pauseRequestedAtActivity}) and the pause actually engaging (activity #${pausedAtActivity}) -- proving the guard deferred past the rest of the bracket, not just past the single in-flight dispatch`,
             );
 
