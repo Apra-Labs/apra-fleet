@@ -79,6 +79,15 @@ import {
 // out of runner.js (apra-fleet-3swo.4.6); beads-scope.mjs's header is the
 // written-down version of that contract.
 import { createBeadsScope, classifyVerifySet } from './beads-scope.mjs';
+// The reviewer-verdict bead transitions: the ONE goal-scope-guarded reopen
+// path all three verdict sites (per-round reviewer, Final Review, Re-Review)
+// now take, the replanIds fold, and the verdict-contract predicate. Extracted
+// out of runner.js (apra-fleet-3swo.4.7), which also brought the previously
+// UNGUARDED Re-Review site under the same guard as the other two.
+import {
+    isReviewerContractViolation, applyGuardedReopens, foldReplanIds,
+    parseIdWithReasonEntry,
+} from './beads-transitions.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -156,6 +165,11 @@ export {
 // isBeadsMutatingCommand were module-private to the pre-move region and stay
 // reachable only from beads-scope.mjs.
 export { classifyVerifySet };
+// Re-exported so importers of the reviewer verdict-contract predicate from
+// runner.js keep working; beads-transitions.mjs is the single source of truth
+// for it and for the reopen/replan transitions it gates
+// (apra-fleet-3swo.4.7).
+export { isReviewerContractViolation };
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
@@ -2072,28 +2086,9 @@ export function kbPromotionBlock(kbCandidates) {
     ];
 }
 
-/**
- * Detects the reviewer contract violation described on
- * `ReviewerContractViolationError`: a `CHANGES_NEEDED` verdict naming nothing
- * to reopen, proposing no follow-up work, AND naming no scoped-replan targets
- * is schema-legal but self-contradictory -- the orchestrator has nothing to
- * act on, so the sprint cannot make progress off of it. A non-empty
- * `replanIds` exempts the verdict from that hard abort even with empty
- * reopenIds/newTasks -- NOT because the field is guaranteed to be consumed
- * (the scoped-replan machinery below only acts on replanIds entries ALSO
- * named in reopenIds this round; see buildReviewerPrompt and the fold-in
- * loop around the `replanIds: DROPPED` log line), but because a verdict that
- * names a genuine replan intent in `notes` still represents real reviewer
- * signal worth an ordinary next-round retry rather than a hard sprint abort.
- * @param {{ verdict: string, reopenIds?: string[], replanIds?: string[], newTasks?: object[] }} verdict
- * @returns {boolean}
- */
-export function isReviewerContractViolation(verdict) {
-    return verdict.verdict === 'CHANGES_NEEDED'
-        && (!verdict.reopenIds || verdict.reopenIds.length === 0)
-        && (!verdict.newTasks || verdict.newTasks.length === 0)
-        && (!verdict.replanIds || verdict.replanIds.length === 0);
-}
+// isReviewerContractViolation lives in beads-transitions.mjs
+// (apra-fleet-3swo.4.7) alongside the reopen/replan transitions that consume
+// the same verdict contract; it is re-exported from this file above.
 
 /**
  * Determines whether a plan-reviewer verdict is CONFINED to specific beads
@@ -5787,39 +5782,29 @@ async function runSprintCycle(context) {
             // below-goal beads, but the orchestrator enforces it -- reopening a
             // DEFERRED P3 feature in a P1/P2 sprint injects out-of-scope work and
             // pins the verdict at CHANGES_NEEDED forever.
-            let reopenAllowlist = null;
-            if (verdict.reopenIds.length > 0) {
-                try {
-                    const inScopeNow = await bdListScoped('');
-                    reopenAllowlist = new Map(inScopeNow.map((b) => [b.id, b]));
-                } catch {
-                    reopenAllowlist = null; // lookup failed -- apply reopens unguarded rather than dropping them
-                }
-            }
             // Ids actually reopened this round (survived the goal-scope
-            // allowlist above) -- gates which `replanIds` entries below are
-            // trusted, so a reviewer naming a replanIds id that was never really
-            // reopened (out of scope, or simply absent from reopenIds) can never
-            // short-circuit the loop.
-            const reopenedIds = new Set();
-            for (const id of verdict.reopenIds) {
-                const bead = reopenAllowlist ? reopenAllowlist.get(id) : null;
-                if (reopenAllowlist && bead && typeof bead.priority === 'number' && bead.priority > goalMax) {
-                    log(`Reviewer reopenIds: SKIPPED '${id}' (priority P${bead.priority} is below this sprint's goal ${validated.goal} -- deferred scope, not reopened).`);
-                    continue;
-                }
-                await command(
-                    `bd update ${id} --status=open`,
-                    { member_name: orchestratorMember, silent: true, label: `Reopen ${id} per reviewer verdict` }
-                );
-                // Track per-bead reopen counts for reopen-thrash detection.
-                recordReopen(id);
-                // Per-bead feedback routing: only beads named in reopenIds carry
-                // this round's feedback into the next round's doer prompt --
-                // never a blanket broadcast.
-                perBeadFeedback.set(id, verdict.notes);
-                reopenedIds.add(id);
-            }
+            // allowlist) -- gates which `replanIds` entries below are trusted,
+            // so a reviewer naming a replanIds id that was never really
+            // reopened (out of scope, or simply absent from reopenIds) can
+            // never short-circuit the loop.
+            const reopenedIds = new Set(await applyGuardedReopens({
+                entries: verdict.reopenIds,
+                bdListScoped, goalMax, goal: validated.goal, log, command,
+                member: orchestratorMember,
+                logPrefix: 'Reviewer reopenIds',
+                buildReopenCommand: ({ id }) => ({
+                    cmd: `bd update ${id} --status=open`,
+                    label: `Reopen ${id} per reviewer verdict`,
+                }),
+                onReopened: ({ id }) => {
+                    // Track per-bead reopen counts for reopen-thrash detection.
+                    recordReopen(id);
+                    // Per-bead feedback routing: only beads named in reopenIds
+                    // carry this round's feedback into the next round's doer
+                    // prompt -- never a blanket broadcast.
+                    perBeadFeedback.set(id, verdict.notes);
+                },
+            }));
             // Fold this round's reviewer `replanIds` (absent/undefined on
             // verdicts that do not use it, so a no-op then) into the cycle's
             // running union, consulted at the top of the next iteration's
@@ -5837,24 +5822,9 @@ async function runSprintCycle(context) {
             // pass for it -- it is handed to the next cycle's planner instead.
             // This is what makes "max one scoped replan per bead per cycle" hold
             // regardless of the round budget.
-            for (const id of (verdict.replanIds || [])) {
-                if (!reopenedIds.has(id)) {
-                    log(
-                        `[fleet-sprint] replanIds: DROPPED '${id}' -- not also named in this round's reopenIds ` +
-                        `(reviewer prompt requires replanIds to be a subset of reopenIds), so it never reaches the ` +
-                        `scoped-replan machinery.`
-                    );
-                    continue;
-                }
-                if (replannedThisCycle.has(id)) {
-                    log(
-                        `[fleet-sprint] replan loop guard: bead ${id} was already scoped-replanned once this cycle ` +
-                        `(C${cycle}) and a reviewer has flagged it for replan AGAIN -- refusing a second in-cycle scoped ` +
-                        `replan (max one per bead per cycle). It stays reopened and is handed off to the next cycle's ` +
-                        `planner rather than re-planned again now.`
-                    );
-                    continue;
-                }
+            for (const id of foldReplanIds({
+                replanIds: verdict.replanIds, reopenedIds, replannedThisCycle, cycle, log,
+            })) {
                 replanIds.add(id);
             }
             for (const newTask of verdict.newTasks) {
@@ -6566,14 +6536,26 @@ async function runSprintCycle(context) {
             // reopens beads or proposes follow-up work must have those
             // effects actually applied, not silently discarded just because
             // this dispatch happened outside the normal Develop loop.
-            for (const id of reReviewVerdict.reopenIds) {
-                await command(
-                    `bd update ${id} --status=open`,
-                    { member_name: orchestratorMember, silent: true, label: `Reopen ${id} per re-review verdict` }
-                );
+            //
+            // apra-fleet-3swo.4.7: this site used to apply reopenIds with NO
+            // goal-scope guard -- the only one of the three verdict sites that
+            // did. It now goes through the same applyGuardedReopens() path as
+            // the per-round reviewer and Final Review, so a below-goal
+            // DEFERRED bead named here is skipped with the identical
+            // "deferred scope, not reopened" outcome instead of being pulled
+            // back into a sprint that no longer targets it.
+            await applyGuardedReopens({
+                entries: reReviewVerdict.reopenIds,
+                bdListScoped, goalMax, goal: validated.goal, log, command,
+                member: orchestratorMember,
+                logPrefix: 'Re-review reopenIds',
+                buildReopenCommand: ({ id }) => ({
+                    cmd: `bd update ${id} --status=open`,
+                    label: `Reopen ${id} per re-review verdict`,
+                }),
                 // Track per-bead reopen counts for reopen-thrash detection.
-                recordReopen(id);
-            }
+                onReopened: ({ id }) => recordReopen(id),
+            });
             for (const newTask of reReviewVerdict.newTasks) {
                 const validation = validateNewTask(newTask);
                 if (!validation.ok) {
@@ -6957,27 +6939,16 @@ async function runSprintCycle(context) {
     // bead's existing notes.
     const finalReopenIds = Array.isArray(finalVerdictResult.reopenIds) ? finalVerdictResult.reopenIds : [];
     if (finalReopenIds.length > 0) {
-        let reopenAllowlist = null;
-        try {
-            const inScopeNow = await bdListScoped('');
-            reopenAllowlist = new Map(inScopeNow.map((b) => [b.id, b]));
-        } catch {
-            reopenAllowlist = null; // lookup failed -- apply reopens unguarded rather than dropping them
-        }
-        const reopenedIds = [];
-        for (const entry of finalReopenIds) {
-            const id = entry && typeof entry.id === 'string' ? entry.id.trim() : '';
-            const reason = entry && typeof entry.reason === 'string' ? entry.reason.trim() : '';
-            if (!id || !reason) {
-                log(`Final Review reopenIds: SKIPPED a malformed entry (both id and reason are required) -- ${JSON.stringify(entry)}`);
-                continue;
-            }
-            const bead = reopenAllowlist ? reopenAllowlist.get(id) : null;
-            if (reopenAllowlist && bead && typeof bead.priority === 'number' && bead.priority > goalMax) {
-                log(`Final Review reopenIds: SKIPPED '${id}' (priority P${bead.priority} is below this sprint's goal ${validated.goal} -- deferred scope, not reopened).`);
-                continue;
-            }
-            try {
+        // Same guard, same fail-open, same skip log as the other two verdict
+        // sites -- only the entry shape ({id, reason}, both required) and the
+        // --append-notes command text are this site's own.
+        const reopenedIds = await applyGuardedReopens({
+            entries: finalReopenIds,
+            bdListScoped, goalMax, goal: validated.goal, log, command,
+            member: orchestratorMember,
+            logPrefix: 'Final Review reopenIds',
+            parseEntry: parseIdWithReasonEntry,
+            buildReopenCommand: ({ id, reason }) => {
                 // bd update has no --append-notes-file / --stdin equivalent for
                 // notes (only --body-file/--stdin, and only for description) --
                 // --append-notes only accepts an inline string. reason is
@@ -6987,19 +6958,23 @@ async function runSprintCycle(context) {
                 const safeReason = sanitizePrText(reason);
                 if (!safeReason) {
                     log(`Final Review reopenIds: SKIPPED '${id}' (reason sanitized to empty -- nothing safe to record).`);
-                    continue;
+                    return null;
                 }
-                await command(
-                    `bd update ${id} --status=open --append-notes "[Final Review C${finalCycleLabel}] Reopened -- ${safeReason}"`,
-                    { member_name: orchestratorMember, silent: true, label: `Reopen ${id} per Final Review verdict` }
-                );
-                reopenedIds.push(id);
+                return {
+                    cmd: `bd update ${id} --status=open --append-notes "[Final Review C${finalCycleLabel}] Reopened -- ${safeReason}"`,
+                    label: `Reopen ${id} per Final Review verdict`,
+                };
+            },
+            onReopened: ({ id, reason }) => {
                 dPushNeededAfterFinalFindings = true;
-                log(`Final Review reopenIds: reopened ${id} -- ${safeReason}`);
-            } catch (reopenErr) {
+                log(`Final Review reopenIds: reopened ${id} -- ${sanitizePrText(reason)}`);
+            },
+            // A single bead's reopen failing must never abort Final Review;
+            // the reason is preserved verbatim in the run log instead.
+            onEntryError: ({ id, reason }, reopenErr) => {
                 log(`[fleet-sprint] Final Review reopen FAILED (non-fatal) for '${id}': ${reopenErr.message} -- reason preserved verbatim in this run log: ${reason}`);
-            }
-        }
+            },
+        });
         if (reopenedIds.length > 0) {
             log(`Final Review: reopened ${reopenedIds.length} bead(s): ${reopenedIds.join(', ')}.`);
         }

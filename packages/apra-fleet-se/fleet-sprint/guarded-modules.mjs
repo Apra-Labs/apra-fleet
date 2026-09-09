@@ -60,6 +60,7 @@ export const GUARDED_MODULES = [
     'coordination.mjs',
     'kb.mjs',
     'beads-scope.mjs',
+    'beads-transitions.mjs',
 ];
 
 /**
