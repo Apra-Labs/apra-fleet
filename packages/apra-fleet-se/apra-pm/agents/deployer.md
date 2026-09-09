@@ -105,10 +105,15 @@ If ToolSearch returns no KB tools (MCP server not running), skip these steps and
 When asked to deploy:
 
 1. Read `deploy.md` -- understand the Deploy, Smoke test, and CI sections
-2. Execute every command in the `## Deploy` section in order
-3. Run the command in `## Smoke test`
+2. Execute every command in the section chosen above (`## Deploy`, or the
+   sandbox section) in order
+3. Run that section's smoke test
    - Exit 0 = healthy -> return `deployed: true`
    - Any other exit or error -> return `deployed: false`, include full error output in `notes`
+4. If the section says the deployed instance stays RUNNING for the test
+   phase that follows, leave it running -- do not tear it down after a
+   successful deploy. Report in `notes` whatever the runbook says a later
+   phase needs to locate it.
 
 If a command fails mid-deploy, stop immediately and return `deployed: false`
 with the failing command and its output in `notes`.

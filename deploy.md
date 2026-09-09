@@ -26,19 +26,14 @@ compose_permissions tool delivers); a broader prefix entry counts as coverage:
 - `Bash(curl * localhost:8787/api/reservations/*)` -- only for the documented
   force-release of a stale reservation.
 
-`## Sandbox Deploy` never runs the installer; it shares the build prefixes
-above and additionally needs:
-- `Bash(node dist/index.js *)` -- sandbox fleet server `start` and its
-  `--version` smoke test. A broader `Bash(node:*)` counts.
-- `Bash(node *packages/apra-fleet-se/bin/serve.mjs *)` -- sandbox supervisor.
-  Invoked with an ABSOLUTE `<repo-root>/...` path, so a relative-prefix entry
-  does not cover it; `Bash(node:*)` does.
-- `Bash(curl * localhost:18787/*)` -- sandbox supervisor health, members,
-  shutdown. Substitute your actual sandbox port.
-- `Bash(mkdir *)` and `Bash(rm -rf *fleet-sandbox-*)` -- sandbox root lifecycle.
-- `Bash(kill:*)` -- teardown's pid-scoped kill of the sandbox fleet server.
-- `Bash(lsof:*)` / `Bash(launchctl list*)` -- Step 0's port and auto-start
-  survey (POSIX). Windows equivalents: `Get-NetTCPConnection`, `schtasks /query`.
+`## Sandbox Deploy` never runs the installer. It shares the build prefixes
+above (`preflight-clear-build-locks`, `npm ci`, `npm run build`) and
+additionally needs exactly one more:
+- `Bash(node scripts/sandbox-deploy.mjs *)` -- the whole sandbox lifecycle
+  (`up`, `env`, `teardown`, ...). Port probes, HTTP checks, pid-scoped kills
+  and the final `rm -rf` all happen INSIDE the script, never as separate Bash
+  calls, so no `kill`/`rm`/`curl`/`lsof` entries are needed. A broader
+  `Bash(node:*)` counts.
 
 ## Deploy
 
@@ -162,9 +157,10 @@ integration / regression tests). Only a deploy that genuinely intends to
 REPLACE this machine's live singleton belongs in `## Deploy`.
 
 A sandbox deploy stands up a throwaway fleet MCP server + fleet-sprint
-supervisor pair ALONGSIDE production: separate data dirs, separate ports, its
+supervisor pair ALONGSIDE production: own data dirs, OS-assigned ports, its
 own empty member registry. It never stops, kills, or fights production, and
-never calls `install --force`.
+never calls `install --force`. `scripts/sandbox-deploy.mjs` owns the whole
+lifecycle; the rest of this section says what it does and why.
 
 ### Why this section exists
 
@@ -206,256 +202,172 @@ Two load-bearing consequences:
    `<APRA_FLEET_DATA_DIR>/server.json`** (`resolveFleetServerConnection` ->
    `checkRunningInstance`,
    `packages/apra-fleet-client/src/client/server-resolution.mjs`); there is no
-   separate fleet-port setting. Exporting `APRA_FLEET_DATA_DIR` for the
-   supervisor points it at the sandbox server, whose own empty `registry.json`
-   gives it an empty member list while production's is untouched.
+   separate fleet-port setting. Setting `APRA_FLEET_DATA_DIR` in the
+   supervisor's environment points it at the sandbox server, whose own empty
+   `registry.json` gives it an empty member list while production's is
+   untouched.
+
+### Why a script, not inline shell
+
+A dispatched agent runs each step as its own stateless shell: an `export` in
+one command is gone by the next. An inline recipe therefore launches the
+supervisor with `APRA_FLEET_DATA_DIR` unset, and consequence 2 silently
+attaches the "sandbox" supervisor to PRODUCTION's `server.json`. So the script
+persists every chosen value in ONE file and every subcommand re-reads it:
+
+- values file: `<home>/.fleet-sandbox-<safe-id>.env` (flat `KEY=value` lines)
+- sandbox root: `<home>/tmp/fleet-sandbox-<safe-id>` (`mcp/` and `se/` inside)
+- `<safe-id>` = sprintId with unsafe characters replaced by `-`, plus
+  `-<first 8 hex of sha1(sprintId)>` so `a/b` and `a-b` never share a sandbox
+- `<home>` = Node's `os.homedir()` (`USERPROFILE` on Windows), the same under
+  Git Bash and PowerShell
+
+Both derive from the sprintId alone -- the literal `Your dispatching sprint's
+own supervisor reservation id (sprintId): <id>` line in every phase's
+dispatch prompt -- so a later, separately dispatched phase finds the SAME
+sandbox with nothing threaded through the orchestrator. The values file lives
+OUTSIDE the sandbox root so Teardown's `rm -rf` can never orphan the pids it
+needs.
 
 ### Non-goals -- hard rules for a sandbox deploy
 
 - **NEVER run the installer** (`install`, `install --force`). The install root
   is hardcoded to `~/.apra-fleet` (`FLEET_BASE` in `src/cli/config.ts`) with
   no override, so any install overwrites the production install AND its OS
-  auto-start registration. Run the freshly built `dist/index.js` in place.
+  auto-start registration. The script runs the freshly built `dist/index.js`
+  in place.
 - **NEVER run `apra-fleet stop` / `node dist/index.js stop`** to tear down.
   `runStop()` (`src/cli/stop.ts`) checks `svcMgr.isInstalled()` FIRST with no
   `isNonDefaultInstance()` guard (the asymmetry with `start` is real): with
   the production service registered, `stop` in a sandbox environment stops
   PRODUCTION and leaves your sandbox running. Use the Teardown below.
-- **NEVER bind the production ports.** `7523` (fleet MCP) and `8787`
-  (supervisor) are off limits, as is whatever port production actually uses on
-  this member if it differs -- check first (Step 0).
+- **NEVER bind the production ports.** The script asks the OS for free ports
+  and refuses `7523`/`8787` (and the regression playbook's `18700`/`18701`).
 - **NEVER write into `~/.apra-fleet`, `~/.apra-fleet-se`, or production's
   configured data dirs.** Everything lives under the sandbox root.
 - **Do NOT run the `## Deploy` active-sprints gate.** It protects a shared
   singleton you are about to restart; a sandbox restarts nothing, so a live
   foreign sprint is not a reason to stop.
 
-### Step 0: record production's real ports and data dirs
+### Lifecycle ownership -- who runs what
 
-Do not assume defaults: a member may run production on a non-default port
-(fleet-mac serves on `7524` while a launchd-managed instance holds `7523`).
-Capture what is live, then pick sandbox ports that collide with none of it.
+| Phase (role) | Runs | Leaves behind |
+| --- | --- | --- |
+| Deploy (`deployer`) | Step 1 build, Step 2 `up` | the sandbox RUNNING, values file on disk |
+| Integration Test (`integ-test-runner`) | `env` to locate it, the tests, then `teardown` LAST, pass or fail | nothing |
+| Regression Test (`regression-test-runner`) | `teardown` as a sweep for a sandbox Integ Test never got to (Deploy succeeded, Integ did not run) | nothing |
 
-POSIX:
-```bash
-lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -E 'node|apra-flee' || true
-launchctl list 2>/dev/null | grep -i apra-fleet || true   # macOS
-systemctl --user list-units 2>/dev/null | grep -i apra-fleet || true  # Linux
-```
-
-Windows (PowerShell):
-```powershell
-Get-NetTCPConnection -State Listen |
-  Where-Object { $_.LocalPort -in 7523,8787,17523,18787 } |
-  Select-Object LocalPort, OwningProcess
-schtasks /query /tn "*apra-fleet*" 2>$null
-```
+The deployer never tears down a sandbox that came up: Integration Test runs
+AFTER Deploy and is what the sandbox exists for. If `up` fails, the script
+tears down whatever it started before exiting non-zero.
 
 ### Step 1: build (no install)
 
 Same build steps as `## Deploy` (pre-flight included; a failed `npm ci` leaves
 `node_modules` PARTIALLY installed) but STOP before the installer.
 `npm run build:binary` is only needed to test the SEA binary itself;
-`dist/index.js` is what this section runs.
+`dist/index.js` is what this section runs. Same commands in POSIX and
+PowerShell:
 
-POSIX:
 ```bash
 node scripts/preflight-clear-build-locks.mjs
 npm ci
 npm run build
 ```
 
-Windows (PowerShell):
-```powershell
-node scripts/preflight-clear-build-locks.mjs
-npm ci
-npm run build
-```
-
-### Step 2: choose the sandbox root and ports
-
-Conventions (override if Step 0 shows a collision):
-
-- Sandbox root: `<tmp>/fleet-sandbox-<sprint-or-cycle-id>` -- per-dispatch, so
-  concurrent sandbox deploys never share state.
-- Fleet MCP port: `17523` (`7523` + 10000).
-- Supervisor port: `18787` (`8787` + 10000).
-
-These avoid the ranges already reserved elsewhere: the regression smoke test's
-`18700`/`18701`, viewer ports from `8081` (`DEFAULT_SPAWNER_BASE_PORT`), and
-the dolt settle range `13300-13400` (`DEFAULT_PORT_RANGE`). If a chosen port
-is occupied, pick another and record it -- do NOT kill whatever holds it. The
-fleet MCP server silently rebinds to an OS-assigned port on `EADDRINUSE`
-(`src/services/http-transport.ts`), so Step 3 verifies the recorded port.
-
-### Step 3: launch the sandbox fleet MCP server
-
-POSIX:
-```bash
-REPO="$(pwd)"                       # this checkout
-SB="$HOME/tmp/fleet-sandbox-$SPRINT_ID"
-rm -rf "$SB"; mkdir -p "$SB/mcp" "$SB/se"
-export APRA_FLEET_DATA_DIR="$SB/mcp"
-export APRA_FLEET_PORT=17523
-export FLEET_SE_DATA_DIR="$SB/se"
-export FLEET_SE_SWEEP_OWNER_DATA_DIR="$SB"
-
-node "$REPO/dist/index.js" start > "$SB/start.log" 2>&1 || {
-  echo "sandbox fleet server failed to start -- see $SB/start.log" >&2; exit 1; }
-sleep 4
-```
-
-Windows (PowerShell):
-```powershell
-$Repo = (Get-Location).Path
-$SB = Join-Path $env:USERPROFILE "tmp\fleet-sandbox-$SprintId"
-if (Test-Path $SB) { Remove-Item -Recurse -Force $SB }
-New-Item -ItemType Directory -Force (Join-Path $SB "mcp"), (Join-Path $SB "se") | Out-Null
-$env:APRA_FLEET_DATA_DIR = Join-Path $SB "mcp"
-$env:APRA_FLEET_PORT = "17523"
-$env:FLEET_SE_DATA_DIR = Join-Path $SB "se"
-$env:FLEET_SE_SWEEP_OWNER_DATA_DIR = $SB
-
-node (Join-Path $Repo "dist\index.js") start *> (Join-Path $SB "start.log")
-Start-Sleep -Seconds 4
-```
-
-`start`, not `run`: `start` direct-spawns a detached child (guaranteed by
-`isNonDefaultInstance()`) and the spawned server writes `server.json`, the
-ONLY thing that makes the instance discoverable to the supervisor in Step 4.
-
-**Verify the recorded port, do not trust the launch** (silent-rebind hazard,
-Step 2):
-
-POSIX:
-```bash
-ACTUAL_PORT="$(node -e '
-  const fs=require("node:fs"), path=require("node:path");
-  const p=path.join(process.env.APRA_FLEET_DATA_DIR,"server.json");
-  process.stdout.write(String(JSON.parse(fs.readFileSync(p,"utf8")).port ?? ""));
-')"
-[ "$ACTUAL_PORT" = "$APRA_FLEET_PORT" ] || {
-  echo "sandbox server bound $ACTUAL_PORT, not $APRA_FLEET_PORT -- refusing to continue" >&2
-  exit 1; }
-```
-
-Windows (PowerShell):
-```powershell
-$Info = Get-Content (Join-Path $env:APRA_FLEET_DATA_DIR "server.json") | ConvertFrom-Json
-if ("$($Info.port)" -ne $env:APRA_FLEET_PORT) {
-  Write-Error "sandbox server bound $($Info.port), not $env:APRA_FLEET_PORT"; exit 1
-}
-```
-
-### Step 4: launch the sandbox supervisor
-
-Inherits `APRA_FLEET_DATA_DIR` (points it at the sandbox fleet server) and
-`FLEET_SE_SWEEP_OWNER_DATA_DIR` (scopes its dolt-orphan-sweep to the sandbox
-so it can never kill a production sprint's ephemeral `dolt sql-server`).
-
-POSIX:
-```bash
-nohup node "$REPO/packages/apra-fleet-se/bin/serve.mjs" --port 18787 \
-  > "$SB/supervisor.log" 2>&1 &
-sleep 5
-curl -sf http://localhost:18787/api/health || {
-  echo "sandbox supervisor did not come up -- see $SB/supervisor.log" >&2; exit 1; }
-```
-
-Windows (PowerShell):
-```powershell
-Start-Process -FilePath "node" `
-  -ArgumentList (Join-Path $Repo "packages\apra-fleet-se\bin\serve.mjs"), "--port", "18787" `
-  -RedirectStandardOutput (Join-Path $SB "supervisor.log") `
-  -RedirectStandardError  (Join-Path $SB "supervisor.err.log") `
-  -WindowStyle Hidden
-Start-Sleep -Seconds 5
-Invoke-RestMethod http://localhost:18787/api/health
-```
-
-### Step 5: prove isolation before testing anything
-
-A sandbox that silently attached to production is worse than none. All three
-must hold:
-
-POSIX:
-```bash
-# 1. Sandbox supervisor sees an EMPTY registry, not production's members.
-curl -sf http://localhost:18787/api/members     # expect {"members":[]}
-
-# 2. Production still answers on its own port, with its own members.
-curl -sf http://localhost:8787/api/health       # substitute production's real port
-
-# 3. The sandbox is NOT registered for OS auto-start.
-launchctl list 2>/dev/null | grep -i apra-fleet || true   # macOS: only production's label
-```
-
-Windows (PowerShell):
-```powershell
-Invoke-RestMethod http://localhost:18787/api/members
-Invoke-RestMethod http://localhost:8787/api/health
-schtasks /query /tn "*apra-fleet*" 2>$null
-```
-
-A member registered against the sandbox (`register-member` with these env
-vars exported) lands in the sandbox's own `registry.json`, invisible to
-production's `list_members` -- intended; that is what makes throwaway test
-members safe.
-
-### Step 6: smoke test the sandbox
+### Step 2: bring the sandbox up
 
 ```bash
-node "$REPO/dist/index.js" --version
+node scripts/sandbox-deploy.mjs up --sprint-id "<your-sprint-id>"
 ```
-Confirm the version/commit matches Step 1's build. Do NOT use `## Smoke
-test`'s `$HOME/.apra-fleet/bin/apra-fleet` path -- that is the production
-install and reports a stale version while your sandbox runs the new code.
+
+`up` runs the four subcommands below in order (each is also runnable on its
+own, for diagnosis, with the same `--sprint-id`):
+
+- `init` -- if a values file for this id already exists (a prior run leaked),
+  runs `teardown` first. Allocates two OS-assigned free ports (never the
+  reserved ones above; the OS ephemeral range also clears viewer ports from
+  `8081` and the dolt settle range `13300-13400`), creates `<root>/mcp` and
+  `<root>/se`, snapshots production (`~/.apra-fleet/data/server.json` pid,
+  `:8787/api/health` pid + uptime, when present), writes the values file.
+- `start` -- spawns `dist/index.js --transport http` detached with the env
+  from the file (what `apra-fleet start` does internally for a non-default
+  instance), then REQUIRES `<root>/mcp/server.json` to name the pid it just
+  spawned and the port it allocated (the server silently rebinds to an
+  OS-assigned port on `EADDRINUSE`, `src/services/http-transport.ts`), and
+  `/health` on that port to answer with that pid. Then
+  `packages/apra-fleet-se/bin/serve.mjs --port <supervisor-port>` the same
+  way; `/api/health` must answer with the spawned pid (on `EADDRINUSE` the
+  supervisor exits, `src/supervisor/server.mjs`). Every failure kills what it
+  just started before exiting 1 -- a "something answered 200" check would
+  pass against an unrelated squatter; a pid match cannot.
+- `verify` -- isolation proof: the sandbox supervisor's `/api/members` is
+  EMPTY (not production's members), both pids still answer as themselves,
+  `server.json` still matches, and production's pids are unchanged with
+  supervisor uptime CONTINUOUS (a reset uptime means it was restarted, which
+  a sandbox deploy must never do).
+- `smoke` -- `/health` of the RUNNING sandbox server must answer with its
+  recorded pid and a version matching this checkout's `version.json`. Not
+  `dist/index.js --version`: that reads a local file and passes whether or
+  not anything is running. Never `## Smoke test`'s
+  `$HOME/.apra-fleet/bin/apra-fleet` either -- that is production.
+
+Exit 0 = sandbox up; the values file is printed to stdout. Put its path,
+`APRA_FLEET_PORT` and `SUPERVISOR_PORT` in `notes`, return `deployed: true`,
+and LEAVE IT RUNNING. Exit 1 = failed; `up` has already torn down what it
+started -- return `deployed: false` with the stderr.
+
+Not registered for OS auto-start is guaranteed by construction (consequence 1
+above: both env vars are set), so no `launchctl`/`schtasks` survey is needed.
+
+### Locating the sandbox from a later phase
+
+```bash
+node scripts/sandbox-deploy.mjs env --sprint-id "<your-sprint-id>"
+```
+
+Prints the values file: `APRA_FLEET_PORT`, `SUPERVISOR_PORT`,
+`APRA_FLEET_DATA_DIR`, `FLEET_SE_DATA_DIR`, `MCP_PID`, `SUPERVISOR_PID`, ...
+Exit 1 = no sandbox exists for this id. A member registered against the
+sandbox (`register-member` with those env vars set in THAT command) lands in
+the sandbox's own `registry.json`, invisible to production's `list_members`
+-- intended; that is what makes throwaway test members safe.
 
 ### Teardown
 
-Run at the end of the integration/regression test phase, pass or fail. No
-`stop` subcommand, no installer, no `pkill` by name (`pkill -x apra-fleet`
-matches production too).
+Owned by the integration/regression test phase and run at its END, pass or
+fail (see Lifecycle ownership) -- never by the deployer after a successful
+`up`. No `stop` subcommand, no installer, no `pkill` by name (`pkill -x
+apra-fleet` matches production too).
 
-POSIX:
 ```bash
-# 1. Graceful supervisor shutdown.
-curl -sf -X POST http://localhost:18787/api/shutdown > /dev/null 2>&1 || true
-sleep 3
-
-# 2. Kill the sandbox fleet server by the pid in ITS OWN server.json --
-#    never by process name, never via `stop`.
-MCP_PID="$(node -e '
-  try { process.stdout.write(String(JSON.parse(
-    require("fs").readFileSync(process.argv[1],"utf8")).pid)); } catch {}
-' "$SB/mcp/server.json")"
-if [ -n "$MCP_PID" ]; then
-  kill "$MCP_PID" 2>/dev/null || true
-  sleep 3
-  kill -9 "$MCP_PID" 2>/dev/null || true
-fi
-
-# 3. Remove the sandbox root wholesale.
-rm -rf "$SB"
+node scripts/sandbox-deploy.mjs teardown --sprint-id "<your-sprint-id>"
 ```
 
-Windows (PowerShell):
-```powershell
-try { Invoke-RestMethod -Method Post http://localhost:18787/api/shutdown } catch {}
-Start-Sleep -Seconds 3
+Order, and why it is this order:
 
-$InfoPath = Join-Path $SB "mcp\server.json"
-if (Test-Path $InfoPath) {
-  $McpPid = (Get-Content $InfoPath | ConvertFrom-Json).pid
-  if ($McpPid) { Stop-Process -Id $McpPid -Force -ErrorAction SilentlyContinue }
-}
-Start-Sleep -Seconds 2
-Remove-Item -Recurse -Force $SB -ErrorAction SilentlyContinue
-```
+1. Reads `<root>/mcp/server.json` and the recorded pids BEFORE deleting
+   anything -- `server.json` is the only pid record, and a server whose
+   record was `rm -rf`ed first becomes unkillable by this recipe.
+2. Supervisor: `POST /api/shutdown` only if `/api/health` answers with the
+   recorded pid, then TERM, then KILL.
+3. Fleet server: a candidate pid (from `server.json` or the values file) is
+   killed only if it is the pid this recipe launched or it answers `/health`
+   as itself -- never a process that merely holds "a pid file".
+4. Confirms both ports are actually free.
+5. Only then removes the sandbox root and the values file.
 
-Then re-verify production matches Step 0 exactly: same pids, same ports,
-supervisor uptime CONTINUOUS (a reset uptime means you restarted it, which a
-sandbox deploy must never do).
+If anything is still alive or bound after 2-4, exit is 1 and the root AND
+values file are KEPT so a retry can still find the pid -- report the stderr
+instead of retrying blindly. No values file = "nothing to tear down", exit 0,
+so it is safe to run as a sweep. It ends by re-checking production's pids and
+uptime against the `init` snapshot and warns on any change.
+
+Windows caveat: the fleet server's auth named pipe
+(`\\.\pipe\apra-fleet-auth-<username>`, `src/services/auth-socket.ts`) has no
+per-instance suffix outside tests, so a sandbox and production collide on it
+the first time either opens the pipe (lazy, on a secret prompt). Tracked
+separately; it does not affect the lifecycle above.
 
 ## Smoke test
 

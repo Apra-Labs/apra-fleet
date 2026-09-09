@@ -20,13 +20,20 @@ section -- see "Two different things both called 'sandbox'" below.)
   supervisor pair (separate `APRA_FLEET_DATA_DIR` / `APRA_FLEET_PORT` /
   `FLEET_SE_DATA_DIR`, no installer, no OS auto-start registration) that
   `deployer` stands up so a test deploy never restarts the machine's shared
-  production singleton. Its purpose is isolation of the deployed artifact
-  under test.
+  production singleton, keyed on the sprintId, and normally torn down by
+  `integ-test-runner` at the end of its cycle.
 
 They use the same isolation primitives and the same reasoning, but they are
 provisioned by different roles at different times and neither replaces the
 other. This playbook's `## Setup` provisions its own sandbox HOME itself and
 does not depend on a `deployer` having run first.
+
+**Leftover sandbox-deploy sweep.** If Deploy succeeded but Integ Test never
+ran in the last cycle, that sprint's sandbox deploy is still up. Before
+returning, run `node scripts/sandbox-deploy.mjs teardown --sprint-id "<the
+sprintId in your dispatch prompt>"` -- exit 0 with "nothing to tear down" is
+the normal case; it only kills processes it can prove are that sandbox's own
+(see `deploy.md` Teardown).
 
 Run BOTH parts for a full regression pass:
 
@@ -135,6 +142,8 @@ runtime:
 - `Bash(curl:*)` -- drives the supervisor's HTTP API (`POST /api/sprints`,
   `GET /api/sprints/:id`, `GET /api/members`, `POST /api/shutdown`) in
   `## Setup`, `## Test scenario`, and `## Teardown`.
+- `Bash(node scripts/sandbox-deploy.mjs *)` -- the leftover sandbox-deploy
+  sweep above; `Bash(node:*)` covers it.
 - `Bash(kill:*)` -- covers the supervisor-boot verification and stop steps'
   own direct `kill -0`/`kill -9` calls (the port and dolt-sql-server kill
   loops now run through the `kill-port.mjs`/`reap-sandbox-dolt.mjs` helpers
