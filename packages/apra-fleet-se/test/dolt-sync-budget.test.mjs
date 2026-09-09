@@ -28,6 +28,7 @@ import {
     invalidateSyncRemoteCache,
     noteMemberCommand,
     noteMemberDispatchCompleted,
+    isMemberDispatchedSinceVerified,
     isSpawnOutageFailure,
     toGitLsRemoteUrl,
     parseLsRemoteTip,
@@ -51,6 +52,9 @@ const OK = { ok: true, output: '', error: null };
 const fail = (error) => ({ ok: false, output: '', error });
 const REMOTE = 'git+https://github.com/Apra-Labs/apra-fleet.git';
 const REMOTE_JSON = { ok: true, output: JSON.stringify({ value: REMOTE }), error: null };
+/** The exact `git ls-remote` target REMOTE resolves to -- a fingerprint is
+ *  bound to this URL, so every hand-planted tip below names it. */
+const PROBE_URL = 'https://github.com/Apra-Labs/apra-fleet.git';
 const SHA_A = '89de8f0f99fabf24c8e7595f76d102baae485f6f';
 const SHA_B = '1122334455667788990011223344556677889900';
 const lsRemote = (sha) => ({ ok: true, output: `${sha}\trefs/dolt/data\n`, error: null });
@@ -136,7 +140,18 @@ test('memo: a thrown command() reports CONFIGURED (fail-safe) and is NOT cached'
 
 test('memo: readMemberSyncRemote returns the URL alongside the boolean', async () => {
     const { command } = makeCommandMock({ [PROBE]: [REMOTE_JSON] });
-    assert.deepEqual(await readMemberSyncRemote('m1', { command }), { configured: true, url: REMOTE });
+    assert.deepEqual(await readMemberSyncRemote('m1', { command }), { configured: true, url: REMOTE, positive: true });
+});
+
+test('memo: verify:true bypasses the memo, refreshes it, and a fail-safe answer reports positive:false', async () => {
+    const { command, countOf } = makeCommandMock({ [PROBE]: [REMOTE_JSON] });
+    await readMemberSyncRemote('m1', { command });
+    await readMemberSyncRemote('m1', { command, verify: true });
+    assert.equal(countOf(PROBE), 2, 'verify must re-spawn the probe');
+    await readMemberSyncRemote('m1', { command });
+    assert.equal(countOf(PROBE), 2, '...and the refreshed answer is memoized again');
+    const { command: broken } = makeCommandMock({ [PROBE]: [fail('bd exploded')] });
+    assert.deepEqual(await readMemberSyncRemote('m1', { command: broken, verify: true }), { configured: true, url: null, positive: false });
 });
 
 test('memo: invalidateSyncRemoteCache(member) forces exactly one re-probe', async () => {
@@ -207,8 +222,8 @@ test('memo: noteMemberCommand also FORGETS the recorded remote tip (round-2 item
         [LS_REMOTE]: [lsRemote(SHA_A)],
         [PULL]: [OK],
     });
-    setLastSyncedTip('m1', SHA_A);
-    setLastSyncedTip('m2', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
+    setLastSyncedTip('m2', SHA_A, PROBE_URL);
     assert.equal(noteMemberCommand('m1', 'cd /tmp/x && bd bootstrap'), true);
     assert.equal(getLastSyncedTip('m1'), undefined, 'a re-bootstrapped clone must not keep its fingerprint');
     assert.equal(getLastSyncedTip('m2'), SHA_A, 'only the named member is affected');
@@ -219,7 +234,7 @@ test('memo: noteMemberCommand also FORGETS the recorded remote tip (round-2 item
 });
 
 test('memo: a non-invalidating command leaves the recorded tip alone', async () => {
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     assert.equal(noteMemberCommand('m1', 'bd list --all --json'), false);
     assert.equal(getLastSyncedTip('m1'), SHA_A);
 });
@@ -254,8 +269,8 @@ test('memo: the auth self-heal path ALSO forgets the recorded tip, symmetric wit
         [PROBE]: [REMOTE_JSON],
         [PUSH]: [fail('fatal: could not read Username for https://github.com'), fail('fatal: could not read Username for https://github.com')],
     });
-    setLastSyncedTip('m1', SHA_A);
-    setLastSyncedTip('m2', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
+    setLastSyncedTip('m2', SHA_A, PROBE_URL);
     let healed = 0;
     await assert.rejects(() => doltPushAfter('m1', {
         command,
@@ -272,49 +287,248 @@ test('memo: the auth self-heal path ALSO forgets the recorded tip, symmetric wit
 });
 
 // -----------------------------------------------------------------------------
-// Round-3 item 2 -- the post-dispatch invalidation seam. An agent's `bd`
-// commands run in its own session on the member and never pass through the
-// runner's command() wrapper, so noteMemberCommand() is structurally blind to
-// an agent-side `bd bootstrap` (which this repo's agent instructions tell an
-// agent to run on a "database exists" error). Every settled dispatch therefore
-// forgets BOTH memos for that member, unconditionally.
+// Round 4 -- the post-dispatch seam is SOFT. An agent's `bd` commands run in
+// its own session on the member and never pass through the runner's command()
+// wrapper, so noteMemberCommand() is structurally blind to them. Round 3 made
+// every settled dispatch wipe both memos, which emptied the fingerprint before
+// every dispatch bracket (the primary path) and re-spawned the sync.remote
+// probe once per dispatch (golden transcript: 1 -> 14). Round 4 replaces the
+// wipe with a MARK: the memos survive the dispatch, and the member's
+// sync.remote is re-read only at the one decision a stale memo could turn
+// into stale data -- the moment a D-pull is about to be SKIPPED on the
+// fingerprint. See noteMemberDispatchCompleted() for the per-event reasoning
+// (bootstrap is non-destructive / clones from the remote; a forced init is
+// unrescuable by any pull; a rewired sync.remote is caught right here).
 // -----------------------------------------------------------------------------
 
-test('dispatch seam: noteMemberDispatchCompleted forgets BOTH memos for that member only', async () => {
+/** One member's bracket under the runner: pre-dispatch D-pull, the dispatch
+ *  itself (the seam), and -- for a beads-mutating role -- the D-push. */
+async function bracket(member, command, { pushBeads = false } = {}) {
+    const pull = await doltPullBefore(member, { command });
+    noteMemberDispatchCompleted(member);
+    if (pushBeads) await doltPushAfter(member, { command, pushBeads: true });
+    return pull;
+}
+
+test('dispatch seam: THE RESTORED BENEFIT -- a read-only dispatch keeps the fingerprint, so the next bracket skips its pull', async () => {
     const { command, countOf } = makeCommandMock({
         [PROBE]: [REMOTE_JSON],
         [LS_REMOTE]: [lsRemote(SHA_A)],
         [PULL]: [OK],
     });
-    await isMemberSyncRemoteConfigured('m1', { command });
-    await isMemberSyncRemoteConfigured('m2', { command });
-    setLastSyncedTip('m1', SHA_A);
-    setLastSyncedTip('m2', SHA_A);
-    assert.equal(countOf(PROBE), 2);
+    // Bracket 1: no fingerprint yet -> real pull, tip recorded.
+    assert.deepEqual(await bracket('m1', command), { ok: true, member: 'm1' });
+    assert.equal(countOf(PULL), 1);
+    assert.equal(isMemberDispatchedSinceVerified('m1'), true, 'the dispatch marked the member');
+    // Brackets 2..4 (reviewer / plan-reviewer / deployer style, no push): the
+    // remote never moved, so every one of them is a provable no-op and is
+    // skipped. Round 3 pulled for real on every one of these.
+    for (let i = 0; i < 3; i += 1) {
+        const res = await bracket('m1', command);
+        assert.equal(res.reason, 'remote-unchanged', `bracket ${i + 2} must skip`);
+    }
+    assert.equal(countOf(PULL), 1, 'exactly one real pull across four brackets');
+    // The price of the first skip after a dispatch is ONE sync.remote re-read
+    // (a config.yaml read), after which the member is verified again until
+    // its next dispatch: 1 initial probe + 1 re-read per post-dispatch skip.
+    assert.equal(countOf(PROBE), 4, 'one initial probe, then one re-read per post-dispatch skip -- never per dispatch');
+    assert.equal(isMemberDispatchedSinceVerified('m1'), true, 'the last bracket dispatched again, so the mark is set again');
+});
 
-    assert.equal(noteMemberDispatchCompleted('m1'), true);
-
-    assert.equal(getLastSyncedTip('m1'), undefined, 'the dispatched member must not keep its fingerprint');
-    assert.equal(getLastSyncedTip('m2'), SHA_A, 'an undispatched member keeps its fingerprint');
-    await isMemberSyncRemoteConfigured('m1', { command });
-    assert.equal(countOf(PROBE), 3, 'the dispatched member re-probes sync.remote');
-    await isMemberSyncRemoteConfigured('m2', { command });
-    assert.equal(countOf(PROBE), 3, 'the undispatched member is still a cache hit');
-
-    // The concrete hazard: a re-bootstrapped (empty) clone against an UNMOVED
-    // remote. Without the seam the surviving fingerprint would match and skip
-    // the one pull that clone needs most; with it, the next D-pull is real.
-    const res = await doltPullBefore('m1', { command });
-    assert.deepEqual(res, { ok: true, member: 'm1' });
+test('dispatch seam: consecutive orchestrator-only reads between dispatches re-read NOTHING', async () => {
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_A)],
+        [PULL]: [OK],
+    });
+    await bracket('m1', command);
+    const probesAfterBracket = countOf(PROBE);
+    // The first post-dispatch skip re-verifies once...
+    assert.equal((await doltPullBefore('m1', { command })).reason, 'remote-unchanged');
+    assert.equal(countOf(PROBE), probesAfterBracket + 1);
+    assert.equal(isMemberDispatchedSinceVerified('m1'), false, 'a positive re-read clears the mark');
+    // ...and every further read with no dispatch in between is a pure cache hit.
+    for (let i = 0; i < 5; i += 1) {
+        assert.equal((await doltPullBefore('m1', { command })).reason, 'remote-unchanged');
+    }
+    assert.equal(countOf(PROBE), probesAfterBracket + 1);
     assert.equal(countOf(PULL), 1);
 });
 
-test('dispatch seam: a non-member argument is a no-op and never throws', () => {
+test('dispatch seam: a bracket whose remote tip MOVED pays no re-read at all', async () => {
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_A), lsRemote(SHA_B)],
+        [PULL]: [OK],
+    });
+    await bracket('m1', command);
+    const probesAfterBracket = countOf(PROBE);
+    const res = await doltPullBefore('m1', { command });
+    assert.deepEqual(res, { ok: true, member: 'm1' }, 'moved tip -> real pull');
+    assert.equal(countOf(PROBE), probesAfterBracket, 'no skip was on the table, so nothing to confirm');
+    assert.equal(getLastSyncedTip('m1'), SHA_B);
+    assert.equal(isMemberDispatchedSinceVerified('m1'), true, 'still unverified -- the next SKIP will confirm');
+});
+
+test('dispatch seam: a beads-mutating dispatch still forgets the tip via its push -- the seam adds nothing on top', async () => {
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_A)],
+        [PULL]: [OK],
+        [PUSH]: [OK],
+    });
+    await bracket('m1', command, { pushBeads: true });
+    assert.equal(getLastSyncedTip('m1'), undefined, 'the push forgot the tip (round-3 item 1), as before');
+    assert.equal(countOf(PROBE), 1, 'the D-push pre-gate was a memo hit -- the seam did not drop the memo');
+    const res = await doltPullBefore('m1', { command });
+    assert.equal(res.skipped, undefined, "the pusher's next pull is real");
+    assert.equal(countOf(PULL), 2);
+});
+
+// The reliability side. `remote.tip` is the shared refs/dolt/data; `clone`
+// models what the member's local DB is derived from ('remote@<sha>' means it
+// was cloned/pulled from the remote at that SHA); the dispatch callback is
+// what the agent did to the member in its own session.
+function makeMemberWorld({ initialTip }) {
+    const remote = { tip: initialTip };
+    const member = { clone: null, syncRemote: REMOTE };
+    const calls = [];
+    const command = async (cmd, opts = {}) => {
+        calls.push({ cmd, opts });
+        if (cmd.includes(PROBE)) return { ok: true, output: JSON.stringify({ value: member.syncRemote }), error: null };
+        if (cmd.includes(LS_REMOTE)) return lsRemote(remote.tip);
+        if (cmd.includes(PULL)) { member.clone = `remote@${remote.tip}`; return OK; }
+        return OK;
+    };
+    const countOf = (needle) => calls.filter((c) => c.cmd.includes(needle)).length;
+    return { remote, member, command, calls, countOf };
+}
+
+test('dispatch seam: RELIABILITY -- an agent-side `bd bootstrap` leaves the fingerprint TRUE, so the skip it permits is correct', async () => {
+    const { remote, member, command, countOf } = makeMemberWorld({ initialTip: SHA_A });
+    await doltPullBefore('m1', { command });
+    assert.equal(member.clone, `remote@${SHA_A}`);
+    // The agent's session: `bd bootstrap` with a DB present is non-destructive
+    // (validates, reports "database exists"); with `--database <other>` it
+    // CLONES from sync.remote -- i.e. the clone is at the remote's tip.
+    member.clone = `remote@${remote.tip}`;
+    noteMemberDispatchCompleted('m1');
+    const res = await doltPullBefore('m1', { command });
+    assert.equal(res.reason, 'remote-unchanged');
+    assert.equal(member.clone, `remote@${SHA_A}`, 'the skipped pull would have fetched exactly what the clone already holds');
+    assert.equal(countOf(PULL), 1);
+});
+
+test('dispatch seam: RELIABILITY -- a remote that moved DURING the dispatch is never skipped, bootstrap or not', async () => {
+    const { remote, member, command, countOf } = makeMemberWorld({ initialTip: SHA_A });
+    await doltPullBefore('m1', { command });
+    remote.tip = SHA_B; // some other machine pushed while the agent ran
+    member.clone = `remote@${SHA_A}`;
+    noteMemberDispatchCompleted('m1');
+    const res = await doltPullBefore('m1', { command });
+    assert.deepEqual(res, { ok: true, member: 'm1' });
+    assert.equal(member.clone, `remote@${SHA_B}`, 'the real pull brought the clone current');
+    assert.equal(countOf(PULL), 2);
+});
+
+test('dispatch seam: RELIABILITY -- an agent-side `bd config set sync.remote <other>` is caught before the skip; the fingerprint is forgotten', async () => {
+    const OTHER = 'git+https://example.invalid/other/beads.git';
+    const { member, command, countOf, calls } = makeMemberWorld({ initialTip: SHA_A });
+    await doltPullBefore('m1', { command });
+    assert.equal(getLastSyncedTip('m1'), SHA_A);
+    // The one reset a surviving fingerprint would get WRONG: the clone should
+    // now follow a different remote, whose tip the old fingerprint says
+    // nothing about. The agent's own `bd config set` never passed through
+    // command(), so only the lazy re-read can see it.
+    member.syncRemote = OTHER;
+    noteMemberDispatchCompleted('m1');
+    const res = await doltPullBefore('m1', { command });
+    assert.deepEqual(res, { ok: true, member: 'm1' }, 'must NOT skip on a fingerprint minted against the old remote');
+    assert.equal(countOf(PULL), 2);
+    assert.equal(getLastSyncedTip('m1'), undefined, 'the stale fingerprint is forgotten, not re-recorded from a probe of the wrong remote');
+    assert.equal(isMemberDispatchedSinceVerified('m1'), false, 'the re-read verified the member');
+    // From here on the probe targets the NEW remote (the memo was refreshed).
+    await doltPullBefore('m1', { command });
+    const lastProbe = calls.filter((c) => c.cmd.includes(LS_REMOTE)).pop();
+    assert.equal(lastProbe.cmd, 'git ls-remote https://example.invalid/other/beads.git refs/dolt/data');
+});
+
+test('dispatch seam: RELIABILITY -- a sync.remote NEUTRALIZED under a dispatch takes the no-remote exit: no pull command, fingerprint forgotten', async () => {
+    // The pre-gate's own contract: a `bd dolt pull` against a clone whose
+    // sync.remote is absent would let bd re-arm a Dolt remote from git's
+    // origin. The re-read that guards the skip must honor that contract too,
+    // not fall through to "pull for real".
+    const { member, command, countOf } = makeMemberWorld({ initialTip: SHA_A });
+    await doltPullBefore('m1', { command });
+    member.syncRemote = '';
+    noteMemberDispatchCompleted('m1');
+    const res = await doltPullBefore('m1', { command });
+    assert.deepEqual(res, { ok: true, member: 'm1', skipped: true, reason: 'no-remote' });
+    assert.equal(countOf(PULL), 1, 'no bd dolt pull against a neutralized clone');
+    assert.equal(getLastSyncedTip('m1'), undefined);
+    // ...and the memo now says absent, so the next bracket's pre-gate exits
+    // before any probe.
+    const probes = countOf(PROBE);
+    const next = await doltPullBefore('m1', { command });
+    assert.equal(next.reason, 'no-remote');
+    assert.equal(countOf(PROBE), probes);
+    assert.equal(countOf(LS_REMOTE), 2);
+});
+
+test('dispatch seam: RELIABILITY -- an UNREADABLE sync.remote after a dispatch falls through to a real pull, never a skip', async () => {
+    const probeResults = [REMOTE_JSON, fail('bd exploded')];
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: probeResults,
+        [LS_REMOTE]: [lsRemote(SHA_A)],
+        [PULL]: [OK],
+    });
+    await bracket('m1', command);
+    const res = await doltPullBefore('m1', { command });
+    assert.deepEqual(res, { ok: true, member: 'm1' }, 'doubt never produces a skip');
+    assert.equal(countOf(PULL), 2);
+    assert.equal(getLastSyncedTip('m1'), SHA_A, 'the tip observed at the still-memoized URL is recorded by the real pull');
+    assert.equal(isMemberDispatchedSinceVerified('m1'), true, 'still unverified: the next skip attempt confirms again');
+});
+
+test('dispatch seam: a fingerprint minted at one URL never validates a probe of another', async () => {
+    setLastSyncedTip('m1', SHA_A, 'https://example.invalid/elsewhere.git');
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_A)],
+        [PULL]: [OK],
+    });
+    const res = await doltPullBefore('m1', { command });
+    assert.deepEqual(res, { ok: true, member: 'm1' });
+    assert.equal(countOf(PULL), 1);
+    assert.equal(getLastSyncedTip('m1'), SHA_A, 're-minted against the URL actually probed');
+});
+
+test('dispatch seam: setLastSyncedTip without a URL records nothing (doubt never skips)', async () => {
     setLastSyncedTip('m1', SHA_A);
+    assert.equal(getLastSyncedTip('m1'), undefined);
+    setLastSyncedTip('m1', SHA_A, '');
+    assert.equal(getLastSyncedTip('m1'), undefined);
+});
+
+test('dispatch seam: a non-member argument is a no-op and never throws', () => {
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     assert.equal(noteMemberDispatchCompleted(''), false);
     assert.equal(noteMemberDispatchCompleted(undefined), false);
     assert.equal(noteMemberDispatchCompleted(null), false);
     assert.equal(getLastSyncedTip('m1'), SHA_A);
+    assert.equal(isMemberDispatchedSinceVerified('m1'), false);
+});
+
+test('dispatch seam: the HARD seams clear the mark along with both memos', async () => {
+    const { command } = makeCommandMock({ [PROBE]: [REMOTE_JSON] });
+    await isMemberSyncRemoteConfigured('m1', { command });
+    noteMemberDispatchCompleted('m1');
+    assert.equal(isMemberDispatchedSinceVerified('m1'), true);
+    noteMemberCommand('m1', 'bd bootstrap');
+    assert.equal(isMemberDispatchedSinceVerified('m1'), false);
+    noteMemberDispatchCompleted('m1');
+    await repair('m1', { command, settle: async () => ({ ok: true, resolvedTables: [] }) });
+    assert.equal(isMemberDispatchedSinceVerified('m1'), false);
 });
 
 test('dispatch seam: runner.js calls it from the central agent() wrapper, in a finally, before the post-dispatch sync can run', () => {
@@ -342,7 +556,7 @@ test('dispatch seam: runner.js calls it from the central agent() wrapper, in a f
 test('memo: repair() invalidates both the sync.remote memo and the recorded tip', async () => {
     const { command } = makeCommandMock({ [PROBE]: [REMOTE_JSON] });
     await isMemberSyncRemoteConfigured('m1', { command });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     await repair('m1', { command, settle: async () => ({ ok: true, resolvedTables: [] }) });
     assert.equal(getLastSyncedTip('m1'), undefined, 'a repair must forget the fingerprint');
     const { command: c2, countOf } = makeCommandMock({ [PROBE]: [REMOTE_JSON] });
@@ -542,6 +756,66 @@ test('fingerprint: toGitLsRemoteUrl REFUSES anything outside the safe charset', 
     }
 });
 
+test('fingerprint: toGitLsRemoteUrl REFUSES a bare Dolt remote NAME or a scheme-less path (round-4 fix A)', () => {
+    // sync.remote can legitimately be a Dolt remote NAME (the integration
+    // fixtures set `bd config set sync.remote origin`). It passes the charset
+    // gate, but `git ls-remote origin` resolves against GIT'S origin -- the
+    // one target this probe must never use. A bare filesystem path is a Dolt
+    // file remote, never a git repository. Both yield null: a real pull.
+    for (const bare of ['origin', 'upstream', 'my-remote', '/srv/dolt/beads', 'C:/dolt/beads', 'github.com/a/b.git', 'git+origin']) {
+        assert.equal(toGitLsRemoteUrl(bare), null, `expected ${JSON.stringify(bare)} to be refused`);
+    }
+    // Scheme-bearing values -- including bd's own git+file:// spelling that the
+    // sandboxes use -- are still accepted.
+    assert.equal(toGitLsRemoteUrl('git+file:///tmp/sbx/.apra-fleet-toy-origin.git'), 'file:///tmp/sbx/.apra-fleet-toy-origin.git');
+    assert.equal(toGitLsRemoteUrl('file:///C:/Users/x/origin.git'), 'file:///C:/Users/x/origin.git');
+});
+
+test('fingerprint: a bare remote-name sync.remote issues NO ls-remote and does a real pull (round-4 fix A)', async () => {
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [{ ok: true, output: JSON.stringify({ value: 'origin' }), error: null }],
+        [PULL]: [OK],
+    });
+    setLastSyncedTip('m1', SHA_A, 'origin');
+    const res = await doltPullBefore('m1', { command });
+    assert.deepEqual(res, { ok: true, member: 'm1' });
+    assert.equal(countOf(LS_REMOTE), 0, "must never run `git ls-remote origin` -- that is git's origin, not the Dolt remote");
+    assert.equal(countOf(PULL), 1);
+});
+
+test('fingerprint: toGitLsRemoteUrl STRIPS http(s) userinfo so a credential never enters a journaled command (round-4 fix B)', () => {
+    assert.equal(
+        toGitLsRemoteUrl('git+https://x-access-token:ghp_AbC123XYZ@github.com/Apra-Labs/apra-fleet.git'),
+        'https://github.com/Apra-Labs/apra-fleet.git',
+    );
+    assert.equal(toGitLsRemoteUrl('https://user@github.com/a/b.git'), 'https://github.com/a/b.git');
+    assert.equal(toGitLsRemoteUrl('http://user:p-w_d.1@host.example/a.git'), 'http://host.example/a.git');
+    // A password full of shell metacharacters must not disable the probe: the
+    // charset gate runs on the STRIPPED url.
+    assert.equal(toGitLsRemoteUrl('https://u:p$(x)`y`\'z\'@github.com/a/b.git'), 'https://github.com/a/b.git');
+    // ssh userinfo is the login name, not a secret, and is needed to connect.
+    assert.equal(toGitLsRemoteUrl('ssh://git@github.com/a/b.git'), 'ssh://git@github.com/a/b.git');
+    assert.equal(toGitLsRemoteUrl('git+ssh://git@github.com/a/b.git'), 'ssh://git@github.com/a/b.git');
+});
+
+test('fingerprint: the journaled probe command carries no credential even when sync.remote embeds one (round-4 fix B)', async () => {
+    const TOKEN = 'ghp_SECRETSECRETSECRET';
+    const { command, calls } = makeCommandMock({
+        [PROBE]: [{ ok: true, output: JSON.stringify({ value: `git+https://x-access-token:${TOKEN}@github.com/o/r.git` }), error: null }],
+        [LS_REMOTE]: [lsRemote(SHA_A)],
+        [PULL]: [OK],
+    });
+    await doltPullBefore('m1', { command });
+    const probe = calls.find((c) => c.cmd.includes(LS_REMOTE));
+    assert.ok(probe, 'expected an ls-remote probe');
+    assert.equal(probe.cmd, 'git ls-remote https://github.com/o/r.git refs/dolt/data');
+    for (const c of calls) {
+        assert.ok(!c.cmd.includes(TOKEN), `credential leaked into a command string: ${c.cmd}`);
+        assert.ok(!String(c.opts.label || '').includes(TOKEN), 'credential leaked into a command label');
+    }
+    assert.equal(getLastSyncedTip('m1'), SHA_A);
+});
+
 test('fingerprint: parseLsRemoteTip reads the refs/dolt/data SHA and nothing else', () => {
     assert.equal(parseLsRemoteTip(`${SHA_A}\trefs/dolt/data`), SHA_A);
     assert.equal(parseLsRemoteTip(`${SHA_A}\trefs/dolt/data\n`), SHA_A);
@@ -559,7 +833,7 @@ test('fingerprint: an UNCHANGED remote tip skips the real pull', async () => {
         [LS_REMOTE]: [lsRemote(SHA_A)],
         [PULL]: [OK],
     });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     const res = await doltPullBefore('m1', { command });
     assert.deepEqual(res, { ok: true, member: 'm1', skipped: true, reason: 'remote-unchanged', remoteTip: SHA_A });
     assert.equal(countOf(PULL), 0, 'the whole point: no bd dolt pull spawn');
@@ -572,7 +846,7 @@ test('fingerprint: a MOVED remote tip does a real pull and records the pre-pull 
         [LS_REMOTE]: [lsRemote(SHA_B)],
         [PULL]: [OK],
     });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     const res = await doltPullBefore('m1', { command });
     assert.deepEqual(res, { ok: true, member: 'm1' });
     assert.equal(countOf(PULL), 1);
@@ -600,7 +874,7 @@ test('fingerprint: a FAILED ls-remote falls through to a real pull, never a skip
         [LS_REMOTE]: [fail('fatal: unable to access remote: Could not resolve host')],
         [PULL]: [OK],
     });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     const res = await doltPullBefore('m1', { command });
     assert.deepEqual(res, { ok: true, member: 'm1' }, 'must NOT report remote-unchanged');
     assert.equal(countOf(PULL), 1, 'a probe failure must fail OPEN into a real pull');
@@ -615,7 +889,7 @@ test('fingerprint: a THROWN ls-remote falls through to a real pull', async () =>
         if (cmd.includes(PULL)) { pulls += 1; return OK; }
         return OK;
     };
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     const res = await doltPullBefore('m1', { command });
     assert.deepEqual(res, { ok: true, member: 'm1' });
     assert.equal(pulls, 1);
@@ -627,7 +901,7 @@ test('fingerprint: UNPARSEABLE ls-remote output falls through to a real pull', a
         [LS_REMOTE]: [{ ok: true, output: 'warning: no refs matched\n', error: null }],
         [PULL]: [OK],
     });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     await doltPullBefore('m1', { command });
     assert.equal(countOf(PULL), 1);
 });
@@ -639,7 +913,7 @@ test('fingerprint: an unreadable sync.remote issues NO probe and does a real pul
         [PROBE]: [{ ok: true, output: '', error: null }],
         [PULL]: [OK],
     });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     await doltPullBefore('m1', { command });
     assert.equal(countOf(LS_REMOTE), 0);
     assert.equal(countOf(PULL), 1);
@@ -664,7 +938,7 @@ test('fingerprint: remoteTipFingerprint:false disables the probe entirely', asyn
         [LS_REMOTE]: [lsRemote(SHA_A)],
         [PULL]: [OK],
     });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     await doltPullBefore('m1', { command, remoteTipFingerprint: false });
     assert.equal(countOf(LS_REMOTE), 0);
     assert.equal(countOf(PULL), 1);
@@ -676,7 +950,7 @@ test('fingerprint: a divergence FORGETS the recorded tip so the next pull is rea
         [LS_REMOTE]: [lsRemote(SHA_B)],
         [PULL]: [fail('merge conflict detected in table issues')],
     });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     await assert.rejects(() => doltPullBefore('m1', { command }));
     assert.equal(getLastSyncedTip('m1'), undefined);
 });
@@ -742,7 +1016,7 @@ test('fingerprint: THE FOREIGN-PUSH RACE -- an unrelated machine pushes right af
         pushedTo: SHA_B,
         afterPush: (remote) => { remote.tip = SHA_C; }, // the foreign push
     });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
 
     const res = await doltPushAfter('m1', { command, pushBeads: true });
     assert.equal(res.pushed, true);
@@ -762,7 +1036,7 @@ test('fingerprint: THE FOREIGN-PUSH RACE -- an unrelated machine pushes right af
 
 test('fingerprint: a real push FORGETS the tip and issues no ls-remote; the next pull is real, then re-arms the skip', async () => {
     const { command, countOf } = makeRacingRemote({ initialTip: SHA_A, pushedTo: SHA_B });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     const res = await doltPushAfter('m1', { command, pushBeads: true });
     assert.deepEqual(res, { ok: true, member: 'm1', pushed: true, reconciled: false });
     assert.equal(countOf(LS_REMOTE), 0, 'no probe before OR after the push (round-3 item 3: no network round trip inside the mutex)');
@@ -792,7 +1066,7 @@ test('fingerprint: a NO-OP push (nothing local to publish) records nothing eithe
 
 test('fingerprint: a no-op push by a clone carrying a STALE tip forgets it rather than re-confirming it', async () => {
     const { command, countOf } = makeRacingRemote({ initialTip: SHA_B, pushedTo: SHA_B });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     await doltPushAfter('m1', { command, pushBeads: true });
     assert.equal(getLastSyncedTip('m1'), undefined);
     await doltPullBefore('m1', { command });
@@ -804,7 +1078,7 @@ test('fingerprint: a no-op push by a clone that WAS current forgets its tip too 
     // no longer distinguish it from the stale case without a network read --
     // and the network read is the race -- so it pays one redundant pull.
     const { command, countOf } = makeRacingRemote({ initialTip: SHA_A, pushedTo: SHA_A });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     await doltPushAfter('m1', { command, pushBeads: true });
     assert.equal(getLastSyncedTip('m1'), undefined);
     await doltPullBefore('m1', { command });
@@ -820,7 +1094,7 @@ test('fingerprint: the reconcile path (rejected push -> one pull -> re-push) for
         [PUSH]: [fail('Updates were rejected because the remote contains work'), OK],
         [PULL]: [OK],
     });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     const res = await doltPushAfter('m1', { command, pushBeads: true, sleep: async () => {} });
     assert.deepEqual(res, { ok: true, member: 'm1', pushed: true, reconciled: true });
     assert.equal(countOf(LS_REMOTE), 0, 'neither the first push nor the re-push may probe the remote');
@@ -838,7 +1112,7 @@ test('fingerprint: a FAILED (non-diverged) push leaves the recorded tip alone --
         [PROBE]: [REMOTE_JSON],
         [PUSH]: [fail('connection refused')],
     });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     await assert.rejects(() => doltPushAfter('m1', { command, pushBeads: true, sleep: async () => {} }));
     assert.equal(countOf(LS_REMOTE), 0);
     assert.equal(getLastSyncedTip('m1'), SHA_A);
@@ -864,7 +1138,7 @@ test('fingerprint: a diverged push forgets the tip', async () => {
         [PUSH]: [fail('Updates were rejected because the remote contains work')],
         [PULL]: [OK],
     });
-    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m1', SHA_A, PROBE_URL);
     await assert.rejects(() => doltPushAfter('m1', { command, pushBeads: true, sleep: async () => {} }));
     assert.equal(getLastSyncedTip('m1'), undefined);
 });

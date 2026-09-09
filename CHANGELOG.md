@@ -36,12 +36,29 @@ spawns, and turn a multi-minute pre-launch guard into a single bulk query.
   the fail-safe answer. Invalidated explicitly -- no TTL -- on any
   `bd config set` / `bd dolt remote` / `bd init` / `bd bootstrap` the
   orchestrator issues for that member (via the runner's central `command()`
-  wrapper), on EVERY settled dispatch to that member (via the central
-  `agent()` wrapper -- an agent's own `bd bootstrap` never passes through
-  `command()`, so pattern-matching cannot see it and the only safe rule is
-  to distrust a member's cached state after any dispatch), on the auth
-  self-heal firing, and on `repair()`. Every one of those seams drops the
-  remote-tip fingerprint below alongside the memo.
+  wrapper), on the auth self-heal firing, and on `repair()`. Every one of
+  those seams drops the remote-tip fingerprint below alongside the memo.
+  - **A settled dispatch MARKS the member rather than wiping it.** An
+    agent's own `bd` commands never pass through `command()`, so the central
+    `agent()` wrapper tells DoltSync when a dispatch settles. An earlier cut
+    made that an unconditional wipe of both memos, which emptied the
+    fingerprint before every dispatch bracket and re-spawned the probe once
+    per dispatch (the golden mock-sprint transcript went from 1 probe to
+    14) -- the primary path then paid an extra `ls-remote` and skipped
+    nothing. The hazards do not warrant it: `bd bootstrap` (the one
+    self-heal this repo's agent instructions prescribe) is non-destructive
+    and, where it creates a DB, clones it from `sync.remote` -- a surviving
+    fingerprint stays TRUE; a forced `bd init` yields an unrelated history no
+    pull can fix, and its next push diverges into the terminals that already
+    forget the tip. The one event a surviving fingerprint would get wrong --
+    an agent-side `bd config set sync.remote <other>` -- is handled: the
+    fingerprint is bound to the URL it was minted against, and a member
+    dispatched-to since its memo was last read has `sync.remote` RE-READ (one
+    `bd config get`, a plain config.yaml read) before any pull is skipped on
+    it; a changed or unreadable answer forces a real pull. So the re-read is
+    paid once per skip-after-dispatch instead of once per dispatch, a bracket
+    whose remote tip moved pays nothing extra, and the golden transcript is
+    back to one probe.
 - **The transient retry ladder is time-boxed, not count-boxed.** Widening the
   ladder to 8 retries with a 30s backoff cap fixed a real Windows `git.exe`
   spawn outage (measured 1-3 minutes) but applied that budget to every
@@ -76,8 +93,16 @@ spawns, and turn a multi-minute pre-launch guard into a single bulk query.
   read or whose URL fails a strict safe-charset check -- falls through to a
   REAL pull. There is no path in which doubt produces a skip. The probe target
   is always resolved from `sync.remote` (via the memo above), never from git's
-  `origin`, since the two can legitimately differ on a member. Disable per
-  call site with `remoteTipFingerprint: false`.
+  `origin`, since the two can legitimately differ on a member -- which is why
+  a scheme-less `sync.remote` (a bare Dolt remote NAME such as `origin`, or a
+  bare path) yields no probe at all: `git ls-remote origin` would silently
+  resolve against git's origin. An http(s) userinfo (`user:token@`) is
+  stripped from the URL before it becomes part of the probe command, because
+  the workflow journals every command string verbatim into the persisted,
+  dashboard-visible transcript; the stripped URL authenticates through the
+  git credential helper every provisioned member carries, and a member
+  without one gets a failed probe, i.e. a real pull. Disable per call site
+  with `remoteTipFingerprint: false`.
 
 - **The supervisor dashboard had the same `--all` gap, with a worse
   consequence.** `dashboard.mjs`'s progress bars and `decomposedParentIds`

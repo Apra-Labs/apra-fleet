@@ -6536,7 +6536,8 @@ async function runSprintCycle(context) {
             // through. Non-matching commands are a cheap regex test. This
             // seam only sees the ORCHESTRATOR's own commands; an agent's
             // commands on the member are covered by the agent() wrapper
-            // below (DoltSync.noteMemberDispatchCompleted).
+            // below (DoltSync.noteMemberDispatchCompleted), which marks the
+            // member for a lazy re-check rather than dropping anything.
             const memberName = opts && opts.member_name;
             if (memberName) DoltSync.noteMemberCommand(memberName, trimmed);
         }
@@ -6572,19 +6573,22 @@ async function runSprintCycle(context) {
     // two test runners, harvester -- got nothing at all until now, which is
     // exactly the population most likely to benefit from a `runbook` entry.
     //
-    // DoltSync cache invalidation (dolt sync budget review round 3, item 2):
-    // this wrapper is also the ONE place every dispatch to a member settles,
-    // so it is where DoltSync learns that the member's cached sync state
-    // (the sync.remote memo and the remote-tip fingerprint) can no longer be
-    // trusted. A dispatched agent runs its `bd` commands in its own session
-    // on the member -- never through the command() wrapper above, whose
-    // noteMemberCommand() seam therefore cannot see an agent-side `bd init` /
-    // `bd bootstrap` / `bd config set`. Invalidation is unconditional and
+    // DoltSync dispatch seam (dolt sync budget review rounds 3-4): this
+    // wrapper is also the ONE place every dispatch to a member settles, so it
+    // is where DoltSync learns that an agent has run on the member. A
+    // dispatched agent runs its `bd` commands in its own session -- never
+    // through the command() wrapper above, whose noteMemberCommand() seam
+    // therefore cannot see an agent-side `bd config set sync.remote`. The
+    // seam MARKS the member (dispatched-since-verified); it drops neither the
+    // sync.remote memo nor the remote-tip fingerprint. DoltSync re-reads the
+    // member's sync.remote lazily, only at the moment a D-pull would be
+    // SKIPPED on that fingerprint (round 3's unconditional wipe emptied the
+    // fingerprint before every dispatch bracket and defeated the memo; see
+    // DoltSync.noteMemberDispatchCompleted for the per-event reasoning). It
     // fires in a `finally`, so it precedes the post-dispatch D-push bracket
     // in withGitSync (which awaits this promise before syncing) on success
     // AND on failure, and covers the dispatches outside withGitSync too
-    // (Streak Assignment). See DoltSync.noteMemberDispatchCompleted for the
-    // cost/benefit of the unconditional rule.
+    // (Streak Assignment).
     const agent = async (prompt, opts = {}) => {
         let finalPrompt = prompt;
         if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {

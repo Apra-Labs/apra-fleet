@@ -1516,29 +1516,47 @@ process per sprint). Two properties matter:
   probe failure cannot pin the fail-safe answer for the rest of the run. The
   fail-CLOSED contract is unchanged.
 - **Explicit invalidation, not a TTL.** A TTL re-adds spawns for no real
-  safety. Four seams drop the memo, and every one of them drops the 9.3
+  safety. Three HARD seams drop the memo, and every one of them drops the 9.3
   remote-tip fingerprint alongside it (the two are always forgotten
   together): `noteMemberCommand()`, called from the runner's central
   `command()` wrapper for any `bd config set` / `bd dolt remote` / `bd init` /
-  `bd bootstrap` the orchestrator issues on that member;
-  `noteMemberDispatchCompleted()`, called from the runner's central `agent()`
-  wrapper the moment ANY dispatch to a member settles (success or failure,
-  before the post-dispatch D-push); the auth self-heal firing inside
-  `runDoltStep`; and `repair()`.
-- **Why the per-dispatch seam is unconditional.** A dispatched agent runs its
+  `bd bootstrap` the orchestrator issues on that member; the auth self-heal
+  firing inside `runDoltStep`; and `repair()`.
+- **The per-dispatch seam is SOFT (round 4).** A dispatched agent runs its
   `bd` commands in its own session on the member, never through the
-  `command()` wrapper -- so an agent-side `bd bootstrap` (which this repo's
-  own agent instructions prescribe on a "database exists" error) is invisible
-  to `noteMemberCommand()` by construction; no regex can see a command the
-  orchestrator never issued. Distrusting the member's cached state after
-  every dispatch is the only rule that upholds "a stale memo never survives
-  an agent-side database reset". The cost is bounded: one `bd config get`
-  re-probe per dispatch (the memo still coalesces the several reads inside a
-  bracket and every orchestrator-side bracket between dispatches), and one
-  real pull at the dispatched member's next bracket -- which a beads-mutating
-  role already pays, since its D-push forgets the fingerprint anyway (9.3).
-  A narrower rule (mutating roles only) was rejected: a read-only agent can
-  hit the same error and follow the same self-heal instruction.
+  `command()` wrapper, so `noteMemberCommand()` cannot see them; the runner's
+  central `agent()` wrapper calls `noteMemberDispatchCompleted()` the moment
+  any dispatch settles. Round 3 made that an unconditional wipe of both
+  memos. Combined with "a push never mints a fingerprint" (9.3), the
+  fingerprint was then EMPTY at the start of every dispatch bracket -- the
+  module's primary path -- so the primary path paid one `ls-remote` more
+  than before the feature and skipped nothing, and the probe was re-spawned
+  once per dispatch (golden mock-sprint transcript: 1 -> 14). The hazards
+  the wipe guarded were checked against what bd actually does:
+  `bd bootstrap` -- the one self-heal this repo's agent instructions
+  prescribe -- is non-destructive (an existing DB is validated and reported,
+  never replaced) and, where it creates a DB, CLONES it from `sync.remote`,
+  so a surviving fingerprint that still equals the remote tip is still the
+  truth; `bd init` refuses on an existing DB unless forced, and a forced
+  re-init yields an unrelated history that no pull can fast-forward (its next
+  push diverges into the terminals that already forget the tip and settle).
+  The one event a surviving fingerprint would get WRONG is an agent-side
+  `bd config set sync.remote <other>`. So the seam now MARKS the member as
+  dispatched-since-verified and drops nothing; the fingerprint is bound to
+  the URL it was minted against; and a marked member's `sync.remote` is
+  re-read (one `bd config get`, a plain config.yaml read, no Dolt engine)
+  only at the one decision a stale memo could turn into stale data -- the
+  moment a D-pull is about to be SKIPPED on that fingerprint. Same URL:
+  skip. Different or unreadable: fingerprint forgotten, real pull. Every
+  other consumer of the memo fails closed anyway (a wrong "configured"
+  answer just issues a real pull/push against whatever remote bd itself has
+  configured). The re-read is therefore paid once per skip-after-dispatch,
+  never per dispatch; a bracket whose tip moved pays nothing extra; the
+  golden transcript is back to one probe. Accepted residual, stated: a
+  member whose `sync.remote` was positively ABSENT at first read (every
+  bracket takes the no-remote exit before any fingerprint logic) and whose
+  agent wires a remote mid-dispatch stays no-remote for the process -- that
+  member was never part of beads sync in this run.
 
 ### 9.2 The transient retry ladder is time-boxed, not count-boxed
 
@@ -1635,18 +1653,32 @@ recorded tip yet, an `ls-remote` failure or timeout, unparseable output, a
 `sync.remote` that could not be positively read, or a URL that fails the
 strict safe-charset gate. A divergence, a settle, a successful push, an auth
 self-heal, a `repair()`, an orchestrator-issued `bd init`/`bootstrap`/`config
-set`, and every settled dispatch all FORGET the recorded tip rather than
-leave a stale one. There is deliberately no path in which doubt produces a
-skip.
+set`, and a `sync.remote` found changed under a dispatch (9.1) all FORGET the
+recorded tip rather than leave a stale one. The recorded tip is bound to the
+URL it was observed at and never validates a probe of any other URL. There
+is deliberately no path in which doubt produces a skip.
 
-**Two implementation constraints worth restating:**
+**Three implementation constraints worth restating:**
 
 - The probe target is resolved from `sync.remote` (through the 9.1 memo, so it
   costs no extra `bd config get`), NEVER from git's `origin`. The two can
   legitimately differ on a member, and probing `origin` would compare this
   member's freshness against the wrong ref. bd spells a git-transport remote
   `git+https://...`; the `git+` prefix is bd's own scheme marker and is
-  stripped before `ls-remote`.
+  stripped before `ls-remote`. A `sync.remote` with NO scheme -- a bare Dolt
+  remote NAME (`origin`, which the integration fixtures legitimately set) or
+  a bare path (a Dolt file remote, never a git repository) -- yields no probe
+  at all, because `git ls-remote origin` would silently resolve against
+  git's origin, the exact target this rule forbids.
+- The probe command string is journaled VERBATIM into the persisted,
+  dashboard-visible run transcript (`silent` only suppresses the console
+  line). An http(s) userinfo (`user:token@`) in `sync.remote` is therefore
+  stripped before the URL is interpolated into the command; previously such
+  a token only ever appeared as command OUTPUT (`bd config get`). The
+  stripped URL still authenticates through the git credential helper every
+  provisioned member carries (that is how `git push` works on members); a
+  member whose only credential was URL-embedded gets a failed probe, which is
+  a real pull. ssh URLs keep their `git@` -- a login name, not a secret.
 - The probe string reaches the member's own shell, which may be PowerShell or
   a POSIX shell. Rather than trying to quote correctly for both, any remote URL
   containing a character outside a conservative safe charset (no whitespace,
