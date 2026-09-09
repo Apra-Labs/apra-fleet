@@ -7376,11 +7376,24 @@ async function runSprintCycle(context) {
         label: 'Resolve origin remote URL',
     });
     const originUrl = originUrlRes.ok ? originUrlRes.output.trim() : '';
-    const hostedRemote = vcsCapabilities(originUrl).canOpenPullRequest;
+    // (apra-fleet-3swo.4.10) capabilities() is already the provider-agnostic
+    // hook -- it dispatches to WHICHEVER registered provider's matchesHost()
+    // claims this remote's host (github, azure-devops, bitbucket, ... see
+    // vcs-module.mjs's capabilities()), never a hardcoded GitHub check. The
+    // log line below used to say "not a gh-hostable GitHub remote" even
+    // though the gate itself was already provider-neutral -- that wording
+    // was pure residue, not control flow, but a broken/misconfigured
+    // Azure DevOps or Bitbucket remote hitting this same branch would have
+    // been told (wrongly) that it looked like a GitHub problem. `host` is
+    // carried through so the log names what was actually resolved, matching
+    // finalizeAbort's identical gate (abort.mjs) which never had the stale
+    // GitHub wording in the first place.
+    const publishPrCapabilities = vcsCapabilities(originUrl);
+    const hostedRemote = publishPrCapabilities.canOpenPullRequest;
 
     if (!hostedRemote) {
-        log(`Publish PR: origin remote '${originUrl || '(unresolved)'}' is not a gh-hostable GitHub remote -- ` +
-            'skipping PR creation entirely (no dependency on gh auth / GH_TOKEN for this path).');
+        log(`Publish PR: origin remote '${originUrl || '(unresolved)'}' cannot open a pull request (host: ${publishPrCapabilities.host || 'unknown'}) -- ` +
+            'skipping PR creation entirely (no dependency on any VCS provider\'s auth for this path).');
         // A non-hosted remote can never complete PR creation, so target-issue
         // closure cannot be gated on it -- close the target issue(s) directly,
         // but only when the sprint's own final verdict actually passed. A FAIL

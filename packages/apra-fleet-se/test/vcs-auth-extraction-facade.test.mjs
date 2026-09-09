@@ -78,7 +78,14 @@ const MOVED_PRIVATE_SYMBOLS = [
     'detectVcsProviderFromRemote',
     'provisionVcsAuthForMember',
     'provisionPrCapableAuthForMember',
-    'GITHUB_VCS_CREDENTIAL_LABEL',
+    // apra-fleet-3swo.4.10: renamed from GITHUB_VCS_CREDENTIAL_LABEL -- the
+    // symbol NAME itself was a github-shaped assumption sitting in shared
+    // code (repo CLAUDE.md forbids this), independent of its value (which is
+    // unchanged: it still derives to 'github', vcs-providers/index.mjs's
+    // DEFAULT_VCS_PROVIDER). This is a deliberate, in-scope rename for this
+    // bead's behaviour PR, not a drift in the move-only extraction the rest
+    // of this list pins.
+    'DEFAULT_VCS_CREDENTIAL_LABEL',
     'PR_SKIPPED_NO_MCP_CLIENT',
     'readMemberVcsCredentialToken',
     'parseVcsCurlOutput',
