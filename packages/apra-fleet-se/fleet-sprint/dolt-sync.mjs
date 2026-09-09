@@ -1989,16 +1989,19 @@ async function runDegradable(run, ctx) {
  */
 export async function syncBefore(member, opts = {}) {
     const { readinessGate = false, skipRefresh, fatal, onDegraded, healthGate, skipPull, ...rest } = opts;
+    // Both renames (healthGate -> readinessGate, skipPull -> skipRefresh) came
+    // from apra-fleet-417.5 (ADR Decision 2). The tracker id lives here, in a
+    // comment, because the thrown messages below are runtime strings.
     if (healthGate !== undefined) {
         throw new Error(
             "DoltSync.syncBefore: opts.healthGate is retired -- pass opts.readinessGate instead " +
-            "(docs/adr-taskdb-backend-neutral-interface.md Decision 2, apra-fleet-417.5).",
+            "(docs/adr-taskdb-backend-neutral-interface.md Decision 2).",
         );
     }
     if (skipPull !== undefined) {
         throw new Error(
             "DoltSync.syncBefore: opts.skipPull is retired -- pass opts.skipRefresh instead " +
-            "(docs/adr-taskdb-backend-neutral-interface.md Decision 2, apra-fleet-417.5).",
+            "(docs/adr-taskdb-backend-neutral-interface.md Decision 2).",
         );
     }
     const adapterOpts = { ...rest, skipPull: skipRefresh };
