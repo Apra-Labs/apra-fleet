@@ -17,6 +17,12 @@ import {
 // Same symbols, resolved through the runner.js facade -- must be the exact
 // same function objects (re-exported, not re-implemented).
 import * as runner from '../fleet-sprint/runner.js';
+// apra-fleet-3swo.4.5: the CLI->runner arg contract runner.js's real dispatch
+// path validates `branch` through -- used by the new describe block below,
+// which ties sprintMutexId back to this and to the documented cli.mjs
+// ledger-key contract.
+import { validateArgs } from '../fleet-sprint/sprint-args.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 describe('coordination.mjs is the single source of truth runner.js re-exports (apra-fleet-3swo.4.3)', () => {
     test('runner.js re-exports the identical function objects, not copies', () => {
@@ -131,5 +137,72 @@ describe('sprintMutexId flows through every coordination client verbatim -- unmo
         for (const call of calls) {
             assert.equal(call.args.sprint_id, FIXED_SPRINT_ID, 'sprint_id must be the exact fixed input, unmodified');
         }
+    });
+});
+
+// apra-fleet-3swo.4.5: sprintMutexId (fleet-sprint/runner.js's
+// `const sprintMutexId = (args && args.branch) ? String(args.branch) : 'sprint';`,
+// stamped as `sprint_id` on every real agent() dispatch) is documented in
+// bin/cli.mjs (~L744-755, the effectiveRunId/createMemberReservationClient
+// comments) as the SAME opaque per-sprint identity as:
+//   - cli.mjs's own `sprintId: branchName` member-reservation reserve call, and
+//   - the supervisor ledger-key fallback (`effectiveRunId = values['run-id']
+//     || branchName`) used for a direct/standalone launch that has no
+//     supervisor --run-id.
+// This pins a FIXED (not per-test-run-computed) branch literal through a real
+// mock sprint end to end and proves the actual dispatch code path -- not a
+// re-derivation of the formula -- stamps every dispatch with exactly that
+// literal, and that it is the same string sprint-args.mjs's validateArgs()
+// (the one arg contract both cli.mjs and runner.js share) resolves `branch`
+// to, and the same string a coordination.mjs member-reservation client built
+// the way cli.mjs builds it actually sends on the wire.
+describe('sprintMutexId for a fixed branch matches the identity the supervisor reservation ledger would key by (apra-fleet-3swo.4.5)', () => {
+    const FIXED_BRANCH = 'feat/pin-mutex-ledger-3swo-4-5';
+
+    test('every real dispatch is stamped with the pinned branch as sprint_id, matching validateArgs and a coordination.mjs reservation client', async () => {
+        await withScenarioMarkers('pin sprintMutexId to the ledger key', async () => {
+            const result = await runDevelopLoopScenario('pinmutexledger', {
+                members: ['local'],
+                taskSpecs: [{ title: 'Task: pin sprintMutexId to the ledger key regression work' }],
+                maxCycles: 2,
+                branchOverride: FIXED_BRANCH,
+            });
+
+            assert.ok(!result.error, `scenario should not abort: ${result.error ? result.error.message : ''}`);
+            assert.equal(result.branch, FIXED_BRANCH);
+            assert.ok(result.dispatched.length > 0, 'expected at least one dispatched call to inspect');
+            const wrongSprintId = result.dispatched.filter((d) => d.sprintId !== FIXED_BRANCH);
+            assert.equal(
+                wrongSprintId.length, 0,
+                `every real dispatch must carry sprint_id '${FIXED_BRANCH}' (runner.js's sprintMutexId), but found ` +
+                `${wrongSprintId.length} that did not: ${JSON.stringify(wrongSprintId.map((d) => ({ agent: d.agent, sprintId: d.sprintId })))}`,
+            );
+
+            // The shared CLI<->runner arg contract resolves `branch` to the
+            // identical literal -- this is what bin/cli.mjs's own
+            // `sprintId: branchName` member-reservation call and its
+            // `effectiveRunId = values['run-id'] || branchName` ledger-key
+            // fallback both key off of for a direct/standalone launch.
+            const validated = validateArgs({
+                target_issues: ['x-1'],
+                members: ['local'],
+                branch: FIXED_BRANCH,
+                base_branch: 'main',
+            });
+            assert.equal(validated.branch, FIXED_BRANCH);
+
+            // Tie it back to the real coordination.mjs client: the exact
+            // same literal, used as sprintId the way cli.mjs constructs it,
+            // is what actually goes out on the wire as sprint_id.
+            const calls = [];
+            const client = createMemberReservationClient({
+                callTool: async (name, args) => { calls.push({ name, args }); return { content: [{ text: '{}' }] }; },
+                members: ['local'],
+                sprintId: validated.branch,
+            });
+            await client.reserveAll();
+            assert.equal(calls.length, 1);
+            assert.equal(calls[0].args.sprint_id, FIXED_BRANCH);
+        });
     });
 });
