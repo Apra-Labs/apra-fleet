@@ -655,3 +655,45 @@ export class MemberReservationResumeError extends WorkflowError {
         this.members = members;
     }
 }
+
+// ---------------------------------------------------------------------------
+// apra-fleet-3swo.4.9 -- sync-bracket mutual-exclusion violation
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by git-sync.mjs's createSyncBrackets() when two brackets sharing the
+ * same `exclusiveKey` genuinely OVERLAP rather than nest -- i.e. the bracket
+ * that opened FIRST closes while a bracket that opened LATER (for the same
+ * key) is still open. Proper nesting (LIFO open/close for the same key) never
+ * throws this; only a crossing close does, which is precisely the shape a
+ * broken bracket pairing (or a regression in the external serialization gate
+ * that is supposed to keep code-writing dispatches sequential, e.g. runner.js
+ * 's `globalDoerTurn`) would produce. Every OTHER key stays fully
+ * independent: two brackets with different `exclusiveKey`s (or no key at all)
+ * may overlap in any order and never trigger this -- that is legitimate,
+ * relied-upon concurrency (e.g. multiple members' D-pushes serialized by
+ * their own dolt push mutex, not by this counter).
+ *
+ * @property {string} exclusiveKey - the shared key the two brackets collided on.
+ * @property {string} closingLabel - the bracket that was closing when the
+ *   violation was detected.
+ * @property {string[]} stillOpenLabels - the other bracket(s) sharing this key
+ *   that were still open at that moment.
+ */
+export class ConcurrentSyncBracketError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ exclusiveKey: string, closingLabel: string, stillOpenLabels: string[], details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { exclusiveKey, closingLabel, stillOpenLabels = [], details, cause } = opts;
+        super(message, {
+            code: 'CONCURRENT_SYNC_BRACKET',
+            details: { exclusiveKey, closingLabel, stillOpenLabels, ...details },
+            cause,
+        });
+        this.exclusiveKey = exclusiveKey;
+        this.closingLabel = closingLabel;
+        this.stillOpenLabels = stillOpenLabels;
+    }
+}

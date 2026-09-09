@@ -14,7 +14,10 @@
 //                        the dispatch itself, post-dispatch G-push/D-push).
 //   syncBeadsBefore() -- a standalone bracketed DoltSync.syncBefore().
 //   syncBeadsAfter()  -- a standalone bracketed DoltSync.syncAfter().
-//   pushBeadsAfter()  -- a standalone bracketed doltPushAfter().
+//   pushBeadsAfter()  -- a standalone bracketed DoltSync.syncAfter() D-push
+//                        (apra-fleet-3swo.4.9 part b -- routes through the
+//                        same degrade-by-default/settle-callback surface as
+//                        syncBeadsAfter, no longer a bare doltPushAfter()).
 //   pushGitAfter()    -- a standalone bracketed syncMemberAfter() G-push.
 // runner.js holds NO counter arithmetic and hand-rolls NO bracket of its own.
 //
@@ -33,10 +36,23 @@
 // =============================================================================
 
 import { ApraFleet } from "@apralabs/apra-fleet-client";
-import { DoltSync, doltPushAfter } from "./dolt-sync.mjs";
+import { DoltSync } from "./dolt-sync.mjs";
 import { buildSettleCallback } from "./dolt-settle.mjs";
-import { PostDispatchSyncError } from "./errors.mjs";
+import { PostDispatchSyncError, ConcurrentSyncBracketError } from "./errors.mjs";
 import { resolveMemberTarget } from "./member-target.mjs";
+
+// (apra-fleet-3swo.4.9 part a) The shared `exclusiveKey` every CODE-WRITING
+// (pushCode:true) withGitSync() bracket opens under. This is the resource
+// mutual exclusion actually protects: the shared git branch a G-push lands
+// on, not any one member -- two DIFFERENT members' pushCode:true dispatches
+// overlapping is exactly as damaging to the fast-forward-by-construction
+// invariant as the same member somehow dispatching twice at once. Read-only
+// brackets (pushCode:false) and the standalone D-only/G-only helpers never
+// pass an exclusiveKey -- their concurrency is either harmless (nothing is
+// pushed) or already serialized by a purpose-built mechanism of their own
+// (the dolt push mutex), so folding them into this check would only add
+// false-positive risk with no corresponding safety gain.
+export const CODE_WRITE_BRACKET_KEY = 'code-write';
 
 // Backoff for retrying ONLY the post-dispatch sync step of a bracket whose
 // dispatch already completed. Short and bounded: this is a git/dolt push round
@@ -56,7 +72,7 @@ const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_
  * module can increment or decrement it.
  *
  * @param {{ setPauseGuard?: Function }} deps
- * @returns {{ withOpenSyncBracket: (fn: () => Promise<any>) => Promise<any>, openBracketCount: () => number }}
+ * @returns {{ withOpenSyncBracket: (fn: () => Promise<any>, opts?: { exclusiveKey?: string, label?: string }) => Promise<any>, openBracketCount: () => number }}
  */
 export function createSyncBrackets({ setPauseGuard } = {}) {
     // (apra-fleet-p2to.4.1) Clean-state pause guard: this is fleet-sprint's OWN
@@ -88,20 +104,80 @@ export function createSyncBrackets({ setPauseGuard } = {}) {
     if (typeof setPauseGuard === 'function') {
         setPauseGuard(() => openSyncBracketCount === 0);
     }
+
+    // MUTUAL-EXCLUSION TRACKING (apra-fleet-3swo.4.9 part a). Before this, the
+    // counter above ONLY counted -- it could not tell a legitimately NESTED
+    // pair of brackets (bracket B opens and fully closes while bracket A,
+    // opened first, is still open -- harmless, LIFO) apart from a genuine
+    // OVERLAP (bracket A closes while a LATER-opened bracket B is still
+    // open -- a crossing, non-LIFO close that proves the two never should
+    // have been open at the same time). A caller that opts in by passing
+    // `exclusiveKey` gets that distinction enforced: brackets sharing a key
+    // are tracked on a per-key STACK, so any depth of legitimate nesting for
+    // that key is free (push on open, pop on close, never throws as long as
+    // closes happen LIFO), and a crossing close throws
+    // ConcurrentSyncBracketError naming both the closing bracket and every
+    // other bracket sharing the key that is still open. Every bracket that
+    // does NOT pass `exclusiveKey` (the default) is completely unaffected --
+    // this is opt-in per key, not a global exclusivity rule, because most
+    // concurrent brackets in this codebase are LEGITIMATE (different
+    // members' D-pushes serialize via their own dolt push mutex, not via
+    // this counter) and must never throw.
+    const exclusiveStacks = new Map();
+    let bracketSeq = 0;
+
     /**
      * Runs `fn` with the open-sync-bracket counter incremented for its
      * duration, decrementing again on EVERY exit path (success or throw) via
      * `finally` -- never leaves a stale increment behind on an error.
      * @template T
      * @param {() => Promise<T>} fn
+     * @param {{ exclusiveKey?: string, label?: string }} [opts] - opt in to
+     *   mutual-exclusion tracking for `exclusiveKey`; `label` is cosmetic,
+     *   used only in the thrown error's message.
      * @returns {Promise<T>}
      */
-    async function withOpenSyncBracket(fn) {
+    async function withOpenSyncBracket(fn, { exclusiveKey, label } = {}) {
         openSyncBracketCount += 1;
+        let token = null;
+        if (exclusiveKey !== undefined && exclusiveKey !== null) {
+            token = { id: ++bracketSeq, label: label || exclusiveKey };
+            const stack = exclusiveStacks.get(exclusiveKey) || [];
+            stack.push(token);
+            exclusiveStacks.set(exclusiveKey, stack);
+        }
         try {
             return await fn();
         } finally {
             openSyncBracketCount -= 1;
+            if (token) {
+                const stack = exclusiveStacks.get(exclusiveKey) || [];
+                const top = stack[stack.length - 1];
+                if (top && top.id === token.id) {
+                    // Normal case, whatever the nesting depth: we are the
+                    // most-recently-opened bracket for this key, so this is
+                    // a valid LIFO close.
+                    stack.pop();
+                    if (stack.length === 0) exclusiveStacks.delete(exclusiveKey);
+                } else {
+                    // CROSSING close: a bracket that opened AFTER us, sharing
+                    // our key, is still open. That is true overlap, not
+                    // nesting -- remove ourselves from the stack (wherever we
+                    // are in it) and throw, naming every bracket still open.
+                    const idx = stack.findIndex((t) => t.id === token.id);
+                    if (idx !== -1) stack.splice(idx, 1);
+                    if (stack.length === 0) exclusiveStacks.delete(exclusiveKey);
+                    else exclusiveStacks.set(exclusiveKey, stack);
+                    const stillOpenLabels = stack.map((t) => t.label);
+                    throw new ConcurrentSyncBracketError(
+                        `[Sync] mutual-exclusion violation on key '${exclusiveKey}': bracket '${token.label}' closed while ` +
+                        `${stack.length} other bracket(s) sharing the same key ${stack.length === 1 ? 'is' : 'are'} still open ` +
+                        `(${stillOpenLabels.join(', ')}) -- these OVERLAPPED rather than nested, which breaks the ` +
+                        `fast-forward-by-construction invariant this key protects.`,
+                        { exclusiveKey, closingLabel: token.label, stillOpenLabels },
+                    );
+                }
+            }
             // (apra-fleet-p2to.4.4.1) Closing the LAST open sync bracket is
             // itself a clean-state boundary a deferred pause may complete at,
             // but the engine only re-checks its pause-engage condition
@@ -317,7 +393,7 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
         }
         if (dispatchThrew) throw dispatchThrew;
         return dispatchResult;
-    });
+    }, pushCode ? { exclusiveKey: CODE_WRITE_BRACKET_KEY, label: `withGitSync(${member})` } : undefined);
 }
 
 /**
@@ -342,7 +418,7 @@ export function createGitSync(deps = {}) {
          * This is the only way to open a bracket from outside this module:
          * the counter itself is unreachable.
          */
-        withOpenSyncBracket: (fn) => brackets.withOpenSyncBracket(fn),
+        withOpenSyncBracket: (fn, options) => brackets.withOpenSyncBracket(fn, options),
         /** The full dispatch bracket. See withGitSync() above. */
         withGitSync: (memberName, pushCode, dispatchFn, options) => withGitSync(ctx, memberName, pushCode, dispatchFn, options),
         /**
@@ -361,13 +437,28 @@ export function createGitSync(deps = {}) {
             () => DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, ...options }),
         ),
         /**
-         * A standalone bracketed doltPushAfter(). This is what closes the
-         * Final Review findings D-push hole: that site used to call
-         * doltPushAfter() bare, so the pause guard read "safe to pause" with a
-         * dolt push in flight.
+         * A standalone bracketed beads D-push, routed through
+         * DoltSync.syncAfter() (apra-fleet-3swo.4.9 part b) exactly like its
+         * sibling syncBeadsAfter() above. This is what closes the Final
+         * Review findings D-push hole: that site used to call doltPushAfter()
+         * bare, outside every bracket, so the pause guard read "safe to
+         * pause" with a dolt push in flight (apra-fleet-3swo.4.1). Routing
+         * through DoltSync.syncAfter() (rather than calling doltPushAfter()
+         * directly the way this function used to) closes a SECOND gap: a
+         * bare doltPushAfter() always THROWS on an unresolved failure, which
+         * made this call site behave inconsistently with every other
+         * orchestrator post-mutation D-push (all of which go through
+         * syncBeadsAfter and are deliberately non-fatal -- see dolt-sync.mjs's
+         * module header, "The orchestrator's post-mutation D-pushes are
+         * deliberately NOT fatal"). Now this site DEGRADES the same way: an
+         * unresolved D-push here is logged and recorded
+         * (DoltSync.getDegradedSyncRecords()) rather than aborting the
+         * sprint, and the next D-push bracket for this member is the queued
+         * retry, same as every sibling site. Pass `fatal: true` in `options`
+         * to opt back into the old throwing behavior at this call site.
          */
         pushBeadsAfter: (memberName, options = {}) => brackets.withOpenSyncBracket(
-            () => doltPushAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, ...options }),
+            () => DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, ...options }),
         ),
         /**
          * A standalone bracketed G-push through runner.js's syncMemberAfter().
