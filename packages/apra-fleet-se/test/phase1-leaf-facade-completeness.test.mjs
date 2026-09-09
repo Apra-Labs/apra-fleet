@@ -38,6 +38,78 @@ const SPRINT_ARGS_PATH = path.join(SE_DIR, 'fleet-sprint/sprint-args.mjs');
 const GOLDEN_FIXTURE_DIR = path.join(__dirname, 'fixtures', 'golden-transcript');
 
 // -----------------------------------------------------------------------------
+// apra-fleet-3yuu.1: shared, env-overridable nested-suite spawn budget.
+//
+// Both describe (3) (golden-transcript) and describe (4) (mock-sprint) below
+// spawn a nested `node --test` child via execFileSync and used to hard-code
+// their own timeout literal (60 seconds / 120 seconds respectively). Under a real
+// bd/dolt-backed run those budgets are roughly an order of magnitude short --
+// golden-transcript.test.mjs alone took 562s standalone in the failing run
+// this bead fixes (apra-fleet-3yuu) -- so both now derive from ONE named
+// constant, overridable by a single env var, defaulting well above that
+// observed runtime. Raising the default further (or overriding per-run) is
+// the correct fix if a real, slower backend needs more headroom; if the
+// raised budget still times out, that is a genuine signal for the separate
+// bd+dolt per-dispatch latency work, not a reason to raise this further.
+//
+// Override: set PHASE1_NESTED_SUITE_TIMEOUT_MS (milliseconds) in the
+// environment to use a different budget for both nested spawns below.
+// -----------------------------------------------------------------------------
+const DEFAULT_NESTED_SUITE_TIMEOUT_MS = 900_000;
+
+function resolveNestedSuiteTimeoutMs() {
+    const raw = process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
+    if (raw === undefined || raw === '') return DEFAULT_NESTED_SUITE_TIMEOUT_MS;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error(`PHASE1_NESTED_SUITE_TIMEOUT_MS must be a positive number of milliseconds, got: ${JSON.stringify(raw)}`);
+    }
+    return parsed;
+}
+
+const NESTED_SUITE_TIMEOUT_MS = resolveNestedSuiteTimeoutMs();
+
+/**
+ * Runs a nested `node --test` suite via execFileSync under the shared
+ * NESTED_SUITE_TIMEOUT_MS budget above, self-describing on timeout instead of
+ * letting a bare "spawnSync node ETIMEDOUT" reach the test output.
+ *
+ * Node distinguishes a timeout from a genuine non-zero-exit failure at the
+ * error-object level (verified directly): a timed-out spawnSync sets
+ * `error.code === 'ETIMEDOUT'` and `error.signal === 'SIGTERM'`, while a
+ * plain non-zero exit sets `error.status` to the exit code and leaves `code`
+ * undefined. Only the timeout case is rewrapped here, naming which nested
+ * suite timed out and which budget (and its source -- the env override or the
+ * default) was in force; a non-timeout failure is re-thrown UNCHANGED, so its
+ * captured stdout/stderr (`error.stdout`/`error.stderr`, from `stdio:
+ * 'pipe'`) and Node's own "Command failed: ..." message still reach the
+ * subtest exactly as before this bead.
+ */
+function runNestedSuite(suiteLabel, args, extraOpts = {}) {
+    try {
+        return execFileSync(process.execPath, args, {
+            cwd: SE_DIR,
+            encoding: 'utf8',
+            stdio: 'pipe',
+            timeout: NESTED_SUITE_TIMEOUT_MS,
+            ...extraOpts,
+        });
+    } catch (err) {
+        if (err && err.code === 'ETIMEDOUT') {
+            const budgetSource = process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS
+                ? `PHASE1_NESTED_SUITE_TIMEOUT_MS=${process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS}`
+                : `the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)`;
+            throw new Error(
+                `nested suite "${suiteLabel}" timed out after ${NESTED_SUITE_TIMEOUT_MS}ms (budget from ${budgetSource}). ` +
+                    `Raise PHASE1_NESTED_SUITE_TIMEOUT_MS if this nested run is genuinely this slow under the current bd/dolt ` +
+                    `backend, or investigate a real hang -- this is not the per-dispatch bd+dolt latency work tracked separately.`,
+            );
+        }
+        throw err;
+    }
+}
+
+// -----------------------------------------------------------------------------
 // (1) runner.js's export surface is a superset of what it exported right
 // before the Phase 1 leaf extractions began (git commit e5f7246b, the parent
 // of the first leaf-extraction commit c516f0d2 "extract sprint-args.mjs
@@ -304,10 +376,10 @@ describe('(3) golden transcripts reproduce with the fixture directory untouched'
         // scope to fix, reported separately.
         delete env.NODE_TEST_CONTEXT;
 
-        const childOut = execFileSync(
-            process.execPath,
+        const childOut = runNestedSuite(
+            'golden-transcript',
             ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
-            { cwd: SE_DIR, env, encoding: 'utf8', stdio: 'pipe', timeout: 60_000 },
+            { env },
         );
         // Falsifiability guard against exactly the no-op-pass failure mode
         // above recurring for some other reason: a genuinely empty/no-op
@@ -364,10 +436,10 @@ describe('(4) every mock-sprint test file passes', () => {
         // sprint files produce several MB of TAP+workflow-log output, and the
         // default silently ENOBUFS/overflows on that volume (verified
         // directly).
-        const childOut = execFileSync(
-            process.execPath,
+        const childOut = runNestedSuite(
+            'mock-sprint',
             ['--test', '--test-concurrency=8', ...mockSprintFiles.map((f) => path.join('test', f))],
-            { cwd: SE_DIR, env, encoding: 'utf8', stdio: 'pipe', timeout: 120_000, maxBuffer: 200 * 1024 * 1024 },
+            { env, maxBuffer: 200 * 1024 * 1024 },
         );
 
         // Falsifiability guard against a no-op child run (see (3) above)
