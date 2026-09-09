@@ -1,0 +1,337 @@
+// Shared source-scanning primitives for the role-dispatch PIN tests.
+//
+// WHY THIS EXISTS: the two dispatch-pin test files (planning-role-dispatch-
+// pins.test.mjs and execution-role-dispatch-pins.test.mjs, apra-fleet-3swo.5.1
+// / .5.6) both need to read the SAME facts out of runner.js's source text --
+// which member a dispatch routes to, whether it sits inside a withGitSync(...)
+// bracket and with which pushCode flag, its max_turns/timeout_s, whether a
+// withDispatchWatchdog(...) is armed around it, and which schema (i.e. which
+// returnable verdicts) it carries. Those pins exist to freeze TODAY's
+// behaviour before the dispatchRole engine refactor starts, so both files must
+// derive their facts the same way; a hand-rolled copy in each would drift
+// exactly when the refactor makes drift most expensive to notice.
+//
+// It builds on ./balanced-call-scanner.mjs (the paren-matching primitives
+// shared with git-sync-brackets.test.mjs and dispatch-sync-bracket-
+// coverage.test.mjs) and adds:
+//   - findCallSites()      -- every real call site of a named function
+//   - splitTopLevelArgs()  -- a call's positional arguments
+//   - objectLiteralFor()   -- the text of a `const NAME = { ... }` literal
+//   - optionField()        -- one `key: value` out of an options-object text
+//   - numericConstant()    -- the value of a `const NAME = <number>;`
+//
+// These are deliberately TEXTUAL. runner.js's dispatch sites are not
+// separately importable today (that is the whole point of the refactor these
+// pins guard), so a static parse of the source is the only way to assert what
+// each ladder does before the engine exists.
+
+import { balancedCallRange, skipStringLiteral } from './balanced-call-scanner.mjs';
+
+/** Is `col` inside an open same-line quote? (mirrors dispatch-sync-bracket-coverage.test.mjs) */
+function isInsideSameLineString(lineText, col) {
+    let quote = null;
+    for (let i = 0; i < col; i++) {
+        const ch = lineText[i];
+        if (ch === '\\') { i++; continue; }
+        if (quote) {
+            if (ch === quote) quote = null;
+        } else if (ch === '"' || ch === "'") {
+            quote = ch;
+        }
+    }
+    return quote !== null;
+}
+
+/**
+ * Finds every real (non-comment, non-string-literal) call site of `fnName(`
+ * in `src`.
+ *
+ * @param {string} src
+ * @param {string} fnName
+ * @param {{excludeDeclaration?: boolean}} [options]
+ * @returns {Array<{index:number, line:number, callText:string, range:[number,number]}>}
+ */
+export function findCallSites(src, fnName, { excludeDeclaration = false } = {}) {
+    const lines = src.split('\n');
+    const lineStarts = [];
+    let offset = 0;
+    for (const line of lines) {
+        lineStarts.push(offset);
+        offset += line.length + 1;
+    }
+    function lineNumberForIndex(idx) {
+        let lo = 0;
+        let hi = lineStarts.length - 1;
+        let ans = 0;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (lineStarts[mid] <= idx) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        return ans + 1;
+    }
+    function isCommentLine(ln) {
+        const text = lines[ln - 1] ? lines[ln - 1].trim() : '';
+        return text.startsWith('//') || text.startsWith('*') || text.startsWith('/*');
+    }
+    function isDeclarationLine(ln) {
+        const text = lines[ln - 1] ? lines[ln - 1].trim() : '';
+        return /^(export\s+)?(async\s+)?function\b/.test(text);
+    }
+
+    const escaped = fnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const callRe = new RegExp(`(?<![.\\w])${escaped}\\(`, 'g');
+    const sites = [];
+    let m;
+    while ((m = callRe.exec(src)) !== null) {
+        const openParenIdx = m.index + m[0].length - 1;
+        const line = lineNumberForIndex(m.index);
+        if (isCommentLine(line)) continue;
+        if (excludeDeclaration && isDeclarationLine(line)) continue;
+        const lineText = lines[line - 1] || '';
+        const col = m.index - lineStarts[line - 1];
+        if (isInsideSameLineString(lineText, col)) continue;
+        const [start, end] = balancedCallRange(src, openParenIdx);
+        sites.push({ index: m.index, line, callText: src.slice(start, end + 1), range: [start, end] });
+    }
+    return sites;
+}
+
+/**
+ * Splits a balanced call's argument list -- `callText` as produced by
+ * findCallSites(), i.e. INCLUDING the surrounding parens -- into its
+ * top-level positional arguments. Nested calls, object/array literals and
+ * string/template contents are skipped so a comma inside them never splits.
+ *
+ * @param {string} callText
+ * @returns {string[]} trimmed argument texts (empty array for a no-arg call)
+ */
+export function splitTopLevelArgs(callText) {
+    const inner = callText.slice(1, -1);
+    const args = [];
+    let depth = 0;
+    let current = '';
+    for (let i = 0; i < inner.length; i++) {
+        const ch = inner[i];
+        if (ch === '"' || ch === "'" || ch === '`') {
+            const end = skipStringLiteral(inner, i, ch);
+            current += inner.slice(i, end + 1);
+            i = end;
+            continue;
+        }
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') depth--;
+        if (ch === ',' && depth === 0) {
+            args.push(current.trim());
+            current = '';
+            continue;
+        }
+        current += ch;
+    }
+    if (current.trim().length > 0) args.push(current.trim());
+    return args;
+}
+
+/**
+ * Returns the source text (braces included) of a `const <name> = { ... }`
+ * object literal, or null when there is no such declaration.
+ *
+ * @param {string} src
+ * @param {string} name
+ * @returns {string|null}
+ */
+export function objectLiteralFor(src, name) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const declRe = new RegExp(`(?:const|let|var)\\s+${escaped}\\s*=\\s*\\{`);
+    const m = declRe.exec(src);
+    if (!m) return null;
+    const openBraceIdx = m.index + m[0].length - 1;
+    let depth = 0;
+    for (let i = openBraceIdx; i < src.length; i++) {
+        const ch = src[i];
+        if (ch === '"' || ch === "'" || ch === '`') {
+            i = skipStringLiteral(src, i, ch);
+            continue;
+        }
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+            depth--;
+            if (depth === 0) return src.slice(openBraceIdx, i + 1);
+        }
+    }
+    return null;
+}
+
+/**
+ * Strips `//` line comments and block comments from `text`, skipping over
+ * string/template contents so an apostrophe inside a comment (or a `//`
+ * inside a string) never confuses the scan. Options objects in runner.js are
+ * heavily commented, and a comment containing a comma or an unbalanced quote
+ * would otherwise corrupt the entry split below.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripComments(text) {
+    let out = '';
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (ch === '"' || ch === "'" || ch === '`') {
+            const end = skipStringLiteral(text, i, ch);
+            out += text.slice(i, end + 1);
+            i = end;
+            continue;
+        }
+        if (ch === '/' && text[i + 1] === '/') {
+            while (i < text.length && text[i] !== '\n') i++;
+            out += '\n';
+            continue;
+        }
+        if (ch === '/' && text[i + 1] === '*') {
+            const end = text.indexOf('*/', i + 2);
+            i = end < 0 ? text.length : end + 1;
+            continue;
+        }
+        out += ch;
+    }
+    return out;
+}
+
+/**
+ * Splits the top-level entries of an object-literal text (braces included)
+ * into `key -> value expression` pairs. Spread entries (`...opts`) and
+ * shorthand properties carry no `key:` and are skipped -- use
+ * spreadsOf()/the raw text for those.
+ *
+ * @param {string} optsText
+ * @returns {Map<string,string>}
+ */
+export function objectEntries(optsText) {
+    const entries = new Map();
+    if (typeof optsText !== 'string') return entries;
+    const stripped = stripComments(optsText).trim();
+    const openIdx = stripped.indexOf('{');
+    if (openIdx < 0) return entries;
+    const inner = stripped.slice(openIdx + 1, stripped.lastIndexOf('}'));
+    const segments = [];
+    let depth = 0;
+    let current = '';
+    for (let i = 0; i < inner.length; i++) {
+        const ch = inner[i];
+        if (ch === '"' || ch === "'" || ch === '`') {
+            const end = skipStringLiteral(inner, i, ch);
+            current += inner.slice(i, end + 1);
+            i = end;
+            continue;
+        }
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') depth--;
+        if (ch === ',' && depth === 0) {
+            segments.push(current);
+            current = '';
+            continue;
+        }
+        current += ch;
+    }
+    segments.push(current);
+    const keyRe = /^\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_$][\w$]*))\s*:\s*([\s\S]+)$/;
+    for (const segment of segments) {
+        const m = keyRe.exec(segment);
+        if (!m) continue;
+        const key = m[1] || m[2] || m[3];
+        entries.set(key, m[4].trim());
+    }
+    return entries;
+}
+
+/**
+ * Reads one `key: value` out of an options-object text. Returns the value
+ * expression, or null when the key is absent.
+ *
+ * @param {string} optsText
+ * @param {string} key
+ * @returns {string|null}
+ */
+export function optionField(optsText, key) {
+    const value = objectEntries(optsText).get(key);
+    return value === undefined ? null : value;
+}
+
+/**
+ * The names spread into an object literal (`{ ...plannerDispatchOpts, ... }`
+ * -> ['plannerDispatchOpts']). A dispatch site whose options are mostly
+ * inherited from a shared const is only readable once its spreads are known.
+ *
+ * @param {string} optsText
+ * @returns {string[]}
+ */
+export function spreadsOf(optsText) {
+    if (typeof optsText !== 'string') return [];
+    const names = [];
+    const re = /\.\.\.\s*([A-Za-z_$][\w$]*)/g;
+    let m;
+    const stripped = stripComments(optsText);
+    while ((m = re.exec(stripped)) !== null) names.push(m[1]);
+    return names;
+}
+
+/**
+ * Value of a `const NAME = <number>;` declaration, or null.
+ *
+ * @param {string} src
+ * @param {string} name
+ * @returns {number|null}
+ */
+export function numericConstant(src, name) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = new RegExp(`(?:const|let|var)\\s+${escaped}\\s*=\\s*(\\d+)\\s*;`).exec(src);
+    return m ? Number(m[1]) : null;
+}
+
+/**
+ * True when `index` falls strictly inside one of `sites`' balanced ranges.
+ *
+ * @param {Array<{range:[number,number]}>} sites
+ * @param {number} index
+ * @returns {boolean}
+ */
+export function isInsideAnyCall(sites, index) {
+    return sites.some((s) => index > s.range[0] && index < s.range[1]);
+}
+
+/**
+ * The INNERMOST of `sites` whose balanced range strictly contains `index`, or
+ * null. Innermost matters for withGitSync: the scoped-replan sites nest
+ * nothing today, but a future edit that wraps one bracket in another must not
+ * silently have its pins read the outer one.
+ *
+ * @param {Array<{range:[number,number]}>} sites
+ * @param {number} index
+ * @returns {object|null}
+ */
+export function innermostEnclosingCall(sites, index) {
+    let best = null;
+    for (const s of sites) {
+        if (index > s.range[0] && index < s.range[1]) {
+            if (!best || s.range[0] > best.range[0]) best = s;
+        }
+    }
+    return best;
+}
+
+/**
+ * The source text between two anchor substrings, for region-scoped assertions
+ * (a ladder's retry/degrade handling, which is control flow rather than a call
+ * site and so cannot be pinned from `callText` alone).
+ *
+ * @param {string} src
+ * @param {string} startAnchor
+ * @param {string} endAnchor
+ * @returns {string}
+ */
+export function regionBetween(src, startAnchor, endAnchor) {
+    const start = src.indexOf(startAnchor);
+    if (start < 0) throw new Error(`region start anchor not found in source: ${JSON.stringify(startAnchor)}`);
+    const end = src.indexOf(endAnchor, start + startAnchor.length);
+    if (end < 0) throw new Error(`region end anchor not found in source: ${JSON.stringify(endAnchor)}`);
+    return src.slice(start, end + endAnchor.length);
+}
