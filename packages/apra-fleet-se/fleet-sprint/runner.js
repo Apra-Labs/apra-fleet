@@ -9961,6 +9961,28 @@ async function runSprintCycle(context) {
 
         let deployedThisCycle = false;
 
+        // apra-fleet-5co8.37: this sprint's own reservation identity, handed to
+        // the deployer so deploy.md's active-sprints gate can tell this
+        // sprint's OWN ledger entry (a sprint is always reserved while it
+        // runs, so the entry is ALWAYS there) from a genuinely foreign one.
+        // Without it the gate stopped on every deploy and no sprint could
+        // deploy its own work. The gate keys on the literal sentence "Your
+        // dispatching sprint's own supervisor reservation id (sprintId): <id>"
+        // in the prompt -- keep that phrase verbatim. `sprintSelfId` is the
+        // SAME string the supervisor keys the reservation by: the forwarded
+        // --run-id, or the branch name for a direct/standalone launch
+        // (bin/cli.mjs reserves under the branch name in that case).
+        //
+        // The integ-test-runner and regression-test-runner prompts carry the
+        // same line: a target repo whose deploy.md stands up an isolated
+        // test instance per sprint can key that instance's location on the
+        // sprintId, so a later, separately dispatched phase finds and tears
+        // down the SAME instance without any output plumbing through here.
+        // What (if anything) to do with the id is the target repo's own
+        // runbook/playbook's business -- nothing target-specific lives here.
+        const sprintSelfId = validated.runId || validated.branch;
+        const sprintSelfIdLine = `Your dispatching sprint's own supervisor reservation id (sprintId): ${sprintSelfId}`;
+
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
             await ensureUnattendedAuto(getMemberForRole('deployer'));
@@ -9970,41 +9992,35 @@ async function runSprintCycle(context) {
             // turn-exhaustion resume below: a source-build fallback deploy runs
             // npm ci plus two builds, comfortably beyond a small default budget.
             const DEPLOYER_MAX_TURNS = 500;
-            // apra-fleet-5co8.37: hand the deployer THIS sprint's own reservation
-            // identity so deploy.md's active-sprints gate can tell this sprint's
-            // OWN ledger entry (a sprint is always reserved while it runs, so the
-            // entry is ALWAYS there) from a genuinely foreign one. Without it the
-            // gate stopped on every deploy and no sprint could deploy its own
-            // work. `sprintSelfId` is the SAME string the supervisor keys the
-            // reservation by: the forwarded --run-id, or the branch name for a
-            // direct/standalone launch (bin/cli.mjs reserves under the branch
-            // name in that case).
-            const sprintSelfId = validated.runId || validated.branch;
             // A sprint-dispatched deploy is ALWAYS for integration/regression
-            // testing, never a production rollout -- so it must use deploy.md's
-            // Sandbox Deploy section (isolated data dirs/ports, no installer, no
-            // OS auto-start registration) rather than its production Deploy
-            // section, which replaces the machine's shared singleton. Saying only
-            // "deploy to test env" left the mode to inference, and the production
-            // section's `install --force` was picked by default: on a host whose
-            // fleet server is kept alive by launchd/systemd/schtasks, its
-            // process-kill stop never converges (the supervisor relaunches the
-            // process under a new pid) and every deploy in the sprint failed.
+            // testing, never a production rollout. Saying only "deploy to test
+            // env" left the mode to inference: a target whose deploy.md offers
+            // a production path that restarts a shared, OS-supervised singleton
+            // had that path picked by default, and every deploy in the sprint
+            // failed. So the prompt states the PURPOSE and asks the deployer to
+            // use a sandbox/isolated mode IF the target's own deploy.md defines
+            // one. This engine is generic (fleet-e2e-toy, Docker, k8s targets
+            // all run through here): it never names a section, env var, file
+            // or tool a target's deploy.md must contain -- those mechanics
+            // belong to the target repo's runbook.
+            //
+            // The instance must SURVIVE this phase: Integration Test runs after
+            // Deploy and is the phase that tests against it, so the deployer
+            // leaves it running and the test phase tears it down (locating it
+            // from the sprintId line, per the target's own playbook). The
+            // deployer tears down only what it started if the deploy FAILS.
             const deployerPrompt =
-                'You are deploying for INTEGRATION/REGRESSION TESTING, not a production rollout.\n' +
-                "Use deploy.md's '## Sandbox Deploy (for integration/regression testing)' section, " +
-                "NOT its production '## Deploy' section.\n" +
-                'That means: build from source, then run the freshly built dist/index.js directly with ' +
-                'an isolated APRA_FLEET_DATA_DIR, APRA_FLEET_PORT and FLEET_SE_DATA_DIR. Do NOT run the ' +
-                'installer or `install --force`, do NOT stop/kill/restart any already-running fleet ' +
-                'server or supervisor, and do NOT bind the production ports. The sandbox instance must ' +
-                'coexist with whatever is already running on this machine.\n' +
-                "deploy.md's active-sprints gate does NOT apply in sandbox mode -- it exists to protect a " +
-                'shared singleton you would otherwise restart, and a sandbox deploy restarts nothing. A ' +
-                'live foreign sprint is therefore not a reason to stop.\n' +
-                `Use this id to name your sandbox root so concurrent deploys never collide: ${sprintSelfId}\n` +
-                "Run deploy.md's Teardown for the sandbox before you return, pass or fail, and confirm the " +
-                'pre-existing production instance is still running and untouched.';
+                'Deploy to test env using deploy.md.\n' +
+                `${sprintSelfIdLine}\n` +
+                "Use it for deploy.md's active-sprints gate: a reservation whose sprintId is EXACTLY " +
+                'this string is your own sprint, not a foreign one, so the deploy proceeds. Stop only ' +
+                'for a reservation with a different sprintId.\n' +
+                'This deploy is for INTEGRATION/REGRESSION TESTING, not a production rollout. If deploy.md ' +
+                'distinguishes a sandbox/isolated deploy mode for testing from its production deploy, use ' +
+                'that mode; otherwise follow deploy.md as written.\n' +
+                'If you stood up an isolated test instance, leave it RUNNING when you return: the test phase ' +
+                "that follows locates it from the sprintId above (per the repo's own runbook) and owns its " +
+                'teardown. Tear down what you started only if the deploy itself fails.';
             const deployerDispatchOpts = {
                 member_name: getMemberForRole('deployer'),
                 agentType: 'deployer',
@@ -10168,7 +10184,14 @@ async function runSprintCycle(context) {
                       `--parent ${targetIssues[0]}.`
                     : `Run tests using integ-test-playbook.md. No open type=feature beads are in scope ` +
                       `this cycle -- report nothing to test. Add bug beads if needed, filed under ` +
-                      `--parent ${targetIssues[0]}.`) + verifyClause;
+                      `--parent ${targetIssues[0]}.`) + verifyClause +
+                    // Generic hand-off to a target that deploys an isolated test
+                    // instance per sprint (see sprintSelfIdLine above): the
+                    // playbook, not this engine, says how to locate it from the
+                    // id and what tearing it down means.
+                    `\n${sprintSelfIdLine}\n` +
+                    `If this cycle's deploy stood up an isolated test instance for this sprint, the playbook ` +
+                    `says how to locate it from that id; tear it down before you return, pass or fail.`;
                 // integ-test-runner does NOT touch code (pushCode: false, no git
                 // push) but it DOES mutate beads -- it closes passing features
                 // and files bug beads -- so it must D-push those mutations
@@ -11057,7 +11080,13 @@ async function runSprintCycle(context) {
             `Filing these parent-less is what makes them carry over to a future sprint instead of blocking ` +
             `this one -- do not "helpfully" parent them under a sprint bead. ` +
             `This sprint's verdict has already been decided and your result is informational: report it ` +
-            `honestly, and never soften a failure because the sprint has otherwise passed.`;
+            `honestly, and never soften a failure because the sprint has otherwise passed.\n` +
+            // Same generic hand-off as the integ prompt: a leftover isolated
+            // test instance from this sprint's deploy (Deploy succeeded but
+            // Integ Test never ran) is the playbook's to sweep, keyed on the id.
+            `${sprintSelfIdLine}\n` +
+            `If an isolated test instance from this sprint's deploy is still up, the playbook says how to ` +
+            `locate it from that id; tear it down too before you return.`;
         const regressionDispatchOpts = {
             member_name: getMemberForRole('regression-test-runner'),
             agentType: 'regression-test-runner',
