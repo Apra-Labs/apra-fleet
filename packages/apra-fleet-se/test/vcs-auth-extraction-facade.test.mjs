@@ -70,6 +70,12 @@ const MOVED_PRIVATE_SYMBOLS = [
     // MOVED_PRIVATE_SYMBOLS siblings, so it belongs in this list rather than
     // a third bucket.
     'provisionOutcome',
+    // Landed on main (register-member VCS-provider self-heal) while this
+    // branch had already moved provisionVcsAuthForMember out of runner.js;
+    // the rebase carried main's dispatch-time self-heal into vcs-auth.mjs
+    // alongside its caller. Like 'provisionOutcome' above it is module-private
+    // to vcs-auth.mjs and never exported by runner.js.
+    'detectVcsProviderFromRemote',
     'provisionVcsAuthForMember',
     'provisionPrCapableAuthForMember',
     'GITHUB_VCS_CREDENTIAL_LABEL',
@@ -126,7 +132,7 @@ describe('(1) the runner.js facade re-exports every symbol the vcs-auth extracti
         });
     }
 
-    test('every moved symbol is accounted for: the two lists cover all 23 top-level declarations in vcs-auth.mjs', () => {
+    test('every moved symbol is accounted for: the two lists cover all 24 top-level declarations in vcs-auth.mjs', () => {
         const declared = [...VCS_AUTH_SRC.matchAll(/^(?:export )?(?:async )?(?:function|const) ([A-Za-z_][A-Za-z0-9_]*)/gm)]
             .map((m) => m[1]);
         const enumerated = new Set([...MOVED_PUBLIC_SYMBOLS, ...MOVED_PRIVATE_SYMBOLS]);
