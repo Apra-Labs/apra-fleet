@@ -81,7 +81,18 @@ const WATCHDOG_SITES = findCallSites(SRC, 'withDispatchWatchdog', { excludeDecla
  *   secondary -- the same for its resume / re-ask dispatch
  *   region    -- [start, end] anchors bounding the ladder's retry/degrade code
  *   degradeRegion -- narrower bounds when the degrade lives outside `region`
- *   attemptVar    -- the ladder's bounded-attempt loop variable, when it has one
+ *   attempts  -- HOW retry.attempts is re-derived from runner.js for this
+ *                ladder (see derivedAttempts below). Exactly one shape per
+ *                role, and every role must declare one -- the table's attempt
+ *                budget is what the forthcoming dispatchRole engine will
+ *                execute from, so no role may carry an unproven number:
+ *                  { kind: 'loop', var }     bounded attempt loop `var <= N`
+ *                  { kind: 'ladder', const } one attempt per backoff entry
+ *                  { kind: 'wrapper', call } retry-once wrapper around `call`
+ *                  { kind: 'single' }        straight-line, no retry at all
+ *
+ * retry.resumeAttempts needs no per-role declaration: it is derived uniformly
+ * from the ladder's own max_turns-exhaustion block (see derivedResumeAttempts).
  */
 const ROLE_SOURCE = {
     planner: {
@@ -90,71 +101,213 @@ const ROLE_SOURCE = {
         region: ['const PLANNER_MAX_TURNS = 500;', 'throw plannerErr;'],
         turnBaseConstant: 'PLANNER_MAX_TURNS',
         fatalThrow: 'throw plannerErr;',
+        attempts: { kind: 'ladder', const: 'PLANNER_DISPATCH_RETRY_DELAYS_MS' },
     },
     'plan-reviewer': {
         anchor: 'priorRoundVerdicts: priorPlanRoundVerdicts',
         secondary: 'Continue your plan review exactly where you left off',
         region: ['for (let planReviewAttempt = 1;', 'lastVerdict = verdict;'],
-        attemptVar: 'planReviewAttempt',
+        attempts: { kind: 'loop', var: 'planReviewAttempt' },
     },
     'scoped-replan-planner': {
         anchor: "label: 'Scoped Replan Plan (interactive)'",
         secondary: null,
         region: ['const SCOPED_REPLAN_PLANNER_MAX_TURNS = 500;', '--- Scoped plan-review pass ---'],
+        attempts: { kind: 'single' },
     },
     'scoped-replan-plan-reviewer': {
         anchor: "label: 'Scoped Replan Review'",
         secondary: null,
         region: ['--- Scoped plan-review pass ---', 'if (scopedReplanApproved) {'],
+        attempts: { kind: 'single' },
     },
     'streak-assignment': {
         anchor: "label: 'Streak Assignment',",
         secondary: "label: 'Streak Assignment (semantic repair)'",
         region: ['let streakCandidate = null;', 'if (usedFallback) {'],
+        attempts: { kind: 'single' },
     },
     doer: {
         anchor: '(\n                        doerPrompt,',
         secondary: null,
         region: ['const BASE_DOER_MAX_TURNS = 500;', 'kbWork.apply(ROLE_DOER'],
+        attempts: { kind: 'wrapper', call: 'dispatchDoer(' },
     },
     'doer-resume': {
         anchor: 'Continue exactly where you left off from this same session',
         secondary: null,
         region: ['const BASE_DOER_MAX_TURNS = 500;', 'kbWork.apply(ROLE_DOER'],
+        // Shares the doer's ladder outright: the resume is dispatched from
+        // inside it, so its attempt budget is the doer's, re-derived here too.
+        attempts: { kind: 'wrapper', call: 'dispatchDoer(' },
     },
     reviewer: {
         anchor: 'acceptanceCriteriaJson,',
         secondary: 'Continue your review exactly where you left off',
         region: ['for (let reviewAttempt = 1;', 'if (!isReviewerContractViolation(verdict)) {'],
-        attemptVar: 'reviewAttempt',
+        attempts: { kind: 'loop', var: 'reviewAttempt' },
     },
     'final-review': {
         anchor: 'buildFinalVerdictPrompt({',
         secondary: 'Continue your final review exactly where you left off',
         region: ['const FINAL_REVIEW_MAX_TURNS', 'const REGRESSION_TEST_MAX_TURNS'],
+        attempts: { kind: 'wrapper', call: 'runFinalReviewAttempt(' },
     },
     deployer: {
         anchor: '(\n                        deployerPrompt,',
         secondary: 'Continue the deploy exactly where you left off',
         region: ['const sprintSelfId =', 'deployedThisCycle = deployResult.deployed === true;'],
+        attempts: { kind: 'single' },
     },
     'integ-test-runner': {
         anchor: '(\n                    featurePrompt,',
         secondary: 'Continue the integration test run exactly where you left off',
         region: ['const INTEG_TEST_MAX_TURNS = 500;', 'Feature closure is judged'],
+        attempts: { kind: 'single' },
     },
     'regression-test-runner': {
         anchor: '(\n                    regressionPrompt,',
         secondary: 'Continue the regression pass exactly where you left off',
         region: ['const REGRESSION_TEST_MAX_TURNS = 500;', 'const harvesterDispatchOpts'],
         degradeRegion: ['A regression-phase infrastructure failure must never abort', 'const harvesterDispatchOpts'],
+        attempts: { kind: 'single' },
     },
     harvester: {
         anchor: '(\n                harvesterPrompt,',
         secondary: 'Continue your harvest exactly where you left off',
         region: ['const harvesterDispatchOpts', '7. Publish: push the sprint branch'],
+        attempts: { kind: 'single' },
     },
 };
+
+/**
+ * Value of a `const NAME = [<number>, ...];` declaration, or null. The scanner's
+ * numericConstant() only reads scalars; a backoff ladder is an array literal.
+ */
+function numericArrayConstant(src, name) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = new RegExp(`(?:const|let|var)\\s+${escaped}\\s*=\\s*\\[([^\\]]*)\\]\\s*;`).exec(src);
+    if (!m) return null;
+    const parts = m[1].split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+    return parts.every((s) => /^\d+$/.test(s)) ? parts.map(Number) : null;
+}
+
+/** Every marker that would mean "this ladder re-dispatches after a failure". */
+const RETRY_ONCE_MARKER = /Retrying once\./;
+const ATTEMPT_LOOP_MARKER = /(?:for|while)\s*\(\s*(?:let\s+)?\w*[Aa]ttempt\w*/;
+const LADDER_LOOP_MARKER = /<\s*([A-Za-z_$][\w$]*RETRY_DELAYS_MS)\.length/;
+
+/**
+ * retry.attempts, re-derived from runner.js rather than read off the table.
+ *
+ * Each shape both COMPUTES the number and proves the ladder really has that
+ * shape, so neither a wrong number in the table nor a runner.js ladder that
+ * silently grew an extra attempt can pass:
+ *
+ *   loop    -- `var <= N`: N is the bound the loop actually carries.
+ *   ladder  -- one attempt per backoff-delay entry, iterated by
+ *              `i < <CONST>.length`; the delay array itself is separately
+ *              matched against retry.backoffMs below, so the length is a
+ *              source fact, not a table fact.
+ *   wrapper -- a retry-once wrapper: the attempt expression is invoked once on
+ *              the happy path, once from the generic retry catch, and (when the
+ *              ladder self-heals LLM auth) once more from the self-heal branch.
+ *              That last one is a heal, not a retry budget entry, so it is
+ *              subtracted -- see runner.js's Final Review ladder, whose comment
+ *              spells out that the healed verdict must short-circuit rather
+ *              than spend the generic retry.
+ *   single  -- straight-line dispatch: proven by the ABSENCE of all three retry
+ *              shapes above, which bounds it at exactly one attempt.
+ */
+function derivedAttempts(role, region) {
+    const spec = ROLE_SOURCE[role].attempts;
+    assert.ok(spec, `${role}: ROLE_SOURCE must say how retry.attempts is derived from runner.js.`);
+    if (spec.kind === 'loop') {
+        const m = new RegExp(`${spec.var}\\s*<=\\s*(\\d+)\\b`).exec(region);
+        assert.ok(m, `${role}: expected a bounded attempt loop on '${spec.var}' in runner.js.`);
+        return Number(m[1]);
+    }
+    if (spec.kind === 'ladder') {
+        const delays = numericArrayConstant(SRC, spec.const);
+        assert.ok(delays, `${role}: backoff ladder '${spec.const}' not found in runner.js.`);
+        assert.ok(
+            new RegExp(`<\\s*${spec.const}\\.length`).test(region),
+            `${role}: the ladder must drive the attempt loop (i < ${spec.const}.length) for attempts to equal its length.`
+        );
+        return delays.length;
+    }
+    if (spec.kind === 'wrapper') {
+        const calls = region.split(spec.call).length - 1;
+        assert.ok(
+            RETRY_ONCE_MARKER.test(region),
+            `${role}: expected a retry-once wrapper around ${spec.call}) in runner.js.`
+        );
+        const authHealCalls = policyFor(role).retry.authSelfHeal ? 1 : 0;
+        return calls - authHealCalls;
+    }
+    assert.strictEqual(spec.kind, 'single', `${role}: unknown attempts proof kind ${JSON.stringify(spec.kind)}.`);
+    assert.ok(
+        !RETRY_ONCE_MARKER.test(region),
+        `${role}: runner.js re-dispatches this ladder after a failure, so it is not a single-attempt ladder.`
+    );
+    assert.ok(
+        !ATTEMPT_LOOP_MARKER.test(region),
+        `${role}: runner.js has a bounded attempt loop here (${(ATTEMPT_LOOP_MARKER.exec(region) || [])[0]}), ` +
+        'so this ladder is not single-attempt.'
+    );
+    assert.ok(
+        !LADDER_LOOP_MARKER.test(region),
+        `${role}: runner.js drives this ladder from a backoff array, so it is not single-attempt.`
+    );
+    return 1;
+}
+
+/**
+ * The body of the ladder's `reason === 'max_turns_exhausted'` branch -- the
+ * ONLY place a resume dispatch can be issued from. Scoped this way on purpose:
+ * an enclosing ATTEMPT loop (plan-reviewer, reviewer) must not be mistaken for
+ * a resume loop, because resumeAttempts is a per-attempt budget.
+ */
+function maxTurnsResumeBlock(region) {
+    const at = region.indexOf("reason === 'max_turns_exhausted'");
+    if (at < 0) return null;
+    const open = region.indexOf('{', at);
+    if (open < 0) return null;
+    let depth = 0;
+    for (let i = open; i < region.length; i++) {
+        if (region[i] === '{') depth += 1;
+        else if (region[i] === '}') {
+            depth -= 1;
+            if (depth === 0) return region.slice(open + 1, i);
+        }
+    }
+    return null;
+}
+
+/**
+ * retry.resumeAttempts, re-derived from runner.js. A resume block either loops
+ * (the doer's escalating ladder, bounded by a named constant) or issues its
+ * resume straight-line, which bounds it at exactly one.
+ */
+function derivedResumeAttempts(role, region) {
+    const block = maxTurnsResumeBlock(region);
+    if (block === null) return 0;
+    assert.ok(
+        /resume: true|Resume\(/.test(block),
+        `${role}: the max_turns branch must actually issue a resume dispatch.`
+    );
+    const loop = /\b(?:while|for)\s*\(([^)]*)\)/.exec(block);
+    if (!loop) return 1;
+    const bound = /<=?\s*([A-Za-z_$][\w$]*|\d+)/.exec(loop[1]);
+    assert.ok(bound, `${role}: the resume loop '${loop[0]}' carries no readable bound.`);
+    if (/^\d+$/.test(bound[1])) return Number(bound[1]);
+    const named = numericConstant(SRC, bound[1]);
+    assert.ok(
+        Number.isInteger(named),
+        `${role}: resume loop bound '${bound[1]}' is not a numeric constant in runner.js.`
+    );
+    return named;
+}
 
 function siteFor(anchor) {
     const hits = AGENT_SITES.filter((s) => s.callText.includes(anchor));
@@ -443,14 +596,16 @@ describe('role policy table: retry ladders match runner.js', () => {
             const region = regionOf(role);
             const src = ROLE_SOURCE[role];
 
-            // Bounded-attempt loop: present iff the policy allows >1 attempt
-            // through a loop, and bounded by exactly the recorded number.
-            if (src.attemptVar) {
-                assert.ok(
-                    new RegExp(`${src.attemptVar} <= ${p.retry.attempts}\\b`).test(region),
-                    `${role}: the ladder loop must be bounded at retry.attempts=${p.retry.attempts}.`
-                );
-            }
+            // The attempt budget, re-derived from runner.js for EVERY role --
+            // not just the two with a bounded loop. This is the number the
+            // dispatchRole engine will execute from, so no role may carry an
+            // unproven one.
+            assert.strictEqual(
+                p.retry.attempts,
+                derivedAttempts(role, region),
+                `${role}: retry.attempts must equal the attempt budget runner.js's ladder really allows ` +
+                `(re-derived from its '${src.attempts.kind}' shape).`
+            );
 
             if (p.retry.backoffMs) {
                 const literal = p.retry.backoffMs.map((n) => String(n)).join(',\\s*');
@@ -471,7 +626,15 @@ describe('role policy table: retry ladders match runner.js', () => {
                 `${role}: retry.maxTurnsResume must match whether the ladder resumes on turn exhaustion.`
             );
             if (p.retry.maxTurnsResume) {
-                assert.ok(p.retry.resumeAttempts >= 1, `${role}: a resuming ladder must record how many resumes it allows.`);
+                // Re-derived from the ladder's own max_turns branch for EVERY
+                // resuming role, not just the doer: a straight-line resume is
+                // bounded at 1, a looping one at the constant it carries.
+                assert.strictEqual(
+                    p.retry.resumeAttempts,
+                    derivedResumeAttempts(role, region),
+                    `${role}: retry.resumeAttempts must equal the number of resumes runner.js's max_turns branch ` +
+                    'really issues per attempt.'
+                );
                 assert.strictEqual(p.retry.turnEscalation, 'double', `${role}: every resume doubles its turn budget.`);
             } else {
                 assert.strictEqual(p.retry.resumeAttempts, 0);
