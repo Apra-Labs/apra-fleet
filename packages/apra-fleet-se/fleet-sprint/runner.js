@@ -6800,6 +6800,29 @@ async function runSprintCycle(context) {
         budget.total = validated.budget;
     }
 
+    // apra-fleet-5co8.37: this sprint's own reservation identity, handed to
+    // the deployer so deploy.md's active-sprints gate can tell this sprint's
+    // OWN ledger entry (a sprint is always reserved while it runs, so the
+    // entry is ALWAYS there) from a genuinely foreign one. Without it the
+    // gate stopped on every deploy and no sprint could deploy its own work.
+    // The gate keys on the literal sentence "Your dispatching sprint's own
+    // supervisor reservation id (sprintId): <id>" in the prompt -- keep that
+    // phrase verbatim. `sprintSelfId` is the SAME string the supervisor keys
+    // the reservation by: the forwarded --run-id, or the branch name for a
+    // direct/standalone launch (bin/cli.mjs reserves under the branch name
+    // in that case).
+    //
+    // The integ-test-runner (per cycle) and regression-test-runner (after
+    // the cycle loop, hence the function-scope declaration) prompts carry
+    // the same line: a target repo whose deploy.md stands up an isolated
+    // test instance per sprint can key that instance's location on the
+    // sprintId, so a later, separately dispatched phase finds and tears
+    // down the SAME instance without any output plumbing through here.
+    // What (if anything) to do with the id is the target repo's own
+    // runbook/playbook's business -- nothing target-specific lives here.
+    const sprintSelfId = validated.runId || validated.branch;
+    const sprintSelfIdLine = `Your dispatching sprint's own supervisor reservation id (sprintId): ${sprintSelfId}`;
+
     let cycle = 1;
     const MAX_CYCLES = validated.maxCycles;
 
@@ -9960,28 +9983,6 @@ async function runSprintCycle(context) {
         const hasPlaybook = await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner'));
 
         let deployedThisCycle = false;
-
-        // apra-fleet-5co8.37: this sprint's own reservation identity, handed to
-        // the deployer so deploy.md's active-sprints gate can tell this
-        // sprint's OWN ledger entry (a sprint is always reserved while it
-        // runs, so the entry is ALWAYS there) from a genuinely foreign one.
-        // Without it the gate stopped on every deploy and no sprint could
-        // deploy its own work. The gate keys on the literal sentence "Your
-        // dispatching sprint's own supervisor reservation id (sprintId): <id>"
-        // in the prompt -- keep that phrase verbatim. `sprintSelfId` is the
-        // SAME string the supervisor keys the reservation by: the forwarded
-        // --run-id, or the branch name for a direct/standalone launch
-        // (bin/cli.mjs reserves under the branch name in that case).
-        //
-        // The integ-test-runner and regression-test-runner prompts carry the
-        // same line: a target repo whose deploy.md stands up an isolated
-        // test instance per sprint can key that instance's location on the
-        // sprintId, so a later, separately dispatched phase finds and tears
-        // down the SAME instance without any output plumbing through here.
-        // What (if anything) to do with the id is the target repo's own
-        // runbook/playbook's business -- nothing target-specific lives here.
-        const sprintSelfId = validated.runId || validated.branch;
-        const sprintSelfIdLine = `Your dispatching sprint's own supervisor reservation id (sprintId): ${sprintSelfId}`;
 
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
