@@ -300,7 +300,18 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // GUARDED_MODULES, so the aggregate checkModules(guardedModulePaths()) test
 // below scans both sites. Same precedent as the vcs-auth.mjs/abort.mjs
 // extractions above.
-const EXPECTED_COMMAND_COUNT = 32;
+// 32 -> 29 (apra-fleet-3swo.4.7): the reviewer-verdict bead transitions moved
+// out of runner.js into ./beads-transitions.mjs, taking the THREE
+// `bd update <id> --status=open` reopen call sites with them -- the per-round
+// reviewer's, Final Review's (the --append-notes variant) and Re-Review's.
+// All three now share ONE applyGuardedReopens() site, which dispatches with
+// `member_name: member` (the orchestrator member each call site passes in),
+// verified compliant. Not a member_name regression and not left unguarded --
+// beads-transitions.mjs is registered in GUARDED_MODULES, so the aggregate
+// checkModules(guardedModulePaths()) test below scans that shared site. Note
+// 3 call sites collapsed to 1 in the new module, so this is -3 here and only
+// +1 there; the arithmetic is deliberate, not a dropped site.
+const EXPECTED_COMMAND_COUNT = 29;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
