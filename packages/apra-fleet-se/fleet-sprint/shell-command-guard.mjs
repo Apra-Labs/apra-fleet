@@ -164,7 +164,7 @@ export function findLineViolations(text) {
         found.push({
             column: m.index + 1,
             reason:
-                'POSIX command substitution "$(" in a command string -- run the probe as its own dispatch and ' +
+                'POSIX command substitution "$(" in a command string -- run the probe as its own dispatch and ' + // shell-guard-allow: this guard's own violation-message text names the "$(" construct it detects; it is never dispatched as a command string.
                 'interpolate the result in JavaScript instead',
         });
     }
@@ -181,7 +181,7 @@ export function findLineViolations(text) {
         found.push({
             column: m.index + 1,
             reason:
-                'braced shell variable expansion "${...}" survives into the dispatched command string -- ' +
+                'braced shell variable expansion "${...}" survives into the dispatched command string -- ' + // shell-guard-allow: this guard's own violation-message text names the "${...}" construct it detects; it is never dispatched as a command string.
                 'interpolate the value in JavaScript instead of leaving it for the member shell to expand',
         });
     }
@@ -193,7 +193,7 @@ export function findLineViolations(text) {
         found.push({
             column: col + 1,
             reason:
-                'leading tilde path "~/" in a command string -- PowerShell and cmd.exe do not expand it; resolve ' +
+                'leading tilde path "~/" in a command string -- PowerShell and cmd.exe do not expand it; resolve ' + // shell-guard-allow: this guard's own violation-message text names the "~/" construct it detects; it is never dispatched as a command string.
                 "the member's home directory in JavaScript (probeCommandFor(targetOs, shell))",
         });
     }

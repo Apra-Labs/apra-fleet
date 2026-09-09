@@ -63,6 +63,28 @@ export const GUARDED_MODULES = [
     'beads-transitions.mjs',
     'role-policies.mjs',
     'inline-ladder-guard.mjs',
+    // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
+    // (zero violations) across all five guards. Registered together so the
+    // completeness test (guarded-modules-coverage.test.mjs) has nothing left
+    // unaccounted for besides GUARD_REGISTRATION_EXEMPT below.
+    'conflict-ladder.mjs',
+    'contracts.mjs',
+    'dispatch-safety-guard.mjs',
+    'errors.mjs',
+    'full-db-fetch-guard.mjs',
+    'shell-command-guard.mjs',
+    'sprint-lock.mjs',
+    'sprint-progress.mjs',
+    'unbracketed-push-guard.mjs',
+    'vcs-module.mjs',
+    'viewer-extensions.mjs',
+    'vcs-providers/azure-devops.mjs',
+    'vcs-providers/bitbucket.mjs',
+    'vcs-providers/dolt.mjs',
+    'vcs-providers/generic-git.mjs',
+    'vcs-providers/github.mjs',
+    'vcs-providers/index.mjs',
+    'vcs-providers/shell-helpers.mjs',
 ];
 
 /**
@@ -87,6 +109,80 @@ export const DOLT_LITERAL_EXEMPT = ['dolt-sync.mjs'];
  * above.
  */
 export const UNBRACKETED_PUSH_EXEMPT = ['git-sync.mjs'];
+
+/**
+ * apra-fleet-3swo.25: modules deliberately excluded from GUARDED_MODULES
+ * ENTIRELY -- never registered, never scanned by any of the five guards --
+ * keyed by filename (relative to this directory, same convention as
+ * GUARDED_MODULES) with a non-empty written reason as the value.
+ *
+ * This is a DIFFERENT kind of exemption than DOLT_LITERAL_EXEMPT/
+ * UNBRACKETED_PUSH_EXEMPT above: those two keep a module registered and
+ * scanned by the other four guards, filtering it out of ONE guard only. An
+ * entry here is not registered at all, because scanning it with ANY guard
+ * would report the module's entire reason for existing (or the guard's own
+ * detection logic) as a violation of itself.
+ * guarded-modules-coverage.test.mjs asserts every *.mjs/*.js file found by a
+ * RECURSIVE walk of this directory is present in either GUARDED_MODULES or
+ * this map -- so a module can no longer silently fall through both lists.
+ */
+export const GUARD_REGISTRATION_EXEMPT = {
+    // The five shell builders -- reasons reused verbatim from this file's own
+    // "WHAT DOES NOT BELONG HERE" header above (do not re-derive them).
+    'se-posix.mjs':
+        'deliberately emits `$HOME`, `$env:USERPROFILE`, `$env:TEMP` and `$( )` because it IS the ' +
+        'OS-branched command surface the shell-command invariant tells everyone else to route ' +
+        'through; scanning it would report its entire reason for existing as violations.',
+    'se-windows.mjs':
+        'deliberately emits `$HOME`, `$env:USERPROFILE`, `$env:TEMP` and `$( )` because it IS the ' +
+        'OS-branched command surface the shell-command invariant tells everyone else to route ' +
+        'through; scanning it would report its entire reason for existing as violations.',
+    'se-windows-gitbash.mjs':
+        'deliberately emits `$HOME`, `$env:USERPROFILE`, `$env:TEMP` and `$( )` because it IS the ' +
+        'OS-branched command surface the shell-command invariant tells everyone else to route ' +
+        'through; scanning it would report its entire reason for existing as violations.',
+    'se-os-commands.mjs':
+        'deliberately emits `$HOME`, `$env:USERPROFILE`, `$env:TEMP` and `$( )` because it IS the ' +
+        'OS-branched command surface the shell-command invariant tells everyone else to route ' +
+        'through; scanning it would report its entire reason for existing as violations.',
+    'dolt-settle.mjs':
+        'deliberately emits `$HOME`, `$env:USERPROFILE`, `$env:TEMP` and `$( )` because it IS the ' +
+        'OS-branched command surface the shell-command invariant tells everyone else to route ' +
+        'through; scanning it would report its entire reason for existing as violations.',
+    // dolt-sync.mjs -- reason reused verbatim from the same header (do not
+    // re-derive it).
+    'dolt-sync.mjs':
+        'legitimately builds the `bd dolt pull`/`bd dolt push` command strings (see ' +
+        'DOLT_LITERAL_EXEMPT above and dolt-literal-guard.mjs\'s own header).',
+
+    // apra-fleet-3swo.25: dolt-literal-guard.mjs -- confirmed guard-detection
+    // false positive. dolt-literal-guard.mjs has no per-line suppression
+    // mechanism (unlike shell-command-guard.mjs's shell-guard-allow
+    // directive, used instead for the other siblings this bead registers --
+    // see contracts.mjs, vcs-module.mjs and vcs-providers/{index,shell-
+    // helpers}.mjs, all now registered above with per-line allow comments),
+    // so this one file is exempted here rather than registered.
+    'dolt-literal-guard.mjs':
+        'dolt-literal-guard\'s own violation-message text builds the literal phrase \'bd dolt pull\'/' +
+        '\'bd dolt push\' to describe what it detects, which the guard then flags as a ' +
+        'self-referential violation of its own implementation, and the guard has no per-line ' +
+        'suppression mechanism (unlike shell-command-guard.mjs) to carve out just that one line.',
+    // guarded-modules.mjs itself: this map's own reason strings (and the
+    // shell-builder header above) necessarily QUOTE the shell-syntax
+    // substrings ($HOME, $(, ~/, 'bd dolt pull'/'bd dolt push', etc.) they
+    // describe, in real JS string literals -- which the dolt-literal and
+    // shell-command guards' naive text-matching then flags as this file
+    // issuing/emitting those constructs itself. Same self-referential class
+    // of false positive as dolt-literal-guard.mjs and shell-command-guard.mjs
+    // above (confirmed by scanning this file with GUARD_REGISTRATION_EXEMPT
+    // populated), not a real dispatched command or shell expansion.
+    'guarded-modules.mjs':
+        'this map\'s own reason strings (and the header above) necessarily quote the shell-syntax ' +
+        'and dolt-command substrings they describe, in real JS string literals, which the ' +
+        'dolt-literal and shell-command guards then flag as this file issuing/emitting those ' +
+        'constructs itself -- the same self-referential false positive as dolt-literal-guard.mjs ' +
+        'and shell-command-guard.mjs above.',
+};
 
 /** Absolute path to a fleet-sprint module by filename. */
 export function guardedModulePath(fileName) {
