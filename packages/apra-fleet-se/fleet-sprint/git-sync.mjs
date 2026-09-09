@@ -54,6 +54,32 @@ import { resolveMemberTarget } from "./member-target.mjs";
 // false-positive risk with no corresponding safety gain.
 export const CODE_WRITE_BRACKET_KEY = 'code-write';
 
+// (apra-fleet-3swo.4.12) DECIDED: the bracket does NOT record the owning
+// STREAK/lane, and the coarse key above plus the cosmetic `label` stays as
+// shipped. Recorded here so the question is not re-litigated:
+//   - As a finer-grained KEY it would be unsound. The protected resource is
+//     the ONE shared sprint branch: `branch` is bound once into
+//     createGitSync()'s ctx and every code-writing bracket pushes to it --
+//     there is no per-streak branch (runner.js's "streak branch" wording is
+//     loose prose for that same sprint branch). Keying by streak would let
+//     two streaks' pushCode:true brackets overlap UNDETECTED, i.e. a strict
+//     weakening of exactly the fast-forward-by-construction check this key
+//     exists to make.
+//   - As richer ATTRIBUTION it would be partial and misleading. Streaks are
+//     anonymous by the time they reach the dispatch site:
+//     groupStreaksFromLaneMetadata() uses `metadata.streak` only to group and
+//     sort, then returns Array<Array<bead>> and DISCARDS the lane id, and the
+//     selectStreaks() dependency path never has one at all. The other
+//     pushCode:true role (harvester) has no streak in any sense. Giving the
+//     bracket a real streak identity means changing worklists.mjs's return
+//     contract and the runner call sites, not just this module.
+//   - Nothing is lost. A ConcurrentSyncBracketError on this key can only mean
+//     the globalDoerTurn FIFO gate (runner.js:5121, which serializes ALL doer
+//     streak turns globally) has been broken or a new unbracketed code-write
+//     path was added; diagnosing that needs the overlapping CALL SITES, which
+//     `withGitSync(<member>)` plus the per-streak bead-id log lines already
+//     give.
+
 // Backoff for retrying ONLY the post-dispatch sync step of a bracket whose
 // dispatch already completed. Short and bounded: this is a git/dolt push round
 // trip, not an LLM turn, and letting the failure escape the bracket would
