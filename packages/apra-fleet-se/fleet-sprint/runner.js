@@ -72,6 +72,13 @@ import {
     kbScope, KB_MAX_KNOWLEDGE_ENTRIES, KB_PROMOTER_ROLES, KB_MIN_PROMOTE_REASON,
     KB_CAPTURE_TYPES, KB_MAX_PROMOTION_CANDIDATES, vetKbWork, createKbWorkClient,
 } from './kb.mjs';
+// Beads scope discovery + the shared full-DB snapshot: the single in-memory
+// BFS scope rule (now shared by bdListScoped and classifyVerifySet instead of
+// duplicated), the `bd list --all --limit 0 --json` snapshot, and the
+// command/phase wrappers that implement its invalidation contract. Extracted
+// out of runner.js (apra-fleet-3swo.4.6); beads-scope.mjs's header is the
+// written-down version of that contract.
+import { createBeadsScope, classifyVerifySet } from './beads-scope.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -142,6 +149,13 @@ export {
     KB_MAX_KNOWLEDGE_ENTRIES, KB_PROMOTER_ROLES, KB_MIN_PROMOTE_REASON,
     KB_CAPTURE_TYPES, KB_MAX_PROMOTION_CANDIDATES, vetKbWork, createKbWorkClient,
 };
+// Re-exported so importers of the verify-set classifier from runner.js keep
+// working; beads-scope.mjs is the single source of truth for its
+// implementation, and for the BFS scope-discovery rule it now shares with
+// bdListScoped (apra-fleet-3swo.4.6). buildBeadGraph/discoverScope/
+// isBeadsMutatingCommand were module-private to the pre-move region and stay
+// reachable only from beads-scope.mjs.
+export { classifyVerifySet };
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
@@ -1801,93 +1815,10 @@ export async function claimBeadsBatched({ command, orchestratorMember, beadIds, 
 // plan-reviewer, and the orchestrator that dispatches doers) reads it back
 // from that same field, so this prompt's instruction MUST stay aligned with
 // planner.md Step 3.
-/**
- * Classify beads whose every child is closed as ready for the `verify` route
- * (apra-fleet-jfo): implementation-complete parents that must be excluded
- * from Plan/Develop/Review and verified against the live deployed product,
- * never administratively closed on child-closure alone -- see
- * docs/fleet-sprint-phase-routing-design.md and apra-fleet-jfo for the design.
- *
- * Pure: derives the verify set fresh from `allBeads` on every call. There is
- * no persisted list -- callers re-invoke this at each classification point
- * (pre-sprint validation, cycle top, IntegTest dispatch) rather than caching,
- * so a crash-restart re-derives it for free and nothing can drift out of sync
- * with the beads DB.
- *
- * Eligibility (a bead qualifies iff ALL of):
- *   1. in scope: is itself one of `targetIssues`, or is a BFS descendant of
- *      one (same discovery rule bdListScoped uses).
- *   2. status is 'open' or 'in_progress' (not already closed/deferred).
- *   3. has at least one child. Childless beads are leaves -- they route
- *      through the normal Plan/Develop pipeline, never verify. A parent with
- *      NO children is never eligible, regardless of anything else.
- *   4. EVERY child (any issue_type) has status 'closed', checked against the
- *      FULL unfiltered `allBeads` list, not a scope-filtered subset -- an
- *      out-of-scope open child must still block eligibility. Partial closure
- *      never qualifies.
- *   5. no unmet 'blocks' dependency (apra-fleet inv-4): a parent whose
- *      blocker is still being implemented in this same run must not be
- *      verified against today's incomplete state.
- *
- * @param {Array<object>} allBeads - the FULL, unfiltered project bead list.
- * @param {string[]} targetIssues - the sprint's target issue root id(s).
- * @returns {{ verifyIds: string[], ineligible: Array<{id: string, reason: string}> }}
- */
-export function classifyVerifySet(allBeads, targetIssues) {
-    const byId = new Map((allBeads || []).map((b) => [b.id, b]));
-    const childrenOf = new Map();
-    for (const b of (allBeads || [])) {
-        if (b && b.parent) {
-            if (!childrenOf.has(b.parent)) childrenOf.set(b.parent, []);
-            childrenOf.get(b.parent).push(b);
-        }
-    }
-
-    // Same BFS discovery bdListScoped uses (module-scoped, ~line 5099), kept
-    // as a standalone copy here since this function must stay pure/testable
-    // independent of the closure state bdListScoped lives inside.
-    const scopeIds = new Set();
-    const frontier = [...(targetIssues || [])];
-    while (frontier.length > 0) {
-        const id = frontier.shift();
-        for (const child of (childrenOf.get(id) || [])) {
-            if (!scopeIds.has(child.id)) {
-                scopeIds.add(child.id);
-                frontier.push(child.id);
-            }
-        }
-    }
-    for (const id of (targetIssues || [])) scopeIds.add(id);
-
-    const verifyIds = [];
-    const ineligible = [];
-    for (const id of scopeIds) {
-        const bead = byId.get(id);
-        if (!bead) continue;
-        if (bead.status !== 'open' && bead.status !== 'in_progress') continue;
-
-        const kids = childrenOf.get(id) || [];
-        if (kids.length === 0) continue; // leaf -- normal pipeline, not eligible
-
-        if (!kids.every((k) => k.status === 'closed')) continue; // partial closure never qualifies
-
-        const unmetBlockerIds = (bead.dependencies || [])
-            .filter((d) => d.type === 'blocks')
-            .map((d) => d.depends_on_id)
-            .filter((depId) => {
-                const dep = byId.get(depId);
-                return dep && dep.status !== 'closed';
-            });
-        if (unmetBlockerIds.length > 0) {
-            ineligible.push({ id, reason: `unmet blocker(s): ${unmetBlockerIds.join(', ')}` });
-            continue;
-        }
-
-        verifyIds.push(id);
-    }
-
-    return { verifyIds, ineligible };
-}
+// classifyVerifySet lives in beads-scope.mjs (apra-fleet-3swo.4.6) so it and
+// bdListScoped share ONE BFS scope-discovery implementation instead of the two
+// independent copies they used to carry; it is re-exported from this file
+// above.
 
 // ---------------------------------------------------------------------------
 // Develop/Review loop prompt builders + pure helpers
@@ -2835,75 +2766,50 @@ async function runSprintCycle(context) {
     // that never go through WorkflowEngine.executeFile() supply none).
     const syncBrackets = createSyncBrackets({ setPauseGuard });
 
-    // The shared full-DB beads snapshot served by fetchAllBeadsShared(), plus
-    // the two choke points that keep it correct. Both wrappers are installed
-    // HERE, before any other statement in this function uses either name, so
-    // every direct `command(...)`/`phase(...)` call below -- and every helper
-    // (doltPullBefore, persistNewTaskBestEffort, withGitSync, ...) that
-    // receives `command` via an options object built from this closure
-    // variable -- transparently goes through the wrapped version.
+    // The shared full-DB beads snapshot, the two choke points that keep it
+    // correct, and the scope-discovery BFS all live in beads-scope.mjs now
+    // (apra-fleet-3swo.4.6) -- see that module's header for the FULL snapshot
+    // invalidation contract (invalidated at every phase boundary, at every
+    // beads-mutating command through this wrapper, and explicitly after every
+    // successful planner dispatch) and for the three read sites that
+    // deliberately bypass the snapshot.
     //
-    // The snapshot MUST be invalidated the instant the underlying data can
-    // have changed, so invalidation fires on ALL of:
-    //   1. every `phase()` call -- a new step must never inherit a stale view
-    //      from the step before it,
-    //   2. every bd command that is not a known read (list/show/ready/config).
-    //      Update/create/close/note/dep/dolt-pull are all mutations, and an
-    //      unrecognized bd subcommand is conservatively assumed to mutate: the
-    //      failure mode is a redundant full fetch, never silently stale data,
-    //      and
-    //   3. every PLANNER dispatch that returns successfully (see the explicit
-    //      invalidateAllBeadsCache() calls right after dispatchPlanner()
-    //      below, in both the main Planning Loop and the in-cycle scoped
-    //      replan). The planner mutates beads on ITS OWN clone via its own
-    //      `bd create` tool calls, never through this orchestrator-side
-    //      `command()` wrapper -- so (2) alone cannot see it, and Execution
-    //      Prep runs later in the SAME "Plan C{cycle} R{round}" phase (no
-    //      intervening phase() call), so (1) cannot see it either. Without
-    //      (3), a planner that creates its task DAG inside one dispatch
-    //      leaves the very next Execution Prep step looking at the pre-plan
-    //      snapshot, which filters those tasks' still-unseen parent features
-    //      out as non-target features and finds nothing ready -- silently
-    //      skipping Develop for that whole cycle (apra-fleet-zmqm).
-    //      Deliberately scoped to the planner only, NOT every dispatch: an
-    //      unconditional per-dispatch invalidation was tried and reverted --
-    //      it defeats the "one full-DB fetch per phase" cost control
-    //      full-db-fetch-tripwire.test.mjs pins, for every OTHER role
-    //      (doer/reviewer/deployer/...) that has no same-phase reader
-    //      depending on its bead mutations the way Execution Prep depends on
-    //      the planner's.
-    //      Non-bd commands (git, node probes) never touch beads state.
-    let allBeadsSnapshot = null; // { beads } -- cleared by invalidateAllBeadsCache()
-    function invalidateAllBeadsCache() { allBeadsSnapshot = null; }
-    const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config)\b/i;
-    const command = async (cmdStr, opts) => {
-        const result = await rawCommand(cmdStr, opts);
-        if (typeof cmdStr === 'string') {
-            const trimmed = cmdStr.trim();
-            if (/^bd\b/i.test(trimmed) && !BD_READ_ONLY_RE.test(trimmed)) {
-                invalidateAllBeadsCache();
-            }
-            // DoltSync memoizes each member's `bd config get sync.remote`
-            // answer for the process lifetime (it was being re-spawned 90-160
-            // times per sprint for a value that never changes mid-run). This
-            // is the invalidation seam: the handful of commands that CAN
-            // rewire a member's remote (`bd config set`, `bd dolt remote`,
-            // `bd init`, `bd bootstrap`) drop that member's memo here, at the
-            // one wrapper every orchestrator-side member command passes
-            // through. Non-matching commands are a cheap regex test. This
-            // seam only sees the ORCHESTRATOR's own commands; an agent's
-            // commands on the member are covered by the agent() wrapper
-            // below (DoltSync.noteMemberDispatchCompleted), which marks the
-            // member for a lazy re-check rather than dropping anything.
+    // Both wrappers are installed HERE, before any other statement in this
+    // function uses either name, so every direct `command(...)`/`phase(...)`
+    // call below -- and every helper (doltPullBefore, persistNewTaskBestEffort,
+    // withGitSync, ...) that receives `command` via an options object built
+    // from this closure variable -- transparently goes through the wrapped
+    // version.
+    const beadsScope = createBeadsScope({
+        targetIssues: validated.targetIssues,
+        assignee: validated.assignee,
+        parseBdJson,
+        // A getter, not a value: `orchestratorMember` is resolved from the
+        // role->member mapping further down this function, but this client
+        // has to exist BEFORE `command` does. No beads read can happen in
+        // between, so the getter is always called on a resolved value.
+        getOrchestratorMember: () => orchestratorMember,
+    });
+    const { invalidateAllBeadsCache, fetchAllBeadsShared, bdListScoped } = beadsScope;
+    const command = beadsScope.wrapCommand(rawCommand, {
+        // DoltSync memoizes each member's `bd config get sync.remote` answer
+        // for the process lifetime (it was being re-spawned 90-160 times per
+        // sprint for a value that never changes mid-run). This is the
+        // invalidation seam: the handful of commands that CAN rewire a
+        // member's remote (`bd config set`, `bd dolt remote`, `bd init`,
+        // `bd bootstrap`) drop that member's memo here, at the one wrapper
+        // every orchestrator-side member command passes through.
+        // Non-matching commands are a cheap regex test. This seam only sees
+        // the ORCHESTRATOR's own commands; an agent's commands on the member
+        // are covered by the agent() wrapper below
+        // (DoltSync.noteMemberDispatchCompleted), which marks the member for
+        // a lazy re-check rather than dropping anything.
+        onCommand: (trimmed, opts) => {
             const memberName = opts && opts.member_name;
             if (memberName) DoltSync.noteMemberCommand(memberName, trimmed);
-        }
-        return result;
-    };
-    const phase = (title) => {
-        invalidateAllBeadsCache();
-        return rawPhase(title);
-    };
+        },
+    });
+    const phase = beadsScope.wrapPhase(rawPhase);
 
     // A stable per-sprint id for mutex fairness/introspection: the sprint branch
     // is unique per concurrent sprint on the shared remote.
@@ -3368,124 +3274,13 @@ async function runSprintCycle(context) {
     // withGitSync member, pushCode, dispatch thunk, options.
     const withGitSync = (member, pushCode, dispatchFn, options) => gitSync.withGitSync(member, pushCode, dispatchFn, options);
 
-    // Scope discovery cannot be built on `bd list --parent`: it accepts exactly
-    // one id per invocation (a comma-joined list is treated as one nonexistent
-    // id and returns `[]`) and is single-level only -- direct children, never
-    // grandchildren -- so a level-3+ descendant would be invisible to the
-    // dispatch scope, not just the dashboard tree.
-    //
-    // Instead, pull the full project bead list ONCE per call (`--all` because
-    // `bd list` excludes closed issues by default, which would drop a closed
-    // node's parent link and orphan its whole subtree from discovery; `--limit
-    // 0` because the default row cap could silently truncate a larger scope),
-    // build a parent->children map locally, then BFS from every target issue in
-    // memory to find every descendant at any depth, regardless of status. This
-    // subsumes the multi-target union case without a separate code path, at the
-    // cost of fetching the whole project's beads rather than just the scope's.
-    //
-    // fetchAllBeadsShared() serves that fetch from `allBeadsSnapshot` whenever
-    // one is still valid -- the snapshot survives across separate,
-    // non-overlapping calls (see the command/phase wrappers above for what
-    // invalidates it) -- and otherwise coalesces concurrent callers onto a
-    // single in-flight request. Coalescing matters beyond saving a round trip:
-    // the command text is identical for every caller, and the bd-replay test
-    // shim matches recorded responses FIFO per exact command string, so N
-    // indistinguishable concurrent commands have no reliable replay order.
-    let allBeadsInFlight = null;
-    async function fetchAllBeadsShared() {
-        if (allBeadsSnapshot) return allBeadsSnapshot.beads;
-        if (!allBeadsInFlight) {
-            const allLabel = 'bd list --all --limit 0 --json';
-            allBeadsInFlight = command(allLabel, { member_name: orchestratorMember, silent: true })
-                .then((raw) => parseBdJson(raw, allLabel))
-                .then((beads) => {
-                    allBeadsSnapshot = { beads };
-                    return beads;
-                })
-                .finally(() => { allBeadsInFlight = null; });
-        }
-        return allBeadsInFlight;
-    }
-
-    async function bdListScoped(restArgs) {
-        const rest = restArgs ? restArgs.trim() : '';
-
-        const allBeads = await fetchAllBeadsShared();
-
-        const childrenOf = new Map();
-        for (const b of allBeads) {
-            if (b && b.parent !== undefined && b.parent !== null && b.parent !== '') {
-                if (!childrenOf.has(b.parent)) childrenOf.set(b.parent, []);
-                childrenOf.get(b.parent).push(b);
-            }
-        }
-
-        const scopeIds = new Set();
-        const frontier = [...targetIssues];
-        while (frontier.length > 0) {
-            const id = frontier.shift();
-            for (const child of (childrenOf.get(id) || [])) {
-                if (!scopeIds.has(child.id)) {
-                    scopeIds.add(child.id);
-                    frontier.push(child.id);
-                }
-            }
-        }
-
-        // Seed scopeIds with every target issue's OWN id, unconditionally --
-        // the BFS above only ever adds descendants, so without this a
-        // childless leaf target's scope would be empty and every query would
-        // short-circuit to `[]`. This used to be conditional on the target
-        // having no children, on the theory that a target WITH children is a
-        // pure grouping node whose own status never matters -- but that is
-        // false: a target with pre-existing children (a verify-routed parent
-        // like the eft.52/vak shape, or this sprint's own apra-fleet-66u) can
-        // itself transition open->closed, and status-counting queries
-        // (closedCount) need to see that transition. Excluding it silently
-        // dropped the parent's own closure from the stall-detection progress
-        // score -- apra-fleet-66u.1's root cause: closedCountHistory stayed
-        // flat across the cycles where eft.52 and vak (both targets WITH
-        // children) closed for real, because their ids were never in
-        // scopeIds to begin with, so `bdListScoped('--status=closed --json')`
-        // could never count them no matter how fresh the read. This now
-        // matches classifyVerifySet()'s own (already-unconditional) BFS seed
-        // a few hundred lines up.
-        //
-        // A childful target is STILL excluded from dispatch (readyLeafBeads())
-        // and from the exit-gate open-at-goal counts (openAtGoal/stillOpen/
-        // finalOpenAtGoal, all post-filtered via decomposedParentIds() -- see
-        // below) -- both use the same structural "is this someone's .parent"
-        // check, independent of scopeIds membership, so widening scope here
-        // does not let a still-open childful target masquerade as done, and
-        // does not let it block dispatch as if it were a leaf. Whether it
-        // still needs to close before the sprint may exit is owned entirely
-        // by the separate, scope-independent stillOpenVerifyIds/verifyEverIds
-        // mechanism (apra-fleet-jfo) further down.
-        for (const id of targetIssues) {
-            scopeIds.add(id);
-        }
-
-        if (scopeIds.size === 0) return [];
-
-        if (!rest) {
-            return allBeads.filter((b) => b && scopeIds.has(b.id));
-        }
-
-        // The caller's filter flags (--ready/--status/--type/--priority-max/
-        // etc) express bd-side computed properties -- readiness in
-        // particular -- that a plain in-memory filter over `allBeads` cannot
-        // reliably replicate. Issue a second project-wide query with those
-        // flags, then intersect with the structurally-discovered scope.
-        // When an assignee is configured, `--assignee` narrows that query to
-        // this sprint's claimed beads so two sprints never select the same one.
-        let filterArgs = rest;
-        if (validated.assignee) {
-            filterArgs = `${rest} --assignee ${validated.assignee}`;
-        }
-        const filterLabel = `bd list ${filterArgs} --limit 0`;
-        const filterRaw = await command(filterLabel, { member_name: orchestratorMember, silent: true });
-        return parseBdJson(filterRaw, filterLabel).filter((b) => b && scopeIds.has(b.id));
-    }
+    // Scope discovery (`bdListScoped`) and the shared full-DB fetch
+    // (`fetchAllBeadsShared`) are provided by the beads-scope.mjs client
+    // destructured at the top of this function, alongside the `command`/
+    // `phase` wrappers that invalidate its snapshot. See that module for the
+    // in-memory BFS scope rule (`bd list --parent` cannot express it: it takes
+    // one id per invocation and is single-level only) and for the snapshot
+    // invalidation contract.
 
     // The set of scope-member ids that are themselves someone else's
     // `--parent` -- i.e. decomposed grouping nodes, not leaf units of work.
