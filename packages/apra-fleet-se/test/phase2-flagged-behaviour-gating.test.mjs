@@ -63,6 +63,40 @@ const VCS_AUTH_SRC = fs.readFileSync(path.join(SE_DIR, 'fleet-sprint/vcs-auth.mj
 // Commits are located by SUBJECT LINE, not by SHA: a rebase of this long-lived
 // refactor branch rewrites every SHA but preserves subjects. Bead ids are not
 // usable as the key -- only some of these commits mention one in their body.
+//
+// apra-fleet-3swo.23: the lookup used to be a fixed depth-limited `git log`
+// window (five hundred commits back from HEAD), which failed in two ways as
+// this branch grew -- (1) after a squash merge every subject vanishes and ALL
+// FIVE git-level checks below silently skip, silently losing the separation
+// guarantee, and (2) once the phase scrolled past that fixed depth with only
+// SOME of the six subjects still inside the window, the group stayed
+// "enabled" and the per-subject `shas.length === 1` assertion hard-failed on
+// whichever subjects had scrolled out -- a spurious red suite unrelated to
+// the actual separation invariant.
+//
+// FIX DIRECTION CHOSEN: make the lookup UNBOUNDED (no depth limit at all; see
+// shasForSubject() below) and gate the git-level checks on ALL SIX subjects
+// resolving, not merely one. As long as these commits remain ancestors of
+// HEAD in a normal (non-squashed, non-shallow) clone, an unbounded `git log`
+// finds them regardless of how many further commits land on top -- there is
+// no depth to scroll past, so failure mode (2) cannot recur. A squash merge
+// or shallow clone still makes all six subjects unreachable, but now as a
+// single named GROUP skip (see HISTORY_SKIP below) rather than a partial,
+// misleading hard failure.
+//
+// REJECTED: (a) merge-base-anchored range -- this branch is itself
+// periodically rebased onto its base (see role-policies-table.test.mjs's own
+// rebase history notes), so pinning a merge-base ref here would need to name
+// a specific, moving base and would still fail identically to the unbounded
+// approach the moment these six commits are squashed away; it adds an anchor
+// to maintain for no extra robustness. (b) a tree-level assertion -- section
+// (1)'s SEPARATION guarantee is inherently a git-HISTORY property (which
+// commit's diff touched which file); once history is squashed into one
+// commit, that information is gone from the tree itself and cannot be
+// recovered by inspecting the final files, so a tree-level check could not
+// actually verify the same guarantee, only a different and weaker one. An
+// explicit, named skip is the honest signal in that case, which is why AC3
+// treats it as an acceptable alternative to a tree-level check.
 // -----------------------------------------------------------------------------
 
 // The flagged BEHAVIOUR changes of this phase. Items A and B shipped in ONE
@@ -97,8 +131,12 @@ const git = (args) => execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf
 
 /** @returns {string[]} every commit SHA whose subject is exactly `subject`. */
 function shasForSubject(subject) {
-    // --format=%H with --grep on the SUBJECT only (-F: fixed string, not a regex).
-    const out = git(['log', '--format=%H%x1f%s', '-500']);
+    // Unbounded: no `-N` depth limit (apra-fleet-3swo.23 -- see the header
+    // comment above for why a fixed window is wrong here). `git log` with no
+    // depth argument walks the FULL history reachable from HEAD in a normal,
+    // non-shallow clone, so a commit already an ancestor of HEAD is found
+    // regardless of how many commits have landed on top of it since.
+    const out = git(['log', '--format=%H%x1f%s']);
     return out
         .split('\n')
         .filter(Boolean)
@@ -130,11 +168,31 @@ function separationViolations(flaggedCommits, moveOnlyCreatedFiles) {
 // Resolved once: a checkout that squash-merged or shallow-cloned this phase
 // has none of these commits, and the git-level assertions below say so
 // explicitly instead of passing vacuously.
+//
+// apra-fleet-3swo.23 (AC2): gated on ALL SIX subjects resolving, not on ANY
+// resolving. With the window now unbounded, a normal clone either finds every
+// one of the six (they are all ancestors of HEAD, full stop) or a history
+// rewrite (squash merge, shallow clone) has made every one of them
+// unreachable together -- there is no longer a "some found, some not" state
+// that a fixed depth window used to produce. The group therefore runs
+// entirely or skips entirely: no reachable state fires the per-subject
+// `shas.length === 1` assertion against a subject that is simply missing.
 const flaggedShas = new Map(FLAGGED_CHANGE_SUBJECTS.map((s) => [s, shasForSubject(s)]));
 const moveOnlyShas = new Map(MOVE_ONLY_EXTRACTION_SUBJECTS.map((s) => [s, shasForSubject(s)]));
-const foundCount = [...flaggedShas.values(), ...moveOnlyShas.values()].filter((v) => v.length > 0).length;
-const HISTORY_AVAILABLE = foundCount > 0;
-const HISTORY_SKIP = 'this phase\'s individual commits are not reachable from HEAD (squash-merged or shallow clone), so the commit-level separation check cannot be evaluated here';
+const allSubjectShas = [...flaggedShas, ...moveOnlyShas];
+const TOTAL_SUBJECTS = allSubjectShas.length;
+const foundCount = allSubjectShas.filter(([, shas]) => shas.length > 0).length;
+const HISTORY_AVAILABLE = foundCount === TOTAL_SUBJECTS;
+const HISTORY_SKIP = HISTORY_AVAILABLE
+    ? null
+    : foundCount === 0
+        ? "the Phase 2 commit-level SEPARATION guarantee (section 1 below) was not evaluated: none of this phase's " +
+          `${TOTAL_SUBJECTS} flagged-change/move-only commits are reachable from HEAD (a squash merge, shallow ` +
+          'clone, or history rewrite made them all unreachable), so the commit-level checks cannot run here'
+        : "the Phase 2 commit-level SEPARATION guarantee (section 1 below) was not evaluated: only " +
+          `${foundCount}/${TOTAL_SUBJECTS} of this phase's flagged-change/move-only commits are reachable from ` +
+          `HEAD (missing: ${allSubjectShas.filter(([, shas]) => shas.length === 0).map(([s]) => `'${s}'`).join(', ')}) ` +
+          '-- the group either runs in full or skips in full, so a partial match never fires the per-subject assertion below';
 
 describe('(1) Phase 2 separation: a flagged behaviour change never lands in a file a move-only extraction created', () => {
     test('FALSIFIABILITY: the rule reports a violation when a flagged commit does touch a created file', () => {
