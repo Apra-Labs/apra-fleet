@@ -179,6 +179,23 @@ export function extractStringLiterals(src) {
                 lastSignificant = '{';
                 continue;
             }
+            // A template that embeds a served client-side script (the
+            // dashboard extension's `js:` block) carries that script's OWN
+            // comments as template text. An own-line `//` comment or a
+            // `/* */` block there is client-JS commentary, not prompt text,
+            // so it is skipped -- same treatment the workflow package's
+            // boundary test gives its HTML_TEMPLATE. Only own-line `//` is
+            // stripped so a URL mid-sentence in a real prompt survives.
+            if (c === '/' && c2 === '/' && /(?:^|\n)[ \t]*$/.test(frame.buf)) {
+                while (i < n && src[i] !== '\n') advance();
+                continue;
+            }
+            if (c === '/' && c2 === '*') {
+                advance(2);
+                while (i < n && !(src[i] === '*' && src[i + 1] === '/')) { if (src[i] === '\n') frame.buf += '\n'; advance(); }
+                advance(2);
+                continue;
+            }
             frame.buf += c;
             advance();
             continue;
@@ -337,7 +354,14 @@ export function listEngineFiles(packageRoot = PACKAGE_ROOT) {
  * another.
  */
 export const ALLOWED_EXCEPTIONS = [
-    // (none yet -- the engine is clean at the time this guard was introduced)
+    {
+        name: 'contracts.mjs version-pin error names the vendored-schema package',
+        file: 'fleet-sprint/contracts.mjs',
+        ids: ['apra-fleet-repo-internals'],
+        anchorRe: /developer-facing Error about this product's own vendored schema/,
+        window: 8,
+        reason: 'a thrown Error read by an apra-fleet DEVELOPER (never dispatched to a sprint agent) that must name the package whose vendored schema drifted; it describes the product, not a target',
+    },
 ];
 
 export const ANCHOR_RE = /GENERIC-BOUNDARY-EXCEPTION:/;
