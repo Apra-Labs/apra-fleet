@@ -23,3 +23,4 @@
 - [ ] I have updated documentation where necessary
 - [ ] Breaking changes are noted above and in the commit message
 - [ ] No new linting errors introduced
+- [ ] Changes under `packages/apra-fleet-se/fleet-sprint/` or `apra-pm/agents/` keep the engine generic: no apra-fleet-specific build commands, env vars, ports, repo paths, bead ids, or undocumented deploy.md/playbook sections in LLM-facing text (`node packages/apra-fleet-se/scripts/check-generic-boundary.mjs` passes; see docs/generic-engine-boundary.md)

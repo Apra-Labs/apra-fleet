@@ -281,6 +281,9 @@ export function majorVersionFromId(id) {
 export function assertVersionPin(role, schema, expectedMajor) {
     const actualMajor = majorVersionFromId(schema && schema.$id);
     if (actualMajor !== expectedMajor) {
+        // GENERIC-BOUNDARY-EXCEPTION: developer-facing Error about this product's own vendored schema --
+        // thrown at module load and read by an apra-fleet developer, never dispatched to a sprint
+        // agent; it must name the package whose vendored schema drifted (docs/generic-engine-boundary.md).
         throw new Error(
             `[contracts] Version-pin mismatch for role "${role}": this module was written against ` +
                 `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` +

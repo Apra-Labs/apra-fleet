@@ -876,6 +876,8 @@ The PM skill and its role agent definitions (planner, plan-reviewer, doer, revie
 
 Remote fleet members do not share the operator's home directory, so `register_member`, `update_member`, and (starting with the first dispatch after an orchestrator upgrade) `execute_prompt` each independently hash-diff the canonical agent set against the remote box and push anything missing or stale. See [docs/mcp-tools.md](mcp-tools.md) for per-tool behavior details.
 
+The sprint engine (`packages/apra-fleet-se/fleet-sprint/`) and these role prompts are generic: they drive a sprint against any target repo, and apra-fleet building itself with them is only one target. A mechanical guard keeps apra-fleet-specific assumptions out of their LLM-facing text -- see [docs/generic-engine-boundary.md](generic-engine-boundary.md).
+
 ## Key Design Decisions
 
 ### Strategy Pattern for Member Types

@@ -63,10 +63,14 @@ export function findDoltLiteralViolations(src) {
 export function checkDoltLiteralPath(filePath) {
     const src = fs.readFileSync(filePath, 'utf8');
     const fileLabel = path.basename(filePath);
+    // The single-surface rule this message enforces was established by
+    // apra-fleet-417.2.1/417.2.2 (dolt command consolidation into
+    // ./dolt-sync.mjs). Provenance stays in this comment: the message itself
+    // is runtime output and must not cite a tracker id.
     const violations = findDoltLiteralViolations(src).map(({ line, text }) =>
         `${fileLabel}:${line} issues a direct 'bd dolt pull'/'bd dolt push' literal ("${text}") -- ` +
         `route it through ./dolt-sync.mjs (DoltSync.syncBefore/syncAfter/status) instead, the single ` +
-        `permitted dolt command surface (apra-fleet-417.2.1/417.2.2).`
+        `permitted dolt command surface.`
     );
     return { violations };
 }
