@@ -358,15 +358,31 @@ function bdInitTemplateDir() {
 const bdInitTemplatePromises = new Map(); // templateDir -> Promise<{ err, stdout, stderr, templateDir }>
 let bdInitTemplateSpawns = 0;
 
-// A template directory counts as usable only once it holds the `.beads` dir
-// `bd init` creates -- the marker bd-init-templating.test.mjs itself asserts
-// on. Anything less is a leftover/partial directory, not a template.
+// A template directory counts as usable only once its embedded dolt store is
+// FULLY written, not merely once `.beads` exists. `bd init` creates `.beads`
+// early in its own sequence and writes `<embeddeddolt db dir>/.dolt/
+// repo_state.json` later; a `bd init` interrupted mid-flight (a killed
+// process, a machine sleep) can leave a `.beads` tree with no dolt schema at
+// all. Checking `.beads` alone let exactly that kind of half-written
+// directory get published as "the" template, silently and permanently:
+// every later real-bd test on the host then copied the same broken tree and
+// failed with "reading aux rekey sentinel ... system cannot find file
+// specified" trying to open a `repo_state.json` that was never there
+// (reproduced 15/15 runs against a week-old broken template on this
+// machine). The embedded db subdirectory's name is derived from the
+// directory basename (not fixed), so scan for ANY entry under
+// `.beads/embeddeddolt/` that has one, rather than hardcoding a path.
 const templateIsReady = (dir) => {
+    let entries;
     try {
-        return fs.statSync(path.join(dir, '.beads')).isDirectory();
+        entries = fs.readdirSync(path.join(dir, '.beads', 'embeddeddolt'), { withFileTypes: true });
     } catch {
         return false;
     }
+    return entries.some((entry) => {
+        if (!entry.isDirectory()) return false;
+        return fs.existsSync(path.join(dir, '.beads', 'embeddeddolt', entry.name, '.dolt', 'repo_state.json'));
+    });
 };
 
 async function createBdInitTemplate(templateDir) {
@@ -384,11 +400,38 @@ async function createBdInitTemplate(templateDir) {
         await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
         return { ...res, templateDir };
     }
+    if (!templateIsReady(staging)) {
+        // `bd init` reported success (exit 0, no res.err) but the embedded
+        // dolt store never finished writing -- publishing this would corrupt
+        // the shared template for every later caller on this host, exactly
+        // as happened before this fix. Surface it as a real failure instead
+        // of a false success; the caller (realBdInitTemplated) propagates it
+        // to the test as `bd init` failing, which is the truth.
+        await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
+        return {
+            err: new Error(
+                `bd init into ${staging} exited 0 but produced no repo_state.json under .beads/embeddeddolt/**/.dolt -- ` +
+                    'the embedded dolt store never finished writing (process killed mid-init? disk stall?). ' +
+                    'Refusing to publish an incomplete template.',
+            ),
+            stdout: res.stdout,
+            stderr: res.stderr,
+            templateDir,
+        };
+    }
 
-    // Publish. Two things can make the rename fail, and they need opposite
-    // handling:
-    //   - the destination already exists  -> another process won the race;
-    //     drop ours and use theirs.
+    // Publish. Three things can make the rename fail, and they need
+    // different handling:
+    //   - the destination is a READY template -> another process already
+    //     published a good one; drop ours and use theirs (checked by the
+    //     loop condition below, every iteration).
+    //   - the destination exists but is NOT ready -> a stale/broken template
+    //     from an earlier interrupted run occupies the path. Reclaim it by
+    //     removing it, rather than retrying rename against it forever (that
+    //     used to fall back to a private per-staging template every time,
+    //     which fixed nothing for the next caller -- the broken shared
+    //     template just sat there permanently, which is exactly how this
+    //     host ended up with a week-old broken one).
     //   - EBUSY/EPERM on the SOURCE       -> Windows only: the just-exited
     //     `bd init` child (or a scanner) still holds a handle inside the
     //     staging tree for a moment. Retry briefly; this is the same
@@ -399,6 +442,9 @@ async function createBdInitTemplate(templateDir) {
     let published = false;
     for (let attempt = 0; attempt < 10 && !published; attempt += 1) {
         if (templateIsReady(templateDir)) break;
+        if (fs.existsSync(templateDir)) {
+            await fs.promises.rm(templateDir, { recursive: true, force: true }).catch(() => {});
+        }
         try {
             await fs.promises.rename(staging, templateDir);
             published = true;
