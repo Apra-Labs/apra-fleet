@@ -316,6 +316,24 @@ both the initial signal and the escalation, install reports a clear error
 proceeding into a copy that would fail anyway or claiming success it can't
 back up.
 
+**Known limitation: a launchd/systemd/Windows-service-managed server defeats
+this poll-and-escalate approach entirely**, not just slows it down. On
+macOS, the LaunchAgent installed for the server (`~/Library/LaunchAgents/
+com.apra-fleet.server.plist`) is registered with `KeepAlive` set for a
+non-successful exit, so the service manager relaunches the server (as a new
+PID) the instant a `SIGTERM`/`SIGKILL` reaches it -- the install path's
+liveness poll then observes the newly relaunched process and reports the
+same "could not stop the running server" failure after escalating through
+both signals, no matter how long the grace windows are. The server's own
+log will show consecutive startup lines with a different PID each time the
+kill was attempted, which is the tell that this is the service-manager case
+rather than a genuinely wedged process. The correct stop path in this case
+is to unload/stop the registered service itself (`launchctl bootout` on
+macOS) before signaling the process directly, not to signal the process and
+expect it to stay down. Killing the process without first stopping its
+service registration is not a valid workaround -- it produces the exact
+failure above.
+
 ### Replaying the npm-publish smoke step locally with an unrelated server running
 
 CI's "Pack + install into a clean temp prefix (fleet-sprint smoke test)" step
