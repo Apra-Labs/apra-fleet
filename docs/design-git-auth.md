@@ -58,6 +58,33 @@ members:
 | `issues` | - (no code access) | issues, PRs, projects, comments |
 | `full` | admin + issues | Everything |
 
+### VCS provider resolution
+
+A member's VCS provider (`github` | `bitbucket` | `azure-devops` | `none`)
+determines which credential backend `provision_vcs_auth` targets and which
+PR-shaped command `fleet-sprint` builds for it. `register_member` accepts an
+explicit `vcs_provider`; when omitted, registration reads the member's git
+`origin` remote (best effort) and maps its host to a provider
+(`github.com` -> `github`, `bitbucket.org` -> `bitbucket`, `dev.azure.com` /
+`*.visualstudio.com` -> `azure-devops`). A GitHub Enterprise host has no
+fixed domain and is never auto-detected -- register those members with an
+explicit `vcs_provider`.
+
+Auto-detection commonly fails at registration time, because the ordinary
+flow is register-then-clone: the member's work folder has no git repo yet,
+so there is no `origin` to read. Registration still succeeds in that case
+(a missing VCS provider does not block onboarding), but emits a loud warning
+that the member cannot push or open a PR until one is set. There are three
+ways to resolve it after the fact: call `provision_vcs_auth` with an explicit
+`provider` (this also records `vcsProvider` as a side effect of provisioning
+credentials); call `update_member` with `vcs_provider` set, to record the
+provider directly without provisioning credentials; or rely on
+`fleet-sprint`'s dispatch-time fallback, which re-attempts the same
+remote-based detection once a git remote exists and self-heals the
+registry entry automatically. Re-registering the same folder path is
+rejected as a duplicate registration, so it is never the remedy for a wrong
+or missing auto-detect.
+
 ### Backend: GitHub App Token Minting
 
 For GitHub-hosted repos, use a **GitHub App** installed on the org.
@@ -206,6 +233,55 @@ credential `label` and `scope_url`, and a per-provider credential group:
 
 Secret-bearing fields accept a `{{secure.NAME}}` token, resolved from the
 credential store server-side so no secret passes through a model's context.
+
+### Structured provisioning responses
+
+`provision_vcs_auth`, `provision_auth` (the LLM-credential counterpart) and
+`member_reservation` all return a structured MCP result (an `ok`/`failed`
+discriminator, a machine-readable `reason` code, and tool-specific fields)
+rather than emoji-prefixed prose. This matters for any orchestrator-side
+consumer: `reason` values include benign-but-not-fully-successful outcomes
+(for example `provision_auth`'s `skipped_local_member`) that still report
+`ok: true`, so a consumer that only checks `ok` cannot distinguish "actually
+provisioned" from "correctly skipped." Always branch on `reason` before
+falling back to the generic `ok`/`failed` split. Any caller that stubs these
+tools in a test must stub the structured shape (`{ text, structuredContent }`),
+not the old string return -- a stub still shaped like the old prose return
+passes type-checking (both are just objects) but throws at the first
+`.structuredContent.ok` read, and if that call site is wrapped in a
+best-effort `catch`, the throw is silently swallowed and the mismatch never
+surfaces as a test failure.
+
+### Server-side credential handoff (`vcs_credential_exec`)
+
+Before this tool existed, the only way an orchestrator-side caller could run
+a credential-requiring git/VCS command was to first learn the token itself:
+dispatch the deployed git-credential-helper as a member command and parse
+`password=<token>` out of the captured stdout. Even dispatched with a
+silent flag, the plaintext token still round-trips through a command result
+the orchestrator process reads.
+
+`vcs_credential_exec` (`src/tools/vcs-credential-exec.ts`) removes that
+round-trip. The caller sends a command containing the literal placeholder
+`{{vcs_token}}` where the credential belongs (never inside the caller's own
+quotes -- the substituted value arrives already shell-escaped for the
+member's shell, the same convention `execute_command`'s `{{secure.NAME}}`
+tokens use), and the server performs the whole handoff in one call:
+
+1. Runs the member's deployed credential helper through `strategy.execCommand`
+   -- that output is consumed in-process and is never part of this tool's
+   result.
+2. Substitutes `{{vcs_token}}` with the token, shell-escaped per
+   `isPosixShell(agentOs, agentShell)` -- never assumed to be POSIX.
+3. Dispatches the substituted command.
+4. Redacts any occurrence of the token from stdout/stderr before returning,
+   the same defense `execute-command.ts`'s output redaction applies.
+
+The tool refuses any command lacking the `{{vcs_token}}` placeholder, so it
+cannot degrade into a second, unguarded `execute_command`. The plaintext
+token appears in no field of any result an orchestrator-side caller can
+read; `readMemberVcsCredentialToken` (the old prose-scraping path) is left in
+place for callers that have not migrated.
 
 ### Security Properties
 

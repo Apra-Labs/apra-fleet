@@ -1244,3 +1244,92 @@ it exited 0 -- a child that spawned zero subtests, or crashed before running
 anything, would still report a clean marker file and a zero exit code,
 silently passing a vacuous check. Parse the child's own TAP summary line
 (`# tests`, `# pass`) and assert it clears a known floor.
+
+## Module decomposition: `runner.js` as a strangler-fig facade
+
+`runner.js` began as a single ~11,700-line file and is being decomposed
+incrementally into focused `fleet-sprint/*.mjs` modules while staying a
+drop-in facade for its ~68 importers and ~63 mock-sprint test fixtures. The
+approach is a strangler-fig extraction, not a rewrite:
+
+- **Move-only discipline.** An extraction commit relocates code verbatim
+  (plus import/export wiring); it does not change behavior. Any actual
+  behavior change ships as a separate, explicitly flagged commit, so a
+  facade regression and a genuine behavior regression are never entangled
+  in the same diff and either can be reverted independently.
+- **Facade re-exports.** Every symbol a module absorbs from `runner.js` is
+  re-exported from `runner.js` under its original name, so existing
+  importers and mock-sprint fixtures need no changes. Each extraction has a
+  paired "facade completeness" test asserting the re-export surface is
+  intact and the extracted module is behaviorally pure (no hidden
+  dependency on `runner.js`-local state).
+- **Extracted modules, by concern:** `vcs-auth.mjs` (VCS credential
+  resolution, self-heal, preflight), `sprint-args.mjs` (`validateArgs` and
+  option validation), `prompts.mjs` (the per-role prompt builders),
+  `worklists.mjs` (tier policy, effort-budget packing, streak worklists),
+  `abort.mjs` / `branch-ensure.mjs` (abort predicates, branch selection,
+  `newTask` validation), `mcp-result.mjs` (shared MCP result-text helpers),
+  `member-target.mjs` (the unified member-resolution registry),
+  `git-sync.mjs` (the `withGitSync` dispatch bracket and the pause-bracket
+  counter it owns), `coordination.mjs` (dolt-push-mutex clients, the
+  child-id allocator, the reservation-ledger client), `kb.mjs` (knowledge-bank
+  priming/query/capture, including logging a rejected `kb_query` result
+  instead of failing silently), `beads-scope.mjs` (the scope-snapshot BFS
+  and its invalidation contract -- `phase()` invalidates the shared
+  snapshot at every phase boundary, not just at planning time), and
+  `beads-transitions.mjs` (verdict-application transitions, including the
+  Re-Review site that previously applied a verdict with no scope-ceiling
+  guard).
+- **`role-policies.mjs`: dispatch policy as data, staged ahead of its
+  engine.** Each sprint role (planner, doer, reviewer, deployer, ...)
+  currently dispatches through its own hand-written `agent()` ladder in
+  `runner.js`. `role-policies.mjs` records, per role, the same axes every
+  ladder repeats -- git-sync bracket usage, turn budgets and timeouts,
+  watchdog arming, retry/degrade behavior, knowledge-injection source, and
+  pre/post-dispatch hooks -- as a frozen data table, keyed by symbolic
+  references to the `runner.js` constants that supply concrete values
+  (turn budgets are runtime-derived, so the table names the constant, not a
+  number). A companion structural scanner re-derives every table row
+  directly from `runner.js`'s live dispatch sites, so a row that drifts
+  from the real ladder fails a test. The table is deliberately landed
+  **before** the engine that will consume it: nothing in `runner.js` reads
+  it yet, so the table and the future `dispatchRole(ctx, roleName, opts)`
+  engine stay independently revertible. `migratedRoleNames()` returns an
+  empty list until a role's ladder is actually migrated onto the engine --
+  do not infer a migration has happened from the table's existence alone.
+- **`inline-ladder-guard.mjs`** exists to close the gap a `dispatchRole`
+  migration could otherwise leave open: once a role is marked
+  `migrated: true` in `role-policies.mjs`, this guard scans for a
+  surviving *inline* `agent()` call site still routing to that role's
+  member, catching a migration that adds the new call but forgets to
+  delete the old one (which would double-dispatch, or silently race on
+  whichever path executes first). With no role yet migrated, the guard is
+  inert by construction -- a green result today asserts nothing about the
+  engine, only that the guard's own scanner runs cleanly.
+
+### The shared guarded-module list
+
+Several independent mechanical guards enforce invariants across
+`fleet-sprint/*` source (a shell-command-construction guard, a dolt-literal
+guard, a full-db-fetch guard, an unbracketed-push guard, the inline-ladder
+guard above). Each originally hard-coded its own single target file
+(`runner.js`). That wiring has a silent failure mode under decomposition:
+the moment a guarded construct moves out of `runner.js` into a newly
+extracted module, every guard pointed only at `runner.js` stops covering it
+while continuing to report a green baseline -- a false sense of safety, not
+an absence of risk.
+
+`guarded-modules.mjs` fixes this by being the single place a newly
+extracted module is registered; every guard consumes that shared list
+rather than keeping a private path array. Registering an extraction's
+output module here is part of the extraction commit itself, not a
+follow-up task -- an extraction that lands without this registration is
+incomplete even if every other test passes. A small, deliberate exemption
+list exists for modules that legitimately emit the exact constructs a guard
+flags (the per-shell command builders, which ARE the OS-branched surface
+other code is required to route through instead of hand-rolling shell
+syntax; `dolt-sync.mjs`, which legitimately owns the `bd dolt pull`/`bd dolt
+push` command strings). Guard test baselines are derived from
+`guarded-modules.mjs` and compared by basename, not from a separate
+hard-coded literal -- a comparison against a raw path list would silently
+stop catching a module that moved between phases.
