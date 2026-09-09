@@ -33,6 +33,32 @@ async function waitForSsh(host: string, port: number): Promise<void> {
   );
 }
 
+/**
+ * Decide whether a provisioning call failed, from its structured half when
+ * present and its prose only as a fallback.
+ *
+ * Both tools return `{ text, structuredContent }` and `structuredContent.ok`
+ * is the field to branch on -- it survives any future wording change. The
+ * guard mirrors provisionOutcome() in
+ * packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs: a result that carries no
+ * structuredContent at all (a stale test double, or an older client shape)
+ * must fall back to the ASCII `[FAIL]` prose marker rather than throw a
+ * TypeError -- reProvisionAuth is best-effort, so a throw here would be
+ * swallowed by the catch below and silently report every provision as a
+ * hard failure.
+ */
+function provisionFailed(result: unknown): boolean {
+  const structured = (result as { structuredContent?: { ok?: unknown } } | null | undefined)?.structuredContent;
+  if (structured && typeof structured.ok === 'boolean') return !structured.ok;
+  return /^\[FAIL\]/.test(provisionSummary(result));
+}
+
+/** First line of a provisioning result's prose, tolerant of a missing `text`. */
+function provisionSummary(result: unknown): string {
+  const text = (result as { text?: unknown } | null | undefined)?.text;
+  return (typeof text === 'string' ? text : '').split('\n')[0].trim();
+}
+
 async function reProvisionAuth(agent: Agent): Promise<void> {
   // F5: Re-provision Claude OAuth credentials from PM machine (best-effort)
   try {
@@ -41,8 +67,8 @@ async function reProvisionAuth(agent: Agent): Promise<void> {
     // the tools no longer emit emoji at all, and `ok` is the field that
     // survives any future wording change.
     const result = await provisionAuth({ member_id: agent.id });
-    if (!result.structuredContent.ok) {
-      log('provision_llm_auth warning for ' + agent.friendlyName + ': ' + result.text.split('\n')[0]);
+    if (provisionFailed(result)) {
+      log('provision_llm_auth warning for ' + agent.friendlyName + ': ' + provisionSummary(result));
     }
   } catch (e) {
     // Truncate error message to prevent accidental credential leakage in log output
@@ -60,8 +86,8 @@ async function reProvisionAuth(agent: Agent): Promise<void> {
         git_access: agent.gitAccess,
         repos: agent.gitRepos,
       });
-      if (!result.structuredContent.ok) {
-        log('provision_vcs_auth warning for ' + agent.friendlyName + ': ' + result.text.split('\n')[0]);
+      if (provisionFailed(result)) {
+        log('provision_vcs_auth warning for ' + agent.friendlyName + ': ' + provisionSummary(result));
       }
     } catch (e) {
       // Truncate error message to prevent accidental credential leakage in log output
