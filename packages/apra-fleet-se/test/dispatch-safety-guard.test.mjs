@@ -289,7 +289,18 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // accounted for inside runner.js. Move-only: no call site was added, removed
 // or rewritten. Same precedent as the vcs-auth.mjs extraction above, and
 // likewise NOT left unguarded -- abort.mjs is asserted by its own test below.
-const EXPECTED_COMMAND_COUNT = 34;
+// 34 -> 32 (apra-fleet-3swo.4.6): the shared full-DB beads snapshot and the
+// scope-discovery BFS moved out of runner.js into ./beads-scope.mjs, taking
+// bdListScoped()'s TWO command() call sites with them -- fetchAllBeadsShared()'s
+// `bd list --all --limit 0 --json` and bdListScoped()'s filtered
+// `bd list <flags> --limit 0`. Move-only: no call site was added, removed or
+// rewritten (both still pass `member_name: getOrchestratorMember()`, the
+// injected getter that resolves to the same orchestratorMember they used
+// before). NOT left unguarded -- beads-scope.mjs is registered in
+// GUARDED_MODULES, so the aggregate checkModules(guardedModulePaths()) test
+// below scans both sites. Same precedent as the vcs-auth.mjs/abort.mjs
+// extractions above.
+const EXPECTED_COMMAND_COUNT = 32;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

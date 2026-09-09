@@ -7,13 +7,13 @@ import { fileURLToPath } from 'url';
 //
 // WHY THIS EXISTS: every mechanical guard in this directory
 // (dispatch-safety-guard.mjs, dolt-literal-guard.mjs, full-db-fetch-guard.mjs,
-// shell-command-guard.mjs) was originally pointed at ONE hard-coded file --
-// runner.js -- by each of its own tests. runner.js is being decomposed into
-// smaller modules; under the old wiring, the moment a guarded construct moved
-// out of runner.js into a newly extracted module, EVERY guard silently stopped
-// covering it while continuing to report a green baseline. That is the exact
-// failure mode this list prevents: extract a module, add ONE line here, and
-// all four guards pick it up at once.
+// shell-command-guard.mjs, unbracketed-push-guard.mjs) was originally pointed
+// at ONE hard-coded file -- runner.js -- by each of its own tests. runner.js
+// is being decomposed into smaller modules; under the old wiring, the moment
+// a guarded construct moved out of runner.js into a newly extracted module,
+// EVERY guard silently stopped covering it while continuing to report a green
+// baseline. That is the exact failure mode this list prevents: extract a
+// module, add ONE line here, and all five guards pick it up at once.
 //
 // REGISTERING A NEWLY EXTRACTED MODULE: add its filename to GUARDED_MODULES
 // below. Do not add a second list anywhere else, and do not re-point an
@@ -59,6 +59,7 @@ export const GUARDED_MODULES = [
     'git-sync.mjs',
     'coordination.mjs',
     'kb.mjs',
+    'beads-scope.mjs',
 ];
 
 /**
