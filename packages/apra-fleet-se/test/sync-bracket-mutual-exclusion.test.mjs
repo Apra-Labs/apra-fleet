@@ -318,3 +318,177 @@ describe('apra-fleet-3swo.4.9 (b): gitSync.pushBeadsAfter() inherits DoltSync.sy
         check(calls.some((c) => c.includes('bd dolt push')), 'a bd dolt push command must actually have been issued');
     });
 });
+
+// =============================================================================
+// apra-fleet-3swo.26 / apra-fleet-3swo.31 -- a crossing sync-bracket close
+// preserves the bracketed body failure.
+//
+// Before apra-fleet-3swo.26, a CROSSING close (see the OVERLAP case test
+// above) always threw a fresh ConcurrentSyncBracketError from the `finally`
+// block, which in JS semantics REPLACES any exception already in flight from
+// the bracketed body -- so if the body itself had rejected, that original
+// (usually more diagnosable) error was silently discarded in favor of the
+// crossing-close symptom. The fix attaches the body's own rejection as the
+// thrown ConcurrentSyncBracketError's native `cause` when the body threw
+// (`undefined` when it did not). The OVERLAP case test above only exercises a
+// SUCCESSFUL body racing a crossing close; this block adds the missing
+// "body also failed" case, plus a dedicated regression guard for the
+// unchanged successful-body shape and the two paths that must NEVER wrap
+// (LIFO close, no key at all).
+//
+// One-line revert used to confirm case (a) fails without the fix (cases (b),
+// (c) and (d) keep passing -- verified directly against this file): in
+// git-sync.mjs's withOpenSyncBracket(), change the ConcurrentSyncBracketError
+// constructor's options argument from
+//   { exclusiveKey, closingLabel: token.label, stillOpenLabels, cause: bodyThrew ? bodyError : undefined }
+// to
+//   { exclusiveKey, closingLabel: token.label, stillOpenLabels }
+// =============================================================================
+describe('apra-fleet-3swo.26: a crossing sync-bracket close preserves the bracketed body failure', () => {
+    test('(a) body rejects and the close is a CROSSING close -- surfaced error is ConcurrentSyncBracketError with cause identity to the body error', async () => {
+        const brackets = createSyncBrackets({});
+        const gateB = deferred();
+        let bOpened = false;
+        const bodyErr = new Error('bracket-A body failed');
+
+        const pA = brackets.withOpenSyncBracket(async () => {
+            while (!bOpened) await Promise.resolve();
+            throw bodyErr;
+        }, { exclusiveKey: 'shared-a', label: 'bracket-A' });
+
+        const pB = brackets.withOpenSyncBracket(async () => {
+            bOpened = true;
+            await gateB.promise;
+            return 'b-result';
+        }, { exclusiveKey: 'shared-a', label: 'bracket-B' });
+
+        let errA = null;
+        try {
+            await pA;
+        } catch (e) {
+            errA = e;
+        }
+        check(errA instanceof ConcurrentSyncBracketError, `expected ConcurrentSyncBracketError, got ${errA && errA.constructor.name}`);
+        assert.strictEqual(errA.cause, bodyErr, 'cause must be the EXACT body error instance, not a re-derived copy or message-only wrapper');
+        check(errA.exclusiveKey === 'shared-a', 'error carries the colliding exclusiveKey');
+        check(errA.closingLabel === 'bracket-A', 'error names the bracket that was closing');
+        check(errA.stillOpenLabels.includes('bracket-B'), `error must name the still-open bracket, got: ${JSON.stringify(errA.stillOpenLabels)}`);
+
+        gateB.resolve();
+        const bRes = await pB;
+        check(bRes === 'b-result', 'the still-open bracket completes normally once released');
+        check(brackets.openBracketCount() === 0, 'both brackets must have closed by the end');
+    });
+
+    test('(b) body succeeds and the close crosses -- regression guard: unchanged shape (message, exclusiveKey, closingLabel, stillOpenLabels), cause undefined', async () => {
+        const brackets = createSyncBrackets({});
+        const gateB = deferred();
+        let bOpened = false;
+
+        const pA = brackets.withOpenSyncBracket(async () => {
+            while (!bOpened) await Promise.resolve();
+            return 'a-result';
+        }, { exclusiveKey: 'shared-b', label: 'bracket-A' });
+
+        const pB = brackets.withOpenSyncBracket(async () => {
+            bOpened = true;
+            await gateB.promise;
+            return 'b-result';
+        }, { exclusiveKey: 'shared-b', label: 'bracket-B' });
+
+        let errA = null;
+        try {
+            await pA;
+        } catch (e) {
+            errA = e;
+        }
+        check(errA instanceof ConcurrentSyncBracketError, `expected ConcurrentSyncBracketError, got ${errA && errA.constructor.name}`);
+        check(
+            errA.message ===
+                `[Sync] mutual-exclusion violation on key 'shared-b': bracket 'bracket-A' closed while ` +
+                `1 other bracket(s) sharing the same key is still open (bracket-B) -- these OVERLAPPED rather than nested, which breaks the ` +
+                `fast-forward-by-construction invariant this key protects.`,
+            `unexpected message shape: ${errA.message}`,
+        );
+        check(errA.exclusiveKey === 'shared-b', 'error carries the colliding exclusiveKey');
+        check(errA.closingLabel === 'bracket-A', 'error names the bracket that was closing');
+        assert.deepEqual(errA.stillOpenLabels, ['bracket-B'], 'error names exactly the still-open bracket');
+        assert.strictEqual(errA.cause, undefined, 'cause must be undefined when the bracketed body succeeded -- reshaping the success-body error must fail this');
+
+        gateB.resolve();
+        const bRes = await pB;
+        check(bRes === 'b-result', 'the still-open bracket completes normally once released');
+        check(brackets.openBracketCount() === 0, 'both brackets must have closed by the end');
+    });
+
+    test('(c) body rejects and the close is a normal LIFO close -- body error propagates by identity, unwrapped', async () => {
+        const brackets = createSyncBrackets({});
+        const bodyErr = new Error('nested body failed');
+        let caught = null;
+        try {
+            await brackets.withOpenSyncBracket(async () => {
+                await brackets.withOpenSyncBracket(async () => {
+                    throw bodyErr;
+                }, { exclusiveKey: 'k-lifo', label: 'inner' });
+            }, { exclusiveKey: 'k-lifo', label: 'outer' });
+        } catch (e) {
+            caught = e;
+        }
+        assert.strictEqual(caught, bodyErr, 'the body error must propagate by identity through a LIFO close, never wrapped in a ConcurrentSyncBracketError');
+        check(brackets.openBracketCount() === 0, 'both brackets must have closed cleanly (no leaked bracket after a LIFO close+throw)');
+    });
+
+    test('(d) counter integrity across all three paths: openBracketCount() returns to its starting value after each', async () => {
+        const brackets = createSyncBrackets({});
+        assert.equal(brackets.openBracketCount(), 0, 'starts at zero');
+
+        // Path 1: crossing close, rejecting body (case (a) shape).
+        {
+            const gateB = deferred();
+            let bOpened = false;
+            const bodyErr = new Error('d-path1');
+            const pA = brackets.withOpenSyncBracket(async () => {
+                while (!bOpened) await Promise.resolve();
+                throw bodyErr;
+            }, { exclusiveKey: 'd-key-1', label: 'A' });
+            const pB = brackets.withOpenSyncBracket(async () => {
+                bOpened = true;
+                await gateB.promise;
+                return 'b';
+            }, { exclusiveKey: 'd-key-1', label: 'B' });
+            await assert.rejects(pA, ConcurrentSyncBracketError);
+            gateB.resolve();
+            await pB;
+            assert.equal(brackets.openBracketCount(), 0, 'count returns to zero after path 1 (crossing close, rejecting body)');
+        }
+
+        // Path 2: crossing close, succeeding body (case (b) shape).
+        {
+            const gateB2 = deferred();
+            let bOpened2 = false;
+            const pA2 = brackets.withOpenSyncBracket(async () => {
+                while (!bOpened2) await Promise.resolve();
+                return 'a2';
+            }, { exclusiveKey: 'd-key-2', label: 'A2' });
+            const pB2 = brackets.withOpenSyncBracket(async () => {
+                bOpened2 = true;
+                await gateB2.promise;
+                return 'b2';
+            }, { exclusiveKey: 'd-key-2', label: 'B2' });
+            await assert.rejects(pA2, ConcurrentSyncBracketError);
+            gateB2.resolve();
+            await pB2;
+            assert.equal(brackets.openBracketCount(), 0, 'count returns to zero after path 2 (crossing close, succeeding body)');
+        }
+
+        // Path 3: normal LIFO close, rejecting body (case (c) shape).
+        {
+            const bodyErr3 = new Error('d-path3');
+            await assert.rejects(
+                brackets.withOpenSyncBracket(async () => { throw bodyErr3; }, { exclusiveKey: 'd-key-3', label: 'solo' }),
+                (e) => e === bodyErr3,
+            );
+            assert.equal(brackets.openBracketCount(), 0, 'count returns to zero after path 3 (LIFO close, rejecting body)');
+        }
+    });
+});
