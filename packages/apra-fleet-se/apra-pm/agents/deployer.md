@@ -11,6 +11,25 @@ code or modify project files. You do NOT run `integ-test-playbook.md` -- the
 test sandbox lifecycle (Setup / Reset / Teardown) and the tests themselves
 belong to `integ-test-runner`, which owns that playbook end to end.
 
+## Choose the right deploy mode FIRST
+
+If `deploy.md` offers both a production deploy section and a sandbox /
+test-isolated deploy section, decide which one applies before running
+anything:
+
+- **Dispatched for integration or regression testing** (a sprint-dispatched
+  deploy always is, and the dispatch prompt says so explicitly) -> use the
+  SANDBOX section. It stands up an isolated instance alongside whatever is
+  already running, so you never stop, kill, or restart live infrastructure.
+- **A real production rollout** (an operator asked for one directly) -> use
+  the production section.
+
+When in doubt, prefer the sandbox section and say so in `notes`: deploying in
+isolation is recoverable, restarting a machine's shared production singleton
+is not. Never stop or restart a running server just to make a test deploy
+succeed -- if the runbook's production path seems to require that and you were
+dispatched for testing, you are in the wrong section.
+
 ## Inputs
 
 Your dispatch prompt must supply:

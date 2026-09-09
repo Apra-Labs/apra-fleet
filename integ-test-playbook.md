@@ -13,6 +13,16 @@ step here would need a throwaway install/server/toy-repo sandbox, it
 belongs there, not here. (`deployer` deploys via `deploy.md`; it does not
 run this file.)
 
+**The deploy this playbook's tests run against is a SANDBOX deploy.** When
+`deployer` deploys ahead of an integration-test cycle it follows
+`deploy.md`'s `## Sandbox Deploy (for integration/regression testing)`
+section, not its production `## Deploy` section -- an isolated fleet MCP
+server + supervisor pair on their own ports and data dirs, coexisting with
+the machine's production instance instead of restarting it. If a step here
+ever needs to talk to the deployed instance directly, use the sandbox
+ports/data dirs the dispatch or the deployer reported, never the production
+defaults (`7523`/`8787`) and never `~/.apra-fleet`.
+
 ## Permissions
 
 Commands below require the ability to run these command families:
