@@ -251,6 +251,18 @@ function policy(role, spec) {
         kind: 'main',
         /** The ladder this dispatch belongs to; a role's own name by default. */
         ladder: role,
+        /**
+         * True once this role's dispatch has moved off its inline runner.js
+         * agent() ladder onto the dispatchRole(ctx, roleName, opts) engine
+         * (apra-fleet-3swo.5.3/.5.6). NOT one of the nine POLICY_FIELDS axes
+         * (deliberately -- it is migration bookkeeping, not a dispatch
+         * policy), so it is not asserted by the "every role carries all nine
+         * policy fields" shape test. fleet-sprint/inline-ladder-guard.mjs
+         * reads this field to know which roles must no longer have a
+         * surviving inline ladder; false for every role until its migration
+         * bead lands.
+         */
+        migrated: spec.migrated ?? false,
         member: spec.member,
         agentType: spec.agentType ?? null,
         model: spec.model,
@@ -702,4 +714,15 @@ export function allDispatchPolicies() {
 /** True when this role's dispatches push CODE (not just beads). */
 export function pushesCode(role) {
     return policyFor(role).bracket.pushCode === true;
+}
+
+/**
+ * Role names this table marks `migrated: true` -- i.e. roles whose dispatch
+ * has moved off its inline runner.js agent() ladder onto the dispatchRole
+ * engine. Empty today (apra-fleet-3swo.5.8 lands this field and
+ * fleet-sprint/inline-ladder-guard.mjs, the guard that consumes it, ahead of
+ * either migration bead actually flipping a role to true).
+ */
+export function migratedRoleNames() {
+    return ROLE_NAMES.filter((name) => ROLE_POLICIES[name].migrated === true);
 }

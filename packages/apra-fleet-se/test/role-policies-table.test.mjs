@@ -14,6 +14,8 @@ import {
     innermostEnclosingCall,
     regionBetween,
     stripComments,
+    dispatchLadderModulePaths,
+    moduleSetSource,
 } from './helpers/dispatch-pin-scanner.mjs';
 import {
     ROLE_POLICIES,
@@ -61,8 +63,14 @@ import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
 // =============================================================================
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RUNNER_PATH = path.join(__dirname, '..', 'fleet-sprint', 'runner.js');
-const SRC = fs.readFileSync(RUNNER_PATH, 'utf8');
+const FLEET_SPRINT_DIR = path.join(__dirname, '..', 'fleet-sprint');
+// SRC now scans the module SET dispatch-pin-scanner.mjs defines
+// (DISPATCH_LADDER_MODULES: runner.js today, plus role-policies.mjs and,
+// once it exists, dispatch-role.mjs), not one hard-coded runner.js path --
+// see that file's header for why. Every ROLE_SOURCE anchor below is
+// unchanged: it still resolves against runner.js's real text, which is
+// still exactly what is in SRC today.
+const SRC = moduleSetSource(dispatchLadderModulePaths(FLEET_SPRINT_DIR));
 const PIN_FILES = [
     path.join(__dirname, 'planning-role-dispatch-pins.test.mjs'),
     path.join(__dirname, 'execution-role-dispatch-pins.test.mjs'),

@@ -1,6 +1,5 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,6 +13,8 @@ import {
     innermostEnclosingCall,
     regionBetween,
     stripComments,
+    dispatchLadderModulePaths,
+    moduleSetSource,
 } from './helpers/dispatch-pin-scanner.mjs';
 import {
     reviewerVerdict,
@@ -57,8 +58,14 @@ import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
 // =============================================================================
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RUNNER_PATH = path.join(__dirname, '..', 'fleet-sprint', 'runner.js');
-const SRC = fs.readFileSync(RUNNER_PATH, 'utf8');
+const FLEET_SPRINT_DIR = path.join(__dirname, '..', 'fleet-sprint');
+// SRC now scans the module SET dispatch-pin-scanner.mjs defines
+// (DISPATCH_LADDER_MODULES: runner.js today, plus role-policies.mjs and,
+// once it exists, dispatch-role.mjs), not one hard-coded runner.js path --
+// see that file's header for why. Every pin below is unchanged: they all
+// still resolve against runner.js's real text, which is still exactly
+// what is in SRC today.
+const SRC = moduleSetSource(dispatchLadderModulePaths(FLEET_SPRINT_DIR));
 
 const AGENT_SITES = findCallSites(SRC, 'agent');
 const WITH_GIT_SYNC_SITES = findCallSites(SRC, 'withGitSync', { excludeDeclaration: true });
