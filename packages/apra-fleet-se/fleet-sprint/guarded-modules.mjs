@@ -61,6 +61,7 @@ export const GUARDED_MODULES = [
     'kb.mjs',
     'beads-scope.mjs',
     'beads-transitions.mjs',
+    'role-policies.mjs',
 ];
 
 /**
