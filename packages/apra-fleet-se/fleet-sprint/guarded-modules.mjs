@@ -62,6 +62,7 @@ export const GUARDED_MODULES = [
     'beads-scope.mjs',
     'beads-transitions.mjs',
     'role-policies.mjs',
+    'inline-ladder-guard.mjs',
 ];
 
 /**

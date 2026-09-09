@@ -24,8 +24,84 @@
 // separately importable today (that is the whole point of the refactor these
 // pins guard), so a static parse of the source is the only way to assert what
 // each ladder does before the engine exists.
+//
+// MODULE-SET GENERALIZATION (apra-fleet-3swo.5.8): every function below still
+// takes a single `src` string, but the THREE callers (the two pin files plus
+// role-policies-table.test.mjs) no longer hard-code one RUNNER_PATH to build
+// it. moduleSetSource()/dispatchLadderModulePaths() below let a caller build
+// `src` from a SET of fleet-sprint modules instead, concatenated into one
+// scannable string -- so an anchor that moves out of runner.js into a module
+// the dispatchRole migration beads (apra-fleet-3swo.5.3/.5.6) extract keeps
+// resolving without this file, or any individual pin, having to change.
+// DISPATCH_LADDER_MODULES is deliberately a SEPARATE list from
+// fleet-sprint/guarded-modules.mjs's GUARDED_MODULES: that list drives the
+// mechanical SECURITY guards and must include every extracted module
+// regardless of content; this list drives the BEHAVIOUR-PIN scanners and only
+// needs the modules that actually host dispatch-ladder structure today.
+//
+// DECISION RECORDED (apra-fleet-3swo.5.8, do not defer): this scanner STAYS
+// TEXTUAL even after the dispatch sites move into dispatch-role.mjs. The
+// facts it locates -- whether a call sits inside a withGitSync(...) bracket,
+// whether a withDispatchWatchdog(...) is armed around it, a ladder's
+// retry/degrade CONTROL FLOW -- are properties of surrounding source
+// structure, not of an importable value, so there is nothing to import even
+// once dispatchRole exists. The one thing that genuinely becomes
+// import-based is PER-DISPATCH OPTION VALUES (member/model/maxTurns/
+// kbInjection/...): those already live in fleet-sprint/role-policies.mjs as
+// the frozen, importable ROLE_POLICIES table (role-policies-table.test.mjs
+// reads it directly today, no scanning involved). Once a ladder's inline
+// options literal is replaced by a ROLE_POLICIES lookup, asserting an
+// option's value should switch from this file's objectLiteralFor()/
+// objectEntries() textual scan to importing ROLE_POLICIES and reading the
+// field directly -- that migration is each dispatchRole bead's call to make
+// per dispatch, not a blanket conversion of this shared helper.
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { balancedCallRange, skipStringLiteral } from './balanced-call-scanner.mjs';
+
+/**
+ * Filenames (relative to fleet-sprint/), in read order, of every module that
+ * can host a role-dispatch ladder's structural facts TODAY. runner.js hosts
+ * all of them today; role-policies.mjs is already on this list because it
+ * exists, even though it currently contributes no matches (it is pure
+ * frozen data, no call sites) -- see this file's header DECISION note for
+ * why that is fine. Add 'dispatch-role.mjs' here once the dispatchRole
+ * migration beads create it.
+ */
+export const DISPATCH_LADDER_MODULES = ['runner.js', 'role-policies.mjs'];
+
+/**
+ * Absolute paths for `fileNames` (default DISPATCH_LADDER_MODULES), resolved
+ * against `fleetSprintDir`.
+ *
+ * @param {string} fleetSprintDir absolute path to packages/apra-fleet-se/fleet-sprint
+ * @param {string[]} [fileNames]
+ * @returns {string[]}
+ */
+export function dispatchLadderModulePaths(fleetSprintDir, fileNames = DISPATCH_LADDER_MODULES) {
+    return fileNames.map((f) => path.join(fleetSprintDir, f));
+}
+
+/**
+ * Reads and concatenates the source of a SET of fleet-sprint modules into ONE
+ * scannable string, joined by a newline so every downstream function here --
+ * all of which operate on a single `src` string and locate facts by
+ * structural anchor search, never by absolute file identity -- keeps working
+ * unchanged. Anchors are unique text, so concatenation is transparent as long
+ * as the set's modules do not repeat the same anchor text (true of
+ * DISPATCH_LADDER_MODULES today: role-policies.mjs shares no anchor text with
+ * runner.js's dispatch ladders).
+ *
+ * @param {string[]} paths absolute file paths to read, in order
+ * @returns {string}
+ */
+export function moduleSetSource(paths) {
+    if (!Array.isArray(paths) || paths.length === 0) {
+        throw new TypeError('moduleSetSource(paths): paths must be a non-empty array of file paths');
+    }
+    return paths.map((p) => fs.readFileSync(p, 'utf8')).join('\n');
+}
 
 /** Is `col` inside an open same-line quote? (mirrors dispatch-sync-bracket-coverage.test.mjs) */
 function isInsideSameLineString(lineText, col) {

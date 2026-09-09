@@ -1,0 +1,145 @@
+import fs from 'fs';
+import path from 'path';
+import { guardedModulePaths } from './guarded-modules.mjs';
+import { findCallSites } from './dispatch-safety-guard.mjs';
+import { ROLE_POLICIES, migratedRoleNames } from './role-policies.mjs';
+
+// =============================================================================
+// apra-fleet-3swo.5.8 -- inline-ladder guard checker.
+//
+// WHY THIS EXISTS: the dispatchRole(ctx, roleName, opts) migration
+// (apra-fleet-3swo.5.3/.5.6) moves each role's hand-written agent() dispatch
+// ladder out of runner.js onto a shared engine driven by
+// fleet-sprint/role-policies.mjs's data table. A migration is only real once
+// the OLD inline ladder for that role is gone -- a migration that adds the
+// dispatchRole call but forgets to delete the original agent() ladder would
+// leave the role dispatching TWICE (or dispatching from whichever code path
+// happens to run first) while every other guard and pin stays green, because
+// none of them assert absence of an inline call once a role is marked done.
+// This guard closes that hole: for every role role-policies.mjs marks
+// `migrated: true`, it flags any surviving inline agent() call site that
+// still routes to that role's member.
+//
+// STANDING RULE, same as dispatch-safety-guard.mjs/dolt-literal-guard.mjs/
+// full-db-fetch-guard.mjs/shell-command-guard.mjs/unbracketed-push-guard.mjs:
+// this guard takes its scanned-file list from the SHARED guarded-module list
+// (./guarded-modules.mjs) and defines no private path array of its own -- a
+// guard that does not consume that list is a guard whose coverage silently
+// rots the moment a dispatch ladder moves into a newly extracted module.
+//
+// TODAY'S BASELINE: no role is marked migrated yet (role-policies.mjs's
+// migratedRoleNames() returns []), so checkModules() reports zero violations
+// against the current tree by construction -- there is nothing yet to flag.
+// That green baseline is the floor the dispatchRole migration beads must
+// keep green as they migrate roles one at a time.
+//
+// HOW A ROLE'S INLINE LADDER IS RECOGNISED: role-policies.mjs's `member`
+// field already records, as data, the resolution kind and argument a role's
+// dispatch routes to ('role' -> getMemberForRole(role), 'pool-head' -> a
+// runner-local binding expression, 'runtime' -> a runner-local binding
+// expression). memberExprFor() below rebuilds the exact source expression
+// runner.js's ladders write for a 'role'-kind member (the only kind this
+// guard needs to recognise for now: every role migrated by the two
+// dispatchRole beads in this phase resolves its member by role, per
+// role-policies.mjs). A migrated role whose member is a 'pool-head' or
+// 'runtime' binding is out of scope for THIS guard's matching until a role
+// of that kind is actually migrated, at which point its binding expression
+// (already present in role-policies.mjs) extends memberExprFor() the same
+// way.
+// =============================================================================
+
+/**
+ * The source expression a policy's `member` resolves to for a 'role'-kind
+ * member -- the only kind this guard matches against inline call text today
+ * (see header). Returns null for any other kind, so callers can skip it
+ * rather than falsely matching on an unresolvable expression.
+ *
+ * @param {{kind:string, role?:string}} member
+ * @returns {string|null}
+ */
+export function memberExprFor(member) {
+    if (!member || member.kind !== 'role') return null;
+    return `getMemberForRole('${member.role}')`;
+}
+
+/**
+ * Scans `src` for `agent(` call sites whose call text still carries one of
+ * `migratedRoles`' member-routing expressions -- an inline ladder that has
+ * not been removed even though role-policies.mjs says this role's dispatch
+ * has moved onto the engine.
+ *
+ * @param {string} src
+ * @param {string} fileLabel
+ * @param {string[]} migratedRoles
+ * @param {Record<string, object>} rolePolicies
+ * @returns {string[]}
+ */
+export function findInlineLadderViolations(src, fileLabel, migratedRoles, rolePolicies) {
+    if (migratedRoles.length === 0) return [];
+    const agentSites = findCallSites(src).filter((s) => s.fnName === 'agent');
+    if (agentSites.length === 0) return [];
+
+    const violations = [];
+    for (const role of migratedRoles) {
+        const entry = rolePolicies[role];
+        if (!entry) continue;
+        // A role's main dispatch and its secondary (max-turns-resume /
+        // semantic-repair-re-ask) usually share the SAME member expression
+        // (secondary() inherits `member` unless a role's spec overrides it),
+        // so de-duplicate by expression BEFORE matching -- otherwise one
+        // real call site is reported twice, once per dispatch variant that
+        // happens to route to the same member.
+        const exprs = new Set();
+        for (const dispatch of [entry, entry.secondary]) {
+            const expr = dispatch && memberExprFor(dispatch.member);
+            if (expr) exprs.add(expr);
+        }
+        for (const expr of exprs) {
+            for (const site of agentSites) {
+                if (site.callText.includes(expr)) {
+                    // NOTE: deliberately spelled with a space before the
+                    // opening paren ("agent (") rather than "agent(" -- the
+                    // latter is the literal substring dispatch-safety-guard's
+                    // findCallSites() (which this module itself is built on)
+                    // treats as a real call site, and this file is itself a
+                    // GUARDED_MODULES entry.
+                    violations.push(
+                        `${fileLabel}:${site.line} (fnName=${site.fnName}) still dispatches role '${role}' ` +
+                        `inline via a raw agent () call -- role-policies.mjs marks '${role}' migrated, so ` +
+                        'this ladder must route through dispatchRole() instead.'
+                    );
+                }
+            }
+        }
+    }
+    return violations;
+}
+
+/**
+ * Aggregate entry point, mirroring dispatch-safety-guard.mjs's
+ * checkModules(): scans every module in `paths` (default: the shared
+ * guarded-module list) for a surviving inline agent() ladder belonging to a
+ * role `rolePolicies` marks migrated (default: role-policies.mjs's real
+ * table, via migratedRoleNames()).
+ *
+ * @param {{paths?: string[], migratedRoles?: string[], rolePolicies?: Record<string, object>}} [opts]
+ * @returns {{ violations: string[], files: string[] }}
+ */
+export function checkModules({
+    paths = guardedModulePaths(),
+    migratedRoles = migratedRoleNames(),
+    rolePolicies = ROLE_POLICIES,
+} = {}) {
+    if (!Array.isArray(paths)) {
+        throw new TypeError('checkModules(opts): opts.paths must be an array of file paths');
+    }
+    const violations = [];
+    const files = [];
+    for (const p of paths) {
+        const file = path.basename(p);
+        files.push(file);
+        const src = fs.readFileSync(p, 'utf8');
+        violations.push(...findInlineLadderViolations(src, file, migratedRoles, rolePolicies));
+    }
+    return { violations, files };
+}
