@@ -172,8 +172,22 @@ export function createSyncBrackets({ setPauseGuard } = {}) {
             stack.push(token);
             exclusiveStacks.set(exclusiveKey, stack);
         }
+        // apra-fleet-3swo.26: captured ONLY so a CROSSING close below can
+        // attach it as that error's `cause` -- the overlap is usually a
+        // CONSEQUENCE of the bracketed body's own failure, not its cause, so
+        // the more diagnosable original error must not be silently discarded
+        // in favor of the crossing-close symptom. On a NORMAL (LIFO) close,
+        // this plays no part: the `catch` block below immediately re-throws
+        // the exact same instance it received (`throw err`), so that path's
+        // error identity is unchanged (never wrapped, never replaced).
+        let bodyError;
+        let bodyThrew = false;
         try {
             return await fn();
+        } catch (err) {
+            bodyThrew = true;
+            bodyError = err;
+            throw err;
         } finally {
             openSyncBracketCount -= 1;
             if (token) {
@@ -200,7 +214,14 @@ export function createSyncBrackets({ setPauseGuard } = {}) {
                         `${stack.length} other bracket(s) sharing the same key ${stack.length === 1 ? 'is' : 'are'} still open ` +
                         `(${stillOpenLabels.join(', ')}) -- these OVERLAPPED rather than nested, which breaks the ` +
                         `fast-forward-by-construction invariant this key protects.`,
-                        { exclusiveKey, closingLabel: token.label, stillOpenLabels },
+                        // apra-fleet-3swo.26: `cause` is the bracketed body's
+                        // OWN rejection when it threw one (undefined when the
+                        // body succeeded, which WorkflowError's constructor
+                        // treats as "no cause" -- see errors.mjs), reachable
+                        // as `.cause` on the thrown ConcurrentSyncBracketError
+                        // per the native Error cause chain, without changing
+                        // this class's signature.
+                        { exclusiveKey, closingLabel: token.label, stillOpenLabels, cause: bodyThrew ? bodyError : undefined },
                     );
                 }
             }
