@@ -585,18 +585,30 @@ const KNOWN_NESTED_FILES = [
 ];
 
 /**
- * True if `relPath` (relative to fleet-sprint/) is accounted for: either
- * registered in GUARDED_MODULES or present in GUARD_REGISTRATION_EXEMPT,
- * compared by BASENAME -- same convention as guardedModuleBasenames()
- * (apra-fleet-3swo.14): a nested GUARDED_MODULES/GUARD_REGISTRATION_EXEMPT
- * entry is legal and resolves correctly, but is always attributed by its
- * bare filename.
+ * True if `relPath` (relative to fleet-sprint/, as produced by
+ * walkFleetSprintRecursive() -- e.g. 'vcs-providers/azure-devops.mjs') is
+ * accounted for: either registered in GUARDED_MODULES or present in
+ * GUARD_REGISTRATION_EXEMPT, compared by FULL RELATIVE PATH.
+ *
+ * apra-fleet-3swo.33: this is DELIBERATELY NOT the same comparison
+ * guardedModuleBasenames() uses (apra-fleet-3swo.14's basename convention is
+ * for guard REPORTING/baseline comparisons only -- every guard's `files`
+ * output and violation strings label a scanned file by path.basename(p), so
+ * baselines must compare against basenames to match that reporting). This
+ * COMPLETENESS check answers a different question -- "is this exact file on
+ * disk registered anywhere?" -- and basename comparison answered it wrong: a
+ * nested file was reported accounted-for whenever ANY registered/exempt entry
+ * merely shared its bare filename, regardless of directory. Concretely (this
+ * was verified against the tree before the fix): a hypothetical
+ * 'phases/index.mjs' reported true solely because 'vcs-providers/index.mjs'
+ * is registered; 'phases/errors.mjs' reported true because 'errors.mjs' is
+ * registered; 'phases/dolt-sync.mjs' reported true because 'dolt-sync.mjs' is
+ * exempt. Comparing full relative paths instead means a nested module is only
+ * accounted for when IT ITSELF (not some other file sharing its filename) is
+ * registered or exempted.
  */
 function isAccountedFor(relPath, registered = GUARDED_MODULES, exempt = GUARD_REGISTRATION_EXEMPT) {
-    const base = path.basename(relPath);
-    const registeredBasenames = registered.map((f) => path.basename(f));
-    const exemptBasenames = Object.keys(exempt).map((f) => path.basename(f));
-    return registeredBasenames.includes(base) || exemptBasenames.includes(base);
+    return registered.includes(relPath) || Object.prototype.hasOwnProperty.call(exempt, relPath);
 }
 
 test('recursion is real: the walk finds vcs-providers/ files one level down, which a flat listing would miss', () => {
@@ -624,6 +636,39 @@ test('every *.mjs/*.js file under fleet-sprint/ (recursive) is registered in GUA
         [],
         `every fleet-sprint module must be registered in GUARDED_MODULES or exempted in GUARD_REGISTRATION_EXEMPT with a reason; unaccounted: ${JSON.stringify(unaccounted)}`
     );
+});
+
+test('apra-fleet-3swo.33 regression: a nested file whose BASENAME collides with an unrelated registered/exempt entry is reported unaccounted-for', () => {
+    // Pins the exact false positives this bead's investigation found by
+    // calling the same predicate the completeness test above uses -- no
+    // fixture/filesystem write needed, since isAccountedFor() is a pure
+    // string comparison and none of these paths need to exist on disk.
+    assert.ok(GUARDED_MODULES.includes('vcs-providers/index.mjs'), 'this pin assumes vcs-providers/index.mjs is registered today');
+    assert.ok(GUARDED_MODULES.includes('errors.mjs'), 'this pin assumes errors.mjs is registered today');
+    assert.ok(
+        Object.prototype.hasOwnProperty.call(GUARD_REGISTRATION_EXEMPT, 'dolt-sync.mjs'),
+        'this pin assumes dolt-sync.mjs is exempt today'
+    );
+    assert.ok(!GUARDED_MODULES.includes('phases/plan.mjs'), 'this pin assumes phases/plan.mjs is not registered today');
+
+    // A nested 'phases/index.mjs' must NOT be considered accounted-for merely
+    // because a DIFFERENT file, 'vcs-providers/index.mjs', shares its bare
+    // filename -- under the old basename-only comparison this incorrectly
+    // reported true.
+    assert.equal(isAccountedFor('phases/index.mjs'), false, "phases/index.mjs must not ride on vcs-providers/index.mjs's registration");
+    // Same shape against a flat registered entry (errors.mjs).
+    assert.equal(isAccountedFor('phases/errors.mjs'), false, "phases/errors.mjs must not ride on errors.mjs's registration");
+    // Same shape against a GUARD_REGISTRATION_EXEMPT entry (dolt-sync.mjs).
+    assert.equal(isAccountedFor('phases/dolt-sync.mjs'), false, "phases/dolt-sync.mjs must not ride on dolt-sync.mjs's exemption");
+    // Control: a file that shares no basename with anything registered or
+    // exempt was already correctly unaccounted-for under either comparison.
+    assert.equal(isAccountedFor('phases/plan.mjs'), false, 'phases/plan.mjs has no colliding basename and must still report unaccounted-for');
+
+    // The real registered/exempt files themselves are unaffected by the
+    // fix -- comparing full relative paths still finds them.
+    assert.equal(isAccountedFor('vcs-providers/index.mjs'), true, 'the real, correctly-registered file must still be accounted for');
+    assert.equal(isAccountedFor('errors.mjs'), true, 'the real, correctly-registered flat file must still be accounted for');
+    assert.equal(isAccountedFor('dolt-sync.mjs'), true, 'the real, correctly-exempted file must still be accounted for');
 });
 
 test('falsifiability: dropping a currently-registered module (kb.mjs) from GUARDED_MODULES makes it unaccounted for', () => {
