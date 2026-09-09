@@ -34,9 +34,14 @@ spawns, and turn a multi-minute pre-launch guard into a single bulk query.
   failSoft error, empty or unparseable output) still reports "configured"
   and is deliberately NOT cached, so a transient probe failure can never pin
   the fail-safe answer. Invalidated explicitly -- no TTL -- on any
-  `bd config set` / `bd dolt remote` / `bd init` / `bd bootstrap` issued for
-  that member (via the runner's central `command()` wrapper), on the auth
-  self-heal firing, and on `repair()`.
+  `bd config set` / `bd dolt remote` / `bd init` / `bd bootstrap` the
+  orchestrator issues for that member (via the runner's central `command()`
+  wrapper), on EVERY settled dispatch to that member (via the central
+  `agent()` wrapper -- an agent's own `bd bootstrap` never passes through
+  `command()`, so pattern-matching cannot see it and the only safe rule is
+  to distrust a member's cached state after any dispatch), on the auth
+  self-heal firing, and on `repair()`. Every one of those seams drops the
+  remote-tip fingerprint below alongside the memo.
 - **The transient retry ladder is time-boxed, not count-boxed.** Widening the
   ladder to 8 retries with a 30s backoff cap fixed a real Windows `git.exe`
   spawn outage (measured 1-3 minutes) but applied that budget to every
@@ -45,8 +50,10 @@ spawns, and turn a multi-minute pre-launch guard into a single bulk query.
   resources") is retried against a 3-minute WALL-CLOCK budget with the 30s cap
   -- so the bound is the same 3 minutes whether attempts return instantly or
   sit on the 600s step timeout -- while every other transient keeps the short
-  pre-widening ladder (2 retries, 8s cap). An explicitly passed
-  `maxTransientRetries` is still honored; only the default changed.
+  pre-widening ladder (5 retries, 8s cap). An explicitly passed
+  `maxTransientRetries` is honored by BOTH ladders (a hard attempt cap on the
+  spawn-outage ladder as well, with the wall-clock budget still underneath);
+  only the default changed.
 - **Remote-tip fingerprint: a D-pull is skipped only when the remote provably
   has not moved.** The shared remote's `refs/dolt/data` is the only channel
   through which beads state moves between machines, so "is a pull needed?" has
@@ -54,11 +61,17 @@ spawns, and turn a multi-minute pre-launch guard into a single bulk query.
   `git ls-remote <sync.remote> refs/dolt/data` (one round trip, no Dolt engine
   startup) is compared against the SHA that member last synchronized to; on a
   match the pull is not spawned and the step reports
-  `{ skipped: true, reason: 'remote-unchanged' }`. The recorded tip is
-  conservative in both directions: the SHA observed immediately BEFORE a
-  successful pull (a push racing in merely forces the next pull to be real),
-  and the SHA read AFTER a successful push, while the push mutex is still
-  held. Every uncertainty -- no recorded tip, an `ls-remote` failure or
+  `{ skipped: true, reason: 'remote-unchanged' }`. The recorded tip is minted
+  in exactly one place: the SHA observed immediately BEFORE a successful pull
+  (a push racing in merely forces the next pull to be real). A successful
+  push FORGETS the member's tip and never records one -- the push mutex only
+  serializes this fleet's own pushes, so a post-push read of the remote can
+  observe an unrelated machine's later commit and would record a SHA this
+  clone has never seen; and for bd's git-backed remote the pushed SHA is a
+  git commit minted inside the push itself, with no stable local ref to read
+  it from. The pusher pays one real pull at its next bracket, after which the
+  skip is re-armed. No `ls-remote` is issued inside the D-push bracket at
+  all. Every uncertainty -- no recorded tip, an `ls-remote` failure or
   timeout, unparseable output, a `sync.remote` that could not be positively
   read or whose URL fails a strict safe-charset check -- falls through to a
   REAL pull. There is no path in which doubt produces a skip. The probe target

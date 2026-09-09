@@ -41,6 +41,7 @@ const NEUTRAL_METHOD_NAMES = new Set([
     // hygiene, not part of the seven-method TaskDBModule contract, but still
     // neutral vocabulary -- no 'dolt'/'beads'/'pull'/'push'.
     'noteMemberCommand',
+    'noteMemberDispatchCompleted',
     'invalidateSyncRemoteCache',
     'getLastSyncedTip',
     'setLastSyncedTip',

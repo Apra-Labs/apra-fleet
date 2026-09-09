@@ -1516,10 +1516,29 @@ process per sprint). Two properties matter:
   probe failure cannot pin the fail-safe answer for the rest of the run. The
   fail-CLOSED contract is unchanged.
 - **Explicit invalidation, not a TTL.** A TTL re-adds spawns for no real
-  safety. Three seams drop the memo: `noteMemberCommand()`, called from the
-  runner's central `command()` wrapper for any `bd config set` / `bd dolt
-  remote` / `bd init` / `bd bootstrap` on that member; the auth self-heal
-  firing inside `runDoltStep`; and `repair()`.
+  safety. Four seams drop the memo, and every one of them drops the 9.3
+  remote-tip fingerprint alongside it (the two are always forgotten
+  together): `noteMemberCommand()`, called from the runner's central
+  `command()` wrapper for any `bd config set` / `bd dolt remote` / `bd init` /
+  `bd bootstrap` the orchestrator issues on that member;
+  `noteMemberDispatchCompleted()`, called from the runner's central `agent()`
+  wrapper the moment ANY dispatch to a member settles (success or failure,
+  before the post-dispatch D-push); the auth self-heal firing inside
+  `runDoltStep`; and `repair()`.
+- **Why the per-dispatch seam is unconditional.** A dispatched agent runs its
+  `bd` commands in its own session on the member, never through the
+  `command()` wrapper -- so an agent-side `bd bootstrap` (which this repo's
+  own agent instructions prescribe on a "database exists" error) is invisible
+  to `noteMemberCommand()` by construction; no regex can see a command the
+  orchestrator never issued. Distrusting the member's cached state after
+  every dispatch is the only rule that upholds "a stale memo never survives
+  an agent-side database reset". The cost is bounded: one `bd config get`
+  re-probe per dispatch (the memo still coalesces the several reads inside a
+  bracket and every orchestrator-side bracket between dispatches), and one
+  real pull at the dispatched member's next bracket -- which a beads-mutating
+  role already pays, since its D-push forgets the fingerprint anyway (9.3).
+  A narrower rule (mutating roles only) was rejected: a read-only agent can
+  hit the same error and follow the same self-heal instruction.
 
 ### 9.2 The transient retry ladder is time-boxed, not count-boxed
 
@@ -1537,14 +1556,21 @@ wall-clock outage window. So the ladder is split by error class:
 | class | bound | backoff cap |
 |---|---|---|
 | spawn outage (`fork/exec`, "Not enough memory resources") | 3 min WALL CLOCK | 30s |
-| every other transient | 2 retries (`maxTransientRetries`) | 8s |
+| every other transient | 5 retries (`maxTransientRetries`) | 8s |
 
 A wall-clock bound is the same 3 minutes whether each attempt returns
 instantly or sits on the 600s step timeout; the old count-based bound
-multiplied out to a worst case of 9 attempts x 600s. An explicitly passed
-`maxTransientRetries` is still honored for the generic class, so every test
-seam keeps working; only the default changed (8 -> 2). A `diverged`
-classification is still never retried, under either ladder.
+multiplied out to a worst case of 9 attempts x 600s. The generic default is
+the pre-widening 5 (a first cut mis-restored it as 2; corrected). An
+explicitly passed `maxTransientRetries` is honored by BOTH ladders: it bounds
+the generic class as before, and it is a hard attempt cap on the spawn-outage
+ladder too (the wall-clock budget still applies underneath it). Left unset --
+the production shape, since no runner call site passes one -- the spawn-outage
+class keeps its full wall-clock budget. A `diverged` classification is still
+never retried, under either ladder. The spawn-outage sub-classifier matches
+only the `fork/exec` line: the "Not enough memory resources" wording on its
+own never classifies `transient` in the first place (it is not in the dolt
+provider's TRANSIENT table), so a pattern for it was dead and was removed.
 
 ### 9.3 Remote-tip fingerprint: skip a D-pull only when it is provably a no-op
 
@@ -1570,21 +1596,48 @@ chunk store to open (0.35s measured, against multi-minute real pulls). On a
 match the pull is not spawned and the step returns `{ ok: true, member,
 skipped: true, reason: 'remote-unchanged', remoteTip }`.
 
-**The recorded tip is conservative in both directions:**
+**The recorded tip is minted in exactly one place, from a value the clone is
+provably current with:**
 
 - after a successful PULL, record the SHA observed IMMEDIATELY BEFORE it --
   never one read afterwards. A push racing in during the pull is not in what
   was fetched, so recording the later SHA would claim freshness the clone does
   not have. Recording the earlier one can only cost one redundant future pull.
-- after a successful PUSH by this member, record the SHA read AFTER the push,
-  while the push mutex is still held so no other writer can interleave.
+- after a successful PUSH by this member, FORGET the recorded tip. A push never
+  records anything.
+
+**Why a push cannot mint a fingerprint.** Two earlier cuts recorded a SHA read
+from the remote after the push -- unconditionally at first, then only when the
+ref had "advanced" past a pre-push read. Both lose the same race: the push
+mutex serializes this fleet's pushes against each other and nothing else, so
+an unrelated machine can push in the gap between our push landing and our
+post-push `ls-remote` returning. That read then observes a stranger's commit
+this clone has never seen, records it as ours, and the next D-pull is wrongly
+skipped -- exactly the staleness the feature exists to prevent. A network read
+of "the remote's current tip" is never a proxy for "what my push published".
+Nor is there a local proxy for this transport: bd's git-backed remote is Dolt's
+git blobstore, where a push wraps the chunk-store manifest in a fresh git
+commit built inside the push on top of the remote head it just fetched. That
+commit -- the remote's new `refs/dolt/data` -- is not a function of local Dolt
+state, is not printed by `bd dolt push`, and lands locally only in a
+per-process UUID-named ref (`refs/dolt/blobstore/<remote>/dolt/data/<uuid>`)
+inside a sha256-named cache dir under `.beads/`, reachable only by a
+shell-dialect-specific scan of the member's disk (verified against a live
+clone: the cache repo's tracking refs and `FETCH_HEAD` already disagreed with
+the remote's live tip). So the pusher forgets its tip and pays one real pull
+at its next bracket, after which the skip is re-armed. A no-op push is treated
+identically -- it proves nothing about the clone's freshness. As a side
+effect no `ls-remote` is issued anywhere in the D-push bracket: the mutex hold
+is exactly push + reconcile + settle.
 
 **Fail-open, always.** Every uncertainty falls through to a REAL pull: no
 recorded tip yet, an `ls-remote` failure or timeout, unparseable output, a
 `sync.remote` that could not be positively read, or a URL that fails the
-strict safe-charset gate. A divergence, a settle, and a failed post-push probe
-all FORGET the recorded tip rather than leave a stale one. There is
-deliberately no path in which doubt produces a skip.
+strict safe-charset gate. A divergence, a settle, a successful push, an auth
+self-heal, a `repair()`, an orchestrator-issued `bd init`/`bootstrap`/`config
+set`, and every settled dispatch all FORGET the recorded tip rather than
+leave a stale one. There is deliberately no path in which doubt produces a
+skip.
 
 **Two implementation constraints worth restating:**
 

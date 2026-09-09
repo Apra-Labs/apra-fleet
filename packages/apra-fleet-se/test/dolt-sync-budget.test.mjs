@@ -16,6 +16,9 @@
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
     doltPullBefore,
@@ -24,6 +27,7 @@ import {
     readMemberSyncRemote,
     invalidateSyncRemoteCache,
     noteMemberCommand,
+    noteMemberDispatchCompleted,
     isSpawnOutageFailure,
     toGitLsRemoteUrl,
     parseLsRemoteTip,
@@ -31,6 +35,7 @@ import {
     setLastSyncedTip,
     clearLastSyncedTip,
     repair,
+    classifyDoltFailure,
     DOLT_GENERIC_TRANSIENT_MAX_RETRIES,
     DOLT_SPAWN_OUTAGE_BUDGET_MS,
 } from '../fleet-sprint/dolt-sync.mjs';
@@ -238,6 +243,102 @@ test('memo: the auth self-heal path invalidates the member memo', async () => {
     assert.equal(countOf(PROBE), before + 1, 'self-heal must have invalidated the memo');
 });
 
+test('memo: the auth self-heal path ALSO forgets the recorded tip, symmetric with repair() (round-3 item 6)', async () => {
+    // A re-provisioned credential can rewire the remote the fingerprint was
+    // minted against. Round 2 dropped only the sync.remote memo here; the
+    // module's own invariant says both memos go together, and repair()
+    // already did both. Use a D-PUSH so the pre-pull probe path cannot be what
+    // records or clears anything: the only tip mutation in this test is the
+    // self-heal's.
+    const { command } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [PUSH]: [fail('fatal: could not read Username for https://github.com'), fail('fatal: could not read Username for https://github.com')],
+    });
+    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m2', SHA_A);
+    let healed = 0;
+    await assert.rejects(() => doltPushAfter('m1', {
+        command,
+        pushBeads: true,
+        sleep: async () => {},
+        onAuthFailure: async () => {
+            healed += 1;
+            assert.equal(getLastSyncedTip('m1'), undefined, 'the tip must already be gone when the self-heal callback runs');
+        },
+    }));
+    assert.equal(healed, 1, 'the one-shot self-heal fired');
+    assert.equal(getLastSyncedTip('m1'), undefined);
+    assert.equal(getLastSyncedTip('m2'), SHA_A, 'only the healed member is affected');
+});
+
+// -----------------------------------------------------------------------------
+// Round-3 item 2 -- the post-dispatch invalidation seam. An agent's `bd`
+// commands run in its own session on the member and never pass through the
+// runner's command() wrapper, so noteMemberCommand() is structurally blind to
+// an agent-side `bd bootstrap` (which this repo's agent instructions tell an
+// agent to run on a "database exists" error). Every settled dispatch therefore
+// forgets BOTH memos for that member, unconditionally.
+// -----------------------------------------------------------------------------
+
+test('dispatch seam: noteMemberDispatchCompleted forgets BOTH memos for that member only', async () => {
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_A)],
+        [PULL]: [OK],
+    });
+    await isMemberSyncRemoteConfigured('m1', { command });
+    await isMemberSyncRemoteConfigured('m2', { command });
+    setLastSyncedTip('m1', SHA_A);
+    setLastSyncedTip('m2', SHA_A);
+    assert.equal(countOf(PROBE), 2);
+
+    assert.equal(noteMemberDispatchCompleted('m1'), true);
+
+    assert.equal(getLastSyncedTip('m1'), undefined, 'the dispatched member must not keep its fingerprint');
+    assert.equal(getLastSyncedTip('m2'), SHA_A, 'an undispatched member keeps its fingerprint');
+    await isMemberSyncRemoteConfigured('m1', { command });
+    assert.equal(countOf(PROBE), 3, 'the dispatched member re-probes sync.remote');
+    await isMemberSyncRemoteConfigured('m2', { command });
+    assert.equal(countOf(PROBE), 3, 'the undispatched member is still a cache hit');
+
+    // The concrete hazard: a re-bootstrapped (empty) clone against an UNMOVED
+    // remote. Without the seam the surviving fingerprint would match and skip
+    // the one pull that clone needs most; with it, the next D-pull is real.
+    const res = await doltPullBefore('m1', { command });
+    assert.deepEqual(res, { ok: true, member: 'm1' });
+    assert.equal(countOf(PULL), 1);
+});
+
+test('dispatch seam: a non-member argument is a no-op and never throws', () => {
+    setLastSyncedTip('m1', SHA_A);
+    assert.equal(noteMemberDispatchCompleted(''), false);
+    assert.equal(noteMemberDispatchCompleted(undefined), false);
+    assert.equal(noteMemberDispatchCompleted(null), false);
+    assert.equal(getLastSyncedTip('m1'), SHA_A);
+});
+
+test('dispatch seam: runner.js calls it from the central agent() wrapper, in a finally, before the post-dispatch sync can run', () => {
+    // Static pin on the wiring: the seam only upholds its invariant if it is
+    // installed at the ONE place every dispatch settles (the agent() wrapper,
+    // which withGitSync awaits before its post-dispatch D-push) and fires on
+    // failure as well as success (a `finally`). A refactor that moves it into
+    // one withGitSync branch, or behind a success check, must fail here.
+    const runnerPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '../fleet-sprint/runner.js');
+    const source = fs.readFileSync(runnerPath, 'utf-8');
+    const wrapper = source.match(/const agent = async \(prompt, opts = \{\}\) => \{[\s\S]*?\n {4}\};/);
+    assert.ok(wrapper, 'expected the central agent() wrapper in runner.js');
+    assert.match(wrapper[0], /agentRaw\(/, 'the wrapper must still delegate to the raw primitive');
+    assert.match(
+        wrapper[0],
+        /finally\s*\{\s*if \(opts\.member_name\) DoltSync\.noteMemberDispatchCompleted\(opts\.member_name\);/,
+        'the seam must fire from a finally inside the agent() wrapper, keyed on the dispatched member',
+    );
+    assert.equal(
+        (source.match(/DoltSync\.noteMemberDispatchCompleted\(/g) || []).length, 1,
+        'exactly one call site: the central wrapper (per-call-site invalidation is the pattern this replaces)',
+    );
+});
+
 test('memo: repair() invalidates both the sync.remote memo and the recorded tip', async () => {
     const { command } = makeCommandMock({ [PROBE]: [REMOTE_JSON] });
     await isMemberSyncRemoteConfigured('m1', { command });
@@ -256,7 +357,15 @@ test('memo: repair() invalidates both the sync.remote memo and the recorded tip'
 test('retry: the spawn-outage class is recognized; ordinary transients are not', () => {
     assert.equal(isSpawnOutageFailure('fork/exec C:\\Program Files\\Git\\bin\\git.exe: Not enough memory resources'), true);
     assert.equal(isSpawnOutageFailure('fork/exec /usr/bin/git: resource unavailable'), true);
-    assert.equal(isSpawnOutageFailure('Not enough memory resources are available to process this command.'), true);
+    // Round-3 item 5: the memory-resources wording on its own is NOT the
+    // class. It was a dead pattern -- the 'dolt' provider's TRANSIENT table
+    // has no such entry, so a text carrying only that wording classifies
+    // 'unknown' and never reaches this sub-classifier; and Go's os/exec always
+    // prefixes a spawn refusal with `fork/exec <path>:`, so the live incident
+    // text carries both halves on one line. The list now matches what can
+    // actually arrive here, nothing more.
+    assert.equal(classifyDoltFailure('Not enough memory resources are available to process this command.'), 'unknown');
+    assert.equal(isSpawnOutageFailure('Not enough memory resources are available to process this command.'), false);
     assert.equal(isSpawnOutageFailure('connection refused'), false);
     assert.equal(isSpawnOutageFailure('database is locked'), false);
     assert.equal(isSpawnOutageFailure(''), false);
@@ -299,9 +408,11 @@ test('retry: an ordinary transient is bounded by COUNT even when wall-clock time
     assert.equal(countOf(PULL), 6, 'an explicitly-passed maxTransientRetries is still honored');
 });
 
-test('retry: a spawn outage is bounded by WALL CLOCK, not by maxTransientRetries', async () => {
+test('retry: a spawn outage is bounded by WALL CLOCK, not by the generic retry count, when maxTransientRetries is left unset', async () => {
     // A fake clock the injected sleep() advances, so the budget is exercised
-    // deterministically and the suite never actually waits.
+    // deterministically and the suite never actually waits. No explicit
+    // maxTransientRetries: the production shape (no runner call site passes
+    // one), so the spawn-outage class gets its full wall-clock budget.
     let clock = 0;
     const { command, countOf } = makeCommandMock({
         [PROBE]: [REMOTE_JSON],
@@ -310,14 +421,49 @@ test('retry: a spawn outage is bounded by WALL CLOCK, not by maxTransientRetries
     await assert.rejects(() => doltPullBefore('m1', {
         command,
         remoteTipFingerprint: false,
-        maxTransientRetries: 2, // deliberately tiny -- must NOT bound this class
         now: () => clock,
         sleep: async (ms) => { clock += ms; },
     }));
-    // Far more than the 2-retry generic ladder would allow: the ladder ran
+    // Far more than the 5-retry generic ladder would allow: the ladder ran
     // until the 3-minute wall-clock budget was spent.
-    assert.ok(countOf(PULL) > 3, `expected the wall-clock budget to outlast the count bound, saw ${countOf(PULL)} attempts`);
+    assert.ok(countOf(PULL) > DOLT_GENERIC_TRANSIENT_MAX_RETRIES + 1, `expected the wall-clock budget to outlast the generic count bound, saw ${countOf(PULL)} attempts`);
     assert.ok(clock >= DOLT_SPAWN_OUTAGE_BUDGET_MS, `expected the full budget to be consumed, saw ${clock}ms`);
+});
+
+test('retry: an EXPLICIT maxTransientRetries caps the spawn-outage ladder too (round-3 item 4)', async () => {
+    // The documented contract: "an explicitly passed maxTransientRetries is
+    // still honored". Round 2 honored it only for the generic class; the
+    // spawn-outage branch ignored it and always ran to its 3-minute budget. A
+    // caller asking for a tight bound must get one on BOTH ladders.
+    let clock = 0;
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [PULL]: [fail('fork/exec git.exe: Not enough memory resources')],
+    });
+    await assert.rejects(() => doltPullBefore('m1', {
+        command,
+        remoteTipFingerprint: false,
+        maxTransientRetries: 2,
+        now: () => clock,
+        sleep: async (ms) => { clock += ms; },
+    }));
+    assert.equal(countOf(PULL), 3, 'initial attempt plus exactly the 2 explicitly requested retries');
+    assert.ok(clock < DOLT_SPAWN_OUTAGE_BUDGET_MS, `the explicit cap must stop the ladder long before the wall-clock budget, saw ${clock}ms`);
+    // ...and it is a cap, not a floor: the wall-clock budget still applies
+    // underneath a generous explicit count.
+    clock = 0;
+    const { command: c2, countOf: count2 } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [PULL]: [() => { clock += 60000; return fail('fork/exec git.exe: Not enough memory resources'); }],
+    });
+    await assert.rejects(() => doltPullBefore('m1', {
+        command: c2,
+        remoteTipFingerprint: false,
+        maxTransientRetries: 100,
+        now: () => clock,
+        sleep: async (ms) => { clock += ms; },
+    }));
+    assert.ok(count2(PULL) <= 5, `the wall-clock budget must still bound a 60s-per-attempt outage under a large explicit cap, saw ${count2(PULL)}`);
 });
 
 test('retry: a spawn outage that clears inside the budget succeeds without exhausting it', async () => {
@@ -545,37 +691,97 @@ test('fingerprint: a FAILED pull does not record the observed tip', async () => 
     assert.equal(getLastSyncedTip('m1'), undefined, 'only a SUCCESSFUL pull may record a tip');
 });
 
-test('fingerprint: a push that ADVANCES the remote records the post-push tip, so the next pull skips', async () => {
-    // The ls-remote queue: SHA_A immediately before the push, SHA_B for every
-    // read after it -- i.e. this push actually published something.
-    const { command, countOf } = makeCommandMock({
-        [PROBE]: [REMOTE_JSON],
-        [LS_REMOTE]: [lsRemote(SHA_A), lsRemote(SHA_B)],
-        [PUSH]: [OK],
-        [PULL]: [OK],
+// -----------------------------------------------------------------------------
+// The PUSH side (round-3 item 1). A push never records a fingerprint -- it
+// only forgets one -- and issues no ls-remote at all. See "WHY A PUSH CANNOT
+// MINT A FINGERPRINT" in dolt-sync.mjs: the remote's new refs/dolt/data SHA
+// is a git commit minted INSIDE the push (Dolt's git blobstore), not derivable
+// from local state, and any post-push network read can observe a stranger's
+// later push instead of ours.
+// -----------------------------------------------------------------------------
+
+/**
+ * A tiny model of the SHARED remote plus one member's command() against it:
+ * `remote.tip` is the live refs/dolt/data; ls-remote reads it; this member's
+ * push advances it to `pushedTo`. `afterPush` runs synchronously the moment
+ * the push has landed -- i.e. in the window BEFORE any post-push read this
+ * member could issue -- which is where a foreign machine's push goes.
+ */
+function makeRacingRemote({ initialTip, pushedTo, afterPush = () => {} }) {
+    const remote = { tip: initialTip };
+    const calls = [];
+    const command = async (cmd, opts = {}) => {
+        calls.push({ cmd, opts });
+        if (cmd.includes(PROBE)) return REMOTE_JSON;
+        if (cmd.includes(LS_REMOTE)) return lsRemote(remote.tip);
+        if (cmd.includes(PUSH)) {
+            remote.tip = pushedTo;
+            afterPush(remote);
+            return OK;
+        }
+        return OK;
+    };
+    const countOf = (needle) => calls.filter((c) => c.cmd.includes(needle)).length;
+    return { remote, command, calls, countOf };
+}
+
+test('fingerprint: THE FOREIGN-PUSH RACE -- an unrelated machine pushes right after ours; its SHA must never become our tip', async () => {
+    // The race the round-2 design lost:
+    //   1. this member is current with the remote at SHA_A (pulled it).
+    //   2. this member pushes local commits; the remote advances to SHA_B.
+    //   3. BEFORE this member could read the remote again, an unrelated
+    //      machine (not in this fleet, not under our push mutex) pushes; the
+    //      remote is now at SHA_C, which this clone has never seen.
+    //   4. the round-2 code read the tip here, saw SHA_C !== SHA_A ("the ref
+    //      advanced, so I moved it"), recorded SHA_C as this member's
+    //      lastSyncedTip -- and the next D-pull saw SHA_C === SHA_C and
+    //      SKIPPED the pull that would have fetched the stranger's commit.
+    const SHA_C = 'cccccccccccccccccccccccccccccccccccccccc';
+    const { command, countOf } = makeRacingRemote({
+        initialTip: SHA_A,
+        pushedTo: SHA_B,
+        afterPush: (remote) => { remote.tip = SHA_C; }, // the foreign push
     });
+    setLastSyncedTip('m1', SHA_A);
+
     const res = await doltPushAfter('m1', { command, pushBeads: true });
     assert.equal(res.pushed, true);
-    assert.equal(getLastSyncedTip('m1'), SHA_B, 'the SHA read AFTER a successful push (still under the mutex)');
+    assert.equal(countOf(LS_REMOTE), 0, 'a push must never read the remote tip -- that read is the race');
+    assert.notEqual(getLastSyncedTip('m1'), SHA_C, "the stranger's SHA must never be recorded as ours");
+    assert.equal(getLastSyncedTip('m1'), undefined, 'a push FORGETS the fingerprint; it never mints one');
+
+    // The proof that matters: the next D-pull is REAL and fetches SHA_C.
     const pullRes = await doltPullBefore('m1', { command });
-    assert.equal(pullRes.reason, 'remote-unchanged');
-    assert.equal(countOf(PULL), 0, 'the pusher is the last writer, so its next pull is a provable no-op');
+    assert.equal(pullRes.skipped, undefined, 'the next D-pull must not be skipped against a foreign SHA');
+    assert.equal(countOf(PULL), 1);
+    assert.equal(getLastSyncedTip('m1'), SHA_C, 'only the pull may record the tip, and only the one it observed before pulling');
+    // ...after which, with the remote quiet, the skip is re-armed as usual.
+    await doltPullBefore('m1', { command });
+    assert.equal(countOf(PULL), 1);
 });
 
-test('fingerprint: a NO-OP push from a possibly-behind clone must NOT record a tip (round-2 race)', async () => {
-    // The exact race the round-2 review found:
-    //   1. another machine pushed; the remote is at SHA_B.
-    //   2. this member never pulled that, and has no recorded tip for it.
-    //   3. this member pushes with nothing local to publish -- `bd dolt push`
-    //      still exits 0 and the ref does not move.
-    // Recording SHA_B here would claim a freshness this clone does not have,
-    // and the next D-pull would skip a pull it genuinely needs.
-    const { command, countOf } = makeCommandMock({
-        [PROBE]: [REMOTE_JSON],
-        [LS_REMOTE]: [lsRemote(SHA_B)], // unchanged before AND after the push
-        [PUSH]: [OK],
-        [PULL]: [OK],
-    });
+test('fingerprint: a real push FORGETS the tip and issues no ls-remote; the next pull is real, then re-arms the skip', async () => {
+    const { command, countOf } = makeRacingRemote({ initialTip: SHA_A, pushedTo: SHA_B });
+    setLastSyncedTip('m1', SHA_A);
+    const res = await doltPushAfter('m1', { command, pushBeads: true });
+    assert.deepEqual(res, { ok: true, member: 'm1', pushed: true, reconciled: false });
+    assert.equal(countOf(LS_REMOTE), 0, 'no probe before OR after the push (round-3 item 3: no network round trip inside the mutex)');
+    assert.equal(getLastSyncedTip('m1'), undefined);
+    const pullRes = await doltPullBefore('m1', { command });
+    assert.equal(pullRes.skipped, undefined, "the pusher's next pull is real (one redundant pull is the safe error)");
+    assert.equal(countOf(PULL), 1);
+    assert.equal(getLastSyncedTip('m1'), SHA_B);
+    await doltPullBefore('m1', { command });
+    assert.equal(countOf(PULL), 1, 'the pull after that is a provable no-op again');
+});
+
+test('fingerprint: a NO-OP push (nothing local to publish) records nothing either -- the round-2 race stays closed', async () => {
+    // Another machine pushed (remote at SHA_B); this member never pulled that
+    // and pushes with nothing new -- `bd dolt push` still exits 0 and the ref
+    // does not move. Recording SHA_B would claim a freshness this clone lacks.
+    // The push layer cannot even tell a no-op from a real push (bd prints the
+    // same output for both), and it does not need to: neither records.
+    const { command, countOf } = makeRacingRemote({ initialTip: SHA_B, pushedTo: SHA_B });
     const res = await doltPushAfter('m1', { command, pushBeads: true });
     assert.equal(res.pushed, true);
     assert.equal(getLastSyncedTip('m1'), undefined, 'a no-op push must never mint a fingerprint');
@@ -584,16 +790,8 @@ test('fingerprint: a NO-OP push from a possibly-behind clone must NOT record a t
     assert.equal(countOf(PULL), 1);
 });
 
-test('fingerprint: a no-op push STALE-tip case forgets the old tip rather than re-confirming it', async () => {
-    // Same shape, but this member does carry a recorded tip -- an OLD one
-    // (SHA_A) that no longer matches the remote (SHA_B). The push publishes
-    // nothing, so nothing about this clone became current with SHA_B.
-    const { command, countOf } = makeCommandMock({
-        [PROBE]: [REMOTE_JSON],
-        [LS_REMOTE]: [lsRemote(SHA_B)],
-        [PUSH]: [OK],
-        [PULL]: [OK],
-    });
+test('fingerprint: a no-op push by a clone carrying a STALE tip forgets it rather than re-confirming it', async () => {
+    const { command, countOf } = makeRacingRemote({ initialTip: SHA_B, pushedTo: SHA_B });
     setLastSyncedTip('m1', SHA_A);
     await doltPushAfter('m1', { command, pushBeads: true });
     assert.equal(getLastSyncedTip('m1'), undefined);
@@ -601,46 +799,62 @@ test('fingerprint: a no-op push STALE-tip case forgets the old tip rather than r
     assert.equal(countOf(PULL), 1, 'the stale tip must not survive into a skip');
 });
 
-test('fingerprint: a no-op push by a clone ALREADY current keeps its fingerprint (no needless pull)', async () => {
-    // The benign no-op: this member is recorded as current with the remote tip
-    // and the push publishes nothing, so the fingerprint still holds and the
-    // next pull may still be skipped.
-    const { command, countOf } = makeCommandMock({
-        [PROBE]: [REMOTE_JSON],
-        [LS_REMOTE]: [lsRemote(SHA_A)],
-        [PUSH]: [OK],
-        [PULL]: [OK],
-    });
+test('fingerprint: a no-op push by a clone that WAS current forgets its tip too (conservative by construction)', async () => {
+    // The one case the round-2 design kept a fingerprint for. This layer can
+    // no longer distinguish it from the stale case without a network read --
+    // and the network read is the race -- so it pays one redundant pull.
+    const { command, countOf } = makeRacingRemote({ initialTip: SHA_A, pushedTo: SHA_A });
     setLastSyncedTip('m1', SHA_A);
     await doltPushAfter('m1', { command, pushBeads: true });
-    assert.equal(getLastSyncedTip('m1'), SHA_A);
-    const pullRes = await doltPullBefore('m1', { command });
-    assert.equal(pullRes.reason, 'remote-unchanged');
-    assert.equal(countOf(PULL), 0);
-});
-
-test('fingerprint: the pre-push tip read is skipped entirely when remoteTipFingerprint is off', async () => {
-    const { command, countOf } = makeCommandMock({
-        [PROBE]: [REMOTE_JSON],
-        [LS_REMOTE]: [lsRemote(SHA_A)],
-        [PUSH]: [OK],
-    });
-    await doltPushAfter('m1', { command, pushBeads: true, remoteTipFingerprint: false });
-    assert.equal(countOf(LS_REMOTE), 0, 'no probe at all -- neither before nor after the push');
-});
-
-test('fingerprint: a push whose post-push probe fails forgets the tip (next pull is real)', async () => {
-    const { command, countOf } = makeCommandMock({
-        [PROBE]: [REMOTE_JSON],
-        [LS_REMOTE]: [fail('unable to access remote')],
-        [PUSH]: [OK],
-        [PULL]: [OK],
-    });
-    setLastSyncedTip('m1', SHA_A);
-    await doltPushAfter('m1', { command, pushBeads: true });
-    assert.equal(getLastSyncedTip('m1'), undefined, 'a stale pre-push tip must never survive a push');
+    assert.equal(getLastSyncedTip('m1'), undefined);
+    await doltPullBefore('m1', { command });
+    assert.equal(countOf(PULL), 1, 'one real pull, then the skip is re-armed');
     await doltPullBefore('m1', { command });
     assert.equal(countOf(PULL), 1);
+});
+
+test('fingerprint: the reconcile path (rejected push -> one pull -> re-push) forgets the tip and never probes', async () => {
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_B)],
+        [PUSH]: [fail('Updates were rejected because the remote contains work'), OK],
+        [PULL]: [OK],
+    });
+    setLastSyncedTip('m1', SHA_A);
+    const res = await doltPushAfter('m1', { command, pushBeads: true, sleep: async () => {} });
+    assert.deepEqual(res, { ok: true, member: 'm1', pushed: true, reconciled: true });
+    assert.equal(countOf(LS_REMOTE), 0, 'neither the first push nor the re-push may probe the remote');
+    assert.equal(countOf(PUSH), 2);
+    assert.equal(countOf(PULL), 1, 'exactly the one bounded reconcile pull');
+    assert.equal(getLastSyncedTip('m1'), undefined, 'the reconcile pull is NOT the fingerprinting pull -- the re-push then moves the remote past it');
+});
+
+test('fingerprint: a FAILED (non-diverged) push leaves the recorded tip alone -- nothing moved, nothing to forget', async () => {
+    // Transient-exhausted, no divergence: the remote did not move and this
+    // clone did not change, so the pre-existing fingerprint is exactly as
+    // trustworthy as before. (A DIVERGED failure is different -- next test --
+    // because the reconcile machinery moves the clone.)
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [PUSH]: [fail('connection refused')],
+    });
+    setLastSyncedTip('m1', SHA_A);
+    await assert.rejects(() => doltPushAfter('m1', { command, pushBeads: true, sleep: async () => {} }));
+    assert.equal(countOf(LS_REMOTE), 0);
+    assert.equal(getLastSyncedTip('m1'), SHA_A);
+});
+
+test('fingerprint: the push side issues no ls-remote whether or not remoteTipFingerprint is passed', async () => {
+    for (const opts of [{}, { remoteTipFingerprint: false }, { remoteTipFingerprint: true }]) {
+        const { command, countOf } = makeCommandMock({
+            [PROBE]: [REMOTE_JSON],
+            [LS_REMOTE]: [lsRemote(SHA_A)],
+            [PUSH]: [OK],
+        });
+        await doltPushAfter('m1', { command, pushBeads: true, ...opts });
+        assert.equal(countOf(LS_REMOTE), 0, `no probe at all for opts ${JSON.stringify(opts)}`);
+        assert.equal(countOf(PUSH), 1);
+    }
 });
 
 test('fingerprint: a diverged push forgets the tip', async () => {

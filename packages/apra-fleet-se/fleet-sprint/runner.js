@@ -6533,7 +6533,10 @@ async function runSprintCycle(context) {
             // rewire a member's remote (`bd config set`, `bd dolt remote`,
             // `bd init`, `bd bootstrap`) drop that member's memo here, at the
             // one wrapper every orchestrator-side member command passes
-            // through. Non-matching commands are a cheap regex test.
+            // through. Non-matching commands are a cheap regex test. This
+            // seam only sees the ORCHESTRATOR's own commands; an agent's
+            // commands on the member are covered by the agent() wrapper
+            // below (DoltSync.noteMemberDispatchCompleted).
             const memberName = opts && opts.member_name;
             if (memberName) DoltSync.noteMemberCommand(memberName, trimmed);
         }
@@ -6568,13 +6571,31 @@ async function runSprintCycle(context) {
     // and handled there. Everyone else -- planner, plan-reviewer, deployer, the
     // two test runners, harvester -- got nothing at all until now, which is
     // exactly the population most likely to benefit from a `runbook` entry.
-    const agent = (prompt, opts = {}) => {
+    //
+    // DoltSync cache invalidation (dolt sync budget review round 3, item 2):
+    // this wrapper is also the ONE place every dispatch to a member settles,
+    // so it is where DoltSync learns that the member's cached sync state
+    // (the sync.remote memo and the remote-tip fingerprint) can no longer be
+    // trusted. A dispatched agent runs its `bd` commands in its own session
+    // on the member -- never through the command() wrapper above, whose
+    // noteMemberCommand() seam therefore cannot see an agent-side `bd init` /
+    // `bd bootstrap` / `bd config set`. Invalidation is unconditional and
+    // fires in a `finally`, so it precedes the post-dispatch D-push bracket
+    // in withGitSync (which awaits this promise before syncing) on success
+    // AND on failure, and covers the dispatches outside withGitSync too
+    // (Streak Assignment). See DoltSync.noteMemberDispatchCompleted for the
+    // cost/benefit of the unconditional rule.
+    const agent = async (prompt, opts = {}) => {
         let finalPrompt = prompt;
         if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
             const [block] = kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name));
             if (block) finalPrompt = prompt + '\n\n' + block;
         }
-        return agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts });
+        try {
+            return await agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts });
+        } finally {
+            if (opts.member_name) DoltSync.noteMemberDispatchCompleted(opts.member_name);
+        }
     };
 
     // The global dolt push mutex client. Every D-push below serializes through
