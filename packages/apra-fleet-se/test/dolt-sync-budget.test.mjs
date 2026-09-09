@@ -29,6 +29,9 @@ import {
     noteMemberCommand,
     noteMemberDispatchCompleted,
     isMemberDispatchedSinceVerified,
+    isTipProbeDisabled,
+    clearTipProbeFailures,
+    DOLT_TIP_PROBE_MAX_CONSECUTIVE_FAILURES,
     isSpawnOutageFailure,
     toGitLsRemoteUrl,
     parseLsRemoteTip,
@@ -46,6 +49,7 @@ import {
 beforeEach(() => {
     invalidateSyncRemoteCache();
     clearLastSyncedTip();
+    clearTipProbeFailures();
 });
 
 const OK = { ok: true, output: '', error: null };
@@ -81,7 +85,7 @@ function makeCommandMock(script) {
 }
 
 const PROBE = 'bd config get sync.remote';
-const LS_REMOTE = 'git ls-remote';
+const LS_REMOTE = ' ls-remote ';
 const PULL = 'bd dolt pull';
 const PUSH = 'bd dolt push';
 
@@ -450,7 +454,7 @@ test('dispatch seam: RELIABILITY -- an agent-side `bd config set sync.remote <ot
     // From here on the probe targets the NEW remote (the memo was refreshed).
     await doltPullBefore('m1', { command });
     const lastProbe = calls.filter((c) => c.cmd.includes(LS_REMOTE)).pop();
-    assert.equal(lastProbe.cmd, 'git ls-remote https://example.invalid/other/beads.git refs/dolt/data');
+    assert.equal(lastProbe.cmd, 'git -c credential.interactive=never -c core.askPass= ls-remote https://example.invalid/other/beads.git refs/dolt/data');
 });
 
 test('dispatch seam: RELIABILITY -- a sync.remote NEUTRALIZED under a dispatch takes the no-remote exit: no pull command, fingerprint forgotten', async () => {
@@ -473,6 +477,50 @@ test('dispatch seam: RELIABILITY -- a sync.remote NEUTRALIZED under a dispatch t
     assert.equal(next.reason, 'no-remote');
     assert.equal(countOf(PROBE), probes);
     assert.equal(countOf(LS_REMOTE), 2);
+});
+
+test('dispatch seam: RELIABILITY -- a member memoized as NO-REMOTE re-reads sync.remote after a dispatch, so a remote wired by the agent is honored (round-4 review, finding 1)', async () => {
+    // The cached "absent" answer never reaches the skip path (both pre-gates
+    // exit on it first), so without this the member's every later D-push
+    // would report a benign no-remote skip -- success -- while its bead
+    // closes never left the clone, for the rest of the process.
+    const { member, command, countOf } = makeMemberWorld({ initialTip: SHA_A });
+    member.syncRemote = '';
+    assert.equal((await doltPullBefore('m1', { command })).reason, 'no-remote');
+    assert.equal((await doltPushAfter('m1', { command, pushBeads: true })).reason, 'no-remote');
+    assert.equal(countOf(PROBE), 1, 'absent is memoized like any positive answer');
+    // Undispatched, the memo holds.
+    assert.equal((await doltPullBefore('m1', { command })).reason, 'no-remote');
+    assert.equal(countOf(PROBE), 1);
+    // The agent wires a remote in its own session (bd init --remote / bd
+    // config set sync.remote), invisible to noteMemberCommand.
+    member.syncRemote = REMOTE;
+    noteMemberDispatchCompleted('m1');
+    const push = await doltPushAfter('m1', { command, pushBeads: true });
+    assert.equal(push.pushed, true, 'the post-dispatch D-push must publish, not take the stale no-remote exit');
+    assert.equal(countOf(PROBE), 2, 'exactly one re-read, at the first pre-gate after the dispatch');
+    assert.equal(countOf(PUSH), 1);
+    assert.equal(isMemberDispatchedSinceVerified('m1'), false);
+    // ...and the refreshed answer is memoized again: the next pull probes the
+    // remote for real, with no further config get.
+    const pull = await doltPullBefore('m1', { command });
+    assert.deepEqual(pull, { ok: true, member: 'm1' });
+    assert.equal(countOf(PROBE), 2);
+    assert.equal(countOf(LS_REMOTE), 1);
+});
+
+test('dispatch seam: a member memoized as NO-REMOTE that stays that way pays one re-read per dispatch, nothing more', async () => {
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [{ ok: true, output: JSON.stringify({ value: '' }), error: null }],
+    });
+    await bracket('m1', command, { pushBeads: true });
+    await bracket('m1', command, { pushBeads: true });
+    await bracket('m1', command, { pushBeads: true });
+    // bracket = pull pre-gate + dispatch + push pre-gate: the first pre-gate
+    // after each dispatch re-reads, the one before it is a hit -- so one
+    // initial probe plus at most one per dispatch.
+    assert.equal(countOf(PROBE), 4, '1 + one per dispatch for a no-remote member (the golden mock sprint is exactly this shape)');
+    assert.equal(countOf(PULL) + countOf(PUSH) + countOf(LS_REMOTE), 0, 'still never a bd dolt command against a neutralized clone');
 });
 
 test('dispatch seam: RELIABILITY -- an UNREADABLE sync.remote after a dispatch falls through to a real pull, never a skip', async () => {
@@ -808,11 +856,66 @@ test('fingerprint: the journaled probe command carries no credential even when s
     await doltPullBefore('m1', { command });
     const probe = calls.find((c) => c.cmd.includes(LS_REMOTE));
     assert.ok(probe, 'expected an ls-remote probe');
-    assert.equal(probe.cmd, 'git ls-remote https://github.com/o/r.git refs/dolt/data');
+    assert.equal(probe.cmd, 'git -c credential.interactive=never -c core.askPass= ls-remote https://github.com/o/r.git refs/dolt/data');
     for (const c of calls) {
         assert.ok(!c.cmd.includes(TOKEN), `credential leaked into a command string: ${c.cmd}`);
         assert.ok(!String(c.opts.label || '').includes(TOKEN), 'credential leaked into a command label');
     }
+    assert.equal(getLastSyncedTip('m1'), SHA_A);
+});
+
+test('fingerprint: the probe can never wait on a credential prompt (round-4 review, finding 2)', async () => {
+    const { command, calls } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [lsRemote(SHA_A)],
+        [PULL]: [OK],
+    });
+    await doltPullBefore('m1', { command });
+    const probe = calls.find((c) => c.cmd.includes(LS_REMOTE));
+    // GCM's own no-UI switch, and no askpass program: with no terminal an
+    // unauthenticated probe fails at once instead of sitting on the 30s
+    // probe timeout every bracket. `-c` config, never a shell env prefix
+    // (the member's shell may be PowerShell).
+    assert.match(probe.cmd, /^git -c credential\.interactive=never -c core\.askPass= ls-remote /);
+    assert.ok(!/^\s*\w+=\S+\s+git/.test(probe.cmd), 'no shell-level env assignment');
+    assert.equal(probe.opts.timeout_s, 30);
+});
+
+test('fingerprint: a probe that keeps failing is DISABLED for the member after two consecutive failures (round-4 review, finding 2)', async () => {
+    // A member whose only credential was the URL-embedded one (no helper), or
+    // whose sync.remote is a Dolt-native remote git cannot list, would
+    // otherwise pay a failed round trip on every one of ~20 brackets.
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [fail('fatal: could not read Username for https://github.com: terminal prompts disabled')],
+        [PULL]: [OK],
+    });
+    assert.equal(DOLT_TIP_PROBE_MAX_CONSECUTIVE_FAILURES, 2);
+    for (let i = 0; i < 6; i += 1) {
+        const res = await doltPullBefore('m1', { command });
+        assert.deepEqual(res, { ok: true, member: 'm1' }, 'always a real pull, never a skip');
+    }
+    assert.equal(countOf(LS_REMOTE), 2, 'two failed probes, then none');
+    assert.equal(isTipProbeDisabled('m1'), true);
+    assert.equal(countOf(PULL), 6);
+    assert.equal(isTipProbeDisabled('m2'), false, 'per member');
+    // A hard seam (credentials re-provisioned, a repair, an orchestrator
+    // rewire) re-arms the probe.
+    noteMemberCommand('m1', 'bd config set sync.remote x');
+    assert.equal(isTipProbeDisabled('m1'), false);
+    await doltPullBefore('m1', { command });
+    assert.equal(countOf(LS_REMOTE), 3);
+});
+
+test('fingerprint: one probe blip does not disable the probe -- a success resets the failure count', async () => {
+    const { command, countOf } = makeCommandMock({
+        [PROBE]: [REMOTE_JSON],
+        [LS_REMOTE]: [fail('Could not resolve host'), lsRemote(SHA_A), fail('Could not resolve host'), lsRemote(SHA_A)],
+        [PULL]: [OK],
+    });
+    for (let i = 0; i < 4; i += 1) await doltPullBefore('m1', { command });
+    assert.equal(countOf(LS_REMOTE), 4, 'never disabled: failures were not consecutive');
+    assert.equal(isTipProbeDisabled('m1'), false);
     assert.equal(getLastSyncedTip('m1'), SHA_A);
 });
 
@@ -928,7 +1031,7 @@ test('fingerprint: the ls-remote target comes from sync.remote, never from git o
     await doltPullBefore('m1', { command });
     const probe = calls.find((c) => c.cmd.includes(LS_REMOTE));
     assert.ok(probe, 'expected an ls-remote probe');
-    assert.equal(probe.cmd, 'git ls-remote https://example.invalid/other/repo.git refs/dolt/data');
+    assert.equal(probe.cmd, 'git -c credential.interactive=never -c core.askPass= ls-remote https://example.invalid/other/repo.git refs/dolt/data');
     assert.ok(!/\borigin\b/.test(probe.cmd), 'must never probe git origin -- it can differ from sync.remote');
 });
 

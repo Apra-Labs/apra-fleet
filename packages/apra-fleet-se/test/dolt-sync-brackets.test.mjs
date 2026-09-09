@@ -14,7 +14,7 @@ import {
     preflightBeadsHealthGate,
     verifyDoerStreakClosed,
 } from '../fleet-sprint/runner.js';
-import { invalidateSyncRemoteCache, clearLastSyncedTip } from '../fleet-sprint/dolt-sync.mjs';
+import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
 
 // The sync.remote probe memo and the remote-tip fingerprint are both
@@ -26,6 +26,7 @@ import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
 beforeEach(() => {
     invalidateSyncRemoteCache();
     clearLastSyncedTip();
+    clearTipProbeFailures();
 });
 
 const __filename = fileURLToPath(import.meta.url);

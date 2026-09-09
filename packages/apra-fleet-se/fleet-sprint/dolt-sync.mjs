@@ -327,6 +327,7 @@ function forgetMemberSyncState(member) {
     invalidateSyncRemoteCache(member);
     clearLastSyncedTip(member);
     dispatchedSinceVerified.delete(member);
+    tipProbeFailures.delete(member);
 }
 
 /**
@@ -384,13 +385,20 @@ function forgetMemberSyncState(member) {
  * with no dispatch in between pay nothing extra. The golden transcript is
  * back to one probe per member per process.
  *
- * ACCEPTED RESIDUAL, stated plainly: a member whose sync.remote was
- * positively ABSENT when first read (memo caches "absent"; every bracket
- * takes the no-remote pre-gate exit before any fingerprint logic) and whose
- * agent then wires a remote mid-dispatch keeps being treated as no-remote
- * for the process. That member was never participating in beads sync in
- * this run; re-probing it per dispatch would put the golden count straight
- * back to 14 for a scenario no runbook produces.
+ * THE ABSENT CASE (round-4 review, finding 1). A member whose sync.remote
+ * was positively ABSENT when first read never reaches the skip path -- both
+ * pre-gates take the no-remote exit first -- so the lazy re-check above
+ * cannot cover it, and a first cut of this design accepted that as
+ * residual. It is not acceptable: an agent that wires a remote mid-dispatch
+ * (a `bd init --remote` / `bd config set sync.remote` in its own session)
+ * would leave every later D-push of that member reporting `{ ok: true,
+ * skipped: true, reason: 'no-remote' }` -- success -- while its bead closes
+ * never left the clone, for the rest of the process. So a memoized ABSENT
+ * answer is re-read once after any dispatch to the member, at the next
+ * pre-gate (readMemberSyncRemote). Cost: one config.yaml read per dispatch,
+ * paid ONLY by members with no remote (sandboxes, the no-remote mock
+ * sprint -- whose golden transcript therefore shows one probe per dispatch);
+ * a member with a remote still pays one probe per process.
  *
  * @param {string} member
  * @returns {boolean} whether the member was marked (false for a non-member)
@@ -433,7 +441,17 @@ export function isMemberDispatchedSinceVerified(member) {
 export async function readMemberSyncRemote(member, opts) {
     const { command, log = () => {}, verify = false } = opts;
     const cached = verify ? undefined : syncRemoteCache.get(member);
-    if (cached) return { ...cached, positive: true };
+    // A memoized ABSENT answer is re-read once after any dispatch to the
+    // member (round-4 review, finding 1). Nothing downstream of a cached
+    // "absent" ever reaches the fingerprint's lazy re-check -- both pre-gates
+    // take the no-remote exit first -- so an agent that wires a remote
+    // mid-dispatch would otherwise leave every later D-push of that member
+    // reporting a benign no-remote skip while its bead closes never left the
+    // clone. A memoized PRESENT answer needs no re-read here: a wrong
+    // "configured" answer fails closed (a real pull/push against whatever
+    // remote bd itself has), and the skip path re-verifies on its own.
+    const absentAfterDispatch = cached && cached.configured === false && dispatchedSinceVerified.has(member);
+    if (cached && !absentAfterDispatch) return { ...cached, positive: true };
 
     let res;
     try {
@@ -907,6 +925,52 @@ const DOLT_TIP_PROBE_TIMEOUT_S = 30;
 /** The ref every `bd dolt push` advances on a git-transport Dolt remote. */
 const DOLT_DATA_REF = 'refs/dolt/data';
 
+/** Never let the probe wait on a human (round-4 review, finding 2). The
+ *  probe URL carries no userinfo (see toGitLsRemoteUrl), so on a member
+ *  whose only credential for the host is the one embedded in sync.remote
+ *  git would otherwise try to PROMPT: on a Windows member Git Credential
+ *  Manager can block on a dialog until the 30s probe timeout, on every
+ *  bracket. `credential.interactive=never` is GCM's own no-UI switch;
+ *  `core.askPass=` (empty) disables any askpass program, so with no terminal
+ *  attached git fails immediately instead of waiting. Passed as `-c` config
+ *  because the command string must not rely on shell-level env assignment
+ *  (the member's shell may be PowerShell). */
+const GIT_NO_PROMPT_FLAGS = '-c credential.interactive=never -c core.askPass=';
+
+/** After this many CONSECUTIVE failed probes a member's probe is disabled
+ *  for the process (cleared by the hard seams): a member that cannot
+ *  authenticate ls-remote, or whose sync.remote is a Dolt-native remote git
+ *  cannot list, would otherwise pay a failed round trip on every bracket.
+ *  Two, not one, so a single network blip does not cost the feature. */
+export const DOLT_TIP_PROBE_MAX_CONSECUTIVE_FAILURES = 2;
+
+/** member -> consecutive probe failures (a success resets to 0). */
+const tipProbeFailures = new Map();
+
+/**
+ * Is `member`'s remote-tip probe currently disabled by the failure latch?
+ * @param {string} member
+ * @returns {boolean}
+ */
+export function isTipProbeDisabled(member) {
+    return (tipProbeFailures.get(member) || 0) >= DOLT_TIP_PROBE_MAX_CONSECUTIVE_FAILURES;
+}
+
+/**
+ * Reset the probe failure latch for `member` (or every member -- test
+ * hygiene, alongside invalidateSyncRemoteCache() / clearLastSyncedTip()).
+ * @param {string} [member]
+ * @returns {number} how many entries were dropped
+ */
+export function clearTipProbeFailures(member) {
+    if (member === undefined) {
+        const n = tipProbeFailures.size;
+        tipProbeFailures.clear();
+        return n;
+    }
+    return tipProbeFailures.delete(member) ? 1 : 0;
+}
+
 /**
  * Strict safe-charset URL gate. The probe command string is handed to the
  * member's own shell, which may be PowerShell OR a POSIX shell, so rather than
@@ -999,9 +1063,23 @@ export function parseLsRemoteTip(output) {
  * @returns {Promise<string|null>}
  */
 async function readRemoteDoltTip(member, { command, log = () => {}, url }) {
+    const sha = await readRemoteDoltTipOnce(member, { command, log, url });
+    if (sha) {
+        tipProbeFailures.delete(member);
+        return sha;
+    }
+    const failures = (tipProbeFailures.get(member) || 0) + 1;
+    tipProbeFailures.set(member, failures);
+    if (failures === DOLT_TIP_PROBE_MAX_CONSECUTIVE_FAILURES) {
+        log(`[Dolt] remote-tip probe for member '${member}' failed ${failures} times in a row; disabling the probe for this member for the rest of the run (every D-pull is real, as before the fingerprint existed).`);
+    }
+    return null;
+}
+
+async function readRemoteDoltTipOnce(member, { command, log, url }) {
     let res;
     try {
-        res = await command(`git ls-remote ${url} ${DOLT_DATA_REF}`, {
+        res = await command(`git ${GIT_NO_PROMPT_FLAGS} ls-remote ${url} ${DOLT_DATA_REF}`, {
             member_name: member,
             silent: true,
             failSoft: true,
@@ -1035,6 +1113,7 @@ async function readRemoteDoltTip(member, { command, log = () => {}, url }) {
  */
 async function resolveTipProbeUrl(member, { command, log }) {
     if (typeof command !== 'function') return null;
+    if (isTipProbeDisabled(member)) return null;
     const { url } = await readMemberSyncRemote(member, { command, log });
     return toGitLsRemoteUrl(url);
 }

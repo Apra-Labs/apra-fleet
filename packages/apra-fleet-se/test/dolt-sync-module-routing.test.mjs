@@ -9,7 +9,7 @@ import {
     syncMemberAfterOrdered,
     finalizeAbort,
 } from '../fleet-sprint/runner.js';
-import { DoltSync } from '../fleet-sprint/dolt-sync.mjs';
+import { DoltSync, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { checkDoltLiteralPath } from '../fleet-sprint/dolt-literal-guard.mjs';
 
 // The sync.remote probe memo and the remote-tip fingerprint are module-level,
@@ -20,6 +20,7 @@ import { checkDoltLiteralPath } from '../fleet-sprint/dolt-literal-guard.mjs';
 beforeEach(() => {
     DoltSync.invalidateSyncRemoteCache();
     DoltSync.clearLastSyncedTip();
+    clearTipProbeFailures();
 });
 
 const __filename = fileURLToPath(import.meta.url);

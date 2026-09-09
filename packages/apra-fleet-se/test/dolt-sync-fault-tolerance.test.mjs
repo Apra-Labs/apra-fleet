@@ -10,6 +10,7 @@ import {
     doltPushAfter,
     invalidateSyncRemoteCache,
     clearLastSyncedTip,
+    clearTipProbeFailures,
 } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
 
@@ -50,6 +51,7 @@ const REAL_DIVERGENCE_STDERR =
 beforeEach(() => {
     invalidateSyncRemoteCache();
     clearLastSyncedTip();
+    clearTipProbeFailures();
 });
 
 function makeCommandMock(script) {

@@ -55,10 +55,24 @@ spawns, and turn a multi-minute pre-launch guard into a single bulk query.
     fingerprint is bound to the URL it was minted against, and a member
     dispatched-to since its memo was last read has `sync.remote` RE-READ (one
     `bd config get`, a plain config.yaml read) before any pull is skipped on
-    it; a changed or unreadable answer forces a real pull. So the re-read is
-    paid once per skip-after-dispatch instead of once per dispatch, a bracket
-    whose remote tip moved pays nothing extra, and the golden transcript is
-    back to one probe.
+    it; a changed or unreadable answer forces a real pull. A member memoized
+    as having NO remote is the one case that never reaches that check (both
+    pre-gates exit on it first), so its memo is re-read once after any
+    dispatch too -- otherwise an agent wiring a remote mid-dispatch would
+    leave every later D-push of that member reporting a benign no-remote
+    skip while its bead closes never left the clone. So the re-read is paid
+    once per skip-after-dispatch for a member with a remote (one probe per
+    process when the remote is quiet) and once per dispatch only for a member
+    without one (sandboxes; the no-remote mock sprint's golden transcript
+    shows exactly that shape).
+  - **The tip probe cannot hang on a credential prompt and disables itself
+    after two consecutive failures.** The probe runs with
+    `-c credential.interactive=never -c core.askPass=` so a member without a
+    usable credential helper fails at once instead of sitting on the 30s
+    probe timeout; and after two consecutive failed probes the member's probe
+    is switched off for the process (re-armed by the same hard seams that
+    drop the memos), so a member that cannot list the remote pays nothing
+    further and every pull is simply real, as before the feature.
 - **The transient retry ladder is time-boxed, not count-boxed.** Widening the
   ladder to 8 retries with a 30s backoff cap fixed a real Windows `git.exe`
   spawn outage (measured 1-3 minutes) but applied that budget to every

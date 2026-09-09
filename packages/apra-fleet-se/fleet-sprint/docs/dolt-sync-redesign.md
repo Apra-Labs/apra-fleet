@@ -1551,12 +1551,27 @@ process per sprint). Two properties matter:
   other consumer of the memo fails closed anyway (a wrong "configured"
   answer just issues a real pull/push against whatever remote bd itself has
   configured). The re-read is therefore paid once per skip-after-dispatch,
-  never per dispatch; a bracket whose tip moved pays nothing extra; the
-  golden transcript is back to one probe. Accepted residual, stated: a
-  member whose `sync.remote` was positively ABSENT at first read (every
-  bracket takes the no-remote exit before any fingerprint logic) and whose
-  agent wires a remote mid-dispatch stays no-remote for the process -- that
-  member was never part of beads sync in this run.
+  never per dispatch; a bracket whose tip moved pays nothing extra; a
+  member with a remote is back to one probe per process. The one case that
+  never reaches that check is a member memoized as having NO remote (both
+  pre-gates exit on it first): its memo is re-read once after any dispatch,
+  because an agent wiring a remote mid-dispatch would otherwise leave every
+  later D-push of that member reporting a benign no-remote skip -- success
+  -- while its bead closes never left the clone. That costs one config.yaml
+  read per dispatch for no-remote members only (sandboxes; the no-remote
+  mock sprint's golden transcript shows one probe per dispatch for exactly
+  this reason).
+- **The probe never waits on a prompt, and switches itself off when it
+  cannot work.** The probe URL carries no userinfo (9.3), so a member whose
+  only credential for the host was URL-embedded would have git try to
+  PROMPT -- under Git Credential Manager on Windows, a dialog that blocks
+  until the 30s probe timeout, on every bracket. The probe runs with
+  `-c credential.interactive=never -c core.askPass=` (config flags, never a
+  shell env prefix -- the member's shell may be PowerShell) so it fails at
+  once, and after two consecutive failed probes the member's probe is
+  disabled for the process (re-armed by the hard seams), so every pull is
+  simply real again. Two rather than one so a single blip does not cost the
+  feature.
 
 ### 9.2 The transient retry ladder is time-boxed, not count-boxed
 

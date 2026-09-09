@@ -1086,8 +1086,11 @@ export function createDashboard(deps = {}) {
             // need it) and coerces `priority` to a number|null
             // (computeSprintProgress() requires that shape). A test-injected
             // `deps.listAllBeads` may already return normalized rows;
-            // normalizeBead() is idempotent on its own output, so mapping
-            // unconditionally is safe either way.
+            // normalizeBead() is idempotent on its own six fields and passes
+            // a `placement` field through (the one extra field
+            // computeSprintProgress() branches on), so mapping unconditionally
+            // is safe either way. It is NOT identity-preserving for any other
+            // extra field an injector might add -- none is consumed here.
             allBeads = (Array.isArray(rawBeads) ? rawBeads : []).map(normalizeBead).filter((b) => b.id.length > 0);
         } catch (err) {
             logError('[dashboard] bulk beads fetch failed (progress bars will show placeholders this round):', err);

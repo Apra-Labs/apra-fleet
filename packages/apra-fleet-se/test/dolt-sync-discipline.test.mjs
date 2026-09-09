@@ -9,7 +9,7 @@ import {
     doltPushAfter,
     verifyDoerStreakClosed,
 } from '../fleet-sprint/runner.js';
-import { invalidateSyncRemoteCache, clearLastSyncedTip } from '../fleet-sprint/dolt-sync.mjs';
+import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { createDoltMutex } from '../src/supervisor/dolt-mutex.mjs';
 import { createIdAllocator } from '../src/supervisor/id-allocator.mjs';
 
@@ -49,6 +49,7 @@ import { createIdAllocator } from '../src/supervisor/id-allocator.mjs';
 beforeEach(() => {
     invalidateSyncRemoteCache();
     clearLastSyncedTip();
+    clearTipProbeFailures();
 });
 
 // A tiny scripted command() mock recording every call with its opts.
