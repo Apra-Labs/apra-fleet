@@ -53,6 +53,54 @@ Integ-test-runner spend: $0.3278 across 3 dispatch(es) this sprint (a subset of 
 Pricing source: all 33 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
+## [Unreleased] -- runner.js module decomposition: Phases T-2 landed, dispatch engine and remaining phases carried forward (sprint FAILED -- scope incomplete)
+
+Sprint goal: begin the strangler-fig decomposition of `fleet-sprint/runner.js`
+(originally ~11,700 lines) into focused modules plus a policy-driven dispatch
+engine, replacing ~13 hand-written per-role dispatch ladders with one
+`dispatchRole(ctx, roleName, opts)` engine backed by a data table. The
+originally-scoped epic estimated 5-6 sprints of work; this sprint delivered
+the branch-queue triage phase, the guard-preparation phase, the full leaf-module
+extraction phase, and the sync/beads/KB extraction phase (the largest phase),
+landing eleven new `fleet-sprint/*.mjs` modules (`vcs-auth`, `sprint-args`,
+`prompts`, `worklists`, `abort`, `branch-ensure`, `mcp-result`,
+`member-target`, `git-sync`, `coordination`, `kb`, `beads-scope`,
+`beads-transitions`) with move-only discipline, a facade-completeness test per
+extraction, and a shared `guarded-modules.mjs` list so five independent
+mechanical guards (shell-command, dolt-literal, full-db-fetch, unbracketed-push,
+inline-ladder) stay pointed at every extracted module instead of silently
+losing coverage as code moves out of `runner.js`. `runner.js` itself shrank
+from roughly 11,700 to roughly 7,800 lines. Two pause-bracket push holes (the
+Final Review findings push and the Publish-PR push) were closed by
+construction as part of the `git-sync.mjs` extraction. The dispatch-engine
+phase itself landed only its data layer (`role-policies.mjs`, with a
+structural scanner keeping every row honest against the live dispatch sites)
+and an inert readiness guard (`inline-ladder-guard.mjs`) -- no role has
+actually been migrated onto `dispatchRole` yet, and the composition-root
+phase (slicing `runSprintCycle` into `phases/*` modules) and the
+observability/productization phase are both largely carried forward, aside
+from three pieces that landed early: structured (non-prose) MCP responses for
+member reservation and LLM/VCS credential provisioning, and a new server-side
+VCS credential handoff tool that removes a plaintext-token round-trip through
+orchestrator-readable command output. A regression was caught and reopened in
+review: a consumer of the new structured provisioning responses shipped with
+a stale test double that masked the new response shape throwing at runtime
+inside a best-effort error handler. Separately, every deploy attempt this
+sprint failed at the install step; the root cause was diagnosed and traced to
+a pre-existing gap in how the installer stops a service-manager-relaunched
+server, filed as follow-up work rather than fixed in this sprint, which means
+none of the phases routed through a deploy-verified smoke test were actually
+confirmed against a running build.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $81.6134.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 48 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- Dolt sync budget: fewer, cheaper beads syncs per sprint
 
 A read-only investigation into where a fleet-sprint spends its `bd dolt pull` /
