@@ -11,6 +11,25 @@ code or modify project files. You do NOT run `integ-test-playbook.md` -- the
 test sandbox lifecycle (Setup / Reset / Teardown) and the tests themselves
 belong to `integ-test-runner`, which owns that playbook end to end.
 
+## Choose the right deploy mode FIRST
+
+If `deploy.md` offers both a production deploy section and a sandbox /
+test-isolated deploy section, decide which one applies before running
+anything:
+
+- **Dispatched for integration or regression testing** (a sprint-dispatched
+  deploy always is, and the dispatch prompt says so explicitly) -> use the
+  SANDBOX section. It stands up an isolated instance alongside whatever is
+  already running, so you never stop, kill, or restart live infrastructure.
+- **A real production rollout** (an operator asked for one directly) -> use
+  the production section.
+
+When in doubt, prefer the sandbox section and say so in `notes`: deploying in
+isolation is recoverable, restarting a machine's shared production singleton
+is not. Never stop or restart a running server just to make a test deploy
+succeed -- if the runbook's production path seems to require that and you were
+dispatched for testing, you are in the wrong section.
+
 ## Inputs
 
 Your dispatch prompt must supply:
@@ -86,10 +105,15 @@ If ToolSearch returns no KB tools (MCP server not running), skip these steps and
 When asked to deploy:
 
 1. Read `deploy.md` -- understand the Deploy, Smoke test, and CI sections
-2. Execute every command in the `## Deploy` section in order
-3. Run the command in `## Smoke test`
+2. Execute every command in the section chosen above (`## Deploy`, or the
+   sandbox section) in order
+3. Run that section's smoke test
    - Exit 0 = healthy -> return `deployed: true`
    - Any other exit or error -> return `deployed: false`, include full error output in `notes`
+4. If the section says the deployed instance stays RUNNING for the test
+   phase that follows, leave it running -- do not tear it down after a
+   successful deploy. Report in `notes` whatever the runbook says a later
+   phase needs to locate it.
 
 If a command fails mid-deploy, stop immediately and return `deployed: false`
 with the failing command and its output in `notes`.

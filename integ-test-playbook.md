@@ -13,6 +13,25 @@ step here would need a throwaway install/server/toy-repo sandbox, it
 belongs there, not here. (`deployer` deploys via `deploy.md`; it does not
 run this file.)
 
+**The deploy this playbook's tests run against is a SANDBOX deploy, and
+this playbook owns its teardown.** `deployer` followed `deploy.md`'s
+`## Sandbox Deploy (for integration/regression testing)` section: an
+isolated fleet MCP server + supervisor pair on OS-assigned ports and their
+own data dirs, coexisting with production, left RUNNING for this phase. It
+is keyed on the sprintId your dispatch prompt states (`Your dispatching
+sprint's own supervisor reservation id (sprintId): <id>`):
+
+```bash
+node scripts/sandbox-deploy.mjs env --sprint-id "<that id>"        # locate: ports, data dirs, pids
+node scripts/sandbox-deploy.mjs teardown --sprint-id "<that id>"   # LAST step, pass or fail
+```
+
+Use the printed `APRA_FLEET_PORT` / `SUPERVISOR_PORT` / `APRA_FLEET_DATA_DIR`
+whenever a step talks to the deployed instance -- never `7523`/`8787`, never
+`~/.apra-fleet`. `env` exiting 1 means no sandbox exists for this id (report
+it; do not test against production). See `deploy.md`'s Teardown for what
+`teardown` checks before it deletes anything.
+
 ## Permissions
 
 Commands below require the ability to run these command families:
@@ -20,6 +39,8 @@ Commands below require the ability to run these command families:
 - `npm run ...` (e.g. `Bash(npm run *)`)
 - `npx vitest ...` (e.g. `Bash(npx vitest *)`)
 - `bd ...` (e.g. `Bash(bd *)`)
+- `node scripts/sandbox-deploy.mjs ...` (e.g. `Bash(node scripts/sandbox-deploy.mjs *)`)
+  -- locating and tearing down the sandbox deploy; `Bash(node:*)` covers it.
 
 Before running anything, verify each family is covered by SOME entry in
 `permissions.allow` of EITHER `.claude/settings.json` OR
@@ -97,6 +118,15 @@ For each feature id handed to the runner:
      ```bash
      bd update <feature-id> --append-notes="integ-test-runner: inconclusive -- <reason>"
      ```
+
+## Sandbox teardown (always, last)
+
+After every feature has been recorded -- pass, fail, or inconclusive -- run
+`node scripts/sandbox-deploy.mjs teardown --sprint-id "<your sprintId>"`.
+Exit 1 means something it launched is still alive or a port is still bound;
+put its stderr in your summary rather than retrying blindly. Never `kill` by
+name, never `node dist/index.js stop` (that stops PRODUCTION when its
+service is registered -- `deploy.md` Non-goals).
 
 ## Waiting on a long-running test run
 

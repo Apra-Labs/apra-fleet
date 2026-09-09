@@ -155,6 +155,12 @@ own role definition):
   needs allowed in its CLI permission settings. The deployer checks this *before
   running anything* and stops with a clear report if your allowlist is missing
   entries, rather than failing mid-deploy.
+- A sandbox / isolated test-deploy mode (optional) -- if `deploy.md` distinguishes
+  one from its production deploy, sprint-dispatched deploys (always for
+  integration/regression testing) use it, leave the instance running for the
+  test phase, and your test playbooks own its teardown. Every phase's dispatch
+  prompt carries the sprint's own `sprintId` line, so a runbook can key the
+  instance's location on it.
 
 The deployer is explicitly forbidden from improvising: if `deploy.md` is absent,
 the deploy and integration-test phases are **skipped cleanly** -- the sprint still
