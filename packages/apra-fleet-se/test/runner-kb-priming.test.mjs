@@ -432,13 +432,16 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     // apra-fleet-23c, second half: an MCP error result resolves, so `captured++` ran
     // on calls that wrote nothing and the run reported "captured 3, promoted 0".
     test('an MCP isError result counts as a failure, not a capture', async () => {
+        const logs = [];
         const { calls, callTool } = errorRecorder('kb capture rejected: an entry must cite at least one source file');
-        const client = createKbWorkClient({ callTool, log: () => {} });
+        const client = createKbWorkClient({ callTool, log: (m) => logs.push(m) });
 
         const out = await client.apply('doer', '/srv/a', { kb_captures: [GOOD_CAPTURE] });
 
         assert.equal(calls.length, 1, 'the call is still attempted');
         assert.equal(out.captured, 0, 'a tool-level error must not be counted as a successful capture');
+        assert.equal(logs.length, 1, 'the rejection must be logged, not silently swallowed');
+        assert.match(logs[0], /^\[kb-work\] kb_capture rejected for "getKbProviders is the only KB accessor" \(non-fatal\): kb capture rejected: an entry must cite at least one source file$/);
     });
 
     test('an MCP isError result on kb_promote is not counted as promoted', async () => {
@@ -555,12 +558,15 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     });
 
     test('a failing kb_query degrades to no knowledge, never throws', async () => {
+        const logs = [];
         const client = createKbWorkClient({
             callTool: async () => { throw new Error('kb down'); },
-            log: () => {},
+            log: (m) => logs.push(m),
         });
 
         assert.deepEqual(await client.relevantKnowledge('/srv/a', ['x']), []);
+        assert.equal(logs.length, 1, 'the failure must be logged, not silently swallowed');
+        assert.match(logs[0], /^\[kb-work\] kb_query failed for \/srv\/a \(non-fatal\): kb down$/);
     });
 
     // apra-fleet-3swo.4.4 rework: this was the one uncovered cell of the
