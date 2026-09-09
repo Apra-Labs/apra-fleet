@@ -10,7 +10,7 @@
 // (provisionOutcome below), keeping the prose regexes only as a fallback for
 // a result with no structuredContent at all.
 import { ApraFleet } from '@apralabs/apra-fleet-client';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER } from './vcs-module.mjs';
+import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resolveMemberTarget } from './member-target.mjs';
 
@@ -378,11 +378,36 @@ async function provisionPrCapableAuthForMember({ fleetApi, command, member, log 
 // `label` is passed (src/tools/provision-vcs-auth.ts: `label = input.label ??
 // input.provider`) -- the PR-raising call sites never pass a label either, so
 // the deployed git-credential-helper file is always
-// $HOME/.fleet-git-credential-github for the 'github' provider on POSIX
-// (src/os/linux.ts gitCredentialHelperWrite), and
-// $env:USERPROFILE\.fleet-git-credential-github.bat on Windows
+// $HOME/.fleet-git-credential-<DEFAULT_VCS_PROVIDER> on POSIX (src/os/linux.ts
+// gitCredentialHelperWrite), and
+// $env:USERPROFILE\.fleet-git-credential-<DEFAULT_VCS_PROVIDER>.bat on Windows
 // (src/os/windows.ts:279-294).
-const GITHUB_VCS_CREDENTIAL_LABEL = 'github';
+//
+// (apra-fleet-3swo.4.10) Kept as a named constant rather than a second
+// independently-hardcoded 'github' string literal: derives from
+// vcs-providers/index.mjs's DEFAULT_VCS_PROVIDER, the SAME single source of
+// truth vcs-module.mjs's classifyFailure()/resolveVcsProviderForHost() fall
+// back to -- so this label default and the rest of the codebase's "which
+// provider when nothing else is known" answer can never independently drift.
+// Value is unchanged ('github') -- this is a routing fix, not a behavior
+// change.
+//
+// REACHABILITY (recorded here so a future reader does not have to redo this
+// analysis): this fallback name is defensive, not normally live. Both call
+// sites below (raiseVcsPrForMember) always resolve a real `provider` via
+// resolveProvider() BEFORE ever consulting vcsCredentialLabelForProvider(),
+// and that call only succeeds after provisionPrCapableAuthForMember() has
+// already run to completion -- which either used an already-registered
+// provider or self-healed by detecting one from the member's git remote and
+// persisting it server-side (provisionVcsAuthForMember's VCS_NO_REGISTERED_
+// PROVIDER branch; see its own comment). resolveProvider() itself NEVER
+// returns a falsy provider on success -- it throws VCS_NO_REGISTERED_PROVIDER
+// instead (vcs-module.mjs) -- so by the time vcsCredentialLabelForProvider()
+// runs in this file's real call graph, `provider` is always a genuine,
+// resolved name and this fallback never fires. It exists purely so a FUTURE
+// caller (or a refactor that loosens resolveProvider()'s contract) degrades
+// to a named, documented default instead of `undefined`/`'undefined'`.
+const DEFAULT_VCS_CREDENTIAL_LABEL = DEFAULT_VCS_PROVIDER;
 
 // The credential-helper label provision_vcs_auth deploys a member's VCS
 // credential under, for the PR-raising call sites to read it back from:
@@ -391,15 +416,16 @@ const GITHUB_VCS_CREDENTIAL_LABEL = 'github';
 // provisionVcsAuthForMember nor a provider's buildProvisionArgs hook) ever
 // sends an explicit `label`, so the label IS the provider name -- 'github'
 // -> $HOME/.fleet-git-credential-github, 'azure-devops' ->
-// $HOME/.fleet-git-credential-azure-devops, etc. A member with no
-// resolvable provider keeps the historical GitHub default.
+// $HOME/.fleet-git-credential-azure-devops, etc. A member with no resolvable
+// provider keeps the historical default (DEFAULT_VCS_PROVIDER, 'github') --
+// see the reachability note above for why this branch is defensive-only.
 /**
  * @param {string|null|undefined} provider
  * @returns {string}
  */
 export function vcsCredentialLabelForProvider(provider) {
     const name = typeof provider === 'string' ? provider.trim() : '';
-    return name || GITHUB_VCS_CREDENTIAL_LABEL;
+    return name || DEFAULT_VCS_CREDENTIAL_LABEL;
 }
 
 // Typed marker returned by finalizeAbort() (and logged by the Publish PR step)
@@ -503,7 +529,7 @@ export function buildCredentialReadCommand(target, label) {
  * @param {{ command: Function, member: string, label?: string, fleetApi?: object, log?: Function }} opts
  * @returns {Promise<string>}
  */
-async function readMemberVcsCredentialToken({ command, member, label = GITHUB_VCS_CREDENTIAL_LABEL, fleetApi, log = () => {} }) {
+async function readMemberVcsCredentialToken({ command, member, label = DEFAULT_VCS_CREDENTIAL_LABEL, fleetApi, log = () => {} }) {
     const target = await resolveMemberTarget({ fleetApi, member, log });
     const { command: credCommand, descriptor: credFile } = buildCredentialReadCommand(target, label);
     const res = await command(credCommand, {
