@@ -43,6 +43,58 @@ function isInsideSameLineString(lineText, col) {
 }
 
 /**
+ * Replaces every comment's characters with spaces (newlines preserved), so the
+ * result has the SAME length and line numbering as `src` but no comment text.
+ *
+ * WHY: balanced-paren scanning skips over string literals, and runner.js's
+ * prose comments are full of apostrophes ("this dispatch's session id"). An
+ * unmasked scan reads that apostrophe as an opening quote and swallows real
+ * code -- including closing parens -- until the next apostrophe, so a call's
+ * balanced range silently runs away to the end of the file and every later
+ * anchor then "matches" it. Masking first is what makes a call-site range
+ * trustworthy.
+ *
+ * @param {string} src
+ * @returns {string}
+ */
+export function maskComments(src) {
+    let out = '';
+    for (let i = 0; i < src.length; i++) {
+        const ch = src[i];
+        if (ch === '"' || ch === "'" || ch === '`') {
+            const end = skipStringLiteral(src, i, ch);
+            out += src.slice(i, end + 1);
+            i = end;
+            continue;
+        }
+        if (ch === '/' && src[i + 1] === '/') {
+            while (i < src.length && src[i] !== '\n') { out += ' '; i++; }
+            out += '\n';
+            continue;
+        }
+        if (ch === '/' && src[i + 1] === '*') {
+            const end = src.indexOf('*/', i + 2);
+            const stop = end < 0 ? src.length - 1 : end + 1;
+            for (; i <= stop; i++) out += src[i] === '\n' ? '\n' : ' ';
+            i--;
+            continue;
+        }
+        out += ch;
+    }
+    return out;
+}
+
+const MASKED_CACHE = new Map();
+function maskedSourceFor(src) {
+    let masked = MASKED_CACHE.get(src);
+    if (masked === undefined) {
+        masked = maskComments(src);
+        MASKED_CACHE.set(src, masked);
+    }
+    return masked;
+}
+
+/**
  * Finds every real (non-comment, non-string-literal) call site of `fnName(`
  * in `src`.
  *
@@ -51,7 +103,11 @@ function isInsideSameLineString(lineText, col) {
  * @param {{excludeDeclaration?: boolean}} [options]
  * @returns {Array<{index:number, line:number, callText:string, range:[number,number]}>}
  */
-export function findCallSites(src, fnName, { excludeDeclaration = false } = {}) {
+export function findCallSites(rawSrc, fnName, { excludeDeclaration = false } = {}) {
+    // Ranges and callText come from the comment-masked source (see
+    // maskComments) so a comment's apostrophe can never derail the scan; line
+    // numbers are unaffected because masking is length-preserving.
+    const src = maskedSourceFor(rawSrc);
     const lines = src.split('\n');
     const lineStarts = [];
     let offset = 0;
