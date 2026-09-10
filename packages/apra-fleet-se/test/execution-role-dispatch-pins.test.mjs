@@ -14,7 +14,8 @@ import {
     regionBetween,
     stripComments,
     dispatchLadderModulePaths,
-    moduleSetSource,
+    moduleSetSourceWithOffsets,
+    formatSiteLocations,
 } from './helpers/dispatch-pin-scanner.mjs';
 import {
     reviewerVerdict,
@@ -65,7 +66,10 @@ const FLEET_SPRINT_DIR = path.join(__dirname, '..', 'fleet-sprint');
 // see that file's header for why. Every pin below is unchanged: they all
 // still resolve against runner.js's real text, which is still exactly
 // what is in SRC today.
-const SRC = moduleSetSource(dispatchLadderModulePaths(FLEET_SPRINT_DIR));
+// MODULE_OFFSETS (apra-fleet-3swo.28) lets failure messages resolve a
+// concatenation-relative site.line back to the real {file, line} it came
+// from, instead of assuming runner.js is the only (or first) module.
+const { source: SRC, offsets: MODULE_OFFSETS } = moduleSetSourceWithOffsets(dispatchLadderModulePaths(FLEET_SPRINT_DIR));
 
 const AGENT_SITES = findCallSites(SRC, 'agent');
 const WITH_GIT_SYNC_SITES = findCallSites(SRC, 'withGitSync', { excludeDeclaration: true });
@@ -99,7 +103,7 @@ function siteFor(anchor) {
         hits.length,
         1,
         `Expected exactly ONE agent() dispatch site matching anchor ${JSON.stringify(anchor)}, found ${hits.length}` +
-        `${hits.length ? ` (runner.js:${hits.map((h) => h.line).join(', ')})` : ''}. Re-anchor this pin on the ladder's ` +
+        `${hits.length ? ` (${formatSiteLocations(MODULE_OFFSETS, hits)})` : ''}. Re-anchor this pin on the ladder's ` +
         `current prompt/label text rather than deleting it.`
     );
     return hits[0];
@@ -472,7 +476,7 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
             truesInSource.length,
             4,
             `Expected exactly 4 withGitSync(...) call sites with pushCode:true, found ${truesInSource.length} ` +
-            `(runner.js:${truesInSource.map((s) => s.line).join(', ')}).`
+            `(${formatSiteLocations(MODULE_OFFSETS, truesInSource)}).`
         );
         for (const pin of EXECUTION_LADDERS.filter((p) => p.ladder === 'harvester')) {
             assert.strictEqual(pin.pushBeads, 'true', 'The harvester also defers low-priority beads, so it D-pushes as well as G-pushes.');
