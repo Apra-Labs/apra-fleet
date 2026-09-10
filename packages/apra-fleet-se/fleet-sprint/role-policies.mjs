@@ -388,6 +388,8 @@ planner.secondary = secondary(planner, 'planner', 'max-turns-resume', {
 });
 
 const planReviewer = policy('plan-reviewer', {
+    // apra-fleet-3swo.5.3: migrated -- dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: 'priorRoundVerdicts: priorPlanRoundVerdicts',
     member: roleMember('plan-reviewer'),
     agentType: 'plan-reviewer',

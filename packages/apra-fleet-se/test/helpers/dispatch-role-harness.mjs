@@ -244,6 +244,16 @@ export const ROLE_CALL_OPTS = Object.freeze({
         resumePrompt: 'PLAN REVIEW RESUME PROMPT',
         roleLabel: 'Plan Reviewer',
         resumeLabel: 'Plan Review (resume, max_turns=1000)',
+        // Distinct SENTINELS rather than a copy of runner.js's real notes
+        // text: what a pin needs to prove is that the engine routes the right
+        // note-builder per error CLASS (degrade.paths === 2 means schema-repair
+        // exhaustion and a dispatch/transport failure are told apart), and a
+        // sentinel proves that without duplicating a production string that
+        // would then have two places to drift.
+        synthesizedNotes: {
+            schema: (err) => `HARNESS-SCHEMA-CLASS: ${err.message}`,
+            dispatch: (err) => `HARNESS-DISPATCH-CLASS: ${err.message}`,
+        },
     },
     'scoped-replan-planner': {
         prompt: 'SCOPED REPLAN PLANNER PROMPT',

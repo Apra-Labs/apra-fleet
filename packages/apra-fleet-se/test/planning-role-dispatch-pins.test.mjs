@@ -32,6 +32,8 @@ import {
     authError,
     trustError,
     busyError,
+    schemaError,
+    transportError,
     postDispatchSyncError,
 } from './helpers/dispatch-role-harness.mjs';
 
@@ -534,37 +536,53 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
         assert.strictEqual(other.rec.kills.length, 0, 'A non-turn-exhaustion error must never trigger a session kill/resume.');
     });
 
-    test('plan-reviewer: two attempts per round, and every failure degrades to CHANGES_NEEDED with dispatchFailed set -- never to an approval', () => {
-        const region = stripComments(regionBetween(SRC, 'for (let planReviewAttempt = 1;', 'lastVerdict = verdict;'));
-        assert.ok(
-            /planReviewAttempt <= 2/.test(region),
-            'An infrastructure failure gets exactly one extra attempt WITHIN the round, without consuming a planning round.'
+    // apra-fleet-3swo.5.3: RE-ANCHORED onto the engine, same facts.
+    test('plan-reviewer: two attempts per round, and every failure degrades to CHANGES_NEEDED with dispatchFailed set -- never to an approval', async () => {
+        const opts = ROLE_CALL_OPTS['plan-reviewer'];
+
+        // Two attempts per round: an infrastructure failure gets exactly one
+        // extra attempt WITHIN the round, without consuming a planning round.
+        const spent = createRecordingCtx({ responses: [schemaError(), transportError(), 'never reached'] });
+        const outcome = await dispatchRole(spent.ctx, 'plan-reviewer', opts);
+        assert.strictEqual(spent.rec.dispatches.length, 2, 'The plan review must be attempted exactly twice per round.');
+
+        // Both recognised failure classes -- schema-repair exhaustion and a
+        // dropped transport -- degrade to the SAME non-approving verdict, and
+        // every synthesized verdict carries the dispatchFailed marker so
+        // plan-cap exhaustion can tell a dead dispatch channel from a genuine
+        // rejection.
+        assert.strictEqual(outcome.degraded, true);
+        assert.strictEqual(outcome.value.verdict, 'CHANGES_NEEDED');
+        assert.strictEqual(outcome.value.dispatchFailed, true);
+        assert.deepStrictEqual(outcome.value.taskAssignments, []);
+        assert.match(outcome.value.notes, /^HARNESS-DISPATCH-CLASS: connection dropped$/, 'A transport failure must be noted through the dispatch-class note builder.');
+
+        const schemaOnly = createRecordingCtx({ responses: [schemaError(), schemaError()] });
+        const schemaOutcome = await dispatchRole(schemaOnly.ctx, 'plan-reviewer', opts);
+        assert.strictEqual(schemaOutcome.value.verdict, 'CHANGES_NEEDED');
+        assert.strictEqual(schemaOutcome.value.dispatchFailed, true);
+        assert.match(schemaOutcome.value.notes, /^HARNESS-SCHEMA-CLASS: /, 'Schema-repair exhaustion must be noted through the schema-class note builder, not the dispatch one.');
+
+        // No degrade path may ever synthesize an APPROVED plan verdict.
+        for (const o of [outcome, schemaOutcome]) {
+            assert.notStrictEqual(o.value.verdict, 'APPROVED', 'No degrade path may ever synthesize an APPROVED plan verdict.');
+        }
+
+        // An unrecognised error class must still propagate rather than being
+        // degraded silently.
+        const unrecognised = createRecordingCtx({ responses: [new TypeError('not a dispatch failure at all')] });
+        await assert.rejects(
+            () => dispatchRole(unrecognised.ctx, 'plan-reviewer', opts),
+            TypeError,
+            'An unrecognised error class must still propagate rather than being degraded silently.'
         );
-        const changesNeeded = region.match(/verdict: 'CHANGES_NEEDED'/g) || [];
-        assert.strictEqual(
-            changesNeeded.length,
-            2,
-            `Expected exactly 2 synthesized CHANGES_NEEDED fallback verdicts (schema-repair exhaustion and dispatch failure), found ${changesNeeded.length}.`
-        );
-        const dispatchFailed = region.match(/dispatchFailed: true/g) || [];
-        assert.strictEqual(
-            dispatchFailed.length,
-            2,
-            'Every synthesized fallback verdict must carry dispatchFailed:true so plan-cap exhaustion can tell a dead dispatch channel from a genuine rejection.'
-        );
-        assert.ok(
-            !/verdict: 'APPROVED'/.test(region),
-            'No degrade path may ever synthesize an APPROVED plan verdict.'
-        );
-        assert.ok(
-            /err instanceof AgentOutputError/.test(region) && /err instanceof AgentDispatchError \|\| err instanceof FleetTransportError/.test(region),
-            'Both schema-repair exhaustion and transport/dispatch failure must be caught and degraded here.'
-        );
-        assert.ok(/throw err;/.test(region), 'An unrecognised error class must still propagate rather than being degraded silently.');
-        assert.ok(
-            /isAuthDispatchError\(err\) && typeof onLlmAuthFailure === 'function'/.test(region),
-            'An unhealed LLM-auth failure would reproduce on every remaining planning round, so one self-heal attempt runs here.'
-        );
+
+        // An unhealed LLM-auth failure would reproduce on every remaining
+        // planning round, so one self-heal attempt runs here.
+        const auth = createRecordingCtx({ responses: [authError(), authError()], healed: false });
+        await dispatchRole(auth.ctx, 'plan-reviewer', opts);
+        assert.strictEqual(auth.rec.authHeals.length, 2, 'Each failing attempt self-heals, so the next round has a real chance.');
+        assert.strictEqual(auth.rec.authHeals[0].label, 'Plan Reviewer dispatch');
     });
 
     test('scoped replan planner: single attempt, no retry ladder, degrades by deferring the flagged beads to the next cycle', () => {

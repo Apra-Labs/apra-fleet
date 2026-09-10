@@ -343,7 +343,9 @@ const EXPECTED_COMMAND_COUNT = 29;
 // the dispatchRole engine (fleet-sprint/dispatch-role.mjs), which is itself a
 // GUARDED_MODULES entry and is scanned by this guard's own checkModules()
 // baseline. Two agent() call sites left runner.js; none were added.
-const EXPECTED_AGENT_COUNT = 20;
+// 20 -> 18 (same bead): the plan-reviewer ladder -- its dispatch and its
+// max_turns-exhaustion resume -- followed the planner onto the engine.
+const EXPECTED_AGENT_COUNT = 18;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in
