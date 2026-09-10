@@ -62,6 +62,47 @@
  *   agentType/schema/resume      -- persona, verdict schema, resume argument
  */
 export const ENGINE_DISPATCHES = [
+    {
+        role: 'planner',
+        kind: 'main',
+        name: 'planner (interactive)',
+        memberRole: 'planner',
+        agentType: 'planner',
+        modelTier: 'premium',
+        maxTurns: 500,
+        timeoutS: 'DISPATCH_TIMEOUT_S',
+        maxTotalS: 'DISPATCH_TIMEOUT_S',
+        bracketed: true,
+        pushCode: false,
+        // Pre-migration this pin read `pushBeads: 'true'` -- the literal at
+        // runner.js's bracket call. Post-migration it is the VALUE the bracket
+        // actually receives. Same fact, resolved instead of quoted.
+        pushBeads: true,
+        watchdog: true,
+        watchdogLabel: 'Plan (interactive)',
+        schema: null,
+        // 'call-site': the engine passes through whatever the runner's
+        // per-round session lookup handed it (roundSessions.resumeArgFor).
+        resume: 'call-site',
+    },
+    {
+        role: 'planner',
+        kind: 'max-turns-resume',
+        name: 'planner (resume after max_turns exhaustion)',
+        memberRole: 'planner',
+        agentType: 'planner',
+        modelTier: 'premium',
+        maxTurns: 1000,
+        timeoutS: 'DISPATCH_TIMEOUT_S',
+        maxTotalS: 'DISPATCH_TIMEOUT_S',
+        bracketed: true,
+        pushCode: false,
+        pushBeads: true,
+        watchdog: true,
+        watchdogLabel: 'Plan (resume, max_turns=1000)',
+        schema: null,
+        resume: true,
+    },
 ];
 
 export const PLANNING_LADDERS = [
@@ -75,44 +116,6 @@ export const PLANNING_LADDERS = [
         // explicitly. That literal is also what anchors this census entry.
         anchor: 'member_name: member,',
         dispatches: ENGINE_DISPATCHES,
-    },
-    {
-        mode: 'inline',
-        ladder: 'planner',
-        name: 'planner (interactive)',
-        anchor: '(plannerPrompt,',
-        member: "getMemberForRole('planner')",
-        agentType: "'planner'",
-        modelTier: 'FIXED_ROLE_TIER.planner',
-        maxTurns: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        bracketed: true,
-        pushCode: 'false',
-        pushBeads: 'true',
-        watchdog: true,
-        watchdogLabel: "'Plan (interactive)'",
-        schema: null,
-        resume: "roundSessions.resumeArgFor('planner', cycle)",
-    },
-    {
-        mode: 'inline',
-        ladder: 'planner',
-        name: 'planner (resume after max_turns exhaustion)',
-        anchor: 'Continue your planning pass exactly where you left off',
-        member: "getMemberForRole('planner')",
-        agentType: "'planner'",
-        modelTier: 'FIXED_ROLE_TIER.planner',
-        maxTurns: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        bracketed: true,
-        pushCode: 'false',
-        pushBeads: 'true',
-        watchdog: true,
-        watchdogLabel: '`Plan (resume, max_turns=${PLANNER_MAX_TURNS * 2})`',
-        schema: null,
-        resume: 'true',
     },
     {
         mode: 'inline',

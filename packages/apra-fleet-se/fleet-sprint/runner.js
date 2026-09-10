@@ -53,6 +53,12 @@ import { decideEnsureBranchAction } from './branch-ensure.mjs';
 // POST_DISPATCH_SYNC_RETRY_DELAYS_MS and the mock instant-backoff switch
 // moved with them (apra-fleet-3swo.4.1).
 import { createSyncBrackets, createGitSync } from './git-sync.mjs';
+// The ONE dispatch engine (apra-fleet-3swo.5.3). It executes a role's ladder
+// out of role-policies.mjs's data table; TURN_BASES is imported alongside it
+// because the turn-budget constants moved there with the dispatch that
+// consumes them, and a few runner-side presentation labels still interpolate
+// a resume's doubled budget.
+import { dispatchRole, TURN_BASES } from './dispatch-role.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
 // verbatim out of runner.js (apra-fleet-3swo.4.3).
@@ -3269,6 +3275,33 @@ async function runSprintCycle(context) {
     // withGitSync member, pushCode, dispatch thunk, options.
     const withGitSync = (member, pushCode, dispatchFn, options) => gitSync.withGitSync(member, pushCode, dispatchFn, options);
 
+    // --- dispatchRole engine context (apra-fleet-3swo.5.3) -------------------
+    // Every runner-side primitive fleet-sprint/dispatch-role.mjs needs to run
+    // a role's ladder out of role-policies.mjs's data table. INJECTED, never
+    // imported: all of these are per-run closures over this function's state,
+    // and dispatch-role.mjs importing runner.js back would be a module cycle
+    // (same discipline as createGitSync above).
+    //
+    // Budgets and schemas arrive as NAMED maps because role-policies.mjs
+    // records them symbolically -- 'DISPATCH_TIMEOUT_S', 'planReviewerVerdict'
+    // -- rather than as values: the timeout comes from the validated CLI args
+    // per run, and the table must stay free of runner/contract imports so it
+    // can be consumed by an engine rather than by a scanner.
+    const dispatchCtx = {
+        agent,
+        withGitSync,
+        withDispatchWatchdog,
+        log,
+        getMemberForRole,
+        memberSessionGuard,
+        onLlmAuthFailure,
+        fixedRoleTier: FIXED_ROLE_TIER,
+        budgets: { DISPATCH_TIMEOUT_S },
+        schemas: { planReviewerVerdict, streakAssignment },
+        isNoMutationDispatchFailure,
+        invalidateAllBeadsCache,
+    };
+
     // Scope discovery (`bdListScoped`) and the shared full-DB fetch
     // (`fetchAllBeadsShared`) are provided by the beads-scope.mjs client
     // destructured at the top of this function, alongside the `command`/
@@ -4321,85 +4354,26 @@ async function runSprintCycle(context) {
                 verifyExcluded: verifySetThisCycle,
             });
             // The planner writes no code but MUTATES beads (it creates the task
-            // DAG), so it is bracketed pushCode:false / pushBeads:true -- its
-            // new tasks are D-pushed for the next dispatch to observe. Each
+            // DAG), so its policy is bracketed pushCode:false / pushBeads:true --
+            // its new tasks are D-pushed for the next dispatch to observe. Each
             // retried attempt gets its own bracket, since a retry may follow a
             // meaningful gap. Like every dispatch site, max_turns exhaustion is
             // answered with a same-session resume at doubled turns; the planner
             // gets a doer-sized base because it builds the whole epic DAG.
-            const PLANNER_MAX_TURNS = 500;
-            const plannerDispatchOpts = {
-                member_name: getMemberForRole('planner'),
-                agentType: 'planner',
-                model: FIXED_ROLE_TIER.planner,
-                // Planning the entire epic DAG is comparably heavy to a doer
-                // streak, so it needs the sprint budget, not the default.
-                timeout_s: DISPATCH_TIMEOUT_S,
-                max_total_s: DISPATCH_TIMEOUT_S,
-                max_turns: PLANNER_MAX_TURNS,
-                // Within THIS cycle's plan-review loop, resume the planner's own
-                // prior-round session by explicit session id so a re-plan keeps
-                // warm context. False on the first round of any cycle
-                // (roundSessions never resumes across cycles). The
-                // max_turns-exhaustion path overrides this to `resume: true` via
-                // spread order -- an in-dispatch continuation of the session
-                // just run, orthogonal to cross-round resume.
-                resume: roundSessions.resumeArgFor('planner', cycle),
-                onSessionId: (id, meta) => roundSessions.record('planner', cycle, id, meta),
-            };
-            // Every interactive Planner dispatch attempt -- the first as well as
-            // the resume -- is raced against a client-side watchdog so a
-            // frozen-but-alive member session can never leave this await
-            // silently hanging past its budget. See withDispatchWatchdog for
-            // why this is needed in addition to, not instead of, the
-            // server-side timeout_s/max_total_s passed below.
-            const dispatchPlannerOnce = ({ skipPreDispatchSync = false, skipPreDispatchDoltPull = false } = {}) => withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
-                agent(plannerPrompt, { ...plannerDispatchOpts, member_name: getMemberForRole('planner') }),
-                { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: 'Plan (interactive)', log }
-            ), { pushBeads: true, skipPreDispatchSync, skipPreDispatchDoltPull });
-            const dispatchPlannerResume = () => withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
-                agent(
-                    'Continue your planning pass exactly where you left off in this same session -- do not restart or re-derive the DAG from scratch. Finish creating/updating the remaining beads and return your final summary now.',
-                    {
-                        ...plannerDispatchOpts,
-                        member_name: getMemberForRole('planner'),
-                        label: `Plan (resume, max_turns=${PLANNER_MAX_TURNS * 2})`,
-                        resume: true,
-                        max_turns: PLANNER_MAX_TURNS * 2,
-                    }
-                ),
-                { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: `Plan (resume, max_turns=${PLANNER_MAX_TURNS * 2})`, log }
-            ), { pushBeads: true });
-            const dispatchPlanner = async ({ skipPreDispatchSync = false, skipPreDispatchDoltPull = false } = {}) => {
-                try {
-                    return await dispatchPlannerOnce({ skipPreDispatchSync, skipPreDispatchDoltPull });
-                } catch (err) {
-                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        log(`Planner exhausted its turn limit (max_turns=${PLANNER_MAX_TURNS}) -- resuming the same session with max_turns=${PLANNER_MAX_TURNS * 2}.`);
-                        // A resume follows an agent that DID run (max_turns_exhausted
-                        // is a resumable partial-work case, not a no-mutation
-                        // failure) -- so it always runs the full pre-dispatch sync.
-                        await memberSessionGuard.killIfAlive(getMemberForRole('planner'));
-                        return await dispatchPlannerResume();
-                    }
-                    throw err;
-                }
-            };
-            // A bounded backoff ladder rather than a single immediate retry: the
-            // dominant transient failure is a "busy" AgentDispatchError
-            // ("execute_prompt is already running for <member>"), and a fleet
-            // member's busy-lock can take considerably longer than a few seconds
-            // to clear. An immediate blind retry reproduces the same error and,
-            // uncaught, would kill the whole sprint. The ladder's total headroom
-            // is sized for a real busy-lock, not for a schema or logic error --
-            // those are caught by the non-retryable checks in the loop body.
-            const PLANNER_DISPATCH_RETRY_DELAYS_MS = [0, 5000, 15000, 30000, 60000];
-            let plannerErr = null;
-            // When the previous attempt failed terminally with nothing to
-            // publish, its pre-dispatch G-pull/D-pull is still fresh, so the next
-            // attempt skips re-running them. See withGitSync's
-            // skipPreDispatchSync.
-            let skipPreDispatchSyncNext = false;
+            //
+            // apra-fleet-3swo.5.3: all of that -- the turn budget, the bounded
+            // [0, 5s, 15s, 30s, 60s] backoff ladder sized for a real member
+            // busy-lock, the one LLM-auth self-heal, the abort-without-
+            // re-dispatch on a post-dispatch sync failure, the no-mutation
+            // pre-sync skip, the same-session resume at doubled turns, and the
+            // FATAL degrade (there is no sprint without a plan, so an exhausted
+            // ladder rethrows rather than synthesizing one) -- is now the
+            // 'planner' row of fleet-sprint/role-policies.mjs, executed by
+            // dispatchRole (fleet-sprint/dispatch-role.mjs). What stays here is
+            // what is genuinely NOT policy: the prompts, the presentation
+            // labels, the per-round session wiring, and the two runner-local
+            // decisions below.
+            //
             // The sprint's FIRST Planner dispatch reads/mutates the SAME beads
             // clone the orchestrator's pre-sprint doltPullBefore just freshened,
             // with only non-mutating `bd list` reads in between, so its own
@@ -4411,86 +4385,45 @@ async function runSprintCycle(context) {
             // a DISTINCT clone from the orchestrator (never freshened by the
             // setup pull).
             const plannerSharesOrchestratorClone = getMemberForRole('planner') === orchestratorMember;
-            // The ladder's real timed sleeps exist purely for production
-            // busy-lock resilience; a hermetic mock run has no busy-lock to wait
-            // out, so the harness sets this flag to exercise the full ladder
-            // LOGIC with zero wall-clock. The delay values and the "waiting Ns"
-            // log line are unchanged either way, so observable behavior matches.
-            const instantRetryBackoff = process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF === '1';
-            for (let i = 0; i < PLANNER_DISPATCH_RETRY_DELAYS_MS.length; i++) {
-                if (PLANNER_DISPATCH_RETRY_DELAYS_MS[i] > 0) {
-                    log(`Planner dispatch: waiting ${PLANNER_DISPATCH_RETRY_DELAYS_MS[i] / 1000}s before retry attempt ${i + 1}/${PLANNER_DISPATCH_RETRY_DELAYS_MS.length}...`);
-                    if (!instantRetryBackoff) {
-                        await new Promise((resolve) => setTimeout(resolve, PLANNER_DISPATCH_RETRY_DELAYS_MS[i]));
-                    }
-                }
-                try {
-                    const skipPreDispatchDoltPull =
-                        i === 0 && cycle === 1 && planningRounds === 1 && plannerSharesOrchestratorClone;
-                    await dispatchPlanner({ skipPreDispatchSync: skipPreDispatchSyncNext, skipPreDispatchDoltPull });
-                    // apra-fleet-jxdf.1: when the planner runs on a DIFFERENT
-                    // clone than the orchestrator, its newly-created/mutated
-                    // beads are invisible to the orchestrator's own Dolt clone
-                    // until that clone is actually pulled -- invalidating the
-                    // JS-level cache below is not enough, since the cache's
-                    // NEXT read still hits stale on-disk data. Fatal on
-                    // failure: proceeding to Execution Prep against a plan the
-                    // orchestrator cannot actually see reproduces exactly the
-                    // "epic looks like a childless ready leaf" failure this
-                    // fix exists to close.
-                    if (!plannerSharesOrchestratorClone) {
-                        const postPlanSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
-                        await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: postPlanSettleShell }) });
-                    }
-                    // apra-fleet-zmqm: the planner just created/mutated beads on
-                    // its own clone via its own bd tool calls -- invisible to
-                    // this orchestrator's command()-wrapper invalidation (see
-                    // fetchAllBeadsShared()'s doc comment, point 3). Execution
-                    // Prep runs later in this SAME phase, so without this the
-                    // cache built before Plan silently survives into it.
-                    invalidateAllBeadsCache();
-                    plannerErr = null;
-                    break;
-                } catch (err) {
-                    plannerErr = err;
-                    // The Planner turn ALREADY RAN and its output is committed in
-                    // the member's local beads clone -- only the post-dispatch
-                    // sync failed, and withGitSync already retried that step on
-                    // its own. Redispatching would spawn a second Planner session
-                    // for the same phase on top of completed work, so abort the
-                    // ladder and surface the sync failure.
-                    if (isPostDispatchSyncFailure(err)) {
-                        log(`Planner dispatch COMPLETED but its post-dispatch sync failed: ${err.message} Aborting retries WITHOUT re-dispatching -- the planning turn already ran and its beads writes are local; fix the sync and re-run.`);
-                        break;
-                    }
-                    // Only a no-mutation dispatch failure leaves the workspace
-                    // provably unchanged, so only then may the next attempt skip
-                    // its pre-dispatch sync. Any other error re-arms it.
-                    skipPreDispatchSyncNext = isNoMutationDispatchFailure(err);
-                    // Auth/workspace-trust failures are deterministic -- no retry
-                    // can succeed -- so abort immediately rather than burning the
-                    // remaining attempts reproducing the same failure.
-                    if (isNonRetryableDispatchError(err)) {
-                        // An LLM-auth failure (unlike workspace-trust, which
-                        // self-heal cannot fix) gets one bounded self-heal
-                        // attempt before the loop gives up.
-                        if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                            const healed = await onLlmAuthFailure({ member: getMemberForRole('planner'), label: 'Planner dispatch', error: err.message });
-                            if (healed) {
-                                log(`Planner dispatch: LLM auth self-heal succeeded -- retrying.`);
-                                continue;
-                            }
-                        }
-                        log(`Planner dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting retries -- fix the member's credentials/trust and re-run.`);
-                        break;
-                    }
-                    const isLastAttempt = i === PLANNER_DISPATCH_RETRY_DELAYS_MS.length - 1;
-                    log(`Planner dispatch threw: ${err.message}.${isLastAttempt ? ' Retries exhausted.' : ' Retrying.'}`);
-                }
-            }
-            if (plannerErr) {
-                throw plannerErr;
-            }
+            await dispatchRole(dispatchCtx, 'planner', {
+                prompt: plannerPrompt,
+                resumePrompt: 'Continue your planning pass exactly where you left off in this same session -- do not restart or re-derive the DAG from scratch. Finish creating/updating the remaining beads and return your final summary now.',
+                roleLabel: 'Planner',
+                resumeLabel: `Plan (resume, max_turns=${TURN_BASES.PLANNER_MAX_TURNS * 2})`,
+                // Within THIS cycle's plan-review loop, resume the planner's own
+                // prior-round session by explicit session id so a re-plan keeps
+                // warm context. False on the first round of any cycle
+                // (roundSessions never resumes across cycles). The
+                // max_turns-exhaustion path overrides this to `resume: true` --
+                // an in-dispatch continuation of the session just run,
+                // orthogonal to cross-round resume.
+                resumeArg: roundSessions.resumeArgFor('planner', cycle),
+                onSessionId: (id, meta) => roundSessions.record('planner', cycle, id, meta),
+                attemptOptions: ({ attempt }) => ({
+                    skipPreDispatchDoltPull:
+                        attempt === 1 && cycle === 1 && planningRounds === 1 && plannerSharesOrchestratorClone,
+                }),
+                // Runs INSIDE the attempt's try, so a failure here is classified
+                // by the same ladder that classifies the dispatch itself.
+                // apra-fleet-jxdf.1: when the planner runs on a DIFFERENT clone
+                // than the orchestrator, its newly-created/mutated beads are
+                // invisible to the orchestrator's own Dolt clone until that
+                // clone is actually pulled -- invalidating the JS-level cache
+                // (the policy's 'invalidate-beads-cache' postResult step, which
+                // the engine runs right after this) is not enough, since the
+                // cache's NEXT read still hits stale on-disk data. Fatal on
+                // failure: proceeding to Execution Prep against a plan the
+                // orchestrator cannot actually see reproduces exactly the "epic
+                // looks like a childless ready leaf" failure this fix closes.
+                afterAttempt: async () => {
+                    if (plannerSharesOrchestratorClone) return;
+                    const postPlanSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+                    await gitSync.syncBeadsBefore(orchestratorMember, {
+                        fatal: true,
+                        settle: buildSettleCallback(orchestratorMember, { command, log, shell: postPlanSettleShell }),
+                    });
+                },
+            });
             // The planner resubmits a corrected rejected finding directly via
             // `bd create`, never through
             // persistNewTaskBestEffort/clearResubmittedNewTask -- and correcting

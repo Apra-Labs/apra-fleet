@@ -338,7 +338,12 @@ const EXPECTED_COMMAND_COUNT = 29;
 // call sites -- the dispatch itself and its max_turns-exhaustion
 // resume-and-continue, both `member_name:
 // getMemberForRole('regression-test-runner')`, verified compliant.
-const EXPECTED_AGENT_COUNT = 22;
+// 22 -> 20 (apra-fleet-3swo.5.3): the planner ladder -- its interactive
+// dispatch and its max_turns-exhaustion resume -- moved out of runner.js onto
+// the dispatchRole engine (fleet-sprint/dispatch-role.mjs), which is itself a
+// GUARDED_MODULES entry and is scanned by this guard's own checkModules()
+// baseline. Two agent() call sites left runner.js; none were added.
+const EXPECTED_AGENT_COUNT = 20;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in
@@ -548,11 +553,15 @@ test("no agent()/command() call site in runner.js has a callText far larger than
     );
 
     // The specific site this bug was found on (dispatchDoerResume's agent()
-    // call at runner.js:5403) must end well before the file's end -- assert
-    // it stays in the same size class as other dispatch call sites rather
-    // than spanning a meaningful fraction of the whole file.
-    const doerResumeSite = sites.find((s) => s.line === 5403 && s.fnName === 'agent');
-    assert.ok(doerResumeSite, 'expected an agent() call site at runner.js:5403 (dispatchDoerResume) -- update this test if that dispatch moved/was renamed');
+    // call) must end well before the file's end -- assert it stays in the same
+    // size class as other dispatch call sites rather than spanning a meaningful
+    // fraction of the whole file. Anchored on the resume prompt's own text
+    // rather than on a line number: runner.js keeps shrinking as extraction
+    // phases move ladders out of it (apra-fleet-3swo.5.3), and a line number
+    // goes stale on every one of those without the site having moved at all.
+    const DOER_RESUME_ANCHOR = 'Continue exactly where you left off from this same session';
+    const doerResumeSite = sites.find((s) => s.fnName === 'agent' && s.callText.includes(DOER_RESUME_ANCHOR));
+    assert.ok(doerResumeSite, `expected an agent() call site containing ${JSON.stringify(DOER_RESUME_ANCHOR)} (dispatchDoerResume) -- update this test if that dispatch moved/was renamed`);
     assert.ok(
         doerResumeSite.callText.length < 10000,
         `dispatchDoerResume's agent() callText is ${doerResumeSite.callText.length} chars -- expected a normal-sized dispatch call, not a runaway match`

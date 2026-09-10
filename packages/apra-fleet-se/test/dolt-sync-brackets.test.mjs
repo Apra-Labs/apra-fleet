@@ -948,7 +948,14 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // max_turns resume -- both read-side (pushCode:false) but BOTH mutating
     // (pushBeads:true): the runner files parent-less
     // `[regression][carry-over]` bug beads that must reach the shared remote.
-    assert.equal(sites.length, 20, `expected 20 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 20 -> 18 (apra-fleet-3swo.5.3): the planner's two brackets -- its
+    // interactive dispatch and its max_turns-exhaustion resume -- moved out of
+    // runner.js onto the dispatchRole engine (fleet-sprint/dispatch-role.mjs),
+    // which opens the SAME bracket (pushCode:false, pushBeads:true) from one
+    // generic place driven by role-policies.mjs. The scoped-replan planner
+    // bracket, which is still inline, is what keeps the planner role
+    // represented in the roleMarkers check below.
+    assert.equal(sites.length, 18, `expected 18 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch
@@ -968,10 +975,13 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // regression-test-runner is a fifth beads-mutating role (it files
     // parent-less carry-over bug beads), and like the doer/integ runner it
     // has TWO pushBeads:true sites -- dispatch and same-session resume.
+    // 11 -> 9 (apra-fleet-3swo.5.3): the planner's own dispatch+resume pair
+    // moved onto the engine (see above), taking two pushBeads:true brackets
+    // with them. The scoped-replan planner's bracket stays inline.
     assert.equal(
         pushBeadsSites.length,
-        11,
-        `expected exactly 11 withGitSync(...) brackets with pushBeads:true (planner+resume, doer+resume, integ+resume, regression+resume, harvester+resume, scoped-replan planner), found ${pushBeadsSites.length}`,
+        9,
+        `expected exactly 9 withGitSync(...) brackets with pushBeads:true (doer+resume, integ+resume, regression+resume, harvester+resume, scoped-replan planner), found ${pushBeadsSites.length}`,
     );
 
     const roleMarkers = [
