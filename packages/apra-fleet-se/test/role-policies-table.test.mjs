@@ -564,6 +564,14 @@ describe('role policy table: coverage against the behaviour pins', () => {
 // (3) Per-dispatch policy fields, re-derived from runner.js.
 // -----------------------------------------------------------------------------
 describe('role policy table: per-dispatch fields match runner.js', () => {
+    test('no dispatch is derived from an inline runner.js call site any more', () => {
+        assert.deepStrictEqual(
+            dispatchRows().filter((r) => !r.engine).map((r) => r.name),
+            [],
+            'a dispatch has an INLINE runner.js call site again -- this section must cover it rather than iterating nothing.'
+        );
+        assert.strictEqual(dispatchRows().length, 22, 'All 22 dispatches must still be described.');
+    });
     for (const row of dispatchRows().filter((r) => !r.engine)) {
         test(`${row.name}: member, model, turn budget, timeouts, bracket, watchdog, KB source and schema`, () => {
             const site = siteFor(row.anchor);
@@ -637,7 +645,34 @@ describe('role policy table: per-dispatch fields match runner.js', () => {
 // -----------------------------------------------------------------------------
 // (4) Ladder-level policy fields: retry and degrade.
 // -----------------------------------------------------------------------------
+// apra-fleet-3swo.5.7: with the execution-side migration complete, INLINE_ROLES
+// is EMPTY -- every one of the thirteen rows is now derived by running the
+// engine (section (7)) rather than by scanning runner.js. The textual
+// derivation machinery above is deliberately kept rather than deleted: it
+// becomes live again the moment a role is un-migrated, and a file that had
+// thrown it away would silently lose that role's coverage instead of failing.
+// These three guards are what stop the now-empty loops from passing vacuously:
+// each asserts that emptiness is the EXPECTED state, so an un-migration is
+// caught loudly, and section (7)'s own census asserts the engine side really
+// covers everything.
+function assertInlineDerivationIsExpectedlyEmpty(section) {
+    assert.deepStrictEqual(
+        INLINE_ROLES,
+        [],
+        `${section}: a role has an INLINE runner.js ladder again -- this section's loop must cover it rather than ` +
+        'silently iterating nothing. Re-check ROLE_SOURCE has a real anchor/region for it.'
+    );
+    assert.strictEqual(
+        MIGRATED_ROLES.length,
+        ROLE_NAMES.length,
+        `${section}: every row must be derived on exactly one side, and today that side is the engine.`
+    );
+}
+
 describe('role policy table: retry ladders match runner.js', () => {
+    test('no row is derived from an inline runner.js ladder any more', () => {
+        assertInlineDerivationIsExpectedlyEmpty('retry ladders');
+    });
     for (const role of INLINE_ROLES) {
         test(`${role}: attempts, backoff, resume escalation, auth self-heal and sync-failure handling`, () => {
             const p = policyFor(role);
@@ -767,6 +802,9 @@ describe('role policy table: retry ladders match runner.js', () => {
 });
 
 describe('role policy table: degrade behaviour matches runner.js', () => {
+    test('no row is derived from an inline runner.js ladder any more', () => {
+        assertInlineDerivationIsExpectedlyEmpty('degrade behaviour');
+    });
     for (const role of INLINE_ROLES) {
         test(`${role}: what the ladder produces when its attempts are spent`, () => {
             const p = policyFor(role);
@@ -900,6 +938,9 @@ function escapeRe(text) {
 }
 
 describe('role policy table: pre-dispatch and post-result steps match runner.js', () => {
+    test('no dispatch has its steps derived from inline runner.js source any more', () => {
+        assertInlineDerivationIsExpectedlyEmpty('pre-dispatch/post-result steps');
+    });
     for (const row of dispatchRows().filter((r) => !r.engine)) {
         test(`${row.name}: every recorded step is a step runner.js really performs`, () => {
             const p = row.policy;
