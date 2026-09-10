@@ -72,6 +72,12 @@ const FLEET_SPRINT_DIR = path.join(__dirname, '..', 'fleet-sprint');
 // still exactly what is in SRC today.
 const SRC = moduleSetSource(dispatchLadderModulePaths(FLEET_SPRINT_DIR));
 const PIN_FILES = [
+    // The planning-side pin TABLE itself lives in a shared data helper
+    // (apra-fleet-3swo.28) so execution-role-dispatch-pins.test.mjs can read
+    // its length without re-importing (and re-running) this test file --
+    // planning-role-dispatch-pins.test.mjs no longer contains any `anchor:`
+    // literals directly, so both must be scanned to recover all 22 anchors.
+    path.join(__dirname, 'helpers', 'planning-ladders.mjs'),
     path.join(__dirname, 'planning-role-dispatch-pins.test.mjs'),
     path.join(__dirname, 'execution-role-dispatch-pins.test.mjs'),
 ];
