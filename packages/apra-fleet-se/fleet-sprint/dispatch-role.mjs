@@ -3,8 +3,9 @@ import {
     isNonRetryableDispatchError,
     isAuthDispatchError,
     isPostDispatchSyncFailure,
+    isInfraDispatchFailure,
 } from './errors.mjs';
-import { AgentOutputError, AgentDispatchError, FleetTransportError } from '@apralabs/apra-fleet-workflow';
+import { AgentOutputError, AgentDispatchError, FleetTransportError, WorkflowError } from '@apralabs/apra-fleet-workflow';
 
 // =============================================================================
 // apra-fleet-3swo.5.3 -- dispatchRole(ctx, roleName, opts): the ONE dispatch
@@ -235,9 +236,20 @@ function resolveSchema(ctx, schemaName) {
 // role-policies.mjs's DEGRADE_KINDS.
 // -----------------------------------------------------------------------------
 
+/** Every constructor NAME on an error's prototype chain, nearest first. */
+function errorClassNames(err) {
+    const names = [];
+    for (let proto = err; proto; proto = Object.getPrototypeOf(proto)) {
+        const name = proto.constructor && proto.constructor.name;
+        if (name) names.push(name);
+        if (name === 'Error') break;
+    }
+    return names;
+}
+
 /**
- * Classifies a ladder failure into the two error CLASSES every degrade
- * distinguishes:
+ * Classifies a ladder failure into one of role-policies.mjs's ERROR_CLASSES.
+ * The first two are universal:
  *   'schema'   -- AgentOutputError: agent()'s own bounded schema-repair loop
  *                 was exhausted, so no schema-valid output ever arrived;
  *   'dispatch' -- AgentDispatchError/FleetTransportError: the dispatch channel
@@ -245,11 +257,62 @@ function resolveSchema(ctx, schemaName) {
  *                 and non-schema as a dispatch error -- neither may abort the
  *                 whole sprint);
  *   null       -- anything else, i.e. an unrecognised error class.
+ *
+ * The remaining three exist only for the roles whose POLICY asks for them,
+ * which is what keeps them variances-as-data rather than engine branches:
+ *   'infra'    -- `degrade.classifiesInfraFailures` (the integ runner): a
+ *                 dispatch that produced no result envelope at all is not a
+ *                 test verdict and must never be recorded as one.
+ *   'dispatch' -- also any class named in `degrade.extraDispatchErrors` (the
+ *                 per-round reviewer's own read-side sync-bracket failures).
+ *   'sync'     -- `degrade.classifiesSyncFailures` (the regression phase):
+ *                 the git/beads sync AROUND the dispatch failed, which for
+ *                 the one phase whose whole job is mutating beads is a
+ *                 routine outcome worth reporting distinctly.
+ *   'unknown'  -- `degrade.classifiesUnrecognisedErrors` (the regression
+ *                 catch-all): even an unrecognised class gets a degrade path
+ *                 rather than aborting an informational phase.
+ *
+ * Called with no policy it behaves exactly as the two-class version did.
+ *
+ * @param {Error} err
+ * @param {object} [policy] the ROLE_POLICIES row whose degrade is in force
  */
-export function classifyLadderError(err) {
+export function classifyLadderError(err, policy) {
+    const degrade = policy ? policy.degrade : null;
     if (err instanceof AgentOutputError) return 'schema';
+    // BEFORE the generic dispatch class: an infra failure IS an
+    // AgentDispatchError, and the whole point of the class is telling the two
+    // apart for the one role that must not conflate them.
+    if (degrade && degrade.classifiesInfraFailures
+        && err instanceof AgentDispatchError && isInfraDispatchFailure(err)) {
+        return 'infra';
+    }
     if (err instanceof AgentDispatchError || err instanceof FleetTransportError) return 'dispatch';
+    if (degrade && degrade.extraDispatchErrors.length > 0) {
+        const names = errorClassNames(err);
+        if (degrade.extraDispatchErrors.some((name) => names.includes(name))) return 'dispatch';
+    }
+    if (degrade && degrade.classifiesSyncFailures
+        && (isPostDispatchSyncFailure(err) || err instanceof WorkflowError)) {
+        return 'sync';
+    }
+    if (degrade && degrade.classifiesUnrecognisedErrors) return 'unknown';
     return null;
+}
+
+/**
+ * Thrown by the engine itself when a SCHEMA-VALID result is rejected by the
+ * caller's own semantic validator under `retry.retryOnInvalidResult`. It is
+ * never surfaced to the caller: the ladder either retries the attempt or
+ * converts it through `opts.onResultRejected`.
+ */
+export class LadderResultRejectedError extends Error {
+    constructor(reason) {
+        super(`dispatch-role: the ladder's result was rejected by its own validator (${reason}).`);
+        this.name = 'LadderResultRejectedError';
+        this.reason = reason;
+    }
 }
 
 /**
@@ -267,13 +330,34 @@ export function classifyLadderError(err) {
  */
 function synthesizeDegradedValue(policy, opts, err, errorClass) {
     const degrade = policy.degrade;
-    if (degrade.kind !== 'synthesized-verdict') return null;
+    // `degrade.classes` -- not the degrade KIND -- decides whether this
+    // ladder fabricates anything for THIS error class. A ladder that
+    // recognises a class but does not list it (streak assignment's
+    // 'fallback-value', the scoped replan's 'defer-to-next-cycle') hands the
+    // caller null on purpose.
+    if (!degrade.synthesized || !degrade.classes.includes(errorClass)) return null;
     const notes = opts.synthesizedNotes && opts.synthesizedNotes[errorClass]
         ? opts.synthesizedNotes[errorClass](err)
         : `${opts.roleLabel || policy.role} dispatch failed: ${err.message}`;
-    const value = { ...degrade.synthesized, notes, taskAssignments: [] };
+    const value = { ...degrade.synthesized, [degrade.notesField]: notes };
     if (degrade.marker) value[degrade.marker] = true;
     return value;
+}
+
+/**
+ * The DEGRADE_STEPS a policy runs on each attempt that degrades (as opposed
+ * to `postResult`, which runs only after a SUCCESSFUL attempt). The one step
+ * today is the per-round reviewer's 'clear-round-session': a failed round's
+ * session must not be resumed by the next round, and a successful one must.
+ */
+async function runDegradeSteps(ctx, policy, err, errorClass) {
+    for (const step of policy.degrade.steps) {
+        const hook = ctx.steps && ctx.steps[step];
+        if (typeof hook !== 'function') {
+            throw new Error(`dispatch-role: policy names degrade step '${step}', which ctx.steps does not supply.`);
+        }
+        await hook({ policy, error: err, errorClass });
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -304,8 +388,14 @@ function synthesizeDegradedValue(policy, opts, err, errorClass) {
  *   attemptOptions   -- ({ attempt, skipPreDispatchSync }) => extra withGitSync options
  *   afterAttempt     -- async (value) => void, run INSIDE the attempt's try so
  *                       a failure in it is classified by the same ladder
- *   synthesizedNotes -- { schema(err), dispatch(err) } for a synthesized verdict
- * @returns {Promise<{ok:boolean, value:any, error:Error|null, degraded:boolean, validation:any}>}
+ *   synthesizedNotes -- { schema(err), dispatch(err), infra(err), sync(err),
+ *                       unknown(err) } -- one note builder per ERROR_CLASS
+ *                       this role's `degrade.classes` fabricates for
+ *   onResultRejected -- (reason) => Error, the error a `retryOnInvalidResult`
+ *                       ladder throws once its budget is spent on results its
+ *                       own validator keeps rejecting
+ * @returns {Promise<{ok:boolean, value:any, error:Error|null, degraded:boolean,
+ *                    inconclusive:{reason:string,message:string}|null, validation:any}>}
  */
 export async function dispatchRole(ctx, roleName, opts = {}) {
     // Destructured so this module's ONE dispatch reads `agent(` -- the literal
@@ -313,7 +403,15 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // `ctx.agent(` call would fall outside both guards' call-site regexes and
     // leave this file's only dispatch silently unguarded.
     const { agent } = ctx;
-    const policy = policyFor(roleName);
+    // ctx.policies: the table this run reads its row from, defaulting to the
+    // real frozen ROLE_POLICIES. It exists so a test can splice ONE field of
+    // ONE row and observe the engine behave differently -- which is the only
+    // way to prove a per-role variance (the integ INCONCLUSIVE record, the
+    // regression catch-all, the final-review heal short-circuit, the
+    // deployer's pre-dispatch prompt invariant) is really driven by POLICY
+    // DATA rather than by a branch in this file that happens to agree with
+    // the table. Production never passes it.
+    const policy = ctx.policies ? policyFor(roleName, ctx.policies) : policyFor(roleName);
     const bindings = opts.bindings || {};
     const member = resolveMember(ctx, policy.member, bindings);
     const roleLabel = opts.roleLabel || policy.role;
@@ -372,24 +470,50 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     };
 
     // --- one ATTEMPT: the main dispatch, plus the resume it may need --------
+    // TWO conditions reach the SAME secondary dispatch, and the policy says
+    // which of them this ladder honours:
+    //   retry.maxTurnsResume       -- the turn budget was spent. Universal.
+    //   retry.infraResumeAttempts  -- the member CLI died mid-turn and lost
+    //                                 its result envelope, so the run may have
+    //                                 made real progress and merely failed to
+    //                                 report it. The integ runner alone, and
+    //                                 bounded at one recovery.
     const runAttempt = async (attemptOpts) => {
+        const preShortCircuit = await runPreDispatchSteps(ctx, policy, member, opts);
+        if (preShortCircuit) return preShortCircuit.value;
         try {
             return await runDispatch(policy, opts.prompt, opts.label, attemptOpts);
         } catch (err) {
             const secondary = policy.secondary;
             const isTurnExhaustion = err instanceof AgentDispatchError
                 && err.details && err.details.reason === 'max_turns_exhausted';
-            if (!retry.maxTurnsResume || !secondary || secondary.kind !== 'max-turns-resume' || !isTurnExhaustion) {
+            const isInfra = err instanceof AgentDispatchError && isInfraDispatchFailure(err);
+            const resumesOnExhaustion = retry.maxTurnsResume && isTurnExhaustion;
+            const resumesOnInfra = retry.infraResumeAttempts > 0 && isInfra && !isTurnExhaustion;
+            if (!secondary || secondary.kind !== 'max-turns-resume' || (!resumesOnExhaustion && !resumesOnInfra)) {
                 throw err;
             }
-            ctx.log(
-                `${roleLabel} exhausted its turn limit (max_turns=${resolveMaxTurns(policy.maxTurns, bindings)}) -- ` +
-                `resuming the same session with max_turns=${resolveMaxTurns(secondary.maxTurns, bindings)}.`
-            );
+            if (resumesOnExhaustion) {
+                ctx.log(
+                    `${roleLabel} exhausted its turn limit (max_turns=${resolveMaxTurns(policy.maxTurns, bindings)}) -- ` +
+                    `resuming the same session with max_turns=${resolveMaxTurns(secondary.maxTurns, bindings)}.`
+                );
+            } else {
+                ctx.log(
+                    `${roleLabel}: infrastructure dispatch failure ` +
+                    `(${(err.details && err.details.reason) || 'unknown'}) -- the member produced no result envelope. ` +
+                    'This is NOT a failure verdict; resuming the same session once to recover before recording anything.'
+                );
+            }
             // A resume follows an agent that DID run (max_turns_exhausted is a
             // resumable partial-work case, not a no-mutation failure), so it
             // always runs the full pre-dispatch sync -- no attemptOpts.
-            await runPreDispatchSteps(ctx, secondary, member);
+            const shortCircuit = await runPreDispatchSteps(ctx, secondary, member, opts);
+            // A pre-dispatch step may find the work already DONE (the doer's
+            // 'verify-streak-closed': a streak whose beads all closed before
+            // the turn limit hit is a success that merely missed its VERIFY
+            // checkpoint), in which case no resume dispatch is made at all.
+            if (shortCircuit) return shortCircuit.value;
             return await runDispatch(secondary, opts.resumePrompt, opts.resumeLabel);
         }
     };
@@ -399,6 +523,9 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     let ok = false;
     let degradedValue = null;
     let skipPreDispatchSyncNext = false;
+    // Set once an auth self-heal succeeded under retry.authSelfHealShortCircuits:
+    // the attempt it grants is the ladder's last, whatever it returns.
+    let healRetryIsFinal = false;
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
         if (backoffMs && backoffMs[attempt - 1] > 0) {
@@ -417,13 +544,37 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             };
             value = await runAttempt(attemptOpts);
             if (opts.afterAttempt) await opts.afterAttempt(value);
-            await runPostResultSteps(ctx, policy);
+            await runPostResultSteps(ctx, policy, value, opts);
+            // A ladder that declares retryOnInvalidResult spends a whole
+            // attempt on a schema-valid answer its own validator rejects,
+            // rather than handing the caller a result it has already judged
+            // unusable. Thrown INSIDE the try so it lands in the same catch
+            // that classifies a dispatch failure.
+            if (retry.retryOnInvalidResult && opts.validate) {
+                const check = opts.validate(value);
+                if (!check.ok) throw new LadderResultRejectedError(check.reason);
+            }
             ok = true;
             lastErr = null;
             degradedValue = null;
             break;
         } catch (err) {
             lastErr = err;
+
+            // A rejected-but-schema-valid result is NOT a degrade: the
+            // dispatch worked, its answer was unusable. Retry the whole
+            // attempt inside the same budget, then hand the caller its own
+            // error rather than a fabricated value.
+            if (err instanceof LadderResultRejectedError) {
+                if (attempt < attempts) {
+                    ctx.log(
+                        `${roleLabel}: result rejected (${err.reason}) -- re-running the dispatch ` +
+                        `(attempt ${attempt + 1} of ${attempts}) before treating this as a distinct failure.`
+                    );
+                    continue;
+                }
+                throw opts.onResultRejected ? opts.onResultRejected(err.reason) : err;
+            }
 
             // The turn ALREADY RAN and its output is committed on the member's
             // own clone -- only the post-dispatch sync failed, and withGitSync
@@ -457,6 +608,14 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                     });
                     if (healed) {
                         ctx.log(`${roleLabel} dispatch: LLM auth self-heal succeeded -- retrying.`);
+                        // retry.authSelfHealShortCircuits: the healed retry is
+                        // this ladder's LAST word. A role whose dispatch is
+                        // the single most expensive in the sprint (final
+                        // review) must not fall through to the generic retry
+                        // as well -- that fires a SECOND full review and
+                        // silently discards the healed verdict, which for a
+                        // PASS/FAIL gate can invert the sprint's outcome.
+                        healRetryIsFinal = retry.authSelfHealShortCircuits;
                         continue;
                     }
                 }
@@ -476,7 +635,17 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 await ctx.onLlmAuthFailure({ member, label: `${roleLabel} dispatch`, error: err.message });
             }
 
-            const errorClass = classifyLadderError(err);
+            // RUN-level control signals are not failures of this role at all,
+            // so they keep propagating even through a catch-all that swallows
+            // everything else: honouring a cancellation outranks finishing an
+            // informational phase, and swallowing a blown spend ceiling would
+            // let the run keep spending past a limit the operator set.
+            if (policy.degrade.rethrowsRunControlSignals.length > 0) {
+                const names = errorClassNames(err);
+                if (policy.degrade.rethrowsRunControlSignals.some((name) => names.includes(name))) throw err;
+            }
+
+            const errorClass = classifyLadderError(err, policy);
             // An unrecognised error class still propagates rather than being
             // degraded silently -- except under a degrade that declares
             // otherwise, and except under 'fatal', whose whole contract is to
@@ -489,13 +658,30 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 ctx.log(`${roleLabel}: schema-repair exhausted, degrading (${policy.degrade.kind}): ${err.message}`);
             } else if (errorClass === 'dispatch') {
                 ctx.log(`${roleLabel}: agent dispatch failed, degrading (${policy.degrade.kind}): ${err.message}`);
+            } else if (errorClass === 'infra') {
+                ctx.log(
+                    `${roleLabel}: infrastructure dispatch failure persisted -- degrading ` +
+                    `(${policy.degrade.kind}), NOT recording a failure verdict: ${err.message}`
+                );
+            } else if (errorClass === 'sync') {
+                ctx.log(
+                    `${roleLabel}: the git/beads sync around the dispatch FAILED (${err.name}: ${err.message}) -- ` +
+                    `degrading (${policy.degrade.kind}). Anything this phase filed may still be local-only.`
+                );
+            } else if (errorClass === 'unknown') {
+                ctx.log(
+                    `${roleLabel}: unexpected error, degrading (${policy.degrade.kind}) -- this phase never aborts ` +
+                    `the sprint: ${err && err.stack ? err.stack : err}`
+                );
             }
+            await runDegradeSteps(ctx, policy, err, errorClass);
             degradedValue = synthesizeDegradedValue(policy, opts, err, errorClass);
-            const isLastAttempt = attempt === attempts;
+            const isLastAttempt = attempt === attempts || healRetryIsFinal;
             ctx.log(
                 `${roleLabel} dispatch threw: ${err.message}.` +
                 (isLastAttempt ? ' Retries exhausted.' : ` Retrying (attempt ${attempt + 1} of ${attempts}).`)
             );
+            if (healRetryIsFinal) break;
         }
     }
 
@@ -509,7 +695,16 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             value: degradedValue,
             error: lastErr,
             degraded: true,
-            validation: opts.validate ? opts.validate(degradedValue).result : null,
+            // An 'inconclusive' degrade whose terminal failure really was an
+            // envelope-less infra fault reports WHY there is no verdict, so
+            // the caller records "no evidence" instead of "the tests failed".
+            // Driven by degrade.kind: any other kind reports null here, which
+            // is what makes the INCONCLUSIVE variance policy data rather than
+            // a branch the integ caller happens to take.
+            inconclusive: inconclusiveOf(policy, lastErr),
+            validation: opts.validate && !retry.retryOnInvalidResult
+                ? opts.validate(degradedValue).result
+                : null,
         };
     }
 
@@ -531,14 +726,29 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 value = await runDispatch(policy.secondary, opts.repairPrompt(verdictOfCandidate.reason), opts.repairLabel);
                 verdictOfCandidate = opts.validate(value);
             } catch (repairErr) {
-                if (classifyLadderError(repairErr) === null) throw repairErr;
+                if (classifyLadderError(repairErr, policy) === null) throw repairErr;
                 ctx.log(`${roleLabel} (semantic repair): dispatch failed (${repairErr.message}) -- falling back.`);
             }
         }
         validation = verdictOfCandidate.result;
     }
 
-    return { ok: true, value, error: null, degraded: false, validation };
+    return { ok: true, value, error: null, degraded: false, inconclusive: null, validation };
+}
+
+/**
+ * The "there is no verdict, and here is why" record an 'inconclusive' degrade
+ * returns, or null for every other degrade kind (and for an inconclusive
+ * ladder whose terminal failure was NOT an infra fault -- that one really did
+ * fail, and says so).
+ */
+function inconclusiveOf(policy, lastErr) {
+    if (policy.degrade.kind !== 'inconclusive' || !lastErr) return null;
+    if (classifyLadderError(lastErr, policy) !== 'infra') return null;
+    return {
+        reason: (lastErr.details && lastErr.details.reason) ?? 'unknown',
+        message: lastErr.message,
+    };
 }
 
 /**
@@ -549,7 +759,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
  * and arrive with their own migration; a step with no engine handler and no
  * ctx.steps hook throws rather than being silently skipped.
  */
-async function runPreDispatchSteps(ctx, dispatch, member) {
+async function runPreDispatchSteps(ctx, dispatch, member, opts = {}) {
     for (const step of dispatch.preDispatch) {
         if (step === 'kill-stale-session') {
             await ctx.memberSessionGuard.killIfAlive(member);
@@ -559,8 +769,17 @@ async function runPreDispatchSteps(ctx, dispatch, member) {
         if (typeof hook !== 'function') {
             throw new Error(`dispatch-role: policy names preDispatch step '${step}', which ctx.steps does not supply.`);
         }
-        await hook({ member, dispatch });
+        // A step is handed the dispatch's own PROMPT as well as its member,
+        // because some pre-dispatch invariants are properties of the prompt
+        // ('sprint-self-id-in-prompt': the deploy runbook's active-sprints
+        // gate self-blocks unless the prompt states the sprint's OWN
+        // reservation id, so the step verifies that rather than trusting it).
+        const result = await hook({ member, dispatch, opts });
+        // A step may report the work already DONE, in which case the dispatch
+        // it precedes is skipped entirely and its value stands in.
+        if (result && result.shortCircuit === true) return result;
     }
+    return null;
 }
 
 /**
@@ -570,7 +789,7 @@ async function runPreDispatchSteps(ctx, dispatch, member) {
  * until it is dropped. 'select-streaks-validate' IS opts.validate, performed
  * by the semantic-repair path above, so it is a no-op here.
  */
-async function runPostResultSteps(ctx, policy) {
+async function runPostResultSteps(ctx, policy, value, opts = {}) {
     for (const step of policy.postResult) {
         if (step === 'select-streaks-validate') continue;
         if (step === 'invalidate-beads-cache') {
@@ -581,6 +800,10 @@ async function runPostResultSteps(ctx, policy) {
         if (typeof hook !== 'function') {
             throw new Error(`dispatch-role: policy names postResult step '${step}', which ctx.steps does not supply.`);
         }
-        await hook({ policy });
+        // The RESULT is handed to the step: every remaining post-result step
+        // is about what the dispatch actually returned ('kb-apply' applies the
+        // report's KB work, 'verify-streak-closed' checks the closes it
+        // claims), so a step that could not see the value could not do its job.
+        await hook({ policy, value, opts });
     }
 }

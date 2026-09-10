@@ -34,12 +34,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AgentOutputError, AgentDispatchError, FleetTransportError } from '@apralabs/apra-fleet-workflow';
+import { AgentOutputError, AgentDispatchError, FleetTransportError, CancelledError, BudgetExceededError } from '@apralabs/apra-fleet-workflow';
 
 import { objectLiteralFor, objectEntries } from './dispatch-pin-scanner.mjs';
-import { planReviewerVerdict, streakAssignment } from '../../fleet-sprint/contracts.mjs';
+import {
+    planReviewerVerdict,
+    streakAssignment,
+    reviewerVerdict,
+    doerReport,
+    deployerReport,
+    integReport,
+    finalVerdict,
+    regressionReport,
+    harvesterReport,
+} from '../../fleet-sprint/contracts.mjs';
 import { isNoMutationDispatchFailure } from '../../fleet-sprint/runner.js';
-import { PostDispatchSyncError } from '../../fleet-sprint/errors.mjs';
+import { PostDispatchSyncError, GitSyncError, DoltSyncError, GitDivergedError } from '../../fleet-sprint/errors.mjs';
 import { ROLE_POLICIES } from '../../fleet-sprint/role-policies.mjs';
 import { dispatchRole, TURN_BASES } from '../../fleet-sprint/dispatch-role.mjs';
 
@@ -78,7 +88,33 @@ export const FIXED_ROLE_TIER = Object.freeze(Object.fromEntries(
 export const DISPATCH_TIMEOUT_S = 4242;
 
 /** The real schema objects, keyed by the name role-policies.mjs records. */
-export const SCHEMAS = Object.freeze({ planReviewerVerdict, streakAssignment });
+export const SCHEMAS = Object.freeze({
+    planReviewerVerdict,
+    streakAssignment,
+    reviewerVerdict,
+    doerReport,
+    deployerReport,
+    integReport,
+    finalVerdict,
+    regressionReport,
+    harvesterReport,
+});
+
+/**
+ * The runner-local values a 'pool-head'/'runtime' member (or a 'per-bead'
+ * model tier, or a 'runtime' turn budget) names by BINDING. Only the
+ * execution side has any: the reviewer routes to its pool head and the doer
+ * to the member its worklist was assigned to, neither of which the engine can
+ * resolve on its own -- which is exactly the fact the member-routing pins
+ * assert. Distinctive sentinels, so a mis-resolution cannot be mistaken for a
+ * plausible member name.
+ */
+export const BINDINGS = Object.freeze({
+    'reviewerPool[0]': 'member:reviewer-pool-head',
+    doerMember: 'member:doer-3',
+    doerModel: 'premium',
+    maxTurns: 1000,
+});
 
 /** An AgentDispatchError whose details.reason marks the turn budget spent. */
 export function turnExhaustionError(message = 'max turns spent') {
@@ -116,6 +152,45 @@ export function postDispatchSyncError(message = 'post-dispatch sync failed') {
 }
 
 /**
+ * An INFRASTRUCTURE dispatch failure: the member CLI never delivered a result
+ * envelope, so no verdict of any kind was produced. 'empty_response' is one
+ * of errors.mjs's real INFRA_DISPATCH_REASONS, so isInfraDispatchFailure()
+ * classifies this exactly as production would.
+ */
+export function infraError(message = 'member produced no result envelope') {
+    return new AgentDispatchError(message, { details: { reason: 'empty_response' } });
+}
+
+/** The read-side git sync bracket around a dispatch failed (not a divergence). */
+export function gitSyncError(message = 'git pull failed') {
+    return new GitSyncError(message, { member: 'bob', operation: 'pull' });
+}
+
+/** The read-side beads sync bracket around a dispatch failed (not a divergence). */
+export function doltSyncError(message = 'dolt pull failed') {
+    return new DoltSyncError(message, { member: 'bob', operation: 'pull' });
+}
+
+/**
+ * A REAL branch divergence: a WorkflowError like the sync errors above, but a
+ * branch-integrity problem rather than a blip. The per-round reviewer must
+ * still propagate it; the regression catch-all must still swallow it.
+ */
+export function divergedError(message = 'branch diverged from its remote') {
+    return new GitDivergedError(message, { member: 'bob', branch: 'feat/x' });
+}
+
+/** The operator/supervisor cancelled the run: a RUN-level control signal. */
+export function cancelledError(message = 'run cancelled') {
+    return new CancelledError(message);
+}
+
+/** The sprint's hard spend ceiling is blown: a RUN-level control signal. */
+export function budgetError(message = 'sprint budget exceeded') {
+    return new BudgetExceededError(message);
+}
+
+/**
  * Builds a recording ctx plus the timeline it records.
  *
  * `responses` is consumed one entry per agent() call: an Error is thrown, a
@@ -135,6 +210,10 @@ export function createRecordingCtx(options = {}) {
         noMutation = isNoMutationDispatchFailure,
         budgets = { DISPATCH_TIMEOUT_S },
         steps = {},
+        // The policy table the engine reads its row from. Left undefined the
+        // engine uses the real frozen ROLE_POLICIES; a test that is proving a
+        // variance is field-driven passes a spliced copy here.
+        policies = undefined,
     } = options;
 
     const rec = {
@@ -150,12 +229,20 @@ export function createRecordingCtx(options = {}) {
         authHeals: [],
         /** How many times the engine dropped the orchestrator's beads cache. */
         invalidations: 0,
+        /**
+         * Every ctx.steps hook the engine really invoked, in order, with the
+         * arguments it was handed. This is what lets a pin assert that a
+         * policy's recorded preDispatch/postResult/degrade step is a step the
+         * engine PERFORMS rather than merely a string in the table.
+         */
+        steps: [],
     };
 
     const queue = [...responses];
     let bracketFrame = null;
 
     const ctx = {
+        ...(policies ? { policies } : {}),
         agent: async (prompt, opts) => {
             const entry = {
                 prompt,
@@ -220,7 +307,29 @@ export function createRecordingCtx(options = {}) {
             rec.invalidations++;
             rec.events.push({ type: 'invalidate-beads-cache' });
         },
-        steps,
+        // Every step name the engine asks for is answered by a RECORDING hook,
+        // so a policy that names a step the runner has not wired yet fails on
+        // the runner side (where ctx.steps is a real object) rather than here.
+        // An explicit `steps` override wins, which is how a test drives a step
+        // that must actually DO something (the doer's closed-streak
+        // short-circuit) rather than merely be observed.
+        steps: new Proxy({}, {
+            has: () => true,
+            get: (_target, step) => {
+                if (typeof step !== 'string') return undefined;
+                if (Object.prototype.hasOwnProperty.call(steps, step)) {
+                    return async (args) => {
+                        rec.steps.push({ step, ...args });
+                        rec.events.push({ type: 'step', step });
+                        return steps[step](args);
+                    };
+                }
+                return async (args) => {
+                    rec.steps.push({ step, ...args });
+                    rec.events.push({ type: 'step', step });
+                };
+            },
+        }),
     };
     return { ctx, rec };
 }
@@ -321,7 +430,10 @@ export function streakValidate(candidate) {
  * @param {'main'|'max-turns-resume'|'semantic-repair-re-ask'} kind
  */
 export async function driveEngineDispatch(role, kind, options = {}) {
-    const opts = { ...ROLE_CALL_OPTS[role], ...(options.opts || {}) };
+    // BINDINGS is supplied to EVERY role, not only the ones that name a
+    // binding: an unused binding is inert, while a missing one makes the
+    // engine throw rather than silently dispatching to the wrong member.
+    const opts = { bindings: BINDINGS, ...ROLE_CALL_OPTS[role], ...(options.opts || {}) };
     if (ROLE_POLICIES[role].postResult.includes('select-streaks-validate') && !opts.validate) {
         opts.validate = streakValidate;
     }

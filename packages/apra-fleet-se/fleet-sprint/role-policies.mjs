@@ -99,6 +99,42 @@ export const MODEL_KINDS = Object.freeze(['fixed', 'per-bead', 'inherited']);
  */
 export const KB_INJECTION_KINDS = Object.freeze(['wrapper', 'prompt-builder', 'none']);
 
+/**
+ * The error CLASSES a ladder can tell apart when it degrades. The engine
+ * (fleet-sprint/dispatch-role.mjs classifyLadderError) resolves a thrown
+ * error to exactly one of these, and `degrade.classes` records which of them
+ * a given role actually fabricates a value for.
+ *
+ *   'schema'   -- AgentOutputError: agent()'s own bounded schema-repair loop
+ *                 was exhausted, so no schema-valid output ever arrived.
+ *   'dispatch' -- AgentDispatchError/FleetTransportError (plus any class a
+ *                 policy names in `extraDispatchErrors`): the dispatch
+ *                 channel itself failed.
+ *   'infra'    -- an AgentDispatchError with no result envelope at all
+ *                 (empty_response / inactivity / orphan-recovery timeout).
+ *                 Recognised ONLY by a policy that sets
+ *                 `classifiesInfraFailures`, because for every other role an
+ *                 infra failure is just a dispatch failure; for the integ
+ *                 runner it is the difference between "no evidence" and "the
+ *                 tests failed".
+ *   'sync'     -- the git/beads sync AROUND the dispatch failed. Recognised
+ *                 ONLY by a policy that sets `classifiesSyncFailures`.
+ *   'unknown'  -- anything else, recognised ONLY by a policy that sets
+ *                 `classifiesUnrecognisedErrors` (the regression catch-all).
+ */
+export const ERROR_CLASSES = Object.freeze(['schema', 'dispatch', 'infra', 'sync', 'unknown']);
+
+/**
+ * Steps the engine runs on the DEGRADE path -- i.e. once per attempt that
+ * failed and fabricated (or declined to fabricate) a value, never after a
+ * successful one. Kept separate from POST_RESULT_STEPS precisely because the
+ * distinction is load-bearing: the per-round reviewer must drop its round
+ * session when a round FAILS, and must NOT drop it when the round succeeds.
+ *
+ *   'clear-round-session' -- do not let a failed round's session be resumed
+ */
+export const DEGRADE_STEPS = Object.freeze(['clear-round-session']);
+
 /** How a failed ladder degrades once its attempts are spent. */
 export const DEGRADE_KINDS = Object.freeze([
     'fatal',                  // rethrow; the sprint cannot continue (planner)
@@ -224,6 +260,16 @@ const retry = (over) => ({
     infraResumeAttempts: 0,
     /** Bounded re-asks that feed the validation failure back to the model. */
     semanticRepairReAsks: 0,
+    /**
+     * A SCHEMA-VALID result the caller's own validator rejects is spent as a
+     * failed attempt (retried inside the same budget) rather than returned.
+     * Distinct from `semanticRepairReAsks`, which re-ASKS the same session
+     * once with the validation failure instead of re-running the attempt:
+     * the reviewer's self-contradictory-verdict guard needs a whole fresh
+     * review, not a nudge, and it throws rather than degrading once the
+     * budget is spent.
+     */
+    retryOnInvalidResult: false,
     ...over,
 });
 
@@ -231,12 +277,48 @@ const degrade = (over) => ({
     kind: 'fatal',
     /** The value fabricated by the degrade path, if any. */
     synthesized: null,
+    /**
+     * The ERROR_CLASSES this ladder fabricates `synthesized` for. A class the
+     * ladder recognises but does not list here degrades to `null` and lets
+     * the caller apply its own deterministic fallback. Empty means the
+     * ladder fabricates nothing at all.
+     */
+    classes: [],
+    /**
+     * The field of `synthesized` that carries the ladder's answer, and which
+     * `neverSynthesizes` therefore constrains ('verdict' for every review
+     * role, 'deployed' for the deployer). null when the ladder fabricates
+     * nothing.
+     */
+    verdictField: null,
+    /**
+     * The field of `synthesized` the human-readable failure text goes in.
+     * 'notes' for the verdict-shaped roles, 'summary' for the report-shaped
+     * test-runner roles.
+     */
+    notesField: 'notes',
     /** A field stamped on every synthesized value so it is recognisable. */
     marker: null,
     /** How many distinct degrade paths produce that value. */
     paths: 0,
-    /** Values no degrade path may ever fabricate. */
+    /** Values no degrade path may ever fabricate, in `verdictField`. */
     neverSynthesizes: [],
+    /**
+     * Error CLASS NAMES (any name on the thrown error's prototype chain) that
+     * this ladder treats as a plain 'dispatch' failure on top of
+     * AgentDispatchError/FleetTransportError. The per-round reviewer lists
+     * its own read-side sync-bracket failures here; a real DIVERGENCE class
+     * is deliberately absent, so it still propagates.
+     */
+    extraDispatchErrors: [],
+    /** Tell an envelope-less INFRA dispatch failure apart from a real verdict. */
+    classifiesInfraFailures: false,
+    /** Tell a sync failure AROUND the dispatch apart from the dispatch failing. */
+    classifiesSyncFailures: false,
+    /** Give even an unrecognised error class a degrade path of its own. */
+    classifiesUnrecognisedErrors: false,
+    /** DEGRADE_STEPS the engine runs on each attempt that degrades. */
+    steps: [],
     /** An unrecognised error class still propagates. */
     rethrowsUnrecognisedErrors: true,
     /**
@@ -420,7 +502,13 @@ const planReviewer = policy('plan-reviewer', {
     }),
     degrade: degrade({
         kind: 'synthesized-verdict',
-        synthesized: { verdict: 'CHANGES_NEEDED' },
+        // `taskAssignments: []` is part of the SHAPE this ladder fabricates
+        // (the runner reads it back off the verdict), so it belongs in the
+        // policy's own template rather than being hard-wired into the engine
+        // -- the reviewer and deployer degrades fabricate different shapes.
+        synthesized: { verdict: 'CHANGES_NEEDED', taskAssignments: [] },
+        classes: ['schema', 'dispatch'],
+        verdictField: 'verdict',
         marker: 'dispatchFailed',
         paths: 2,
         neverSynthesizes: ['APPROVED'],
@@ -774,11 +862,17 @@ export const ROLE_POLICIES = freezeDeep({
 /** Every role name in the table, in table order. */
 export const ROLE_NAMES = Object.freeze(Object.keys(ROLE_POLICIES));
 
-/** The policy for `role`, or throws naming the roles that do exist. */
-export function policyFor(role) {
-    const found = ROLE_POLICIES[role];
+/**
+ * The policy for `role`, or throws naming the roles that do exist.
+ *
+ * `table` defaults to the real frozen ROLE_POLICIES. It is a parameter only
+ * so a test can hand the engine a table with ONE field of ONE row changed and
+ * watch the behaviour change with it -- see dispatch-role.mjs's `ctx.policies`.
+ */
+export function policyFor(role, table = ROLE_POLICIES) {
+    const found = table[role];
     if (!found) {
-        throw new Error(`role-policies: no policy for role '${role}' (known roles: ${ROLE_NAMES.join(', ')})`);
+        throw new Error(`role-policies: no policy for role '${role}' (known roles: ${Object.keys(table).join(', ')})`);
     }
     return found;
 }

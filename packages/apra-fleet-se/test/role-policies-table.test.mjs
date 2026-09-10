@@ -38,6 +38,7 @@ import { PLANNING_LADDERS, ENGINE_DISPATCHES } from './helpers/planning-ladders.
 import {
     createRecordingCtx,
     ROLE_CALL_OPTS,
+    BINDINGS,
     DISPATCH_TIMEOUT_S,
     FIXED_ROLE_TIER,
     SCHEMAS,
@@ -48,6 +49,12 @@ import {
     schemaError,
     transportError,
     postDispatchSyncError,
+    infraError,
+    gitSyncError,
+    doltSyncError,
+    divergedError,
+    cancelledError,
+    budgetError,
     driveEngineDispatch,
     streakValidate,
     watchdogLabelOf,
@@ -101,6 +108,11 @@ const PIN_FILES = [
     // literals directly, so both must be scanned to recover all 22 anchors.
     path.join(__dirname, 'helpers', 'planning-ladders.mjs'),
     path.join(__dirname, 'planning-role-dispatch-pins.test.mjs'),
+    // apra-fleet-3swo.5.7: the execution-side pin TABLE moved into its own
+    // shared data helper for the same reason the planning one did -- a
+    // migrating ladder needs somewhere to move its pins TO. Both files are
+    // scanned so no anchor is lost while the table is split across them.
+    path.join(__dirname, 'helpers', 'execution-ladders.mjs'),
     path.join(__dirname, 'execution-role-dispatch-pins.test.mjs'),
 ];
 
@@ -1153,10 +1165,11 @@ function expectedMember(ctx, member) {
     if (member.kind === 'role') return ctx.getMemberForRole(member.role);
     return ROLE_CALL_OPTS_BINDINGS[member.binding];
 }
-// No migrated planning role uses a pool-head/runtime member yet; the two that
-// do (doer, reviewer) arrive with the execution-side migration and will supply
-// their bindings here.
-const ROLE_CALL_OPTS_BINDINGS = {};
+// The runner-local values a 'pool-head'/'runtime' member or a 'per-bead' tier
+// names by binding -- the reviewer's pool head and the doer's assigned member
+// and declared tier (apra-fleet-3swo.5.7). Shared with the pin file through
+// the harness so both prove the SAME resolution.
+const ROLE_CALL_OPTS_BINDINGS = BINDINGS;
 
 /** What the engine must resolve a policy's `model` to. */
 function expectedModel(ctx, model) {
@@ -1164,6 +1177,18 @@ function expectedModel(ctx, model) {
     if (model.kind === 'fixed') return ctx.fixedRoleTier[model.key];
     if (model.kind === 'inherited') return null;
     return ROLE_CALL_OPTS_BINDINGS[model.binding] ?? null;
+}
+
+/**
+ * A copy of the whole ROLE_POLICIES table with ONE role's row shallow-merged
+ * with `over`. Handed to the engine as `ctx.policies` so a test can prove a
+ * variance is really driven by a policy FIELD: change the field, watch the
+ * engine behave differently. The real table stays frozen and untouched.
+ */
+function splicePolicy(role, over) {
+    const row = { ...ROLE_POLICIES[role], ...over };
+    if (row.secondary) row.secondary = { ...row.secondary, ...over, secondary: null };
+    return { ...ROLE_POLICIES, [role]: row };
 }
 
 /** Every dispatch of a migrated role, paired with the kind that produces it. */
@@ -1191,9 +1216,15 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                 // The turn VALUE the row records must be the engine's own
                 // named base times the recorded multiplier -- the same proof
                 // the textual section makes against runner.js's constant.
+                // A 'runtime'-kind turn budget (the doer's escalating resume
+                // ladder) has no recorded VALUE at all: the number is computed
+                // per resume attempt and arrives as a binding, so the pin is
+                // that the engine passes THAT binding rather than a constant.
                 assert.strictEqual(
                     o.max_turns ?? null,
-                    p.maxTurns === null ? null : p.maxTurns.value,
+                    p.maxTurns === null
+                        ? null
+                        : (p.maxTurns.kind === 'runtime' ? BINDINGS[p.maxTurns.binding] : p.maxTurns.value),
                     `${row.name}: turn budget.`
                 );
                 if (p.maxTurns && p.maxTurns.kind === 'constant') {
@@ -1408,12 +1439,62 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                     `${role}: retry.resumeOntoRemoteTipOnRetry must match whether a retry really resumes onto the remote tip.`
                 );
             }
+            // --- infra-failure recovery resume ---------------------------------
+            // An envelope-less dispatch failure is a DIFFERENT condition from
+            // turn exhaustion, so it needs its own drive: count the extra
+            // dispatches the engine really issues before the first attempt is
+            // over. Zero for every ladder but the integ runner.
+            const infraRun = createRecordingCtx({ responses: [infraError()] });
+            let infraThrew = null;
+            try {
+                await dispatchRole(infraRun.ctx, role, withValidate);
+            } catch (err) {
+                infraThrew = err;
+            }
             assert.strictEqual(
+                infraRun.rec.logs.filter((m) => /infrastructure dispatch failure .* resuming the same session once/.test(m)).length,
                 p.retry.infraResumeAttempts,
-                0,
-                `${role}: no migrated planning ladder recovers an infrastructure failure with an extra resume.`
+                `${role}: retry.infraResumeAttempts must equal the number of infra-recovery resumes the engine really issues.`
             );
-            assert.strictEqual(p.retry.authSelfHealShortCircuits, false, `${role}: no migrated planning ladder short-circuits its retry on a heal.`);
+            if (p.retry.infraResumeAttempts > 0) {
+                assert.strictEqual(infraThrew, null, `${role}: a successful infra recovery must not propagate the failure.`);
+                assert.ok(
+                    infraRun.rec.dispatches.length > 1,
+                    `${role}: an infra-recovering ladder must really re-dispatch, not merely log about it.`
+                );
+            }
+
+            // --- a healed retry that ends the ladder ---------------------------
+            // Derived by SPLICING the field on a copy of this role's real row
+            // and giving both arms the same enlarged attempt budget, because
+            // at the real budget of two the two settings coincide: the heal
+            // consumes attempt one and the generic retry IS attempt two. With
+            // room to tell them apart, a short-circuiting ladder stops after
+            // the healed retry while a non-short-circuiting one keeps going.
+            for (const shortCircuits of [true, false]) {
+                const spliced = splicePolicy(role, {
+                    retry: { ...p.retry, attempts: 3, authSelfHeal: true, abortOnNonRetryable: true, authSelfHealShortCircuits: shortCircuits },
+                });
+                const { ctx, rec } = createRecordingCtx({
+                    responses: [authError(), busyError(), busyError()],
+                    healed: true,
+                    policies: spliced,
+                });
+                try {
+                    await dispatchRole(ctx, role, withValidate);
+                } catch { /* a fatal degrade rethrows; the dispatch COUNT is the pin */ }
+                assert.strictEqual(
+                    rec.dispatches.length,
+                    shortCircuits ? 2 : 3,
+                    `${role}: retry.authSelfHealShortCircuits=${shortCircuits} must decide whether the healed retry is ` +
+                    'the ladder\'s last word or merely another attempt.'
+                );
+            }
+            assert.strictEqual(
+                p.retry.authSelfHealShortCircuits,
+                ROLE_POLICIES[role].retry.authSelfHealShortCircuits,
+                `${role}: the real row's setting is what the ladder ships with.`
+            );
 
             // --- bounded semantic-repair re-ask -------------------------------
             const repair = createRecordingCtx({ responses: [REJECTED_CANDIDATE, ACCEPTED_CANDIDATE] });
@@ -1442,10 +1523,26 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                 }
             };
 
-            // The two error CLASSES every degrade distinguishes: schema-repair
-            // exhaustion and a dispatch/transport failure. `degrade.paths` is
-            // how many of them produce the synthesized value.
-            const runs = [await run(() => schemaError()), await run(() => transportError())];
+            // Every ERROR_CLASS this ladder's degrade RECOGNISES, driven one at
+            // a time with an error that really is of that class. The first two
+            // are universal; the other three exist only for the roles whose
+            // policy asks for them, so driving a class the policy does not
+            // recognise would prove nothing about it.
+            const recognisedClasses = ['schema', 'dispatch'];
+            if (d.classifiesInfraFailures) recognisedClasses.unshift('infra');
+            if (d.classifiesSyncFailures) recognisedClasses.push('sync');
+            if (d.classifiesUnrecognisedErrors) recognisedClasses.push('unknown');
+            const CLASS_DRIVERS = {
+                schema: () => schemaError(),
+                dispatch: () => transportError(),
+                infra: () => infraError(),
+                sync: () => gitSyncError(),
+                unknown: () => new TypeError('not a dispatch failure at all'),
+            };
+            const runs = [];
+            for (const errorClass of recognisedClasses) {
+                runs.push({ errorClass, ...(await run(CLASS_DRIVERS[errorClass])) });
+            }
 
             if (d.kind === 'fatal') {
                 for (const r of runs) {
@@ -1456,29 +1553,54 @@ describe('role policy table: migrated roles re-derived by running the engine', (
             }
 
             for (const r of runs) {
-                assert.strictEqual(r.thrown, null, `${role}: a non-fatal degrade must never propagate a recognised failure.`);
+                assert.strictEqual(
+                    r.thrown,
+                    null,
+                    `${role}: a non-fatal degrade must never propagate a failure of a class it recognises (${r.errorClass}).`
+                );
                 assert.strictEqual(r.outcome.degraded, true, `${role}: a spent ladder must report itself degraded.`);
             }
 
             const synthesizing = runs.filter((r) => r.outcome.value !== null);
+            assert.deepStrictEqual(
+                synthesizing.map((r) => r.errorClass).sort(),
+                [...d.classes].sort(),
+                `${role}: degrade.classes must be exactly the error classes that really fabricate a value.`
+            );
+            // `paths` counts distinct degrade PATHS, not classes: a ladder
+            // whose auth self-heal short-circuits reaches every class twice
+            // (once from the healed retry, once from the generic one), which
+            // is why the final review records four paths over two classes.
             assert.strictEqual(
-                synthesizing.length,
                 d.paths,
-                `${role}: degrade.paths must equal the number of error classes that really synthesize a value.`
+                d.classes.length * (p.retry.authSelfHealShortCircuits ? 2 : 1),
+                `${role}: degrade.paths must be its classes times the number of ladder positions that reach them.`
             );
             if (d.synthesized) {
                 for (const r of synthesizing) {
                     for (const [key, value] of Object.entries(d.synthesized)) {
                         if (key === 'grouping') continue; // a caller-side deterministic fallback, not a fabricated value
-                        assert.strictEqual(r.outcome.value[key], value, `${role}: the degrade must synthesize ${key}=${value}.`);
+                        assert.deepStrictEqual(r.outcome.value[key], value, `${role}: the degrade must synthesize ${key}=${JSON.stringify(value)}.`);
                     }
+                    assert.strictEqual(
+                        typeof r.outcome.value[d.notesField],
+                        'string',
+                        `${role}: every synthesized value must carry its failure text in '${d.notesField}'.`
+                    );
                     if (d.marker) {
                         assert.strictEqual(r.outcome.value[d.marker], true, `${role}: every synthesized value must carry the '${d.marker}' marker.`);
                     }
                     for (const forbidden of d.neverSynthesizes) {
-                        assert.notStrictEqual(r.outcome.value.verdict, forbidden, `${role}: no degrade path may ever synthesize ${forbidden}.`);
+                        assert.ok(d.verdictField, `${role}: neverSynthesizes constrains degrade.verdictField, which must be recorded.`);
+                        assert.notStrictEqual(
+                            r.outcome.value[d.verdictField],
+                            forbidden,
+                            `${role}: no degrade path may ever synthesize ${d.verdictField}=${forbidden}.`
+                        );
                     }
                 }
+            } else {
+                assert.deepStrictEqual(d.classes, [], `${role}: a degrade with no template can fabricate nothing.`);
             }
 
             // An unrecognised error class still propagates (or does not),
@@ -1506,7 +1628,21 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                         assert.ok(killIndex >= 0 && killIndex < dispatchIndex, `${row.name}: the kill must precede the dispatch it precedes.`);
                         continue;
                     }
-                    assert.fail(`${row.name}: no engine evidence is defined for preDispatch step '${step}'.`);
+                    // Every other step is a ctx.steps HOOK, so the evidence is
+                    // that the engine really invoked it -- and invoked it
+                    // BEFORE the dispatch it precedes, which is the whole
+                    // meaning of 'preDispatch'.
+                    const invoked = rec.steps.filter((e) => e.step === step);
+                    assert.ok(
+                        invoked.length > 0,
+                        `${row.name}: policy records preDispatch step '${step}', but the engine never invoked it.`
+                    );
+                    const stepIndex = rec.events.findIndex((e) => e.type === 'step' && e.step === step);
+                    const firstDispatchIndex = rec.events.findIndex((e) => e.type === 'dispatch');
+                    assert.ok(
+                        stepIndex >= 0 && (firstDispatchIndex < 0 || stepIndex < firstDispatchIndex),
+                        `${row.name}: preDispatch step '${step}' must run BEFORE the dispatch, not after it.`
+                    );
                 }
             }
             const { rec, outcome } = await driveEngineDispatch(role, 'main');
@@ -1526,7 +1662,53 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                     );
                     continue;
                 }
-                assert.fail(`${role}: no engine evidence is defined for postResult step '${step}'.`);
+                // A postResult hook must run AFTER the dispatch and must be
+                // handed the dispatch's own RESULT -- a step that cannot see
+                // what came back could not act on it.
+                const invoked = rec.steps.filter((e) => e.step === step);
+                assert.ok(
+                    invoked.length > 0,
+                    `${role}: policy records postResult step '${step}', but the engine never invoked it.`
+                );
+                assert.ok(
+                    Object.prototype.hasOwnProperty.call(invoked[0], 'value'),
+                    `${role}: postResult step '${step}' must be handed the dispatch's result.`
+                );
+                const stepIndex = rec.events.findIndex((e) => e.type === 'step' && e.step === step);
+                const lastDispatchIndex = rec.events.map((e) => e.type).lastIndexOf('dispatch');
+                assert.ok(
+                    stepIndex > lastDispatchIndex,
+                    `${role}: postResult step '${step}' must run AFTER the dispatch it follows.`
+                );
+            }
+
+            // --- degrade steps: run on FAILURE, and never on success ----------
+            // The distinction is the whole reason DEGRADE_STEPS is a separate
+            // vocabulary: the per-round reviewer must drop its round session
+            // when a round fails and must KEEP it when the round succeeds, and
+            // a step recorded in the wrong list gets exactly that backwards.
+            const degradeSteps = ROLE_POLICIES[role].degrade.steps;
+            for (const step of degradeSteps) {
+                assert.strictEqual(
+                    rec.steps.filter((e) => e.step === step).length,
+                    0,
+                    `${role}: degrade step '${step}' must NOT run after a successful dispatch.`
+                );
+            }
+            if (degradeSteps.length > 0) {
+                const pDegrade = policyFor(role);
+                const failing = createRecordingCtx({
+                    responses: Array.from({ length: pDegrade.retry.attempts + 1 }, () => transportError()),
+                });
+                try {
+                    await dispatchRole(failing.ctx, role, ROLE_CALL_OPTS[role]);
+                } catch { /* a fatal degrade rethrows; the step record is the pin */ }
+                for (const step of degradeSteps) {
+                    assert.ok(
+                        failing.rec.steps.some((e) => e.step === step),
+                        `${role}: policy records degrade step '${step}', but a failing ladder never invoked it.`
+                    );
+                }
             }
         });
     }

@@ -27,7 +27,17 @@ import {
     harvesterReport,
 } from '../fleet-sprint/contracts.mjs';
 import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
+import { policyFor } from '../fleet-sprint/role-policies.mjs';
+import { driveEngineDispatch, SCHEMAS, BINDINGS } from './helpers/dispatch-role-harness.mjs';
 import { PLANNING_LADDERS } from './helpers/planning-ladders.mjs';
+import { EXECUTION_INLINE_LADDERS, EXECUTION_ENGINE_DISPATCHES } from './helpers/execution-ladders.mjs';
+
+// The still-inline half of the execution pin table. It used to be written out
+// in this file; apra-fleet-3swo.5.7 moved it (and its migrated counterpart)
+// into ./helpers/execution-ladders.mjs so a migrating role's pins have
+// somewhere to MOVE to rather than being deleted, and so the census length
+// this file asserts on is readable without re-running these tests.
+const EXECUTION_LADDERS = EXECUTION_INLINE_LADDERS;
 
 // =============================================================================
 // apra-fleet-3swo.5.6 -- EXECUTION-ROLE dispatch behaviour pins.
@@ -109,247 +119,6 @@ function siteFor(anchor) {
     );
     return hits[0];
 }
-
-// -----------------------------------------------------------------------------
-// The pin table. Every value was read off the CURRENT unrefactored runner.js.
-//   maxTurnsExpr  -- the literal max_turns expression at the dispatch
-//   maxTurnsValue -- what it resolves to, or null when it is a runtime value
-//                    (the doer's escalating resume ladder), pinned separately
-// -----------------------------------------------------------------------------
-const EXECUTION_LADDERS = [
-    {
-        ladder: 'reviewer',
-        name: 'reviewer (per-round, once)',
-        anchor: 'acceptanceCriteriaJson,',
-        member: 'reviewerPool[0]',
-        agentType: "'reviewer'",
-        modelTier: 'FIXED_ROLE_TIER.reviewer',
-        maxTurnsExpr: 'BASE_REVIEWER_MAX_TURNS',
-        maxTurnsValue: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'false',
-        pushBeads: null,
-        schema: 'reviewerVerdict',
-        resume: "roundSessions.resumeArgFor('reviewer', cycle)",
-    },
-    {
-        ladder: 'reviewer',
-        name: 'reviewer (resume after max_turns exhaustion)',
-        anchor: 'Continue your review exactly where you left off',
-        member: 'reviewerPool[0]',
-        agentType: "'reviewer'",
-        modelTier: 'FIXED_ROLE_TIER.reviewer',
-        maxTurnsExpr: 'BASE_REVIEWER_MAX_TURNS * 2',
-        maxTurnsValue: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'false',
-        pushBeads: null,
-        schema: 'reviewerVerdict',
-        resume: 'true',
-    },
-    {
-        ladder: 'doer',
-        name: 'doer (streak)',
-        anchor: '(\n                        doerPrompt,',
-        member: 'doerMember',
-        agentType: "'doer'",
-        // The doer is the ONE role dispatched at a per-bead declared tier
-        // instead of a FIXED_ROLE_TIER constant.
-        modelTier: 'doerModel',
-        maxTurnsExpr: 'BASE_DOER_MAX_TURNS',
-        maxTurnsValue: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'true',
-        pushBeads: 'true',
-        schema: 'doerReport',
-        resume: 'worklistResumeArg',
-    },
-    {
-        ladder: 'doer',
-        name: 'doer (resume after max_turns exhaustion)',
-        anchor: 'Continue exactly where you left off from this same session',
-        member: 'doerMember',
-        agentType: "'doer'",
-        // Deliberately undefined: the tier was already resolved and priced on
-        // the main dispatch this resume continues.
-        modelTier: 'undefined',
-        maxTurnsExpr: 'maxTurns',
-        maxTurnsValue: null,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'true',
-        pushBeads: 'true',
-        schema: 'doerReport',
-        resume: 'true',
-    },
-    {
-        ladder: 'deployer',
-        name: 'deployer (once)',
-        anchor: '(\n                        deployerPrompt,',
-        member: "getMemberForRole('deployer')",
-        agentType: "'deployer'",
-        modelTier: 'FIXED_ROLE_TIER.deployer',
-        maxTurnsExpr: 'DEPLOYER_MAX_TURNS',
-        maxTurnsValue: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'false',
-        pushBeads: null,
-        schema: 'deployerReport',
-        resume: null,
-    },
-    {
-        ladder: 'deployer',
-        name: 'deployer (resume after max_turns exhaustion)',
-        anchor: 'Continue the deploy exactly where you left off',
-        member: "getMemberForRole('deployer')",
-        agentType: "'deployer'",
-        modelTier: 'FIXED_ROLE_TIER.deployer',
-        maxTurnsExpr: 'DEPLOYER_MAX_TURNS * 2',
-        maxTurnsValue: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'false',
-        pushBeads: null,
-        schema: 'deployerReport',
-        resume: 'true',
-    },
-    {
-        ladder: 'integ-test-runner',
-        name: 'integ test runner (once)',
-        anchor: '(\n                    featurePrompt,',
-        member: "getMemberForRole('integ-test-runner')",
-        agentType: "'integ-test-runner'",
-        modelTier: "FIXED_ROLE_TIER['integ-test-runner']",
-        maxTurnsExpr: 'INTEG_TEST_MAX_TURNS',
-        maxTurnsValue: 500,
-        // Shorter INACTIVITY timer, longer HARD elapsed ceiling: a hung runner
-        // still dies on silence, an active long pass is never killed.
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'INTEG_MAX_TOTAL_S',
-        pushCode: 'false',
-        pushBeads: 'true',
-        schema: 'integReport',
-        resume: null,
-    },
-    {
-        ladder: 'integ-test-runner',
-        name: 'integ test runner (resume after max_turns exhaustion)',
-        anchor: 'Continue the integration test run exactly where you left off',
-        member: "getMemberForRole('integ-test-runner')",
-        agentType: "'integ-test-runner'",
-        modelTier: "FIXED_ROLE_TIER['integ-test-runner']",
-        maxTurnsExpr: 'INTEG_TEST_MAX_TURNS * 2',
-        maxTurnsValue: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'INTEG_MAX_TOTAL_S',
-        pushCode: 'false',
-        pushBeads: 'true',
-        schema: 'integReport',
-        resume: 'true',
-    },
-    {
-        ladder: 'final-review',
-        name: 'final review (once)',
-        anchor: 'buildFinalVerdictPrompt({',
-        // Final Review is the SAME reviewer role member -- not a distinct
-        // final-review role.
-        member: "getMemberForRole('reviewer')",
-        agentType: "'reviewer'",
-        modelTier: 'FIXED_ROLE_TIER.reviewer',
-        maxTurnsExpr: 'FINAL_REVIEW_MAX_TURNS',
-        maxTurnsValue: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'false',
-        pushBeads: null,
-        schema: 'finalVerdict',
-        resume: null,
-    },
-    {
-        ladder: 'final-review',
-        name: 'final review (resume after max_turns exhaustion)',
-        anchor: 'Continue your final review exactly where you left off',
-        member: "getMemberForRole('reviewer')",
-        agentType: "'reviewer'",
-        modelTier: 'FIXED_ROLE_TIER.reviewer',
-        maxTurnsExpr: 'FINAL_REVIEW_MAX_TURNS * 2',
-        maxTurnsValue: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'false',
-        pushBeads: null,
-        schema: 'finalVerdict',
-        resume: 'true',
-    },
-    {
-        ladder: 'regression-test-runner',
-        name: 'regression test runner (once)',
-        anchor: '(\n                    regressionPrompt,',
-        member: "getMemberForRole('regression-test-runner')",
-        agentType: "'regression-test-runner'",
-        modelTier: "FIXED_ROLE_TIER['regression-test-runner']",
-        maxTurnsExpr: 'REGRESSION_TEST_MAX_TURNS',
-        maxTurnsValue: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'REGRESSION_TEST_MAX_TOTAL_S',
-        pushCode: 'false',
-        pushBeads: 'true',
-        schema: 'regressionReport',
-        resume: null,
-    },
-    {
-        ladder: 'regression-test-runner',
-        name: 'regression test runner (resume after max_turns exhaustion)',
-        anchor: 'Continue the regression pass exactly where you left off',
-        member: "getMemberForRole('regression-test-runner')",
-        agentType: "'regression-test-runner'",
-        modelTier: "FIXED_ROLE_TIER['regression-test-runner']",
-        maxTurnsExpr: 'REGRESSION_TEST_MAX_TURNS * 2',
-        maxTurnsValue: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'REGRESSION_TEST_MAX_TOTAL_S',
-        pushCode: 'false',
-        pushBeads: 'true',
-        schema: 'regressionReport',
-        resume: 'true',
-    },
-    {
-        ladder: 'harvester',
-        name: 'harvester (once)',
-        anchor: '(\n                harvesterPrompt,',
-        member: "getMemberForRole('harvester')",
-        agentType: "'harvester'",
-        modelTier: 'FIXED_ROLE_TIER.harvester',
-        maxTurnsExpr: 'HARVESTER_MAX_TURNS',
-        maxTurnsValue: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'true',
-        pushBeads: 'true',
-        schema: 'harvesterReport',
-        resume: null,
-    },
-    {
-        ladder: 'harvester',
-        name: 'harvester (resume after max_turns exhaustion)',
-        anchor: 'Continue your harvest exactly where you left off',
-        member: "getMemberForRole('harvester')",
-        agentType: "'harvester'",
-        modelTier: 'FIXED_ROLE_TIER.harvester',
-        maxTurnsExpr: 'HARVESTER_MAX_TURNS * 2',
-        maxTurnsValue: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'true',
-        pushBeads: 'true',
-        schema: 'harvesterReport',
-        resume: 'true',
-    },
-];
 
 describe('execution-role dispatch ladders: per-dispatch pins', () => {
     for (const pin of EXECUTION_LADDERS) {
@@ -450,15 +219,18 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
             `${EXECUTION_LADDERS.length}), found ${AGENT_SITES.length}. A new dispatch must be added to this pin table ` +
             `(execution/verification side) or to the planning-side pin file, not left unpinned.`
         );
-        // Seven execution-side ladders, each contributing exactly two pins
-        // (main dispatch + max_turns-exhaustion resume) -- derived from the
-        // distinct ladder names actually present, not a bare literal.
+        // A ladder migrates WHOLE -- both its dispatches move onto the engine
+        // in the same commit -- so every ladder still represented here still
+        // contributes exactly two inline pins. The all-fourteen-across-both-
+        // lists census is asserted by the engine-served block at the end of
+        // this file.
         const executionLadderNames = new Set(EXECUTION_LADDERS.map((pin) => pin.ladder));
         assert.strictEqual(
             EXECUTION_LADDERS.length,
             executionLadderNames.size * 2,
-            `Each of the ${executionLadderNames.size} execution-side ladders must contribute exactly two pins (main ` +
-            `dispatch + max_turns-exhaustion resume); found ${EXECUTION_LADDERS.length} pins across ${executionLadderNames.size} ladders.`
+            `Each of the ${executionLadderNames.size} still-inline execution ladders must contribute exactly two pins ` +
+            `(main dispatch + max_turns-exhaustion resume); found ${EXECUTION_LADDERS.length} pins across ` +
+            `${executionLadderNames.size} ladders. A half-migrated ladder is what this catches.`
         );
         const lines = new Set(EXECUTION_LADDERS.map((pin) => siteFor(pin.anchor).line));
         assert.strictEqual(
@@ -473,7 +245,16 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
         // harvester". The tree says otherwise -- the doer's MAIN dispatch and
         // the harvester's resume are pushCode:true as well. These are the four
         // code-writing dispatches; every other role is read-side.
-        const pushCodeTrue = EXECUTION_LADDERS.filter((pin) => pin.pushCode === 'true').map((pin) => pin.name);
+        //
+        // Taken over BOTH lists (apra-fleet-3swo.5.7): a migrated ladder's
+        // push flag stops being a source literal ('true') and becomes the
+        // boolean its bracket really receives, so the set is re-derived from
+        // whichever side each ladder currently sits on. The set itself is
+        // unchanged, which is the point.
+        const pushCodeTrue = [
+            ...EXECUTION_LADDERS.filter((pin) => pin.pushCode === 'true').map((pin) => pin.name),
+            ...EXECUTION_ENGINE_DISPATCHES.filter((pin) => pin.pushCode === true).map((pin) => pin.name),
+        ];
         assert.deepStrictEqual(
             pushCodeTrue.sort(),
             [
@@ -485,19 +266,28 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
             'Exactly the doer and harvester dispatch pairs write code and therefore G-push.'
         );
         // Independently re-derived from the source rather than from the table
-        // above, so a table edit alone cannot move this pin.
+        // above, so a table edit alone cannot move this pin. Only the
+        // STILL-INLINE ones have a runner.js bracket of their own: a migrated
+        // ladder is bracketed by the engine's single generic call, whose
+        // pushCode argument is an expression (`dispatch.bracket.pushCode ===
+        // true`) rather than a literal -- which is exactly why the engine-served
+        // half is proved behaviourally instead.
+        const inlinePushCodeTrue = EXECUTION_LADDERS.filter((pin) => pin.pushCode === 'true').length;
         const truesInSource = WITH_GIT_SYNC_SITES.filter((s) => {
             const args = splitTopLevelArgs(s.callText);
             return args[1] === 'true';
         });
         assert.strictEqual(
             truesInSource.length,
-            4,
-            `Expected exactly 4 withGitSync(...) call sites with pushCode:true, found ${truesInSource.length} ` +
-            `(${formatSiteLocations(MODULE_OFFSETS, truesInSource)}).`
+            inlinePushCodeTrue,
+            `Expected exactly ${inlinePushCodeTrue} withGitSync(...) call sites with a literal pushCode:true, found ` +
+            `${truesInSource.length} (${formatSiteLocations(MODULE_OFFSETS, truesInSource)}).`
         );
         for (const pin of EXECUTION_LADDERS.filter((p) => p.ladder === 'harvester')) {
             assert.strictEqual(pin.pushBeads, 'true', 'The harvester also defers low-priority beads, so it D-pushes as well as G-pushes.');
+        }
+        for (const pin of EXECUTION_ENGINE_DISPATCHES.filter((p) => p.role === 'harvester')) {
+            assert.strictEqual(pin.pushBeads, true, 'The harvester also defers low-priority beads, so it D-pushes as well as G-pushes.');
         }
     });
 
@@ -748,5 +538,170 @@ describe('execution-role dispatch: returnable verdicts', () => {
         assert.deepStrictEqual(regressionReport.required, ['passed', 'suitePassed', 'smokePassed', 'bugsFiled', 'summary']);
         assert.deepStrictEqual(harvesterReport.properties.status.enum, ['OK', 'FAILED']);
         assert.deepStrictEqual(harvesterReport.required, ['status', 'notes']);
+    });
+});
+
+// =============================================================================
+// ENGINE-SERVED execution dispatches (apra-fleet-3swo.5.7).
+//
+// PER-PIN INVENTORY -- what happened to each assertion above when a ladder
+// migrated. Nothing was dropped or weakened; only the EVIDENCE changed, from
+// "this text appears at this runner.js call site" to "the real engine, run
+// against the real frozen policy row, really did this".
+//
+//   pre-migration (textual, above)          post-migration (behavioural, below)
+//   ------------------------------------    ------------------------------------
+//   merged.get('member_name') === expr      dispatch.options.member_name === the
+//                                           resolved member (role member, or the
+//                                           runner-local binding for the
+//                                           reviewer pool head / doer member)
+//   merged.get('model')                     dispatch.options.model, resolved from
+//                                           runner.js's own FIXED_ROLE_TIER (read
+//                                           from source by the harness) or the
+//                                           per-bead tier binding
+//   merged.get('max_turns') + resolveTurns  dispatch.options.max_turns, the real
+//                                           number the engine passed
+//   merged.get('timeout_s'/'max_total_s')   the same, resolved through
+//                                           ctx.budgets from the SYMBOLIC name
+//                                           the policy records -- a sentinel
+//                                           value, so a hard-coded fallback
+//                                           cannot pass
+//   merged.get('resume')                    dispatch.options.resume
+//   innermostEnclosingCall(WITH_GIT_SYNC)   dispatch.bracket !== null, plus its
+//     + bracketArgs[0]/[1] + pushBeads      member / pushCode / pushBeads as
+//                                           really received
+//   innermostEnclosingCall(WATCHDOG) null   dispatch.watchdog === null
+//   KB_SELF_INJECTING_ROLES membership      unchanged: still asserted against the
+//                                           real exported set, now paired with
+//                                           the policy's own kbInjection field
+//   merged.get('schema')                    dispatch.options.schema, identity-
+//                                           compared to the real contracts.mjs
+//                                           object
+//   merged.get('sprint_id') === null        dispatch.options.sprint_id === null
+//   the 14 EXECUTION_LADDERS entries        the same 14, as
+//                                           EXECUTION_INLINE_LADDERS entries
+//                                           until each role migrates and then as
+//                                           EXECUTION_ENGINE_DISPATCHES entries;
+//                                           the cross-cutting test below asserts
+//                                           the two lists still sum to 14 and
+//                                           still cover 7 ladders x 2 dispatches
+// =============================================================================
+
+/** Resolved member for an engine-served pin: a role member, or a binding. */
+function engineMemberOf(ctx, pin) {
+    return pin.memberRole ? ctx.getMemberForRole(pin.memberRole) : BINDINGS[pin.memberBinding];
+}
+
+describe('execution-role dispatch ladders: per-dispatch pins (engine-served)', () => {
+    for (const pin of EXECUTION_ENGINE_DISPATCHES) {
+        test(`${pin.name}: member routing, bracketing, turns, timeout, watchdog, KB and verdict schema`, async () => {
+            const { ctx, dispatch, opts, rec } = await driveEngineDispatch(pin.role, pin.kind);
+            assert.ok(
+                dispatch,
+                `${pin.name}: the engine never made the expected ${pin.kind} dispatch (it made ${rec.dispatches.length}).`
+            );
+            const o = dispatch.options;
+            const member = engineMemberOf(ctx, pin);
+
+            // --- member routing -------------------------------------------------
+            assert.strictEqual(
+                o.member_name,
+                member,
+                `${pin.name} must route to ${pin.memberRole ? `the '${pin.memberRole}' role member` : pin.memberBinding}.`
+            );
+
+            // --- model tier -----------------------------------------------------
+            assert.strictEqual(o.model ?? null, pin.modelTier, `${pin.name} must dispatch at model tier ${pin.modelTier}.`);
+
+            // --- turn budget and timeout ----------------------------------------
+            assert.strictEqual(o.max_turns ?? null, pin.maxTurns, `${pin.name} must pass max_turns ${pin.maxTurns}.`);
+            assert.strictEqual(
+                o.timeout_s ?? null,
+                pin.timeoutS === null ? null : ctx.budgets[pin.timeoutS],
+                `${pin.name} must pass timeout_s resolved from the symbolic budget ${pin.timeoutS}.`
+            );
+            assert.strictEqual(
+                o.max_total_s ?? null,
+                pin.maxTotalS === null ? null : ctx.budgets[pin.maxTotalS],
+                `${pin.name} must pass max_total_s resolved from the symbolic budget ${pin.maxTotalS}.`
+            );
+
+            // --- same-session resume flag ---------------------------------------
+            const expectedResume = pin.resume === 'call-site' ? opts.resumeArg : pin.resume;
+            assert.strictEqual(o.resume ?? null, expectedResume ?? null, `${pin.name}: same-session resume argument.`);
+
+            // --- git sync bracketing and push flags -----------------------------
+            assert.ok(dispatch.bracket, `${pin.name} must be wrapped in a withGitSync(...) bracket -- every execution-side dispatch is.`);
+            assert.strictEqual(
+                dispatch.bracket.member,
+                member,
+                `${pin.name}'s bracket must sync the SAME member the dispatch routes to.`
+            );
+            assert.strictEqual(dispatch.bracket.pushCode, pin.pushCode, `${pin.name}: pushCode flag.`);
+            assert.strictEqual(dispatch.bracket.options.pushBeads, pin.pushBeads, `${pin.name}: pushBeads flag.`);
+
+            // --- watchdog arming ------------------------------------------------
+            assert.strictEqual(
+                dispatch.watchdog,
+                null,
+                `${pin.name} is NOT raced against a client-side watchdog -- only the planner-side dispatches are.`
+            );
+
+            // --- KB knowledge injection -----------------------------------------
+            assert.strictEqual(o.agentType ?? null, pin.agentType, `${pin.name} must pass agentType=${pin.agentType}.`);
+            const fromWrapper = !KB_SELF_INJECTING_ROLES.has(pin.agentType);
+            assert.strictEqual(
+                fromWrapper,
+                !['doer', 'reviewer'].includes(pin.agentType),
+                `${pin.name}: doer and reviewer place their own KNOWLEDGE BANK block from their prompt builders; every ` +
+                'other execution role receives it from the agent() wrapper.'
+            );
+            assert.strictEqual(
+                policyFor(pin.role).kbInjection,
+                fromWrapper ? 'wrapper' : 'prompt-builder',
+                `${pin.name}: the policy's kbInjection field must agree with where the block really comes from.`
+            );
+
+            // --- returnable verdicts --------------------------------------------
+            assert.strictEqual(
+                o.schema ?? null,
+                pin.schema === null ? null : SCHEMAS[pin.schema],
+                `${pin.name}: returnable verdict schema (identity-compared to the real contracts.mjs object).`
+            );
+
+            // --- sprint_id ------------------------------------------------------
+            assert.strictEqual(
+                o.sprint_id ?? null,
+                null,
+                `${pin.name} must NOT pass its own sprint_id -- the agent() wrapper supplies the sprint-identity token.`
+            );
+        });
+    }
+
+    test('the two execution lists together still cover all fourteen dispatches across seven ladders', () => {
+        const all = [
+            ...EXECUTION_INLINE_LADDERS.map((pin) => ({ ladder: pin.ladder, name: pin.name })),
+            ...EXECUTION_ENGINE_DISPATCHES.map((pin) => ({ ladder: pin.role, name: pin.name })),
+        ];
+        assert.strictEqual(
+            all.length,
+            14,
+            'Seven execution ladders x (main dispatch + max_turns-exhaustion resume). Migrating a role MOVES its two ' +
+            'entries between the lists; it must never drop one.'
+        );
+        assert.strictEqual(
+            new Set(all.map((e) => e.ladder)).size,
+            7,
+            'The seven execution-side ladders: reviewer, doer, deployer, integ-test-runner, final review, ' +
+            'regression-test-runner, harvester.'
+        );
+        for (const ladder of new Set(all.map((e) => e.ladder))) {
+            assert.strictEqual(
+                all.filter((e) => e.ladder === ladder).length,
+                2,
+                `${ladder} must contribute exactly two dispatches (main + resume) across the two lists.`
+            );
+        }
+        assert.strictEqual(new Set(all.map((e) => e.name)).size, 14, 'Every dispatch must be named distinctly.');
     });
 });
