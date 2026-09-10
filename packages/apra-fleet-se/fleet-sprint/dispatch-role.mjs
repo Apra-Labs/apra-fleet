@@ -84,6 +84,12 @@ const INTEG_TEST_MAX_TURNS = 500;
  * outcome to FAIL.
  */
 const FINAL_REVIEW_MAX_TURNS = 500;
+/**
+ * Per-round reviewer turn base: a full-cycle review can genuinely exhaust the
+ * fleet's default turn budget, and a fresh retry deterministically hits the
+ * same wall -- hence the explicit budget plus the same-session resume.
+ */
+const BASE_REVIEWER_MAX_TURNS = 500;
 
 /**
  * Every turn-base constant a policy's `maxTurns.base` may name, keyed by that
@@ -101,6 +107,7 @@ export const TURN_BASES = Object.freeze({
     REGRESSION_TEST_MAX_TURNS,
     INTEG_TEST_MAX_TURNS,
     FINAL_REVIEW_MAX_TURNS,
+    BASE_REVIEWER_MAX_TURNS,
 });
 
 /**
@@ -571,16 +578,12 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             };
             value = await runAttempt(attemptOpts);
             if (opts.afterAttempt) await opts.afterAttempt(value);
+            // A postResult step may REJECT the result (the reviewer's
+            // contract guard: a CHANGES_NEEDED verdict with nothing for the
+            // orchestrator to act on is self-contradictory). Steps run in
+            // order and the rejection throws immediately, so a later step
+            // never acts on a result the ladder has already judged unusable.
             await runPostResultSteps(ctx, policy, value, opts, member);
-            // A ladder that declares retryOnInvalidResult spends a whole
-            // attempt on a schema-valid answer its own validator rejects,
-            // rather than handing the caller a result it has already judged
-            // unusable. Thrown INSIDE the try so it lands in the same catch
-            // that classifies a dispatch failure.
-            if (retry.retryOnInvalidResult && opts.validate) {
-                const check = opts.validate(value);
-                if (!check.ok) throw new LadderResultRejectedError(check.reason);
-            }
             ok = true;
             lastErr = null;
             degradedValue = null;
@@ -590,10 +593,11 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
 
             // A rejected-but-schema-valid result is NOT a degrade: the
             // dispatch worked, its answer was unusable. Retry the whole
-            // attempt inside the same budget, then hand the caller its own
-            // error rather than a fabricated value.
+            // attempt inside the same budget -- a nudge cannot fix a verdict
+            // that contradicts itself, only a fresh review can -- then hand
+            // the caller its own error rather than a fabricated value.
             if (err instanceof LadderResultRejectedError) {
-                if (attempt < attempts) {
+                if (retry.retryOnInvalidResult && attempt < attempts) {
                     ctx.log(
                         `${roleLabel}: result rejected (${err.reason}) -- re-running the dispatch ` +
                         `(attempt ${attempt + 1} of ${attempts}) before treating this as a distinct failure.`
@@ -744,9 +748,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // is what makes the INCONCLUSIVE variance policy data rather than
             // a branch the integ caller happens to take.
             inconclusive: inconclusiveOf(policy, lastErr),
-            validation: opts.validate && !retry.retryOnInvalidResult
-                ? opts.validate(degradedValue).result
-                : null,
+            validation: opts.validate ? opts.validate(degradedValue).result : null,
         };
     }
 
@@ -846,6 +848,13 @@ async function runPostResultSteps(ctx, policy, value, opts = {}, member = null) 
         // is about what the dispatch actually returned ('kb-apply' applies the
         // report's KB work, 'verify-streak-closed' checks the closes it
         // claims), so a step that could not see the value could not do its job.
-        await hook({ policy, value, opts, member });
+        const outcome = await hook({ policy, value, opts, member });
+        // A step that REJECTS the result ends the attempt then and there:
+        // later steps must not act on a value the ladder has judged unusable,
+        // and retry.retryOnInvalidResult decides whether the ladder spends
+        // another attempt on it or hands the caller its own error.
+        if (outcome && outcome.rejected === true) {
+            throw new LadderResultRejectedError(outcome.reason);
+        }
     }
 }

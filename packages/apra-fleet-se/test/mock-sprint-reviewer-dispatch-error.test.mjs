@@ -37,7 +37,13 @@ test('mock sprint: Reviewer dispatch failure (AgentDispatchError) is logged dist
             }),
         });
         check(
-            reviewerDispatchErr.logs.some((m) => m.includes('Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED')),
+            // apra-fleet-3swo.5.7: the reviewer ladder moved onto the
+            // dispatchRole engine, which names the DEGRADE KIND where the
+            // ladder used to spell out "treating round as CHANGES_NEEDED".
+            // The distinction this test exists for -- dispatch failure vs
+            // schema-repair exhaustion getting DIFFERENT wording -- is
+            // unchanged and still asserted both ways.
+            reviewerDispatchErr.logs.some((m) => m.includes('Reviewer: agent dispatch failed, degrading (synthesized-verdict)')),
             `Expected the distinct "agent dispatch failed" log line (not the schema-repair-exhausted wording), logs: ${JSON.stringify(reviewerDispatchErr.logs)}`
         );
         check(
@@ -59,7 +65,7 @@ test('mock sprint: Reviewer schema-repair exhaustion (AgentOutputError) still us
             }),
         });
         check(
-            reviewerSchemaErr.logs.some((m) => m.includes('Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED')),
+            reviewerSchemaErr.logs.some((m) => m.includes('Reviewer: schema-repair exhausted, degrading (synthesized-verdict)')),
             `Expected the original "schema-repair exhausted" wording for persistent invalid output, logs: ${JSON.stringify(reviewerSchemaErr.logs)}`
         );
         check(

@@ -383,6 +383,22 @@ export const ROLE_CALL_OPTS = Object.freeze({
         roleLabel: 'Scoped Replan Review',
         label: 'Scoped Replan Review',
     },
+    reviewer: {
+        // A 'pool-head'-kind member is a runner-local value, so every caller
+        // -- not just driveEngineDispatch -- must supply it or the engine
+        // refuses to guess a member.
+        bindings: BINDINGS,
+        prompt: 'REVIEWER PROMPT',
+        resumePrompt: 'REVIEWER RESUME PROMPT',
+        roleLabel: 'Reviewer',
+        resumeLabel: 'Review (resume, max_turns=1000)',
+        resumeArg: 'reviewer-session-abc',
+        synthesizedNotes: {
+            schema: (err) => `HARNESS-SCHEMA-CLASS: ${err.message}`,
+            dispatch: (err) => `HARNESS-DISPATCH-CLASS: ${err.message}`,
+        },
+        onResultRejected: (reason) => new Error(`HARNESS-REJECTED: ${reason}`),
+    },
     'final-review': {
         prompt: 'FINAL REVIEW PROMPT',
         resumePrompt: 'FINAL REVIEW RESUME PROMPT',
