@@ -87,8 +87,7 @@ fixture corpus directory is still empty. `bindings/mcp/` now holds 23
 committed tool definitions (commit `fcccf19f`, one per inventoried tool);
 `bindings/openapi/` remains an unowned empty stub. See
 `docs/memory-contract-v1-generator-design.md` for the full design of what did
-land and `docs/learnings.md` for the review approach that reached this
-verdict.
+land.
 
 What landed: the zod-to-JSON-Schema generation path was selected, proven
 against every hard construct in the surface (discriminated unions, closed
