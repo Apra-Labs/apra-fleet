@@ -66,6 +66,12 @@ const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 500;
 const HARVESTER_MAX_TURNS = 500;
 /** Deployer turn base: it runs real deploy commands per a runbook. */
 const DEPLOYER_MAX_TURNS = 500;
+/**
+ * Regression turn base: the real functional suite alone spends roughly one
+ * turn per liveness poll for the better part of an hour, and this single
+ * dispatch carries both it and the sandbox smoke sprint.
+ */
+const REGRESSION_TEST_MAX_TURNS = 500;
 
 /**
  * Every turn-base constant a policy's `maxTurns.base` may name, keyed by that
@@ -80,6 +86,7 @@ export const TURN_BASES = Object.freeze({
     SCOPED_REPLAN_REVIEWER_MAX_TURNS,
     HARVESTER_MAX_TURNS,
     DEPLOYER_MAX_TURNS,
+    REGRESSION_TEST_MAX_TURNS,
 });
 
 /**
@@ -586,26 +593,37 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // own clone -- only the post-dispatch sync failed, and withGitSync
             // already retried that step on its own. Re-dispatching would spawn
             // a second session for the same phase on top of completed work.
-            if (retry.skipRedispatchOnPostDispatchSyncFailure && isPostDispatchSyncFailure(err)) {
+            //
+            // This ENDS the ladder but still runs the degrade below, because
+            // "the dispatch ran and its writes are local" is itself something
+            // a caller may need reported: the regression phase, whose whole job
+            // is filing carry-over beads, has to say in its summary that they
+            // may not have reached the shared remote. A ladder that fabricates
+            // nothing for this class (the planner, the doer) is unaffected --
+            // its degrade.classes simply does not list it.
+            const completedButSyncFailed =
+                retry.skipRedispatchOnPostDispatchSyncFailure && isPostDispatchSyncFailure(err);
+            if (completedButSyncFailed) {
                 ctx.log(
                     `${roleLabel} dispatch COMPLETED but its post-dispatch sync failed: ${err.message} Aborting ` +
                     'retries WITHOUT re-dispatching -- the turn already ran and its writes are local; fix the sync ' +
                     'and re-run.'
                 );
-                break;
             }
 
             // Only a provably no-mutation dispatch failure leaves the workspace
             // unchanged, so only then may the next attempt skip its
             // pre-dispatch sync. Any other error re-arms it.
-            if (retry.skipPreDispatchSyncOnNoMutation) {
+            if (!completedButSyncFailed && retry.skipPreDispatchSyncOnNoMutation) {
                 skipPreDispatchSyncNext = ctx.isNoMutationDispatchFailure(err);
             }
 
             // Auth/workspace-trust failures are deterministic -- no retry can
             // succeed -- so a ladder that declares abortOnNonRetryable ends
             // rather than burning its remaining attempts on the same wall.
-            if (retry.abortOnNonRetryable && isNonRetryableDispatchError(err)) {
+            // Deliberately WITHOUT a degrade: a ladder that aborts here has a
+            // credentials/trust problem to fix, not a result to fabricate.
+            if (!completedButSyncFailed && retry.abortOnNonRetryable && isNonRetryableDispatchError(err)) {
                 // An LLM-auth failure (unlike workspace trust, which self-heal
                 // cannot fix) gets one bounded self-heal attempt first.
                 if (retry.authSelfHeal && isAuthDispatchError(err) && typeof ctx.onLlmAuthFailure === 'function') {
@@ -636,8 +654,8 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // self-heals an unhealed LLM-auth failure, because the SAME member
             // is dispatched again later in the cycle and would otherwise walk
             // into the identical wall.
-            if (!retry.abortOnNonRetryable && retry.authSelfHeal && isAuthDispatchError(err)
-                && typeof ctx.onLlmAuthFailure === 'function') {
+            if (!completedButSyncFailed && !retry.abortOnNonRetryable && retry.authSelfHeal
+                && isAuthDispatchError(err) && typeof ctx.onLlmAuthFailure === 'function') {
                 await ctx.onLlmAuthFailure({ member, label: `${roleLabel} dispatch`, error: err.message });
             }
 
@@ -682,12 +700,12 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             }
             await runDegradeSteps(ctx, policy, err, errorClass);
             degradedValue = synthesizeDegradedValue(policy, opts, err, errorClass);
-            const isLastAttempt = attempt === attempts || healRetryIsFinal;
+            const isLastAttempt = attempt === attempts || healRetryIsFinal || completedButSyncFailed;
             ctx.log(
                 `${roleLabel} dispatch threw: ${err.message}.` +
                 (isLastAttempt ? ' Retries exhausted.' : ` Retrying (attempt ${attempt + 1} of ${attempts}).`)
             );
-            if (healRetryIsFinal) break;
+            if (healRetryIsFinal || completedButSyncFailed) break;
         }
     }
 

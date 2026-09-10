@@ -358,7 +358,9 @@ const EXPECTED_COMMAND_COUNT = 29;
 // runner.js; none were added.
 // 12 -> 10 (same bead): the deployer ladder -- its dispatch and its
 // max_turns-exhaustion resume -- followed the harvester onto the engine.
-const EXPECTED_AGENT_COUNT = 10;
+// 10 -> 8 (same bead): the regression-test-runner ladder -- its dispatch and
+// its max_turns-exhaustion resume -- followed the deployer onto the engine.
+const EXPECTED_AGENT_COUNT = 8;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in

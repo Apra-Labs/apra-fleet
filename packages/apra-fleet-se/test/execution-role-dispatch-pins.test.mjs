@@ -37,6 +37,12 @@ import {
     schemaError,
     transportError,
     authError,
+    gitSyncError,
+    doltSyncError,
+    divergedError,
+    cancelledError,
+    budgetError,
+    postDispatchSyncError,
 } from './helpers/dispatch-role-harness.mjs';
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
 import { PLANNING_LADDERS } from './helpers/planning-ladders.mjs';
@@ -593,26 +599,79 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         );
     });
 
-    test('regression: a load-bearing catch-all keeps an informational phase from ever aborting the sprint', () => {
-        const region = stripComments(regionBetween(SRC, 'const regressionDispatchOpts', 'Harvest'));
-        assert.ok(
-            /\} catch \(err\) \{/.test(region),
-            'The regression phase must wrap its dispatch in a catch.'
-        );
-        // Deliberately NO instanceof filtering on the outer catch: sync-layer
-        // aborts (divergence classes) must be swallowed here too.
-        const outerCatch = stripComments(regionBetween(SRC, 'A regression-phase infrastructure failure must never abort', 'Harvest'));
-        assert.ok(
-            !/throw /.test(outerCatch),
-            'The regression catch-all must never rethrow: a D-push failure while filing carry-over bugs would otherwise turn a green sprint into a terminal ABORTED record, skipping Harvest and Publish PR.'
-        );
-        assert.ok(
-            /memberSessionGuard\.killIfAlive\(getMemberForRole\('regression-test-runner'\)\)/.test(region),
+    test('regression: a load-bearing catch-all keeps an informational phase from ever aborting the sprint', async () => {
+        // apra-fleet-3swo.5.7: re-anchored onto the engine. The textual version
+        // asserted the SHAPE of a catch-all (a bare `} catch (err) {`, no
+        // `throw` anywhere in the outer catch region); the engine version
+        // asserts the BEHAVIOUR that shape existed for -- which is stronger,
+        // because a catch-all that swallows an error and then fabricates
+        // nothing usable would have passed the text scan.
+        //   bare catch / no throw in the outer catch
+        //        -> every error class, including a typed sprint abort, really
+        //           degrades instead of propagating
+        //   memberSessionGuard.killIfAlive before the resume  -> rec.kills
+        //   regressionResult.passed !== true                  -> the degrade
+        //           really fabricates passed:false, never true
+        const p = policyFor('regression-test-runner');
+        assert.strictEqual(p.degrade.kind, 'catch-all', 'The regression phase is the table\'s one catch-all.');
+
+        const resumed = await driveEngineDispatch('regression-test-runner', 'max-turns-resume');
+        assert.deepStrictEqual(
+            resumed.rec.kills,
+            [resumed.ctx.getMemberForRole('regression-test-runner')],
             'The regression resume kills a still-alive session first.'
         );
-        assert.ok(
-            /regressionResult\.passed !== true/.test(region),
-            'Only an explicit passed:true is treated as a green regression pass.'
+
+        // Every class, including a REAL divergence -- a typed sprint abort that
+        // every other ladder propagates -- must be swallowed here. This is the
+        // exact failure the catch-all exists for: a D-push failure while filing
+        // carry-over bugs must never turn a green sprint into a terminal
+        // ABORTED record that skips Harvest and Publish PR.
+        const classDrivers = [
+            ['schema', schemaError, 'HARNESS-SCHEMA-CLASS'],
+            ['dispatch', transportError, 'HARNESS-DISPATCH-CLASS'],
+            ['sync', gitSyncError, 'HARNESS-SYNC-CLASS'],
+            ['sync', doltSyncError, 'HARNESS-SYNC-CLASS'],
+            ['sync', divergedError, 'HARNESS-SYNC-CLASS'],
+            ['unknown', () => new TypeError('not a dispatch failure at all'), 'HARNESS-UNKNOWN-CLASS'],
+        ];
+        for (const [errorClass, make, marker] of classDrivers) {
+            const { ctx } = createRecordingCtx({ responses: [make()] });
+            const outcome = await dispatchRole(ctx, 'regression-test-runner', ROLE_CALL_OPTS['regression-test-runner']);
+            assert.strictEqual(outcome.degraded, true, `a ${errorClass}-class failure must degrade, never propagate`);
+            assert.strictEqual(outcome.value.passed, false, 'Only an explicit passed:true is treated as a green regression pass.');
+            assert.notStrictEqual(outcome.value.passed, true, 'No degrade path may report a green pass.');
+            assert.ok(
+                outcome.value.summary.startsWith(marker),
+                `a ${errorClass}-class failure must be reported through its OWN summary builder, not a shared one ` +
+                `(got ${JSON.stringify(outcome.value.summary)})`
+            );
+            assert.deepStrictEqual(outcome.value.bugsFiled, [], 'A degraded pass filed no bugs it can vouch for.');
+        }
+        assert.strictEqual(p.degrade.paths, 4, 'Four degrade paths: schema, dispatch, sync and unrecognised.');
+
+        // A completed pass whose post-dispatch sync failed is NOT re-dispatched
+        // (the pass already ran), but it still reports honestly that its
+        // carry-over beads may be local-only.
+        const syncFailed = createRecordingCtx({ responses: [postDispatchSyncError(), postDispatchSyncError()] });
+        const syncOutcome = await dispatchRole(syncFailed.ctx, 'regression-test-runner', ROLE_CALL_OPTS['regression-test-runner']);
+        assert.strictEqual(syncFailed.rec.dispatches.length, 1, 'A pass that already ran is never re-dispatched.');
+        assert.ok(syncOutcome.value.summary.startsWith('HARNESS-SYNC-CLASS'), 'It is reported as a sync failure, not as a failed pass.');
+
+        // The two deliberate exceptions: RUN-level control signals are not
+        // failures of this phase and keep propagating.
+        for (const make of [cancelledError, budgetError]) {
+            const { ctx } = createRecordingCtx({ responses: [make()] });
+            await assert.rejects(
+                () => dispatchRole(ctx, 'regression-test-runner', ROLE_CALL_OPTS['regression-test-runner']),
+                (err) => err === undefined || make().constructor === err.constructor,
+                'Cancellation and a blown spend ceiling are run-level signals, not a failure of this phase.'
+            );
+        }
+        assert.deepStrictEqual(
+            p.degrade.rethrowsRunControlSignals,
+            ['CancelledError', 'BudgetExceededError'],
+            'Exactly those two signals still propagate through the catch-all.'
         );
     });
 

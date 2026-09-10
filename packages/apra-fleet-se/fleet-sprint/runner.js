@@ -3055,6 +3055,14 @@ async function runSprintCycle(context) {
     // 2x ceiling.
     const DISPATCH_TIMEOUT_S = validated.dispatchTimeoutS;
     const INTEG_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 2;
+    // Hoisted here with its siblings (apra-fleet-3swo.5.7): role-policies.mjs
+    // records a dispatch's budgets by the NAME of the runner constant that
+    // supplies them, so every named budget must exist by the time dispatchCtx
+    // is built. Same shape as the integ ceiling -- keep the shorter INACTIVITY
+    // timer (a genuinely hung runner still dies) while giving the HARD
+    // elapsed-time ceiling real headroom, since a max_total_s kill surfaces as
+    // a plain AgentDispatchError that the max_turns resume ladder cannot catch.
+    const REGRESSION_TEST_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 3;
 
     // Apply the optional `budget` arg ceiling to THIS run's budget object.
     // Setting it here, before any dispatch, is what makes the ceiling
@@ -3296,8 +3304,8 @@ async function runSprintCycle(context) {
         memberSessionGuard,
         onLlmAuthFailure,
         fixedRoleTier: FIXED_ROLE_TIER,
-        budgets: { DISPATCH_TIMEOUT_S },
-        schemas: { planReviewerVerdict, streakAssignment, harvesterReport, deployerReport },
+        budgets: { DISPATCH_TIMEOUT_S, INTEG_MAX_TOTAL_S, REGRESSION_TEST_MAX_TOTAL_S },
+        schemas: { planReviewerVerdict, streakAssignment, harvesterReport, deployerReport, regressionReport },
         isNoMutationDispatchFailure,
         invalidateAllBeadsCache,
         // The named steps role-policies.mjs records for a row, implemented
@@ -6858,8 +6866,6 @@ async function runSprintCycle(context) {
         // poll for the better part of an hour, and this single dispatch carries
         // both it and the sandbox smoke sprint -- hence the large turn budget
         // and the wider hard ceiling.
-        const REGRESSION_TEST_MAX_TURNS = 500;
-        const REGRESSION_TEST_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 3;
         const regressionPrompt =
             `Run the full regression pass using regression-test-playbook.md at the repo root: part 1 ` +
             `(the real functional suite) and part 2 (the sandbox smoke test), then ALWAYS run the ` +
@@ -6877,114 +6883,61 @@ async function runSprintCycle(context) {
             `${sprintSelfIdLine}\n` +
             `If an isolated test instance from this sprint's deploy is still up, the playbook says how to ` +
             `locate it from that id; tear it down too before you return.`;
-        const regressionDispatchOpts = {
-            member_name: getMemberForRole('regression-test-runner'),
-            agentType: 'regression-test-runner',
-            schema: regressionReport,
-            model: FIXED_ROLE_TIER['regression-test-runner'],
-            // Same shape as the integ dispatch: keep the shorter INACTIVITY
-            // timer (a genuinely hung runner still dies) while giving the HARD
-            // elapsed-time ceiling real headroom, since a max_total_s kill
-            // surfaces as a plain AgentDispatchError that the max_turns resume
-            // ladder below cannot catch.
-            timeout_s: DISPATCH_TIMEOUT_S,
-            max_total_s: REGRESSION_TEST_MAX_TOTAL_S,
-            max_turns: REGRESSION_TEST_MAX_TURNS,
-        };
-        try {
-            // Mutates beads (files carry-over bugs) but never touches code:
-            // pushCode false / pushBeads true, exactly like the integ runner.
-            try {
-                regressionResult = await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
-                    regressionPrompt,
-                    { ...regressionDispatchOpts, member_name: getMemberForRole('regression-test-runner') }
-                ), { pushBeads: true });
-            } catch (err) {
-                if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                    log(`Regression Test Runner exhausted its turn limit (max_turns=${REGRESSION_TEST_MAX_TURNS}) -- resuming the same session with max_turns=${REGRESSION_TEST_MAX_TURNS * 2} instead of restarting the pass.`);
-                    await memberSessionGuard.killIfAlive(getMemberForRole('regression-test-runner'));
-                    // A resume DELIVERS A NEW prompt artifact, so restate the
-                    // dispatch's scope/filing rules -- a bare "continue" would
-                    // lose the parent-less filing rule, which is the whole point
-                    // of this phase.
-                    regressionResult = await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
-                        'Continue the regression pass exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining work, run Teardown, and return your final report now. ' +
-                        'Your original instructions, restated so a resumed dispatch never loses them: ' + regressionPrompt,
-                        {
-                            ...regressionDispatchOpts,
-                            member_name: getMemberForRole('regression-test-runner'),
-                            label: `Regression Test (resume, max_turns=${REGRESSION_TEST_MAX_TURNS * 2})`,
-                            resume: true,
-                            max_turns: REGRESSION_TEST_MAX_TURNS * 2,
-                        }
-                    ), { pushBeads: true });
-                } else {
-                    throw err;
-                }
-            }
-            if (regressionResult.passed !== true) {
-                log(`Regression pass reported FAILURES (carry-over beads: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}): ${regressionResult.summary}`);
-            } else {
-                log(`Regression pass PASSED (suite: ${regressionResult.suitePassed}, smoke: ${regressionResult.smokePassed}).`);
-            }
-        } catch (err) {
-            // A regression-phase infrastructure failure must never abort the
-            // sprint. Hence deliberately NO outer retry-once wrapper and
-            // deliberately a CATCH-ALL: unlike Final Review -- whose failure
-            // legitimately fails the whole sprint -- ANY failure of this phase
-            // must soft-fail and log. It can never abort the run, gate the
-            // verdict, or block Harvest.
-            //
-            // The catch-all is load-bearing, not defensive sloppiness. The
-            // dispatch above is wrapped in withGitSync(..., { pushBeads: true }),
-            // whose pre-dispatch G-pull/D-pull and post-dispatch G-push/D-push
-            // can throw GitSyncError / GitDivergedError / DoltSyncError /
-            // DoltDivergedError / PostDispatchSyncError -- and this is the ONE
-            // phase whose whole job is mutating beads (filing carry-over bugs),
-            // so a D-push failure here is a routine outcome, not an exotic one.
-            // The divergence classes among them (GitDivergedError, and a
-            // DoltDivergedError bare or wrapped in a PostDispatchSyncError) are
-            // typed sprint aborts -- isTypedAbortError() returns true for them --
-            // so without this catch-all the top-level handler
-            // in this file's exported entry point would turn the throw into a
-            // terminal `verdict: 'ABORTED'` record -- skipping Harvest AND
-            // Publish PR, and discarding the already-computed
-            // finalVerdictResult, which is only published after Harvest. A green
-            // sprint would be reported as ABORTED because an informational pass
-            // could not push a bug bead. Catch broadly; record the failure in the
-            // summary instead.
-            //
-            // Two deliberate exceptions, both RUN-level control signals rather
-            // than "the regression phase failed":
-            //   - CancelledError: the operator/supervisor cancelled the run.
-            //     Honouring cancellation outranks finishing an informational
-            //     phase (and isTypedAbortError() already excludes it, so it is
-            //     not a spurious ABORT).
-            //   - BudgetExceededError: the sprint's hard spend ceiling is
-            //     blown. Swallowing it here would let Harvest keep spending
-            //     past a limit the operator set. Same treatment it gets at
-            //     every other dispatch site in this file.
-            if (err instanceof CancelledError || err instanceof BudgetExceededError) {
-                throw err;
-            }
-            if (err instanceof AgentOutputError) {
-                log(`Regression Test Runner: schema-repair exhausted, continuing without a regression result: ${err.message}`);
-                regressionResult = { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [], summary: `Regression test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
-            } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                log(`Regression Test Runner: agent dispatch failed, continuing without a regression result: ${err.message}`);
-                regressionResult = { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [], summary: `Regression test runner dispatch failed: ${err.message}` };
-            } else if (isPostDispatchSyncFailure(err) || err instanceof WorkflowError) {
-                // Sync/publish failure around an informational phase. The
+        // apra-fleet-3swo.5.7: the regression ladder -- its dispatch, its
+        // pushBeads git-sync bracket, its max_turns-exhaustion resume at
+        // doubled turns, its refusal to re-dispatch a pass that already ran,
+        // and its load-bearing CATCH-ALL degrade -- is now the
+        // 'regression-test-runner' row of fleet-sprint/role-policies.mjs.
+        //
+        // WHY THE CATCH-ALL IS POLICY DATA AND NOT A try/catch HERE: this
+        // phase is informational and must never abort the sprint. The dispatch
+        // is bracketed with pushBeads:true, and this is the ONE phase whose
+        // whole job is mutating beads (filing carry-over bugs), so a D-push
+        // failure is a routine outcome. Among the classes it can throw are
+        // typed sprint aborts (GitDivergedError, DoltDivergedError bare or
+        // wrapped in a PostDispatchSyncError) -- without the catch-all the
+        // top-level handler would turn one into a terminal verdict:'ABORTED',
+        // skipping Harvest AND Publish PR and discarding an already-computed
+        // finalVerdictResult. A green sprint would be reported as ABORTED
+        // because an informational pass could not push a bug bead. The row
+        // says all of that as data: degrade.classes lists all four error
+        // classes it fabricates a summary for, and
+        // degrade.classifiesUnrecognisedErrors is what stops an unknown class
+        // from escaping.
+        //
+        // Two deliberate exceptions, both RUN-level control signals rather than
+        // "the regression phase failed", recorded as
+        // degrade.rethrowsRunControlSignals: CancelledError (honouring an
+        // operator cancellation outranks finishing an informational phase) and
+        // BudgetExceededError (swallowing a blown spend ceiling would let
+        // Harvest keep spending past a limit the operator set).
+        const regressionOutcome = await dispatchRole(dispatchCtx, 'regression-test-runner', {
+            prompt: regressionPrompt,
+            // A resume DELIVERS A NEW prompt artifact, so restate the
+            // dispatch's scope/filing rules -- a bare "continue" would lose the
+            // parent-less filing rule, which is the whole point of this phase.
+            resumePrompt:
+                'Continue the regression pass exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining work, run Teardown, and return your final report now. ' +
+                'Your original instructions, restated so a resumed dispatch never loses them: ' + regressionPrompt,
+            roleLabel: 'Regression Test Runner',
+            resumeLabel: `Regression Test (resume, max_turns=${TURN_BASES.REGRESSION_TEST_MAX_TURNS * 2})`,
+            synthesizedNotes: {
+                schema: (err) => `Regression test runner failed to return a schema-valid report after repair attempts: ${err.message}`,
+                dispatch: (err) => `Regression test runner dispatch failed: ${err.message}`,
+                // Said honestly rather than as a clean "the pass failed": the
                 // carry-over beads may or may not have reached the shared
-                // remote, so say so honestly in the summary rather than
-                // reporting a clean "the pass failed", and let the sprint
-                // finish normally.
-                log(`Regression Test Runner: git/beads sync around the regression dispatch FAILED (${err.name}: ${err.message}). Continuing to Harvest -- this phase is informational and never aborts the sprint. Any carry-over beads it filed may still be local-only; re-check with: bd search "[carry-over]"`);
-                regressionResult = { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [], summary: `Regression pass could not be completed: git/beads sync around the dispatch failed (${err.name}: ${err.message}). Any carry-over beads filed may not have reached the shared remote.` };
-            } else {
-                log(`Regression Test Runner: unexpected error, continuing without a regression result (this phase never aborts the sprint): ${err && err.stack ? err.stack : err}`);
-                regressionResult = { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [], summary: `Regression test runner failed with an unexpected error: ${err && err.message ? err.message : String(err)}` };
-            }
+                // remote, and the operator needs to know which.
+                sync: (err) => `Regression pass could not be completed: git/beads sync around the dispatch failed (${err.name}: ${err.message}). Any carry-over beads filed may not have reached the shared remote.`,
+                unknown: (err) => `Regression test runner failed with an unexpected error: ${err && err.message ? err.message : String(err)}`,
+            },
+        });
+        regressionResult = regressionOutcome.value;
+        // No duplicate log() dump -- see dispatchReview() for why. Only an
+        // explicit passed:true is treated as a green regression pass.
+        if (regressionResult.passed !== true) {
+            log(`Regression pass reported FAILURES (carry-over beads: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}): ${regressionResult.summary}`);
+        } else {
+            log(`Regression pass PASSED (suite: ${regressionResult.suitePassed}, smoke: ${regressionResult.smokePassed}).`);
         }
         await updateDashboard();
     } else {

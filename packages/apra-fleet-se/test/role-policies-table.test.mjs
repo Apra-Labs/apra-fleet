@@ -178,7 +178,11 @@ const ROLE_SOURCE = {
     'final-review': {
         anchor: 'buildFinalVerdictPrompt({',
         secondary: 'Continue your final review exactly where you left off',
-        region: ['const FINAL_REVIEW_MAX_TURNS', 'const REGRESSION_TEST_MAX_TURNS'],
+        // apra-fleet-3swo.5.7: the end bound used to be the regression
+        // ladder's own turn constant, which the regression migration deleted.
+        // Its prompt build is the next stable landmark past the final-review
+        // ladder and bounds it just as tightly.
+        region: ['const FINAL_REVIEW_MAX_TURNS', 'const regressionPrompt ='],
         attempts: { kind: 'wrapper', call: 'runFinalReviewAttempt(' },
     },
     // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
@@ -189,17 +193,8 @@ const ROLE_SOURCE = {
         region: ['const INTEG_TEST_MAX_TURNS = 500;', 'Feature closure is judged'],
         attempts: { kind: 'single' },
     },
-    'regression-test-runner': {
-        anchor: '(\n                    regressionPrompt,',
-        secondary: 'Continue the regression pass exactly where you left off',
-        // apra-fleet-3swo.5.7: the end bound used to be the harvester's own
-        // dispatch-opts object, which the harvester migration deleted. The
-        // harvest phase's prompt build is the next stable landmark past the
-        // regression ladder and bounds it just as tightly.
-        region: ['const REGRESSION_TEST_MAX_TURNS = 500;', 'const harvesterPrompt = buildHarvesterPrompt({'],
-        degradeRegion: ['A regression-phase infrastructure failure must never abort', 'const harvesterPrompt = buildHarvesterPrompt({'],
-        attempts: { kind: 'single' },
-    },
+    // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
+    'regression-test-runner': { engine: true },
     // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
     harvester: { engine: true },
 };
