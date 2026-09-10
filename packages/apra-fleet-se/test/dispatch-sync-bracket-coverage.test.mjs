@@ -108,10 +108,15 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // max_turns-exhaustion resume -- moved onto the dispatchRole engine, starting
 // the execution-side half of the migration. Two agent() call sites left
 // runner.js; none were added.
-const EXPECTED_AGENT_COUNT = 12;
+// 12 -> 10 (same bead): the deployer ladder -- its dispatch and its
+// max_turns-exhaustion resume -- followed the harvester onto the engine.
+const EXPECTED_AGENT_COUNT = 10;
 // 14 -> 12 (apra-fleet-3swo.5.7): the harvester's dispatch and resume brackets
 // moved onto the dispatchRole engine's one generic withGitSync call.
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 12;
+// 12 -> 10 (same bead): the deployer's two read-side brackets followed the
+// harvester onto the engine. Neither carried pushBeads, so that count is
+// unchanged.
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 10;
 // apra-fleet-3swo.5.3: EMPTY. The two Streak Assignment dispatches -- the only
 // documented, deliberate exemptions from the bracket invariant -- now run
 // through the dispatchRole engine, whose policy row records `bracket: {wrapped:

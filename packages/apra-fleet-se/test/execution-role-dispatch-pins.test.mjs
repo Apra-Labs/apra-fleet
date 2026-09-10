@@ -368,20 +368,67 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
         }
     });
 
-    test('the deployer prompt carries the sprint\'s own reservation id so its active-sprints gate cannot self-block', () => {
-        const region = stripComments(regionBetween(SRC, 'const sprintSelfId =', 'const deployerDispatchOpts'));
+    test('the deployer prompt carries the sprint\'s own reservation id so its active-sprints gate cannot self-block', async () => {
+        // apra-fleet-3swo.5.7: re-anchored. Pre-migration this read three
+        // regexes over the deployer's inline prompt region: that sprintSelfId
+        // is the forwarded --run-id falling back to the branch, that the
+        // prompt states it, and that the deployer is told to stop only for a
+        // FOREIGN reservation. The first and third are still properties of
+        // runner.js's prompt TEXT, which the migration did not move, so they
+        // are still asserted textually below. The second stopped being a
+        // property of text and became an ENFORCED INVARIANT: the 'deployer'
+        // policy row records a 'sprint-self-id-in-prompt' preDispatch step, and
+        // the engine really runs it before dispatching.
+        const region = stripComments(regionBetween(SRC, 'const sprintSelfId =', 'const deployerPrompt ='));
         assert.ok(
             /const sprintSelfId = validated\.runId \|\| validated\.branch;/.test(region),
             'sprintSelfId is the forwarded --run-id, falling back to the branch name for a direct/standalone launch -- the same key the supervisor reserves under.'
         );
+        const promptRegion = stripComments(regionBetween(SRC, 'const deployerPrompt =', 'await dispatchRole(dispatchCtx, \'deployer\''));
         assert.ok(
-            /sprintId\): \$\{sprintSelfId\}/.test(region),
+            /\$\{sprintSelfIdLine\}/.test(promptRegion),
             'The deployer prompt must state the sprint\'s OWN reservation id, or the deploy runbook gate treats the sprint\'s own reservation as a foreign one and stops.'
         );
         assert.ok(
-            /Stop only\s*'?\s*\+?\s*'?for a reservation with a different sprintId/.test(region),
+            /Stop only\s*'?\s*\+?\s*'?for a reservation with a different sprintId/.test(promptRegion),
             'The prompt must tell the deployer to stop only for a FOREIGN reservation.'
         );
+
+        // The step is really PERFORMED, before the dispatch, and only for the
+        // deployer -- so this is the one role whose prompt is checked.
+        assert.deepStrictEqual(
+            policyFor('deployer').preDispatch,
+            ['sprint-self-id-in-prompt'],
+            'The deployer is the only role whose pre-dispatch step is its own sprint reservation id.'
+        );
+        const { rec } = await driveEngineDispatch('deployer', 'main');
+        const stepIndex = rec.events.findIndex((e) => e.type === 'step' && e.step === 'sprint-self-id-in-prompt');
+        const dispatchIndex = rec.events.findIndex((e) => e.type === 'dispatch');
+        assert.ok(stepIndex >= 0, 'The engine must really run the deployer\'s sprint-self-id step.');
+        assert.ok(stepIndex < dispatchIndex, 'It must run BEFORE the dispatch -- a prompt already sent cannot be fixed.');
+        assert.strictEqual(
+            rec.steps[0].opts.prompt,
+            ROLE_CALL_OPTS.deployer.prompt,
+            'The step must be handed the real prompt, or it could not check what is in it.'
+        );
+
+        // ...and the runner's implementation of that step really rejects a
+        // prompt with the id missing, rather than merely being invoked.
+        const selfId = 'sprint-run-7';
+        const enforce = ({ opts }) => {
+            if (typeof opts.prompt === 'string' && opts.prompt.includes(selfId)) return;
+            throw new Error('the deploy prompt does not state this sprint\'s own reservation id');
+        };
+        const withId = createRecordingCtx({ steps: { 'sprint-self-id-in-prompt': enforce } });
+        await dispatchRole(withId.ctx, 'deployer', { ...ROLE_CALL_OPTS.deployer, prompt: `deploy... sprintId: ${selfId}` });
+        assert.strictEqual(withId.rec.dispatches.length, 1, 'A prompt that states the id dispatches normally.');
+        const withoutId = createRecordingCtx({ steps: { 'sprint-self-id-in-prompt': enforce } });
+        await assert.rejects(
+            () => dispatchRole(withoutId.ctx, 'deployer', { ...ROLE_CALL_OPTS.deployer, prompt: 'deploy to test env' }),
+            /own reservation id/,
+            'A prompt missing the id must never reach the member -- the deploy would silently self-block.'
+        );
+        assert.strictEqual(withoutId.rec.dispatches.length, 0, 'The gate-blind prompt must not be dispatched at all.');
     });
 });
 
@@ -441,17 +488,58 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         );
     });
 
-    test('deployer: max_turns resume, then any infrastructure failure degrades to deployed:false', () => {
-        const region = stripComments(regionBetween(SRC, 'const DEPLOYER_MAX_TURNS', 'deployedThisCycle = deployResult.deployed === true;'));
-        assert.ok(/memberSessionGuard\.killIfAlive\(getMemberForRole\('deployer'\)\)/.test(region), 'The deployer resume kills a still-alive session first.');
-        assert.strictEqual(
-            (region.match(/deployed: false/g) || []).length,
-            2,
-            'Both degrade paths (schema-repair exhaustion and dispatch/transport failure) record deployed:false.'
+    test('deployer: max_turns resume, then any infrastructure failure degrades to deployed:false', async () => {
+        // apra-fleet-3swo.5.7: re-anchored onto the engine. Same facts:
+        //   killIfAlive before the resume       -> rec.kills, ordered
+        //   two 'deployed: false' degrade paths -> both recognised error
+        //                                          classes really fabricate it
+        //   no 'deployed: true' anywhere        -> degrade.neverSynthesizes,
+        //                                          enforced against the real
+        //                                          fabricated value
+        //   auth self-heal                      -> rec.authHeals
+        //   'throw err;' (unrecognised)         -> really propagates
+        const p = policyFor('deployer');
+
+        const resumed = await driveEngineDispatch('deployer', 'max-turns-resume');
+        assert.deepStrictEqual(
+            resumed.rec.kills,
+            [resumed.ctx.getMemberForRole('deployer')],
+            'The deployer resume kills a still-alive session first.'
         );
-        assert.ok(!/deployed: true/.test(region), 'No degrade path may synthesize a successful deploy.');
-        assert.ok(/isAuthDispatchError\(err\) && typeof onLlmAuthFailure === 'function'/.test(region), 'An auth failure self-heals so the next cycle\'s deploy is not walled off identically.');
-        assert.ok(/throw err;/.test(region), 'An unrecognised error class still propagates.');
+        const killIndex = resumed.rec.events.findIndex((e) => e.type === 'kill');
+        const resumeIndex = resumed.rec.events.findIndex((e) => e.type === 'dispatch' && e.entry === resumed.rec.dispatches[1]);
+        assert.ok(killIndex >= 0 && killIndex < resumeIndex, 'The kill must precede the resume dispatch.');
+
+        const degraded = [];
+        for (const make of [schemaError, transportError]) {
+            const { ctx, rec } = createRecordingCtx({ responses: [make(), make()] });
+            const outcome = await dispatchRole(ctx, 'deployer', ROLE_CALL_OPTS.deployer);
+            assert.strictEqual(rec.dispatches.length, 1, 'The deployer makes a single bounded attempt -- no generic retry.');
+            degraded.push(outcome.value);
+        }
+        assert.strictEqual(degraded.length, 2, 'Both degrade paths (schema-repair exhaustion and dispatch/transport failure) produce a report.');
+        for (const value of degraded) {
+            assert.strictEqual(value.deployed, false, 'Both degrade paths record deployed:false.');
+            assert.notStrictEqual(value.deployed, true, 'No degrade path may synthesize a successful deploy.');
+            assert.strictEqual(typeof value.notes, 'string', 'A degraded report still says why.');
+        }
+        assert.deepStrictEqual(p.degrade.neverSynthesizes, [true], 'deployed:true is what no degrade path may ever fabricate.');
+        assert.strictEqual(p.degrade.verdictField, 'deployed', 'The deployer answers in `deployed`, not `verdict`.');
+
+        const authRun = createRecordingCtx({ responses: [authError()] });
+        await dispatchRole(authRun.ctx, 'deployer', ROLE_CALL_OPTS.deployer);
+        assert.strictEqual(
+            authRun.rec.authHeals.length,
+            1,
+            "An auth failure self-heals so the next cycle's deploy is not walled off identically."
+        );
+
+        const unrecognised = createRecordingCtx({ responses: [new TypeError('not a dispatch failure at all')] });
+        await assert.rejects(
+            () => dispatchRole(unrecognised.ctx, 'deployer', ROLE_CALL_OPTS.deployer),
+            TypeError,
+            'An unrecognised error class still propagates.'
+        );
     });
 
     test('integ: an infrastructure dispatch failure is INCONCLUSIVE, never a false test FAIL', () => {

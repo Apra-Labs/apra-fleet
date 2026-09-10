@@ -3297,7 +3297,7 @@ async function runSprintCycle(context) {
         onLlmAuthFailure,
         fixedRoleTier: FIXED_ROLE_TIER,
         budgets: { DISPATCH_TIMEOUT_S },
-        schemas: { planReviewerVerdict, streakAssignment, harvesterReport },
+        schemas: { planReviewerVerdict, streakAssignment, harvesterReport, deployerReport },
         isNoMutationDispatchFailure,
         invalidateAllBeadsCache,
         // The named steps role-policies.mjs records for a row, implemented
@@ -3312,6 +3312,20 @@ async function runSprintCycle(context) {
             // reviewer and the final review alike.
             'kb-apply': async ({ policy, value, member }) => {
                 await kbWork.apply(policy.agentType, kbPriming.folderOf(member), value);
+            },
+            // deploy.md's active-sprints gate stops for a FOREIGN reservation,
+            // so a deployer prompt that does not state this sprint's OWN
+            // reservation id makes the deploy treat the sprint as a stranger
+            // and refuse to proceed. Verified here rather than assumed: the
+            // prompt is assembled from several pieces, and a silent drop
+            // manifests only as a mysteriously stalled deploy.
+            'sprint-self-id-in-prompt': ({ opts }) => {
+                if (typeof opts.prompt === 'string' && opts.prompt.includes(sprintSelfId)) return;
+                throw new Error(
+                    "dispatch: the deploy prompt does not state this sprint's own reservation id " +
+                    `(${sprintSelfId}) -- deploy.md's active-sprints gate would treat this sprint's own ` +
+                    'reservation as a foreign one and stop.'
+                );
             },
         },
     };
@@ -5791,7 +5805,6 @@ async function runSprintCycle(context) {
             // Turn budget for the deployer, with the same-session
             // turn-exhaustion resume below: a source-build fallback deploy runs
             // npm ci plus two builds, comfortably beyond a small default budget.
-            const DEPLOYER_MAX_TURNS = 500;
             // A sprint-dispatched deploy is ALWAYS for integration/regression
             // testing, never a production rollout. Saying only "deploy to test
             // env" left the mode to inference: a target whose deploy.md offers
@@ -5809,6 +5822,14 @@ async function runSprintCycle(context) {
             // leaves it running and the test phase tears it down (locating it
             // from the sprintId line, per the target's own playbook). The
             // deployer tears down only what it started if the deploy FAILS.
+            //
+            // sprintSelfIdLine is not decoration: deploy.md's active-sprints
+            // gate stops for any foreign reservation, so a prompt that omits
+            // the sprint's OWN id makes the deploy self-block. That is why the
+            // 'deployer' policy row records a 'sprint-self-id-in-prompt'
+            // preDispatch step -- the engine VERIFIES the id is really in the
+            // prompt before dispatching, rather than trusting this string to
+            // stay assembled correctly.
             const deployerPrompt =
                 'Deploy to test env using deploy.md.\n' +
                 `${sprintSelfIdLine}\n` +
@@ -5821,61 +5842,23 @@ async function runSprintCycle(context) {
                 'If you stood up an isolated test instance, leave it RUNNING when you return: the test phase ' +
                 "that follows locates it from the sprintId above (per the repo's own runbook) and owns its " +
                 'teardown. Tear down what you started only if the deploy itself fails.';
-            const deployerDispatchOpts = {
-                member_name: getMemberForRole('deployer'),
-                agentType: 'deployer',
-                schema: deployerReport,
-                model: FIXED_ROLE_TIER.deployer,
-                // Runs real deploy commands per a runbook, plausibly
-                // long-running.
-                timeout_s: DISPATCH_TIMEOUT_S,
-                max_total_s: DISPATCH_TIMEOUT_S,
-                max_turns: DEPLOYER_MAX_TURNS,
-            };
-            try {
-                // The deployer is a read-side role (pushCode: false) -- but a
-                // deployer on a stale checkout is as damaging as a stale reviewer
-                // diff, so it still gets the pre-dispatch G-pull.
-                try {
-                    deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
-                        deployerPrompt,
-                        { ...deployerDispatchOpts, member_name: getMemberForRole('deployer') }
-                    ));
-                } catch (err) {
-                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        log(`Deployer exhausted its turn limit (max_turns=${DEPLOYER_MAX_TURNS}) -- resuming the same session with max_turns=${DEPLOYER_MAX_TURNS * 2}.`);
-                        await memberSessionGuard.killIfAlive(getMemberForRole('deployer'));
-                        deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
-                            'Continue the deploy exactly where you left off in this same session -- do not restart deploy.md from the top if steps already completed. Finish the remaining steps and the smoke test, and return your final report now.',
-                            {
-                                ...deployerDispatchOpts,
-                                member_name: getMemberForRole('deployer'),
-                                label: `Deploy (resume, max_turns=${DEPLOYER_MAX_TURNS * 2})`,
-                                resume: true,
-                                max_turns: DEPLOYER_MAX_TURNS * 2,
-                            }
-                        ));
-                    } else {
-                        throw err;
-                    }
-                }
-            } catch (err) {
-                if (err instanceof AgentOutputError) {
-                    log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
-                    deployResult = { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
-                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                    // Self-heal now so the next cycle's Deployer dispatch on this
-                    // same member isn't walking into the identical unhealed auth
-                    // failure.
-                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                        await onLlmAuthFailure({ member: getMemberForRole('deployer'), label: 'Deployer dispatch', error: err.message });
-                    }
-                    log(`Deployer: agent dispatch failed, treating as deployed:false: ${err.message}`);
-                    deployResult = { deployed: false, notes: `Deployer dispatch failed: ${err.message}` };
-                } else {
-                    throw err;
-                }
-            }
+            // apra-fleet-3swo.5.7: the deployer ladder -- its dispatch, its
+            // read-side git-sync bracket, its max_turns-exhaustion resume at
+            // doubled turns, its one bounded LLM-auth self-heal (so the NEXT
+            // cycle's deploy is not walled off identically) and its
+            // deployed:false degrade -- is now the 'deployer' row of
+            // fleet-sprint/role-policies.mjs, executed by dispatchRole.
+            const deployOutcome = await dispatchRole(dispatchCtx, 'deployer', {
+                prompt: deployerPrompt,
+                resumePrompt: 'Continue the deploy exactly where you left off in this same session -- do not restart deploy.md from the top if steps already completed. Finish the remaining steps and the smoke test, and return your final report now.',
+                roleLabel: 'Deployer',
+                resumeLabel: `Deploy (resume, max_turns=${TURN_BASES.DEPLOYER_MAX_TURNS * 2})`,
+                synthesizedNotes: {
+                    schema: (err) => `Deployer failed to return a schema-valid report after repair attempts: ${err.message}`,
+                    dispatch: (err) => `Deployer dispatch failed: ${err.message}`,
+                },
+            });
+            deployResult = deployOutcome.value;
             // No duplicate log() dump -- see dispatchReview() for why.
             deployedThisCycle = deployResult.deployed === true;
             if (!deployedThisCycle) {

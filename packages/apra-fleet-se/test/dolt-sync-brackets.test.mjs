@@ -967,7 +967,9 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // moved onto the engine, starting the execution-side migration. Both were
     // pushCode:true / pushBeads:true, so the pushBeads count below drops by
     // two with them.
-    assert.equal(sites.length, 12, `expected 12 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 12 -> 10 (same bead): the deployer's two read-side brackets followed
+    // them. Neither carried pushBeads, so the count below is unchanged.
+    assert.equal(sites.length, 10, `expected 10 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch

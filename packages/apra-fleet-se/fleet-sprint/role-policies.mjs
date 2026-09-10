@@ -702,6 +702,8 @@ finalReview.secondary = secondary(finalReview, 'final-review', 'max-turns-resume
 });
 
 const deployer = policy('deployer', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: 'deployerPrompt,',
     member: roleMember('deployer'),
     agentType: 'deployer',
@@ -720,9 +722,15 @@ const deployer = policy('deployer', {
     }),
     degrade: degrade({
         kind: 'synthesized-report',
+        // A REPORT, not a verdict: the answer field is `deployed` and the
+        // failure text goes in `notes`. Both are recorded here rather than
+        // assumed by the engine, which is what lets one engine fabricate the
+        // reviewer's verdict shape and the deployer's report shape alike.
         synthesized: { deployed: false },
+        classes: ['schema', 'dispatch'],
+        verdictField: 'deployed',
         paths: 2,
-        neverSynthesizes: ['deployed: true'],
+        neverSynthesizes: [true],
     }),
     // The deploy runbook gates on foreign reservations, so the prompt must
     // carry the sprint's OWN reservation id or the gate self-blocks.
