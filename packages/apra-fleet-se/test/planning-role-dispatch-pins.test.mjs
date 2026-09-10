@@ -364,8 +364,9 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
 
     test('the planning-side anchors each resolve to a distinct dispatch site', () => {
         // To verify this assertion can fail, temporarily change a pin's anchor
-        // to match another: e.g., change one of the plan-reviewer anchors to
-        // "label: 'Plan (interactive)',".
+        // to match another: e.g., in planning-ladders.mjs change one of the
+        // plan-reviewer (once) anchors to 'Continue your plan review exactly where you left off'
+        // (an existing anchor that resolves to an agent() site).
         const lines = new Set(PLANNING_LADDERS.map((pin) => siteFor(pin.anchor).line));
         assert.strictEqual(
             lines.size,
