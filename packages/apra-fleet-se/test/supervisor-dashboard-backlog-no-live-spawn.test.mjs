@@ -131,16 +131,17 @@ describe('apra-fleet-7h6n.8: supervisor-dashboard/backlog mocked fixtures spawn 
                 `no fixture that injects listAllBeads/driftCheck may spawn a live bd/git subprocess; observed invocation(s):\n${spawnedLive}`,
             );
 
-            // Pre-fix (apra-fleet-7h6n.1's parent commit c632e371 message):
-            // combined wall time for both files dropped from ~6.9s (real bd/git
-            // spawns) to ~0.2s once the fixtures were stubbed; the standalone
-            // supervisor-backlog.test.mjs baseline this bead cites is ~12s. 5s
-            // leaves generous headroom for a slow CI host while still failing
-            // hard if a live spawn regresses back in.
-            assert.ok(
-                elapsedMs < 5000,
-                `expected combined runtime well under the pre-fix live-spawn baseline, got ${elapsedMs.toFixed(0)}ms`,
-            );
+            // No absolute wall-clock threshold is asserted here (apra-fleet-3swo.36.3.1):
+            // under full-suite contention (e.g. the Phase 3 nested-test gate
+            // running concurrently) this nested `node --test` child has been
+            // observed taking up to ~6.9s even on a passing, non-live-spawn
+            // run, leaving no headroom for a stable absolute budget. The
+            // property this test exists to defend -- no fixture spawns a live
+            // bd/git subprocess -- is already asserted non-temporally above
+            // (empty marker file) and below (TAP summary parsing), so dropping
+            // the timing gate does not reopen the vacuous-run hazard. The
+            // elapsed time is still reported via t.diagnostic below so a
+            // regression remains observable in test output.
 
             // Belt-and-suspenders: exit 0 + an empty marker file + a fast
             // runtime are ALSO exactly what a vacuous nested run (zero tests
