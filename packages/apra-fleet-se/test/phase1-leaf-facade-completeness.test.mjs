@@ -635,44 +635,92 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
         const originalEnv = process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
 
         try {
-            // Subcase (d1): env var set
+            // Subcase (d1): resolveNestedSuiteTimeoutMs() with env var set returns the override
             process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = '5000';
+            const resolved1 = resolveNestedSuiteTimeoutMs();
+            assert.equal(resolved1, 5000, 'must parse env override and return numeric value');
+
+            // Verify the handler message reflects this override
             const timeoutError1 = new Error('timeout signal');
             timeoutError1.code = 'ETIMEDOUT';
             timeoutError1.signal = 'SIGTERM';
 
             assert.throws(
-                () => handleNestedSuiteSpawnResult('test-suite', timeoutError1, 5000),
+                () => handleNestedSuiteSpawnResult('test-suite', timeoutError1, resolved1),
                 (err) => {
                     const msg = err.message;
                     assert.ok(
                         msg.includes('PHASE1_NESTED_SUITE_TIMEOUT_MS=5000'),
                         `env-override case must mention the override value; got: ${msg}`,
                     );
+                    assert.ok(
+                        msg.includes('5000'),
+                        `env-override case must include the budget value; got: ${msg}`,
+                    );
                     return true;
                 },
             );
 
-            // Subcase (d2): env var unset (falls back to default message)
+            // Subcase (d2): resolveNestedSuiteTimeoutMs() with env var unset returns default
             delete process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
+            const resolved2 = resolveNestedSuiteTimeoutMs();
+            assert.equal(resolved2, 900_000, 'must return default when env unset');
+
+            // Verify the handler message reflects the default
             const timeoutError2 = new Error('timeout signal');
             timeoutError2.code = 'ETIMEDOUT';
             timeoutError2.signal = 'SIGTERM';
 
             assert.throws(
-                () => handleNestedSuiteSpawnResult('test-suite', timeoutError2, 900_000),
+                () => handleNestedSuiteSpawnResult('test-suite', timeoutError2, resolved2),
                 (err) => {
                     const msg = err.message;
                     assert.ok(
                         msg.includes('the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)'),
                         `no-override case must mention the default; got: ${msg}`,
                     );
+                    assert.ok(
+                        msg.includes('900000'),
+                        `no-override case must include the default budget value; got: ${msg}`,
+                    );
                     return true;
                 },
             );
 
-            // Subcase (d3): env var set to unparseable value (handled by resolveNestedSuiteTimeoutMs at init time)
-            // This cannot be tested here without re-running module init, so it is covered by the parent task's criterion 2.
+            // Subcase (d3): resolveNestedSuiteTimeoutMs() with unparseable env var throws
+            process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = 'abc';
+            assert.throws(
+                () => resolveNestedSuiteTimeoutMs(),
+                (err) => {
+                    assert.ok(
+                        err.message.includes('PHASE1_NESTED_SUITE_TIMEOUT_MS must be a positive number'),
+                        `unparseable case must describe the requirement; got: ${err.message}`,
+                    );
+                    assert.ok(
+                        err.message.includes('abc'),
+                        `unparseable case must show what was received; got: ${err.message}`,
+                    );
+                    return true;
+                },
+            );
+
+            // Subcase (d4): empty string falls back to default (treated same as unset)
+            process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = '';
+            const resolved4 = resolveNestedSuiteTimeoutMs();
+            assert.equal(resolved4, 900_000, 'empty string must fall back to default');
+
+            // Subcase (d5): zero is unparseable (not positive)
+            process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = '0';
+            assert.throws(
+                () => resolveNestedSuiteTimeoutMs(),
+                (err) => {
+                    assert.ok(
+                        err.message.includes('must be a positive number'),
+                        `zero case must describe the requirement; got: ${err.message}`,
+                    );
+                    return true;
+                },
+            );
         } finally {
             // Restore original env state
             if (originalEnv !== undefined) {
@@ -714,14 +762,15 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
 });
 
 // =============================================================================
-// Falsification note for criterion (4): reverting the parent apra-fleet-3yuu.1
-// would make case (a) and (d) of section (6) fail by restoring hard-coded
-// timeouts and removing the env-override logic. This was verified by:
+// Falsification note for criterion (4): reverting the ETIMEDOUT handling in
+// handleNestedSuiteSpawnResult makes cases (a) and (d) fail. Verified by
+// one-line revert:
 //
-//   git revert -n HEAD  (or: git reset --hard HEAD~1)
+//   Delete lines 103-111 (the "if (spawnError.code === 'ETIMEDOUT')" branch)
 //
-// which would remove the NESTED_SUITE_TIMEOUT_MS constant, the
-// resolveNestedSuiteTimeoutMs function, and the handleNestedSuiteSpawnResult
-// helper's timeout-wrapping logic. After such a revert, cases (a) and (d)
-// would throw AssertionError (message does not include budget/override text).
+// With that deletion, case (a) re-throws the error unchanged without the
+// descriptive message naming the suite and budget, and case (d) subcase (d1)
+// throws an AssertionError that the message does not include the override
+// value "PHASE1_NESTED_SUITE_TIMEOUT_MS=5000". The error handling falls
+// through directly to line 114 (re-throw spawnError), losing the wrapping.
 // =============================================================================
