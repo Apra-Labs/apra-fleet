@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'node:fs';
 import os from 'node:os';
-import { checkPath, checkModules } from '../fleet-sprint/dispatch-safety-guard.mjs';
+import { checkPath, checkModules, findCallSites, extractBalancedCall } from '../fleet-sprint/dispatch-safety-guard.mjs';
 import { GUARDED_MODULES, guardedModulePaths, guardedModuleBasenames } from '../fleet-sprint/guarded-modules.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -486,6 +486,76 @@ test('every command() call site in abort.mjs passes member_name or member_id', (
         violations,
         [],
         `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-3swo.34 -- an apostrophe inside a comment must never let
+// extractBalancedCall()'s depth walk run past the call's real closing paren.
+//
+// Concrete case this reproduces (verified against runner.js:5403-5404 before
+// this fix): dispatchDoerResume's `agent(` call site has a comment reading
+// "Restate the streak's scope: ..." immediately inside its call body. The
+// apostrophe in "streak's" was read as opening a string, which hid the
+// call's real closing paren and let the balanced range run away to
+// end-of-file -- callText grew from ~1.8KB to 155,327 characters (about a
+// third of runner.js), while every other agent() site stayed under 4.2KB.
+// =============================================================================
+
+test("extractBalancedCall/findCallSites stop at the real closing paren even when a comment inside the call contains an apostrophe", () => {
+    const src = [
+        "const x = agent(",
+        "    // it's a comment with an apostrophe inside the call body",
+        "    'do the thing',",
+        "    { member_name: member }",
+        ")",
+        ";",
+        "const y = 1;",
+    ].join('\n');
+
+    const sites = findCallSites(src);
+    assert.strictEqual(sites.length, 1, `expected exactly one call site, got: ${JSON.stringify(sites)}`);
+    assert.strictEqual(sites[0].fnName, 'agent');
+    // The call site's text must end at its own closing paren, i.e. must NOT
+    // include the statements that follow it (";", "const y = 1;").
+    assert.ok(sites[0].callText.endsWith(')'), `callText should end at the closing paren, got: ${JSON.stringify(sites[0].callText)}`);
+    assert.ok(!sites[0].callText.includes('const y'), `callText leaked past its closing paren into later source: ${JSON.stringify(sites[0].callText)}`);
+
+    // extractBalancedCall() directly, called the same way findCallSites()
+    // calls it, exhibits the same fix.
+    const openParenIdx = src.indexOf('agent(') + 'agent'.length;
+    const callText = extractBalancedCall(src, openParenIdx);
+    assert.strictEqual(callText, sites[0].callText);
+});
+
+test("no agent()/command() call site in runner.js has a callText far larger than the largest real dispatch (regression guard for the apostrophe-swallows-file bug)", () => {
+    const { sites } = checkPath(RUNNER_PATH);
+    const lengths = sites.map((s) => s.callText.length);
+    const maxLen = Math.max(...lengths);
+    const sorted = [...lengths].sort((a, b) => a - b);
+    const secondMaxLen = sorted[sorted.length - 2];
+
+    // Before the fix, dispatchDoerResume's call site was ~155KB (about 37x
+    // the next-largest real site, ~4.2KB). An order-of-magnitude margin
+    // catches a recurrence without pinning an exact byte count that would
+    // need updating on every legitimate dispatch edit.
+    assert.ok(
+        maxLen <= secondMaxLen * 10,
+        `a call site's callText (${maxLen} chars) is more than 10x the next-largest site's (${secondMaxLen} chars) -- ` +
+        `likely the apostrophe-in-comment bug swallowing the rest of the file again. Sites: ${JSON.stringify(
+            sites.map((s) => ({ line: s.line, fnName: s.fnName, len: s.callText.length })).filter((s) => s.len === maxLen)
+        )}`
+    );
+
+    // The specific site this bug was found on (dispatchDoerResume's agent()
+    // call at runner.js:5403) must end well before the file's end -- assert
+    // it stays in the same size class as other dispatch call sites rather
+    // than spanning a meaningful fraction of the whole file.
+    const doerResumeSite = sites.find((s) => s.line === 5403 && s.fnName === 'agent');
+    assert.ok(doerResumeSite, 'expected an agent() call site at runner.js:5403 (dispatchDoerResume) -- update this test if that dispatch moved/was renamed');
+    assert.ok(
+        doerResumeSite.callText.length < 10000,
+        `dispatchDoerResume's agent() callText is ${doerResumeSite.callText.length} chars -- expected a normal-sized dispatch call, not a runaway match`
     );
 });
 
