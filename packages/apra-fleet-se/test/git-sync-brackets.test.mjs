@@ -15,6 +15,7 @@ import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 import { runCmd, sleep, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 import { balancedCallRange } from './helpers/balanced-call-scanner.mjs';
+import { ROLE_POLICIES } from '../fleet-sprint/role-policies.mjs';
 
 // =============================================================================
 // apra-fleet-eft.8.7 -- Orchestrator-bracketed git sync: consolidated
@@ -102,7 +103,17 @@ function withGitSyncRanges(src) {
 // any single bracket drops that role's marker out of every range and fails
 // here.
 // =============================================================================
-const SEVEN_DISPATCH_MARKERS = {
+// apra-fleet-3swo.5.3: this census covers the dispatches that are still
+// hand-written IN runner.js. A role whose ladder has moved onto the
+// dispatchRole engine (role-policies.mjs marks it `migrated`) has no runner.js
+// call site left to find, and the engine's bracket is opened through the
+// injected `ctx.withGitSync(...)` -- deliberately invisible to a runner.js
+// text scan. Those roles' brackets are asserted BEHAVIOURALLY instead, by
+// test/planning-role-dispatch-pins.test.mjs and test/role-policies-table
+// .test.mjs, which run the real engine and observe the bracket it opens.
+// The filter is driven off the policy table rather than by deleting entries,
+// so the next migration needs no edit here and an UN-migration is caught.
+const ALL_DISPATCH_MARKERS = {
     planner: /member_name:\s*getMemberForRole\('planner'\)/g,
     'plan-reviewer': /member_name:\s*getMemberForRole\('plan-reviewer'\)/g,
     doer: /agentType:\s*'doer'/g,
@@ -111,11 +122,23 @@ const SEVEN_DISPATCH_MARKERS = {
     'integ-test-runner': /member_name:\s*getMemberForRole\('integ-test-runner'\)/g,
     harvester: /member_name:\s*getMemberForRole\('harvester'\)/g,
 };
+const SEVEN_DISPATCH_MARKERS = Object.fromEntries(
+    Object.entries(ALL_DISPATCH_MARKERS).filter(([role]) => ROLE_POLICIES[role].migrated !== true)
+);
 
 test('(a) every one of the seven dispatch types is wrapped in a withGitSync(...) bracket', () => {
     const src = fs.readFileSync(RUNNER_PATH, 'utf8');
     const ranges = withGitSyncRanges(src);
-    check(ranges.length >= 7, `expected at least seven withGitSync(...) call sites, found ${ranges.length}`);
+    check(
+        ranges.length >= Object.keys(SEVEN_DISPATCH_MARKERS).length,
+        `expected at least one withGitSync(...) call site per still-inline dispatch role ` +
+        `(${Object.keys(SEVEN_DISPATCH_MARKERS).length}), found ${ranges.length}`
+    );
+    check(
+        Object.keys(SEVEN_DISPATCH_MARKERS).length > 0,
+        'every dispatch role has migrated onto the engine -- this runner.js census now proves nothing and must be retired, ' +
+        'not left passing vacuously'
+    );
 
     const inSomeRange = (idx) => ranges.some(([s, e]) => idx > s && idx < e);
 

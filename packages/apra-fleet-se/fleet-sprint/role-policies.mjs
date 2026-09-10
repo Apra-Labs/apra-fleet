@@ -423,6 +423,8 @@ planReviewer.secondary = secondary(planReviewer, 'plan-reviewer', 'max-turns-res
 });
 
 const scopedReplanPlanner = policy('scoped-replan-planner', {
+    // apra-fleet-3swo.5.3: migrated -- dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: "label: 'Scoped Replan Plan (interactive)'",
     member: roleMember('planner'),
     agentType: 'planner',

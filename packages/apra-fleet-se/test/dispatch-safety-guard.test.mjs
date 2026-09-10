@@ -345,7 +345,9 @@ const EXPECTED_COMMAND_COUNT = 29;
 // baseline. Two agent() call sites left runner.js; none were added.
 // 20 -> 18 (same bead): the plan-reviewer ladder -- its dispatch and its
 // max_turns-exhaustion resume -- followed the planner onto the engine.
-const EXPECTED_AGENT_COUNT = 18;
+// 18 -> 17 (same bead): the scoped-replan planner (a single dispatch, no
+// resume of its own) followed them.
+const EXPECTED_AGENT_COUNT = 17;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in

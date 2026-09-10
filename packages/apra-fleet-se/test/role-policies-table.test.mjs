@@ -137,12 +137,8 @@ const ROLE_SOURCE = {
     planner: { engine: true },
     // apra-fleet-3swo.5.3: MIGRATED -- see section (7).
     'plan-reviewer': { engine: true },
-    'scoped-replan-planner': {
-        anchor: "label: 'Scoped Replan Plan (interactive)'",
-        secondary: null,
-        region: ['const SCOPED_REPLAN_PLANNER_MAX_TURNS = 500;', '--- Scoped plan-review pass ---'],
-        attempts: { kind: 'single' },
-    },
+    // apra-fleet-3swo.5.3: MIGRATED -- see section (7).
+    'scoped-replan-planner': { engine: true },
     'scoped-replan-plan-reviewer': {
         anchor: "label: 'Scoped Replan Review'",
         secondary: null,

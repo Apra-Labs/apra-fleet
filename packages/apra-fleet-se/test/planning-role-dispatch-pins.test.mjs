@@ -585,26 +585,50 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
         assert.strictEqual(auth.rec.authHeals[0].label, 'Plan Reviewer dispatch');
     });
 
-    test('scoped replan planner: single attempt, no retry ladder, degrades by deferring the flagged beads to the next cycle', () => {
-        const region = stripComments(regionBetween(SRC, '--- Scoped planner pass ---', '--- Scoped plan-review pass ---'));
-        assert.ok(/let scopedPlannerOk = true;/.test(region), 'The scoped planner pass tracks its own success flag.');
-        assert.ok(/scopedPlannerOk = false;/.test(region), 'A failed scoped planner dispatch must clear that flag.');
-        assert.ok(
-            !/\bfor\s*\(/.test(region) && !/\bwhile\s*\(/.test(region),
-            'The scoped replan planner is a SINGLE bounded attempt -- it has no retry ladder of its own.'
+    // apra-fleet-3swo.5.3: RE-ANCHORED onto the engine, same facts.
+    test('scoped replan planner: single attempt, no retry ladder, degrades by deferring the flagged beads to the next cycle', async () => {
+        const opts = ROLE_CALL_OPTS['scoped-replan-planner'];
+
+        // A SINGLE bounded attempt: no retry ladder of its own, and no
+        // announced backoff wait.
+        const failed = createRecordingCtx({ responses: [transportError(), 'never reached'] });
+        const outcome = await dispatchRole(failed.ctx, 'scoped-replan-planner', opts);
+        assert.strictEqual(failed.rec.dispatches.length, 1, 'The scoped replan planner is a SINGLE bounded attempt.');
+        assert.deepStrictEqual(
+            failed.rec.logs.filter((m) => /waiting [\d.]+s before retry attempt/.test(m)),
+            [],
+            'A single-attempt ladder announces no backoff waits.'
         );
-        assert.ok(
-            !/\bthrow\b/.test(region),
-            'A scoped replan planner failure must never abort the sprint: it degrades to leaving the flagged beads for the next cycle.'
-        );
-        assert.ok(
-            /isAuthDispatchError\(err\) && typeof onLlmAuthFailure === 'function'/.test(region),
-            'A scoped replan auth failure self-heals so the next cycle\'s planner does not hit the identical wall.'
-        );
-        assert.ok(
-            /invalidateAllBeadsCache\(\);/.test(region),
-            'A successful scoped replan mutated beads on the planner clone, so the orchestrator cache must be invalidated before the scoped review reads it.'
-        );
+
+        // A failure must never abort the sprint: it degrades to leaving the
+        // flagged bead(s) for the next cycle, fabricating nothing.
+        assert.strictEqual(outcome.ok, false, 'A failed scoped planner dispatch must be reported as not-ok, so the caller can defer.');
+        assert.strictEqual(outcome.degraded, true);
+        assert.strictEqual(outcome.value, null, 'A defer-to-next-cycle degrade fabricates no value at all.');
+        assert.ok(outcome.error, 'The caller needs the real error to log why it is deferring.');
+
+        // Even an UNRECOGNISED error class degrades here rather than
+        // propagating -- the original ladder wrapped the dispatch in a bare
+        // catch, and a scoped replan must never end the sprint.
+        const weird = createRecordingCtx({ responses: [new TypeError('something else entirely')] });
+        const weirdOutcome = await dispatchRole(weird.ctx, 'scoped-replan-planner', opts);
+        assert.strictEqual(weirdOutcome.ok, false);
+        assert.strictEqual(weirdOutcome.degraded, true);
+
+        // A scoped replan auth failure self-heals so the next cycle's planner
+        // does not hit the identical wall.
+        const auth = createRecordingCtx({ responses: [authError()], healed: false });
+        await dispatchRole(auth.ctx, 'scoped-replan-planner', opts);
+        assert.strictEqual(auth.rec.authHeals.length, 1);
+        assert.strictEqual(auth.rec.authHeals[0].label, 'Scoped Replan Plan dispatch');
+
+        // A SUCCESSFUL scoped replan mutated beads on the planner clone, so
+        // the orchestrator cache must be invalidated before the scoped review
+        // reads it -- and a FAILED one must not pretend anything changed.
+        const ok = createRecordingCtx({});
+        await dispatchRole(ok.ctx, 'scoped-replan-planner', opts);
+        assert.strictEqual(ok.rec.invalidations, 1, 'A successful scoped replan must invalidate the orchestrator beads cache.');
+        assert.strictEqual(failed.rec.invalidations, 0, 'A failed scoped replan must not invalidate anything.');
     });
 
     test('scoped replan plan-reviewer: only an explicit APPROVED approves, and any failure is a non-approval', () => {

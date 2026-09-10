@@ -4743,57 +4743,48 @@ async function runSprintCycle(context) {
                 for (const id of replanScopeIds) replannedThisCycle.add(id);
 
                 // --- Scoped planner pass ---
-                const SCOPED_REPLAN_PLANNER_MAX_TURNS = 500;
-                let scopedPlannerOk = true;
-                try {
-                    const scopedPlannerRes = await withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
-                        agent(
-                            buildPlannerPrompt({
-                                isDeltaCycle: true,
-                                targetIssues,
-                                goal: validated.goal,
-                                requirementsFile: validated.requirementsFile,
-                                requirementsContent,
-                                feedback: null,
-                                replanScope: replanScopeIds,
-                                // The scoped replan is a real planner dispatch
-                                // like the main Plan phase, so a pending
-                                // rejected newTask must resurface here too.
-                                rejectedNewTasksToResubmit: pendingRejectedNewTasks,
-                                verifyExcluded: verifySetThisCycle,
-                            }),
-                            {
-                                member_name: getMemberForRole('planner'),
-                                agentType: 'planner',
-                                model: FIXED_ROLE_TIER.planner,
-                                timeout_s: DISPATCH_TIMEOUT_S,
-                                max_total_s: DISPATCH_TIMEOUT_S,
-                                max_turns: SCOPED_REPLAN_PLANNER_MAX_TURNS,
-                                label: 'Scoped Replan Plan (interactive)',
-                            }
-                        ),
-                        { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: 'Scoped Replan Plan (interactive)', log }
-                    ), { pushBeads: true });
-                    log(`Scoped Replan Planner: ${scopedPlannerRes}`);
-                    // apra-fleet-zmqm: same reasoning as the main Planning
-                    // Loop's invalidateAllBeadsCache() call -- this dispatch
-                    // mutated beads on its own clone, and everything after it
-                    // in this same "Replan C{cycle} R{devRounds}" phase (the
-                    // scoped plan-reviewer, the resumed develop round) must
-                    // see those mutations, not the pre-replan snapshot taken
-                    // when this phase() started.
-                    invalidateAllBeadsCache();
-                } catch (err) {
-                    scopedPlannerOk = false;
-                    // Self-heal an LLM-auth failure so the next cycle's planner
-                    // -- which this bead is deferred to below -- does not hit
-                    // the identical wall.
-                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                        await onLlmAuthFailure({ member: getMemberForRole('planner'), label: 'Scoped Replan Plan dispatch', error: err.message });
-                    }
-                    log(`[fleet-sprint] in-cycle scoped replan: planner dispatch failed (${err.message}) -- leaving bead(s) ${replanScopeIds.join(', ')} flagged for the next cycle's planner.`);
+                // apra-fleet-3swo.5.3: the 'scoped-replan-planner' row of
+                // role-policies.mjs, executed by dispatchRole. That row owns
+                // the turn budget, the read-side pushBeads:true bracket (this
+                // dispatch re-scopes the flagged subtree, so its beads writes
+                // must be D-pushed), the client-side watchdog, the SINGLE
+                // bounded attempt (no retry ladder of its own), the one auth
+                // self-heal -- so the next cycle's planner, which this bead is
+                // deferred to below, does not hit the identical wall -- and the
+                // defer-to-next-cycle degrade, which never aborts the sprint.
+                //
+                // apra-fleet-zmqm: the policy's 'invalidate-beads-cache'
+                // postResult step is the same reasoning as the main Planning
+                // Loop's -- a successful dispatch mutated beads on its own
+                // clone, and everything after it in this same "Replan
+                // C{cycle} R{devRounds}" phase (the scoped plan-reviewer, the
+                // resumed develop round) must see those mutations, not the
+                // pre-replan snapshot taken when this phase() started. The
+                // engine runs it only on success, exactly as this ladder did.
+                const scopedPlannerOutcome = await dispatchRole(dispatchCtx, 'scoped-replan-planner', {
+                    prompt: buildPlannerPrompt({
+                        isDeltaCycle: true,
+                        targetIssues,
+                        goal: validated.goal,
+                        requirementsFile: validated.requirementsFile,
+                        requirementsContent,
+                        feedback: null,
+                        replanScope: replanScopeIds,
+                        // The scoped replan is a real planner dispatch like the
+                        // main Plan phase, so a pending rejected newTask must
+                        // resurface here too.
+                        rejectedNewTasksToResubmit: pendingRejectedNewTasks,
+                        verifyExcluded: verifySetThisCycle,
+                    }),
+                    label: 'Scoped Replan Plan (interactive)',
+                    roleLabel: 'Scoped Replan Plan',
+                });
+                const scopedPlannerOk = scopedPlannerOutcome.ok;
+                if (scopedPlannerOk) {
+                    log(`Scoped Replan Planner: ${scopedPlannerOutcome.value}`);
+                } else {
+                    log(`[fleet-sprint] in-cycle scoped replan: planner dispatch failed (${scopedPlannerOutcome.error.message}) -- leaving bead(s) ${replanScopeIds.join(', ')} flagged for the next cycle's planner.`);
                 }
-
                 // --- Scoped plan-review pass ---
                 let scopedReplanApproved = false;
                 if (scopedPlannerOk) {
