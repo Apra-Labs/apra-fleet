@@ -11,18 +11,29 @@
 // and what runs before/after it. This module records those axes, per role, as
 // plain frozen data so a single engine can execute them.
 //
-// WHAT THIS IS NOT (yet): nothing consumes this table. It is deliberately
-// landed on its own, ahead of the engine that will read it, so the table and
-// the engine stay independently revertible. runner.js is untouched by the
-// change that introduced this file.
+// WHO CONSUMES IT (apra-fleet-3swo.5.3): fleet-sprint/dispatch-role.mjs's
+// dispatchRole(ctx, roleName, opts) EXECUTES a row -- the agent() dispatch, its
+// git-sync bracket, its watchdog, its resume, its retry ladder and its degrade
+// are all read out of the row rather than written out per role. A row is only
+// live once `migrated: true` says so; until then runner.js still runs that
+// role's hand-written ladder and the row is a description of it. The table and
+// the engine landed as separate changes, and each role's migration is its own
+// commit, so every step stays independently revertible.
 //
 // HOW IT IS KEPT HONEST: test/role-policies-table.test.mjs re-derives every
-// value below from runner.js's real dispatch sites, using the same structural
-// scanner the two behaviour-pin files use
-// (test/planning-role-dispatch-pins.test.mjs and
-// test/execution-role-dispatch-pins.test.mjs). The table therefore describes
-// TODAY's behaviour -- a row that drifts from the runner fails that test, and
-// a row that disagrees with a pin fails the pin too.
+// value below from REAL SOURCE, on whichever side of the migration the role
+// currently sits.
+//   - NOT migrated: scanned out of runner.js's real dispatch sites with the
+//     same structural scanner the two behaviour-pin files use
+//     (test/planning-role-dispatch-pins.test.mjs and
+//     test/execution-role-dispatch-pins.test.mjs).
+//   - MIGRATED: re-derived by RUNNING dispatch-role.mjs against a recording
+//     ctx and observing what it actually does, because once a ladder is
+//     data-driven its behaviour stops being a property of any source region
+//     (a regex over the engine's generic loop would answer identically for
+//     every role). See that file's section (7) for the full reasoning.
+// Either way the table describes REAL behaviour -- a row that drifts fails
+// that test, and a row that disagrees with a pin fails the pin too.
 //
 // SYMBOLIC VALUES: budgets and turn bases are recorded by the NAME of the
 // runner constant that supplies them ('DISPATCH_TIMEOUT_S',
