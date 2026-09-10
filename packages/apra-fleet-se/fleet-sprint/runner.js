@@ -3297,9 +3297,23 @@ async function runSprintCycle(context) {
         onLlmAuthFailure,
         fixedRoleTier: FIXED_ROLE_TIER,
         budgets: { DISPATCH_TIMEOUT_S },
-        schemas: { planReviewerVerdict, streakAssignment },
+        schemas: { planReviewerVerdict, streakAssignment, harvesterReport },
         isNoMutationDispatchFailure,
         invalidateAllBeadsCache,
+        // The named steps role-policies.mjs records for a row, implemented
+        // once here rather than per role: each is resolved from the POLICY the
+        // engine is executing (its persona, the member it already resolved),
+        // so adding a role that records the same step needs no new wiring.
+        steps: {
+            // The report's kb_captures/kb_promotions, executed through the same
+            // kbWork path every capturing role uses. The persona names the KB
+            // role and the engine hands back the member it dispatched, so this
+            // one implementation serves the harvester, the doer, the per-round
+            // reviewer and the final review alike.
+            'kb-apply': async ({ policy, value, member }) => {
+                await kbWork.apply(policy.agentType, kbPriming.folderOf(member), value);
+            },
+        },
     };
 
     // Scope discovery (`bdListScoped`) and the shared full-DB fetch
@@ -7033,81 +7047,42 @@ async function runSprintCycle(context) {
         analysisText,
         costAnalysis,
     });
-    let harvesterResult = null;
-    // Turn budget for the harvester, with the same-session turn-exhaustion
-    // resume below: it writes docs/changelog across the whole epic.
-    const HARVESTER_MAX_TURNS = 500;
-    const harvesterDispatchOpts = {
-        member_name: getMemberForRole('harvester'),
-        agentType: 'harvester',
-        schema: harvesterReport,
-        model: FIXED_ROLE_TIER.harvester,
-        // Writes docs/changelog/sprint-analysis across the whole epic,
-        // plausibly long-running.
-        timeout_s: DISPATCH_TIMEOUT_S,
-        max_total_s: DISPATCH_TIMEOUT_S,
-        max_turns: HARVESTER_MAX_TURNS,
-    };
-    try {
-        // The harvester is a code-writing role (pushCode: true) alongside the
-        // doer -- G-pull before, G-push after so the docs/changelog/
-        // sprint-analysis commits it makes are published before anything
-        // downstream (Publish PR, below) reads the branch. It ALSO mutates beads
-        // (issue-defer of low-priority items), so it must D-push those mutations
-        // (pushBeads: true) alongside its git push.
-        try {
-            harvesterResult = await withGitSync(getMemberForRole('harvester'), true, () => agent(
-                harvesterPrompt,
-                { ...harvesterDispatchOpts, member_name: getMemberForRole('harvester') }
-            ), { pushBeads: true });
-        } catch (err) {
-            if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                log(`Harvester exhausted its turn limit (max_turns=${HARVESTER_MAX_TURNS}) -- resuming the same session with max_turns=${HARVESTER_MAX_TURNS * 2}.`);
-                await memberSessionGuard.killIfAlive(getMemberForRole('harvester'));
-                harvesterResult = await withGitSync(getMemberForRole('harvester'), true, () => agent(
-                    'Continue your harvest exactly where you left off in this same session -- do not redo docs or changelog sections already written. Finish the remaining updates, commit them, and return your final report now.',
-                    {
-                        ...harvesterDispatchOpts,
-                        member_name: getMemberForRole('harvester'),
-                        label: `Harvest (resume, max_turns=${HARVESTER_MAX_TURNS * 2})`,
-                        resume: true,
-                        max_turns: HARVESTER_MAX_TURNS * 2,
-                    }
-                ), { pushBeads: true });
-            } else {
-                throw err;
-            }
-        }
-        // No duplicate log() dump -- see dispatchReview() for why. The file
-        // path itself IS worth a line: it is the durable, committed record of
-        // the Final Review verdict (and everything else in analysisText) --
-        // unlike the verdict object, it survives after this process exits.
-        // harvester-output.json declares kb_captures, and until now nothing
-        // consumed it: the harvester filled the field and the engine dropped it
-        // -- the same "gathered and thrown away" shape kbWork was built to fix
-        // for the doer and reviewer. The harvester is a good capturer precisely
-        // because it has just read the whole sprint's evidence. Capture only:
-        // vetKbWork refuses kb_promotions from any role but the reviewer.
-        await kbWork.apply('harvester', kbPriming.folderOf(getMemberForRole('harvester')), harvesterResult);
-        if (harvesterResult.status !== 'OK') {
-            log(`Harvester reported FAILED: ${harvesterResult.notes}`);
-        } else {
-            log(`Harvester: wrote sprint analysis (including the Final Review verdict) to ${analysisArtifactFile}.`);
-        }
-    } catch (err) {
-        if (err instanceof AgentOutputError) {
-            log(`Harvester: schema-repair exhausted, proceeding without a validated harvester report: ${err.message}`);
-        } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-            // Self-heal now: the harvester is the run's last dispatch, but the
-            // SAME member/credentials get reused by the next sprint, so an
-            // unhealed auth failure here just reproduces there.
-            if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                await onLlmAuthFailure({ member: getMemberForRole('harvester'), label: 'Harvester dispatch', error: err.message });
-            }
-            log(`Harvester: agent dispatch failed, proceeding without a validated harvester report: ${err.message}`);
-        } else {
-            throw err;
-        }
+    // apra-fleet-3swo.5.7: the harvester ladder -- its dispatch, its
+    // pushCode/pushBeads git-sync bracket, its max_turns-exhaustion resume at
+    // doubled turns, its one bounded LLM-auth self-heal and its
+    // proceed-without-a-report degrade -- is now the 'harvester' row of
+    // fleet-sprint/role-policies.mjs, executed by dispatchRole. What stays
+    // here is what is genuinely NOT policy: the prompts, the presentation
+    // labels, and what the caller does with the report.
+    //
+    // The harvester is a code-writing role (pushCode: true) alongside the doer
+    // -- G-pull before, G-push after so the docs/changelog/sprint-analysis
+    // commits it makes are published before anything downstream (Publish PR,
+    // below) reads the branch. It ALSO mutates beads (issue-defer of
+    // low-priority items), so it D-pushes those mutations alongside its git
+    // push. Both flags live in the policy row now.
+    const harvestOutcome = await dispatchRole(dispatchCtx, 'harvester', {
+        prompt: harvesterPrompt,
+        resumePrompt: 'Continue your harvest exactly where you left off in this same session -- do not redo docs or changelog sections already written. Finish the remaining updates, commit them, and return your final report now.',
+        roleLabel: 'Harvester',
+        resumeLabel: `Harvest (resume, max_turns=${TURN_BASES.HARVESTER_MAX_TURNS * 2})`,
+    });
+    const harvesterResult = harvestOutcome.value;
+    // No duplicate log() dump -- see dispatchReview() for why. The file
+    // path itself IS worth a line: it is the durable, committed record of
+    // the Final Review verdict (and everything else in analysisText) --
+    // unlike the verdict object, it survives after this process exits.
+    //
+    // A degraded harvest proceeds WITHOUT a validated report (the sprint
+    // verdict is already decided by this point), so everything below is
+    // gated on actually having one. The report's kb_captures were applied by
+    // the policy's 'kb-apply' postResult step, which only runs on success.
+    if (!harvestOutcome.ok) {
+        log(`Harvester: proceeding without a validated harvester report: ${harvestOutcome.error?.message ?? 'no report'}`);
+    } else if (harvesterResult.status !== 'OK') {
+        log(`Harvester reported FAILED: ${harvesterResult.notes}`);
+    } else {
+        log(`Harvester: wrote sprint analysis (including the Final Review verdict) to ${analysisArtifactFile}.`);
     }
 
     // =======================

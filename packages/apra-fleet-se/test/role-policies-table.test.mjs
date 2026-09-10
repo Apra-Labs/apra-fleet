@@ -206,16 +206,16 @@ const ROLE_SOURCE = {
     'regression-test-runner': {
         anchor: '(\n                    regressionPrompt,',
         secondary: 'Continue the regression pass exactly where you left off',
-        region: ['const REGRESSION_TEST_MAX_TURNS = 500;', 'const harvesterDispatchOpts'],
-        degradeRegion: ['A regression-phase infrastructure failure must never abort', 'const harvesterDispatchOpts'],
+        // apra-fleet-3swo.5.7: the end bound used to be the harvester's own
+        // dispatch-opts object, which the harvester migration deleted. The
+        // harvest phase's prompt build is the next stable landmark past the
+        // regression ladder and bounds it just as tightly.
+        region: ['const REGRESSION_TEST_MAX_TURNS = 500;', 'const harvesterPrompt = buildHarvesterPrompt({'],
+        degradeRegion: ['A regression-phase infrastructure failure must never abort', 'const harvesterPrompt = buildHarvesterPrompt({'],
         attempts: { kind: 'single' },
     },
-    harvester: {
-        anchor: '(\n                harvesterPrompt,',
-        secondary: 'Continue your harvest exactly where you left off',
-        region: ['const harvesterDispatchOpts', '7. Publish: push the sprint branch'],
-        attempts: { kind: 'single' },
-    },
+    // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
+    harvester: { engine: true },
 };
 
 /**
@@ -1029,9 +1029,19 @@ describe('role policy table: every named variance is expressed as data', () => {
         for (const role of ROLE_NAMES.filter((r) => !['doer', 'doer-resume', 'harvester'].includes(r))) {
             assert.strictEqual(pushesCode(role), false, `${role} is read-side and must not push code.`);
         }
-        // Re-derived from runner.js so a table edit alone cannot move this.
+        // Re-derived from runner.js so a table edit alone cannot move this --
+        // but only over the dispatches still bracketed INLINE. A migrated
+        // ladder is bracketed by the engine's one generic withGitSync call,
+        // whose pushCode argument is an expression rather than a literal, so
+        // its flag is proved behaviourally by the pin file instead.
+        const inlineCodePushers = allDispatchPolicies()
+            .filter((p) => p.bracket.pushCode === true && ROLE_POLICIES[p.ladder].migrated !== true);
         const truesInSource = WITH_GIT_SYNC_SITES.filter((s) => splitTopLevelArgs(s.callText)[1] === 'true');
-        assert.strictEqual(truesInSource.length, 4, 'runner.js must still have exactly 4 code-pushing brackets.');
+        assert.strictEqual(
+            truesInSource.length,
+            inlineCodePushers.length,
+            `runner.js must still have exactly ${inlineCodePushers.length} literal code-pushing brackets.`
+        );
     });
 
     test('a watchdog is armed only for the planner-side dispatches', () => {

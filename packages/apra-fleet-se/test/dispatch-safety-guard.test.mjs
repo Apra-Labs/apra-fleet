@@ -352,7 +352,11 @@ const EXPECTED_COMMAND_COUNT = 29;
 // 16 -> 14 (same bead): the Streak Assignment grouping call and its bounded
 // semantic-repair re-ask followed them, completing the planning-side
 // migration. Every remaining runner.js agent() site is execution-side.
-const EXPECTED_AGENT_COUNT = 14;
+// 14 -> 12 (apra-fleet-3swo.5.7): the harvester ladder -- its dispatch and its
+// max_turns-exhaustion resume -- moved onto the dispatchRole engine, starting
+// the execution-side half of the migration. Two agent() call sites left
+// runner.js; none were added.
+const EXPECTED_AGENT_COUNT = 12;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in

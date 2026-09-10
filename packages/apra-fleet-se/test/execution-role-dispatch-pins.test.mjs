@@ -28,7 +28,17 @@ import {
 } from '../fleet-sprint/contracts.mjs';
 import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
 import { policyFor } from '../fleet-sprint/role-policies.mjs';
-import { driveEngineDispatch, SCHEMAS, BINDINGS } from './helpers/dispatch-role-harness.mjs';
+import {
+    driveEngineDispatch,
+    createRecordingCtx,
+    ROLE_CALL_OPTS,
+    SCHEMAS,
+    BINDINGS,
+    schemaError,
+    transportError,
+    authError,
+} from './helpers/dispatch-role-harness.mjs';
+import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
 import { PLANNING_LADDERS } from './helpers/planning-ladders.mjs';
 import { EXECUTION_INLINE_LADDERS, EXECUTION_ENGINE_DISPATCHES } from './helpers/execution-ladders.mjs';
 
@@ -314,7 +324,7 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
         );
     });
 
-    test('every execution-side dispatch inherits sprint_id and its KB block from the one agent() wrapper', () => {
+    test('every execution-side dispatch inherits sprint_id and its KB block from the one agent() wrapper', async () => {
         const stripped = stripComments(SRC);
         assert.ok(
             /agentRaw\(\s*finalPrompt\s*,\s*\{\s*sprint_id:\s*sprintMutexId\s*,\s*\.\.\.opts\s*\}\s*\)/.test(stripped),
@@ -335,10 +345,25 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
             );
         }
         // ...and the wrapper-fed roles pass no kbKnowledge of their own.
-        for (const anchor of ['(\n                        deployerPrompt,', '(\n                    featurePrompt,', '(\n                    regressionPrompt,', '(\n                harvesterPrompt,']) {
+        // Only the STILL-INLINE wrapper-fed dispatches have a runner.js call
+        // site of their own to read. A migrated one passes no kbKnowledge
+        // either -- the engine builds its options from the policy row and
+        // there is no kbKnowledge field in it at all -- which the engine-served
+        // block at the end of this file asserts against the real dispatch.
+        const wrapperFedAnchors = EXECUTION_LADDERS
+            .filter((pin) => !['doer', 'reviewer', 'final-review'].includes(pin.ladder))
+            .map((pin) => pin.anchor);
+        for (const anchor of wrapperFedAnchors) {
             assert.ok(
                 !/kbKnowledge/.test(siteFor(anchor).callText),
                 'A wrapper-fed role must not also inject its own knowledge block, or it would receive the block twice.'
+            );
+        }
+        for (const pin of EXECUTION_ENGINE_DISPATCHES.filter((p) => !['doer', 'reviewer'].includes(p.agentType))) {
+            const { dispatch } = await driveEngineDispatch(pin.role, pin.kind);
+            assert.ok(
+                !Object.prototype.hasOwnProperty.call(dispatch.options, 'kbKnowledge'),
+                `${pin.name}: a wrapper-fed role must not also inject its own knowledge block.`
             );
         }
     });
@@ -503,22 +528,76 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         );
     });
 
-    test('harvester: max_turns resume, and any failure proceeds without a validated report rather than failing the sprint', () => {
-        const region = stripComments(regionBetween(SRC, 'const harvesterDispatchOpts', '7. Publish: push the sprint branch'));
-        assert.ok(/memberSessionGuard\.killIfAlive\(getMemberForRole\('harvester'\)\)/.test(region), 'The harvester resume kills a still-alive session first.');
-        assert.ok(
-            /proceeding without a validated harvester report/.test(region),
-            'A harvester schema/dispatch failure degrades to proceeding without a report -- the sprint verdict is already decided by this point.'
+    test('harvester: max_turns resume, and any failure proceeds without a validated report rather than failing the sprint', async () => {
+        // apra-fleet-3swo.5.7: re-anchored onto the engine. Every fact the
+        // textual version asserted is asserted here against a real run:
+        //   killIfAlive before the resume  -> rec.kills, ordered before the
+        //                                     resume dispatch
+        //   'proceeding without a validated harvester report'
+        //                                  -> the ladder really returns no
+        //                                     value at all for either failure
+        //                                     class, which is the degrade that
+        //                                     phrase described
+        //   auth self-heal                 -> rec.authHeals
+        //   'throw err;' (unrecognised)    -> an unrecognised class really
+        //                                     propagates
+        //   kbWork.apply('harvester', ...) -> the 'kb-apply' postResult step is
+        //                                     really performed, and only on a
+        //                                     successful dispatch
+        const p = policyFor('harvester');
+
+        const resumed = await driveEngineDispatch('harvester', 'max-turns-resume');
+        assert.strictEqual(resumed.rec.dispatches.length, 2, 'Turn exhaustion resumes the same session rather than restarting the harvest.');
+        assert.deepStrictEqual(
+            resumed.rec.kills,
+            [resumed.ctx.getMemberForRole('harvester')],
+            'A still-alive exhausted session is killed before the resume.'
         );
-        assert.ok(
-            /isAuthDispatchError\(err\) && typeof onLlmAuthFailure === 'function'/.test(region),
+        const killIndex = resumed.rec.events.findIndex((e) => e.type === 'kill');
+        const resumeIndex = resumed.rec.events.findIndex((e) => e.type === 'dispatch' && e.entry === resumed.rec.dispatches[1]);
+        assert.ok(killIndex >= 0 && killIndex < resumeIndex, 'The kill must precede the resume dispatch.');
+
+        for (const make of [schemaError, transportError]) {
+            const { ctx, rec } = createRecordingCtx({ responses: [make(), make()] });
+            const outcome = await dispatchRole(ctx, 'harvester', ROLE_CALL_OPTS.harvester);
+            assert.strictEqual(outcome.ok, false);
+            assert.strictEqual(outcome.degraded, true);
+            assert.strictEqual(
+                outcome.value,
+                null,
+                'A harvester schema/dispatch failure degrades to proceeding WITHOUT a report -- it never fabricates one.'
+            );
+            assert.strictEqual(
+                rec.steps.filter((e) => e.step === 'kb-apply').length,
+                0,
+                'A failed harvest has no report whose kb_captures could be applied.'
+            );
+        }
+
+        const authRun = createRecordingCtx({ responses: [authError()] });
+        await dispatchRole(authRun.ctx, 'harvester', ROLE_CALL_OPTS.harvester);
+        assert.strictEqual(
+            authRun.rec.authHeals.length,
+            1,
             'The harvester still self-heals an auth failure: the same member and credentials are reused by the NEXT sprint.'
         );
-        assert.ok(/throw err;/.test(region), 'An unrecognised error class still propagates.');
-        assert.ok(
-            /kbWork\.apply\('harvester'/.test(region),
-            'The harvester report\'s kb_captures are applied through kbWork -- capture only, since promotions are reviewer-only.'
+
+        const unrecognised = createRecordingCtx({ responses: [new TypeError('not a dispatch failure at all')] });
+        await assert.rejects(
+            () => dispatchRole(unrecognised.ctx, 'harvester', ROLE_CALL_OPTS.harvester),
+            TypeError,
+            'An unrecognised error class still propagates.'
         );
+        assert.strictEqual(p.degrade.rethrowsUnrecognisedErrors, true);
+
+        const good = await driveEngineDispatch('harvester', 'main');
+        assert.deepStrictEqual(
+            good.rec.steps.map((e) => e.step),
+            ['kb-apply'],
+            "The harvester report's kb_captures are applied through the policy's 'kb-apply' step -- capture only, since promotions are reviewer-only."
+        );
+        assert.strictEqual(good.rec.steps[0].policy.agentType, 'harvester', 'kb-apply is routed by the dispatching persona.');
+        assert.strictEqual(good.rec.steps[0].member, good.ctx.getMemberForRole('harvester'), 'kb-apply lands in the dispatched member\'s own work folder.');
     });
 });
 

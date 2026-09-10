@@ -374,6 +374,12 @@ export const ROLE_CALL_OPTS = Object.freeze({
         roleLabel: 'Scoped Replan Review',
         label: 'Scoped Replan Review',
     },
+    harvester: {
+        prompt: 'HARVESTER PROMPT',
+        resumePrompt: 'HARVESTER RESUME PROMPT',
+        roleLabel: 'Harvester',
+        resumeLabel: 'Harvest (resume, max_turns=1000)',
+    },
     'streak-assignment': {
         prompt: 'STREAK ASSIGNMENT PROMPT',
         roleLabel: 'Streak Assignment',

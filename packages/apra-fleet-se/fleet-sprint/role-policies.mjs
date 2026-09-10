@@ -806,6 +806,8 @@ regressionTestRunner.secondary = secondary(regressionTestRunner, 'regression-tes
 });
 
 const harvester = policy('harvester', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: 'harvesterPrompt,',
     member: roleMember('harvester'),
     agentType: 'harvester',
@@ -823,6 +825,10 @@ const harvester = policy('harvester', {
         resumeAttempts: 1,
         turnEscalation: 'double',
     }),
+    // Fabricates NOTHING: by this point the sprint's verdict is already
+    // decided, so a missing harvest report is a gap in the record rather than
+    // a result to invent. degrade.classes is empty, which is what makes that
+    // "produces no value" rather than "produces an empty one".
     degrade: degrade({ kind: 'proceed-without-report' }),
     postResult: ['kb-apply'],
 });
