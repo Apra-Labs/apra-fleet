@@ -135,12 +135,8 @@ const ROLE_SOURCE = {
     // runner.js to anchor on any more -- every field of this row is
     // re-derived by RUNNING dispatch-role.mjs (see section (7) below).
     planner: { engine: true },
-    'plan-reviewer': {
-        anchor: 'priorRoundVerdicts: priorPlanRoundVerdicts',
-        secondary: 'Continue your plan review exactly where you left off',
-        region: ['for (let planReviewAttempt = 1;', 'lastVerdict = verdict;'],
-        attempts: { kind: 'loop', var: 'planReviewAttempt' },
-    },
+    // apra-fleet-3swo.5.3: MIGRATED -- see section (7).
+    'plan-reviewer': { engine: true },
     'scoped-replan-planner': {
         anchor: "label: 'Scoped Replan Plan (interactive)'",
         secondary: null,
@@ -1371,20 +1367,39 @@ describe('role policy table: migrated roles re-derived by running the engine', (
             }
 
             // --- abort on a non-retryable (auth/trust) failure -----------------
+            // Observed through the engine's own abort announcement rather than
+            // through the dispatch COUNT: a ladder that also rethrows
+            // unrecognised errors would stop after one dispatch either way, so
+            // a count-based derivation would report the flag as set for a role
+            // that does not carry it.
             const trustRun = await runSpent(() => trustError());
             assert.strictEqual(
-                trustRun.rec.dispatches.length === 1 && p.retry.attempts > 1,
-                p.retry.abortOnNonRetryable && p.retry.attempts > 1,
+                trustRun.rec.logs.some((m) => /threw a non-retryable error \(auth\/trust\)/.test(m)),
+                p.retry.abortOnNonRetryable,
                 `${role}: retry.abortOnNonRetryable must match whether an auth/trust failure really ends the ladder early.`
             );
+            if (p.retry.abortOnNonRetryable) {
+                assert.strictEqual(
+                    trustRun.rec.dispatches.length,
+                    1,
+                    `${role}: an aborting ladder must not burn its remaining attempts on a deterministic failure.`
+                );
+            }
 
             // --- a dispatch that already ran is never re-dispatched ------------
             const syncRun = await runSpent(() => postDispatchSyncError());
             assert.strictEqual(
-                syncRun.rec.dispatches.length === 1 && p.retry.attempts > 1,
-                p.retry.skipRedispatchOnPostDispatchSyncFailure && p.retry.attempts > 1,
+                syncRun.rec.logs.some((m) => /COMPLETED but its post-dispatch sync failed/.test(m)),
+                p.retry.skipRedispatchOnPostDispatchSyncFailure,
                 `${role}: a dispatch that already ran must not be re-dispatched for a post-dispatch sync failure.`
             );
+            if (p.retry.skipRedispatchOnPostDispatchSyncFailure) {
+                assert.strictEqual(
+                    syncRun.rec.dispatches.length,
+                    1,
+                    `${role}: a turn whose writes are already local must never be re-dispatched.`
+                );
+            }
 
             // --- no-mutation pre-sync skip ------------------------------------
             if (p.retry.attempts > 1 && p.bracket.wrapped) {

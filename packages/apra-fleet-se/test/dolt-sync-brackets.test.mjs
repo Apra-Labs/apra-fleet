@@ -955,7 +955,10 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // generic place driven by role-policies.mjs. The scoped-replan planner
     // bracket, which is still inline, is what keeps the planner role
     // represented in the roleMarkers check below.
-    assert.equal(sites.length, 18, `expected 18 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 18 -> 16 (same bead): the plan-reviewer's two read-side brackets
+    // followed the planner onto the engine. Both were read-side with no
+    // pushBeads, so the pushBeads count below is unchanged.
+    assert.equal(sites.length, 16, `expected 16 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch
