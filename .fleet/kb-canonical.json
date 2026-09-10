@@ -1,11 +1,55 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "63e0132d3290bacf20b38d5b62fd4ea336e78f7d",
+    "commit": "d5667b95dbcd2a60051df676ea23fbebf4e13be2",
     "branch": "feat/runner-refactor-standalone",
-    "entry_count": 104
+    "entry_count": 119
   },
   "entries": [
+    {
+      "id": "07003cb6-580b-41de-be4a-8827d7dcf240",
+      "type": "learning",
+      "title": "A dispatch-pin falsification edit must reuse an existing anchor, or siteFor fails first and masks the real check",
+      "summary": "siteFor() asserts exactly one matching agent() site before any pin-level comparison runs, so falsifying a pin-collision assertion with an invented anchor string turns the subtest red for the wrong reason and looks confirmed.",
+      "symbols": [
+        "siteFor",
+        "PLANNING_LADDERS",
+        "EXECUTION_LADDERS",
+        "findCallSites"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/planning-role-dispatch-pins.test.mjs",
+        "packages/apra-fleet-se/test/execution-role-dispatch-pins.test.mjs",
+        "packages/apra-fleet-se/test/helpers/planning-ladders.mjs",
+        "packages/apra-fleet-se/test/helpers/dispatch-pin-scanner.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T03:11:15.622Z"
+    },
+    {
+      "id": "07dbc271-b464-4afe-8760-87456e491691",
+      "type": "knowledge",
+      "title": "install --force must stop the registered service, not pkill: launchd/systemd relaunch under a new pid",
+      "summary": "killApraFleet() signals apra-fleet by process name, which cannot stop a supervised server; the fix is ServiceManager.stop() (graceful exit 0) first, with pid-delta detection to tell a relaunch from a process refusing to die.",
+      "symbols": [
+        "apraFleetPids",
+        "isApraFleetRunning",
+        "killApraFleet",
+        "registeredServiceManager",
+        "waitForServiceStop",
+        "MacOSServiceManager.stop",
+        "gracefulStopByServerJson"
+      ],
+      "source_files": [
+        "src/cli/install.ts",
+        "src/services/service-manager/macos.ts",
+        "src/services/service-manager/linux.ts",
+        "src/services/service-manager/index.ts",
+        "deploy.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-09T23:26:48.877Z"
+    },
     {
       "id": "0c2b91da-5ed6-45f4-95cd-498c823ade80",
       "type": "knowledge",
@@ -356,6 +400,27 @@
       "updated_at": "2026-09-07T16:36:39.088Z"
     },
     {
+      "id": "219a8a75-4537-488e-b3d2-10b018534573",
+      "type": "learning",
+      "title": "A vitest mock returning the wrong SHAPE hides inside a best-effort try/catch and still reports green",
+      "summary": "tests/cloud-lifecycle-unit.test.ts stubbed provisionAuth with a bare string while lifecycle.ts read result.structuredContent.ok; the TypeError was swallowed by reProvisionAuth's best-effort catch, so 9 tests passed while every real call failed. Assert on the absence of the warning log, not just on resolves.toBeDefined().",
+      "symbols": [
+        "reProvisionAuth",
+        "provisionFailed",
+        "provisionSummary",
+        "provisionOutcome",
+        "ensureCloudReady"
+      ],
+      "source_files": [
+        "src/services/cloud/lifecycle.ts",
+        "tests/cloud-lifecycle-unit.test.ts",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "src/tools/provision-auth.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-09T23:26:48.881Z"
+    },
+    {
       "id": "22e52be3-d44c-4c71-ae51-9f25a498af40",
       "type": "knowledge",
       "title": "sprint-logs/ must never carry a blanket directory ignore -- .gitignore says so inline",
@@ -526,6 +591,26 @@
       "updated_at": "2026-09-09T08:48:45.599Z"
     },
     {
+      "id": "42eb6187-b287-415c-b4cb-e7fc1bb05440",
+      "type": "knowledge",
+      "title": "Watchdog label literals are not always inside the agent() call, so they are unsafe pin anchors",
+      "summary": "A runner.js label: literal may live in withDispatchWatchdog's options rather than the agent() options object, in which case it matches zero AGENT_SITES and cannot anchor a dispatch pin.",
+      "symbols": [
+        "siteFor",
+        "withDispatchWatchdog",
+        "PLANNING_LADDERS",
+        "AGENT_SITES"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/helpers/planning-ladders.mjs",
+        "packages/apra-fleet-se/test/helpers/dispatch-pin-scanner.mjs",
+        "packages/apra-fleet-se/test/planning-role-dispatch-pins.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T03:59:54.826Z"
+    },
+    {
       "id": "44cfb13c-397c-4b93-88b3-5731cb417c65",
       "type": "knowledge",
       "title": "beads-scope wrapCommand only invalidates on a command that RETURNS, not one that throws",
@@ -557,6 +642,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.001Z"
+    },
+    {
+      "id": "47853939-c3d6-4e79-9c7b-073a4d26976b",
+      "type": "knowledge",
+      "title": "role-policies-table.test.mjs proves retry budgets via four declared shapes, superseding the earlier gap entry",
+      "summary": "Every role's retry.attempts and retry.resumeAttempts is now re-derived from runner.js through a per-role ROLE_SOURCE.attempts shape, so the earlier entry claiming these two fields were unproven is obsolete.",
+      "symbols": [
+        "derivedAttempts",
+        "derivedResumeAttempts",
+        "maxTurnsResumeBlock",
+        "ROLE_SOURCE",
+        "dispatchDoer",
+        "runFinalReviewAttempt",
+        "PLANNER_DISPATCH_RETRY_DELAYS_MS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/role-policies-table.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T00:05:18.080Z"
     },
     {
       "id": "4844d64a-deee-4b5d-87d2-6fcd8c596f64",
@@ -842,6 +949,24 @@
       "updated_at": "2026-09-07T16:36:39.257Z"
     },
     {
+      "id": "6f0fe337-1eb5-4abc-b3ae-6c542b7c18f4",
+      "type": "knowledge",
+      "title": "install --force cannot stop a launchd/service-manager-relaunched apra-fleet server, no matter how long the SIGKILL grace window is",
+      "summary": "When the server is registered as a macOS LaunchAgent with KeepAlive on non-successful exit, killing the process directly just makes the service manager relaunch it under a new PID before the installer's liveness poll re-checks, so the installer's poll-and-escalate stop logic always reports failure in this case.",
+      "symbols": [
+        "killApraFleet",
+        "waitForApraFleetToStop",
+        "isApraFleetRunning"
+      ],
+      "source_files": [
+        "src/cli/install.ts",
+        "src/services/service-manager/macos.ts",
+        "docs/install.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T00:05:18.085Z"
+    },
+    {
       "id": "73dc2e09-eff7-4cdb-bec0-54e9403da198",
       "type": "knowledge",
       "title": "A role's member expression in role-policies.mjs is not role-unique, so it cannot identify a ladder",
@@ -977,6 +1102,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.329Z"
+    },
+    {
+      "id": "86ea49c4-49a3-4b4a-b98a-a9d430a58db7",
+      "type": "knowledge",
+      "title": "Two ladder anchors match two call sites each because resume prompts re-embed their main prompt variable",
+      "summary": "An exactly-one assertion on role policy ladder anchors cannot hold: integ-test-runner and regression-test-runner resume prompts concatenate their own main prompt variable, so those two main anchors legitimately match two agent() sites.",
+      "symbols": [
+        "allDispatchPolicies",
+        "ladderAnchor",
+        "findInlineLadderViolations"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/inline-ladder-guard.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/inline-ladder-guard.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T02:29:39.665Z"
     },
     {
       "id": "878a6d68-14da-4a1c-b454-c0f3b8e2fba5",
@@ -1173,6 +1317,41 @@
       "updated_at": "2026-09-09T13:25:24.333Z"
     },
     {
+      "id": "a488d002-4ae5-4126-af55-ec009161df4c",
+      "type": "learning",
+      "title": "role-policies-table's deployer ROLE_SOURCE region anchor was wrong, not the deployer's retry.attempts value",
+      "summary": "The deployer's region start anchor 'const sprintSelfId =' spanned nearly 3000 unrelated lines of runner.js (including the doer's own ladder), causing derivedAttempts()'s RETRY_ONCE_MARKER check to false-positive on the doer's 'Retrying once.' log line.",
+      "symbols": [
+        "derivedAttempts",
+        "ROLE_SOURCE",
+        "regionOf",
+        "RETRY_ONCE_MARKER"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/role-policies-table.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T00:05:18.078Z"
+    },
+    {
+      "id": "a6438761-57f2-4011-a158-833afd6fbbe5",
+      "type": "learning",
+      "title": "execFileSync distinguishes a timeout from a non-zero exit by error.code, not error.status",
+      "summary": "A timed-out execFileSync sets code ETIMEDOUT, signal SIGTERM and status null, while a non-zero exit leaves code undefined and sets status to the exit code with stdout and stderr intact.",
+      "symbols": [
+        "runNestedSuite",
+        "resolveNestedSuiteTimeoutMs",
+        "DEFAULT_NESTED_SUITE_TIMEOUT_MS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T00:05:18.089Z"
+    },
+    {
       "id": "a71f0b1f-18ce-447a-9f73-31dd265e208f",
       "type": "knowledge",
       "title": "The pushCode:true dispatch set is four sites (doer + harvester, each with its resume), not two",
@@ -1306,6 +1485,25 @@
       "updated_at": "2026-09-08T02:23:21.233Z"
     },
     {
+      "id": "b433854c-f269-4c88-af8f-a5de17bd0cba",
+      "type": "knowledge",
+      "title": "Only two runner.js role ladders use a bounded attempt loop; the rest express retry as nested try/catch",
+      "summary": "Grepping for an attempt-counter loop in runner.js finds exactly reviewer and plan-reviewer, so any guard that detects retry depth by loop bound silently misses the other eleven roles.",
+      "symbols": [
+        "runFinalReviewAttempt",
+        "PLANNER_DISPATCH_RETRY_DELAYS_MS",
+        "reviewAttempt",
+        "planReviewAttempt"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/role-policies-table.test.mjs",
+        "packages/apra-fleet-se/test/planning-role-dispatch-pins.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T03:59:54.830Z"
+    },
+    {
       "id": "b57704a3-f7a8-4260-a069-21ec0a0e54d5",
       "type": "knowledge",
       "title": "phase0-seams-facade and vcs-auth-extraction-facade never actually run their nested golden-transcript checks",
@@ -1319,6 +1517,20 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-08T09:48:50.346Z"
+    },
+    {
+      "id": "b5f7d0d2-59e6-444d-b8fd-c83a3f604f84",
+      "type": "learning",
+      "title": "tests/install-force.test.ts afterEach does not actually restore process.platform",
+      "summary": "Its afterEach redefines process.platform to its own current value, so a platform set by one test leaks into every following test in the file.",
+      "symbols": [
+        "isApraFleetRunning"
+      ],
+      "source_files": [
+        "tests/install-force.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-09T23:26:48.886Z"
     },
     {
       "id": "b65ddcb4-6f74-4b5f-9877-502a38938e47",
@@ -1443,6 +1655,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.620Z"
+    },
+    {
+      "id": "c5f3d5d6-0ccd-4669-a45b-e3dd7dcad5ae",
+      "type": "knowledge",
+      "title": "extractBalancedCall now masks comments, but still mis-reads a regex literal ending in an escaped slash",
+      "summary": "The apostrophe-in-comment runaway is fixed by maskComments, yet the masker models strings and comments only, so a regex body ending in an escaped slash before its delimiter is masked as a line comment and can unbalance a call site.",
+      "symbols": [
+        "maskComments",
+        "extractBalancedCall",
+        "findCallSites",
+        "checkModules"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-safety-guard.mjs",
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/inline-ladder-guard.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T02:29:39.659Z"
     },
     {
       "id": "c791fcf0-48c2-4a17-a247-ea634fec70b3",
@@ -1757,6 +1989,22 @@
       "updated_at": "2026-09-07T16:36:39.813Z"
     },
     {
+      "id": "f49831f2-77d5-44b4-8ca5-a563bcff7538",
+      "type": "knowledge",
+      "title": "role-policies-table.test.mjs deployer retry-ladder subtest fails on feat/runner-refactor-standalone tip",
+      "summary": "packages/apra-fleet-se/test/role-policies-table.test.mjs:602 'deployer: attempts, backoff, resume escalation...' fails at derivedAttempts (line 257) with 'runner.js re-dispatches this ladder after a failure', making npm test exit 1 on the branch tip independent of any provisioning work.",
+      "symbols": [
+        "derivedAttempts"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/role-policies-table.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-09T23:26:48.898Z"
+    },
+    {
       "id": "f80badf2-1b0c-4a2a-857f-c7cbd21786c2",
       "type": "knowledge",
       "title": "mock-sprint network guard misses absolute-path curl invocations",
@@ -1771,6 +2019,46 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.838Z"
+    },
+    {
+      "id": "fabcf384-270a-4c4f-a630-6b82597e5207",
+      "type": "knowledge",
+      "title": "ROLE_POLICIES doer.secondary and the doer-resume entry are the same object, so anchors look duplicated",
+      "summary": "role-policies.mjs assigns the doer-resume policy object to doer.secondary, so any sweep iterating ROLE_NAMES and then entry.secondary visits one dispatch twice and reports a false duplicate ladderAnchor.",
+      "symbols": [
+        "ROLE_POLICIES",
+        "ROLE_NAMES",
+        "secondary",
+        "memberExprFor",
+        "ladderAnchor"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/inline-ladder-guard.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T02:20:19.572Z"
+    },
+    {
+      "id": "fb08755e-dbee-43c7-83a4-f72b1fc7114d",
+      "type": "learning",
+      "title": "vi.mock('node:child_process') makes WindowsServiceManager.isInstalled() return true in tests",
+      "summary": "Any install.ts code path gated on ServiceManager.isInstalled() takes the service branch under win32 in tests/install-force.test.ts, because the auto-mocked execFileSync never throws.",
+      "symbols": [
+        "WindowsServiceManager.isInstalled",
+        "MacOSServiceManager.isInstalled",
+        "LinuxServiceManager.isInstalled",
+        "registeredServiceManager"
+      ],
+      "source_files": [
+        "tests/install-force.test.ts",
+        "src/services/service-manager/windows.ts",
+        "src/services/service-manager/macos.ts",
+        "src/services/service-manager/linux.ts",
+        "src/cli/install.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-09T23:26:48.891Z"
     },
     {
       "id": "ff02b32b-5d77-4af5-ad6b-0d7288e2476f",
