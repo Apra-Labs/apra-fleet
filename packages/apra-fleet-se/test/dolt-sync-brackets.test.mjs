@@ -969,7 +969,9 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // two with them.
     // 12 -> 10 (same bead): the deployer's two read-side brackets followed
     // them. Neither carried pushBeads, so the count below is unchanged.
-    assert.equal(sites.length, 10, `expected 10 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 10 -> 8 (same bead): the regression runner's two brackets followed
+    // them; both carried pushBeads:true, so the count below drops by two.
+    assert.equal(sites.length, 8, `expected 8 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch
@@ -998,10 +1000,13 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // onto the engine. Its pushBeads:true bracket is now opened generically
     // from fleet-sprint/dispatch-role.mjs and is asserted behaviourally by
     // test/execution-role-dispatch-pins.test.mjs instead.
+    // 6 -> 4 (same bead): the regression runner's pair moved onto the engine;
+    // its pushBeads:true bracket is now opened generically and asserted
+    // behaviourally by test/execution-role-dispatch-pins.test.mjs.
     assert.equal(
         pushBeadsSites.length,
-        6,
-        `expected exactly 6 withGitSync(...) brackets with pushBeads:true (doer+resume, integ+resume, regression+resume), found ${pushBeadsSites.length}`,
+        4,
+        `expected exactly 4 withGitSync(...) brackets with pushBeads:true (doer+resume, integ+resume), found ${pushBeadsSites.length}`,
     );
 
     // apra-fleet-3swo.5.3: 'planner' is no longer in this list -- every
@@ -1011,11 +1016,11 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // behaviourally by test/planning-role-dispatch-pins.test.mjs and
     // test/role-policies-table.test.mjs; keeping a runner.js-only marker for
     // it here would just be a standing false failure.
-    // apra-fleet-3swo.5.7: 'harvester' left this list for the same reason.
+    // apra-fleet-3swo.5.7: 'harvester' and 'regression-test-runner' left this
+    // list for the same reason.
     const roleMarkers = [
         { name: 'doer', re: /agentType:\s*'doer'/ },
         { name: 'integ-test-runner', re: /getMemberForRole\('integ-test-runner'\)|agentType:\s*'integ-test-runner'/ },
-        { name: 'regression-test-runner', re: /getMemberForRole\('regression-test-runner'\)|agentType:\s*'regression-test-runner'/ },
     ];
     for (const { name, re } of roleMarkers) {
         assert.ok(

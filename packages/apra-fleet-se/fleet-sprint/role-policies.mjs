@@ -775,6 +775,8 @@ integTestRunner.secondary = secondary(integTestRunner, 'integ-test-runner', 'max
 });
 
 const regressionTestRunner = policy('regression-test-runner', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: 'regressionPrompt,',
     member: roleMember('regression-test-runner'),
     agentType: 'regression-test-runner',
@@ -802,6 +804,24 @@ const regressionTestRunner = policy('regression-test-runner', {
     // they still propagate.
     degrade: degrade({
         kind: 'catch-all',
+        // FOUR degrade classes, which is what "catch-all" means expressed as
+        // data: on top of the two every ladder distinguishes, this one also
+        // tells apart a SYNC failure around the dispatch (the phase files
+        // carry-over beads, so a D-push failure is a routine outcome worth
+        // reporting honestly rather than as "the pass failed") and an
+        // otherwise UNRECOGNISED error (a divergence class is a typed sprint
+        // abort, and letting one through here would turn a green sprint into
+        // a terminal ABORTED record that skips Harvest and Publish).
+        classes: ['schema', 'dispatch', 'sync', 'unknown'],
+        classifiesSyncFailures: true,
+        classifiesUnrecognisedErrors: true,
+        // A REPORT shape, like the deployer's: the answer is `passed` and the
+        // failure text goes in `summary`.
+        synthesized: { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [] },
+        verdictField: 'passed',
+        notesField: 'summary',
+        paths: 4,
+        neverSynthesizes: [true],
         rethrowsUnrecognisedErrors: false,
         rethrowsRunControlSignals: ['CancelledError', 'BudgetExceededError'],
     }),

@@ -87,6 +87,15 @@ export const FIXED_ROLE_TIER = Object.freeze(Object.fromEntries(
  */
 export const DISPATCH_TIMEOUT_S = 4242;
 
+/**
+ * The other two symbolic budgets the table names, each a DISTINCT sentinel:
+ * the integ and regression runners keep the shorter inactivity timer while
+ * giving the hard elapsed ceiling real headroom, and a pin that could not tell
+ * the two budgets apart could not prove that.
+ */
+export const INTEG_MAX_TOTAL_S = 8484;
+export const REGRESSION_TEST_MAX_TOTAL_S = 12726;
+
 /** The real schema objects, keyed by the name role-policies.mjs records. */
 export const SCHEMAS = Object.freeze({
     planReviewerVerdict,
@@ -208,7 +217,7 @@ export function createRecordingCtx(options = {}) {
         members = {},
         healed = false,
         noMutation = isNoMutationDispatchFailure,
-        budgets = { DISPATCH_TIMEOUT_S },
+        budgets = { DISPATCH_TIMEOUT_S, INTEG_MAX_TOTAL_S, REGRESSION_TEST_MAX_TOTAL_S },
         steps = {},
         // The policy table the engine reads its row from. Left undefined the
         // engine uses the real frozen ROLE_POLICIES; a test that is proving a
@@ -373,6 +382,21 @@ export const ROLE_CALL_OPTS = Object.freeze({
         prompt: 'SCOPED REPLAN REVIEW PROMPT',
         roleLabel: 'Scoped Replan Review',
         label: 'Scoped Replan Review',
+    },
+    'regression-test-runner': {
+        prompt: 'REGRESSION PROMPT',
+        resumePrompt: 'REGRESSION RESUME PROMPT',
+        roleLabel: 'Regression Test Runner',
+        resumeLabel: 'Regression Test (resume, max_turns=1000)',
+        // One SENTINEL note builder per error class the catch-all fabricates
+        // for, so a pin can prove the engine routes by class rather than
+        // collapsing four degrade paths into one message.
+        synthesizedNotes: {
+            schema: (err) => `HARNESS-SCHEMA-CLASS: ${err.message}`,
+            dispatch: (err) => `HARNESS-DISPATCH-CLASS: ${err.message}`,
+            sync: (err) => `HARNESS-SYNC-CLASS: ${err.message}`,
+            unknown: (err) => `HARNESS-UNKNOWN-CLASS: ${err.message}`,
+        },
     },
     deployer: {
         prompt: 'DEPLOYER PROMPT',
