@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { resultText, resolveMemberTarget, clearMemberOsCache } from '../fleet-sprint/runner.js';
 
@@ -137,14 +137,14 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
 
             // Sanity: the sandbox copy is faithful -- the facade resolves
             // before any mutation, same as the real module.
-            const before = await import(`${sandboxRunnerPath}?facade-sanity=${Date.now()}-${Math.random()}`);
+            const before = await import(`${pathToFileURL(sandboxRunnerPath).href}?facade-sanity=${Date.now()}-${Math.random()}`);
             assert.equal(typeof before.resolveMemberTarget, 'function');
 
             // Remove the single re-export line and prove the facade breaks.
             const brokenContent = originalContent.replace(`${reExportLine}\n`, '');
             assert.notEqual(brokenContent, originalContent, 'the re-export line must actually have been removed');
             fs.writeFileSync(sandboxRunnerPath, brokenContent, 'utf-8');
-            const broken = await import(`${sandboxRunnerPath}?facade-broken=${Date.now()}-${Math.random()}`);
+            const broken = await import(`${pathToFileURL(sandboxRunnerPath).href}?facade-broken=${Date.now()}-${Math.random()}`);
             assert.equal(
                 broken.resolveMemberTarget,
                 undefined,
@@ -153,7 +153,7 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
 
             // Restore, and prove the facade resolves again.
             fs.writeFileSync(sandboxRunnerPath, originalContent, 'utf-8');
-            const restored = await import(`${sandboxRunnerPath}?facade-restored=${Date.now()}-${Math.random()}`);
+            const restored = await import(`${pathToFileURL(sandboxRunnerPath).href}?facade-restored=${Date.now()}-${Math.random()}`);
             assert.equal(typeof restored.resolveMemberTarget, 'function', 'the re-export line must be restored before this task completes');
             assert.equal(fs.readFileSync(sandboxRunnerPath, 'utf-8'), originalContent, 'sandbox runner.js must be byte-identical to its original content once restored');
         } finally {
