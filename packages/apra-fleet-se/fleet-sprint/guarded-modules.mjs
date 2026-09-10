@@ -28,6 +28,16 @@ import { fileURLToPath } from 'url';
 // single mutex resource; any future bead that adds a line here MUST belong to
 // the same streak as, or run after, whatever else is editing them.
 //
+// NESTED ENTRIES ARE LEGAL (first used by apra-fleet-3swo.6.2's phases/*
+// modules): guardedModulePath() path.joins a 'dir/file.mjs' entry, so it
+// resolves and scans exactly like a flat one. What differs is REPORTING --
+// every guard labels a scanned file by path.basename() -- so a baseline that
+// compares a guard's `files` output must use guardedModuleBasenames(), never
+// GUARDED_MODULES verbatim. Note the COMPLETENESS check in
+// guarded-modules-coverage.test.mjs deliberately compares FULL RELATIVE PATHS
+// instead, so a nested module can never ride on an unrelated entry that
+// merely shares its bare filename.
+//
 // WHAT DOES *NOT* BELONG HERE: the per-shell command builders --
 // se-posix.mjs, se-windows.mjs, se-windows-gitbash.mjs, se-os-commands.mjs and
 // dolt-settle.mjs. They deliberately emit `$HOME`, `$env:USERPROFILE`,
@@ -76,6 +86,22 @@ export const GUARDED_MODULES = [
     // invariant is about -- so it is registered from the start rather than
     // retrofitted later.
     'sprint-state.mjs',
+    // apra-fleet-3swo.6.2: the first two phase modules sliced out of
+    // runSprintCycle. These are the first NESTED entries in this list --
+    // guardedModulePath() path.joins them, so they resolve and scan
+    // correctly, but every guard labels a scanned file by path.basename(),
+    // so they are always REPORTED as 'ensure-sprint-branch.mjs' and
+    // 'plan.mjs'. Any baseline assertion must therefore compare against
+    // guardedModuleBasenames() rather than GUARDED_MODULES verbatim (see
+    // that function's doc comment below).
+    //
+    // ensure-sprint-branch.mjs took EIGHT member_name-bearing command() call
+    // sites out of runner.js and plan.mjs took THREE, which is exactly why
+    // both are registered as part of the extraction rather than afterwards:
+    // eleven guarded dispatch sites would otherwise leave runner.js's scanned
+    // surface and land in files no guard reads, with every guard still green.
+    'phases/ensure-sprint-branch.mjs',
+    'phases/plan.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left

@@ -72,7 +72,38 @@ import { balancedCallRange, skipStringLiteral } from './balanced-call-scanner.mj
  * sites (it is pure frozen data) -- see this file's header DECISION note for
  * why that is fine.
  */
-export const DISPATCH_LADDER_MODULES = ['runner.js', 'role-policies.mjs', 'dispatch-role.mjs'];
+export const DISPATCH_LADDER_MODULES = [
+    'runner.js',
+    // apra-fleet-3swo.6.2: the phase modules sliced out of runSprintCycle.
+    // Registered here so a consumer-side census (phase3-dispatch-engine-
+    // completeness.test.mjs derives its dispatchRole()/inline-ladder scan set
+    // by FILTERING this list to runner.js + phases/*) keeps seeing every
+    // module that can host a dispatch once a phase leaves runner.js.
+    //
+    // POSITION IS DELIBERATE -- after runner.js, BEFORE role-policies.mjs --
+    // and it is the LATENT FALSE-GREEN this file's header describes. The Plan
+    // phase took its ladder anchors ('plannerPrompt,' and
+    // 'priorRoundVerdicts: priorPlanRoundVerdicts') into phases/plan.mjs,
+    // while role-policies.mjs still carries both strings VERBATIM AS DATA in
+    // its planner/plan-reviewer `ladderAnchor` fields. Were role-policies.mjs
+    // to come first, an anchor search would resolve inside that data literal
+    // instead of the real dispatch site.
+    //
+    // MEASURED, NOT ASSUMED: nothing resolves through those anchors TODAY.
+    // Every planning and execution ladder is `migrated`, so both pin tables'
+    // inline halves (PLANNING_LADDERS/EXECUTION_LADDERS filtered to
+    // mode:'inline') are EMPTY and no anchor search runs at all -- verified by
+    // renaming plan.mjs's plannerPrompt anchor and confirming
+    // planning-role-dispatch-pins.test.mjs stayed green either way. So this
+    // ordering fixes nothing that is currently broken; it keeps the hazard
+    // shut for the next slice that moves an anchor. Any future slice that
+    // moves a ladder anchor out of runner.js must add its module in this same
+    // position.
+    'phases/ensure-sprint-branch.mjs',
+    'phases/plan.mjs',
+    'role-policies.mjs',
+    'dispatch-role.mjs',
+];
 
 /**
  * Absolute paths for `fileNames` (default DISPATCH_LADDER_MODULES), resolved

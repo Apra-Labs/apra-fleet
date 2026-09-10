@@ -63,6 +63,14 @@ import { dispatchRole, TURN_BASES } from './dispatch-role.mjs';
 // The policy TABLE the engine executes. runner.js reads it only to state, in a
 // log line, the bound the row itself sets -- never to re-implement a ladder.
 import { policyFor } from './role-policies.mjs';
+// apra-fleet-3swo.6.2: the first two of runSprintCycle's twelve phase()
+// boundaries, sliced into their own modules under ./phases/. Each takes ONE
+// explicit state argument instead of closing over runSprintCycle's locals; the
+// call sites below are the only places they are used, and the phase ORDER is
+// unchanged -- Ensure Sprint Branch still runs where it ran, Plan still runs
+// at the top of every cycle.
+import { runEnsureSprintBranchPhase } from './phases/ensure-sprint-branch.mjs';
+import { runPlanPhase } from './phases/plan.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
 // verbatim out of runner.js (apra-fleet-3swo.4.3).
@@ -3784,189 +3792,13 @@ async function runSprintCycle(context) {
     // =======================
     // First GIT dispatch of the run -- runs before any bd/agent activity so
     // the whole sprint develops on `branch`, branched from `base_branch`.
-    group('Sprint Setup');
-    phase('Ensure Sprint Branch');
-    // Dispatch the fetch + checkout to EVERY member in the ensure set, not just
-    // the orchestrator. Sequential (not parallel) so the command log stays
-    // deterministic.
-    for (const member of branchEnsureMembers) {
-        // Two sequential command() calls, not a single `a && b` shell string:
-        // `&&` is a bash-ism that PowerShell 5.1 (Windows' default, pre-7.0)
-        // rejects outright ("The token '&&' is not a valid statement
-        // separator in this version"), breaking this phase on any Windows
-        // member. command() already throws on a non-zero exit by default (no
-        // failSoft here), so awaiting the fetch before the checkout
-        // reproduces `&&`'s fail-fast semantics -- if the fetch fails, the
-        // checkout is never attempted, on every OS/shell.
-        await command(
-            `git fetch origin ${validated.baseBranch} --quiet`,
-            {
-                member_name: member,
-                silent: true,
-                label: `Fetch '${validated.baseBranch}' on member '${member}'`,
-            }
-        );
-
-        // Fetch <branch> itself before deciding the checkout start-point:
-        // adopting origin/<branch> when it exists keeps real pushed sprint
-        // history from being force-reset to base's tip on a relaunch, and makes
-        // `checkout -B <branch> origin/<branch>` set up correct upstream
-        // tracking. failSoft because a brand-new sprint branch legitimately
-        // does not exist on origin yet, and that must never abort the run;
-        // origin/<baseBranch> is the fallback only when it is genuinely new.
-        const branchFetch = await command(
-            `git fetch origin ${validated.branch} --quiet`,
-            {
-                member_name: member,
-                silent: true,
-                failSoft: true,
-                label: `Fetch existing '${validated.branch}' (if any) on member '${member}'`,
-            }
-        );
-        // Probe for a pre-existing local branch. When the remote ref is
-        // missing, the naive fallback would force-reset that local branch to
-        // base's tip, discarding commits that closed beads but were never
-        // pushed and leaving beads and the git tree disagreeing. The probe also
-        // runs when the fetch SUCCEEDED, because a successful fetch alone does
-        // not make origin/<branch> authoritative if the local branch has
-        // committed work origin does not (see the tip comparison below).
-        const localProbe = await command(
-            `git rev-parse --verify --quiet refs/heads/${validated.branch}`,
-            {
-                member_name: member,
-                silent: true,
-                failSoft: true,
-                label: `Probe for pre-existing local branch '${validated.branch}' on member '${member}'`,
-            }
-        );
-        const localBranchExists = localProbe.ok;
-
-        // When both origin/<branch> and a local <branch> exist, compare their
-        // tips with two `git merge-base --is-ancestor` checks (one each
-        // direction) so decideEnsureBranchAction() never has to assume a
-        // successful fetch means "safe to reset" -- see that function for the
-        // ahead/behind/diverged case breakdown this feeds.
-        let localTipStatus;
-        if (branchFetch.ok && localBranchExists) {
-            const localIsAncestorOfRemote = await command(
-                `git merge-base --is-ancestor ${validated.branch} origin/${validated.branch}`,
-                {
-                    member_name: member,
-                    silent: true,
-                    failSoft: true,
-                    label: `Check whether local '${validated.branch}' is an ancestor of 'origin/${validated.branch}' on member '${member}'`,
-                }
-            );
-            const remoteIsAncestorOfLocal = await command(
-                `git merge-base --is-ancestor origin/${validated.branch} ${validated.branch}`,
-                {
-                    member_name: member,
-                    silent: true,
-                    failSoft: true,
-                    label: `Check whether 'origin/${validated.branch}' is an ancestor of local '${validated.branch}' on member '${member}'`,
-                }
-            );
-            if (localIsAncestorOfRemote.ok && remoteIsAncestorOfLocal.ok) {
-                localTipStatus = 'behind-or-equal'; // tips are equal
-            } else if (localIsAncestorOfRemote.ok) {
-                localTipStatus = 'behind-or-equal'; // local is a strict ancestor of origin
-            } else if (remoteIsAncestorOfLocal.ok) {
-                localTipStatus = 'ahead';
-            } else {
-                localTipStatus = 'diverged';
-            }
-        }
-
-        // The fetch-outcome / local-probe / tip-comparison -> checkout-command
-        // decision lives in the pure decideEnsureBranchAction() helper above;
-        // this call site only turns that decision into a command()/log()
-        // dispatch.
-        const decision = decideEnsureBranchAction({
-            branch: validated.branch,
-            baseBranch: validated.baseBranch,
-            branchFetchOk: branchFetch.ok,
-            branchFetchError: branchFetch.error,
-            localBranchExists,
-            localTipStatus,
-        });
-        if (decision.action === 'abort') {
-            throw new Error(`${decision.message} (member '${member}')`);
-        }
-        if (decision.reused) {
-            if (branchFetch.ok) {
-                log(
-                    `Ensure Sprint Branch: local branch '${validated.branch}' on member '${member}' is AHEAD of ` +
-                    `'origin/${validated.branch}' (has committed, unpushed work) -- reusing it as-is instead of ` +
-                    `resetting to origin, to avoid discarding local-only commits.`
-                );
-            } else {
-                log(
-                    `Ensure Sprint Branch: remote ref for '${validated.branch}' is missing on member '${member}' ` +
-                    `but a local branch of that name already exists -- reusing it as-is instead of resetting to base, ` +
-                    `to avoid discarding local-only commits.`
-                );
-            }
-        }
-        const checkoutCommand = decision.command;
-        const checkoutLabel = decision.reused
-            ? (branchFetch.ok
-                ? `Reuse existing local sprint branch '${validated.branch}' on member '${member}' (local ahead of origin)`
-                : `Reuse existing local sprint branch '${validated.branch}' on member '${member}' (remote ref missing)`)
-            : `Ensure sprint branch '${validated.branch}' from '${decision.startPoint}' on member '${member}'`;
-
-        // An infrastructure-killed dispatch (transport drop, timeout,
-        // stop_prompt) leaves the member's working tree DIRTY with whatever the
-        // agent had in flight, and the checkout then fails with "Your local
-        // changes ... would be overwritten". That orphaned WIP belongs to a
-        // bead that is still open (a future streak redoes it properly), so
-        // preserve it in a named stash and proceed -- never abort the sprint
-        // over it, and never discard it. A clean tree issues no extra commands.
-        const checkoutResult = await command(
-            checkoutCommand,
-            {
-                member_name: member,
-                silent: true,
-                failSoft: true,
-                label: checkoutLabel,
-            }
-        );
-        if (!checkoutResult.ok) {
-            if (!/would be overwritten/i.test(checkoutResult.error || '')) {
-                throw new Error(
-                    `Ensure Sprint Branch: checkout of '${validated.branch}' on member '${member}' failed for a ` +
-                    `reason other than a dirty working tree (${checkoutResult.error || 'unknown error'}) -- aborting.`
-                );
-            }
-            log(
-                `Ensure Sprint Branch: member '${member}' has uncommitted changes (likely orphaned WIP from an ` +
-                `interrupted prior dispatch) blocking checkout -- preserving them in a named stash and retrying.`
-            );
-            await command(
-                `git stash push -u -m "fleet-sprint[${validated.branch}] auto-stash of orphaned WIP blocking branch ensure"`,
-                {
-                    member_name: member,
-                    silent: true,
-                    label: `Stash orphaned WIP on member '${member}'`,
-                }
-            );
-            await command(
-                checkoutCommand,
-                {
-                    member_name: member,
-                    silent: true,
-                    label: `${checkoutLabel} (post-stash retry)`,
-                }
-            );
-        }
-    }
-    publishState('sprint-args', {
-        branch: validated.branch,
-        baseBranch: validated.baseBranch,
-        goal: validated.goal,
-        maxCycles: validated.maxCycles,
-        requirementsFile: validated.requirementsFile || null,
+    // The phase body lives in ./phases/ensure-sprint-branch.mjs
+    // (apra-fleet-3swo.6.2), which receives its state explicitly instead of
+    // closing over the locals above.
+    await runEnsureSprintBranchPhase({
+        command, log, group, phase, endGroup, publishState,
+        branchEnsureMembers, validated,
     });
-    endGroup();
 
     // NON-DESTRUCTIVE re-ensure of the sprint branch on every member: an agent
     // on any member can check something else out between cycles, so the "every
@@ -4387,263 +4219,27 @@ async function runSprintCycle(context) {
         // =======================
         // 1. Planning Loop
         // =======================
-        // Approval is `verdict === 'APPROVED'` EXACTLY, read from the
-        // plan-reviewer's schema-validated structured output (contracts.mjs
-        // `planReviewerVerdict`). No substring matching anywhere in this phase,
-        // so free text like "This can NOT be APPROVED" can never be misread as
-        // an approval. A plan-reviewer that persistently fails to return
-        // schema-valid JSON (after agent()'s own bounded schema-repair loop) is
-        // a failed, CHANGES_NEEDED-equivalent round, never an approval.
-        //
-        // `cycle > 1` means this Plan phase is a RE-PLANNING pass after an
-        // earlier Develop/Review cycle needed more work -- distinct from
-        // `planningRounds`, which counts rounds *within* one Plan phase's
-        // planner<->plan-reviewer approval loop. Only the outer `cycle`
-        // controls the delta-vs-full prompt framing.
-        const isDeltaCycle = cycle > 1;
-
-        let planApproved = false;
-        let planningRounds = 0;
-        let plannerFeedback = null;
-        let lastVerdict = null;
-        // Every earlier round's verdict for THIS cycle's plan-review loop,
-        // oldest first -- fed to buildPlanReviewerPrompt from round 2 on, so
-        // the no-goalpost-moving rule (plan-reviewer.md) has prior-round
-        // rulings to bind against. Scoped to the cycle, like lastReviewVerdict.
-        const priorPlanRoundVerdicts = [];
-
-        while (!planApproved && planningRounds < 3) {
-            planningRounds++;
-            phase(`Plan C${cycle} R${planningRounds}`);
-
-            const plannerPrompt = buildPlannerPrompt({
-                isDeltaCycle,
-                targetIssues,
-                goal: validated.goal,
-                requirementsFile: validated.requirementsFile,
-                requirementsContent,
-                feedback: plannerFeedback,
-                rejectedNewTasksToResubmit: pendingRejectedNewTasks,
-                verifyExcluded: verifySetThisCycle,
-            });
-            // The planner writes no code but MUTATES beads (it creates the task
-            // DAG), so its policy is bracketed pushCode:false / pushBeads:true --
-            // its new tasks are D-pushed for the next dispatch to observe. Each
-            // retried attempt gets its own bracket, since a retry may follow a
-            // meaningful gap. Like every dispatch site, max_turns exhaustion is
-            // answered with a same-session resume at doubled turns; the planner
-            // gets a doer-sized base because it builds the whole epic DAG.
-            //
-            // apra-fleet-3swo.5.3: all of that -- the turn budget, the bounded
-            // [0, 5s, 15s, 30s, 60s] backoff ladder sized for a real member
-            // busy-lock, the one LLM-auth self-heal, the abort-without-
-            // re-dispatch on a post-dispatch sync failure, the no-mutation
-            // pre-sync skip, the same-session resume at doubled turns, and the
-            // FATAL degrade (there is no sprint without a plan, so an exhausted
-            // ladder rethrows rather than synthesizing one) -- is now the
-            // 'planner' row of fleet-sprint/role-policies.mjs, executed by
-            // dispatchRole (fleet-sprint/dispatch-role.mjs). What stays here is
-            // what is genuinely NOT policy: the prompts, the presentation
-            // labels, the per-round session wiring, and the two runner-local
-            // decisions below.
-            //
-            // The sprint's FIRST Planner dispatch reads/mutates the SAME beads
-            // clone the orchestrator's pre-sprint doltPullBefore just freshened,
-            // with only non-mutating `bd list` reads in between, so its own
-            // pre-dispatch `bd dolt pull` is redundant. Skipping it also keeps
-            // the terminal auth-abort path from hanging on that bracket. Scoped
-            // out -- all keeping the full D-pull -- are: a later cycle (a re-plan
-            // follows real beads mutation), a later planning round (round 1's
-            // planner already mutated beads), any retry attempt, and a planner on
-            // a DISTINCT clone from the orchestrator (never freshened by the
-            // setup pull).
-            const plannerSharesOrchestratorClone = getMemberForRole('planner') === orchestratorMember;
-            await dispatchRole(dispatchCtx, 'planner', {
-                prompt: plannerPrompt,
-                resumePrompt: 'Continue your planning pass exactly where you left off in this same session -- do not restart or re-derive the DAG from scratch. Finish creating/updating the remaining beads and return your final summary now.',
-                roleLabel: 'Planner',
-                resumeLabel: `Plan (resume, max_turns=${TURN_BASES.PLANNER_MAX_TURNS * 2})`,
-                // Within THIS cycle's plan-review loop, resume the planner's own
-                // prior-round session by explicit session id so a re-plan keeps
-                // warm context. False on the first round of any cycle
-                // (roundSessions never resumes across cycles). The
-                // max_turns-exhaustion path overrides this to `resume: true` --
-                // an in-dispatch continuation of the session just run,
-                // orthogonal to cross-round resume.
-                resumeArg: roundSessions.resumeArgFor('planner', cycle),
-                onSessionId: (id, meta) => roundSessions.record('planner', cycle, id, meta),
-                attemptOptions: ({ attempt }) => ({
-                    skipPreDispatchDoltPull:
-                        attempt === 1 && cycle === 1 && planningRounds === 1 && plannerSharesOrchestratorClone,
-                }),
-                // Runs INSIDE the attempt's try, so a failure here is classified
-                // by the same ladder that classifies the dispatch itself.
-                // apra-fleet-jxdf.1: when the planner runs on a DIFFERENT clone
-                // than the orchestrator, its newly-created/mutated beads are
-                // invisible to the orchestrator's own Dolt clone until that
-                // clone is actually pulled -- invalidating the JS-level cache
-                // (the policy's 'invalidate-beads-cache' postResult step, which
-                // the engine runs right after this) is not enough, since the
-                // cache's NEXT read still hits stale on-disk data. Fatal on
-                // failure: proceeding to Execution Prep against a plan the
-                // orchestrator cannot actually see reproduces exactly the "epic
-                // looks like a childless ready leaf" failure this fix closes.
-                afterAttempt: async () => {
-                    if (plannerSharesOrchestratorClone) return;
-                    const postPlanSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
-                    await gitSync.syncBeadsBefore(orchestratorMember, {
-                        fatal: true,
-                        settle: buildSettleCallback(orchestratorMember, { command, log, shell: postPlanSettleShell }),
-                    });
-                },
-            });
-            // The planner resubmits a corrected rejected finding directly via
-            // `bd create`, never through
-            // persistNewTaskBestEffort/clearResubmittedNewTask -- and correcting
-            // the stated defect usually means changing the title, so a
-            // title-keyed pending entry would stay stuck and reappear in every
-            // later planning prompt this run. Reconcile against what now exists
-            // as a child of each target parent, matching on description
-            // (title-independent); see reconcilePendingRejectedNewTasks().
-            // Best-effort: a listing failure leaves the pending list as-is, so
-            // the worst case is one more resurfacing, never a sprint abort.
-            if (pendingRejectedNewTasks.length > 0) {
-                for (const parentId of targetIssues) {
-                    try {
-                        const label = `bd list --parent ${parentId} --json`;
-                        const raw = await command(label, { member_name: orchestratorMember, silent: true });
-                        const children = parseBdJson(raw, label);
-                        pendingRejectedNewTasks = reconcilePendingRejectedNewTasks(pendingRejectedNewTasks, children);
-                    } catch (err) {
-                        log(`[fleet-sprint] pending-rejected-newTask reconciliation against '${parentId}' children FAILED (non-fatal, list stays as-is): ${err.message}`);
-                    }
-                }
-            }
-            // Deliberately no log() dump of the planner's response here: the
-            // agent() call inside dispatchPlanner() already emits it as the
-            // dispatch's own AGENT activity row, so logging it again would
-            // render a duplicate row in the viewer. The same rule applies at
-            // every role's dispatch site in this file.
-
-            // apra-fleet-3swo.5.3: the plan-review ladder is the 'plan-reviewer'
-            // row of role-policies.mjs, executed by dispatchRole. What that row
-            // owns, and what used to be spelled out here: the reviewer-sized
-            // turn base with the same same-session turn-exhaustion resume every
-            // dispatch site uses; the read-side git-sync bracket; the TWO
-            // attempts per round (an infrastructure dispatch failure -- schema-
-            // repair exhaustion, a dropped transport -- gets exactly one extra
-            // attempt WITHIN this same planning round, so it does not consume a
-            // second round out of the 3-round planningRounds cap); the one
-            // bounded LLM-auth self-heal (an unhealed auth failure would
-            // reproduce identically on every remaining planning round); and the
-            // degrade, which synthesizes a non-approving CHANGES_NEEDED verdict
-            // and can never fabricate an approval.
-            //
-            // Every synthesized fallback verdict carries `dispatchFailed: true`
-            // so the plan-cap exhaustion check after this loop can tell "the
-            // plan-reviewer's dispatch channel never came back" apart from "the
-            // reviewer genuinely rejected the plan" and throw the
-            // correctly-flavored error for each (apra-fleet-9ta.4). The engine
-            // stamps that marker from the policy row; the notes below are the
-            // per-error-class text this call site still owns.
-            const planReviewOutcome = await dispatchRole(dispatchCtx, 'plan-reviewer', {
-                prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle }),
-                resumePrompt: 'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
-                roleLabel: 'Plan Reviewer',
-                resumeLabel: `Plan Review (resume, max_turns=${TURN_BASES.PLAN_REVIEWER_MAX_TURNS * 2})`,
-            });
-            const verdict = planReviewOutcome.value;
-            lastVerdict = verdict;
-            // No duplicate log() dump -- see dispatchReview() for why.
-            // This round's verdict is recorded AFTER the dispatch that consumed
-            // the accumulated prior rounds, so a round never sees its own
-            // not-yet-returned verdict.
-            priorPlanRoundVerdicts.push({ round: planningRounds, verdict: verdict.verdict, notes: verdict.notes });
-
-            if (verdict.verdict === 'APPROVED') {
-                planApproved = true;
-            } else {
-                plannerFeedback = verdict.notes; // Pass textual feedback to planner, wrapped as untrusted by buildPlannerPrompt
-            }
-            await updateDashboard();
-        }
-
-        // Plan-cap exhaustion (every round CHANGES_NEEDED, never an APPROVED)
-        // does not necessarily condemn the whole plan: one bead's unresolved
-        // finding can pin the verdict while the rest of the task set is clean.
-        // When the last verdict's findings name specific beads, defer just
-        // those (status=deferred plus the finding attached as a note) and
-        // proceed to Develop with the remaining approved set. Abort only when
-        // the contested set is the whole plan, or when deferring it would leave
-        // nothing ready to dispatch (checked once readyBeads is computed).
-        let planCapDeferredIds = [];
-        if (!planApproved) {
-            const allTaskIds = (lastVerdict && Array.isArray(lastVerdict.taskAssignments))
-                ? lastVerdict.taskAssignments.map((a) => a && a.id).filter((id) => typeof id === 'string' && id.length > 0)
-                : [];
-            const contestedIds = extractContestedBeadIds(lastVerdict);
-            const wholePlanContested = allTaskIds.length === 0
-                || contestedIds.length === 0
-                || contestedIds.length >= allTaskIds.length;
-
-            if (wholePlanContested) {
-                // apra-fleet-9ta.4: a `dispatchFailed` last verdict means the
-                // plan-reviewer's dispatch channel never came back with a real
-                // verdict (schema-repair exhaustion / transport failure, even
-                // after the one same-round retry above) -- the plan was never
-                // actually reviewed, so this must NOT be misreported as
-                // SprintPlanRejectedError (which asserts a genuine rejection).
-                if (lastVerdict && lastVerdict.dispatchFailed) {
-                    throw new PlanReviewDispatchFailedError(
-                        `Plan phase for cycle ${cycle} exhausted ${planningRounds} plan round(s) without a usable ` +
-                        'plan-reviewer verdict -- the last round\'s verdict was synthesized from a dispatch failure, ' +
-                        'not a genuine review. The plan was never actually reviewed; re-run the sprint once the ' +
-                        'plan-reviewer dispatch channel recovers.',
-                        {
-                            notes: lastVerdict ? lastVerdict.notes : null,
-                            cycle,
-                            planningRounds,
-                        }
-                    );
-                }
-                throw new SprintPlanRejectedError(
-                    `Plan phase for cycle ${cycle} was not approved after ${planningRounds} round(s). ` +
-                    'Refusing to proceed to Develop with an unapproved plan.',
-                    {
-                        notes: lastVerdict ? lastVerdict.notes : null,
-                        cycle,
-                        planningRounds,
-                    }
-                );
-            }
-
-            log(`[fleet-sprint] plan-cap deferral: cycle ${cycle} exhausted ${planningRounds} plan round(s) with ` +
-                `CHANGES_NEEDED confined to bead(s) [${contestedIds.join(', ')}] -- deferring ${contestedIds.length === 1 ? 'it' : 'them'} ` +
-                `and proceeding to Develop with the remaining approved task set.`);
-
-            for (const id of contestedIds) {
-                await command(
-                    `bd update ${id} --status=deferred`,
-                    { member_name: orchestratorMember, silent: true, label: `Defer contested bead ${id} per plan-cap exhaustion` }
-                );
-                // Stage the deferral note member-side: the orchestrator member
-                // can itself be remote, so a host-local body-file path would be
-                // unreachable to `bd note`.
-                const noteFile = await stageCommandBodyMemberSide({
-                    command, member: orchestratorMember,
-                    content:
-                        `[fleet-sprint plan-cap deferral] Deferred after ${planningRounds} plan round(s) of CHANGES_NEEDED ` +
-                        `confined to this bead (cycle ${cycle}). Plan reviewer finding:\n${lastVerdict.notes}`,
-                    label: `Stage plan-cap deferral finding for ${id}`,
-                });
-                await command(
-                    `bd note ${id} --file "${noteFile}"`,
-                    { member_name: orchestratorMember, silent: true, label: `Attach plan-cap deferral finding to ${id}` }
-                );
-            }
-            await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
-            planCapDeferredIds = contestedIds;
-        }
+        // The phase body lives in ./phases/plan.mjs (apra-fleet-3swo.6.2),
+        // which receives this cycle's state explicitly instead of closing over
+        // the locals here. It hands back the three values "2. Execution Prep"
+        // below still reads (planCapDeferredIds / lastVerdict / planningRounds)
+        // plus the pendingRejectedNewTasks list it reassigns -- the one mutable
+        // local that used to be shared through the closure.
+        const planOutcome = await runPlanPhase({
+            phase, log, command, dispatchCtx,
+            cycle, validated, targetIssues, requirementsContent,
+            orchestratorMember, getMemberForRole,
+            sprintState, gitSync, args,
+            verifySetThisCycle, roundSessions, pendingRejectedNewTasks,
+            resolveSettleShell,
+            parseBdJson,
+            extractContestedBeadIds,
+            reconcilePendingRejectedNewTasks,
+            stageCommandBodyMemberSide,
+            updateDashboard,
+        });
+        pendingRejectedNewTasks = planOutcome.pendingRejectedNewTasks;
+        const { planCapDeferredIds, lastVerdict, planningRounds } = planOutcome;
 
         // =======================
         // 2. Execution Prep

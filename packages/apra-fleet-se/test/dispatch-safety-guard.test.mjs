@@ -314,7 +314,20 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // checkModules(guardedModulePaths()) test below scans that shared site. Note
 // 3 call sites collapsed to 1 in the new module, so this is -3 here and only
 // +1 there; the arithmetic is deliberate, not a dropped site.
-const EXPECTED_COMMAND_COUNT = 29;
+// 29 -> 18 (apra-fleet-3swo.6.2): the first two phase() boundaries were sliced
+// out of runSprintCycle into ./phases/ensure-sprint-branch.mjs (EIGHT command()
+// call sites -- the base fetch, the sprint-branch fetch, the local-branch
+// probe, the two merge-base tip comparisons, the checkout, the orphaned-WIP
+// stash and the post-stash checkout retry) and ./phases/plan.mjs (THREE -- the
+// per-parent `bd list --parent` reconciliation listing and the plan-cap
+// deferral's `bd update --status=deferred` plus `bd note --file`). 8 + 3 = 11,
+// which is exactly 29 - 18; no site was added, removed or collapsed in the
+// move. Not left unguarded: BOTH modules are registered in GUARDED_MODULES
+// (as the list's first NESTED entries), so the aggregate
+// checkModules(guardedModulePaths()) test below scans all eleven, and each
+// module also gets its own explicit baseline count below -- same precedent as
+// the vcs-auth.mjs/abort.mjs/beads-transitions.mjs extractions above.
+const EXPECTED_COMMAND_COUNT = 18;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -518,6 +531,82 @@ test('every command() call site in abort.mjs passes member_name or member_id', (
         sites.filter((s) => s.fnName === 'agent').length,
         0,
         'abort.mjs must never dispatch an agent() -- it is an abort-handling/newTask command surface only.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-3swo.6.2: the first two runSprintCycle phase() boundaries moved
+// into ./phases/, taking eleven command() call sites with them (see
+// EXPECTED_COMMAND_COUNT's own note above for the 29 -> 18 arithmetic). Same
+// reasoning as the vcs-auth.mjs/abort.mjs baselines above: the aggregate
+// checkModules() scan already proves every site is member_name-bearing, but
+// only a per-module COUNT catches a later refactor that silently DROPS a site
+// (e.g. inlines a dispatch behind a helper this parser cannot see) while every
+// surviving site stays individually compliant.
+//
+// These are the first NESTED guarded modules, so the paths below join through
+// a 'phases' segment. That matters only for locating the file -- the guard
+// reports both under their bare basenames.
+// =============================================================================
+const ENSURE_SPRINT_BRANCH_PATH = path.join(__dirname, '../fleet-sprint/phases/ensure-sprint-branch.mjs');
+// The base fetch, the sprint-branch fetch, the local-branch probe, the two
+// `git merge-base --is-ancestor` tip comparisons, the checkout, the
+// orphaned-WIP stash and the post-stash checkout retry -- exactly the eight
+// that left runner.js.
+const EXPECTED_ENSURE_SPRINT_BRANCH_COMMAND_COUNT = 8;
+
+const PLAN_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/plan.mjs');
+// The `bd list --parent <id> --json` reconciliation listing, and the plan-cap
+// deferral's `bd update <id> --status=deferred` and `bd note <id> --file` --
+// exactly the three that left runner.js.
+const EXPECTED_PLAN_PHASE_COMMAND_COUNT = 3;
+
+test('every command() call site in phases/ensure-sprint-branch.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(ENSURE_SPRINT_BRANCH_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_ENSURE_SPRINT_BRANCH_COMMAND_COUNT,
+        `Expected ${EXPECTED_ENSURE_SPRINT_BRANCH_COMMAND_COUNT} command() call site(s) in phases/ensure-sprint-branch.mjs, ` +
+        `found ${commandSites.length}. If a call site was intentionally added or removed, update ` +
+        `EXPECTED_ENSURE_SPRINT_BRANCH_COMMAND_COUNT after confirming every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'phases/ensure-sprint-branch.mjs must never dispatch an agent() -- it is a git setup phase, not a role dispatch.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+test('every command() call site in phases/plan.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(PLAN_PHASE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_PLAN_PHASE_COMMAND_COUNT,
+        `Expected ${EXPECTED_PLAN_PHASE_COMMAND_COUNT} command() call site(s) in phases/plan.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_PLAN_PHASE_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    // The planner and plan-reviewer ladders are dispatchRole rows
+    // (apra-fleet-3swo.5.3), so the phase module dispatches no agent() of its
+    // own -- the engine owns the single real call site.
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'phases/plan.mjs must never dispatch an agent() directly -- both its ladders run through the dispatchRole engine.'
     );
     assert.deepStrictEqual(
         violations,

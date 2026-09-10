@@ -568,13 +568,20 @@ function walkFleetSprintRecursive(dir, base = '') {
 }
 
 /**
- * Every file the RECURSIVE walk must find one level down, under
- * vcs-providers/ -- the concrete proof that the enumeration is not a flat
- * `fs.readdirSync(fleetSprintDir)` (which would never see them, and would
- * also never see a future `phases/*` directory -- the exact case
- * apra-fleet-3swo.6.1's Phase 4 introduces right after this bead).
+ * Every file the RECURSIVE walk must find one level down -- the concrete
+ * proof that the enumeration is not a flat `fs.readdirSync(fleetSprintDir)`,
+ * which would never see any of them.
+ *
+ * Two directories now, not one: apra-fleet-3swo.6.2's Phase 4 slice made the
+ * once-hypothetical `phases/*` case real, which is exactly why it is listed
+ * here alongside vcs-providers/. A walk that regressed to a flat listing
+ * would stop seeing the phase modules -- and, because they are registered
+ * under nested paths, the completeness test below would keep passing while
+ * silently checking a smaller tree.
  */
 const KNOWN_NESTED_FILES = [
+    'phases/ensure-sprint-branch.mjs',
+    'phases/plan.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',
@@ -649,7 +656,13 @@ test('apra-fleet-3swo.33 regression: a nested file whose BASENAME collides with 
         Object.prototype.hasOwnProperty.call(GUARD_REGISTRATION_EXEMPT, 'dolt-sync.mjs'),
         'this pin assumes dolt-sync.mjs is exempt today'
     );
-    assert.ok(!GUARDED_MODULES.includes('phases/plan.mjs'), 'this pin assumes phases/plan.mjs is not registered today');
+    // apra-fleet-3swo.6.2 landed the real phases/ modules, so 'phases/plan.mjs'
+    // is now REGISTERED and can no longer serve as the "not registered
+    // anywhere" control below. The control moved to a nested path that is
+    // still hypothetical; this line now pins the opposite fact, which is what
+    // makes the replacement control's premise checkable.
+    assert.ok(GUARDED_MODULES.includes('phases/plan.mjs'), 'this pin assumes phases/plan.mjs is registered today (apra-fleet-3swo.6.2)');
+    assert.ok(!GUARDED_MODULES.includes('phases/replan.mjs'), 'this pin assumes phases/replan.mjs is not registered yet');
 
     // A nested 'phases/index.mjs' must NOT be considered accounted-for merely
     // because a DIFFERENT file, 'vcs-providers/index.mjs', shares its bare
@@ -662,7 +675,21 @@ test('apra-fleet-3swo.33 regression: a nested file whose BASENAME collides with 
     assert.equal(isAccountedFor('phases/dolt-sync.mjs'), false, "phases/dolt-sync.mjs must not ride on dolt-sync.mjs's exemption");
     // Control: a file that shares no basename with anything registered or
     // exempt was already correctly unaccounted-for under either comparison.
-    assert.equal(isAccountedFor('phases/plan.mjs'), false, 'phases/plan.mjs has no colliding basename and must still report unaccounted-for');
+    // Uses phases/replan.mjs (a later slice in the same epic, not yet
+    // extracted) now that phases/plan.mjs is genuinely registered.
+    assert.equal(isAccountedFor('phases/replan.mjs'), false, 'phases/replan.mjs has no colliding basename and must still report unaccounted-for');
+    // The nested entries apra-fleet-3swo.6.2 actually registered are accounted
+    // for by their FULL RELATIVE PATH -- the first real exercise of nested
+    // registration, and the reason the two assertions below are not redundant
+    // with the vcs-providers/ one further down: these are the entries whose
+    // basenames ('plan.mjs', 'ensure-sprint-branch.mjs') differ from the paths
+    // under which they are registered.
+    assert.equal(isAccountedFor('phases/plan.mjs'), true, 'the really-registered nested phase module must be accounted for');
+    assert.equal(isAccountedFor('phases/ensure-sprint-branch.mjs'), true, 'the really-registered nested phase module must be accounted for');
+    // ...and registering them must NOT make a bare 'plan.mjs' at the
+    // fleet-sprint/ root ride on the nested entry, which is the same
+    // directory-blind failure this bead's fix prevents in the other direction.
+    assert.equal(isAccountedFor('plan.mjs'), false, "a root-level plan.mjs must not ride on phases/plan.mjs's registration");
 
     // The real registered/exempt files themselves are unaffected by the
     // fix -- comparing full relative paths still finds them.
