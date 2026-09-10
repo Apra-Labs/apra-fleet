@@ -321,17 +321,17 @@ describe('ClaudeProvider', () => {
     expect(p.supportsFork?.()).toBe(true);
   });
 
-  it('forkFlag seeds from the source session id via --resume + --fork-session', () => {
-    expect(p.forkFlag?.('source-ses-1')).toBe('--resume "source-ses-1" --fork-session');
+  it('forkFlag seeds from the source session id via --resume + --fork-session and pre-mints the forked output id via --session-id', () => {
+    expect(p.forkFlag?.('source-ses-1', 'new-ses-1')).toBe('--session-id "new-ses-1" --resume "source-ses-1" --fork-session');
   });
 
-  it('forkFlag never hardcodes a --session-id -- the CLI mints the forked output id, not the caller', () => {
-    const flag = p.forkFlag?.('source-ses-1') ?? '';
-    expect(flag).not.toContain('--session-id');
+  it('forkFlag explicitly pre-mints --session-id for the forked output -- the caller controls the forked id, not the CLI', () => {
+    const flag = p.forkFlag?.('source-ses-1', 'new-ses-1') ?? '';
+    expect(flag).toContain('--session-id "new-ses-1"');
   });
 
   it('forkFlag is structurally distinct from a plain in-place resume of the same source id -- --fork-session is what guarantees a NEW, distinct output session id (Claude never reuses the source id under fork)', () => {
-    const forked = p.forkFlag?.('source-ses-1') ?? '';
+    const forked = p.forkFlag?.('source-ses-1', 'new-ses-1') ?? '';
     const resumed = p.resumeFlag('source-ses-1', true);
     expect(forked).not.toBe(resumed);
     expect(forked).toContain(resumed); // fork extends plain resume with --fork-session
@@ -733,20 +733,25 @@ describe('buildSessionIdFlag', () => {
 
 describe('buildForkFlag', () => {
   it('returns empty string when no sourceSessionId and no fallback', () => {
-    expect(buildForkFlag(undefined)).toBe('');
+    expect(buildForkFlag(undefined, undefined)).toBe('');
   });
 
   it('returns fallback when no sourceSessionId', () => {
-    expect(buildForkFlag(undefined, '--fork-fallback')).toBe('--fork-fallback');
+    expect(buildForkFlag(undefined, undefined, '--fork-fallback')).toBe('--fork-fallback');
   });
 
-  it('sanitizes and quotes the source session ID, appending --fork-session', () => {
-    expect(buildForkFlag('sess-abc-123')).toBe('--resume "sess-abc-123" --fork-session');
+  it('sanitizes and quotes the source session ID, appending --fork-session (no newSessionId)', () => {
+    expect(buildForkFlag('sess-abc-123', undefined)).toBe('--resume "sess-abc-123" --fork-session');
+  });
+
+  it('pre-mints the forked output id via --session-id when newSessionId is supplied', () => {
+    expect(buildForkFlag('sess-abc-123', 'new-sess-456')).toBe('--session-id "new-sess-456" --resume "sess-abc-123" --fork-session');
   });
 
   it('rejects malicious session IDs', () => {
-    expect(() => buildForkFlag('$(whoami)')).toThrow('Invalid session ID');
-    expect(() => buildForkFlag('id;rm -rf /')).toThrow('Invalid session ID');
+    expect(() => buildForkFlag('$(whoami)', undefined)).toThrow('Invalid session ID');
+    expect(() => buildForkFlag('id;rm -rf /', undefined)).toThrow('Invalid session ID');
+    expect(() => buildForkFlag('sess-abc-123', '$(whoami)')).toThrow('Invalid session ID');
   });
 });
 

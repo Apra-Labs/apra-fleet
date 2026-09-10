@@ -184,11 +184,10 @@ describe('OsCommands via getOsCommands', () => {
           expect(cmd).toContain('--fork-session');
         });
 
-        it(`${name}: never emits a --session-id (or the newly minted id) for the forked output session -- the CLI mints it, not the caller`, () => {
+        it(`${name}: emits --session-id with the pre-minted forked output id -- the caller controls the forked id, not the CLI`, () => {
           const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, fork });
-          expect(cmd).not.toContain('--session-id');
-          expect(cmd).not.toContain(fork.newSessionId);
-          // the emitted source id must be distinct from the (never-emitted) new id
+          expect(cmd).toContain(`--session-id "${fork.newSessionId}"`);
+          // the emitted new id must be distinct from the source id
           expect(fork.newSessionId).not.toBe(fork.sourceSessionId);
         });
 

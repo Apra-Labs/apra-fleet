@@ -18,9 +18,10 @@ export interface ForkDescriptor {
   sourceSessionId: string;
   /** Newly minted output session id for the forked conversation, tracked by
    *  the caller (e.g. execute-prompt.ts, for recordKnownSession/bookkeeping).
-   *  NOT emitted as a CLI flag: a fork-capable provider mints its own output
-   *  session id (see ProviderAdapter.forkFlag), so this must never be
-   *  confused with a caller-minted --session-id. */
+   *  Passed to the provider's forkFlag() so it is emitted as an explicit
+   *  --session-id flag alongside --resume/--fork-session -- the CLI honors a
+   *  caller-supplied session id even in fork mode, so we pre-mint it rather
+   *  than scraping the id back out of the CLI's response afterward. */
   newSessionId: string;
 }
 

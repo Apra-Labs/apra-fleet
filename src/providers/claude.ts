@@ -257,17 +257,17 @@ export class ClaudeProvider implements ProviderAdapter {
   // apra-fleet-lmtg.1: Claude Code's CLI supports fork-mode dispatch natively
   // via `--resume <source> --fork-session` -- per `claude --help`, --fork-session
   // "When resuming, create a new session ID instead of reusing the original".
-  // Unlike a plain new-session dispatch (sessionIdStrategy() 'caller-minted',
-  // where WE mint the --session-id UUID), the CLI itself mints the forked
-  // output session id -- it is not something we can pass in and must not be
-  // confused with a caller-minted id. The source session is left untouched;
-  // only the forked dispatch continues under the new, CLI-minted id.
+  // The CLI honors a caller-supplied `--session-id` even in fork mode, so we
+  // pre-mint the forked session's id (same as a plain caller-minted dispatch)
+  // and pass it explicitly rather than letting the CLI mint its own and
+  // scraping it out of the response afterward. The source session is left
+  // untouched; only the forked dispatch continues under the new id.
   supportsFork(): boolean {
     return true;
   }
 
-  forkFlag(sourceSessionId: string): string {
-    return buildForkFlag(sourceSessionId);
+  forkFlag(sourceSessionId: string, newSessionId: string): string {
+    return buildForkFlag(sourceSessionId, newSessionId);
   }
 
   resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {

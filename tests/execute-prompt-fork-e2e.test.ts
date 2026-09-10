@@ -53,6 +53,18 @@ function respond(sessionId: string, result = 'done'): SSHExecResult {
   return { stdout: JSON.stringify({ result, session_id: sessionId }), stderr: '', code: 0 };
 }
 
+// The CLI now honors a caller-supplied --session-id even in fork mode, so a
+// realistic fork-dispatch mock echoes back the SAME id we asked it to use
+// (extracted from the built command) rather than a fixed, independently
+// chosen string -- mirrors production, where the returned id always equals
+// the pre-minted one on success.
+function echoSessionId(result = 'done') {
+  return (cmd: string) => {
+    const m = cmd.match(/--session-id "([^"]+)"/);
+    return Promise.resolve(respond(m ? m[1] : 'NO-SESSION-ID-FOUND', result));
+  };
+}
+
 describe('execute_prompt fork end-to-end (apra-fleet-lmtg.8)', () => {
   beforeEach(() => {
     backupAndResetRegistry();
@@ -74,7 +86,7 @@ describe('execute_prompt fork end-to-end (apra-fleet-lmtg.8)', () => {
     addAgent(member);
     recordKnownSession(member.id, 'source-sess');
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 }); // writePromptFile
-    mockExecCommand.mockResolvedValueOnce(respond('forked-new-id'));            // main dispatch
+    mockExecCommand.mockImplementationOnce(echoSessionId());                   // main dispatch
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 }); // deletePromptFile
 
     const result = await executePrompt({ member_id: member.id, prompt: 'branch me', fork: 'source-sess', resume: true, timeout_s: 5 });
@@ -83,20 +95,24 @@ describe('execute_prompt fork end-to-end (apra-fleet-lmtg.8)', () => {
     const cmd = mockExecCommand.mock.calls[1][0];
     expect(cmd).toContain('--resume "source-sess"');
     expect(cmd).toContain('--fork-session');
-    // The CLI mints the forked output id itself -- the caller never emits a
-    // --session-id for it.
-    expect(cmd).not.toMatch(/--session-id "forked-new-id"/);
+    // The forked output id is pre-minted by the caller and passed explicitly
+    // via --session-id (the CLI honors it even in fork mode) -- it must not
+    // equal the source id it was forked from.
+    const sidMatch = cmd.match(/--session-id "([^"]+)"/);
+    expect(sidMatch).not.toBeNull();
+    const mintedForkId = sidMatch![1];
+    expect(mintedForkId).not.toBe('source-sess');
 
     expect(resultText(result)).toContain('done');
     expect(typeof result).not.toBe('string');
     if (typeof result !== 'string') {
-      expect(result.structuredContent?.sessionId).toBe('forked-new-id');
+      expect(result.structuredContent?.sessionId).toBe(mintedForkId);
       expect(result.structuredContent?.sessionId).not.toBe('source-sess');
     }
 
     // The member's stored session is now the NEW forked id, not the source.
     const stored = getAgent(member.id);
-    expect(stored?.sessionId).toBe('forked-new-id');
+    expect(stored?.sessionId).toBe(mintedForkId);
     expect(stored?.sessionId).not.toBe('source-sess');
   });
 
@@ -105,21 +121,23 @@ describe('execute_prompt fork end-to-end (apra-fleet-lmtg.8)', () => {
     addAgent(member);
     recordKnownSession(member.id, 'source-sess');
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
-    mockExecCommand.mockResolvedValueOnce(respond('forked-new-id'));
+    mockExecCommand.mockImplementationOnce(echoSessionId());
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
 
     await executePrompt({ member_id: member.id, prompt: 'branch me', fork: 'source-sess', resume: true, timeout_s: 5 });
+    const forkedId = getAgent(member.id)?.sessionId;
+    expect(forkedId).toBeTruthy();
     mockExecCommand.mockClear();
 
     // Next turn: plain best-effort resume (the default) of this SAME member.
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
-    mockExecCommand.mockResolvedValueOnce(respond('forked-new-id', 'continued'));
+    mockExecCommand.mockResolvedValueOnce(respond(forkedId!, 'continued'));
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
 
     const followUp = await executePrompt({ member_id: member.id, prompt: 'continue', resume: true, timeout_s: 5 });
 
     const followUpCmd = mockExecCommand.mock.calls[1][0];
-    expect(followUpCmd).toContain('--resume "forked-new-id"');
+    expect(followUpCmd).toContain(`--resume "${forkedId}"`);
     expect(followUpCmd).not.toContain('source-sess');
     expect(resultText(followUp)).toContain('continued');
   });
@@ -129,7 +147,7 @@ describe('execute_prompt fork end-to-end (apra-fleet-lmtg.8)', () => {
     addAgent(member);
     recordKnownSession(member.id, 'stored-sess');
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
-    mockExecCommand.mockResolvedValueOnce(respond('forked-id-2'));
+    mockExecCommand.mockImplementationOnce(echoSessionId());
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'branch stored', fork: true, resume: true, timeout_s: 5 });
@@ -137,10 +155,34 @@ describe('execute_prompt fork end-to-end (apra-fleet-lmtg.8)', () => {
     const cmd = mockExecCommand.mock.calls[1][0];
     expect(cmd).toContain('--resume "stored-sess"');
     expect(cmd).toContain('--fork-session');
+    const sidMatch = cmd.match(/--session-id "([^"]+)"/);
+    expect(sidMatch).not.toBeNull();
+    const mintedForkId = sidMatch![1];
     if (typeof result !== 'string') {
-      expect(result.structuredContent?.sessionId).toBe('forked-id-2');
+      expect(result.structuredContent?.sessionId).toBe(mintedForkId);
       expect(result.structuredContent?.sessionId).not.toBe('stored-sess');
     }
+  });
+
+  it('a genuine fork session-id mismatch (CLI returns a different id than the pre-minted one) is a terminal failure for an explicit fork, not silently accepted', async () => {
+    const member = makeTestAgent({ friendlyName: 'fork-mismatch' });
+    addAgent(member);
+    recordKnownSession(member.id, 'source-sess');
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 }); // writePromptFile
+    // CLI returns a session id that does NOT match what we asked it to use
+    // via --session-id -- must be surfaced as a mismatch, not silently accepted.
+    mockExecCommand.mockResolvedValueOnce(respond('some-other-id-the-cli-invented'));
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 }); // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'branch me', fork: 'source-sess', resume: true, timeout_s: 5 });
+
+    expect(typeof result).not.toBe('string');
+    if (typeof result !== 'string') {
+      expect(result.structuredContent?.isError).toBe(true);
+      expect(result.structuredContent?.reason).toBe('session_not_found');
+      expect(result.structuredContent?.returnedSessionId).toBe('some-other-id-the-cli-invented');
+    }
+    expect(resultText(result)).toContain('mismatch');
   });
 
   it('fork=true with a stale/unknown stored session degrades to a plain fresh dispatch (no error, no fork flags)', async () => {

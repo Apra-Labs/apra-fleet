@@ -171,7 +171,7 @@ export class WindowsCommands implements OsCommands {
     // resume branch below. Absent a fork descriptor (or a non-fork-capable
     // provider), behavior is unchanged.
     if (fork && provider.supportsFork?.()) {
-      const ff = provider.forkFlag?.(fork.sourceSessionId);
+      const ff = provider.forkFlag?.(fork.sourceSessionId, fork.newSessionId);
       if (ff) argList += ` ${ff}`;
     } else if (sessionId && provider.supportsResume()) {
       const rf = provider.resumeFlag(sessionId, resuming);

@@ -49,6 +49,18 @@ function respond(sessionId: string, result = 'done'): SSHExecResult {
   return { stdout: JSON.stringify({ result, session_id: sessionId }), stderr: '', code: 0 };
 }
 
+// The CLI now honors a caller-supplied --session-id even in fork mode, so a
+// realistic fork-dispatch mock echoes back the SAME id we asked it to use
+// (extracted from the built command) rather than a fixed, independently
+// chosen string -- mirrors production, where the returned id always equals
+// the pre-minted one on success.
+function echoSessionId(result = 'done') {
+  return (cmd: string) => {
+    const m = cmd.match(/--session-id "([^"]+)"/);
+    return Promise.resolve(respond(m ? m[1] : 'NO-SESSION-ID-FOUND', result));
+  };
+}
+
 describe('execute_prompt fork mode-resolution gates (apra-fleet-lmtg.6)', () => {
   beforeEach(() => {
     backupAndResetRegistry();
@@ -155,26 +167,30 @@ describe('execute_prompt fork mode-resolution gates (apra-fleet-lmtg.6)', () => 
     addAgent(member);
     recordKnownSession(member.id, 'source-known');
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
-    mockExecCommand.mockResolvedValueOnce(respond('newly-forked-id'));
+    mockExecCommand.mockImplementationOnce(echoSessionId());
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
 
     // Sanity: only the source is known before dispatch.
     expect(isKnownSession(member.id, 'source-known')).toBe(true);
-    expect(isKnownSession(member.id, 'newly-forked-id')).toBe(false);
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', fork: 'source-known', resume: true, timeout_s: 5 });
 
+    const cmd = mockExecCommand.mock.calls[1][0];
+    const sidMatch = cmd.match(/--session-id "([^"]+)"/);
+    expect(sidMatch).not.toBeNull();
+    const mintedForkId = sidMatch![1];
+
     expect(typeof result).not.toBe('string');
     if (typeof result !== 'string') {
-      expect(result.structuredContent?.sessionId).toBe('newly-forked-id');
+      expect(result.structuredContent?.sessionId).toBe(mintedForkId);
       expect(result.structuredContent?.sessionId).not.toBe('source-known');
     }
     // The forked id is now the member's active known/resumable session --
     // the source's own known-ness is untouched (fork never mutates it).
-    expect(isKnownSession(member.id, 'newly-forked-id')).toBe(true);
+    expect(isKnownSession(member.id, mintedForkId)).toBe(true);
     expect(isKnownSession(member.id, 'source-known')).toBe(true);
     // The member's persisted sessionId (touchAgent) now points at the NEW
     // forked session, never the source.
-    expect(getAgent(member.id)?.sessionId).toBe('newly-forked-id');
+    expect(getAgent(member.id)?.sessionId).toBe(mintedForkId);
   });
 });

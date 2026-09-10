@@ -135,7 +135,7 @@ export class LinuxCommands implements OsCommands {
     // provider's own fork invocation instead. Absent a fork descriptor (or a
     // non-fork-capable provider), behavior is unchanged.
     const forkFlag = (fork && provider.supportsFork?.())
-      ? provider.forkFlag?.(fork.sourceSessionId)
+      ? provider.forkFlag?.(fork.sourceSessionId, fork.newSessionId)
       : undefined;
     const providerCmd = forkFlag
       ? `${provider.buildPromptCommand({ ...opts, sessionId: undefined, resuming: undefined })} ${forkFlag}`

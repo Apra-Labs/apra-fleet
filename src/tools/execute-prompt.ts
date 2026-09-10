@@ -1004,10 +1004,13 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   // Mint a fresh distinct output session id for the forked conversation (never
   // reuse the source id): mintedId is already a freshly minted uuid here because
-  // fork forced resuming off above (see resumeRequested). It is NOT emitted as a
-  // CLI flag in fork mode (the provider mints/uses its own forked output id --
-  // see ForkDescriptor.newSessionId); we track it for recordKnownSession, the
-  // stall-detector log path, and the post-dispatch session bookkeeping below.
+  // fork forced resuming off above (see resumeRequested). It IS emitted as an
+  // explicit `--session-id` CLI flag in fork mode (see ForkDescriptor.newSessionId
+  // and provider.forkFlag) -- the CLI honors a caller-supplied session id even
+  // when forking, so we pre-mint and pass it rather than scraping the CLI's own
+  // minted id back out of the response afterward. The same id also drives
+  // recordKnownSession, the stall-detector log path, and the post-dispatch
+  // session bookkeeping below.
   const forkDescriptor = forkActive && forkSourceId
     ? { sourceSessionId: forkSourceId, newSessionId: mintedId ?? uuid() }
     : undefined;
@@ -1511,20 +1514,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
 
     // Session-id assertion: returned id must match the one we minted/resumed.
-    // apra-fleet-lmtg.5: a fork is exempt. For a caller-minted provider (Claude)
-    // the fork mints its OWN new id server-side (--resume <src> --fork-session,
-    // with --session-id suppressed in the OS builders), so mintedId is only a
-    // placeholder that is never sent and can never match parsed.sessionId. Left
-    // in, that guarantees a spurious "session-id mismatch ... not persisting" log
-    // on every successful fork. Treat expectedSid as undefined when a fork is
-    // active so the real forked id flows straight through to recordKnownSession.
-    const expectedSid = forkActive
-      ? undefined
-      : (resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined));
+    // apra-fleet-lmtg.5: a fork now gets the SAME assertion as any other
+    // caller-minted session. mintedId is explicitly passed to the CLI as
+    // --session-id even in fork mode (provider.forkFlag/buildForkFlag), and the
+    // CLI honors it -- so it is no longer a placeholder the CLI silently
+    // discards, and a genuine mismatch here is a real signal worth catching
+    // rather than something to exempt.
+    const expectedSid = resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined);
     const isMismatch = expectedSid && parsed.sessionId && parsed.sessionId !== expectedSid;
     if (isMismatch) {
       scope.info(`session-id mismatch: expected=${expectedSid} got=${parsed.sessionId} -- not persisting`);
-      if (!allowFreshSessionFallback && explicitResumeId !== undefined) {
+      if (!allowFreshSessionFallback && (explicitResumeId !== undefined || explicitForkId !== undefined)) {
         inFlightAgents.delete(agent.id);
         stallDetector.remove(agent.id);
         writeStatusline(new Map([[agent.id, 'idle']]));
