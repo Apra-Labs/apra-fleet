@@ -960,7 +960,10 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // pushBeads, so the pushBeads count below is unchanged.
     // 16 -> 15 (same bead): the scoped-replan planner's bracket followed them,
     // taking the last planner-role pushBeads:true bracket with it.
-    assert.equal(sites.length, 15, `expected 15 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 15 -> 14 (same bead): the scoped-replan plan-reviewer's read-side
+    // bracket followed them; it carried no pushBeads, so the count below is
+    // unchanged.
+    assert.equal(sites.length, 14, `expected 14 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch

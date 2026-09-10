@@ -347,7 +347,9 @@ const EXPECTED_COMMAND_COUNT = 29;
 // max_turns-exhaustion resume -- followed the planner onto the engine.
 // 18 -> 17 (same bead): the scoped-replan planner (a single dispatch, no
 // resume of its own) followed them.
-const EXPECTED_AGENT_COUNT = 17;
+// 17 -> 16 (same bead): the scoped-replan plan-reviewer (also a single
+// dispatch) followed them.
+const EXPECTED_AGENT_COUNT = 16;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in

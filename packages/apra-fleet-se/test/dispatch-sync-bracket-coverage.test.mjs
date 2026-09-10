@@ -96,8 +96,10 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // read-side bracket -- followed the planner onto the engine.
 // 18 -> 17 agent()/16 -> 15 withGitSync (same bead): the scoped-replan
 // planner (one dispatch, one pushBeads:true read-side bracket) followed them.
-const EXPECTED_AGENT_COUNT = 17;
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 15;
+// 17 -> 16 agent()/15 -> 14 withGitSync (same bead): the scoped-replan
+// plan-reviewer (one dispatch, one read-side bracket) followed them.
+const EXPECTED_AGENT_COUNT = 16;
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 14;
 const STREAK_ASSIGNMENT_MARKERS = [
     "label: 'Streak Assignment'",
     "label: 'Streak Assignment (semantic repair)'",
