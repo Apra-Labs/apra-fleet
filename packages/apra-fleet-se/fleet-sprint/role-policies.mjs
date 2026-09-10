@@ -298,6 +298,26 @@ const retry = (over) => ({
     ...over,
 });
 
+/**
+ * The two failure notes EVERY fabricating ladder carries, phrased from the
+ * role's own display `subject` and the shape of what it failed to return
+ * (`artifact`: a review role returns a 'verdict', a test-runner/deploy role
+ * returns a 'report'). `over` supplies the classes only one role recognises
+ * (the regression catch-all's 'sync' and 'unknown') and the rare deliberate
+ * rewording -- the final review's dispatch note says "after repair attempts"
+ * because its ladder really does exhaust a bounded self-heal first.
+ *
+ * This is where the six copies of these sentences collapsed to one
+ * (apra-fleet-3swo.5.4): every remaining difference between two roles' notes
+ * is now visibly an ARGUMENT, so a reader can see at a glance that only the
+ * regression phase says anything the others do not.
+ */
+const degradeNotes = (subject, artifact, over = {}) => ({
+    schema: `${subject} failed to return a schema-valid ${artifact} after repair attempts: {message}`,
+    dispatch: `${subject} dispatch failed: {message}`,
+    ...over,
+});
+
 const degrade = (over) => ({
     kind: 'fatal',
     /** The value fabricated by the degrade path, if any. */
@@ -322,6 +342,29 @@ const degrade = (over) => ({
      * test-runner roles.
      */
     notesField: 'notes',
+    /**
+     * apra-fleet-3swo.5.4: the failure TEXT a degrade writes into
+     * `notesField`, as one template per ERROR_CLASS in `classes`.
+     *
+     * WHY IT IS DATA AND NOT A CALLER CALLBACK: before this, every runner.js
+     * dispatch site handed the engine its own `synthesizedNotes` map of
+     * per-class note builders -- six near-identical copies of the same two
+     * sentences, which is the per-role fallback duplication the policy table
+     * exists to remove. Rendering is now ONE implementation in
+     * dispatch-role.mjs (renderDegradeNote) driven by these templates, so
+     * changing what a degraded verdict says is a table edit, and a class a
+     * ladder fabricates for but has no template for is a loud table/engine
+     * mismatch rather than a silently empty note.
+     *
+     * PLACEHOLDERS: `{message}` (the terminal error's message, falling back
+     * to String(err) when a non-Error was thrown) and `{name}` (its
+     * constructor name -- the regression phase's sync note names the class
+     * because "which sync layer failed" is what the operator acts on).
+     * Nothing else is interpolated: a note that needed runner state would be
+     * a variance the table could not express, and belongs in this comment as
+     * a reason to widen the vocabulary rather than as an escape hatch.
+     */
+    noteTemplates: {},
     /** A field stamped on every synthesized value so it is recognisable. */
     marker: null,
     /** How many distinct degrade paths produce that value. */
@@ -533,6 +576,7 @@ const planReviewer = policy('plan-reviewer', {
         // -- the reviewer and deployer degrades fabricate different shapes.
         synthesized: { verdict: 'CHANGES_NEEDED', taskAssignments: [] },
         classes: ['schema', 'dispatch'],
+        noteTemplates: degradeNotes('Plan reviewer', 'verdict'),
         verdictField: 'verdict',
         marker: 'dispatchFailed',
         paths: 2,
@@ -694,6 +738,7 @@ const reviewer = policy('reviewer', {
         // one for a self-contradictory verdict.
         synthesized: { verdict: 'CHANGES_NEEDED', reopenIds: [], newTasks: [] },
         classes: ['schema', 'dispatch'],
+        noteTemplates: degradeNotes('Reviewer', 'verdict'),
         verdictField: 'verdict',
         marker: 'dispatchFailed',
         paths: 2,
@@ -751,6 +796,12 @@ const finalReview = policy('final-review', {
     degrade: degrade({
         kind: 'synthesized-verdict',
         synthesized: { verdict: 'FAIL' },
+        // The one deliberate rewording in the table: this ladder's dispatch
+        // note says "after repair attempts" because its retry really does
+        // spend a bounded LLM-auth self-heal before giving up.
+        noteTemplates: degradeNotes('Final reviewer', 'verdict', {
+            dispatch: 'Final reviewer dispatch failed after repair attempts: {message}',
+        }),
         // TWO error classes reached from TWO ladder positions -- the healed
         // retry and the generic retry -- which is what makes four paths over
         // two classes. A dead dispatch channel never passes a sprint.
@@ -795,6 +846,7 @@ const deployer = policy('deployer', {
         // reviewer's verdict shape and the deployer's report shape alike.
         synthesized: { deployed: false },
         classes: ['schema', 'dispatch'],
+        noteTemplates: degradeNotes('Deployer', 'report'),
         verdictField: 'deployed',
         paths: 2,
         neverSynthesizes: [true],
@@ -851,6 +903,7 @@ const integTestRunner = policy('integ-test-runner', {
         marker: 'integInfraInconclusive',
         classifiesInfraFailures: true,
         classes: ['schema', 'dispatch'],
+        noteTemplates: degradeNotes('Integ test runner', 'report'),
         synthesized: { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [] },
         verdictField: 'passed',
         notesField: 'summary',
@@ -904,6 +957,15 @@ const regressionTestRunner = policy('regression-test-runner', {
         // abort, and letting one through here would turn a green sprint into
         // a terminal ABORTED record that skips Harvest and Publish).
         classes: ['schema', 'dispatch', 'sync', 'unknown'],
+        noteTemplates: degradeNotes('Regression test runner', 'report', {
+            // Said honestly rather than as a clean "the pass failed": the
+            // carry-over beads may or may not have reached the shared remote,
+            // and the operator needs to know which -- hence {name} as well as
+            // {message}, so the summary says WHICH sync layer failed.
+            sync: 'Regression pass could not be completed: git/beads sync around the dispatch failed '
+                + '({name}: {message}). Any carry-over beads filed may not have reached the shared remote.',
+            unknown: 'Regression test runner failed with an unexpected error: {message}',
+        }),
         classifiesSyncFailures: true,
         classifiesUnrecognisedErrors: true,
         // A REPORT shape, like the deployer's: the answer is `passed` and the

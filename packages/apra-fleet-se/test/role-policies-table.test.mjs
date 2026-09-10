@@ -25,6 +25,7 @@ import {
     MODEL_KINDS,
     KB_INJECTION_KINDS,
     DEGRADE_KINDS,
+    ERROR_CLASSES,
     PRE_DISPATCH_STEPS,
     POST_RESULT_STEPS,
     SECONDARY_KINDS,
@@ -61,6 +62,7 @@ import {
     TURN_BASES,
     REJECTED_CANDIDATE,
     ACCEPTED_CANDIDATE,
+    splicePolicy,
 } from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
@@ -1249,18 +1251,6 @@ function expectedModel(ctx, model) {
     return ROLE_CALL_OPTS_BINDINGS[model.binding] ?? null;
 }
 
-/**
- * A copy of the whole ROLE_POLICIES table with ONE role's row shallow-merged
- * with `over`. Handed to the engine as `ctx.policies` so a test can prove a
- * variance is really driven by a policy FIELD: change the field, watch the
- * engine behave differently. The real table stays frozen and untouched.
- */
-function splicePolicy(role, over) {
-    const row = { ...ROLE_POLICIES[role], ...over };
-    if (row.secondary) row.secondary = { ...row.secondary, ...over, secondary: null };
-    return { ...ROLE_POLICIES, [role]: row };
-}
-
 /** Every dispatch of a migrated role, paired with the kind that produces it. */
 function engineDispatchesOf(role) {
     const entry = ROLE_POLICIES[role];
@@ -1838,5 +1828,299 @@ describe('role policy table: migrated roles re-derived by running the engine', (
             ROLE_NAMES.length,
             'Every role must be derived on exactly one side: textually from runner.js, or behaviourally from the engine.'
         );
+    });
+});
+
+// =============================================================================
+// apra-fleet-3swo.5.4 -- the CONSOLIDATED verdict/fallback path, and the proof
+// that each role's remaining variance is DATA rather than a branch in it.
+//
+// The ladders themselves collapsed onto dispatchRole in .5.3/.5.7. What was
+// still duplicated afterwards was the DEGRADE side: every runner.js dispatch
+// site handed the engine its own `synthesizedNotes` map of per-error-class
+// note builders, six near-identical copies of the same two sentences. Those
+// are now `degrade.noteTemplates` in role-policies.mjs, rendered by ONE
+// implementation (dispatch-role.mjs renderDegradeNote).
+//
+// The tests below are deliberately MUTATION tests, not table-vs-table
+// comparisons: each takes the real frozen row, changes exactly one degrade
+// FIELD, runs the real engine, and asserts the behaviour changed accordingly.
+// That is the only assertion shape that can tell "driven by the table" apart
+// from "hard-coded in the engine and happens to agree with the table" -- a
+// per-role fallback branch restored inside dispatch-role.mjs would keep
+// producing the real row's behaviour and fail these.
+// =============================================================================
+
+/** Enough failures to spend `role`'s whole ladder, all of one class. */
+function spendLadder(role, make) {
+    return Array.from({ length: policyFor(role).retry.attempts + 1 }, make);
+}
+
+/** Runs `role`'s ladder to exhaustion against `policies`, capturing a throw. */
+async function runSpentLadder(role, make, policies) {
+    const { ctx, rec } = createRecordingCtx({ responses: spendLadder(role, make), ...(policies ? { policies } : {}) });
+    try {
+        return { outcome: await dispatchRole(ctx, role, ROLE_CALL_OPTS[role]), thrown: null, rec };
+    } catch (err) {
+        return { outcome: null, thrown: err, rec };
+    }
+}
+
+/** The same row with one degrade FIELD replaced. */
+function spliceDegrade(role, over) {
+    return splicePolicy(role, { degrade: { ...ROLE_POLICIES[role].degrade, ...over } });
+}
+
+describe('apra-fleet-3swo.5.4: the consolidated degrade path is driven by the table', () => {
+    test('every fabricating role records a note template for exactly the classes it fabricates for', () => {
+        for (const role of ROLE_NAMES) {
+            const d = ROLE_POLICIES[role].degrade;
+            assert.deepStrictEqual(
+                Object.keys(d.noteTemplates).sort(),
+                [...d.classes].sort(),
+                `${role}: degrade.noteTemplates must cover exactly degrade.classes -- a fabricated value with no ` +
+                'template would write an empty note, and a template for a class the ladder never fabricates for is dead data.'
+            );
+            for (const [errorClass, template] of Object.entries(d.noteTemplates)) {
+                assert.ok(ERROR_CLASSES.includes(errorClass), `${role}: '${errorClass}' is not one of ERROR_CLASSES.`);
+                assert.ok(
+                    template.includes('{message}'),
+                    `${role}: the '${errorClass}' note template must interpolate {message} -- a degrade note that ` +
+                    'drops the terminal error text tells the operator nothing about what actually failed.'
+                );
+                assert.ok(
+                    !/\{(?!message\}|name\})/.test(template),
+                    `${role}: the '${errorClass}' note template uses a placeholder outside the {message}/{name} ` +
+                    'vocabulary the engine renders.'
+                );
+            }
+        }
+    });
+
+    // The consolidation's own falsification: the note text must have exactly
+    // ONE source. A restored per-role fallback -- a note builder passed in
+    // from a dispatch site, or a per-role branch inside the engine -- is what
+    // this catches, because both would reintroduce a second place the wording
+    // can drift to.
+    test('no dispatch site anywhere supplies its own per-role degrade notes', () => {
+        for (const file of dispatchLadderModulePaths(FLEET_SPRINT_DIR)) {
+            const text = stripComments(fs.readFileSync(file, 'utf8'));
+            assert.ok(
+                !/synthesizedNotes/.test(text),
+                `${path.basename(file)}: a dispatch site is supplying its own per-role degrade notes again. The ` +
+                'failure text is degrade.noteTemplates data in role-policies.mjs; there is one renderer for every role.'
+            );
+        }
+        const engine = stripComments(fs.readFileSync(path.join(FLEET_SPRINT_DIR, 'dispatch-role.mjs'), 'utf8'));
+        assert.strictEqual(
+            (engine.match(/noteTemplates\[/g) || []).length,
+            1,
+            'The engine must LOOK UP a note template in exactly ONE place (renderDegradeNote) -- a second lookup is ' +
+            'a per-role degrade path growing back inside the consolidated one.'
+        );
+    });
+
+    // Mutating the TEMPLATE, not the caller: the note a degraded value carries
+    // changes with the table and with nothing else.
+    for (const role of ROLE_NAMES.filter((r) => ROLE_POLICIES[r].degrade.classes.includes('dispatch'))) {
+        test(`${role}: the degraded value's failure text comes from degrade.noteTemplates`, async () => {
+            const d = ROLE_POLICIES[role].degrade;
+
+            const real = await runSpentLadder(role, () => transportError());
+            assert.strictEqual(real.thrown, null, `${role}: a dispatch-class failure must degrade, not propagate.`);
+            assert.strictEqual(
+                real.outcome.value[d.notesField],
+                d.noteTemplates.dispatch.replace('{message}', 'connection dropped'),
+                `${role}: the real row's own template, rendered against the terminal error, is what the caller gets.`
+            );
+
+            const spliced = await runSpentLadder(
+                role,
+                () => transportError(),
+                spliceDegrade(role, { noteTemplates: { ...d.noteTemplates, dispatch: 'SPLICED-NOTE: {message}' } })
+            );
+            assert.strictEqual(
+                spliced.outcome.value[d.notesField],
+                'SPLICED-NOTE: connection dropped',
+                `${role}: changing the template must change the note -- if it does not, the text is hard-coded in the engine.`
+            );
+        });
+    }
+
+    // --- the integ runner's INCONCLUSIVE variance ---------------------------
+    test('integ: INCONCLUSIVE is degrade DATA -- degrade.kind and classifiesInfraFailures each change it', async () => {
+        const role = 'integ-test-runner';
+        const d = ROLE_POLICIES[role].degrade;
+        assert.strictEqual(d.kind, 'inconclusive', 'The integ runner is the table\'s one inconclusive degrade.');
+
+        // As shipped: an envelope-less failure produces NO verdict at all --
+        // an `inconclusive` record instead of a fabricated passed:false.
+        const real = await runSpentLadder(role, () => infraError());
+        assert.strictEqual(real.thrown, null);
+        assert.ok(real.outcome.inconclusive, 'An infra failure must report WHY there is no verdict.');
+        assert.strictEqual(
+            real.outcome.value,
+            null,
+            'An infra failure must fabricate nothing: it never reached a test pass, so there is no result to report.'
+        );
+
+        // ONE field: stop RECOGNISING the class. The identical error is now an
+        // ordinary dispatch failure, so it fabricates the report -- i.e.
+        // records a test failure that never happened. That is exactly the
+        // regression classifiesInfraFailures exists to prevent, and it is
+        // reachable by changing the table alone.
+        const unrecognised = await runSpentLadder(role, () => infraError(), spliceDegrade(role, { classifiesInfraFailures: false }));
+        assert.strictEqual(unrecognised.thrown, null);
+        assert.strictEqual(
+            unrecognised.outcome.inconclusive,
+            null,
+            'With the class unrecognised there is no inconclusive record left to make.'
+        );
+        assert.strictEqual(
+            unrecognised.outcome.value.passed,
+            false,
+            'It is recorded as a failed pass instead -- the false failure the real row avoids.'
+        );
+
+        // ONE field: keep recognising the class, change only the degrade KIND.
+        // The inconclusive RECORD is what disappears, which pins that the
+        // record is keyed off degrade.kind rather than off the caller.
+        const otherKind = await runSpentLadder(role, () => infraError(), spliceDegrade(role, { kind: 'synthesized-report' }));
+        assert.strictEqual(otherKind.thrown, null);
+        assert.strictEqual(
+            otherKind.outcome.inconclusive,
+            null,
+            'Only an `inconclusive`-kind degrade makes an inconclusive record; the kind is the switch.'
+        );
+
+        // And the asymmetry holds the other way: a schema/dispatch failure DID
+        // reach a running pass, so it still reports passed:false, never
+        // inconclusive.
+        for (const make of [schemaError, transportError]) {
+            const reached = await runSpentLadder(role, make);
+            assert.strictEqual(reached.outcome.inconclusive, null, 'A failure that reached the pass is not inconclusive.');
+            assert.strictEqual(reached.outcome.value.passed, false, 'It is a real, reportable failed pass.');
+        }
+    });
+
+    // --- the regression phase's CATCH-ALL variance --------------------------
+    test('regression: the catch-all is degrade DATA -- each recognition field changes what escapes the phase', async () => {
+        const role = 'regression-test-runner';
+        const d = ROLE_POLICIES[role].degrade;
+        assert.strictEqual(d.kind, 'catch-all', 'The regression phase is the table\'s one catch-all.');
+
+        // As shipped: an entirely unrecognised error class still degrades to a
+        // reportable summary rather than aborting an informational phase.
+        const real = await runSpentLadder(role, () => new TypeError('not a dispatch failure at all'));
+        assert.strictEqual(real.thrown, null, 'A catch-all never lets an informational phase abort the sprint.');
+        assert.strictEqual(real.outcome.value.passed, false);
+        assert.strictEqual(
+            real.outcome.value.summary,
+            d.noteTemplates.unknown.replace('{message}', 'not a dispatch failure at all'),
+            'The unrecognised class has its OWN summary template, not the shared dispatch one.'
+        );
+
+        // ONE field: stop recognising the class. The phase still swallows the
+        // error (rethrowsUnrecognisedErrors is false on this row), but it can
+        // no longer say anything about it.
+        const unrecognised = await runSpentLadder(
+            role,
+            () => new TypeError('not a dispatch failure at all'),
+            spliceDegrade(role, { classifiesUnrecognisedErrors: false })
+        );
+        assert.strictEqual(unrecognised.thrown, null);
+        assert.strictEqual(
+            unrecognised.outcome.value,
+            null,
+            'An unrecognised class fabricates nothing -- the catch-all summary is what classifiesUnrecognisedErrors buys.'
+        );
+
+        // Both recognition fields off: the error propagates, which is what
+        // EVERY other role in the table does with it. The catch-all is a
+        // property of these two fields and nothing else.
+        const propagates = await runSpentLadder(
+            role,
+            () => new TypeError('not a dispatch failure at all'),
+            spliceDegrade(role, { classifiesUnrecognisedErrors: false, rethrowsUnrecognisedErrors: true })
+        );
+        assert.ok(propagates.thrown instanceof TypeError, 'With the catch-all fields off, the phase aborts like any other.');
+
+        // ONE field: the sync class. A git/beads sync failure around the
+        // dispatch is told apart from the dispatch failing ONLY because
+        // classifiesSyncFailures says so.
+        const realSync = await runSpentLadder(role, () => gitSyncError());
+        assert.strictEqual(
+            realSync.outcome.value.summary,
+            d.noteTemplates.sync.replace('{name}', 'GitSyncError').replace('{message}', realSync.outcome.error.message),
+            'A sync failure is reported through its own template, naming the layer that failed.'
+        );
+        const noSync = await runSpentLadder(role, () => gitSyncError(), spliceDegrade(role, { classifiesSyncFailures: false }));
+        assert.ok(
+            noSync.outcome.value.summary.startsWith(d.noteTemplates.unknown.split('{')[0]),
+            'Without classifiesSyncFailures the same error falls through to the unrecognised class instead.'
+        );
+
+        // ONE field: the RUN-level control signals that must escape even a
+        // catch-all. Emptying the list is what stops them escaping.
+        for (const make of [cancelledError, budgetError]) {
+            const swallowed = await runSpentLadder(role, make, spliceDegrade(role, { rethrowsRunControlSignals: [] }));
+            assert.strictEqual(
+                swallowed.thrown,
+                null,
+                'rethrowsRunControlSignals is the ONLY reason a cancellation escapes the catch-all.'
+            );
+        }
+    });
+
+    // --- the streak-assignment semantic-repair re-ask -----------------------
+    test('streak assignment: its bounded semantic-repair re-ask survives on top of agent()\'s own schema-repair loop', async () => {
+        const role = 'streak-assignment';
+        const p = policyFor(role);
+        const opts = { ...ROLE_CALL_OPTS[role], validate: streakValidate };
+        assert.strictEqual(p.retry.semanticRepairReAsks, 1, 'Exactly ONE re-ask: guarded, never looped.');
+
+        // A schema-VALID but semantically rejected candidate is re-asked once,
+        // with the validation failure, and the second answer is what stands.
+        const once = createRecordingCtx({ responses: [REJECTED_CANDIDATE, ACCEPTED_CANDIDATE] });
+        const healed = await dispatchRole(once.ctx, role, opts);
+        assert.strictEqual(once.rec.dispatches.length, 2, 'The re-ask is a real second dispatch, not a log line.');
+        assert.strictEqual(healed.validation.usedFallback, false, 'The re-asked answer is accepted.');
+
+        // BOUNDED: a candidate that is rejected twice is NOT re-asked again --
+        // it drops to the caller's deterministic fallback instead of looping.
+        const bounded = createRecordingCtx({ responses: [REJECTED_CANDIDATE, REJECTED_CANDIDATE, ACCEPTED_CANDIDATE] });
+        const fellBack = await dispatchRole(bounded.ctx, role, opts);
+        assert.strictEqual(bounded.rec.dispatches.length, 2, 'The re-ask ladder is spent after one re-ask.');
+        assert.strictEqual(fellBack.validation.usedFallback, true, 'Only then does the caller\'s own fallback apply.');
+
+        // And it is a bound of its OWN, layered on top of agent()'s built-in
+        // schema-repair loop rather than replacing it: the engine never
+        // re-dispatches an AgentOutputError as a semantic repair, because by
+        // the time one is thrown agent()'s own bounded loop is already spent.
+        const schemaSpent = await runSpentLadder(role, () => schemaError());
+        assert.strictEqual(
+            schemaSpent.rec.dispatches.length,
+            p.retry.attempts,
+            'Schema repair belongs to agent(); the engine must not re-run its own loop on top of it.'
+        );
+    });
+
+    // The engine must never implement schema repair itself: agent() owns that
+    // bounded loop, and a second one here would double every repair budget in
+    // the table while looking like one.
+    test('the consolidated path neither duplicates nor bypasses agent()\'s built-in schema-repair loop', () => {
+        const engine = stripComments(fs.readFileSync(path.join(FLEET_SPRINT_DIR, 'dispatch-role.mjs'), 'utf8'));
+        assert.ok(
+            !/schemaRepair|repairAttempts|maxRepairs/.test(engine),
+            'dispatch-role.mjs must not carry a schema-repair loop of its own -- agent() already has one.'
+        );
+        // Every dispatch the engine makes still passes its policy's schema
+        // through to agent(), so the built-in loop is never bypassed either.
+        for (const role of MIGRATED_ROLES.filter((r) => ROLE_POLICIES[r].schema)) {
+            assert.ok(
+                SCHEMAS[ROLE_POLICIES[role].schema],
+                `${role}: names a schema the engine can resolve, so agent() validates and repairs its output.`
+            );
+        }
     });
 });

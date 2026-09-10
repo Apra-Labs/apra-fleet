@@ -3629,10 +3629,6 @@ async function runSprintCycle(context) {
             // continuation, not a cross-round one.
             resumeArg: roundSessions.resumeArgFor('reviewer', cycle),
             onSessionId: (id, meta) => roundSessions.record('reviewer', cycle, id, meta),
-            synthesizedNotes: {
-                schema: (err) => `Reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
-                dispatch: (err) => `Reviewer dispatch failed: ${err.message}`,
-            },
             onResultRejected: (reason) => new ReviewerContractViolationError(
                 `Reviewer returned CHANGES_NEEDED with empty reopenIds AND empty newTasks twice in a ` +
                 `row (cycle ${cycle}) -- a self-contradictory verdict with nothing for the ` +
@@ -4506,10 +4502,6 @@ async function runSprintCycle(context) {
                 resumePrompt: 'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
                 roleLabel: 'Plan Reviewer',
                 resumeLabel: `Plan Review (resume, max_turns=${TURN_BASES.PLAN_REVIEWER_MAX_TURNS * 2})`,
-                synthesizedNotes: {
-                    schema: (err) => `Plan reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
-                    dispatch: (err) => `Plan reviewer dispatch failed: ${err.message}`,
-                },
             });
             const verdict = planReviewOutcome.value;
             lastVerdict = verdict;
@@ -5774,10 +5766,6 @@ async function runSprintCycle(context) {
                 resumePrompt: 'Continue the deploy exactly where you left off in this same session -- do not restart deploy.md from the top if steps already completed. Finish the remaining steps and the smoke test, and return your final report now.',
                 roleLabel: 'Deployer',
                 resumeLabel: `Deploy (resume, max_turns=${TURN_BASES.DEPLOYER_MAX_TURNS * 2})`,
-                synthesizedNotes: {
-                    schema: (err) => `Deployer failed to return a schema-valid report after repair attempts: ${err.message}`,
-                    dispatch: (err) => `Deployer dispatch failed: ${err.message}`,
-                },
             });
             deployResult = deployOutcome.value;
             // No duplicate log() dump -- see dispatchReview() for why.
@@ -5946,10 +5934,6 @@ async function runSprintCycle(context) {
                     'Your original scope, restated so a resumed dispatch never loses it: ' + featurePrompt,
                 roleLabel: 'Integ Test Runner',
                 resumeLabel: `Integ Test (resume, max_turns=${TURN_BASES.INTEG_TEST_MAX_TURNS * 2})`,
-                synthesizedNotes: {
-                    schema: (err) => `Integ test runner failed to return a schema-valid report after repair attempts: ${err.message}`,
-                    dispatch: (err) => `Integ test runner dispatch failed: ${err.message}`,
-                },
             });
             integResult = integOutcome.value;
             integInfraInconclusive = integOutcome.inconclusive;
@@ -6455,10 +6439,6 @@ async function runSprintCycle(context) {
         roleLabel: 'Final Review',
         label: 'Final Review',
         resumeLabel: `Final Review (resume, max_turns=${TURN_BASES.FINAL_REVIEW_MAX_TURNS * 2})`,
-        synthesizedNotes: {
-            schema: (err) => `Final reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
-            dispatch: (err) => `Final reviewer dispatch failed after repair attempts: ${err.message}`,
-        },
     });
     finalVerdictResult = finalReviewOutcome.value;
     // No duplicate log() dump -- see dispatchReview() for why.
@@ -6698,15 +6678,6 @@ async function runSprintCycle(context) {
                 'Your original instructions, restated so a resumed dispatch never loses them: ' + regressionPrompt,
             roleLabel: 'Regression Test Runner',
             resumeLabel: `Regression Test (resume, max_turns=${TURN_BASES.REGRESSION_TEST_MAX_TURNS * 2})`,
-            synthesizedNotes: {
-                schema: (err) => `Regression test runner failed to return a schema-valid report after repair attempts: ${err.message}`,
-                dispatch: (err) => `Regression test runner dispatch failed: ${err.message}`,
-                // Said honestly rather than as a clean "the pass failed": the
-                // carry-over beads may or may not have reached the shared
-                // remote, and the operator needs to know which.
-                sync: (err) => `Regression pass could not be completed: git/beads sync around the dispatch failed (${err.name}: ${err.message}). Any carry-over beads filed may not have reached the shared remote.`,
-                unknown: (err) => `Regression test runner failed with an unexpected error: ${err && err.message ? err.message : String(err)}`,
-            },
         });
         regressionResult = regressionOutcome.value;
         // No duplicate log() dump -- see dispatchReview() for why. Only an

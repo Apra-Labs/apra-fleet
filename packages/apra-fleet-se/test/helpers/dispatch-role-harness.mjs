@@ -362,16 +362,6 @@ export const ROLE_CALL_OPTS = Object.freeze({
         resumePrompt: 'PLAN REVIEW RESUME PROMPT',
         roleLabel: 'Plan Reviewer',
         resumeLabel: 'Plan Review (resume, max_turns=1000)',
-        // Distinct SENTINELS rather than a copy of runner.js's real notes
-        // text: what a pin needs to prove is that the engine routes the right
-        // note-builder per error CLASS (degrade.paths === 2 means schema-repair
-        // exhaustion and a dispatch/transport failure are told apart), and a
-        // sentinel proves that without duplicating a production string that
-        // would then have two places to drift.
-        synthesizedNotes: {
-            schema: (err) => `HARNESS-SCHEMA-CLASS: ${err.message}`,
-            dispatch: (err) => `HARNESS-DISPATCH-CLASS: ${err.message}`,
-        },
     },
     'scoped-replan-planner': {
         prompt: 'SCOPED REPLAN PLANNER PROMPT',
@@ -412,10 +402,6 @@ export const ROLE_CALL_OPTS = Object.freeze({
         roleLabel: 'Reviewer',
         resumeLabel: 'Review (resume, max_turns=1000)',
         resumeArg: 'reviewer-session-abc',
-        synthesizedNotes: {
-            schema: (err) => `HARNESS-SCHEMA-CLASS: ${err.message}`,
-            dispatch: (err) => `HARNESS-DISPATCH-CLASS: ${err.message}`,
-        },
         onResultRejected: (reason) => new Error(`HARNESS-REJECTED: ${reason}`),
     },
     'final-review': {
@@ -424,45 +410,24 @@ export const ROLE_CALL_OPTS = Object.freeze({
         roleLabel: 'Final Review',
         label: 'Final Review',
         resumeLabel: 'Final Review (resume, max_turns=1000)',
-        synthesizedNotes: {
-            schema: (err) => `HARNESS-SCHEMA-CLASS: ${err.message}`,
-            dispatch: (err) => `HARNESS-DISPATCH-CLASS: ${err.message}`,
-        },
     },
     'integ-test-runner': {
         prompt: 'INTEG PROMPT',
         resumePrompt: 'INTEG RESUME PROMPT',
         roleLabel: 'Integ Test Runner',
         resumeLabel: 'Integ Test (resume, max_turns=1000)',
-        synthesizedNotes: {
-            schema: (err) => `HARNESS-SCHEMA-CLASS: ${err.message}`,
-            dispatch: (err) => `HARNESS-DISPATCH-CLASS: ${err.message}`,
-        },
     },
     'regression-test-runner': {
         prompt: 'REGRESSION PROMPT',
         resumePrompt: 'REGRESSION RESUME PROMPT',
         roleLabel: 'Regression Test Runner',
         resumeLabel: 'Regression Test (resume, max_turns=1000)',
-        // One SENTINEL note builder per error class the catch-all fabricates
-        // for, so a pin can prove the engine routes by class rather than
-        // collapsing four degrade paths into one message.
-        synthesizedNotes: {
-            schema: (err) => `HARNESS-SCHEMA-CLASS: ${err.message}`,
-            dispatch: (err) => `HARNESS-DISPATCH-CLASS: ${err.message}`,
-            sync: (err) => `HARNESS-SYNC-CLASS: ${err.message}`,
-            unknown: (err) => `HARNESS-UNKNOWN-CLASS: ${err.message}`,
-        },
     },
     deployer: {
         prompt: 'DEPLOYER PROMPT',
         resumePrompt: 'DEPLOYER RESUME PROMPT',
         roleLabel: 'Deployer',
         resumeLabel: 'Deploy (resume, max_turns=1000)',
-        synthesizedNotes: {
-            schema: (err) => `HARNESS-SCHEMA-CLASS: ${err.message}`,
-            dispatch: (err) => `HARNESS-DISPATCH-CLASS: ${err.message}`,
-        },
     },
     harvester: {
         prompt: 'HARVESTER PROMPT',
@@ -478,6 +443,45 @@ export const ROLE_CALL_OPTS = Object.freeze({
         repairPrompt: (reason) => `STREAK ASSIGNMENT PROMPT\n\nYour previous answer was REJECTED: ${reason}.`,
     },
 });
+
+/**
+ * A copy of the whole ROLE_POLICIES table with ONE role's row shallow-merged
+ * with `over`. Handed to the engine as `ctx.policies` so a test can prove a
+ * variance is really driven by a policy FIELD: change the field, watch the
+ * engine behave differently. The real table stays frozen and untouched.
+ *
+ * Shared by role-policies-table.test.mjs and the two pin files so all three
+ * mutate the table the same way (apra-fleet-3swo.5.4).
+ */
+export function splicePolicy(role, over) {
+    const row = { ...ROLE_POLICIES[role], ...over };
+    if (row.secondary) row.secondary = { ...row.secondary, ...over, secondary: null };
+    return { ...ROLE_POLICIES, [role]: row };
+}
+
+/**
+ * apra-fleet-3swo.5.4: the same table with ONE role's `degrade.noteTemplates`
+ * replaced by a distinct SENTINEL per error class.
+ *
+ * What a pin needs to prove is that the engine routes the right note per
+ * error CLASS -- that schema-repair exhaustion and a dropped transport are
+ * told apart rather than collapsed into one message -- and a sentinel proves
+ * that without duplicating a production string that would then have two
+ * places to drift. Since the notes became table DATA rather than a per-call
+ * builder the caller passed in, splicing the table is also the only honest
+ * way to assert it: if a future change re-introduced a per-role fallback
+ * branch in the engine, these sentinels would stop appearing and every pin
+ * below would fail, which is exactly the falsification the consolidation
+ * needs.
+ */
+export function sentinelNotePolicies(role) {
+    const row = ROLE_POLICIES[role];
+    const noteTemplates = {};
+    for (const errorClass of row.degrade.classes) {
+        noteTemplates[errorClass] = `HARNESS-${errorClass.toUpperCase()}-CLASS: {message}`;
+    }
+    return splicePolicy(role, { degrade: { ...row.degrade, noteTemplates } });
+}
 
 /** The five planning roles this migration bead moved onto the engine. */
 export const MIGRATED_PLANNING_ROLES = Object.freeze([
