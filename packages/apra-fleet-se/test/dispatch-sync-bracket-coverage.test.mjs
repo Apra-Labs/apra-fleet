@@ -98,12 +98,23 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // planner (one dispatch, one pushBeads:true read-side bracket) followed them.
 // 17 -> 16 agent()/15 -> 14 withGitSync (same bead): the scoped-replan
 // plan-reviewer (one dispatch, one read-side bracket) followed them.
-const EXPECTED_AGENT_COUNT = 16;
+// 16 -> 14 agent() (same bead): the Streak Assignment grouping call and its
+// bounded semantic-repair re-ask followed them. Those two were the file's ONLY
+// documented unbracketed exemptions, so STREAK_ASSIGNMENT_MARKERS is now empty
+// and every remaining runner.js agent() site must be bracketed -- a strictly
+// stronger statement than before. withGitSync stays at 14: the two dispatches
+// that left were the two that never had a bracket.
+const EXPECTED_AGENT_COUNT = 14;
 const EXPECTED_WITHGITSYNC_CALL_COUNT = 14;
-const STREAK_ASSIGNMENT_MARKERS = [
-    "label: 'Streak Assignment'",
-    "label: 'Streak Assignment (semantic repair)'",
-];
+// apra-fleet-3swo.5.3: EMPTY. The two Streak Assignment dispatches -- the only
+// documented, deliberate exemptions from the bracket invariant -- now run
+// through the dispatchRole engine, whose policy row records `bracket: {wrapped:
+// false}` as data and whose behaviour is pinned by
+// test/planning-role-dispatch-pins.test.mjs. Every agent() call site LEFT in
+// runner.js must therefore be bracketed, with no exemption at all. Kept as a
+// list rather than deleted so a future deliberate exemption is added here, in
+// the one place this file's arithmetic already accounts for it.
+const STREAK_ASSIGNMENT_MARKERS = [];
 
 /** Same helper as dispatch-safety-guard.test.mjs: is `col` inside an open same-line quote? */
 function isInsideSameLineString(lineText, col) {

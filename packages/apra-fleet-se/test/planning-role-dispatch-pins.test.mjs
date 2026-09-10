@@ -35,6 +35,9 @@ import {
     schemaError,
     transportError,
     postDispatchSyncError,
+    streakValidate,
+    REJECTED_CANDIDATE,
+    ACCEPTED_CANDIDATE,
 } from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
@@ -385,23 +388,31 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
         );
     });
 
-    test('streak assignment deliberately carries no persona, borrows the planner member, and runs at the cheap tier', () => {
-        for (const anchor of ["label: 'Streak Assignment',", "label: 'Streak Assignment (semantic repair)'"]) {
-            const { merged } = effectiveOpts(siteFor(anchor));
+    test('streak assignment deliberately carries no persona, borrows the planner member, and runs at the cheap tier', async () => {
+        // apra-fleet-3swo.5.3: the two Streak Assignment dispatches are
+        // engine-served, so the per-dispatch facts (no agentType, the planner
+        // member, the cheap tier) are proved behaviourally by their pins
+        // above. What is asserted HERE is the same three-way statement across
+        // both dispatches at once, plus the runner constant those tiers are
+        // read from, which is still runner.js source text.
+        const streakPins = ENGINE_LADDER.dispatches.filter((pin) => pin.role === 'streak-assignment');
+        assert.strictEqual(streakPins.length, 2, 'Streak Assignment has exactly two dispatches: the grouping call and its bounded semantic-repair re-ask.');
+        for (const pin of streakPins) {
+            const { dispatch, ctx } = await driveEngineTo(pin);
             assert.strictEqual(
-                merged.get('agentType') ?? null,
+                dispatch.options.agentType ?? null,
                 null,
                 'Streak Assignment passes no agentType: it has no vendored persona of its own, and activating the planner ' +
                 'persona on this narrow grouping task makes the model go exploring instead of answering.'
             );
             assert.strictEqual(
-                merged.get('member_name'),
-                "getMemberForRole('planner')",
+                dispatch.options.member_name,
+                ctx.getMemberForRole('planner'),
                 'Streak Assignment reuses the planner MEMBER purely for model-tier routing.'
             );
             assert.strictEqual(
-                merged.get('model'),
-                'FIXED_ROLE_TIER.streakAssignment',
+                dispatch.options.model,
+                'cheap',
                 'Streak Assignment must use its own fixed tier, not the planner tier.'
             );
         }
@@ -667,42 +678,73 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
         assert.strictEqual(auth.rec.authHeals[0].label, 'Scoped Replan Review dispatch');
     });
 
-    test('streak assignment: schema/dispatch failures fall back to one-bead-per-streak, with exactly one bounded semantic-repair re-ask', () => {
-        const region = stripComments(regionBetween(SRC, 'let streakCandidate = null;', 'if (usedFallback) {'));
-        assert.ok(
-            /err instanceof AgentOutputError/.test(region),
-            'Schema-repair exhaustion must degrade to the deterministic fallback grouping.'
-        );
-        assert.ok(
-            /err instanceof AgentDispatchError \|\| err instanceof FleetTransportError/.test(region),
-            'A dispatch/transport failure must degrade to the deterministic fallback grouping.'
-        );
-        assert.ok(/throw err;/.test(region), 'An unrecognised error class must still propagate.');
-        assert.ok(
-            /isAuthDispatchError\(err\) && typeof onLlmAuthFailure === 'function'/.test(region),
-            'Streak Assignment self-heals an auth failure because the SAME member is dispatched again later in the cycle.'
-        );
-        assert.ok(
-            /selectStreaks\(streakCandidate, currentReady\)/.test(region),
-            'The candidate grouping is validated by selectStreaks(), which is what decides whether the fallback is used.'
-        );
+    // apra-fleet-3swo.5.3: RE-ANCHORED onto the engine, same facts.
+    test('streak assignment: schema/dispatch failures fall back to one-bead-per-streak, with exactly one bounded semantic-repair re-ask', async () => {
+        const opts = { ...ROLE_CALL_OPTS['streak-assignment'], validate: streakValidate };
+
+        // Schema-repair exhaustion and a dispatch/transport failure must BOTH
+        // degrade to the deterministic fallback grouping -- the engine hands
+        // the caller a validated null candidate, which is exactly what
+        // selectStreaks() turns into one-bead-per-streak.
+        for (const err of [schemaError(), transportError()]) {
+            const failed = createRecordingCtx({ responses: [err] });
+            const outcome = await dispatchRole(failed.ctx, 'streak-assignment', opts);
+            assert.strictEqual(failed.rec.dispatches.length, 1, 'Streak Assignment is a SINGLE bounded attempt.');
+            assert.strictEqual(outcome.degraded, true);
+            assert.strictEqual(outcome.value, null, 'The degrade fabricates no grouping; the caller applies its deterministic fallback.');
+            assert.strictEqual(
+                outcome.validation.usedFallback,
+                true,
+                'The candidate grouping is validated by selectStreaks(), which is what decides whether the fallback is used.'
+            );
+        }
+
+        // An unrecognised error class must still propagate.
+        const weird = createRecordingCtx({ responses: [new TypeError('something else entirely')] });
+        await assert.rejects(() => dispatchRole(weird.ctx, 'streak-assignment', opts), TypeError);
+
+        // Streak Assignment self-heals an auth failure because the SAME member
+        // is dispatched again later in the cycle.
+        const auth = createRecordingCtx({ responses: [authError()], healed: false });
+        await dispatchRole(auth.ctx, 'streak-assignment', opts);
+        assert.strictEqual(auth.rec.authHeals.length, 1);
+        assert.strictEqual(auth.rec.authHeals[0].label, 'Streak Assignment dispatch');
 
         // The semantic-repair re-ask: ONE bounded attempt layered on top of
-        // agent()'s own bounded schema-repair loop -- guarded, not looped.
-        const repair = stripComments(regionBetween(SRC, 'if (usedFallback && streakCandidate) {', 'if (usedFallback) {'));
-        assert.ok(
-            !/\bfor\s*\(/.test(repair) && !/\bwhile\s*\(/.test(repair),
-            'The semantic-repair re-ask is ONE bounded attempt -- never a loop.'
+        // agent()'s own bounded schema-repair loop -- guarded, not looped. A
+        // candidate that keeps failing validation gets exactly one re-ask and
+        // then the fallback, never a second.
+        const repaired = createRecordingCtx({ responses: [REJECTED_CANDIDATE, ACCEPTED_CANDIDATE] });
+        const repairedOutcome = await dispatchRole(repaired.ctx, 'streak-assignment', opts);
+        assert.strictEqual(repaired.rec.dispatches.length, 2, 'A rejected candidate must be re-asked exactly once.');
+        assert.strictEqual(
+            repaired.rec.dispatches[1].options.label,
+            ROLE_CALL_OPTS['streak-assignment'].repairLabel,
+            'There must be exactly one semantic-repair re-ask dispatch, and it must be labelled as such.'
         );
-        const reAskSites = AGENT_SITES.filter((s) => s.callText.includes("label: 'Streak Assignment (semantic repair)'"));
-        assert.strictEqual(reAskSites.length, 1, 'There must be exactly one semantic-repair re-ask dispatch.');
-        assert.ok(
-            /Your previous answer was REJECTED/.test(repair),
+        assert.match(
+            repaired.rec.dispatches[1].prompt,
+            /Your previous answer was REJECTED: ids did not cover the ready set/,
             'The re-ask must feed the exact validation failure back to the model rather than blindly repeating the prompt.'
         );
-        assert.ok(
-            /\(\{ streaks, usedFallback, reason \} = selectStreaks\(streakCandidate, currentReady\)\);/.test(repair),
+        assert.strictEqual(
+            repairedOutcome.validation.usedFallback,
+            false,
             'The re-asked candidate must be re-validated by selectStreaks() before it is trusted.'
+        );
+
+        const neverAccepted = createRecordingCtx({ responses: [REJECTED_CANDIDATE, REJECTED_CANDIDATE, REJECTED_CANDIDATE] });
+        const neverOutcome = await dispatchRole(neverAccepted.ctx, 'streak-assignment', opts);
+        assert.strictEqual(neverAccepted.rec.dispatches.length, 2, 'The re-ask is ONE bounded attempt -- never a loop.');
+        assert.strictEqual(neverOutcome.validation.usedFallback, true, 'A twice-rejected candidate falls back deterministically.');
+
+        // A re-ask whose own dispatch fails falls back rather than propagating.
+        const repairFailed = createRecordingCtx({ responses: [REJECTED_CANDIDATE, transportError()] });
+        const repairFailedOutcome = await dispatchRole(repairFailed.ctx, 'streak-assignment', opts);
+        assert.strictEqual(repairFailedOutcome.validation.usedFallback, true);
+        assert.ok(
+            repairFailed.rec.logs.some((m) => /\(semantic repair\): dispatch failed/.test(m)),
+            'A failed re-ask must announce the fallback rather than aborting the round.'
         );
     });
 });

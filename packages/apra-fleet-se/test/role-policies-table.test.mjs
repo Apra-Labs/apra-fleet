@@ -141,12 +141,8 @@ const ROLE_SOURCE = {
     'scoped-replan-planner': { engine: true },
     // apra-fleet-3swo.5.3: MIGRATED -- see section (7).
     'scoped-replan-plan-reviewer': { engine: true },
-    'streak-assignment': {
-        anchor: "label: 'Streak Assignment',",
-        secondary: "label: 'Streak Assignment (semantic repair)'",
-        region: ['let streakCandidate = null;', 'if (usedFallback) {'],
-        attempts: { kind: 'single' },
-    },
+    // apra-fleet-3swo.5.3: MIGRATED -- see section (7).
+    'streak-assignment': { engine: true },
     doer: {
         anchor: '(\n                        doerPrompt,',
         secondary: null,

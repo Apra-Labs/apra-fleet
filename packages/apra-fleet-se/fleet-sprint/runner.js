@@ -4896,78 +4896,54 @@ async function runSprintCycle(context) {
             // or agent()'s own bounded schema-repair loop exhausted. See
             // selectStreaks().
             log('Streak grouping: no lane metadata on this round\'s ready beads -- falling back to LLM Streak Assignment dispatch (back-compat with pre-eft.76 plans).');
-            let streakCandidate = null;
-            try {
-                streakCandidate = await agent(
-                    buildStreakAssignmentPrompt({ readyBeadIds: currentReady.map((b) => b.id) }),
-                    {
-                        // No `agentType` here on purpose: this call has no
-                        // vendored persona of its own (see the streakAssignment
-                        // schema comment in contracts.mjs) and reuses the
-                        // planner MEMBER only for its model-tier routing.
-                        // Activating the full `planner` persona -- whose system
-                        // prompt is "read open beads, build a sprint DAG" -- on
-                        // this narrow, fully-specified grouping task makes the
-                        // model go exploring with its Bash/Read/Grep tools
-                        // instead of answering directly from the prompt, which
-                        // can run long enough to hit the transport timeout.
-                        member_name: getMemberForRole('planner'),
-                        label: 'Streak Assignment',
-                        schema: streakAssignment,
-                        model: FIXED_ROLE_TIER.streakAssignment,
-                    }
-                );
-                // No duplicate log() dump -- see dispatchReview() for why. The
-                // standard AGENT row (label 'Streak Assignment', above) already
-                // renders through the same generic path as every other dispatch.
-            } catch (err) {
-                if (err instanceof AgentOutputError) {
-                    log(`Streak Assignment: schema-repair exhausted, falling back to one-bead-per-streak: ${err.message}`);
-                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                    // Self-heal now so the SAME member's next dispatch this
-                    // cycle -- it reuses the planner member -- does not walk
-                    // into the identical unhealed auth failure.
-                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                        await onLlmAuthFailure({ member: getMemberForRole('planner'), label: 'Streak Assignment dispatch', error: err.message });
-                    }
-                    log(`Streak Assignment: agent dispatch failed, falling back to one-bead-per-streak: ${err.message}`);
-                } else {
-                    throw err;
-                }
-            }
-            ({ streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady));
-            // Semantic-repair re-ask, one bounded attempt: agent()'s own
-            // schema-repair only fixes JSON-shape problems, so a candidate can
-            // be schema-valid yet semantically invalid (e.g. bead ids returned
-            // with their prefix stripped). Dropping the whole grouping to the
-            // one-bead-per-streak fallback silently discards sequencing intent,
-            // which on a multi-doer fleet would PARALLELIZE beads the model said
-            // must run sequentially. Re-ask once with the exact validation
-            // failure; only then fall back.
-            if (usedFallback && streakCandidate) {
-                log(`Streak Assignment: candidate rejected (${reason}) -- re-asking once with the validation failure before falling back.`);
-                try {
-                    streakCandidate = await agent(
-                        buildStreakAssignmentPrompt({ readyBeadIds: currentReady.map((b) => b.id) })
-                        + `\n\nYour previous answer was REJECTED: ${reason}. `
-                        + 'Return the bead ids exactly as listed -- verbatim, full prefix included.',
-                        {
-                            member_name: getMemberForRole('planner'),
-                            label: 'Streak Assignment (semantic repair)',
-                            schema: streakAssignment,
-                            model: FIXED_ROLE_TIER.streakAssignment,
-                        }
-                    );
-                    // No duplicate log() dump -- see dispatchReview().
-                    ({ streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady));
-                } catch (repairErr) {
-                    if (repairErr instanceof AgentOutputError || repairErr instanceof AgentDispatchError || repairErr instanceof FleetTransportError) {
-                        log(`Streak Assignment (semantic repair): dispatch failed (${repairErr.message}) -- falling back.`);
-                    } else {
-                        throw repairErr;
-                    }
-                }
-            }
+            // apra-fleet-3swo.5.3: the 'streak-assignment' row of
+            // role-policies.mjs, executed by dispatchRole. That row owns the
+            // one variance nothing else in the table has -- NO git-sync
+            // bracket at all, because this is pure compute with no repo access
+            // -- plus the deliberate absence of an agentType (this call has no
+            // vendored persona of its own; see the streakAssignment schema
+            // comment in contracts.mjs, and activating the full `planner`
+            // persona on this narrow grouping task makes the model go
+            // exploring with its Bash/Read/Grep tools instead of answering
+            // from the prompt, which can run long enough to hit the transport
+            // timeout), the planner MEMBER borrowed purely for model-tier
+            // routing, its own cheap tier, and the transport-default budgets.
+            //
+            // The bounded semantic-repair re-ask is the row's
+            // `semanticRepairReAsks: 1` plus its `select-streaks-validate`
+            // postResult step: agent()'s own schema-repair only fixes
+            // JSON-shape problems, so a candidate can be schema-valid yet
+            // semantically invalid (e.g. bead ids returned with their prefix
+            // stripped). Dropping the whole grouping to the one-bead-per-streak
+            // fallback silently discards sequencing intent, which on a
+            // multi-doer fleet would PARALLELIZE beads the model said must run
+            // sequentially. The engine re-asks ONCE with the exact validation
+            // failure -- guarded, never looped -- and only then falls back.
+            //
+            // `validate` is that step: selectStreaks() is what decides whether
+            // the fallback is used, and the engine hands its result back as
+            // `validation` on BOTH the success path and the degrade path (a
+            // spent ladder validates a null candidate, which is exactly the
+            // deterministic one-bead-per-streak grouping the old ladder fell
+            // back to).
+            const streakPrompt = buildStreakAssignmentPrompt({ readyBeadIds: currentReady.map((b) => b.id) });
+            const streakOutcome = await dispatchRole(dispatchCtx, 'streak-assignment', {
+                prompt: streakPrompt,
+                label: 'Streak Assignment',
+                repairPrompt: (rejectionReason) => streakPrompt
+                    + `\n\nYour previous answer was REJECTED: ${rejectionReason}. `
+                    + 'Return the bead ids exactly as listed -- verbatim, full prefix included.',
+                repairLabel: 'Streak Assignment (semantic repair)',
+                roleLabel: 'Streak Assignment',
+                validate: (candidate) => {
+                    const selected = selectStreaks(candidate, currentReady);
+                    return { ok: !selected.usedFallback, reason: selected.reason, result: selected };
+                },
+            });
+            // No duplicate log() dump -- see dispatchReview() for why. The
+            // standard AGENT row (label 'Streak Assignment') already renders
+            // through the same generic path as every other dispatch.
+            ({ streaks, usedFallback, reason } = streakOutcome.validation);
             if (usedFallback) {
                 log(`Streak Assignment: using one-bead-per-streak fallback (${reason}).`);
             }
