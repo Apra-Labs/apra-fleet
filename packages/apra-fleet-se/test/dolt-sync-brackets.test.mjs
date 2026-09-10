@@ -958,7 +958,9 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // 18 -> 16 (same bead): the plan-reviewer's two read-side brackets
     // followed the planner onto the engine. Both were read-side with no
     // pushBeads, so the pushBeads count below is unchanged.
-    assert.equal(sites.length, 16, `expected 16 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 16 -> 15 (same bead): the scoped-replan planner's bracket followed them,
+    // taking the last planner-role pushBeads:true bracket with it.
+    assert.equal(sites.length, 15, `expected 15 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch
@@ -981,14 +983,22 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // 11 -> 9 (apra-fleet-3swo.5.3): the planner's own dispatch+resume pair
     // moved onto the engine (see above), taking two pushBeads:true brackets
     // with them. The scoped-replan planner's bracket stays inline.
+    // 9 -> 8 (same bead): the scoped-replan planner's pushBeads:true bracket
+    // moved onto the engine, so no planner-role bracket is left inline.
     assert.equal(
         pushBeadsSites.length,
-        9,
-        `expected exactly 9 withGitSync(...) brackets with pushBeads:true (doer+resume, integ+resume, regression+resume, harvester+resume, scoped-replan planner), found ${pushBeadsSites.length}`,
+        8,
+        `expected exactly 8 withGitSync(...) brackets with pushBeads:true (doer+resume, integ+resume, regression+resume, harvester+resume), found ${pushBeadsSites.length}`,
     );
 
+    // apra-fleet-3swo.5.3: 'planner' is no longer in this list -- every
+    // planner-role dispatch (main, resume and scoped replan) now runs through
+    // the dispatchRole engine, which opens the same pushBeads:true bracket
+    // from fleet-sprint/dispatch-role.mjs. That bracket is asserted
+    // behaviourally by test/planning-role-dispatch-pins.test.mjs and
+    // test/role-policies-table.test.mjs; keeping a runner.js-only marker for
+    // it here would just be a standing false failure.
     const roleMarkers = [
-        { name: 'planner', re: /getMemberForRole\('planner'\)|agentType:\s*'planner'/ },
         { name: 'doer', re: /agentType:\s*'doer'/ },
         { name: 'integ-test-runner', re: /getMemberForRole\('integ-test-runner'\)|agentType:\s*'integ-test-runner'/ },
         { name: 'regression-test-runner', re: /getMemberForRole\('regression-test-runner'\)|agentType:\s*'regression-test-runner'/ },

@@ -282,7 +282,12 @@ describe('buildPlannerPrompt: rejectedNewTasksToResubmit surfacing (apra-fleet-1
     // call-site text (bounded by two source landmarks unique to that block)
     // and asserts the call actually forwards `rejectedNewTasksToResubmit`.
     test('the scoped in-cycle replan CALL SITE in runner.js actually forwards rejectedNewTasksToResubmit (not just the builder shape)', () => {
-        const startMarker = 'const SCOPED_REPLAN_PLANNER_MAX_TURNS';
+        // apra-fleet-3swo.5.3: re-anchored -- the scoped replan's own
+        // MAX_TURNS constant moved into the dispatchRole engine with the
+        // ladder, so the block now starts at the engine call itself. The
+        // assertion is unchanged: this call site must still forward
+        // rejectedNewTasksToResubmit into buildPlannerPrompt().
+        const startMarker = "dispatchRole(dispatchCtx, 'scoped-replan-planner'";
         const endMarker = "label: 'Scoped Replan Plan (interactive)'";
         const startIdx = RUNNER_SOURCE.indexOf(startMarker);
         const endIdx = RUNNER_SOURCE.indexOf(endMarker, startIdx);
