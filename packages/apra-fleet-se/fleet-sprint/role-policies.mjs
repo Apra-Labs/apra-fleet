@@ -442,6 +442,8 @@ const scopedReplanPlanner = policy('scoped-replan-planner', {
 });
 
 const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
+    // apra-fleet-3swo.5.3: migrated -- dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: "label: 'Scoped Replan Review'",
     member: roleMember('plan-reviewer'),
     agentType: 'plan-reviewer',

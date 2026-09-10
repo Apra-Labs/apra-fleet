@@ -631,21 +631,40 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
         assert.strictEqual(failed.rec.invalidations, 0, 'A failed scoped replan must not invalidate anything.');
     });
 
-    test('scoped replan plan-reviewer: only an explicit APPROVED approves, and any failure is a non-approval', () => {
-        const region = stripComments(regionBetween(SRC, '--- Scoped plan-review pass ---', 'if (scopedReplanApproved) {'));
-        assert.ok(/let scopedReplanApproved = false;/.test(region), 'The scoped replan starts un-approved.');
-        assert.ok(
-            /scopedReplanApproved = scopedVerdict\.verdict === 'APPROVED';/.test(region),
-            'Only a returned APPROVED verdict may approve a scoped replan.'
-        );
-        assert.ok(
-            /if \(scopedPlannerOk\) \{/.test(region),
-            'The scoped plan-review only runs when the scoped planner pass itself succeeded.'
-        );
-        assert.ok(
-            !/\bthrow\b/.test(region),
-            'A scoped plan-review dispatch failure degrades to NOT approved; it never aborts the sprint.'
-        );
+    // apra-fleet-3swo.5.3: RE-ANCHORED onto the engine, same facts.
+    test('scoped replan plan-reviewer: only an explicit APPROVED approves, and any failure is a non-approval', async () => {
+        const opts = ROLE_CALL_OPTS['scoped-replan-plan-reviewer'];
+
+        // ONLY a returned APPROVED verdict may approve a scoped replan: the
+        // engine hands the caller the verdict verbatim and fabricates nothing,
+        // so the caller's `=== 'APPROVED'` check is the only approval path.
+        const approved = createRecordingCtx({ responses: [{ verdict: 'APPROVED', notes: 'ok', taskAssignments: [] }] });
+        const approvedOutcome = await dispatchRole(approved.ctx, 'scoped-replan-plan-reviewer', opts);
+        assert.strictEqual(approvedOutcome.ok, true);
+        assert.strictEqual(approvedOutcome.value.verdict, 'APPROVED');
+
+        // A schema-repair-exhausted or dispatch failure is a FAILED scoped
+        // review -- never an approval -- and never aborts the sprint.
+        for (const err of [schemaError(), transportError(), new TypeError('something else entirely')]) {
+            const failed = createRecordingCtx({ responses: [err] });
+            const outcome = await dispatchRole(failed.ctx, 'scoped-replan-plan-reviewer', opts);
+            assert.strictEqual(failed.rec.dispatches.length, 1, 'The scoped plan-review is a SINGLE bounded attempt.');
+            assert.strictEqual(outcome.ok, false, `${err.constructor.name}: a failed scoped review must be reported not-ok.`);
+            assert.strictEqual(outcome.degraded, true);
+            assert.strictEqual(
+                outcome.value,
+                null,
+                'A non-approval degrade fabricates NO verdict at all -- there is nothing for the caller to mistake for an approval.'
+            );
+            assert.ok(outcome.error, 'The caller needs the real error to log why the replan was not approved.');
+        }
+
+        // Same rationale as the scoped planner: self-heal before deferring to
+        // the next cycle's planner/plan-reviewer pass.
+        const auth = createRecordingCtx({ responses: [authError()], healed: false });
+        await dispatchRole(auth.ctx, 'scoped-replan-plan-reviewer', opts);
+        assert.strictEqual(auth.rec.authHeals.length, 1);
+        assert.strictEqual(auth.rec.authHeals[0].label, 'Scoped Replan Review dispatch');
     });
 
     test('streak assignment: schema/dispatch failures fall back to one-bead-per-streak, with exactly one bounded semantic-repair re-ask', () => {

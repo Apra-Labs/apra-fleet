@@ -4788,34 +4788,27 @@ async function runSprintCycle(context) {
                 // --- Scoped plan-review pass ---
                 let scopedReplanApproved = false;
                 if (scopedPlannerOk) {
-                    const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 500;
-                    try {
-                        const scopedVerdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
-                            buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle }),
-                            {
-                                member_name: getMemberForRole('plan-reviewer'),
-                                agentType: 'plan-reviewer',
-                                schema: planReviewerVerdict,
-                                model: FIXED_ROLE_TIER['plan-reviewer'],
-                                timeout_s: DISPATCH_TIMEOUT_S,
-                                max_total_s: DISPATCH_TIMEOUT_S,
-                                max_turns: SCOPED_REPLAN_REVIEWER_MAX_TURNS,
-                                label: 'Scoped Replan Review',
-                            }
-                        ));
-                        log(`Scoped Replan Reviewer: ${JSON.stringify(scopedVerdict)}`);
-                        scopedReplanApproved = scopedVerdict.verdict === 'APPROVED';
-                    } catch (err) {
-                        // Same rationale as the scoped planner catch above:
-                        // self-heal before deferring to the next cycle's
-                        // planner/plan-reviewer pass.
-                        if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                            await onLlmAuthFailure({ member: getMemberForRole('plan-reviewer'), label: 'Scoped Replan Review dispatch', error: err.message });
-                        }
-                        // A schema-repair-exhausted or dispatch failure is a
-                        // FAILED scoped review (never an approval), same
-                        // discipline as the main plan loop above.
-                        log(`[fleet-sprint] in-cycle scoped replan: plan-review dispatch failed (${err.message}) -- treating the scoped replan as NOT approved; bead(s) ${replanScopeIds.join(', ')} handed to the next cycle's planner.`);
+                    // The 'scoped-replan-plan-reviewer' row of
+                    // role-policies.mjs, executed by dispatchRole. That row
+                    // owns the turn budget, the read-side bracket, the single
+                    // bounded attempt, the auth self-heal (same rationale as
+                    // the scoped planner above: heal before deferring to the
+                    // next cycle's planner/plan-reviewer pass) and the
+                    // non-approval degrade -- a schema-repair-exhausted or
+                    // failed dispatch is a FAILED scoped review, never an
+                    // approval, and never an abort, the same discipline as the
+                    // main plan loop.
+                    const scopedReviewOutcome = await dispatchRole(dispatchCtx, 'scoped-replan-plan-reviewer', {
+                        prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle }),
+                        label: 'Scoped Replan Review',
+                        roleLabel: 'Scoped Replan Review',
+                    });
+                    if (scopedReviewOutcome.ok) {
+                        log(`Scoped Replan Reviewer: ${JSON.stringify(scopedReviewOutcome.value)}`);
+                        // ONLY an explicit APPROVED approves.
+                        scopedReplanApproved = scopedReviewOutcome.value.verdict === 'APPROVED';
+                    } else {
+                        log(`[fleet-sprint] in-cycle scoped replan: plan-review dispatch failed (${scopedReviewOutcome.error.message}) -- treating the scoped replan as NOT approved; bead(s) ${replanScopeIds.join(', ')} handed to the next cycle's planner.`);
                     }
                 }
 
