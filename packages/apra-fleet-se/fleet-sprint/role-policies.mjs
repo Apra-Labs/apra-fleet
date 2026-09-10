@@ -267,11 +267,22 @@ function policy(role, spec) {
          */
         migrated: spec.migrated ?? false,
         /**
-         * apra-fleet-3swo.24: a literal source substring, unique across every
-         * dispatch this table describes, that appears ONLY inside this
-         * dispatch's own real `agent(...)` call text in runner.js. NOT one of
-         * the nine POLICY_FIELDS axes (same reasoning as `migrated` above --
-         * it is call-site identity, not dispatch policy).
+         * apra-fleet-3swo.24: a literal source substring, UNIQUE ACROSS EVERY
+         * DISPATCH this table describes, that occurs inside this dispatch's
+         * own real `agent(...)` call text in runner.js. NOT one of the nine
+         * POLICY_FIELDS axes (same reasoning as `migrated` above -- it is
+         * call-site identity, not dispatch policy).
+         *
+         * UNIQUENESS ACROSS THE TABLE, NOT EXCLUSIVITY TO ONE CALL SITE: a
+         * dispatch's own anchor can legitimately appear at MORE than one real
+         * agent() call site of its OWN ladder. integ-test-runner's and
+         * regression-test-runner's main anchors ('featurePrompt,' /
+         * 'regressionPrompt,') each match two sites, because each role's own
+         * resume prompt re-embeds its main prompt variable verbatim
+         * (inline-ladder-guard.test.mjs's apra-fleet-3swo.35 block records and
+         * pins this). What matters is that no anchor is ever shared BETWEEN
+         * two different dispatches (see this file's (d) anchor-uniqueness
+         * test block).
          *
          * WHY THIS EXISTS: a role's `member` resolution expression
          * (memberExprFor()) is NOT role-unique -- roleMember('planner') is

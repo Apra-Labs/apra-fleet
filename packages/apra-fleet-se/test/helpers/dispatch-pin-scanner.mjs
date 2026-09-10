@@ -89,9 +89,22 @@ export function dispatchLadderModulePaths(fleetSprintDir, fileNames = DISPATCH_L
  * all of which operate on a single `src` string and locate facts by
  * structural anchor search, never by absolute file identity -- keeps working
  * unchanged. Anchors are unique text, so concatenation is transparent as long
- * as the set's modules do not repeat the same anchor text (true of
- * DISPATCH_LADDER_MODULES today: role-policies.mjs shares no anchor text with
- * runner.js's dispatch ladders).
+ * as no anchor search resolves inside the WRONG module.
+ *
+ * THIS IS NO LONGER "role-policies.mjs shares no anchor text with runner.js"
+ * (that was true when this file was first written, but role-policies.mjs now
+ * embeds every dispatch's `ladderAnchor` literal verbatim as data -- e.g.
+ * 'plannerPrompt,', "label: 'Streak Assignment'," -- copied from runner.js's
+ * own call sites). Nothing breaks TODAY only because runner.js is first in
+ * DISPATCH_LADDER_MODULES, so indexOf()/regionBetween() resolve against
+ * runner.js's copy first, and role-policies.mjs hosts no agent()/
+ * withGitSync()/withDispatchWatchdog() call sites for findCallSites() to
+ * find. This is a LATENT FALSE-GREEN, not a proven-safe invariant: if an
+ * anchor were ever deleted from runner.js while role-policies.mjs still
+ * carries the literal as data, regionBetween() would silently resolve inside
+ * role-policies.mjs instead of throwing "region start anchor not found".
+ * Module order in DISPATCH_LADDER_MODULES is load-bearing for that reason --
+ * do not reorder it without re-auditing every anchor search against it.
  *
  * @param {string[]} paths absolute file paths to read, in order
  * @returns {string}
