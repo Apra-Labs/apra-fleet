@@ -21,7 +21,16 @@ import {
 } from './helpers/dispatch-pin-scanner.mjs';
 import { planReviewerVerdict, streakAssignment } from '../fleet-sprint/contracts.mjs';
 import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
-import { PLANNING_LADDERS, ENGINE_DISPATCHES } from './helpers/planning-ladders.mjs';
+// PLANNING_ENGINE_DISPATCHES, not the shared ENGINE_DISPATCHES union: this
+// file pins the PLANNING side. Once the execution-side migration
+// (apra-fleet-3swo.5.7) starts adding its own engine-served dispatches to the
+// union, iterating it here would make this file assert planning-only
+// invariants (a role-kind member, an engine-injected KB block) about roles
+// that legitimately have neither. Those dispatches are pinned by
+// execution-role-dispatch-pins.test.mjs instead.
+import { PLANNING_LADDERS, PLANNING_ENGINE_DISPATCHES } from './helpers/planning-ladders.mjs';
+
+const ENGINE_DISPATCHES = PLANNING_ENGINE_DISPATCHES;
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
 import {
     createRecordingCtx,

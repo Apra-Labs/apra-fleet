@@ -45,6 +45,8 @@
 // inventory mapping each pre-migration assertion to its post-migration
 // replacement is in planning-role-dispatch-pins.test.mjs's header.
 
+import { EXECUTION_ENGINE_DISPATCHES } from './execution-ladders.mjs';
+
 /**
  * Every dispatch the dispatchRole engine (fleet-sprint/dispatch-role.mjs)
  * serves on the planning side, with the values it must RESOLVE for each --
@@ -61,7 +63,7 @@
  *   watchdog/watchdogLabel       -- the client-side watchdog really armed
  *   agentType/schema/resume      -- persona, verdict schema, resume argument
  */
-export const ENGINE_DISPATCHES = [
+export const PLANNING_ENGINE_DISPATCHES = [
     {
         role: 'planner',
         kind: 'main',
@@ -219,6 +221,18 @@ export const ENGINE_DISPATCHES = [
         resume: null,
     },
 ];
+
+/**
+ * EVERY dispatch the engine's single agent() call site serves, both sides of
+ * the migration. The census entry below names ONE call site, so its
+ * `dispatches` list must be the union: an execution-side ladder that migrates
+ * adds its resolved pins to ./execution-ladders.mjs and they arrive here,
+ * rather than needing a second (non-existent) engine call site to hang off.
+ *
+ * The import direction is deliberate -- execution-ladders.mjs is pure data
+ * with no imports of its own, so there is no cycle.
+ */
+export const ENGINE_DISPATCHES = [...PLANNING_ENGINE_DISPATCHES, ...EXECUTION_ENGINE_DISPATCHES];
 
 export const PLANNING_LADDERS = [
     {
