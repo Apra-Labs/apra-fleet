@@ -73,8 +73,12 @@ test('mock sprint: a successful Final Review LLM-auth self-heal short-circuits -
             sc.result && sc.result.status === 'success',
             `Expected the sprint to succeed off the preserved healed PASS verdict, got: ${JSON.stringify(sc.result)}`
         );
+        // apra-fleet-3swo.5.7: the final-review ladder moved onto the
+        // dispatchRole engine, which announces the same events in its own
+        // generic wording. The FACT each line stood for is unchanged and is
+        // still asserted -- only the sentence the engine writes differs.
         check(
-            sc.logs.some((m) => m.includes('LLM auth self-heal succeeded -- retrying once')),
+            sc.logs.some((m) => m.includes('LLM auth self-heal succeeded -- retrying')),
             `Expected the self-heal success log line, logs: ${JSON.stringify(sc.logs)}`
         );
         check(
@@ -120,8 +124,13 @@ test('mock sprint: a Final Review heal-retry that itself throws degrades to the 
             sc.result && sc.result.verdict === 'FAIL' && sc.result.status === 'failed',
             `Expected the hardcoded FAIL fallback (heal-retry failure degrades, does not abort), got: ${JSON.stringify(sc.result)}`
         );
+        // apra-fleet-3swo.5.7: the final-review ladder moved onto the
+        // dispatchRole engine, which announces the same events in its own
+        // generic wording. The FACT each line stood for is unchanged and is
+        // still asserted -- only the sentence the engine writes differs.
         check(
-            sc.logs.some((m) => m.includes('heal-retry agent dispatch failed') && m.includes('treating as FAIL')),
+            sc.logs.some((m) => m.includes('LLM auth self-heal succeeded -- retrying'))
+                && sc.logs.some((m) => m.includes('agent dispatch failed, degrading (synthesized-verdict)')),
             `Expected a logged heal-retry-failure -> FAIL fallback message, logs: ${JSON.stringify(sc.logs)}`
         );
     });

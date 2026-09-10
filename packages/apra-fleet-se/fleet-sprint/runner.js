@@ -3312,6 +3312,7 @@ async function runSprintCycle(context) {
             deployerReport,
             regressionReport,
             integReport,
+            finalVerdict,
         },
         isNoMutationDispatchFailure,
         invalidateAllBeadsCache,
@@ -6499,34 +6500,39 @@ async function runSprintCycle(context) {
     // reviewer. Without it a large sprint's final review dies at the default
     // turn limit and flips the whole sprint to a FAIL whose notes carry no
     // findings at all.
-    const FINAL_REVIEW_MAX_TURNS = 500;
-    // Final Review is the same 'reviewer' role as dispatchReview above
-    // (read-side, pushCode: false) -- G-pull before, no-op G-push after every
-    // attempt (including the retry below).
-    const finalReviewDispatchOpts = {
-        member_name: getMemberForRole('reviewer'),
-        agentType: 'reviewer',
-        schema: finalVerdict,
-        label: 'Final Review',
-        model: FIXED_ROLE_TIER.reviewer,
-        // Reviews the full diff/evidence across an entire epic's worth of
-        // closed tasks -- a timeout here flips a whole sprint's outcome to
-        // FAIL.
-        timeout_s: DISPATCH_TIMEOUT_S,
-        max_total_s: DISPATCH_TIMEOUT_S,
-        max_turns: FINAL_REVIEW_MAX_TURNS,
-    };
     // apra-fleet-nx7: offer the final reviewer the same INFERRED candidates a
     // per-round reviewer gets. Fetched once, before the dispatch, so the retry
-    // and resume paths below reuse the identical block rather than re-querying a
+    // and resume paths reuse the identical block rather than re-querying a
     // KB that its own earlier promotions may have already changed.
     const finalReviewRepoPath = kbPriming.folderOf(getMemberForRole('reviewer'));
     const finalKbCandidates = await kbWork.promotionCandidates(finalReviewRepoPath);
     if (finalKbCandidates.length > 0) {
         log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
     }
-    const dispatchFinalReview = () => withGitSync(getMemberForRole('reviewer'), false, () => agent(
-        buildFinalVerdictPrompt({
+    // apra-fleet-3swo.5.7: the final-review ladder -- its dispatch, its
+    // read-side git-sync bracket, its max_turns-exhaustion resume at doubled
+    // turns, its retry-once wrapper, its auth self-heal and its FAIL degrade --
+    // is now the 'final-review' row of fleet-sprint/role-policies.mjs.
+    //
+    // WHY THE HEAL SHORT-CIRCUIT IS POLICY DATA. Final Review is the LAST and
+    // most expensive dispatch of the sprint, and its verdict IS the sprint's
+    // outcome. An auth/trust failure is deterministic, so the generic
+    // retry-once ladder would only reproduce it -- but an LLM-auth failure gets
+    // exactly ONE self-heal, and on success the healed verdict is
+    // authoritative and MUST end the ladder: falling through to the generic
+    // retry as well would fire a SECOND full Final Review, silently discard the
+    // healed verdict (a PASS could become a FAIL) and double the cost. That is
+    // retry.authSelfHealShortCircuits. A heal that does NOT succeed leaves the
+    // channel walled off with no judgement to fabricate, so
+    // retry.rethrowsUnhealedNonRetryable propagates it rather than degrading to
+    // a FAIL nobody decided.
+    //
+    // Note Final Review has no role member of its own: it is the REVIEWER role,
+    // dispatching the reviewer persona over the whole sprint -- so its policy
+    // routes to getMemberForRole('reviewer'), unlike the per-round reviewer
+    // which takes the pool head.
+    const finalReviewOutcome = await dispatchRole(dispatchCtx, 'final-review', {
+        prompt: buildFinalVerdictPrompt({
             targetIssues,
             branch: validated.branch,
             baseBranch: validated.baseBranch,
@@ -6541,117 +6547,31 @@ async function runSprintCycle(context) {
             kbCandidates: finalKbCandidates,
             kbKnowledge: kbPriming.knowledgeOf(getMemberForRole('reviewer')),
         }),
-        // member_name is repeated literally here -- not only via the
-        // shared opts object -- so the source-level call-site parse in
-        // dispatch-safety-guard can verify it.
-        { ...finalReviewDispatchOpts, member_name: getMemberForRole('reviewer') }
-    ));
-    const dispatchFinalReviewResume = () => withGitSync(getMemberForRole('reviewer'), false, () => agent(
-        'Continue your final review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',
-        {
-            ...finalReviewDispatchOpts,
-            member_name: getMemberForRole('reviewer'),
-            label: `Final Review (resume, max_turns=${FINAL_REVIEW_MAX_TURNS * 2})`,
-            resume: true,
-            max_turns: FINAL_REVIEW_MAX_TURNS * 2,
-        }
-    ));
-    // One logical final-review attempt: on max_turns exhaustion, resume the
-    // SAME session with a doubled budget instead of restarting (a fresh
-    // retry would deterministically die at the same limit).
-    const runFinalReviewAttempt = async () => {
-        try {
-            return await dispatchFinalReview();
-        } catch (err) {
-            if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                log(`Final Review exhausted its turn limit (max_turns=${FINAL_REVIEW_MAX_TURNS}) -- resuming the same session with max_turns=${FINAL_REVIEW_MAX_TURNS * 2} instead of restarting the review.`);
-                await memberSessionGuard.killIfAlive(getMemberForRole('reviewer'));
-                return await dispatchFinalReviewResume();
-            }
-            throw err;
-        }
-    };
-    // Final Review is the LAST dispatch of the sprint, so a single transient
-    // AgentDispatchError/AgentOutputError here would otherwise flip an
-    // otherwise fully-successful sprint straight to verdict:FAIL with zero
-    // retry. Mirrors dispatchPlanner()'s retry-once wrapper: retry once before
-    // falling back to the hardcoded FAIL verdict.
-    try {
-        finalVerdictResult = await runFinalReviewAttempt();
-    } catch (err) {
-        // Auth/trust failures are deterministic -- the generic retry-once
-        // ladder below would only reproduce them. LLM-auth failures instead
-        // get exactly ONE self-heal attempt: on success the healed verdict is
-        // authoritative and MUST short-circuit here -- falling through to the
-        // generic ladder below would fire a SECOND full Final Review (the
-        // most expensive dispatch in the sprint), silently discarding the
-        // healed verdict (a PASS could become a FAIL) and doubling cost. If
-        // the heal itself succeeds but the heal-retry dispatch throws, that
-        // throw is caught here too and degraded through the same FAIL
-        // fallback as an ordinary retry failure below -- it must never escape
-        // this catch and abort the whole sprint.
-        let handledByAuthSelfHeal = false;
-        if (isNonRetryableDispatchError(err)) {
-            let healedByLlmAuthSelfHeal = false;
-            if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                const healed = await onLlmAuthFailure({ member: getMemberForRole('reviewer'), label: 'Final Review dispatch', error: err.message });
-                if (healed) {
-                    log(`Final Review: LLM auth self-heal succeeded -- retrying once.`);
-                    try {
-                        finalVerdictResult = await runFinalReviewAttempt();
-                    } catch (healRetryErr) {
-                        if (healRetryErr instanceof AgentOutputError) {
-                            log(`Final Review: heal-retry schema-repair exhausted, treating as FAIL: ${healRetryErr.message}`);
-                            finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after an LLM-auth self-heal retry: ${healRetryErr.message}` };
-                        } else if (healRetryErr instanceof AgentDispatchError || healRetryErr instanceof FleetTransportError) {
-                            log(`Final Review: heal-retry agent dispatch failed, treating as FAIL: ${healRetryErr.message}`);
-                            finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer dispatch failed after an LLM-auth self-heal retry: ${healRetryErr.message}` };
-                        } else {
-                            throw healRetryErr;
-                        }
-                    }
-                    healedByLlmAuthSelfHeal = true;
-                }
-            }
-            if (!healedByLlmAuthSelfHeal) throw err;
-            handledByAuthSelfHeal = true;
-        }
-        if (!handledByAuthSelfHeal) {
-            if (err instanceof AgentOutputError) {
-                log(`Final Review: dispatch failed (schema-repair exhausted: ${err.message}). Retrying once.`);
-            } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                log(`Final Review: dispatch failed (agent dispatch error: ${err.message}). Retrying once.`);
-            } else {
-                throw err;
-            }
-            try {
-                finalVerdictResult = await runFinalReviewAttempt();
-            } catch (retryErr) {
-                if (retryErr instanceof AgentOutputError) {
-                    log(`Final Review: schema-repair exhausted after retry, treating as FAIL: ${retryErr.message}`);
-                    finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts (including one retry): ${retryErr.message}` };
-                } else if (retryErr instanceof AgentDispatchError || retryErr instanceof FleetTransportError) {
-                    log(`Final Review: agent dispatch failed after retry, treating as FAIL: ${retryErr.message}`);
-                    finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer dispatch failed after repair attempts (including one retry): ${retryErr.message}` };
-                } else {
-                    throw retryErr;
-                }
-            }
-        }
-    }
+        resumePrompt: 'Continue your final review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',
+        roleLabel: 'Final Review',
+        label: 'Final Review',
+        resumeLabel: `Final Review (resume, max_turns=${TURN_BASES.FINAL_REVIEW_MAX_TURNS * 2})`,
+        synthesizedNotes: {
+            schema: (err) => `Final reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
+            dispatch: (err) => `Final reviewer dispatch failed after repair attempts: ${err.message}`,
+        },
+    });
+    finalVerdictResult = finalReviewOutcome.value;
     // No duplicate log() dump -- see dispatchReview() for why.
     // `finalVerdictResult.verdict` also surfaces via the generic,
     // workflow-agnostic Result strip in the dashboard header (state.result --
     // see src/viewer/index.mjs), a second independent reason a raw JSON
     // re-print here would be redundant.
 
-    // apra-fleet-nx7: execute the final reviewer's KB decisions through the same
-    // path every per-round review uses. Deliberately NOT gated on the verdict --
-    // a fact can be verified even when the sprint as a whole fails, and reviewer
-    // contract already says as much ("Not tied to the verdict"). Placed before
-    // the beads/PR work below and kept non-fatal by kbWork.apply itself, so a KB
-    // problem can never change a sprint's outcome.
-    await kbWork.apply(ROLE_REVIEWER, finalReviewRepoPath, finalVerdictResult);
+    // apra-fleet-nx7: the final reviewer's KB decisions are executed through
+    // the same path every per-round review uses -- now as the 'final-review'
+    // row's 'kb-apply' postResult step (apra-fleet-3swo.5.7), which the engine
+    // runs immediately after a successful dispatch. Deliberately NOT gated on
+    // the VERDICT -- a fact can be verified even when the sprint as a whole
+    // fails, and the reviewer contract already says as much ("Not tied to the
+    // verdict"). It is gated on there BEING a verdict: a degraded FAIL is
+    // fabricated by the engine and carries no KB fields at all, so there is
+    // nothing to apply.
 
     // Publish what this sprint confirmed. Immediately after the LAST promotion
     // of the run, so the bible carries every CONFIRMED entry including the ones

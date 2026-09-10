@@ -363,7 +363,9 @@ const EXPECTED_COMMAND_COUNT = 29;
 // 8 -> 6 (same bead): the integ-test-runner ladder -- its dispatch and its
 // max_turns-exhaustion resume, which is also its ONE infra-recovery resume --
 // followed the regression runner onto the engine.
-const EXPECTED_AGENT_COUNT = 6;
+// 6 -> 4 (same bead): the final-review ladder -- its dispatch and its
+// max_turns-exhaustion resume -- followed the integ runner onto the engine.
+const EXPECTED_AGENT_COUNT = 4;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in
