@@ -53,6 +53,50 @@
  */
 export const EXECUTION_ENGINE_DISPATCHES = [
     {
+        role: 'reviewer',
+        kind: 'main',
+        name: 'reviewer (per-round, once)',
+        // The per-round reviewer takes the reviewer POOL HEAD, a runner-local
+        // value the engine cannot resolve on its own -- so the pin names the
+        // BINDING rather than a role. Final review, by contrast, resolves the
+        // reviewer ROLE member; that difference is the point.
+        memberRole: null,
+        memberBinding: 'reviewerPool[0]',
+        agentType: 'reviewer',
+        modelTier: 'premium',
+        maxTurns: 500,
+        timeoutS: 'DISPATCH_TIMEOUT_S',
+        maxTotalS: 'DISPATCH_TIMEOUT_S',
+        bracketed: true,
+        pushCode: false,
+        pushBeads: false,
+        watchdog: false,
+        watchdogLabel: null,
+        schema: 'reviewerVerdict',
+        // 'call-site': the engine passes through whatever the runner's
+        // per-round session lookup handed it (roundSessions.resumeArgFor).
+        resume: 'call-site',
+    },
+    {
+        role: 'reviewer',
+        kind: 'max-turns-resume',
+        name: 'reviewer (resume after max_turns exhaustion)',
+        memberRole: null,
+        memberBinding: 'reviewerPool[0]',
+        agentType: 'reviewer',
+        modelTier: 'premium',
+        maxTurns: 1000,
+        timeoutS: 'DISPATCH_TIMEOUT_S',
+        maxTotalS: 'DISPATCH_TIMEOUT_S',
+        bracketed: true,
+        pushCode: false,
+        pushBeads: false,
+        watchdog: false,
+        watchdogLabel: null,
+        schema: 'reviewerVerdict',
+        resume: true,
+    },
+    {
         role: 'final-review',
         kind: 'main',
         name: 'final review (once)',
@@ -267,38 +311,6 @@ export const EXECUTION_ENGINE_DISPATCHES = [
  *                    (the doer's escalating resume ladder), pinned separately
  */
 export const EXECUTION_INLINE_LADDERS = [
-    {
-        ladder: 'reviewer',
-        name: 'reviewer (per-round, once)',
-        anchor: 'acceptanceCriteriaJson,',
-        member: 'reviewerPool[0]',
-        agentType: "'reviewer'",
-        modelTier: 'FIXED_ROLE_TIER.reviewer',
-        maxTurnsExpr: 'BASE_REVIEWER_MAX_TURNS',
-        maxTurnsValue: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'false',
-        pushBeads: null,
-        schema: 'reviewerVerdict',
-        resume: "roundSessions.resumeArgFor('reviewer', cycle)",
-    },
-    {
-        ladder: 'reviewer',
-        name: 'reviewer (resume after max_turns exhaustion)',
-        anchor: 'Continue your review exactly where you left off',
-        member: 'reviewerPool[0]',
-        agentType: "'reviewer'",
-        modelTier: 'FIXED_ROLE_TIER.reviewer',
-        maxTurnsExpr: 'BASE_REVIEWER_MAX_TURNS * 2',
-        maxTurnsValue: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'false',
-        pushBeads: null,
-        schema: 'reviewerVerdict',
-        resume: 'true',
-    },
     {
         ladder: 'doer',
         name: 'doer (streak)',

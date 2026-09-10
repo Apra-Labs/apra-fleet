@@ -117,7 +117,9 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // followed the regression runner onto the engine.
 // 6 -> 4 (same bead): the final-review ladder -- its dispatch and its
 // max_turns-exhaustion resume -- followed the integ runner onto the engine.
-const EXPECTED_AGENT_COUNT = 4;
+// 4 -> 2 (same bead): the per-round reviewer ladder -- its dispatch and its
+// max_turns-exhaustion resume -- followed the final review onto the engine.
+const EXPECTED_AGENT_COUNT = 2;
 // 14 -> 12 (apra-fleet-3swo.5.7): the harvester's dispatch and resume brackets
 // moved onto the dispatchRole engine's one generic withGitSync call.
 // 12 -> 10 (same bead): the deployer's two read-side brackets followed the
@@ -128,7 +130,9 @@ const EXPECTED_AGENT_COUNT = 4;
 // 8 -> 6 (same bead): the integ runner's two pushBeads:true brackets followed
 // them onto the engine.
 // 6 -> 4 (same bead): the final review's two read-side brackets followed them.
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 4;
+// 4 -> 2 (same bead): the per-round reviewer's two read-side brackets followed
+// them. Only the doer pair is left inline.
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 2;
 // apra-fleet-3swo.5.3: EMPTY. The two Streak Assignment dispatches -- the only
 // documented, deliberate exemptions from the bracket invariant -- now run
 // through the dispatchRole engine, whose policy row records `bracket: {wrapped:

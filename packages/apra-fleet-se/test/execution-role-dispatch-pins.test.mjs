@@ -454,28 +454,146 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
 });
 
 describe('execution-role dispatch: retry and degrade ladders', () => {
-    test('reviewer: two attempts, max_turns resume, and infrastructure failures degrade to CHANGES_NEEDED marked dispatchFailed', () => {
-        const region = stripComments(regionBetween(SRC, 'for (let reviewAttempt = 1;', 'if (!isReviewerContractViolation(verdict)) {'));
-        assert.ok(/reviewAttempt <= 2/.test(region), 'The reviewer gets exactly one extra infrastructure attempt per round.');
-        assert.ok(
-            /err instanceof AgentDispatchError && err\.details\?\.reason === 'max_turns_exhausted'/.test(region),
-            'Turn exhaustion resumes the same session rather than restarting the review.'
+    test('reviewer: two attempts, max_turns resume, and infrastructure failures degrade to CHANGES_NEEDED marked dispatchFailed', async () => {
+        // apra-fleet-3swo.5.7: re-anchored onto the engine.
+        //   /reviewAttempt <= 2/                    -> the ladder really makes
+        //        two dispatches before degrading
+        //   max_turns_exhausted -> same-session resume, and
+        //   memberSessionGuard.killIfAlive(reviewerPool[0])
+        //                                           -> rec.kills, ordered
+        //                                              before the resume
+        //   two `verdict: 'CHANGES_NEEDED'` paths   -> both recognised classes
+        //                                              really fabricate it
+        //   two `dispatchFailed: true`              -> degrade.marker, stamped
+        //                                              on every fabricated one
+        //   no `verdict: 'APPROVED'`                -> neverSynthesizes,
+        //                                              enforced on the real value
+        //   GitSyncError / DoltSyncError degrade    -> degrade.extraDispatchErrors
+        //   NO GitDivergedError / DoltDivergedError -> a real divergence really
+        //                                              still propagates
+        //   roundSessions.clear('reviewer')         -> the 'clear-round-session'
+        //                                              DEGRADE step, which runs
+        //                                              on failure and NOT on
+        //                                              success
+        //   `throw err;`                            -> an unrecognised class
+        //                                              really propagates
+        const p = policyFor('reviewer');
+        const opts = ROLE_CALL_OPTS.reviewer;
+
+        const resumed = await driveEngineDispatch('reviewer', 'max-turns-resume');
+        assert.deepStrictEqual(
+            resumed.rec.kills,
+            [BINDINGS['reviewerPool[0]']],
+            'A still-alive exhausted session is killed before the resume, on the pool head the dispatch routes to.'
         );
-        assert.ok(/memberSessionGuard\.killIfAlive\(reviewerPool\[0\]\)/.test(region), 'A still-alive exhausted session is killed before the resume.');
-        const changesNeeded = region.match(/verdict: 'CHANGES_NEEDED'/g) || [];
-        assert.strictEqual(changesNeeded.length, 2, 'Both degrade paths (schema-repair exhaustion, dispatch/sync failure) synthesize CHANGES_NEEDED.');
-        assert.strictEqual((region.match(/dispatchFailed: true/g) || []).length, 2, 'Both synthesized verdicts are marked dispatchFailed so the contract-violation guard never mistakes them for a self-contradictory verdict.');
-        assert.ok(!/verdict: 'APPROVED'/.test(region), 'No reviewer degrade path may synthesize an APPROVED verdict.');
-        assert.ok(
-            /err instanceof GitSyncError/.test(region) && /err instanceof DoltSyncError/.test(region),
-            'The review\'s own read-side sync bracket failures degrade identically to a dispatch failure.'
+        const killIndex = resumed.rec.events.findIndex((e) => e.type === 'kill');
+        const resumeIndex = resumed.rec.events.findIndex((e) => e.type === 'dispatch' && e.entry === resumed.rec.dispatches[1]);
+        assert.ok(killIndex >= 0 && killIndex < resumeIndex, 'Turn exhaustion resumes the same session rather than restarting the review.');
+
+        // Two attempts, then degrade -- one extra infrastructure attempt per round.
+        const spent = createRecordingCtx({ responses: [transportError(), transportError()] });
+        const degraded = await dispatchRole(spent.ctx, 'reviewer', opts);
+        assert.strictEqual(spent.rec.dispatches.length, 2, 'The reviewer gets exactly one extra infrastructure attempt per round.');
+        assert.strictEqual(p.retry.attempts, 2);
+
+        // Both degrade paths, plus the two sync classes that degrade identically.
+        const degradeDrivers = [schemaError, transportError, gitSyncError, doltSyncError];
+        for (const make of degradeDrivers) {
+            const { ctx } = createRecordingCtx({ responses: [make(), make()] });
+            const outcome = await dispatchRole(ctx, 'reviewer', opts);
+            assert.strictEqual(outcome.value.verdict, 'CHANGES_NEEDED', 'Both degrade paths synthesize CHANGES_NEEDED.');
+            assert.notStrictEqual(outcome.value.verdict, 'APPROVED', 'No reviewer degrade path may synthesize an APPROVED verdict.');
+            assert.strictEqual(
+                outcome.value.dispatchFailed,
+                true,
+                'Every synthesized verdict is marked dispatchFailed so the contract-violation guard never mistakes it for a self-contradictory verdict.'
+            );
+            assert.deepStrictEqual(outcome.value.reopenIds, [], 'A fabricated verdict claims nothing to reopen.');
+            assert.deepStrictEqual(outcome.value.newTasks, []);
+        }
+        assert.deepStrictEqual(
+            p.degrade.extraDispatchErrors,
+            ['GitSyncError', 'DoltSyncError'],
+            "The review's own read-side sync bracket failures degrade identically to a dispatch failure."
         );
-        assert.ok(
-            !/GitDivergedError/.test(region) && !/DoltDivergedError/.test(region),
-            'A real divergence is a branch integrity problem and must still propagate rather than degrade to a verdict.'
+        assert.strictEqual(degraded.value.verdict, 'CHANGES_NEEDED');
+
+        // A REAL divergence is a branch integrity problem and must still
+        // propagate rather than degrade to a verdict.
+        const diverged = createRecordingCtx({ responses: [divergedError(), divergedError()] });
+        await assert.rejects(
+            () => dispatchRole(diverged.ctx, 'reviewer', opts),
+            /branch diverged/,
+            'A real divergence must still propagate rather than degrade to a verdict.'
         );
-        assert.ok(/roundSessions\.clear\('reviewer'\)/.test(region), 'A failed round must not leave its session to be resumed by the next round.');
-        assert.ok(/throw err;/.test(region), 'An unrecognised error class still propagates.');
+        const unrecognised = createRecordingCtx({ responses: [new TypeError('not a dispatch failure at all')] });
+        await assert.rejects(
+            () => dispatchRole(unrecognised.ctx, 'reviewer', opts),
+            TypeError,
+            'An unrecognised error class still propagates.'
+        );
+
+        // A failed round drops its session; a SUCCESSFUL round keeps it.
+        const failedRound = createRecordingCtx({ responses: [transportError(), transportError()] });
+        await dispatchRole(failedRound.ctx, 'reviewer', opts);
+        assert.ok(
+            failedRound.rec.steps.some((e) => e.step === 'clear-round-session'),
+            'A failed round must not leave its session to be resumed by the next round.'
+        );
+        const goodRound = await driveEngineDispatch('reviewer', 'main');
+        assert.ok(
+            !goodRound.rec.steps.some((e) => e.step === 'clear-round-session'),
+            "A SUCCESSFUL round's session is exactly what the next round wants to resume -- that asymmetry is why this is a degrade step."
+        );
+        assert.deepStrictEqual(p.degrade.steps, ['clear-round-session']);
+    });
+
+    test('reviewer: a self-contradictory verdict is retried once on the SAME budget, then raised as its own error', async () => {
+        // apra-fleet-3swo.5.7: the contract guard used to be a loop condition
+        // inside dispatchReview (`isReviewerContractViolation(verdict)` ->
+        // retry once -> throw ReviewerContractViolationError). It is now a
+        // postResult STEP that rejects the result plus
+        // retry.retryOnInvalidResult, and the behaviour is pinned here.
+        const opts = ROLE_CALL_OPTS.reviewer;
+        const contradictory = { verdict: 'CHANGES_NEEDED', notes: 'nothing actionable', reopenIds: [], newTasks: [] };
+        const usable = { verdict: 'CHANGES_NEEDED', notes: 'fix X', reopenIds: ['bead-1'], newTasks: [] };
+        const guard = ({ value }) => (value && value.reopenIds && value.reopenIds.length === 0
+            && (value.newTasks || []).length === 0 && value.verdict === 'CHANGES_NEEDED' && !value.dispatchFailed
+            ? { rejected: true, reason: 'nothing for the orchestrator to act on' }
+            : undefined);
+
+        // Rejected once, then a fresh review returns something usable.
+        const recovered = createRecordingCtx({
+            responses: [contradictory, usable],
+            steps: { 'reviewer-contract-guard': guard },
+        });
+        const outcome = await dispatchRole(recovered.ctx, 'reviewer', opts);
+        assert.strictEqual(recovered.rec.dispatches.length, 2, 'A verdict that contradicts itself is answered with a whole fresh review, not a nudge.');
+        assert.strictEqual(outcome.value, usable);
+        assert.strictEqual(
+            recovered.rec.steps.filter((e) => e.step === 'kb-apply').length,
+            1,
+            'kb-apply must not run for a verdict the guard rejected -- steps run in order and the rejection ends the attempt.'
+        );
+
+        // Rejected twice: the caller gets its OWN error, never a fabricated verdict.
+        const persistent = createRecordingCtx({
+            responses: [contradictory, contradictory],
+            steps: { 'reviewer-contract-guard': guard },
+        });
+        await assert.rejects(
+            () => dispatchRole(persistent.ctx, 'reviewer', opts),
+            /HARNESS-REJECTED/,
+            'Twice in a row is a distinct failure the caller raises as ReviewerContractViolationError, not a degrade.'
+        );
+        assert.strictEqual(persistent.rec.dispatches.length, 2, 'The contract guard shares the ladder\'s two-attempt budget.');
+        assert.strictEqual(
+            persistent.rec.steps.filter((e) => e.step === 'kb-apply').length,
+            0,
+            'No usable verdict was ever produced, so no KB work was applied.'
+        );
+        assert.strictEqual(policyFor('reviewer').retry.retryOnInvalidResult, true);
+        assert.deepStrictEqual(policyFor('reviewer').postResult, ['reviewer-contract-guard', 'kb-apply']);
     });
 
     test('doer: bounded escalating resume ladder, closed-streak short-circuit, and no re-dispatch after a post-dispatch sync failure', () => {

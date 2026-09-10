@@ -169,12 +169,8 @@ const ROLE_SOURCE = {
         // inside it, so its attempt budget is the doer's, re-derived here too.
         attempts: { kind: 'wrapper', call: 'dispatchDoer(' },
     },
-    reviewer: {
-        anchor: 'acceptanceCriteriaJson,',
-        secondary: 'Continue your review exactly where you left off',
-        region: ['for (let reviewAttempt = 1;', 'if (!isReviewerContractViolation(verdict)) {'],
-        attempts: { kind: 'loop', var: 'reviewAttempt' },
-    },
+    // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
+    reviewer: { engine: true },
     // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
     'final-review': { engine: true },
     // apra-fleet-3swo.5.7: MIGRATED -- see section (7).

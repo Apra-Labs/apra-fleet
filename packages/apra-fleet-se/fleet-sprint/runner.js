@@ -3313,6 +3313,7 @@ async function runSprintCycle(context) {
             regressionReport,
             integReport,
             finalVerdict,
+            reviewerVerdict,
         },
         isNoMutationDispatchFailure,
         invalidateAllBeadsCache,
@@ -3335,6 +3336,32 @@ async function runSprintCycle(context) {
             // and refuse to proceed. Verified here rather than assumed: the
             // prompt is assembled from several pieces, and a silent drop
             // manifests only as a mysteriously stalled deploy.
+            // A CHANGES_NEEDED verdict with both reopenIds and newTasks empty
+            // is self-contradictory: there is nothing for the orchestrator to
+            // act on, so it can only accumulate toward stall-abort. Rejecting
+            // it here (rather than at the call site) is what lets
+            // retry.retryOnInvalidResult spend the ladder's OWN remaining
+            // attempt on a fresh review. A verdict the engine itself
+            // fabricated is exempt -- it is marked dispatchFailed and stands
+            // for an infrastructure failure, not the reviewer contradicting
+            // itself.
+            'reviewer-contract-guard': ({ value }) => {
+                if (!isReviewerContractViolation(value)) return undefined;
+                return {
+                    rejected: true,
+                    // Worded so the engine's own "result rejected (<reason>)"
+                    // line still names this as a contract violation: that
+                    // phrase is what an operator scans the log for.
+                    reason: 'contract violation: CHANGES_NEEDED with empty reopenIds AND empty newTasks -- nothing for the orchestrator to act on',
+                };
+            },
+            // A failed round's session must not be resumed by the next round --
+            // drop it so the next review starts fresh. Recorded as a DEGRADE
+            // step, never a postResult one: a successful round's session is
+            // exactly what the next round wants to resume.
+            'clear-round-session': ({ policy }) => {
+                roundSessions.clear(policy.ladder);
+            },
             'sprint-self-id-in-prompt': ({ opts }) => {
                 if (typeof opts.prompt === 'string' && opts.prompt.includes(sprintSelfId)) return;
                 throw new Error(
@@ -3503,29 +3530,31 @@ async function runSprintCycle(context) {
         // session at a doubled budget: the session already holds the full
         // review context, so a continue-nudge finishes the job instead of
         // restarting it.
-        const BASE_REVIEWER_MAX_TURNS = 500;
-        const reviewerDispatchOpts = {
-            member_name: reviewerPool[0],
-            agentType: 'reviewer',
-            schema: reviewerVerdict,
-            model: FIXED_ROLE_TIER.reviewer,
-            // The reviewer inspects a real diff/branch, not a quick prompt, so
-            // it needs the sprint's dispatch budget rather than the default.
-            timeout_s: DISPATCH_TIMEOUT_S,
-            max_total_s: DISPATCH_TIMEOUT_S,
-            max_turns: BASE_REVIEWER_MAX_TURNS,
-            // Within THIS cycle's develop-review loop, resume the reviewer's own
-            // prior-round session by explicit session id so a re-review of the
-            // next round's fixes keeps the diff/context it already built. False
-            // on the first round of any cycle (roundSessions never resumes
-            // across cycles) and cleared on a failed round below. The
-            // max_turns-exhaustion resume overrides this to `resume: true`,
-            // which is an in-dispatch continuation, not a cross-round one.
-            resume: roundSessions.resumeArgFor('reviewer', cycle),
-            onSessionId: (id, meta) => roundSessions.record('reviewer', cycle, id, meta),
-        };
-        const dispatchReviewerOnce = () => withGitSync(reviewerPool[0], false, () => agent(
-            buildReviewerPrompt({
+        // apra-fleet-3swo.5.7: the per-round reviewer ladder -- its dispatch,
+        // its read-side git-sync bracket, its max_turns-exhaustion resume at
+        // doubled turns, its two-attempt budget, its auth self-heal, its
+        // CHANGES_NEEDED degrade and its contract-violation retry -- is now the
+        // 'reviewer' row of fleet-sprint/role-policies.mjs.
+        //
+        // TWO things about this ladder are worth naming, because both are
+        // recorded as data rather than written out here:
+        //
+        //  1. The reviewer routes to the reviewer POOL HEAD, not to the
+        //     reviewer ROLE member the final review uses. That is a
+        //     'pool-head'-kind member, which the engine cannot resolve on its
+        //     own -- it arrives as the `reviewerPool[0]` binding below.
+        //
+        //  2. The contract guard shares the ladder's attempt budget. A
+        //     CHANGES_NEEDED verdict with both reopenIds and newTasks empty is
+        //     self-contradictory (nothing for the orchestrator to act on) and
+        //     must never be treated as an ordinary "more work needed" round.
+        //     It is a postResult STEP that rejects the result, and
+        //     retry.retryOnInvalidResult is what spends a second whole review
+        //     on it rather than a nudge -- a verdict that contradicts itself
+        //     cannot be repaired in place. Once the budget is spent the caller
+        //     gets a ReviewerContractViolationError, never a fabricated verdict.
+        const reviewOutcome = await dispatchRole(dispatchCtx, 'reviewer', {
+            prompt: buildReviewerPrompt({
                 beadIds,
                 acceptanceCriteriaJson,
                 baseBranch: validated.baseBranch,
@@ -3534,141 +3563,58 @@ async function runSprintCycle(context) {
                 kbCandidates,
                 kbKnowledge: reviewerKnowledge,
             }),
-            // member_name is repeated literally here -- not only via the
-            // shared opts object -- so the source-level call-site parse in
-            // dispatch-safety-guard can verify it.
-            { ...reviewerDispatchOpts, member_name: reviewerPool[0] }
-        ));
-        const dispatchReviewerResume = () => withGitSync(reviewerPool[0], false, () => agent(
             // Restate the review scope: a resumed dispatch replaces the
             // delivered prompt artifact, so the scope must be repeated inline.
-            'Continue your review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. ' +
-            // apra-fleet-s6d: same empty-beadIds case as buildReviewerPrompt --
-            // a scope-wide re-review has no ids to restate, and "bead id(s)
-            // under review  on branch..." reads as a dropped value.
-            `Your scope, restated so a resumed dispatch never loses it: `
-            + (Array.isArray(beadIds) && beadIds.length > 0
-                ? `bead id(s) under review ${beadIds.join(', ')} `
-                : `the entire sprint scope (no individual bead ids -- you are judging whether the sprint as a whole is complete) `)
-            + `on branch ${validated.branch} against base ${validated.baseBranch}. ` +
-            'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
-            {
-                ...reviewerDispatchOpts,
-                member_name: reviewerPool[0],
-                label: `Review (resume, max_turns=${BASE_REVIEWER_MAX_TURNS * 2})`,
-                resume: true,
-                max_turns: BASE_REVIEWER_MAX_TURNS * 2,
-            }
-        ));
-        let verdict;
-        for (let reviewAttempt = 1; reviewAttempt <= 2; reviewAttempt++) {
-            try {
-                try {
-                    verdict = await dispatchReviewerOnce();
-                } catch (err) {
-                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        log(`Reviewer exhausted its turn limit (max_turns=${BASE_REVIEWER_MAX_TURNS}) -- resuming the same session with max_turns=${BASE_REVIEWER_MAX_TURNS * 2} instead of restarting the review.`);
-                        await memberSessionGuard.killIfAlive(reviewerPool[0]);
-                        verdict = await dispatchReviewerResume();
-                    } else {
-                        throw err;
-                    }
-                }
-            } catch (err) {
-                // The retry-once loop below blind-retries an AgentDispatchError,
-                // and an LLM-auth failure reproduces deterministically on an
-                // unhealed retry -- one self-heal attempt gives that retry a
-                // real chance to succeed.
-                if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                    await onLlmAuthFailure({ member: reviewerPool[0], label: 'Reviewer dispatch', error: err.message });
-                }
-                // The verdicts synthesized below stand for INFRASTRUCTURE
-                // failures, not the reviewer contradicting itself -- they are
-                // marked dispatchFailed so the contract-violation guard further
-                // down never mistakes a dispatch failure for a self-
-                // contradictory LLM verdict.
-                if (err instanceof AgentOutputError) {
-                    log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
-                    // A failed round's session must not be resumed by the next
-                    // round -- drop it so the next review starts fresh.
-                    roundSessions.clear('reviewer');
-                    verdict = {
-                        verdict: 'CHANGES_NEEDED',
-                        notes: `Reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
-                        reopenIds: [],
-                        newTasks: [],
-                        dispatchFailed: true,
-                    };
-                } else if (
-                    err instanceof AgentDispatchError
-                    || err instanceof FleetTransportError
-                    // The review's own read-side sync bracket can fail for the
-                    // same transient infrastructure reasons as the dispatch, so
-                    // it degrades identically. A REAL divergence
-                    // (GitDivergedError / DoltDivergedError -- separate classes,
-                    // deliberately NOT listed here) still propagates: that is a
-                    // branch integrity problem, not a blip.
-                    || err instanceof GitSyncError
-                    || err instanceof DoltSyncError
-                ) {
-                    // A transport-level failure (e.g. a dropped connection
-                    // mid-dispatch) is exactly as transient and non-schema as an
-                    // AgentDispatchError; neither may abort the whole sprint.
-                    log(`Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
-                    roundSessions.clear('reviewer');
-                    verdict = {
-                        verdict: 'CHANGES_NEEDED',
-                        notes: `Reviewer dispatch failed: ${err.message}`,
-                        reopenIds: [],
-                        newTasks: [],
-                        dispatchFailed: true,
-                    };
-                } else {
-                    throw err;
-                }
-            }
-            // Deliberately NO log() dump of `verdict` here. Every path that
-            // reaches this line already produced an activity row with the
-            // identical content: agent() emits the schema-validated output
-            // verbatim on the standard AGENT row (src/viewer/index.mjs), and
-            // each failure fallback logs next to where `verdict` is built. A
-            // second log() would render a duplicate row. The same rule holds at
-            // every post-dispatch site in this file, so every agent dispatch
-            // renders uniformly through its one AGENT row.
-
-            if (verdict.dispatchFailed) {
-                if (reviewAttempt < 2) {
-                    // One more infrastructure attempt (transport blips and
-                    // orphaned-lock busy waits are transient), then degrade.
-                    log(`Reviewer: dispatch-level failure on attempt ${reviewAttempt} of 2 -- retrying the review once before degrading the round.`);
-                    continue;
-                }
-                // A degraded round counts toward the bounded stall-abort
-                // budget like every other role's dispatch failure -- it is
-                // NOT a reviewer contract violation.
-                return verdict;
-            }
-            if (!isReviewerContractViolation(verdict)) {
-                return verdict;
-            }
-            if (reviewAttempt < 2) {
-                log(
-                    `Reviewer: CHANGES_NEEDED verdict with empty reopenIds AND empty newTasks is a ` +
-                    `contract violation (nothing for the orchestrator to act on) -- retrying the review ` +
-                    `once (attempt ${reviewAttempt} of 2) before treating this as a distinct failure.`
-                );
-            } else {
-                throw new ReviewerContractViolationError(
-                    `Reviewer returned CHANGES_NEEDED with empty reopenIds AND empty newTasks twice in a ` +
-                    `row (cycle ${cycle}) -- a self-contradictory verdict with nothing for the ` +
-                    `orchestrator to act on. Refusing to let this silently accumulate toward stall-abort.`,
-                    { cycle, notes: verdict.notes }
-                );
-            }
-        }
-        // Unreachable (the loop above always returns or throws), but keeps
-        // this function's return type honest for static analysis.
-        return verdict;
+            resumePrompt:
+                'Continue your review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. ' +
+                // apra-fleet-s6d: same empty-beadIds case as buildReviewerPrompt
+                // -- a scope-wide re-review has no ids to restate, and "bead
+                // id(s) under review  on branch..." reads as a dropped value.
+                `Your scope, restated so a resumed dispatch never loses it: `
+                + (Array.isArray(beadIds) && beadIds.length > 0
+                    ? `bead id(s) under review ${beadIds.join(', ')} `
+                    : `the entire sprint scope (no individual bead ids -- you are judging whether the sprint as a whole is complete) `)
+                + `on branch ${validated.branch} against base ${validated.baseBranch}. ` +
+                'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
+            roleLabel: 'Reviewer',
+            resumeLabel: `Review (resume, max_turns=${TURN_BASES.BASE_REVIEWER_MAX_TURNS * 2})`,
+            // The reviewer pool head is a runner-local value; the policy names
+            // it by binding and the engine resolves it from here.
+            bindings: { 'reviewerPool[0]': reviewerPool[0] },
+            // Within THIS cycle's develop-review loop, resume the reviewer's own
+            // prior-round session by explicit session id so a re-review of the
+            // next round's fixes keeps the diff/context it already built. False
+            // on the first round of any cycle (roundSessions never resumes
+            // across cycles) and cleared on a failed round by the policy's
+            // 'clear-round-session' degrade step. The max_turns-exhaustion
+            // resume overrides this to `resume: true`, which is an in-dispatch
+            // continuation, not a cross-round one.
+            resumeArg: roundSessions.resumeArgFor('reviewer', cycle),
+            onSessionId: (id, meta) => roundSessions.record('reviewer', cycle, id, meta),
+            synthesizedNotes: {
+                schema: (err) => `Reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
+                dispatch: (err) => `Reviewer dispatch failed: ${err.message}`,
+            },
+            onResultRejected: (reason) => new ReviewerContractViolationError(
+                `Reviewer returned CHANGES_NEEDED with empty reopenIds AND empty newTasks twice in a ` +
+                `row (cycle ${cycle}) -- a self-contradictory verdict with nothing for the ` +
+                `orchestrator to act on. Refusing to let this silently accumulate toward stall-abort.`,
+                { cycle, notes: reason }
+            ),
+        });
+        // Deliberately NO log() dump of the verdict here. Every path that
+        // reaches this line already produced an activity row with the identical
+        // content: agent() emits the schema-validated output verbatim on the
+        // standard AGENT row (src/viewer/index.mjs), and each failure fallback
+        // logs next to where the verdict is built. A second log() would render a
+        // duplicate row. The same rule holds at every post-dispatch site in this
+        // file, so every agent dispatch renders uniformly through its one AGENT
+        // row.
+        //
+        // A degraded round counts toward the bounded stall-abort budget like
+        // every other role's dispatch failure -- it is NOT a reviewer contract
+        // violation, which is what the dispatchFailed marker records.
+        return reviewOutcome.value;
     }
 
     // The sprint branch must be git-ensured on EVERY member that will operate
@@ -5636,9 +5582,12 @@ async function runSprintCycle(context) {
             // both reopenIds and newTasks empty is self-contradictory and must
             // never be treated as an ordinary "more work needed" round.
             const verdict = await dispatchReview({ beadIds: assignedBeadIds, acceptanceCriteriaJson });
-            // KB trust pipeline Phase 2: the reviewer decides, the engine executes.
-            // Reviewer is the ONLY role whose kb_promotions are honoured.
-            await kbWork.apply(ROLE_REVIEWER, kbPriming.folderOf(getMembersForRole(ROLE_REVIEWER)[0]), verdict);
+            // KB trust pipeline Phase 2: the reviewer decides, the engine
+            // executes. Reviewer is the ONLY role whose kb_promotions are
+            // honoured. apra-fleet-3swo.5.7: performed by the 'reviewer' row's
+            // 'kb-apply' postResult step inside dispatchReview, so BOTH of its
+            // call sites get it and a degraded round (which fabricates a
+            // verdict carrying no KB fields) does not.
             // A5: the last reviewer verdict seen THIS cycle feeds the Cycle
             // Evaluation section's completion check below -- goal-priority
             // completion requires this to be exactly 'APPROVED', not just
@@ -6320,7 +6269,6 @@ async function runSprintCycle(context) {
             // verdict in; acceptanceCriteriaJson still carries the full scope
             // for context.
             const reReviewVerdict = await dispatchReview({ beadIds: targetIssues, acceptanceCriteriaJson: JSON.stringify(reReviewScope) });
-            await kbWork.apply(ROLE_REVIEWER, kbPriming.folderOf(getMembersForRole(ROLE_REVIEWER)[0]), reReviewVerdict);
             lastReviewVerdict = reReviewVerdict.verdict;
             reviewedThisCycle = true;
 

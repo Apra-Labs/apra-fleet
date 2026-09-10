@@ -635,6 +635,8 @@ const doerResume = secondary(doer, 'doer-resume', 'max-turns-resume', {
 doer.secondary = doerResume;
 
 const reviewer = policy('reviewer', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: 'acceptanceCriteriaJson,',
     member: poolHeadMember('reviewer', 'reviewerPool[0]'),
     agentType: 'reviewer',
@@ -651,15 +653,39 @@ const reviewer = policy('reviewer', {
         maxTurnsResume: true,
         resumeAttempts: 1,
         turnEscalation: 'double',
+        // The SAME two-attempt budget covers both ways a round can fail: an
+        // infrastructure failure, and a schema-valid verdict the contract
+        // guard rejects. A self-contradictory verdict cannot be nudged into
+        // shape -- only a fresh review can fix it -- so the whole attempt is
+        // spent again rather than re-asked (contrast streak assignment's
+        // semanticRepairReAsks). Once the budget is gone the caller gets a
+        // ReviewerContractViolationError, never a fabricated verdict.
+        retryOnInvalidResult: true,
     }),
     degrade: degrade({
         kind: 'synthesized-verdict',
-        synthesized: { verdict: 'CHANGES_NEEDED' },
+        // The verdicts fabricated here stand for INFRASTRUCTURE failures, not
+        // the reviewer contradicting itself, so they are marked dispatchFailed
+        // -- which is also what stops the contract guard above from mistaking
+        // one for a self-contradictory verdict.
+        synthesized: { verdict: 'CHANGES_NEEDED', reopenIds: [], newTasks: [] },
+        classes: ['schema', 'dispatch'],
+        verdictField: 'verdict',
         marker: 'dispatchFailed',
         paths: 2,
         neverSynthesizes: ['APPROVED'],
+        // The review's own read-side sync bracket can fail for the same
+        // transient infrastructure reasons as the dispatch, so it degrades
+        // identically. A REAL divergence (GitDivergedError / DoltDivergedError
+        // -- deliberately NOT listed) still propagates: that is a branch
+        // integrity problem, not a blip.
+        extraDispatchErrors: ['GitSyncError', 'DoltSyncError'],
+        // On FAILURE only. A failed round's session must not be resumed by the
+        // next round; a SUCCESSFUL round's must, which is exactly why this is
+        // a degrade step rather than a postResult one.
+        steps: ['clear-round-session'],
     }),
-    postResult: ['reviewer-contract-guard', 'kb-apply', 'clear-round-session'],
+    postResult: ['reviewer-contract-guard', 'kb-apply'],
 });
 reviewer.secondary = secondary(reviewer, 'reviewer', 'max-turns-resume', {
     ladderAnchor: 'Continue your review exactly where you left off',

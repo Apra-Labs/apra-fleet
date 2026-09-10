@@ -365,7 +365,9 @@ const EXPECTED_COMMAND_COUNT = 29;
 // followed the regression runner onto the engine.
 // 6 -> 4 (same bead): the final-review ladder -- its dispatch and its
 // max_turns-exhaustion resume -- followed the integ runner onto the engine.
-const EXPECTED_AGENT_COUNT = 4;
+// 4 -> 2 (same bead): the per-round reviewer ladder -- its dispatch and its
+// max_turns-exhaustion resume -- followed the final review onto the engine.
+const EXPECTED_AGENT_COUNT = 2;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in
