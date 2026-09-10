@@ -97,10 +97,86 @@ export function dispatchLadderModulePaths(fleetSprintDir, fileNames = DISPATCH_L
  * @returns {string}
  */
 export function moduleSetSource(paths) {
+    return moduleSetSourceWithOffsets(paths).source;
+}
+
+/**
+ * Same concatenation as moduleSetSource(), but also returns the per-module
+ * LINE offsets a caller needs to resolve a concatenation-relative
+ * site.line (from findCallSites() et al, which only ever see the joined
+ * string) back to the real {file, line} it came from -- see
+ * resolveModuleLocation() below.
+ *
+ * apra-fleet-3swo.28: before this, every pin failure message hard-coded
+ * 'runner.js:' as the label, which was only correct because runner.js
+ * happened to be DISPATCH_LADDER_MODULES[0]. Once a second module
+ * (role-policies.mjs today, dispatch-role.mjs once the dispatchRole
+ * migration lands) contributes call sites, a concatenation-relative line
+ * must be resolved against the RIGHT module's own line numbering.
+ *
+ * @param {string[]} paths absolute file paths to read, in order
+ * @returns {{source: string, offsets: Array<{file: string, path: string, startLine: number, lineCount: number}>}}
+ */
+export function moduleSetSourceWithOffsets(paths) {
     if (!Array.isArray(paths) || paths.length === 0) {
-        throw new TypeError('moduleSetSource(paths): paths must be a non-empty array of file paths');
+        throw new TypeError('moduleSetSourceWithOffsets(paths): paths must be a non-empty array of file paths');
     }
-    return paths.map((p) => fs.readFileSync(p, 'utf8')).join('\n');
+    const offsets = [];
+    let startLine = 1;
+    const texts = paths.map((p) => {
+        const text = fs.readFileSync(p, 'utf8');
+        // Matches how `.split('\n')` would count lines in this module's own
+        // text -- including the phantom trailing entry a trailing newline
+        // produces, which is exactly the blank line the join('\n') below
+        // inserts before the next module. This is what keeps the cumulative
+        // startLine math exact at the boundary between modules (AC#4).
+        const lineCount = text.split('\n').length;
+        offsets.push({ file: path.basename(p), path: p, startLine, lineCount });
+        startLine += lineCount;
+        return text;
+    });
+    return { source: texts.join('\n'), offsets };
+}
+
+/**
+ * Resolves a 1-based line number into the concatenated source produced by
+ * moduleSetSource()/moduleSetSourceWithOffsets() back to the {file, line}
+ * it actually came from, `line` being 1-based and relative to that module's
+ * OWN start (not the concatenation).
+ *
+ * @param {Array<{file: string, startLine: number}>} offsets from moduleSetSourceWithOffsets()
+ * @param {number} concatLine
+ * @returns {{file: string, line: number}}
+ */
+export function resolveModuleLocation(offsets, concatLine) {
+    if (!Array.isArray(offsets) || offsets.length === 0) {
+        throw new TypeError('resolveModuleLocation(offsets, concatLine): offsets must be a non-empty array');
+    }
+    let match = offsets[0];
+    for (const o of offsets) {
+        if (concatLine >= o.startLine) match = o;
+        else break;
+    }
+    return { file: match.file, line: concatLine - match.startLine + 1 };
+}
+
+/**
+ * Formats a list of sites (anything with a `.line` field, e.g. findCallSites()
+ * results) as "file:line" pairs resolved via resolveModuleLocation(), joined
+ * with ', ' -- the shared replacement for the four failure messages that used
+ * to hard-code a 'runner.js:' label.
+ *
+ * @param {Array<{file: string, startLine: number}>} offsets from moduleSetSourceWithOffsets()
+ * @param {Array<{line: number}>} sites
+ * @returns {string}
+ */
+export function formatSiteLocations(offsets, sites) {
+    return sites
+        .map((s) => {
+            const { file, line } = resolveModuleLocation(offsets, s.line);
+            return `${file}:${line}`;
+        })
+        .join(', ');
 }
 
 /** Is `col` inside an open same-line quote? (mirrors dispatch-sync-bracket-coverage.test.mjs) */
