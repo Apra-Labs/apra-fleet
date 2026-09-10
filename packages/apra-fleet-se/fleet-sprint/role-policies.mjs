@@ -245,6 +245,9 @@ const degrade = (over) => ({
  * resumeArg) and an optional `secondary` dispatch.
  */
 function policy(role, spec) {
+    if (typeof spec.ladderAnchor !== 'string' || spec.ladderAnchor.length === 0) {
+        throw new TypeError(`role-policies: policy('${role}', ...) requires a non-empty string spec.ladderAnchor.`);
+    }
     return {
         role,
         /** 'main' for a role's primary dispatch. */
@@ -263,6 +266,26 @@ function policy(role, spec) {
          * bead lands.
          */
         migrated: spec.migrated ?? false,
+        /**
+         * apra-fleet-3swo.24: a literal source substring, unique across every
+         * dispatch this table describes, that appears ONLY inside this
+         * dispatch's own real `agent(...)` call text in runner.js. NOT one of
+         * the nine POLICY_FIELDS axes (same reasoning as `migrated` above --
+         * it is call-site identity, not dispatch policy).
+         *
+         * WHY THIS EXISTS: a role's `member` resolution expression
+         * (memberExprFor()) is NOT role-unique -- roleMember('planner') is
+         * shared by planner, scoped-replan-planner and streak-assignment, and
+         * roleMember('plan-reviewer') by plan-reviewer and
+         * scoped-replan-plan-reviewer. agentType and schema do not
+         * disambiguate either (see inline-ladder-guard.mjs's header).
+         * fleet-sprint/inline-ladder-guard.mjs therefore requires a call
+         * site's text to include BOTH this role's member expression AND its
+         * ladderAnchor before reporting a surviving inline ladder -- the
+         * member expression alone would flag every sibling ladder that
+         * happens to route through the same member.
+         */
+        ladderAnchor: spec.ladderAnchor,
         member: spec.member,
         agentType: spec.agentType ?? null,
         model: spec.model,
@@ -285,8 +308,20 @@ function policy(role, spec) {
  * Builds a ladder's SECONDARY dispatch from its main one: the shape mirrors
  * the runner's own "spread the shared options, then override inline", so a
  * field not named in `over` is inherited verbatim.
+ *
+ * `over.ladderAnchor` is REQUIRED (not merely inherited): a secondary
+ * dispatch is always a DIFFERENT real `agent(...)` call site in runner.js
+ * than its main dispatch, so silently inheriting the main dispatch's anchor
+ * would make the two indistinguishable -- exactly the collision this bead
+ * (apra-fleet-3swo.24) exists to remove.
  */
 function secondary(main, role, kind, over) {
+    if (typeof over.ladderAnchor !== 'string' || over.ladderAnchor.length === 0) {
+        throw new TypeError(
+            `role-policies: secondary(..., '${role}', '${kind}', over) must override ladderAnchor with a ` +
+            'non-empty string -- inheriting the main dispatch\'s anchor would make the two indistinguishable.'
+        );
+    }
     return {
         ...main,
         role,
@@ -302,6 +337,7 @@ function secondary(main, role, kind, over) {
 // -----------------------------------------------------------------------------
 
 const planner = policy('planner', {
+    ladderAnchor: 'plannerPrompt,',
     member: roleMember('planner'),
     agentType: 'planner',
     model: fixedTier('planner'),
@@ -330,6 +366,7 @@ const planner = policy('planner', {
     postResult: ['invalidate-beads-cache'],
 });
 planner.secondary = secondary(planner, 'planner', 'max-turns-resume', {
+    ladderAnchor: 'Continue your planning pass exactly where you left off',
     maxTurns: turns('PLANNER_MAX_TURNS', 2, 500),
     watchdog: watchdog(['Plan (resume, max_turns=', { expr: 'PLANNER_MAX_TURNS * 2' }, ')']),
     resumeArg: SAME_SESSION_RESUME,
@@ -337,6 +374,7 @@ planner.secondary = secondary(planner, 'planner', 'max-turns-resume', {
 });
 
 const planReviewer = policy('plan-reviewer', {
+    ladderAnchor: 'priorRoundVerdicts: priorPlanRoundVerdicts',
     member: roleMember('plan-reviewer'),
     agentType: 'plan-reviewer',
     model: fixedTier('plan-reviewer'),
@@ -362,12 +400,14 @@ const planReviewer = policy('plan-reviewer', {
     }),
 });
 planReviewer.secondary = secondary(planReviewer, 'plan-reviewer', 'max-turns-resume', {
+    ladderAnchor: 'Continue your plan review exactly where you left off',
     maxTurns: turns('PLAN_REVIEWER_MAX_TURNS', 2, 500),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],
 });
 
 const scopedReplanPlanner = policy('scoped-replan-planner', {
+    ladderAnchor: "label: 'Scoped Replan Plan (interactive)'",
     member: roleMember('planner'),
     agentType: 'planner',
     model: fixedTier('planner'),
@@ -384,6 +424,7 @@ const scopedReplanPlanner = policy('scoped-replan-planner', {
 });
 
 const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
+    ladderAnchor: "label: 'Scoped Replan Review'",
     member: roleMember('plan-reviewer'),
     agentType: 'plan-reviewer',
     model: fixedTier('plan-reviewer'),
@@ -397,6 +438,7 @@ const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
 });
 
 const streakAssignment = policy('streak-assignment', {
+    ladderAnchor: "label: 'Streak Assignment',",
     // Borrows the planner MEMBER for model-tier routing only, and carries no
     // agentType: it has no persona of its own, and activating the planner
     // persona on this narrow grouping task makes the model go exploring.
@@ -416,9 +458,12 @@ const streakAssignment = policy('streak-assignment', {
     }),
     postResult: ['select-streaks-validate'],
 });
-streakAssignment.secondary = secondary(streakAssignment, 'streak-assignment', 'semantic-repair-re-ask', {});
+streakAssignment.secondary = secondary(streakAssignment, 'streak-assignment', 'semantic-repair-re-ask', {
+    ladderAnchor: "label: 'Streak Assignment (semantic repair)'",
+});
 
 const doer = policy('doer', {
+    ladderAnchor: 'doerPrompt,',
     member: runtimeMember('doerMember'),
     agentType: 'doer',
     // The ONE role dispatched at a per-bead declared tier rather than a fixed one.
@@ -449,6 +494,7 @@ const doer = policy('doer', {
     postResult: ['verify-streak-closed', 'kb-apply'],
 });
 const doerResume = secondary(doer, 'doer-resume', 'max-turns-resume', {
+    ladderAnchor: 'Continue exactly where you left off from this same session',
     // No tier: the streak was already priced on the dispatch this continues.
     model: INHERITED_TIER,
     // The escalating ladder computes the budget per resume attempt.
@@ -461,6 +507,7 @@ const doerResume = secondary(doer, 'doer-resume', 'max-turns-resume', {
 doer.secondary = doerResume;
 
 const reviewer = policy('reviewer', {
+    ladderAnchor: 'acceptanceCriteriaJson,',
     member: poolHeadMember('reviewer', 'reviewerPool[0]'),
     agentType: 'reviewer',
     model: fixedTier('reviewer'),
@@ -487,12 +534,14 @@ const reviewer = policy('reviewer', {
     postResult: ['reviewer-contract-guard', 'kb-apply', 'clear-round-session'],
 });
 reviewer.secondary = secondary(reviewer, 'reviewer', 'max-turns-resume', {
+    ladderAnchor: 'Continue your review exactly where you left off',
     maxTurns: turns('BASE_REVIEWER_MAX_TURNS', 2, 500),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],
 });
 
 const finalReview = policy('final-review', {
+    ladderAnchor: 'buildFinalVerdictPrompt({',
     // Final Review has no role member of its own: it is the reviewer role,
     // dispatching the reviewer persona over the whole sprint.
     member: roleMember('reviewer'),
@@ -525,12 +574,14 @@ const finalReview = policy('final-review', {
     postResult: ['kb-apply'],
 });
 finalReview.secondary = secondary(finalReview, 'final-review', 'max-turns-resume', {
+    ladderAnchor: 'Continue your final review exactly where you left off',
     maxTurns: turns('FINAL_REVIEW_MAX_TURNS', 2, 500),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],
 });
 
 const deployer = policy('deployer', {
+    ladderAnchor: 'deployerPrompt,',
     member: roleMember('deployer'),
     agentType: 'deployer',
     model: fixedTier('deployer'),
@@ -557,12 +608,14 @@ const deployer = policy('deployer', {
     preDispatch: ['sprint-self-id-in-prompt'],
 });
 deployer.secondary = secondary(deployer, 'deployer', 'max-turns-resume', {
+    ladderAnchor: 'Continue the deploy exactly where you left off',
     maxTurns: turns('DEPLOYER_MAX_TURNS', 2, 500),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],
 });
 
 const integTestRunner = policy('integ-test-runner', {
+    ladderAnchor: 'featurePrompt,',
     member: roleMember('integ-test-runner'),
     agentType: 'integ-test-runner',
     model: fixedTier('integ-test-runner'),
@@ -586,12 +639,14 @@ const integTestRunner = policy('integ-test-runner', {
     degrade: degrade({ kind: 'inconclusive', marker: 'integInfraInconclusive' }),
 });
 integTestRunner.secondary = secondary(integTestRunner, 'integ-test-runner', 'max-turns-resume', {
+    ladderAnchor: 'Continue the integration test run exactly where you left off',
     maxTurns: turns('INTEG_TEST_MAX_TURNS', 2, 500),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],
 });
 
 const regressionTestRunner = policy('regression-test-runner', {
+    ladderAnchor: 'regressionPrompt,',
     member: roleMember('regression-test-runner'),
     agentType: 'regression-test-runner',
     model: fixedTier('regression-test-runner'),
@@ -623,12 +678,14 @@ const regressionTestRunner = policy('regression-test-runner', {
     }),
 });
 regressionTestRunner.secondary = secondary(regressionTestRunner, 'regression-test-runner', 'max-turns-resume', {
+    ladderAnchor: 'Continue the regression pass exactly where you left off',
     maxTurns: turns('REGRESSION_TEST_MAX_TURNS', 2, 500),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],
 });
 
 const harvester = policy('harvester', {
+    ladderAnchor: 'harvesterPrompt,',
     member: roleMember('harvester'),
     agentType: 'harvester',
     model: fixedTier('harvester'),
@@ -649,6 +706,7 @@ const harvester = policy('harvester', {
     postResult: ['kb-apply'],
 });
 harvester.secondary = secondary(harvester, 'harvester', 'max-turns-resume', {
+    ladderAnchor: 'Continue your harvest exactly where you left off',
     maxTurns: turns('HARVESTER_MAX_TURNS', 2, 500),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],

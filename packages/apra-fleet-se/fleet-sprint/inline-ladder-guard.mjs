@@ -46,6 +46,16 @@ import { ROLE_POLICIES, migratedRoleNames } from './role-policies.mjs';
 // of that kind is actually migrated, at which point its binding expression
 // (already present in role-policies.mjs) extends memberExprFor() the same
 // way.
+//
+// MEMBER EXPRESSION ALONE IS NOT ROLE-UNIQUE (apra-fleet-3swo.24): three
+// policies share roleMember('planner') (planner, scoped-replan-planner,
+// streak-assignment) and two share roleMember('plan-reviewer') (plan-reviewer,
+// scoped-replan-plan-reviewer). Neither agentType nor schema disambiguates
+// them either. So memberExprFor()'s expression is only a coarse PRE-FILTER
+// here: a call site is only reported once it ALSO contains that dispatch's
+// `ladderAnchor` (role-policies.mjs) -- a literal substring unique to that
+// dispatch's own real call site. A call site matching the member expression
+// but not the anchor belongs to a sibling ladder and is never reported.
 // =============================================================================
 
 /**
@@ -64,9 +74,14 @@ export function memberExprFor(member) {
 
 /**
  * Scans `src` for `agent(` call sites whose call text still carries one of
- * `migratedRoles`' member-routing expressions -- an inline ladder that has
- * not been removed even though role-policies.mjs says this role's dispatch
- * has moved onto the engine.
+ * `migratedRoles`' member-routing expressions AND that dispatch's
+ * `ladderAnchor` -- an inline ladder that has not been removed even though
+ * role-policies.mjs says this role's dispatch has moved onto the engine.
+ *
+ * The member expression alone is a coarse pre-filter, never the sole
+ * discriminator (apra-fleet-3swo.24): several policies share the same
+ * member-routing expression (see this file's header), so a site is only
+ * reported once it ALSO contains the specific dispatch's ladderAnchor.
  *
  * @param {string} src
  * @param {string} fileLabel
@@ -84,19 +99,36 @@ export function findInlineLadderViolations(src, fileLabel, migratedRoles, rolePo
         const entry = rolePolicies[role];
         if (!entry) continue;
         // A role's main dispatch and its secondary (max-turns-resume /
-        // semantic-repair-re-ask) usually share the SAME member expression
-        // (secondary() inherits `member` unless a role's spec overrides it),
-        // so de-duplicate by expression BEFORE matching -- otherwise one
-        // real call site is reported twice, once per dispatch variant that
-        // happens to route to the same member.
-        const exprs = new Set();
+        // semantic-repair-re-ask) each carry their OWN ladderAnchor (the two
+        // are distinct real call sites in runner.js), so pair each dispatch's
+        // member expression with its own anchor rather than pooling all
+        // exprs together -- pooling would let one dispatch's anchor match
+        // against a site that only satisfies a DIFFERENT dispatch's member
+        // expression. De-duplicate identical (expr, anchor) pairs so a
+        // dispatch variant that happens to repeat both is never matched
+        // twice.
+        const pairs = new Set();
         for (const dispatch of [entry, entry.secondary]) {
-            const expr = dispatch && memberExprFor(dispatch.member);
-            if (expr) exprs.add(expr);
+            if (!dispatch) continue;
+            const expr = memberExprFor(dispatch.member);
+            if (!expr) continue;
+            if (typeof dispatch.ladderAnchor !== 'string' || dispatch.ladderAnchor.length === 0) {
+                throw new Error(
+                    `inline-ladder-guard: role '${role}' has no non-empty ladderAnchor -- every dispatch role-policies.mjs ` +
+                    'can mark migrated must carry a unique ladder anchor so this guard can tell sibling ladders apart.'
+                );
+            }
+            pairs.add(JSON.stringify([expr, dispatch.ladderAnchor]));
         }
-        for (const expr of exprs) {
+        // One real call site must never be reported twice for the same role,
+        // even if (implausibly) more than one (expr, anchor) pair matched it.
+        const reportedSites = new Set();
+        for (const pairKey of pairs) {
+            const [expr, anchor] = JSON.parse(pairKey);
             for (const site of agentSites) {
-                if (site.callText.includes(expr)) {
+                if (reportedSites.has(site)) continue;
+                if (site.callText.includes(expr) && site.callText.includes(anchor)) {
+                    reportedSites.add(site);
                     // NOTE: deliberately spelled with a space before the
                     // opening paren ("agent (") rather than "agent(" -- the
                     // latter is the literal substring dispatch-safety-guard's
