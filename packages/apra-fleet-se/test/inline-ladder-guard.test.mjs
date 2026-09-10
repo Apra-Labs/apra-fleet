@@ -180,15 +180,82 @@ describe('inline-ladder guard: falsifiability against a seeded violation', () =>
     test('a migrated role with no matching call site in the scanned file reports zero violations', () => {
         const sandbox = createSandbox();
         try {
-            // Seeded ladder routes to 'planner'; marking 'doer' migrated
+            // Seeded ladder routes to 'planner'; marking 'harvester' migrated
             // instead must not false-positive on an unrelated call site.
+            // Deliberately a 'role'-kind role (like planner itself) so this
+            // case exercises the real member-expr + anchor matching path
+            // end-to-end rather than being vacuous -- see the two
+            // doer/reviewer cases below for why 'doer' would NOT do that
+            // (memberExprFor(doer.member) used to be unconditionally null,
+            // so this exact case with 'doer' passed even with matching
+            // completely broken).
             const fixture = sandbox.write('planner-ladder.mjs', SEEDED_LADDER_FIXTURE);
+            const { violations } = checkModules({
+                paths: [fixture],
+                migratedRoles: ['harvester'],
+                rolePolicies: withRoleMigrated('harvester'),
+            });
+            assert.deepStrictEqual(violations, []);
+        } finally {
+            sandbox.cleanup();
+        }
+    });
+
+    // apra-fleet-3swo.5.8 rework (reviewer round): memberExprFor() used to
+    // return null for 'pool-head'/'runtime' members, so a surviving inline
+    // ladder for doer or reviewer -- the two execution roles the very next
+    // migration bead (apra-fleet-3swo.5.7) touches -- would report zero
+    // violations FOREVER, no matter what. These two cases prove that hole is
+    // closed: a fixture carrying doer's/reviewer's REAL member expression and
+    // REAL ladderAnchor, with that role marked migrated, must be flagged.
+    test('flags a surviving inline agent() ladder for doer (runtime-kind member), not silently green', () => {
+        const sandbox = createSandbox();
+        try {
+            const { expr, anchor } = { expr: memberExprFor(ROLE_POLICIES.doer.member), anchor: ROLE_POLICIES.doer.ladderAnchor };
+            assert.ok(expr, 'test setup: doer.member must resolve to a non-null expression once memberExprFor() supports runtime members');
+            const fixture = sandbox.write('doer-ladder.mjs', [
+                'export async function dispatchDoer(agent, doerPrompt) {',
+                '    await agent(doerPrompt, {',
+                `        member_name: ${expr},`,
+                `        // ${anchor}`,
+                '    });',
+                '}',
+                '',
+            ]);
             const { violations } = checkModules({
                 paths: [fixture],
                 migratedRoles: ['doer'],
                 rolePolicies: withRoleMigrated('doer'),
             });
-            assert.deepStrictEqual(violations, []);
+            assert.strictEqual(violations.length, 1, `expected exactly one violation, got: ${JSON.stringify(violations, null, 2)}`);
+            assert.match(violations[0], /role 'doer'/);
+        } finally {
+            sandbox.cleanup();
+        }
+    });
+
+    test('flags a surviving inline agent() ladder for reviewer (pool-head-kind member), not silently green', () => {
+        const sandbox = createSandbox();
+        try {
+            const expr = memberExprFor(ROLE_POLICIES.reviewer.member);
+            const anchor = ROLE_POLICIES.reviewer.ladderAnchor;
+            assert.ok(expr, 'test setup: reviewer.member must resolve to a non-null expression once memberExprFor() supports pool-head members');
+            const fixture = sandbox.write('reviewer-ladder.mjs', [
+                'export async function dispatchReviewer(agent, reviewerPrompt) {',
+                '    await agent(reviewerPrompt, {',
+                `        member_name: ${expr},`,
+                `        // ${anchor}`,
+                '    });',
+                '}',
+                '',
+            ]);
+            const { violations } = checkModules({
+                paths: [fixture],
+                migratedRoles: ['reviewer'],
+                rolePolicies: withRoleMigrated('reviewer'),
+            });
+            assert.strictEqual(violations.length, 1, `expected exactly one violation, got: ${JSON.stringify(violations, null, 2)}`);
+            assert.match(violations[0], /role 'reviewer'/);
         } finally {
             sandbox.cleanup();
         }
@@ -200,10 +267,21 @@ describe('inline-ladder guard: memberExprFor()', () => {
         assert.strictEqual(memberExprFor({ kind: 'role', role: 'planner' }), "getMemberForRole('planner')");
     });
 
-    test('returns null for a pool-head/runtime member (out of scope for this guard today)', () => {
-        assert.strictEqual(memberExprFor({ kind: 'pool-head', role: 'reviewer', binding: 'reviewerPool[0]' }), null);
-        assert.strictEqual(memberExprFor({ kind: 'runtime', binding: 'doerMember' }), null);
+    test('rebuilds the recorded binding verbatim for a pool-head/runtime member', () => {
+        // reviewer's real member (role-policies.mjs) and doer's real member
+        // are 'pool-head'/'runtime' kinds -- both execution roles the doer
+        // migration bead (apra-fleet-3swo.5.7) is expected to migrate, so
+        // this guard must recognise their inline call text too, not just
+        // 'role'-kind members.
+        assert.strictEqual(memberExprFor({ kind: 'pool-head', role: 'reviewer', binding: 'reviewerPool[0]' }), 'reviewerPool[0]');
+        assert.strictEqual(memberExprFor({ kind: 'runtime', binding: 'doerMember' }), 'doerMember');
+    });
+
+    test('returns null for a missing member or a pool-head/runtime member with no binding recorded', () => {
         assert.strictEqual(memberExprFor(null), null);
+        assert.strictEqual(memberExprFor({ kind: 'pool-head', role: 'reviewer' }), null);
+        assert.strictEqual(memberExprFor({ kind: 'runtime' }), null);
+        assert.strictEqual(memberExprFor({ kind: 'unknown-kind' }), null);
     });
 });
 

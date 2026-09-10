@@ -36,16 +36,19 @@ import { ROLE_POLICIES, migratedRoleNames } from './role-policies.mjs';
 // HOW A ROLE'S INLINE LADDER IS RECOGNISED: role-policies.mjs's `member`
 // field already records, as data, the resolution kind and argument a role's
 // dispatch routes to ('role' -> getMemberForRole(role), 'pool-head' -> a
-// runner-local binding expression, 'runtime' -> a runner-local binding
-// expression). memberExprFor() below rebuilds the exact source expression
-// runner.js's ladders write for a 'role'-kind member (the only kind this
-// guard needs to recognise for now: every role migrated by the two
-// dispatchRole beads in this phase resolves its member by role, per
-// role-policies.mjs). A migrated role whose member is a 'pool-head' or
-// 'runtime' binding is out of scope for THIS guard's matching until a role
-// of that kind is actually migrated, at which point its binding expression
-// (already present in role-policies.mjs) extends memberExprFor() the same
-// way.
+// runner-local binding expression e.g. reviewerPool[0], 'runtime' -> a
+// runner-local binding expression e.g. doerMember). memberExprFor() below
+// rebuilds the exact source expression runner.js's ladders write for ALL
+// THREE kinds: a 'role'-kind member becomes getMemberForRole(role); a
+// 'pool-head'/'runtime'-kind member becomes its own recorded `binding`
+// string verbatim (runner.js writes `member_name: reviewerPool[0]` /
+// `member_name: doerMember` at its real call sites -- see doer and
+// reviewer's real policy entries in role-policies.mjs). This matters because
+// the two execution-role migration beads in this phase migrate doer
+// (runtime member) and reviewer (pool-head member), not just role-kind
+// roles -- a guard that only recognised 'role'-kind members would stay
+// silently green for exactly those two roles' surviving inline ladders,
+// which is the one failure mode this guard exists to prevent.
 //
 // MEMBER EXPRESSION ALONE IS NOT ROLE-UNIQUE (apra-fleet-3swo.24): three
 // policies share roleMember('planner') (planner, scoped-replan-planner,
@@ -59,17 +62,25 @@ import { ROLE_POLICIES, migratedRoleNames } from './role-policies.mjs';
 // =============================================================================
 
 /**
- * The source expression a policy's `member` resolves to for a 'role'-kind
- * member -- the only kind this guard matches against inline call text today
- * (see header). Returns null for any other kind, so callers can skip it
- * rather than falsely matching on an unresolvable expression.
+ * The source expression a policy's `member` resolves to at its real inline
+ * call site (see header): 'role' -> getMemberForRole(role); 'pool-head' and
+ * 'runtime' -> the member's own recorded `binding` string verbatim (that is
+ * exactly what runner.js's ladders write, e.g. `member_name: doerMember` /
+ * `member_name: reviewerPool[0]`). Returns null for a missing/unrecognised
+ * member or a 'pool-head'/'runtime' member with no binding recorded, so
+ * callers can skip it rather than falsely matching on an unresolvable
+ * expression.
  *
- * @param {{kind:string, role?:string}} member
+ * @param {{kind:string, role?:string, binding?:string}} member
  * @returns {string|null}
  */
 export function memberExprFor(member) {
-    if (!member || member.kind !== 'role') return null;
-    return `getMemberForRole('${member.role}')`;
+    if (!member) return null;
+    if (member.kind === 'role') return `getMemberForRole('${member.role}')`;
+    if (member.kind === 'pool-head' || member.kind === 'runtime') {
+        return typeof member.binding === 'string' && member.binding.length > 0 ? member.binding : null;
+    }
+    return null;
 }
 
 /**
