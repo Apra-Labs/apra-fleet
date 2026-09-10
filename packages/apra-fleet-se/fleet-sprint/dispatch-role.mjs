@@ -72,6 +72,12 @@ const DEPLOYER_MAX_TURNS = 500;
  * dispatch carries both it and the sandbox smoke sprint.
  */
 const REGRESSION_TEST_MAX_TURNS = 500;
+/**
+ * Integ turn base: a compliant runner spends ~1 turn per liveness poll, but a
+ * real per-feature pass also spends fast, sub-poll turns, so the WALL-CLOCK
+ * ceiling (max_total_s) is what should bind first on any progressing run.
+ */
+const INTEG_TEST_MAX_TURNS = 500;
 
 /**
  * Every turn-base constant a policy's `maxTurns.base` may name, keyed by that
@@ -87,6 +93,7 @@ export const TURN_BASES = Object.freeze({
     HARVESTER_MAX_TURNS,
     DEPLOYER_MAX_TURNS,
     REGRESSION_TEST_MAX_TURNS,
+    INTEG_TEST_MAX_TURNS,
 });
 
 /**

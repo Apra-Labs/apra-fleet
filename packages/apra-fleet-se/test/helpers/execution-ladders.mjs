@@ -53,6 +53,47 @@
  */
 export const EXECUTION_ENGINE_DISPATCHES = [
     {
+        role: 'integ-test-runner',
+        kind: 'main',
+        name: 'integ test runner (once)',
+        memberRole: 'integ-test-runner',
+        agentType: 'integ-test-runner',
+        modelTier: 'standard',
+        maxTurns: 500,
+        // Shorter INACTIVITY timer, longer HARD elapsed ceiling: a hung runner
+        // still dies on silence, an active long pass is never killed. Two
+        // DISTINCT symbolic budgets, so a pin that resolved both to the same
+        // number could not pass.
+        timeoutS: 'DISPATCH_TIMEOUT_S',
+        maxTotalS: 'INTEG_MAX_TOTAL_S',
+        bracketed: true,
+        // Closes passing features and files bug beads, but never touches code.
+        pushCode: false,
+        pushBeads: true,
+        watchdog: false,
+        watchdogLabel: null,
+        schema: 'integReport',
+        resume: null,
+    },
+    {
+        role: 'integ-test-runner',
+        kind: 'max-turns-resume',
+        name: 'integ test runner (resume after max_turns exhaustion)',
+        memberRole: 'integ-test-runner',
+        agentType: 'integ-test-runner',
+        modelTier: 'standard',
+        maxTurns: 1000,
+        timeoutS: 'DISPATCH_TIMEOUT_S',
+        maxTotalS: 'INTEG_MAX_TOTAL_S',
+        bracketed: true,
+        pushCode: false,
+        pushBeads: true,
+        watchdog: false,
+        watchdogLabel: null,
+        schema: 'integReport',
+        resume: true,
+    },
+    {
         role: 'regression-test-runner',
         kind: 'main',
         name: 'regression test runner (once)',
@@ -253,40 +294,6 @@ export const EXECUTION_INLINE_LADDERS = [
         pushCode: 'true',
         pushBeads: 'true',
         schema: 'doerReport',
-        resume: 'true',
-    },
-    {
-        ladder: 'integ-test-runner',
-        name: 'integ test runner (once)',
-        anchor: '(\n                    featurePrompt,',
-        member: "getMemberForRole('integ-test-runner')",
-        agentType: "'integ-test-runner'",
-        modelTier: "FIXED_ROLE_TIER['integ-test-runner']",
-        maxTurnsExpr: 'INTEG_TEST_MAX_TURNS',
-        maxTurnsValue: 500,
-        // Shorter INACTIVITY timer, longer HARD elapsed ceiling: a hung runner
-        // still dies on silence, an active long pass is never killed.
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'INTEG_MAX_TOTAL_S',
-        pushCode: 'false',
-        pushBeads: 'true',
-        schema: 'integReport',
-        resume: null,
-    },
-    {
-        ladder: 'integ-test-runner',
-        name: 'integ test runner (resume after max_turns exhaustion)',
-        anchor: 'Continue the integration test run exactly where you left off',
-        member: "getMemberForRole('integ-test-runner')",
-        agentType: "'integ-test-runner'",
-        modelTier: "FIXED_ROLE_TIER['integ-test-runner']",
-        maxTurnsExpr: 'INTEG_TEST_MAX_TURNS * 2',
-        maxTurnsValue: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'INTEG_MAX_TOTAL_S',
-        pushCode: 'false',
-        pushBeads: 'true',
-        schema: 'integReport',
         resume: 'true',
     },
     {

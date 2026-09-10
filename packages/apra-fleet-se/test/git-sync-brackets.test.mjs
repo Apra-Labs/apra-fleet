@@ -15,7 +15,7 @@ import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 import { runCmd, sleep, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 import { balancedCallRange } from './helpers/balanced-call-scanner.mjs';
-import { ROLE_POLICIES } from '../fleet-sprint/role-policies.mjs';
+import { ROLE_POLICIES, allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
 
 // =============================================================================
 // apra-fleet-eft.8.7 -- Orchestrator-bracketed git sync: consolidated
@@ -174,8 +174,23 @@ test('(a) pushCode:true is reserved for the two code-writing roles (doer, harves
             falseCount++;
         }
     }
-    check(trueCount >= 2, `expected at least two pushCode:true (code-writing) brackets, found ${trueCount}`);
-    check(falseCount >= 5, `expected the read-only roles to pass pushCode:false, found ${falseCount}`);
+    // apra-fleet-3swo.5.7: both counts are DERIVED from the policy table's
+    // still-inline dispatches rather than being bare literals, because each
+    // execution-role migration moves a bracket off runner.js onto the engine's
+    // one generic (expression-argument) withGitSync call. The migrated ones are
+    // asserted behaviourally by the two dispatch-pin files instead.
+    const inlineBrackets = allDispatchPolicies()
+        .filter((p) => p.bracket.wrapped && ROLE_POLICIES[p.ladder].migrated !== true);
+    const expectedTrue = inlineBrackets.filter((p) => p.bracket.pushCode === true).length;
+    const expectedFalse = inlineBrackets.length - expectedTrue;
+    check(
+        trueCount === expectedTrue,
+        `expected ${expectedTrue} pushCode:true (code-writing) brackets still inline, found ${trueCount}`
+    );
+    check(
+        falseCount === expectedFalse,
+        `expected ${expectedFalse} read-only pushCode:false brackets still inline, found ${falseCount}`
+    );
 });
 
 // =============================================================================

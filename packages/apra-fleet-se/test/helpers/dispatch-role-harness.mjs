@@ -383,6 +383,16 @@ export const ROLE_CALL_OPTS = Object.freeze({
         roleLabel: 'Scoped Replan Review',
         label: 'Scoped Replan Review',
     },
+    'integ-test-runner': {
+        prompt: 'INTEG PROMPT',
+        resumePrompt: 'INTEG RESUME PROMPT',
+        roleLabel: 'Integ Test Runner',
+        resumeLabel: 'Integ Test (resume, max_turns=1000)',
+        synthesizedNotes: {
+            schema: (err) => `HARNESS-SCHEMA-CLASS: ${err.message}`,
+            dispatch: (err) => `HARNESS-DISPATCH-CLASS: ${err.message}`,
+        },
+    },
     'regression-test-runner': {
         prompt: 'REGRESSION PROMPT',
         resumePrompt: 'REGRESSION RESUME PROMPT',
