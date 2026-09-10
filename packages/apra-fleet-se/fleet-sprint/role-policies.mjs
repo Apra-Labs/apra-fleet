@@ -458,6 +458,8 @@ const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
 });
 
 const streakAssignment = policy('streak-assignment', {
+    // apra-fleet-3swo.5.3: migrated -- dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: "label: 'Streak Assignment',",
     // Borrows the planner MEMBER for model-tier routing only, and carries no
     // agentType: it has no persona of its own, and activating the planner

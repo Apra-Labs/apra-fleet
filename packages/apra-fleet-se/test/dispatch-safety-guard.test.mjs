@@ -349,7 +349,10 @@ const EXPECTED_COMMAND_COUNT = 29;
 // resume of its own) followed them.
 // 17 -> 16 (same bead): the scoped-replan plan-reviewer (also a single
 // dispatch) followed them.
-const EXPECTED_AGENT_COUNT = 16;
+// 16 -> 14 (same bead): the Streak Assignment grouping call and its bounded
+// semantic-repair re-ask followed them, completing the planning-side
+// migration. Every remaining runner.js agent() site is execution-side.
+const EXPECTED_AGENT_COUNT = 14;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in
