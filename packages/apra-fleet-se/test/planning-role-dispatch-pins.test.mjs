@@ -25,10 +25,14 @@ import { PLANNING_LADDERS, ENGINE_DISPATCHES } from './helpers/planning-ladders.
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
 import {
     createRecordingCtx,
-    turnExhaustionError,
+    driveEngineDispatch,
     ROLE_CALL_OPTS,
-    DISPATCH_TIMEOUT_S,
     SCHEMAS,
+    turnExhaustionError,
+    authError,
+    trustError,
+    busyError,
+    postDispatchSyncError,
 } from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
@@ -365,9 +369,9 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
         );
 
         // Table half, spanning BOTH sides of the migration: the engine-served
-        // dispatches\' `bracketed` values are each proved behaviourally in the
+        // dispatches' `bracketed` values are each proved behaviourally in the
         // engine block below, so this is the one place the whole planning
-        // side\'s bracket census is compared against the standing invariant.
+        // side's bracket census is compared against the standing invariant.
         const allUnbracketed = [...INLINE_LADDERS, ...ENGINE_LADDER.dispatches]
             .filter((pin) => !pin.bracketed)
             .map((pin) => pin.name);
@@ -424,47 +428,110 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
 });
 
 describe('planning-role dispatch: retry and degrade ladders', () => {
-    test('planner: five-step backoff ladder, no re-dispatch after a post-dispatch sync failure, one auth self-heal, fatal on exhaustion', () => {
-        const region = stripComments(regionBetween(SRC, 'const PLANNER_DISPATCH_RETRY_DELAYS_MS', 'throw plannerErr;'));
-        assert.ok(
-            /PLANNER_DISPATCH_RETRY_DELAYS_MS\s*=\s*\[0,\s*5000,\s*15000,\s*30000,\s*60000\]/.test(region),
-            'The planner dispatch retry ladder must stay the bounded [0, 5s, 15s, 30s, 60s] backoff sized for a real member busy-lock.'
-        );
-        assert.ok(
-            /isPostDispatchSyncFailure\(err\)/.test(region),
-            'A post-dispatch sync failure must be recognised so the ladder does NOT re-dispatch a planning turn that already ran.'
-        );
-        assert.ok(
-            /isNonRetryableDispatchError\(err\)/.test(region),
-            'Auth/workspace-trust failures must abort the ladder rather than burn the remaining attempts.'
-        );
-        assert.ok(
-            /isAuthDispatchError\(err\)\s*&&\s*typeof onLlmAuthFailure === 'function'/.test(region),
-            'An LLM-auth failure must get exactly one bounded self-heal attempt inside the ladder.'
-        );
-        assert.ok(
-            /skipPreDispatchSyncNext = isNoMutationDispatchFailure\(err\)/.test(region),
-            'Only a provably no-mutation dispatch failure may let the next attempt skip its pre-dispatch sync.'
-        );
-        // Degrade behaviour: there is none. An exhausted planner ladder rethrows.
-        assert.ok(
-            /if \(plannerErr\) \{\s*throw plannerErr;/.test(stripComments(SRC)),
+    // apra-fleet-3swo.5.3: the planner ladder now runs on the engine, so its
+    // retry/degrade shape is no longer a property of runner.js source text --
+    // a regex over dispatch-role.mjs's generic loop would report the same
+    // answer for every role. These two pins are RE-ANCHORED onto the engine
+    // and prove the same facts by driving it: same backoff ladder, same
+    // no-re-dispatch rule, same single self-heal, same no-mutation pre-sync
+    // skip, same fatal exhaustion, same kill-then-resume-at-doubled-turns.
+    test('planner: five-step backoff ladder, no re-dispatch after a post-dispatch sync failure, one auth self-heal, fatal on exhaustion', async () => {
+        // (a) the bounded [0, 5s, 15s, 30s, 60s] ladder, sized for a real
+        //     member busy-lock -- five attempts, four waits, and the ladder is
+        //     FATAL once spent (it rethrows rather than degrading).
+        const busy = createRecordingCtx({ responses: Array.from({ length: 5 }, () => busyError()) });
+        await assert.rejects(
+            () => dispatchRole(busy.ctx, 'planner', ROLE_CALL_OPTS.planner),
+            /execute_prompt is already running/,
             'An exhausted planner ladder is FATAL to the sprint -- it rethrows rather than degrading to a synthesized result.'
+        );
+        assert.strictEqual(busy.rec.dispatches.length, 5, 'The planner ladder must make exactly five dispatch attempts.');
+        assert.deepStrictEqual(
+            busy.rec.logs.filter((m) => /waiting \d+s before retry attempt/.test(m)),
+            [
+                'Planner dispatch: waiting 5s before retry attempt 2/5...',
+                'Planner dispatch: waiting 15s before retry attempt 3/5...',
+                'Planner dispatch: waiting 30s before retry attempt 4/5...',
+                'Planner dispatch: waiting 60s before retry attempt 5/5...',
+            ],
+            'The planner dispatch retry ladder must stay the bounded [0, 5s, 15s, 30s, 60s] backoff.'
+        );
+
+        // (b) a post-dispatch sync failure must NOT re-dispatch: the planning
+        //     turn already ran and its beads writes are local.
+        const synced = createRecordingCtx({ responses: [postDispatchSyncError()] });
+        await assert.rejects(() => dispatchRole(synced.ctx, 'planner', ROLE_CALL_OPTS.planner));
+        assert.strictEqual(
+            synced.rec.dispatches.length,
+            1,
+            'A post-dispatch sync failure must abort the ladder WITHOUT re-dispatching a turn that already ran.'
+        );
+
+        // (c) an auth/trust failure is deterministic, so the ladder aborts
+        //     rather than burning its remaining attempts -- but an LLM-auth
+        //     failure (unlike workspace trust) gets exactly ONE self-heal try.
+        const trust = createRecordingCtx({ responses: [trustError()] });
+        await assert.rejects(() => dispatchRole(trust.ctx, 'planner', ROLE_CALL_OPTS.planner));
+        assert.strictEqual(trust.rec.dispatches.length, 1, 'A workspace-trust failure must end the ladder immediately.');
+        assert.strictEqual(trust.rec.authHeals.length, 0, 'Workspace trust is not something LLM-auth self-heal can fix.');
+
+        const unhealable = createRecordingCtx({ responses: [authError(), authError()], healed: false });
+        await assert.rejects(() => dispatchRole(unhealable.ctx, 'planner', ROLE_CALL_OPTS.planner));
+        assert.strictEqual(
+            unhealable.rec.authHeals.length,
+            1,
+            'An LLM-auth failure must get exactly ONE bounded self-heal attempt inside the ladder.'
+        );
+        assert.strictEqual(unhealable.rec.dispatches.length, 1, 'An unhealed auth failure ends the ladder.');
+        assert.strictEqual(unhealable.rec.authHeals[0].label, 'Planner dispatch');
+
+        const healable = createRecordingCtx({ responses: [authError()], healed: true });
+        await dispatchRole(healable.ctx, 'planner', ROLE_CALL_OPTS.planner);
+        assert.strictEqual(healable.rec.dispatches.length, 2, 'A healed auth failure must be retried once healed.');
+
+        // (d) only a provably no-mutation failure may let the next attempt
+        //     skip its pre-dispatch sync.
+        const noMutation = createRecordingCtx({ responses: Array.from({ length: 5 }, () => busyError()), noMutation: () => true });
+        await assert.rejects(() => dispatchRole(noMutation.ctx, 'planner', ROLE_CALL_OPTS.planner));
+        assert.strictEqual(
+            noMutation.rec.dispatches[1].bracket.options.skipPreDispatchSync,
+            true,
+            'After a provably no-mutation failure the next attempt skips its pre-dispatch sync.'
+        );
+        const mutated = createRecordingCtx({ responses: Array.from({ length: 5 }, () => busyError()), noMutation: () => false });
+        await assert.rejects(() => dispatchRole(mutated.ctx, 'planner', ROLE_CALL_OPTS.planner));
+        assert.strictEqual(
+            mutated.rec.dispatches[1].bracket.options.skipPreDispatchSync,
+            false,
+            'Any other error must re-arm the next attempt\'s pre-dispatch sync.'
         );
     });
 
-    test('planner: max_turns exhaustion resumes the SAME session at doubled turns after killing the stale session', () => {
-        const region = stripComments(regionBetween(SRC, 'const dispatchPlanner = async (', 'const PLANNER_DISPATCH_RETRY_DELAYS_MS'));
-        assert.ok(
-            /err instanceof AgentDispatchError && err\.details\?\.reason === 'max_turns_exhausted'/.test(region),
-            'The planner resume must trigger on max_turns exhaustion specifically, not on any dispatch error.'
-        );
-        assert.ok(
-            /memberSessionGuard\.killIfAlive\(getMemberForRole\('planner'\)\)/.test(region),
+    test('planner: max_turns exhaustion resumes the SAME session at doubled turns after killing the stale session', async () => {
+        const { ctx, rec } = createRecordingCtx({ responses: [turnExhaustionError()] });
+        await dispatchRole(ctx, 'planner', ROLE_CALL_OPTS.planner);
+        assert.strictEqual(rec.dispatches.length, 2, 'Turn exhaustion must resume rather than restart or give up.');
+        assert.deepStrictEqual(
+            rec.kills,
+            [ctx.getMemberForRole('planner')],
             'The planner resume must kill a still-alive session before resuming it.'
         );
-        assert.ok(/dispatchPlannerResume\(\)/.test(region), 'The planner resume ladder must call dispatchPlannerResume().');
-        assert.ok(/throw err;/.test(region), 'Any non-max_turns error must propagate to the retry ladder rather than being swallowed.');
+        const killIndex = rec.events.findIndex((e) => e.type === 'kill');
+        const resumeIndex = rec.events.lastIndexOf(rec.events.find((e) => e.type === 'dispatch' && e.entry === rec.dispatches[1]));
+        assert.ok(killIndex < resumeIndex, 'The kill must precede the resume dispatch.');
+        assert.strictEqual(rec.dispatches[1].options.resume, true, 'The resume must continue the SAME session.');
+        assert.strictEqual(
+            rec.dispatches[1].options.max_turns,
+            rec.dispatches[0].options.max_turns * 2,
+            'The resume must double the turn budget.'
+        );
+        assert.strictEqual(rec.dispatches[1].prompt, ROLE_CALL_OPTS.planner.resumePrompt);
+
+        // Any NON-max_turns error must propagate to the retry ladder rather
+        // than being swallowed into a resume.
+        const other = createRecordingCtx({ responses: [busyError(), busyError(), busyError(), busyError(), busyError()] });
+        await assert.rejects(() => dispatchRole(other.ctx, 'planner', ROLE_CALL_OPTS.planner));
+        assert.strictEqual(other.rec.kills.length, 0, 'A non-turn-exhaustion error must never trigger a session kill/resume.');
     });
 
     test('plan-reviewer: two attempts per round, and every failure degrades to CHANGES_NEEDED with dispatchFailed set -- never to an approval', () => {
@@ -598,14 +665,33 @@ describe('planning-role dispatch: returnable verdicts', () => {
         assert.strictEqual(streakAssignment.properties.streaks.type, 'array');
         assert.strictEqual(streakAssignment.properties.streaks.items.type, 'array');
         assert.strictEqual(streakAssignment.properties.streaks.items.items.type, 'string');
-        for (const anchor of ['(plannerPrompt,', 'Continue your planning pass exactly where you left off', "label: 'Scoped Replan Plan (interactive)'"]) {
-            const { merged } = effectiveOpts(siteFor(anchor));
+        // The planner-persona ladders, whichever side of the migration each
+        // currently sits on. A still-inline one is read off runner.js; an
+        // engine-served one's `schema` is proved behaviourally by its
+        // per-dispatch pin above, so here it is the census that matters.
+        const plannerLadders = INLINE_LADDERS.filter((pin) => pin.ladder.includes('planner'));
+        for (const pin of plannerLadders) {
+            const { merged } = effectiveOpts(siteFor(pin.anchor));
             assert.strictEqual(
                 merged.get('schema') ?? null,
                 null,
                 'A planner dispatch returns free-text prose, not a structured verdict -- its real output is the mutated bead DAG.'
             );
         }
+        const engagedPlannerDispatches = ENGINE_LADDER.dispatches.filter((pin) => pin.role.includes('planner'));
+        for (const pin of engagedPlannerDispatches) {
+            assert.strictEqual(
+                pin.schema,
+                null,
+                `${pin.name} returns free-text prose, not a structured verdict.`
+            );
+        }
+        assert.strictEqual(
+            plannerLadders.length + engagedPlannerDispatches.length,
+            3,
+            'There are exactly three planner-persona planning dispatches: the interactive planner, its resume, and the ' +
+            'scoped replan planner.'
+        );
     });
 });
 
@@ -686,47 +772,39 @@ describe('planning-role dispatch: the dispatchRole engine call site', () => {
 });
 
 /**
- * Drives the REAL engine so that `pin`'s specific dispatch happens, and
- * returns the recording ctx's timeline. Each dispatch KIND needs its own
- * driver because that is what distinguishes them: a resume only happens after
- * turn exhaustion, a semantic-repair re-ask only after a candidate fails
- * validation.
+ * Drives the REAL engine so that `pin`'s specific dispatch happens. The
+ * driver lives in ./helpers/dispatch-role-harness.mjs so this file and
+ * role-policies-table.test.mjs cannot drift on HOW a dispatch is produced.
  */
 async function driveEngineTo(pin) {
-    const opts = { ...ROLE_CALL_OPTS[pin.role] };
-    let responses = [];
-    if (pin.kind === 'max-turns-resume') {
-        responses = [turnExhaustionError()];
-    }
-    if (pin.kind === 'semantic-repair-re-ask') {
-        responses = ['REJECTED CANDIDATE', 'ACCEPTED CANDIDATE'];
-    }
-    if (pin.role === 'streak-assignment') {
-        opts.validate = (value) => (value === 'ACCEPTED CANDIDATE' || value === 'dispatch ok'
-            ? { ok: true, reason: null, result: { usedFallback: false } }
-            : { ok: false, reason: 'ids did not cover the ready set', result: { usedFallback: true } });
-    }
-    const { ctx, rec } = createRecordingCtx({ responses });
-    const outcome = await dispatchRole(ctx, pin.role, opts);
-    const index = pin.kind === 'main' ? 0 : 1;
+    const driven = await driveEngineDispatch(pin.role, pin.kind);
     assert.ok(
-        rec.dispatches[index],
-        `${pin.name}: the engine never made the expected ${pin.kind} dispatch (it made ${rec.dispatches.length}).`
+        driven.dispatch,
+        `${pin.name}: the engine never made the expected ${pin.kind} dispatch (it made ${driven.rec.dispatches.length}).`
     );
-    return { rec, outcome, dispatch: rec.dispatches[index] };
+    return driven;
 }
 
 describe('planning-role dispatch ladders: per-dispatch pins (engine-served)', () => {
     for (const pin of ENGINE_DISPATCHES) {
         test(`${pin.name}: member routing, bracketing, turns, timeout, watchdog, KB and verdict schema`, async () => {
-            const { dispatch } = await driveEngineTo(pin);
+            const { ctx, dispatch, opts } = await driveEngineTo(pin);
             const o = dispatch.options;
+            const member = ctx.getMemberForRole(pin.memberRole);
 
             // --- member routing -------------------------------------------------
-            assert.strictEqual(o.member_name, pin.member, `${pin.name} must route to ${pin.member}.`);
+            assert.strictEqual(
+                o.member_name,
+                member,
+                `${pin.name} must route to the '${pin.memberRole}' role member.`
+            );
 
             // --- model tier -----------------------------------------------------
-            assert.strictEqual(o.model ?? null, pin.modelTier, `${pin.name} must dispatch at model tier ${pin.modelTier}.`);
+            assert.strictEqual(
+                o.model ?? null,
+                pin.modelTier,
+                `${pin.name} must dispatch at model tier ${pin.modelTier} (runner.js's own FIXED_ROLE_TIER value).`
+            );
 
             // --- turn budget and timeout ----------------------------------------
             assert.strictEqual(
@@ -734,11 +812,28 @@ describe('planning-role dispatch ladders: per-dispatch pins (engine-served)', ()
                 pin.maxTurns,
                 `${pin.name} must pass max_turns ${pin.maxTurns === null ? '(none -- the dispatch default)' : pin.maxTurns}.`
             );
-            assert.strictEqual(o.timeout_s ?? null, pin.timeoutS, `${pin.name}: inactivity timeout budget.`);
-            assert.strictEqual(o.max_total_s ?? null, pin.maxTotalS, `${pin.name}: hard elapsed-time budget.`);
+            // Budgets stay SYMBOLIC: the pin names the budget, and the engine
+            // must resolve it through ctx.budgets rather than hard-coding a
+            // number -- the harness's sentinel value makes a hard-coded
+            // fallback impossible to miss.
+            assert.strictEqual(
+                o.timeout_s ?? null,
+                pin.timeoutS === null ? null : ctx.budgets[pin.timeoutS],
+                `${pin.name} must pass timeout_s resolved from ${pin.timeoutS ?? '(none -- the dispatch default)'}.`
+            );
+            assert.strictEqual(
+                o.max_total_s ?? null,
+                pin.maxTotalS === null ? null : ctx.budgets[pin.maxTotalS],
+                `${pin.name} must pass max_total_s resolved from ${pin.maxTotalS ?? '(none -- the dispatch default)'}.`
+            );
 
             // --- same-session resume flag ---------------------------------------
-            assert.strictEqual(o.resume ?? null, pin.resume, `${pin.name}: same-session resume argument.`);
+            const expectedResume = pin.resume === 'call-site' ? opts.resumeArg : pin.resume;
+            assert.strictEqual(
+                o.resume ?? null,
+                expectedResume ?? null,
+                `${pin.name}: same-session resume argument.`
+            );
 
             // --- git sync bracketing and push flags -----------------------------
             if (!pin.bracketed) {
@@ -751,15 +846,11 @@ describe('planning-role dispatch ladders: per-dispatch pins (engine-served)', ()
                 assert.ok(dispatch.bracket, `${pin.name} must be wrapped in a git-sync bracket.`);
                 assert.strictEqual(
                     dispatch.bracket.member,
-                    pin.member,
+                    member,
                     `${pin.name}'s bracket must sync the SAME member the dispatch routes to.`
                 );
                 assert.strictEqual(dispatch.bracket.pushCode, pin.pushCode, `${pin.name}: pushCode flag.`);
-                assert.strictEqual(
-                    dispatch.bracket.options.pushBeads ?? null,
-                    pin.pushBeads,
-                    `${pin.name}: pushBeads flag.`
-                );
+                assert.strictEqual(dispatch.bracket.options.pushBeads, pin.pushBeads, `${pin.name}: pushBeads flag.`);
             }
 
             // --- watchdog arming ------------------------------------------------
@@ -769,15 +860,16 @@ describe('planning-role dispatch ladders: per-dispatch pins (engine-served)', ()
                 assert.ok(dispatch.watchdog, `${pin.name} must be raced against a client-side dispatch watchdog.`);
                 assert.strictEqual(
                     dispatch.watchdog.timeoutS,
-                    DISPATCH_TIMEOUT_S,
+                    ctx.budgets.DISPATCH_TIMEOUT_S,
                     `${pin.name}'s watchdog must fire on the same DISPATCH_TIMEOUT_S budget the server-side timeout uses.`
                 );
                 assert.strictEqual(
                     dispatch.watchdog.member,
-                    pin.member,
+                    member,
                     `${pin.name}'s watchdog must name the dispatched member so its kill path targets the right session.`
                 );
                 assert.strictEqual(dispatch.watchdog.label, pin.watchdogLabel, `${pin.name}: watchdog label.`);
+                assert.ok(dispatch.watchdog.hasLog, `${pin.name}'s watchdog must be given the sprint log so its kill path is visible.`);
             }
 
             // --- KB knowledge injection -----------------------------------------
@@ -794,7 +886,7 @@ describe('planning-role dispatch ladders: per-dispatch pins (engine-served)', ()
             assert.strictEqual(
                 o.schema ?? null,
                 pin.schema === null ? null : SCHEMAS[pin.schema],
-                `${pin.name}: returnable verdict schema.`
+                `${pin.name}: returnable verdict schema (identity-compared to the real contracts.mjs object).`
             );
 
             // --- sprint_id ------------------------------------------------------

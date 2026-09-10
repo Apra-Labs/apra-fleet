@@ -81,8 +81,18 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // max_turns-exhaustion resume, each in its own read-side (pushCode:false,
 // pushBeads:true -- it files carry-over bug beads but never writes code)
 // withGitSync(...) bracket. pushCode:true stays at 4.
-const EXPECTED_AGENT_COUNT = 22;
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 20;
+// 22 -> 20 agent()/20 -> 18 withGitSync (apra-fleet-3swo.5.3): the planner
+// ladder -- its interactive dispatch and its max_turns-exhaustion resume, each
+// in its own read-side (pushCode:false, pushBeads:true) bracket -- moved out of
+// runner.js onto the dispatchRole engine (fleet-sprint/dispatch-role.mjs).
+// The engine opens the SAME bracket around the SAME dispatch; it just does so
+// from one generic place, driven by role-policies.mjs, instead of from a
+// hand-written ladder here. dispatch-role.mjs is a GUARDED_MODULES entry, so
+// dispatch-safety-guard still covers its call site, and the planning-side pins
+// (test/planning-role-dispatch-pins.test.mjs) assert the bracket behaviourally.
+// pushCode:true stays at 4 -- the planner never wrote code.
+const EXPECTED_AGENT_COUNT = 20;
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 18;
 const STREAK_ASSIGNMENT_MARKERS = [
     "label: 'Streak Assignment'",
     "label: 'Streak Assignment (semantic repair)'",

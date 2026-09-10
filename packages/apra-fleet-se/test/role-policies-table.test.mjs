@@ -48,6 +48,12 @@ import {
     schemaError,
     transportError,
     postDispatchSyncError,
+    driveEngineDispatch,
+    streakValidate,
+    watchdogLabelOf,
+    TURN_BASES,
+    REJECTED_CANDIDATE,
+    ACCEPTED_CANDIDATE,
 } from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
@@ -125,14 +131,10 @@ const WATCHDOG_SITES = findCallSites(SRC, 'withDispatchWatchdog', { excludeDecla
  * from the ladder's own max_turns-exhaustion block (see derivedResumeAttempts).
  */
 const ROLE_SOURCE = {
-    planner: {
-        anchor: '(plannerPrompt,',
-        secondary: 'Continue your planning pass exactly where you left off',
-        region: ['const PLANNER_MAX_TURNS = 500;', 'throw plannerErr;'],
-        turnBaseConstant: 'PLANNER_MAX_TURNS',
-        fatalThrow: 'throw plannerErr;',
-        attempts: { kind: 'ladder', const: 'PLANNER_DISPATCH_RETRY_DELAYS_MS' },
-    },
+    // apra-fleet-3swo.5.3: MIGRATED. There is no inline planner ladder in
+    // runner.js to anchor on any more -- every field of this row is
+    // re-derived by RUNNING dispatch-role.mjs (see section (7) below).
+    planner: { engine: true },
     'plan-reviewer': {
         anchor: 'priorRoundVerdicts: priorPlanRoundVerdicts',
         secondary: 'Continue your plan review exactly where you left off',
@@ -1138,5 +1140,407 @@ describe('role policy table: every named variance is expressed as data', () => {
             allDispatchPolicies().filter((p) => p.kbInjection === 'prompt-builder').map((p) => p.agentType)
         );
         assert.deepStrictEqual([...selfInjecting].sort(), [...KB_SELF_INJECTING_ROLES].sort());
+    });
+});
+
+// -----------------------------------------------------------------------------
+// (7) MIGRATED roles: every field re-derived by RUNNING the engine.
+//
+// WHY THIS SECTION EXISTS AND WHY IT IS NOT A TABLE-COMPARED-TO-A-TABLE.
+// Sections (3)-(6) re-derive a policy row from runner.js SOURCE TEXT, which is
+// the only evidence available while a ladder is a closure inside one enormous
+// function. Once a ladder moves onto dispatchRole that evidence stops existing:
+// the engine's loop is `for (let attempt = 1; attempt <= attempts; attempt++)`,
+// so no regex over dispatch-role.mjs can tell you how many attempts the PLANNER
+// makes -- it would give the same answer for every role.
+//
+// The replacement is not weaker, it is stronger. Every assertion below RUNS the
+// real engine (fleet-sprint/dispatch-role.mjs) against the real frozen policy
+// row and observes what it actually did: how many times it really dispatched,
+// how long it really said it would wait, whether it really killed the session
+// before resuming, what it really handed back once its attempts were spent.
+// That is a re-derivation from real, executed source -- and it catches a class
+// of defect the old scan could not: a policy field that is recorded but never
+// applied. A row whose number is wrong now fails here instead of shipping green.
+// -----------------------------------------------------------------------------
+
+/** What the engine must resolve a policy's `member` to, given a ctx. */
+function expectedMember(ctx, member) {
+    if (member.kind === 'role') return ctx.getMemberForRole(member.role);
+    return ROLE_CALL_OPTS_BINDINGS[member.binding];
+}
+// No migrated planning role uses a pool-head/runtime member yet; the two that
+// do (doer, reviewer) arrive with the execution-side migration and will supply
+// their bindings here.
+const ROLE_CALL_OPTS_BINDINGS = {};
+
+/** What the engine must resolve a policy's `model` to. */
+function expectedModel(ctx, model) {
+    if (!model) return null;
+    if (model.kind === 'fixed') return ctx.fixedRoleTier[model.key];
+    if (model.kind === 'inherited') return null;
+    return ROLE_CALL_OPTS_BINDINGS[model.binding] ?? null;
+}
+
+/** Every dispatch of a migrated role, paired with the kind that produces it. */
+function engineDispatchesOf(role) {
+    const entry = ROLE_POLICIES[role];
+    const rows = [{ policy: entry, kind: 'main', name: role }];
+    if (entry.secondary) {
+        rows.push({ policy: entry.secondary, kind: entry.secondary.kind, name: `${role} (${entry.secondary.kind})` });
+    }
+    return rows;
+}
+
+describe('role policy table: migrated roles re-derived by running the engine', () => {
+    for (const role of MIGRATED_ROLES) {
+        for (const row of engineDispatchesOf(role)) {
+            test(`${row.name}: member, model, turn budget, timeouts, bracket, watchdog, KB source and schema`, async () => {
+                const { ctx, dispatch, opts } = await driveEngineDispatch(role, row.kind);
+                assert.ok(dispatch, `${row.name}: the engine never made this dispatch.`);
+                const p = row.policy;
+                const o = dispatch.options;
+
+                assert.strictEqual(o.member_name, expectedMember(ctx, p.member), `${row.name}: member resolution.`);
+                assert.strictEqual(o.model ?? null, expectedModel(ctx, p.model), `${row.name}: model tier resolution.`);
+
+                // The turn VALUE the row records must be the engine's own
+                // named base times the recorded multiplier -- the same proof
+                // the textual section makes against runner.js's constant.
+                assert.strictEqual(
+                    o.max_turns ?? null,
+                    p.maxTurns === null ? null : p.maxTurns.value,
+                    `${row.name}: turn budget.`
+                );
+                if (p.maxTurns && p.maxTurns.kind === 'constant') {
+                    assert.strictEqual(
+                        TURN_BASES[p.maxTurns.base] * p.maxTurns.multiplier,
+                        p.maxTurns.value,
+                        `${row.name}: recorded turn VALUE must equal the named turn base times the recorded multiplier.`
+                    );
+                }
+
+                assert.strictEqual(
+                    o.timeout_s ?? null,
+                    p.timeouts.timeoutS === null ? null : ctx.budgets[p.timeouts.timeoutS],
+                    `${row.name}: inactivity timeout budget, resolved from the SYMBOLIC name the row records.`
+                );
+                assert.strictEqual(
+                    o.max_total_s ?? null,
+                    p.timeouts.maxTotalS === null ? null : ctx.budgets[p.timeouts.maxTotalS],
+                    `${row.name}: hard elapsed-time budget.`
+                );
+
+                const expectedResume = p.resumeArg === null
+                    ? null
+                    : (p.resumeArg.kind === 'same-session' ? true : (opts.resumeArg ?? null));
+                assert.strictEqual(o.resume ?? null, expectedResume, `${row.name}: same-session resume argument.`);
+                assert.strictEqual(o.agentType ?? null, p.agentType, `${row.name}: persona.`);
+                assert.strictEqual(
+                    o.schema ?? null,
+                    p.schema === null ? null : SCHEMAS[p.schema],
+                    `${row.name}: returnable verdict schema.`
+                );
+
+                // --- bracket ----------------------------------------------------
+                if (!p.bracket.wrapped) {
+                    assert.strictEqual(dispatch.bracket, null, `${row.name}: policy says no git-sync bracket, but one was opened.`);
+                } else {
+                    assert.ok(dispatch.bracket, `${row.name}: policy says bracketed, but no bracket was opened.`);
+                    assert.strictEqual(dispatch.bracket.member, expectedMember(ctx, p.member), `${row.name}: the bracket must sync the dispatched member.`);
+                    assert.strictEqual(dispatch.bracket.pushCode, p.bracket.pushCode === true, `${row.name}: pushCode flag.`);
+                    assert.strictEqual(dispatch.bracket.options.pushBeads, p.bracket.pushBeads === true, `${row.name}: pushBeads flag.`);
+                }
+
+                // --- watchdog ---------------------------------------------------
+                if (!p.watchdog.armed) {
+                    assert.strictEqual(dispatch.watchdog, null, `${row.name}: policy arms no watchdog, but the dispatch was raced against one.`);
+                } else {
+                    assert.ok(dispatch.watchdog, `${row.name}: policy arms a watchdog, but the dispatch was not raced against one.`);
+                    assert.strictEqual(dispatch.watchdog.timeoutS, ctx.budgets[p.watchdog.timeoutS], `${row.name}: watchdog budget.`);
+                    assert.strictEqual(p.watchdog.member, 'dispatch');
+                    assert.strictEqual(
+                        dispatch.watchdog.member,
+                        expectedMember(ctx, p.member),
+                        `${row.name}: the watchdog must name the dispatched member (policy records this as member:'dispatch').`
+                    );
+                    assert.strictEqual(dispatch.watchdog.label, watchdogLabelOf(p.watchdog.label), `${row.name}: watchdog label.`);
+                }
+
+                // --- KB injection source ---------------------------------------
+                const expectedKb = p.agentType === null
+                    ? 'none'
+                    : (KB_SELF_INJECTING_ROLES.has(p.agentType) ? 'prompt-builder' : 'wrapper');
+                assert.strictEqual(
+                    p.kbInjection,
+                    expectedKb,
+                    `${row.name}: kbInjection must match where the knowledge block actually comes from for persona ` +
+                    `${JSON.stringify(p.agentType)}.`
+                );
+            });
+        }
+
+        test(`${role}: attempts, backoff, resume escalation, auth self-heal and sync-failure handling (engine-derived)`, async () => {
+            const p = policyFor(role);
+            const opts = ROLE_CALL_OPTS[role];
+            const withValidate = ROLE_POLICIES[role].postResult.includes('select-streaks-validate')
+                ? { ...opts, validate: streakValidate }
+                : opts;
+            const spend = (make) => Array.from({ length: p.retry.attempts + 1 }, make);
+            /** Runs the ladder to exhaustion, tolerating a fatal degrade's rethrow. */
+            const runSpent = async (make, ctxOver = {}) => {
+                const { ctx, rec } = createRecordingCtx({ responses: spend(make), ...ctxOver });
+                let thrown = null;
+                let outcome = null;
+                try {
+                    outcome = await dispatchRole(ctx, role, withValidate);
+                } catch (err) {
+                    thrown = err;
+                }
+                return { ctx, rec, outcome, thrown };
+            };
+
+            // --- attempts, re-derived by counting real dispatches -------------
+            const spent = await runSpent(() => busyError());
+            assert.strictEqual(
+                spent.rec.dispatches.length,
+                p.retry.attempts,
+                `${role}: retry.attempts must equal the number of dispatches the engine really makes before giving up.`
+            );
+
+            // --- backoff ladder, re-derived from the waits it announced -------
+            const waits = spent.rec.logs.filter((m) => /waiting [\d.]+s before retry attempt/.test(m));
+            if (p.retry.backoffMs) {
+                assert.deepStrictEqual(
+                    waits,
+                    p.retry.backoffMs
+                        .map((ms, i) => (ms > 0
+                            ? `${opts.roleLabel} dispatch: waiting ${ms / 1000}s before retry attempt ${i + 1}/${p.retry.backoffMs.length}...`
+                            : null))
+                        .filter(Boolean),
+                    `${role}: retry.backoffMs must be the backoff ladder the engine really waits out.`
+                );
+            } else {
+                assert.deepStrictEqual(waits, [], `${role}: the policy records no backoff ladder, so the engine must announce no waits.`);
+            }
+
+            // --- max_turns resume ---------------------------------------------
+            const exhausted = createRecordingCtx({ responses: [turnExhaustionError()] });
+            let resumeThrew = null;
+            try {
+                await dispatchRole(exhausted.ctx, role, withValidate);
+            } catch (err) {
+                resumeThrew = err;
+            }
+            assert.strictEqual(
+                exhausted.rec.dispatches.length > 1,
+                p.retry.maxTurnsResume,
+                `${role}: retry.maxTurnsResume must match whether turn exhaustion really resumes.`
+            );
+            if (p.retry.maxTurnsResume) {
+                assert.strictEqual(resumeThrew, null, `${role}: a successful resume must not propagate the exhaustion.`);
+                assert.strictEqual(
+                    exhausted.rec.dispatches.length - 1,
+                    p.retry.resumeAttempts,
+                    `${role}: retry.resumeAttempts must equal the number of resumes the engine really issues per attempt.`
+                );
+                assert.strictEqual(
+                    exhausted.rec.dispatches[1].options.max_turns,
+                    exhausted.rec.dispatches[0].options.max_turns * 2,
+                    `${role}: retry.turnEscalation='double' must be the escalation the resume really performs.`
+                );
+                assert.strictEqual(p.retry.turnEscalation, 'double');
+            } else {
+                assert.strictEqual(p.retry.resumeAttempts, 0);
+                assert.strictEqual(p.retry.turnEscalation, null);
+            }
+
+            // --- auth self-heal ------------------------------------------------
+            const authRun = await runSpent(() => authError(), { healed: false });
+            assert.strictEqual(
+                authRun.rec.authHeals.length > 0,
+                p.retry.authSelfHeal,
+                `${role}: retry.authSelfHeal must match whether the ladder really self-heals an LLM-auth failure.`
+            );
+            if (p.retry.authSelfHeal) {
+                assert.strictEqual(
+                    authRun.rec.authHeals[0].label,
+                    `${opts.roleLabel} dispatch`,
+                    `${role}: the self-heal must name the dispatch it is healing.`
+                );
+            }
+
+            // --- abort on a non-retryable (auth/trust) failure -----------------
+            const trustRun = await runSpent(() => trustError());
+            assert.strictEqual(
+                trustRun.rec.dispatches.length === 1 && p.retry.attempts > 1,
+                p.retry.abortOnNonRetryable && p.retry.attempts > 1,
+                `${role}: retry.abortOnNonRetryable must match whether an auth/trust failure really ends the ladder early.`
+            );
+
+            // --- a dispatch that already ran is never re-dispatched ------------
+            const syncRun = await runSpent(() => postDispatchSyncError());
+            assert.strictEqual(
+                syncRun.rec.dispatches.length === 1 && p.retry.attempts > 1,
+                p.retry.skipRedispatchOnPostDispatchSyncFailure && p.retry.attempts > 1,
+                `${role}: a dispatch that already ran must not be re-dispatched for a post-dispatch sync failure.`
+            );
+
+            // --- no-mutation pre-sync skip ------------------------------------
+            if (p.retry.attempts > 1 && p.bracket.wrapped) {
+                const skipped = await runSpent(() => busyError(), { noMutation: () => true });
+                assert.strictEqual(
+                    skipped.rec.dispatches[1].bracket.options.skipPreDispatchSync === true,
+                    p.retry.skipPreDispatchSyncOnNoMutation,
+                    `${role}: only a provably no-mutation failure may let the next attempt skip its pre-dispatch sync.`
+                );
+            }
+
+            // --- axes that must be OFF for this ladder ------------------------
+            for (const d of spent.rec.dispatches) {
+                if (!d.bracket) continue;
+                assert.strictEqual(
+                    d.bracket.options.resumeOntoRemoteTip === true,
+                    p.retry.resumeOntoRemoteTipOnRetry,
+                    `${role}: retry.resumeOntoRemoteTipOnRetry must match whether a retry really resumes onto the remote tip.`
+                );
+            }
+            assert.strictEqual(
+                p.retry.infraResumeAttempts,
+                0,
+                `${role}: no migrated planning ladder recovers an infrastructure failure with an extra resume.`
+            );
+            assert.strictEqual(p.retry.authSelfHealShortCircuits, false, `${role}: no migrated planning ladder short-circuits its retry on a heal.`);
+
+            // --- bounded semantic-repair re-ask -------------------------------
+            const repair = createRecordingCtx({ responses: [REJECTED_CANDIDATE, ACCEPTED_CANDIDATE] });
+            await dispatchRole(repair.ctx, role, withValidate);
+            const reAsks = repair.rec.logs.filter((m) => /candidate rejected .* re-asking once/.test(m)).length;
+            assert.strictEqual(
+                reAsks,
+                p.retry.semanticRepairReAsks,
+                `${role}: retry.semanticRepairReAsks must equal the number of validation-failure re-asks the engine really makes.`
+            );
+        });
+
+        test(`${role}: what the ladder produces when its attempts are spent (engine-derived)`, async () => {
+            const p = policyFor(role);
+            const d = p.degrade;
+            const opts = ROLE_POLICIES[role].postResult.includes('select-streaks-validate')
+                ? { ...ROLE_CALL_OPTS[role], validate: streakValidate }
+                : ROLE_CALL_OPTS[role];
+            const spend = (make) => Array.from({ length: p.retry.attempts + 1 }, make);
+            const run = async (make) => {
+                const { ctx, rec } = createRecordingCtx({ responses: spend(make) });
+                try {
+                    return { outcome: await dispatchRole(ctx, role, opts), thrown: null, rec };
+                } catch (err) {
+                    return { outcome: null, thrown: err, rec };
+                }
+            };
+
+            // The two error CLASSES every degrade distinguishes: schema-repair
+            // exhaustion and a dispatch/transport failure. `degrade.paths` is
+            // how many of them produce the synthesized value.
+            const runs = [await run(() => schemaError()), await run(() => transportError())];
+
+            if (d.kind === 'fatal') {
+                for (const r of runs) {
+                    assert.ok(r.thrown, `${role}: an abortsSprint degrade must really rethrow its accumulated error.`);
+                }
+                assert.ok(d.abortsSprint, `${role}: only a sprint-ending degrade may be fatal.`);
+                return;
+            }
+
+            for (const r of runs) {
+                assert.strictEqual(r.thrown, null, `${role}: a non-fatal degrade must never propagate a recognised failure.`);
+                assert.strictEqual(r.outcome.degraded, true, `${role}: a spent ladder must report itself degraded.`);
+            }
+
+            const synthesizing = runs.filter((r) => r.outcome.value !== null);
+            assert.strictEqual(
+                synthesizing.length,
+                d.paths,
+                `${role}: degrade.paths must equal the number of error classes that really synthesize a value.`
+            );
+            if (d.synthesized) {
+                for (const r of synthesizing) {
+                    for (const [key, value] of Object.entries(d.synthesized)) {
+                        if (key === 'grouping') continue; // a caller-side deterministic fallback, not a fabricated value
+                        assert.strictEqual(r.outcome.value[key], value, `${role}: the degrade must synthesize ${key}=${value}.`);
+                    }
+                    if (d.marker) {
+                        assert.strictEqual(r.outcome.value[d.marker], true, `${role}: every synthesized value must carry the '${d.marker}' marker.`);
+                    }
+                    for (const forbidden of d.neverSynthesizes) {
+                        assert.notStrictEqual(r.outcome.value.verdict, forbidden, `${role}: no degrade path may ever synthesize ${forbidden}.`);
+                    }
+                }
+            }
+
+            // An unrecognised error class still propagates (or does not),
+            // exactly as the row records.
+            const unrecognised = await run(() => new TypeError('not a dispatch failure at all'));
+            assert.strictEqual(
+                unrecognised.thrown !== null,
+                d.rethrowsUnrecognisedErrors,
+                `${role}: degrade.rethrowsUnrecognisedErrors must match whether an unrecognised error really propagates.`
+            );
+        });
+
+        test(`${role}: every recorded step is a step the engine really performs`, async () => {
+            for (const row of engineDispatchesOf(role)) {
+                const { ctx, rec } = await driveEngineDispatch(role, row.kind);
+                const p = row.policy;
+                for (const step of p.preDispatch) {
+                    if (step === 'kill-stale-session') {
+                        assert.ok(
+                            rec.kills.includes(expectedMember(ctx, p.member)),
+                            `${row.name}: policy records 'kill-stale-session', but the engine killed no session for that member.`
+                        );
+                        const killIndex = rec.events.findIndex((e) => e.type === 'kill');
+                        const dispatchIndex = rec.events.findIndex((e) => e.type === 'dispatch' && e.entry === rec.dispatches[1]);
+                        assert.ok(killIndex >= 0 && killIndex < dispatchIndex, `${row.name}: the kill must precede the dispatch it precedes.`);
+                        continue;
+                    }
+                    assert.fail(`${row.name}: no engine evidence is defined for preDispatch step '${step}'.`);
+                }
+            }
+            const { rec, outcome } = await driveEngineDispatch(role, 'main');
+            for (const step of ROLE_POLICIES[role].postResult) {
+                if (step === 'invalidate-beads-cache') {
+                    assert.strictEqual(
+                        rec.invalidations,
+                        1,
+                        `${role}: policy records 'invalidate-beads-cache', but the engine did not drop the orchestrator's beads cache.`
+                    );
+                    continue;
+                }
+                if (step === 'select-streaks-validate') {
+                    assert.ok(
+                        outcome.validation,
+                        `${role}: policy records 'select-streaks-validate', but the engine returned no validation result.`
+                    );
+                    continue;
+                }
+                assert.fail(`${role}: no engine evidence is defined for postResult step '${step}'.`);
+            }
+        });
+    }
+
+    test('the engine-derived section really covers every migrated role', () => {
+        // Guards the loops themselves: if MIGRATED_ROLES were ever empty (or
+        // short) the per-role tests above would silently not exist rather than
+        // fail, which is exactly how a migration would lose its coverage.
+        assert.deepStrictEqual(
+            MIGRATED_ROLES,
+            ROLE_NAMES.filter((r) => ROLE_POLICIES[r].migrated === true),
+            'MIGRATED_ROLES must be exactly the roles role-policies.mjs marks migrated.'
+        );
+        assert.strictEqual(
+            MIGRATED_ROLES.length + INLINE_ROLES.length,
+            ROLE_NAMES.length,
+            'Every role must be derived on exactly one side: textually from runner.js, or behaviourally from the engine.'
+        );
     });
 });

@@ -40,6 +40,10 @@ import { objectLiteralFor, objectEntries } from './dispatch-pin-scanner.mjs';
 import { planReviewerVerdict, streakAssignment } from '../../fleet-sprint/contracts.mjs';
 import { isNoMutationDispatchFailure } from '../../fleet-sprint/runner.js';
 import { PostDispatchSyncError } from '../../fleet-sprint/errors.mjs';
+import { ROLE_POLICIES } from '../../fleet-sprint/role-policies.mjs';
+import { dispatchRole, TURN_BASES } from '../../fleet-sprint/dispatch-role.mjs';
+
+export { TURN_BASES };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FLEET_SPRINT_DIR = path.join(__dirname, '..', '..', 'fleet-sprint');
@@ -268,3 +272,76 @@ export const MIGRATED_PLANNING_ROLES = Object.freeze([
     'scoped-replan-plan-reviewer',
     'streak-assignment',
 ]);
+
+/**
+ * The two sentinel candidate values the semantic-repair drivers below use.
+ * REJECTED is what `streakValidate` refuses; anything else it accepts, so a
+ * re-ask that really re-dispatches lands on ACCEPTED and a ladder that
+ * silently skipped the re-ask stays on REJECTED.
+ */
+export const REJECTED_CANDIDATE = 'REJECTED CANDIDATE';
+export const ACCEPTED_CANDIDATE = 'ACCEPTED CANDIDATE';
+
+/**
+ * Stand-in for the runner's selectStreaks()-backed semantic validation: the
+ * `postResult: ['select-streaks-validate']` step the streak-assignment policy
+ * records. `result` is what the engine hands back as `outcome.validation`,
+ * mirroring selectStreaks' real {streaks, usedFallback, reason} shape.
+ */
+export function streakValidate(candidate) {
+    const ok = candidate !== REJECTED_CANDIDATE && candidate !== null && candidate !== undefined;
+    return {
+        ok,
+        reason: ok ? null : 'ids did not cover the ready set',
+        result: { streaks: ok ? [['bead-1']] : [['bead-1'], ['bead-2']], usedFallback: !ok, reason: ok ? null : 'ids did not cover the ready set' },
+    };
+}
+
+/**
+ * Runs the REAL engine so that `role`'s dispatch of `kind` actually happens,
+ * and returns the recorded timeline plus the dispatch itself.
+ *
+ * Each dispatch KIND needs its own driver, because the kind IS the condition
+ * that produces it: a 'max-turns-resume' only happens after turn exhaustion,
+ * a 'semantic-repair-re-ask' only after a candidate fails validation. That is
+ * itself part of what these pins assert -- a ladder that resumed on any error,
+ * or re-asked unconditionally, would not land here.
+ *
+ * @param {string} role a key of ROLE_POLICIES
+ * @param {'main'|'max-turns-resume'|'semantic-repair-re-ask'} kind
+ */
+export async function driveEngineDispatch(role, kind, options = {}) {
+    const opts = { ...ROLE_CALL_OPTS[role], ...(options.opts || {}) };
+    if (ROLE_POLICIES[role].postResult.includes('select-streaks-validate') && !opts.validate) {
+        opts.validate = streakValidate;
+    }
+    let { responses } = options;
+    if (!responses) {
+        if (kind === 'max-turns-resume') responses = [turnExhaustionError()];
+        else if (kind === 'semantic-repair-re-ask') responses = [REJECTED_CANDIDATE, ACCEPTED_CANDIDATE];
+        else responses = [];
+    }
+    const { ctx, rec } = createRecordingCtx({ responses, ...(options.ctx || {}) });
+    const outcome = await dispatchRole(ctx, role, opts);
+    const index = kind === 'main' ? 0 : 1;
+    return { ctx, rec, outcome, opts, dispatch: rec.dispatches[index] };
+}
+
+/**
+ * Rebuilds a policy watchdog label from its segment list the way the engine
+ * does -- literal string segments verbatim, an `{ expr }` segment evaluated
+ * as turn-base arithmetic over the engine's own TURN_BASES.
+ */
+export function watchdogLabelOf(segments) {
+    if (!segments) return null;
+    return segments
+        .map((segment) => {
+            if (typeof segment === 'string') return segment;
+            const m = /^([A-Za-z_$][\w$]*)(?:\s*\*\s*(\d+))?$/.exec(String(segment.expr).trim());
+            if (!m || typeof TURN_BASES[m[1]] !== 'number') {
+                throw new Error(`watchdogLabelOf: ${JSON.stringify(segment.expr)} is not turn-base arithmetic.`);
+            }
+            return String(m[2] ? TURN_BASES[m[1]] * Number(m[2]) : TURN_BASES[m[1]]);
+        })
+        .join('');
+}

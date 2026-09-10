@@ -348,6 +348,9 @@ function secondary(main, role, kind, over) {
 // -----------------------------------------------------------------------------
 
 const planner = policy('planner', {
+    // apra-fleet-3swo.5.3: migrated -- the planner ladder no longer exists
+    // inline in runner.js; dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: 'plannerPrompt,',
     member: roleMember('planner'),
     agentType: 'planner',

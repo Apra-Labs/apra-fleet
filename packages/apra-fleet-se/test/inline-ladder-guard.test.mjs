@@ -97,8 +97,23 @@ function withRoleMigrated(role) {
 }
 
 describe('inline-ladder guard: baseline against the real tree', () => {
-    test('no role is migrated today, so migratedRoleNames() is empty', () => {
-        assert.deepStrictEqual(migratedRoleNames(), []);
+    test('migratedRoleNames() is exactly the set of roles role-policies.mjs marks migrated', () => {
+        // apra-fleet-3swo.5.3: this used to assert the EMPTY baseline, which
+        // was the honest statement while nothing had migrated. The dispatchRole
+        // migration beads flip roles one at a time, so the durable statement is
+        // the derivation, not the literal: migratedRoleNames() must report
+        // exactly the rows carrying `migrated: true`, and nothing else. The
+        // migration's real safety property -- "a migrated role has no surviving
+        // inline ladder" -- is the checkModules() baseline immediately below,
+        // which is what actually goes red if a ladder is left behind.
+        assert.deepStrictEqual(
+            migratedRoleNames(),
+            ROLE_NAMES.filter((role) => ROLE_POLICIES[role].migrated === true),
+        );
+        assert.ok(
+            migratedRoleNames().every((role) => ROLE_POLICIES[role].migrated === true),
+            'A role may only be reported migrated because its own policy row says so.',
+        );
     });
 
     test('checkModules() over the shared list reports zero violations today, sourced from guarded-modules.mjs alone', () => {
@@ -166,11 +181,13 @@ describe('inline-ladder guard: falsifiability against a seeded violation', () =>
         const sandbox = createSandbox();
         try {
             const fixture = sandbox.write('planner-ladder.mjs', SEEDED_LADDER_FIXTURE);
-            // migratedRoles omitted -> defaults to migratedRoleNames() against
-            // the REAL table, which marks no role migrated -- the seeded
-            // ladder is a legitimate, still-active dispatch until its role
-            // actually migrates.
-            const { violations } = checkModules({ paths: [fixture] });
+            // The seeded ladder is a legitimate, still-active dispatch until
+            // its role actually migrates. Driven with an explicitly EMPTY
+            // migrated set rather than by leaving `migratedRoles` to default:
+            // the real table now marks the planner migrated (apra-fleet-3swo
+            // .5.3), so the default would legitimately flag this fixture and
+            // the case would stop testing what it exists to test.
+            const { violations } = checkModules({ paths: [fixture], migratedRoles: [] });
             assert.deepStrictEqual(violations, []);
         } finally {
             sandbox.cleanup();
@@ -629,8 +646,25 @@ describe('inline-ladder guard: (apra-fleet-3swo.35) every real dispatch anchor p
     }
 
     for (const dispatch of allDispatchPolicies()) {
-        test(`role '${dispatch.role}' (kind=${dispatch.kind}) anchor ${JSON.stringify(dispatch.ladderAnchor)} matches a real agent() call site`, () => {
+        const migrated = ROLE_POLICIES[dispatch.ladder].migrated === true;
+        test(`role '${dispatch.role}' (kind=${dispatch.kind}) anchor ${JSON.stringify(dispatch.ladderAnchor)} ${migrated ? 'matches NO surviving inline ladder' : 'matches a real agent() call site'}`, () => {
             const matches = sitesMatchingAnchor(dispatch.ladderAnchor);
+            if (migrated) {
+                // apra-fleet-3swo.5.3: once a role IS migrated the assertion
+                // INVERTS, and becomes the stronger one. An anchor's job is to
+                // identify a surviving inline ladder; a migrated role must have
+                // none left, so a match here means the migration added the
+                // dispatchRole call but never deleted the original ladder --
+                // exactly the double-dispatch hole this guard exists to close.
+                assert.deepStrictEqual(
+                    matches,
+                    [],
+                    `role '${dispatch.role}' (kind=${dispatch.kind}) is marked migrated, but its ladderAnchor ` +
+                    `${JSON.stringify(dispatch.ladderAnchor)} still matches an agent() call site -- the old inline ` +
+                    'ladder was not removed.'
+                );
+                return;
+            }
             assert.ok(
                 matches.length >= 1,
                 `role '${dispatch.role}' (kind=${dispatch.kind}) ladderAnchor ${JSON.stringify(dispatch.ladderAnchor)} ` +
