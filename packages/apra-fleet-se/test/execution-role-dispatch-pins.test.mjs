@@ -141,6 +141,26 @@ function siteFor(anchor) {
 }
 
 describe('execution-role dispatch ladders: per-dispatch pins', () => {
+    // apra-fleet-3swo.5.7: with all seven ladders migrated this list is EMPTY,
+    // and every pin it held now lives in the engine-served block at the end of
+    // this file. The textual scanner above is deliberately kept rather than
+    // deleted -- it becomes live again the moment a ladder is un-migrated, and
+    // a file that had thrown it away would silently lose that ladder's coverage
+    // instead of failing. This guard is what stops the now-empty loop from
+    // passing vacuously.
+    test('no execution ladder is pinned against inline runner.js source any more', () => {
+        assert.deepStrictEqual(
+            EXECUTION_LADDERS.map((pin) => pin.name),
+            [],
+            'an execution ladder has an INLINE runner.js call site again -- this section must pin it rather than ' +
+            'iterating nothing. Move its entry back from EXECUTION_ENGINE_DISPATCHES to EXECUTION_INLINE_LADDERS.'
+        );
+        assert.strictEqual(
+            EXECUTION_ENGINE_DISPATCHES.length,
+            14,
+            'All fourteen execution dispatches must be pinned on the engine side instead.'
+        );
+    });
     for (const pin of EXECUTION_LADDERS) {
         test(`${pin.name}: member routing, bracketing, turns, timeout, watchdog, KB and verdict schema`, () => {
             const site = siteFor(pin.anchor);
