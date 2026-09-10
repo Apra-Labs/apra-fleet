@@ -58,6 +58,9 @@ const __dirname = path.dirname(__filename);
 // =============================================================================
 
 const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
+// The dispatchRole engine: since apra-fleet-3swo.5.7 the ONLY module in the
+// dispatch-ladder set that makes an agent() call at all.
+const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.mjs');
 // Branch-split convention (established when the three auto-sprint
 // stabilization fixes -- auto-sprint-9's branch-adopt fix, auto-sprint-3's
 // bdListScoped rewrite, and the failSoft-discrimination follow-up -- were
@@ -367,7 +370,12 @@ const EXPECTED_COMMAND_COUNT = 29;
 // max_turns-exhaustion resume -- followed the integ runner onto the engine.
 // 4 -> 2 (same bead): the per-round reviewer ladder -- its dispatch and its
 // max_turns-exhaustion resume -- followed the final review onto the engine.
-const EXPECTED_AGENT_COUNT = 2;
+// 2 -> 0 (same bead): the doer ladder -- its streak dispatch and its
+// max_turns-exhaustion resume -- was the last inline execution ladder. Every
+// agent() dispatch in the scanned module set is now the dispatchRole engine's
+// single call site, so this runner.js-only census proves nothing and the
+// EXPECTED counts here are zero by construction.
+const EXPECTED_AGENT_COUNT = 0;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in
@@ -583,12 +591,36 @@ test("no agent()/command() call site in runner.js has a callText far larger than
     // rather than on a line number: runner.js keeps shrinking as extraction
     // phases move ladders out of it (apra-fleet-3swo.5.3), and a line number
     // goes stale on every one of those without the site having moved at all.
-    const DOER_RESUME_ANCHOR = 'Continue exactly where you left off from this same session';
-    const doerResumeSite = sites.find((s) => s.fnName === 'agent' && s.callText.includes(DOER_RESUME_ANCHOR));
-    assert.ok(doerResumeSite, `expected an agent() call site containing ${JSON.stringify(DOER_RESUME_ANCHOR)} (dispatchDoerResume) -- update this test if that dispatch moved/was renamed`);
+    //
+    // apra-fleet-3swo.5.7: re-anchored. The site this bug was found on was
+    // dispatchDoerResume's agent() call, which the dispatchRole migration
+    // deleted along with every other inline ladder -- runner.js makes no
+    // agent() dispatch at all any more. The bug it guards against is a
+    // property of the SCANNER, not of that one call site, so the anchor moves
+    // to the engine's single dispatch (fleet-sprint/dispatch-role.mjs), which
+    // is itself a GUARDED_MODULES entry and is now the only agent() call site
+    // in the dispatch-ladder module set.
+    const { sites: engineSites } = checkPath(DISPATCH_ROLE_PATH);
+    const ENGINE_DISPATCH_ANCHOR = 'member_name: member,';
+    const engineDispatchSite = engineSites.find((s) => s.fnName === 'agent' && s.callText.includes(ENGINE_DISPATCH_ANCHOR));
     assert.ok(
-        doerResumeSite.callText.length < 10000,
-        `dispatchDoerResume's agent() callText is ${doerResumeSite.callText.length} chars -- expected a normal-sized dispatch call, not a runaway match`
+        engineDispatchSite,
+        `expected the engine's agent() call site containing ${JSON.stringify(ENGINE_DISPATCH_ANCHOR)} in ` +
+        'dispatch-role.mjs -- update this test if that dispatch moved/was renamed'
+    );
+    assert.ok(
+        engineDispatchSite.callText.length < 10000,
+        `the engine's agent() callText is ${engineDispatchSite.callText.length} chars -- expected a normal-sized ` +
+        'dispatch call, not a runaway match'
+    );
+    // The runner-side half of the same guard: with every ladder migrated,
+    // runner.js has no agent() call site left to run away. Asserted rather
+    // than assumed, so a new inline dispatch re-enters this guard's scope.
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        EXPECTED_AGENT_COUNT,
+        'runner.js dispatches only through the engine now; a new inline agent() call must be added to this count ' +
+        'deliberately, not slipped in.'
     );
 });
 

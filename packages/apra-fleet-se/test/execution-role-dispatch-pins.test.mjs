@@ -27,7 +27,7 @@ import {
     harvesterReport,
 } from '../fleet-sprint/contracts.mjs';
 import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
-import { policyFor, ROLE_POLICIES } from '../fleet-sprint/role-policies.mjs';
+import { policyFor, ROLE_POLICIES, PRE_DISPATCH_STEPS_IN_BRACKET } from '../fleet-sprint/role-policies.mjs';
 import {
     driveEngineDispatch,
     createRecordingCtx,
@@ -46,6 +46,7 @@ import {
     infraError,
     trustError,
     turnExhaustionError,
+    TURN_BASES,
 } from './helpers/dispatch-role-harness.mjs';
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
 import { PLANNING_LADDERS } from './helpers/planning-ladders.mjs';
@@ -596,34 +597,128 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         assert.deepStrictEqual(policyFor('reviewer').postResult, ['reviewer-contract-guard', 'kb-apply']);
     });
 
-    test('doer: bounded escalating resume ladder, closed-streak short-circuit, and no re-dispatch after a post-dispatch sync failure', () => {
-        const region = stripComments(regionBetween(SRC, 'report = await dispatchDoer();', 'Per-bead failure attribution'));
-        assert.strictEqual(numericConstant(SRC, 'MAX_TURN_RESUME_ATTEMPTS'), 2, 'The doer resume ladder is bounded at two attempts.');
-        assert.strictEqual(numericConstant(SRC, 'BASE_DOER_MAX_TURNS'), 500, 'The doer streak turn base.');
-        assert.ok(
-            /let currentMaxTurns = BASE_DOER_MAX_TURNS \* 2;/.test(region),
-            'The first resume doubles the base turn budget.'
+    test('doer: bounded escalating resume ladder, closed-streak short-circuit, and no re-dispatch after a post-dispatch sync failure', async () => {
+        // apra-fleet-3swo.5.7: re-anchored onto the engine.
+        //   MAX_TURN_RESUME_ATTEMPTS === 2        -> retry.resumeAttempts, and
+        //        the number of resumes the engine really issues
+        //   BASE_DOER_MAX_TURNS === 500           -> TURN_BASES, which the row
+        //        names symbolically
+        //   `currentMaxTurns = BASE * 2` and
+        //   `currentMaxTurns *= 2;`               -> the budgets the resumes
+        //        really pass, doubling each time
+        //   `while (resumeAttempt < MAX_...)`     -> the ladder really stops at
+        //        the bound rather than running while failures last
+        //   verifyDoerStreakClosed + preResumeUnclosed.length === 0
+        //                                         -> the 'verify-streak-closed'
+        //        preDispatch step really short-circuits the resume, and runs
+        //        BEFORE the kill
+        //   isPostDispatchSyncFailure(err)        -> really no re-dispatch
+        //   isNonRetryableDispatchError + auth self-heal
+        //                                         -> one heal plus one bounded
+        //        retry; a workspace-trust failure is not retried at all
+        //   dispatchDoer({ resumeOntoRemoteTip: true })
+        //                                         -> the generic retry really
+        //        asks for it, and the auth-healed retry really does not
+        const p = policyFor('doer');
+        const opts = ROLE_CALL_OPTS.doer;
+        assert.strictEqual(p.retry.resumeAttempts, 2, 'The doer resume ladder is bounded at two attempts.');
+        assert.strictEqual(TURN_BASES.BASE_DOER_MAX_TURNS, 500, 'The doer streak turn base.');
+
+        // Bounded, escalating ladder. One more exhaustion than it may answer,
+        // so the BOUND is what stops it.
+        const escalating = createRecordingCtx({
+            responses: Array.from({ length: p.retry.resumeAttempts + 1 }, () => turnExhaustionError()),
+        });
+        await dispatchRole(escalating.ctx, 'doer', opts);
+        const resumes = escalating.rec.dispatches.filter((d) => d.options.resume === true);
+        assert.strictEqual(resumes.length, p.retry.resumeAttempts, 'The escalation is bounded, never unbounded.');
+        assert.deepStrictEqual(
+            resumes.map((d) => d.options.max_turns),
+            [TURN_BASES.BASE_DOER_MAX_TURNS * 2, TURN_BASES.BASE_DOER_MAX_TURNS * 4],
+            'The first resume doubles the base turn budget; each further exhaustion doubles again.'
         );
-        assert.ok(/currentMaxTurns \*= 2;/.test(region), 'Each further turn exhaustion doubles again.');
-        assert.ok(
-            /while \(resumeAttempt < MAX_TURN_RESUME_ATTEMPTS\)/.test(region),
-            'The escalation is bounded by MAX_TURN_RESUME_ATTEMPTS, never unbounded.'
+        assert.strictEqual(p.retry.turnEscalation, 'double');
+
+        // A turn-exhausted streak whose beads are ALL already closed is a
+        // SUCCESS and gets NO resume dispatch -- and no session killed either,
+        // because the check runs BEFORE the kill.
+        const alreadyClosed = createRecordingCtx({
+            responses: [turnExhaustionError()],
+            steps: {
+                'verify-streak-closed': async ({ phase }) => (phase === 'preDispatch'
+                    ? { shortCircuit: true, value: null }
+                    : []),
+            },
+        });
+        const shortCircuited = await dispatchRole(alreadyClosed.ctx, 'doer', opts);
+        assert.strictEqual(alreadyClosed.rec.dispatches.length, 1, 'A closed streak gets NO resume dispatch.');
+        assert.deepStrictEqual(alreadyClosed.rec.kills, [], 'The closure check runs before the kill.');
+        assert.strictEqual(shortCircuited.ok, true, 'The doer merely missed its VERIFY checkpoint -- that is a success.');
+        assert.deepStrictEqual(
+            ROLE_POLICIES['doer-resume'].preDispatch,
+            ['verify-streak-closed', 'kill-stale-session'],
+            'The order is recorded in the row, and the engine honours it.'
         );
-        assert.ok(
-            /verifyDoerStreakClosed\(/.test(region) && /preResumeUnclosed\.length === 0/.test(region),
-            'A turn-exhausted streak whose beads are ALL already closed is a success (the doer merely missed its VERIFY checkpoint) and gets NO resume dispatch.'
+
+        // A completed streak whose post-dispatch sync failed must NOT be
+        // re-dispatched -- the work is already committed locally.
+        const syncFailed = createRecordingCtx({ responses: [postDispatchSyncError(), postDispatchSyncError()] });
+        const syncOutcome = await dispatchRole(syncFailed.ctx, 'doer', opts);
+        assert.strictEqual(syncFailed.rec.dispatches.length, 1, 'A streak whose writes are already local is never re-dispatched.');
+        assert.ok(syncOutcome.error, 'The caller still sees the failure, and attributes per bead.');
+        assert.strictEqual(p.retry.skipRedispatchOnPostDispatchSyncFailure, true);
+
+        // An auth failure gets one self-heal plus one bounded retry; a
+        // workspace-trust failure is not retried at all.
+        const healed = createRecordingCtx({ responses: [authError()], healed: true });
+        await dispatchRole(healed.ctx, 'doer', opts);
+        assert.strictEqual(healed.rec.authHeals.length, 1, 'One bounded LLM-auth self-heal.');
+        assert.strictEqual(healed.rec.dispatches.length, 2, 'A healed auth failure is retried once.');
+        const trust = createRecordingCtx({ responses: [trustError(), trustError()], healed: false });
+        await dispatchRole(trust.ctx, 'doer', opts);
+        assert.strictEqual(trust.rec.dispatches.length, 1, 'A workspace-trust failure is not retried at all.');
+        assert.strictEqual(trust.rec.authHeals.length, 0, 'Self-heal cannot fix workspace trust, so it is not attempted.');
+
+        // The GENERIC retry resumes onto the streak branch's remote tip so it
+        // builds on already-published work instead of creating a divergent,
+        // content-identical duplicate commit that can never fast-forward. The
+        // auth-healed retry does NOT: that failure provably ran nothing.
+        const generic = createRecordingCtx({ responses: [transportError()] });
+        await dispatchRole(generic.ctx, 'doer', opts);
+        assert.strictEqual(generic.rec.dispatches.length, 2, 'A generic failure is retried once.');
+        assert.strictEqual(
+            generic.rec.dispatches[0].bracket.options.resumeOntoRemoteTip,
+            undefined,
+            'The FIRST attempt keeps plain ff-only pre-dispatch sync.'
         );
-        assert.ok(
-            /isPostDispatchSyncFailure\(err\)/.test(region),
-            'A completed streak whose post-dispatch sync failed must NOT be re-dispatched -- the work is already committed locally.'
+        assert.strictEqual(
+            generic.rec.dispatches[1].bracket.options.resumeOntoRemoteTip,
+            true,
+            'The generic retry resumes onto the streak branch remote tip.'
         );
-        assert.ok(
-            /isNonRetryableDispatchError\(err\)/.test(region) && /isAuthDispatchError\(err\) && typeof onLlmAuthFailure === 'function'/.test(region),
-            'An auth failure gets one self-heal plus one bounded retry; a workspace-trust failure is not retried at all.'
+        assert.strictEqual(
+            healed.rec.dispatches[1].bracket.options.resumeOntoRemoteTip,
+            undefined,
+            'A retry after a provably no-mutation auth failure has no published work to build on.'
         );
+        assert.strictEqual(p.retry.resumeOntoRemoteTipOnRetry, true);
+
+        // The claim runs INSIDE the bracket, so it sees the remote state the
+        // pre-dispatch D-pull just brought in -- and its narrowing is visible
+        // to the prompt the dispatch actually sends.
+        assert.deepStrictEqual(p.preDispatch, ['claim-beads-batched']);
         assert.ok(
-            /dispatchDoer\(\{ resumeOntoRemoteTip: true \}\)/.test(region),
-            'The generic retry resumes onto the streak branch remote tip so it builds on already-published work instead of creating a divergent duplicate commit.'
+            PRE_DISPATCH_STEPS_IN_BRACKET.includes('claim-beads-batched'),
+            'Claiming before the bracket opens is claiming against stale remote state.'
+        );
+        const claimed = createRecordingCtx({ responses: ['REPORT'] });
+        await dispatchRole(claimed.ctx, 'doer', opts);
+        const bracketIndex = claimed.rec.events.findIndex((e) => e.type === 'bracket-open');
+        const claimIndex = claimed.rec.events.findIndex((e) => e.type === 'step' && e.step === 'claim-beads-batched');
+        const dispatchIndex = claimed.rec.events.findIndex((e) => e.type === 'dispatch');
+        assert.ok(
+            bracketIndex >= 0 && bracketIndex < claimIndex && claimIndex < dispatchIndex,
+            'The claim must sit INSIDE the bracket and BEFORE the dispatch it narrows.'
         );
     });
 
@@ -1068,7 +1163,7 @@ function engineMemberOf(ctx, pin) {
 describe('execution-role dispatch ladders: per-dispatch pins (engine-served)', () => {
     for (const pin of EXECUTION_ENGINE_DISPATCHES) {
         test(`${pin.name}: member routing, bracketing, turns, timeout, watchdog, KB and verdict schema`, async () => {
-            const { ctx, dispatch, opts, rec } = await driveEngineDispatch(pin.role, pin.kind);
+            const { ctx, dispatch, opts, rec } = await driveEngineDispatch(pin.driveAs ?? pin.role, pin.kind);
             assert.ok(
                 dispatch,
                 `${pin.name}: the engine never made the expected ${pin.kind} dispatch (it made ${rec.dispatches.length}).`
@@ -1154,7 +1249,10 @@ describe('execution-role dispatch ladders: per-dispatch pins (engine-served)', (
     test('the two execution lists together still cover all fourteen dispatches across seven ladders', () => {
         const all = [
             ...EXECUTION_INLINE_LADDERS.map((pin) => ({ ladder: pin.ladder, name: pin.name })),
-            ...EXECUTION_ENGINE_DISPATCHES.map((pin) => ({ ladder: pin.role, name: pin.name })),
+            // `driveAs` when present: doer-resume is registered as a role of
+            // its own but belongs to the DOER's ladder, which is what this
+            // census counts.
+            ...EXECUTION_ENGINE_DISPATCHES.map((pin) => ({ ladder: pin.driveAs ?? pin.role, name: pin.name })),
         ];
         assert.strictEqual(
             all.length,

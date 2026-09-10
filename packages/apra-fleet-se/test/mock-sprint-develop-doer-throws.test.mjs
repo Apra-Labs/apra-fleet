@@ -72,7 +72,9 @@ test('mock sprint: a doer that always throws is isolated; sibling streak still c
             `Expected the always-throwing bead '${throwsTaskId}' to remain open (never closed), got: ${JSON.stringify(isolation.finalBeadsById.get(throwsTaskId))}`
         );
         check(
-            isolation.logs.some((m) => m.includes('Retrying once')),
+            // apra-fleet-3swo.5.7: engine wording -- the attempt number
+            // replaces "Retrying once".
+            isolation.logs.some((m) => m.includes('Retrying (attempt 2 of 2)')),
             `Expected a "Retrying once" log line for the failed streak, logs: ${JSON.stringify(isolation.logs)}`
         );
     });

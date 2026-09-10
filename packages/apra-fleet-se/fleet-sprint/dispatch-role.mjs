@@ -1,4 +1,4 @@
-import { policyFor } from './role-policies.mjs';
+import { policyFor, PRE_DISPATCH_STEPS_IN_BRACKET } from './role-policies.mjs';
 import {
     isNonRetryableDispatchError,
     isAuthDispatchError,
@@ -90,6 +90,12 @@ const FINAL_REVIEW_MAX_TURNS = 500;
  * same wall -- hence the explicit budget plus the same-session resume.
  */
 const BASE_REVIEWER_MAX_TURNS = 500;
+/**
+ * Doer streak turn base. A streak runs a full impl+test+commit cycle, which is
+ * categorically heavier than a one-shot prompt; the resume ladder escalates
+ * from here by doubling, bounded by the row's resumeAttempts.
+ */
+const BASE_DOER_MAX_TURNS = 500;
 
 /**
  * Every turn-base constant a policy's `maxTurns.base` may name, keyed by that
@@ -108,6 +114,7 @@ export const TURN_BASES = Object.freeze({
     INTEG_TEST_MAX_TURNS,
     FINAL_REVIEW_MAX_TURNS,
     BASE_REVIEWER_MAX_TURNS,
+    BASE_DOER_MAX_TURNS,
 });
 
 /**
@@ -428,8 +435,19 @@ async function runDegradeSteps(ctx, policy, err, errorClass) {
  *   onResultRejected -- (reason) => Error, the error a `retryOnInvalidResult`
  *                       ladder throws once its budget is spent on results its
  *                       own validator keeps rejecting
+ *   prepare          -- async ({dispatch, resumeAttempt}) => {prompt, label,
+ *                       resumeArg, bindings}: per-dispatch values that are only
+ *                       knowable INSIDE the git-sync bracket, after this
+ *                       dispatch's in-bracket pre-dispatch steps have run (the
+ *                       doer's streak narrows when the claim finds beads another
+ *                       sprint already holds, and its prompt/label/tier follow)
+ *   bindings         -- runner-local values a policy names by binding; a
+ *                       FUNCTION ({resumeAttempt}) => bindings when a value
+ *                       differs per resume (the doer's escalating turn budget)
  * @returns {Promise<{ok:boolean, value:any, error:Error|null, degraded:boolean,
- *                    inconclusive:{reason:string,message:string}|null, validation:any}>}
+ *                    inconclusive:{reason:string,message:string}|null,
+ *                    attempts:number, resumesIssued:number,
+ *                    stepResults:Record<string,any>, validation:any}>}
  */
 export async function dispatchRole(ctx, roleName, opts = {}) {
     // Destructured so this module's ONE dispatch reads `agent(` -- the literal
@@ -446,7 +464,16 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // DATA rather than by a branch in this file that happens to agree with
     // the table. Production never passes it.
     const policy = ctx.policies ? policyFor(roleName, ctx.policies) : policyFor(roleName);
-    const bindings = opts.bindings || {};
+    /**
+     * The runner-local values a policy names by binding. A FUNCTION when a
+     * value differs per resume attempt -- the doer's escalating turn budget is
+     * computed from the attempt number, so the table records it as a
+     * 'runtime' turn budget and the runner supplies the arithmetic.
+     */
+    const bindingsFor = (resumeAttempt = 0) => (typeof opts.bindings === 'function'
+        ? opts.bindings({ resumeAttempt })
+        : (opts.bindings || {}));
+    const bindings = bindingsFor(0);
     const member = resolveMember(ctx, policy.member, bindings);
     const roleLabel = opts.roleLabel || policy.role;
     const retry = policy.retry;
@@ -459,23 +486,38 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // than written out again per role. member_name is spelled at the call site
     // itself, never folded into `options`, because dispatch-safety-guard.mjs
     // requires every agent() call site to name its member explicitly.
-    const runDispatch = (dispatch, prompt, label, attemptOpts) => {
-        const options = {
-            agentType: dispatch.agentType ?? undefined,
-            model: resolveModelTier(ctx, dispatch.model, bindings),
-            timeout_s: resolveBudget(ctx, dispatch.timeouts.timeoutS),
-            max_total_s: resolveBudget(ctx, dispatch.timeouts.maxTotalS),
-            max_turns: resolveMaxTurns(dispatch.maxTurns, bindings),
-            schema: resolveSchema(ctx, dispatch.schema),
-            resume: resolveResumeArg(dispatch.resumeArg, opts),
-            onSessionId: opts.onSessionId,
-            label,
-        };
-        for (const key of Object.keys(options)) {
-            if (options[key] === undefined) delete options[key];
-        }
-        const invoke = () => {
-            const inFlight = agent(prompt, {
+    //
+    // EVERYTHING IS RESOLVED INSIDE `invoke`, i.e. INSIDE the git-sync bracket
+    // when there is one. That matters for exactly one reason, and it is a real
+    // one: an in-bracket pre-dispatch step can CHANGE what the dispatch should
+    // say. The doer claims its beads after the bracket's D-pull, which is what
+    // reveals that another sprint already holds some of them; the streak
+    // narrows, and its prompt, its label and the tier it is priced at all
+    // follow. Resolving options before the bracket opened would dispatch the
+    // pre-claim scope.
+    const runDispatch = (dispatch, defaultPrompt, defaultLabel, attemptOpts, extra = {}) => {
+        const invoke = async () => {
+            // In-bracket pre-dispatch steps, then the caller's own preparation.
+            const inBracket = await runPreDispatchSteps(ctx, dispatch, member, opts, extra, 'in-bracket');
+            if (inBracket) return inBracket.value;
+            const prepared = opts.prepare ? await opts.prepare({ dispatch, ...extra }) : {};
+            const localBindings = { ...bindingsFor(extra.resumeAttempt || 0), ...(prepared.bindings || {}) };
+            const localOpts = prepared.resumeArg !== undefined ? { ...opts, resumeArg: prepared.resumeArg } : opts;
+            const options = {
+                agentType: dispatch.agentType ?? undefined,
+                model: resolveModelTier(ctx, dispatch.model, localBindings),
+                timeout_s: resolveBudget(ctx, dispatch.timeouts.timeoutS),
+                max_total_s: resolveBudget(ctx, dispatch.timeouts.maxTotalS),
+                max_turns: resolveMaxTurns(dispatch.maxTurns, localBindings),
+                schema: resolveSchema(ctx, dispatch.schema),
+                resume: resolveResumeArg(dispatch.resumeArg, localOpts),
+                onSessionId: opts.onSessionId,
+                label: prepared.label ?? defaultLabel,
+            };
+            for (const key of Object.keys(options)) {
+                if (options[key] === undefined) delete options[key];
+            }
+            const inFlight = agent(prepared.prompt ?? defaultPrompt, {
                 ...options,
                 member_name: member,
             });
@@ -487,7 +529,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             return ctx.withDispatchWatchdog(inFlight, {
                 timeoutS: resolveBudget(ctx, dispatch.watchdog.timeoutS),
                 member,
-                label: resolveWatchdogLabel(dispatch.watchdog.label, bindings),
+                label: resolveWatchdogLabel(dispatch.watchdog.label, localBindings),
                 log: ctx.log,
             });
         };
@@ -513,7 +555,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     //                                 report it. The integ runner alone, and
     //                                 bounded at one recovery.
     const runAttempt = async (attemptOpts) => {
-        const preShortCircuit = await runPreDispatchSteps(ctx, policy, member, opts);
+        const preShortCircuit = await runPreDispatchSteps(ctx, policy, member, opts, {});
         if (preShortCircuit) return preShortCircuit.value;
         try {
             return await runDispatch(policy, opts.prompt, opts.label, attemptOpts);
@@ -527,28 +569,65 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             if (!secondary || secondary.kind !== 'max-turns-resume' || (!resumesOnExhaustion && !resumesOnInfra)) {
                 throw err;
             }
-            if (resumesOnExhaustion) {
-                ctx.log(
-                    `${roleLabel} exhausted its turn limit (max_turns=${resolveMaxTurns(policy.maxTurns, bindings)}) -- ` +
-                    `resuming the same session with max_turns=${resolveMaxTurns(secondary.maxTurns, bindings)}.`
-                );
-            } else {
-                ctx.log(
-                    `${roleLabel}: infrastructure dispatch failure ` +
-                    `(${(err.details && err.details.reason) || 'unknown'}) -- the member produced no result envelope. ` +
-                    'This is NOT a failure verdict; resuming the same session once to recover before recording anything.'
-                );
+            // A BOUNDED ladder of resumes, not a single one: retry.resumeAttempts
+            // says how many, and retry.turnEscalation='double' is performed by
+            // the runtime turn budget the policy names (the runner's bindings
+            // thunk is handed the attempt number). A resume that fails for any
+            // reason OTHER than spending its turns again is not something more
+            // turns can fix, so the escalation stops there.
+            let resumeAttempt = 0;
+            let lastResumeErr = err;
+            while (resumeAttempt < Math.max(retry.resumeAttempts, resumesOnInfra ? 1 : 0)) {
+                resumeAttempt += 1;
+                // A resume follows an agent that DID run (max_turns_exhausted is
+                // a resumable partial-work case, not a no-mutation failure), so
+                // it always runs the full pre-dispatch sync -- no attemptOpts.
+                //
+                // Run BEFORE announcing the resume: a pre-dispatch step may find
+                // the work already DONE (the doer's 'verify-streak-closed': a
+                // streak whose beads all closed before the turn limit hit is a
+                // success that merely missed its VERIFY checkpoint), and
+                // announcing a resume that never happens reads as a wasted
+                // dispatch in the log.
+                const shortCircuit = await runPreDispatchSteps(ctx, secondary, member, opts, { resumeAttempt });
+                if (shortCircuit) return shortCircuit.value;
+                if (resumeAttempt === 1 && resumesOnExhaustion) {
+                    ctx.log(
+                        `${roleLabel} exhausted its turn limit ` +
+                        `(max_turns=${resolveMaxTurns(policy.maxTurns, bindingsFor(0))}) -- resuming the same ` +
+                        `session with max_turns=${resolveMaxTurns(secondary.maxTurns, bindingsFor(1))}.`
+                    );
+                } else if (resumeAttempt === 1) {
+                    ctx.log(
+                        `${roleLabel}: infrastructure dispatch failure ` +
+                        `(${(err.details && err.details.reason) || 'unknown'}) -- the member produced no result ` +
+                        'envelope. This is NOT a failure verdict; resuming the same session once to recover ' +
+                        'before recording anything.'
+                    );
+                } else {
+                    ctx.log(
+                        `${roleLabel} exhausted its turn limit again -- resuming the same session with ` +
+                        `max_turns=${resolveMaxTurns(secondary.maxTurns, bindingsFor(resumeAttempt))} ` +
+                        `(attempt ${resumeAttempt}/${retry.resumeAttempts}).`
+                    );
+                }
+                resumesIssued += 1;
+                try {
+                    return await runDispatch(secondary, opts.resumePrompt, opts.resumeLabel, undefined, { resumeAttempt });
+                } catch (resumeErr) {
+                    lastResumeErr = resumeErr;
+                    const exhaustedAgain = resumeErr instanceof AgentDispatchError
+                        && resumeErr.details && resumeErr.details.reason === 'max_turns_exhausted';
+                    if (retry.maxTurnsResume && exhaustedAgain) continue;
+                    throw resumeErr;
+                }
             }
-            // A resume follows an agent that DID run (max_turns_exhausted is a
-            // resumable partial-work case, not a no-mutation failure), so it
-            // always runs the full pre-dispatch sync -- no attemptOpts.
-            const shortCircuit = await runPreDispatchSteps(ctx, secondary, member, opts);
-            // A pre-dispatch step may find the work already DONE (the doer's
-            // 'verify-streak-closed': a streak whose beads all closed before
-            // the turn limit hit is a success that merely missed its VERIFY
-            // checkpoint), in which case no resume dispatch is made at all.
-            if (shortCircuit) return shortCircuit.value;
-            return await runDispatch(secondary, opts.resumePrompt, opts.resumeLabel);
+            // The escalating ladder is spent. A ladder that declares
+            // abortAfterSpentResumeLadder has thereby PROVED the task is too
+            // large for one streak, so another full attempt at the same size
+            // would only reproduce it; the caller is told so instead.
+            resumeLadderSpent = retry.abortAfterSpentResumeLadder;
+            throw lastResumeErr;
         }
     };
 
@@ -560,6 +639,15 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // Set once an auth self-heal succeeded under retry.authSelfHealShortCircuits:
     // the attempt it grants is the ladder's last, whatever it returns.
     let healRetryIsFinal = false;
+    // How many attempts the ladder really made, and how many resume dispatches
+    // it issued. Surfaced on the outcome because a caller can legitimately
+    // need to know (the doer records whether a streak was retried).
+    let attemptsMade = 0;
+    let resumesIssued = 0;
+    let stepResults = {};
+    // Set when an attempt's escalating resume ladder ran out under a policy
+    // that treats that as terminal. Reset per attempt.
+    let resumeLadderSpent = false;
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
         if (backoffMs && backoffMs[attempt - 1] > 0) {
@@ -571,9 +659,22 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 await new Promise((resolve) => setTimeout(resolve, backoffMs[attempt - 1]));
             }
         }
+        attemptsMade = attempt;
+        resumeLadderSpent = false;
         try {
+            // A generic retry resumes onto the streak branch's REMOTE TIP so it
+            // builds on already-published work instead of re-implementing the
+            // task as a divergent, content-identical duplicate commit that can
+            // never fast-forward. Only after a failure that may have committed:
+            // an auth/trust failure provably ran nothing, so its retry keeps
+            // plain ff-only pre-dispatch sync.
+            const retryFollowsPossibleMutation = attempt > 1 && lastErr
+                && !isNonRetryableDispatchError(lastErr);
             const attemptOpts = {
                 ...(retry.skipPreDispatchSyncOnNoMutation ? { skipPreDispatchSync: skipPreDispatchSyncNext } : {}),
+                ...(retry.resumeOntoRemoteTipOnRetry && retryFollowsPossibleMutation
+                    ? { resumeOntoRemoteTip: true }
+                    : {}),
                 ...(opts.attemptOptions ? opts.attemptOptions({ attempt }) : {}),
             };
             value = await runAttempt(attemptOpts);
@@ -583,7 +684,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // orchestrator to act on is self-contradictory). Steps run in
             // order and the rejection throws immediately, so a later step
             // never acts on a result the ladder has already judged unusable.
-            await runPostResultSteps(ctx, policy, value, opts, member);
+            stepResults = await runPostResultSteps(ctx, policy, value, opts, member);
             ok = true;
             lastErr = null;
             degradedValue = null;
@@ -620,8 +721,9 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // nothing for this class (the planner, the doer) is unaffected --
             // its degrade.classes simply does not list it.
             const completedButSyncFailed =
-                retry.skipRedispatchOnPostDispatchSyncFailure && isPostDispatchSyncFailure(err);
-            if (completedButSyncFailed) {
+                (retry.skipRedispatchOnPostDispatchSyncFailure && isPostDispatchSyncFailure(err))
+                || resumeLadderSpent;
+            if (retry.skipRedispatchOnPostDispatchSyncFailure && isPostDispatchSyncFailure(err)) {
                 ctx.log(
                     `${roleLabel} dispatch COMPLETED but its post-dispatch sync failed: ${err.message} Aborting ` +
                     'retries WITHOUT re-dispatching -- the turn already ran and its writes are local; fix the sync ' +
@@ -748,6 +850,9 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // is what makes the INCONCLUSIVE variance policy data rather than
             // a branch the integ caller happens to take.
             inconclusive: inconclusiveOf(policy, lastErr),
+            attempts: attemptsMade,
+            resumesIssued,
+            stepResults: {},
             validation: opts.validate ? opts.validate(degradedValue).result : null,
         };
     }
@@ -777,7 +882,17 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
         validation = verdictOfCandidate.result;
     }
 
-    return { ok: true, value, error: null, degraded: false, inconclusive: null, validation };
+    return {
+        ok: true,
+        value,
+        error: null,
+        degraded: false,
+        inconclusive: null,
+        attempts: attemptsMade,
+        resumesIssued,
+        stepResults,
+        validation,
+    };
 }
 
 /**
@@ -803,8 +918,10 @@ function inconclusiveOf(policy, lastErr) {
  * and arrive with their own migration; a step with no engine handler and no
  * ctx.steps hook throws rather than being silently skipped.
  */
-async function runPreDispatchSteps(ctx, dispatch, member, opts = {}) {
+async function runPreDispatchSteps(ctx, dispatch, member, opts = {}, extra = {}, placement = 'before-bracket') {
+    const wantsInBracket = placement === 'in-bracket';
     for (const step of dispatch.preDispatch) {
+        if (PRE_DISPATCH_STEPS_IN_BRACKET.includes(step) !== wantsInBracket) continue;
         if (step === 'kill-stale-session') {
             await ctx.memberSessionGuard.killIfAlive(member);
             continue;
@@ -818,7 +935,7 @@ async function runPreDispatchSteps(ctx, dispatch, member, opts = {}) {
         // ('sprint-self-id-in-prompt': the deploy runbook's active-sprints
         // gate self-blocks unless the prompt states the sprint's OWN
         // reservation id, so the step verifies that rather than trusting it).
-        const result = await hook({ member, dispatch, opts });
+        const result = await hook({ phase: 'preDispatch', member, dispatch, opts, ...extra });
         // A step may report the work already DONE, in which case the dispatch
         // it precedes is skipped entirely and its value stands in.
         if (result && result.shortCircuit === true) return result;
@@ -834,6 +951,7 @@ async function runPreDispatchSteps(ctx, dispatch, member, opts = {}) {
  * by the semantic-repair path above, so it is a no-op here.
  */
 async function runPostResultSteps(ctx, policy, value, opts = {}, member = null) {
+    const results = {};
     for (const step of policy.postResult) {
         if (step === 'select-streaks-validate') continue;
         if (step === 'invalidate-beads-cache') {
@@ -848,7 +966,7 @@ async function runPostResultSteps(ctx, policy, value, opts = {}, member = null) 
         // is about what the dispatch actually returned ('kb-apply' applies the
         // report's KB work, 'verify-streak-closed' checks the closes it
         // claims), so a step that could not see the value could not do its job.
-        const outcome = await hook({ policy, value, opts, member });
+        const outcome = await hook({ phase: 'postResult', policy, value, opts, member });
         // A step that REJECTS the result ends the attempt then and there:
         // later steps must not act on a value the ladder has judged unusable,
         // and retry.retryOnInvalidResult decides whether the ladder spends
@@ -856,5 +974,11 @@ async function runPostResultSteps(ctx, policy, value, opts = {}, member = null) 
         if (outcome && outcome.rejected === true) {
             throw new LadderResultRejectedError(outcome.reason);
         }
+        // A step that COMPUTES something the caller needs (the doer's
+        // 'verify-streak-closed' returns which of the streak's beads are
+        // really still open) hands it back on the outcome's `stepResults`,
+        // rather than the caller re-doing the work the policy just did.
+        results[step] = outcome;
     }
+    return results;
 }

@@ -383,6 +383,25 @@ export const ROLE_CALL_OPTS = Object.freeze({
         roleLabel: 'Scoped Replan Review',
         label: 'Scoped Replan Review',
     },
+    doer: {
+        // A FUNCTION, mirroring the runner: the doer's turn budget is a
+        // 'runtime' value the escalating resume ladder computes per attempt
+        // (BASE * 2^n), so a static bindings object could not express it --
+        // and a pin that used one would report every resume at the same budget.
+        bindings: ({ resumeAttempt }) => ({
+            ...BINDINGS,
+            maxTurns: TURN_BASES.BASE_DOER_MAX_TURNS * (2 ** Math.max(resumeAttempt, 1)),
+        }),
+        prompt: 'DOER PROMPT',
+        resumePrompt: 'DOER RESUME PROMPT',
+        roleLabel: 'Doer streak [bead-1]',
+        label: 'Streak [bead-1]',
+        resumeLabel: 'Streak [bead-1] (resume, max_turns=1000)',
+        // The doer's two streak-scoped steps. The engine only NAMES them; the
+        // per-dispatch bead list is runner state, exactly as in production.
+        claimBeads: async () => {},
+        verifyStreakClosed: async () => ['bead-1'],
+    },
     reviewer: {
         // A 'pool-head'-kind member is a runner-local value, so every caller
         // -- not just driveEngineDispatch -- must supply it or the engine
