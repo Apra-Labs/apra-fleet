@@ -63,13 +63,16 @@ import { balancedCallRange, skipStringLiteral } from './balanced-call-scanner.mj
 /**
  * Filenames (relative to fleet-sprint/), in read order, of every module that
  * can host a role-dispatch ladder's structural facts TODAY. runner.js hosts
- * all of them today; role-policies.mjs is already on this list because it
- * exists, even though it currently contributes no matches (it is pure
- * frozen data, no call sites) -- see this file's header DECISION note for
- * why that is fine. Add 'dispatch-role.mjs' here once the dispatchRole
- * migration beads create it.
+ * every UNMIGRATED ladder; dispatch-role.mjs (apra-fleet-3swo.5.3) hosts the
+ * ONE generic dispatch every MIGRATED ladder runs through, and is on this
+ * list so that the "every agent() call site in the scanned set is pinned by
+ * one of the two pin tables" invariant keeps covering the engine's own call
+ * site instead of losing sight of it the moment a ladder moves. role-policies
+ * .mjs is on the list because it exists, even though it contributes no call
+ * sites (it is pure frozen data) -- see this file's header DECISION note for
+ * why that is fine.
  */
-export const DISPATCH_LADDER_MODULES = ['runner.js', 'role-policies.mjs'];
+export const DISPATCH_LADDER_MODULES = ['runner.js', 'role-policies.mjs', 'dispatch-role.mjs'];
 
 /**
  * Absolute paths for `fileNames` (default DISPATCH_LADDER_MODULES), resolved
