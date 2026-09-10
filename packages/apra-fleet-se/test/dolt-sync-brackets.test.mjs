@@ -973,7 +973,9 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // them; both carried pushBeads:true, so the count below drops by two.
     // 8 -> 6 (same bead): the integ runner's two brackets followed them; both
     // carried pushBeads:true, so the count below drops by two.
-    assert.equal(sites.length, 6, `expected 6 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 6 -> 4 (same bead): the final review's two read-side brackets followed
+    // them; neither carried pushBeads, so the count below is unchanged.
+    assert.equal(sites.length, 4, `expected 4 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch

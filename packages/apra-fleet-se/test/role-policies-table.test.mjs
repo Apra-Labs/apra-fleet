@@ -175,16 +175,8 @@ const ROLE_SOURCE = {
         region: ['for (let reviewAttempt = 1;', 'if (!isReviewerContractViolation(verdict)) {'],
         attempts: { kind: 'loop', var: 'reviewAttempt' },
     },
-    'final-review': {
-        anchor: 'buildFinalVerdictPrompt({',
-        secondary: 'Continue your final review exactly where you left off',
-        // apra-fleet-3swo.5.7: the end bound used to be the regression
-        // ladder's own turn constant, which the regression migration deleted.
-        // Its prompt build is the next stable landmark past the final-review
-        // ladder and bounds it just as tightly.
-        region: ['const FINAL_REVIEW_MAX_TURNS', 'const regressionPrompt ='],
-        attempts: { kind: 'wrapper', call: 'runFinalReviewAttempt(' },
-    },
+    // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
+    'final-review': { engine: true },
     // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
     deployer: { engine: true },
     // apra-fleet-3swo.5.7: MIGRATED -- see section (7).

@@ -27,7 +27,7 @@ import {
     harvesterReport,
 } from '../fleet-sprint/contracts.mjs';
 import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
-import { policyFor } from '../fleet-sprint/role-policies.mjs';
+import { policyFor, ROLE_POLICIES } from '../fleet-sprint/role-policies.mjs';
 import {
     driveEngineDispatch,
     createRecordingCtx,
@@ -44,6 +44,8 @@ import {
     budgetError,
     postDispatchSyncError,
     infraError,
+    trustError,
+    turnExhaustionError,
 } from './helpers/dispatch-role-harness.mjs';
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
 import { PLANNING_LADDERS } from './helpers/planning-ladders.mjs';
@@ -308,27 +310,39 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
         }
     });
 
-    test('final review resolves to the reviewer ROLE member, while per-round review dispatches to the reviewer pool head', () => {
+    test('final review resolves to the reviewer ROLE member, while per-round review dispatches to the reviewer pool head', async () => {
+        // apra-fleet-3swo.5.7: half re-anchored. The per-round reviewer is
+        // still inline, so its pool-head routing is still a property of
+        // runner.js text; final review has migrated, so its role-member routing
+        // is proved by running the engine. The FACT the pin exists for -- that
+        // the two resolve differently, and that the difference is expressible
+        // per role -- is asserted across both.
         const stripped = stripComments(SRC);
         assert.ok(
             /const reviewerPool = getMembersForRole\(ROLE_REVIEWER\);/.test(stripped),
             'The per-round reviewer pool must be built from the reviewer role, which is what makes pool head and role member the same role.'
         );
-        for (const anchor of ['acceptanceCriteriaJson,', 'Continue your review exactly where you left off']) {
-            assert.strictEqual(effectiveOpts(siteFor(anchor)).merged.get('member_name'), 'reviewerPool[0]');
+        for (const pin of EXECUTION_LADDERS.filter((p) => p.ladder === 'reviewer')) {
+            assert.strictEqual(effectiveOpts(siteFor(pin.anchor)).merged.get('member_name'), 'reviewerPool[0]');
         }
-        for (const anchor of ['buildFinalVerdictPrompt({', 'Continue your final review exactly where you left off']) {
+        for (const pin of EXECUTION_ENGINE_DISPATCHES.filter((p) => p.role === 'reviewer')) {
+            const { ctx, dispatch } = await driveEngineDispatch(pin.role, pin.kind);
+            assert.strictEqual(dispatch.options.member_name, BINDINGS['reviewerPool[0]'], 'The per-round reviewer takes the pool head.');
+            assert.notStrictEqual(dispatch.options.member_name, ctx.getMemberForRole('reviewer'));
+        }
+        for (const pin of EXECUTION_ENGINE_DISPATCHES.filter((p) => p.role === 'final-review')) {
+            const { ctx, dispatch } = await driveEngineDispatch(pin.role, pin.kind);
             assert.strictEqual(
-                effectiveOpts(siteFor(anchor)).merged.get('member_name'),
-                "getMemberForRole('reviewer')",
+                dispatch.options.member_name,
+                ctx.getMemberForRole('reviewer'),
                 'Final Review has no distinct role member of its own -- it shares the reviewer role resolution.'
             );
+            assert.strictEqual(dispatch.options.agentType, 'reviewer', 'Final Review dispatches the reviewer persona.');
         }
-        assert.strictEqual(
-            effectiveOpts(siteFor('buildFinalVerdictPrompt({')).merged.get('agentType'),
-            "'reviewer'",
-            'Final Review dispatches the reviewer persona.'
-        );
+        // The two resolution KINDS really differ, which is what makes member
+        // resolution expressible per role rather than one shared rule.
+        assert.deepStrictEqual(policyFor('final-review').member, { kind: 'role', role: 'reviewer' });
+        assert.deepStrictEqual(policyFor('reviewer').member, { kind: 'pool-head', role: 'reviewer', binding: 'reviewerPool[0]' });
     });
 
     test('every execution-side dispatch inherits sprint_id and its KB block from the one agent() wrapper', async () => {
@@ -622,28 +636,96 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         );
     });
 
-    test('final review: the auth self-heal short-circuits the generic retry so a healed verdict is never discarded', () => {
-        const region = stripComments(regionBetween(SRC, 'let handledByAuthSelfHeal = false;', 'No duplicate log() dump -- see dispatchReview() for why.'));
-        assert.ok(/let healedByLlmAuthSelfHeal = false;/.test(region), 'The heal path tracks whether it produced a verdict.');
-        assert.ok(
-            /if \(!healedByLlmAuthSelfHeal\) throw err;/.test(region),
+    test('final review: the auth self-heal short-circuits the generic retry so a healed verdict is never discarded', async () => {
+        // apra-fleet-3swo.5.7: re-anchored onto the engine.
+        //   healedByLlmAuthSelfHeal tracking            -> a healed auth
+        //        failure really produces a second dispatch
+        //   `if (!healedByLlmAuthSelfHeal) throw err;`   -> an UNHEALED
+        //        non-retryable failure really propagates
+        //   handledByAuthSelfHeal short-circuit         -> the healed retry is
+        //        the ladder's LAST dispatch; no second full Final Review fires
+        //   four `verdict: 'FAIL'` degrade paths        -> two error classes
+        //        reached from two ladder positions, all fabricating FAIL
+        //   no `verdict: 'PASS'` anywhere               -> neverSynthesizes,
+        //        enforced against the real fabricated value
+        //   runFinalReviewAttempt() re-run on retry     -> the retry inherits
+        //        the max_turns resume too
+        const p = policyFor('final-review');
+        const opts = ROLE_CALL_OPTS['final-review'];
+
+        // A HEALED auth failure retries once, and that retry is the last word.
+        const healed = createRecordingCtx({ responses: [authError(), 'HEALED VERDICT'], healed: true });
+        const healedOutcome = await dispatchRole(healed.ctx, 'final-review', opts);
+        assert.strictEqual(healed.rec.authHeals.length, 1, 'An LLM-auth failure gets exactly ONE self-heal.');
+        assert.strictEqual(healed.rec.dispatches.length, 2, 'The heal is followed by exactly one retry.');
+        assert.strictEqual(healedOutcome.value, 'HEALED VERDICT', 'The healed verdict is what the caller gets.');
+
+        // ...and if that healed retry ALSO fails, the ladder stops rather than
+        // firing a second full Final Review. Proved by SPLICING the field on a
+        // copy of the real row with room to tell the two settings apart: at the
+        // shipped budget of two attempts the heal consumes attempt one and the
+        // generic retry IS attempt two, so they coincide.
+        for (const shortCircuits of [true, false]) {
+            const spliced = {
+                ...ROLE_POLICIES,
+                'final-review': {
+                    ...ROLE_POLICIES['final-review'],
+                    retry: { ...p.retry, attempts: 3, authSelfHealShortCircuits: shortCircuits },
+                },
+            };
+            const { ctx, rec } = createRecordingCtx({
+                responses: [authError(), transportError(), transportError()],
+                healed: true,
+                policies: spliced,
+            });
+            await dispatchRole(ctx, 'final-review', opts);
+            assert.strictEqual(
+                rec.dispatches.length,
+                shortCircuits ? 2 : 3,
+                `authSelfHealShortCircuits=${shortCircuits}: a healed Final Review must SHORT-CIRCUIT the generic ` +
+                'retry-once ladder -- otherwise a second full Final Review fires and silently discards the healed verdict.'
+            );
+        }
+        assert.strictEqual(p.retry.authSelfHealShortCircuits, true, 'The shipped row short-circuits.');
+
+        // An auth/trust failure the heal could NOT fix propagates.
+        const unhealed = createRecordingCtx({ responses: [trustError()], healed: false });
+        await assert.rejects(
+            () => dispatchRole(unhealed.ctx, 'final-review', opts),
+            /workspace not trusted/,
             'A non-retryable error that could NOT be healed must still propagate.'
         );
-        assert.ok(
-            /handledByAuthSelfHeal = true;/.test(region) && /if \(!handledByAuthSelfHeal\) \{/.test(region),
-            'A healed final review must SHORT-CIRCUIT the generic retry-once ladder -- otherwise a second full Final Review fires and silently discards the healed verdict.'
-        );
-        // Every degrade lands on FAIL; a dead dispatch channel never passes a sprint.
-        assert.strictEqual(
-            (region.match(/verdict: 'FAIL'/g) || []).length,
-            4,
-            'All four degrade paths (heal-retry schema/dispatch failure, generic-retry schema/dispatch failure) record FAIL.'
-        );
-        assert.ok(!/verdict: 'PASS'/.test(region), 'No final-review degrade path may synthesize a PASS.');
-        assert.ok(
-            /finalVerdictResult = await runFinalReviewAttempt\(\);/.test(region),
-            'The retry re-runs the whole attempt helper, so the retry inherits the max_turns resume too.'
-        );
+        assert.strictEqual(unhealed.rec.dispatches.length, 1, 'It must not burn the retry on the identical wall.');
+        assert.strictEqual(p.retry.rethrowsUnhealedNonRetryable, true);
+
+        // Every degrade lands on FAIL; a dead dispatch channel never passes a
+        // sprint. Two classes x two ladder positions = the four paths the row
+        // records.
+        const positions = [
+            ['generic retry', false],
+            ['healed retry', true],
+        ];
+        let pathCount = 0;
+        for (const [label, viaHeal] of positions) {
+            for (const make of [schemaError, transportError]) {
+                const responses = viaHeal ? [authError(), make()] : [make(), make()];
+                const { ctx } = createRecordingCtx({ responses, healed: viaHeal });
+                const outcome = await dispatchRole(ctx, 'final-review', opts);
+                assert.strictEqual(outcome.value.verdict, 'FAIL', `${label}: every degrade path records FAIL.`);
+                assert.notStrictEqual(outcome.value.verdict, 'PASS', `${label}: no degrade path may synthesize a PASS.`);
+                assert.strictEqual(typeof outcome.value.notes, 'string', `${label}: a fabricated verdict still says why.`);
+                pathCount += 1;
+            }
+        }
+        assert.strictEqual(pathCount, p.degrade.paths, 'degrade.paths counts classes times ladder positions.');
+        assert.deepStrictEqual(p.degrade.neverSynthesizes, ['PASS']);
+
+        // The retry re-runs the WHOLE attempt, so it inherits the max_turns
+        // resume: a retry whose own dispatch exhausts its turns still resumes.
+        const retryThenExhaust = createRecordingCtx({ responses: [transportError(), turnExhaustionError(), 'RESUMED VERDICT'] });
+        const inherited = await dispatchRole(retryThenExhaust.ctx, 'final-review', opts);
+        assert.strictEqual(retryThenExhaust.rec.dispatches.length, 3, 'attempt 1, attempt 2, and attempt 2\'s own resume.');
+        assert.strictEqual(inherited.value, 'RESUMED VERDICT');
     });
 
     test('regression: a load-bearing catch-all keeps an informational phase from ever aborting the sprint', async () => {

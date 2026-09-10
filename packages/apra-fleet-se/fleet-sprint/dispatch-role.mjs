@@ -78,6 +78,12 @@ const REGRESSION_TEST_MAX_TURNS = 500;
  * ceiling (max_total_s) is what should bind first on any progressing run.
  */
 const INTEG_TEST_MAX_TURNS = 500;
+/**
+ * Final review turn base: it reads the full diff/evidence across an entire
+ * epic's worth of closed tasks, and a timeout here flips a whole sprint's
+ * outcome to FAIL.
+ */
+const FINAL_REVIEW_MAX_TURNS = 500;
 
 /**
  * Every turn-base constant a policy's `maxTurns.base` may name, keyed by that
@@ -94,6 +100,7 @@ export const TURN_BASES = Object.freeze({
     DEPLOYER_MAX_TURNS,
     REGRESSION_TEST_MAX_TURNS,
     INTEG_TEST_MAX_TURNS,
+    FINAL_REVIEW_MAX_TURNS,
 });
 
 /**
@@ -654,6 +661,10 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                     `${roleLabel} dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting ` +
                     "retries -- fix the member's credentials/trust and re-run."
                 );
+                // A ladder whose own failure legitimately fails the whole
+                // sprint propagates instead of degrading: with the dispatch
+                // channel walled off there is no judgement to fabricate.
+                if (retry.rethrowsUnhealedNonRetryable) throw err;
                 break;
             }
 

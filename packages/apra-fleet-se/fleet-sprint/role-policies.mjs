@@ -244,6 +244,13 @@ const retry = (over) => ({
     authSelfHealShortCircuits: false,
     /** Auth/workspace-trust failures end the ladder instead of burning attempts. */
     abortOnNonRetryable: false,
+    /**
+     * An auth/trust failure the self-heal could NOT fix PROPAGATES rather than
+     * degrading. For a ladder whose own failure legitimately fails the whole
+     * sprint (the final review), fabricating a verdict when the dispatch
+     * channel itself is walled off would report a judgement nobody made.
+     */
+    rethrowsUnhealedNonRetryable: false,
     /** A dispatch that already ran is never re-dispatched for a sync failure. */
     skipRedispatchOnPostDispatchSyncFailure: false,
     /** A provably no-mutation failure lets the next attempt skip its pre-sync. */
@@ -662,6 +669,8 @@ reviewer.secondary = secondary(reviewer, 'reviewer', 'max-turns-resume', {
 });
 
 const finalReview = policy('final-review', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: 'buildFinalVerdictPrompt({',
     // Final Review has no role member of its own: it is the reviewer role,
     // dispatching the reviewer persona over the whole sprint.
@@ -680,8 +689,11 @@ const finalReview = policy('final-review', {
         // retry as well would fire a second full review and discard it.
         authSelfHealShortCircuits: true,
         // An auth/trust failure that could NOT be healed ends the ladder
-        // instead of burning the retry on the identical wall.
+        // instead of burning the retry on the identical wall -- and
+        // PROPAGATES, because a sprint whose final verdict could not be
+        // obtained at all must not be handed a fabricated one.
         abortOnNonRetryable: true,
+        rethrowsUnhealedNonRetryable: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
         turnEscalation: 'double',
@@ -689,6 +701,11 @@ const finalReview = policy('final-review', {
     degrade: degrade({
         kind: 'synthesized-verdict',
         synthesized: { verdict: 'FAIL' },
+        // TWO error classes reached from TWO ladder positions -- the healed
+        // retry and the generic retry -- which is what makes four paths over
+        // two classes. A dead dispatch channel never passes a sprint.
+        classes: ['schema', 'dispatch'],
+        verdictField: 'verdict',
         paths: 4,
         neverSynthesizes: ['PASS'],
     }),

@@ -39,13 +39,17 @@ test('mock sprint: Final Review survives one transient dispatch failure via retr
             finalReviewRetry.result && finalReviewRetry.result.verdict === 'PASS' && finalReviewRetry.result.notes === 'Approved after transient-failure retry.',
             `Expected the retry's real PASS verdict/notes to be surfaced (not the hardcoded FAIL fallback text), got: ${JSON.stringify(finalReviewRetry.result)}`
         );
+        // apra-fleet-3swo.5.7: the final-review ladder moved onto the
+        // dispatchRole engine, which announces its retry in its own generic
+        // wording (naming the attempt number rather than "once"). Same fact:
+        // the first dispatch failed and the ladder said it was retrying.
         check(
-            finalReviewRetry.logs.some((m) => m.includes('Final Review: dispatch failed') && m.includes('Retrying once')),
-            `Expected a logged "Final Review: dispatch failed ... Retrying once." message, logs: ${JSON.stringify(finalReviewRetry.logs)}`
+            finalReviewRetry.logs.some((m) => m.includes('Final Review dispatch threw') && m.includes('Retrying (attempt 2 of 2)')),
+            `Expected a logged "Final Review dispatch threw ... Retrying (attempt 2 of 2)." message, logs: ${JSON.stringify(finalReviewRetry.logs)}`
         );
         check(
-            !finalReviewRetry.logs.some((m) => m.includes('schema-repair exhausted after retry')),
-            `Did NOT expect the "exhausted after retry" fallback message to fire, since the retry itself succeeded, logs: ${JSON.stringify(finalReviewRetry.logs)}`
+            !finalReviewRetry.logs.some((m) => m.includes('Retries exhausted.') && m.includes('Final Review')),
+            `Did NOT expect the "retries exhausted" fallback message to fire, since the retry itself succeeded, logs: ${JSON.stringify(finalReviewRetry.logs)}`
         );
     });
 });
@@ -69,13 +73,22 @@ test('mock sprint: Final Review falls back to hardcoded FAIL if the retry also f
             finalReviewRetryFail.result && finalReviewRetryFail.result.status === 'failed',
             `Expected the hardcoded FAIL fallback to produce status:'failed', got: ${JSON.stringify(finalReviewRetryFail.result)}`
         );
+        // apra-fleet-3swo.5.7: same engine-wording move as above.
         check(
-            finalReviewRetryFail.logs.some((m) => m.includes('Final Review: dispatch failed') && m.includes('Retrying once')),
+            finalReviewRetryFail.logs.some((m) => m.includes('Final Review dispatch threw') && m.includes('Retrying (attempt 2 of 2)')),
             `Expected the retry attempt to have been logged, logs: ${JSON.stringify(finalReviewRetryFail.logs)}`
         );
+        // Same engine-wording move: the ladder announces the degrade by KIND
+        // ('synthesized-verdict') on the attempt that spends the budget, and
+        // then that its retries are exhausted. Same fact -- the retry itself
+        // also failed and the FAIL fallback is what the sprint got.
         check(
-            finalReviewRetryFail.logs.some((m) => m.includes('schema-repair exhausted after retry, treating as FAIL')),
-            `Expected the "exhausted after retry" fallback message once the retry itself also fails, logs: ${JSON.stringify(finalReviewRetryFail.logs)}`
+            finalReviewRetryFail.logs.some((m) => m.includes('Final Review: schema-repair exhausted, degrading (synthesized-verdict)')),
+            `Expected the schema-repair-exhausted degrade message, logs: ${JSON.stringify(finalReviewRetryFail.logs)}`
+        );
+        check(
+            finalReviewRetryFail.logs.some((m) => m.includes('Final Review dispatch threw') && m.includes('Retries exhausted.')),
+            `Expected the "retries exhausted" line once the retry itself also fails, logs: ${JSON.stringify(finalReviewRetryFail.logs)}`
         );
     });
 });
