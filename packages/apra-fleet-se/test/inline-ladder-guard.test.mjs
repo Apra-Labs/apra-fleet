@@ -56,14 +56,19 @@ function createSandbox() {
 // A fixture module carrying one inline `agent(` dispatch that routes to the
 // planner role's real member expression (getMemberForRole('planner') --
 // ROLE_POLICIES.planner.member is { kind: 'role', role: 'planner' }, and
-// memberExprFor() rebuilds that exact runner.js expression from it). This is
-// what "an inline ladder that was not removed when its role migrated" looks
-// like structurally.
+// memberExprFor() rebuilds that exact runner.js expression from it) AND
+// carries the planner's real ladderAnchor ('plannerPrompt,' --
+// apra-fleet-3swo.24). The anchor is required alongside the member
+// expression: the member expression alone is not role-unique (three
+// policies share roleMember('planner')), so a fixture matching only the
+// expression is no longer enough to exercise a "real" seeded violation. This
+// is what "an inline ladder that was not removed when its role migrated"
+// looks like structurally.
 const SEEDED_LADDER_FIXTURE = [
     "import { getMemberForRole } from './member-target.mjs';",
     '',
-    'export async function dispatchPlanner(agent) {',
-    "    await agent('Plan (interactive)', {",
+    'export async function dispatchPlanner(agent, plannerPrompt) {',
+    '    await agent(plannerPrompt, {',
     '        member_name: getMemberForRole(\'planner\'),',
     '        max_turns: 10,',
     '    });',
