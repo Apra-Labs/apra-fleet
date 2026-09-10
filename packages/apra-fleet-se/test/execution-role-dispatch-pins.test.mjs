@@ -27,6 +27,7 @@ import {
     harvesterReport,
 } from '../fleet-sprint/contracts.mjs';
 import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
+import { PLANNING_LADDERS } from './helpers/planning-ladders.mjs';
 
 // =============================================================================
 // apra-fleet-3swo.5.6 -- EXECUTION-ROLE dispatch behaviour pins.
@@ -436,18 +437,35 @@ describe('execution-role dispatch ladders: per-dispatch pins', () => {
 
 describe('execution-role dispatch: cross-cutting invariants', () => {
     test('the pin table covers every execution-side dispatch runner.js makes', () => {
-        // 22 agent() sites total: 8 planning-side (pinned by the sibling file)
-        // and the 14 pinned here. A new role dispatch lands in neither table
-        // and fails this count.
+        // Total agent() site count is DERIVED from both pin tables' lengths,
+        // never a bare literal: the dispatchRole migration is guaranteed to
+        // delete pinned call sites out of runner.js as ladders move onto it
+        // (apra-fleet-3swo.28 AC#5), which would silently desync a hard-coded
+        // count from reality.
+        const expectedTotal = PLANNING_LADDERS.length + EXECUTION_LADDERS.length;
         assert.strictEqual(
             AGENT_SITES.length,
-            22,
-            `Expected 22 agent() dispatch sites in runner.js, found ${AGENT_SITES.length}. A new dispatch must be added to ` +
-            `this pin table (execution/verification side) or to the planning-side pin file, not left unpinned.`
+            expectedTotal,
+            `Expected ${expectedTotal} agent() dispatch sites (planning: ${PLANNING_LADDERS.length}, execution: ` +
+            `${EXECUTION_LADDERS.length}), found ${AGENT_SITES.length}. A new dispatch must be added to this pin table ` +
+            `(execution/verification side) or to the planning-side pin file, not left unpinned.`
         );
-        assert.strictEqual(EXECUTION_LADDERS.length, 14, 'Seven execution-side ladders, each with a max_turns-exhaustion resume.');
+        // Seven execution-side ladders, each contributing exactly two pins
+        // (main dispatch + max_turns-exhaustion resume) -- derived from the
+        // distinct ladder names actually present, not a bare literal.
+        const executionLadderNames = new Set(EXECUTION_LADDERS.map((pin) => pin.ladder));
+        assert.strictEqual(
+            EXECUTION_LADDERS.length,
+            executionLadderNames.size * 2,
+            `Each of the ${executionLadderNames.size} execution-side ladders must contribute exactly two pins (main ` +
+            `dispatch + max_turns-exhaustion resume); found ${EXECUTION_LADDERS.length} pins across ${executionLadderNames.size} ladders.`
+        );
         const lines = new Set(EXECUTION_LADDERS.map((pin) => siteFor(pin.anchor).line));
-        assert.strictEqual(lines.size, 14, 'Each pin must anchor a DISTINCT dispatch site -- two pins resolving to one site would leave a dispatch unpinned.');
+        assert.strictEqual(
+            lines.size,
+            EXECUTION_LADDERS.length,
+            'Each pin must anchor a DISTINCT dispatch site -- two pins resolving to one site would leave a dispatch unpinned.'
+        );
     });
 
     test('pushCode:true is exactly the doer and harvester dispatch pairs', () => {
