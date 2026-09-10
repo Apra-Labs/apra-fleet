@@ -27,6 +27,8 @@ CLAUDE.md
 *.db
 .beads-credential-key
 .beads/
+# Per-clone beads-DB backup directories (created by pre-clone safety copies); never commit
+.beads.bak-*/
 
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/
