@@ -56,7 +56,7 @@ describe('register-member interactive bootstrap gate', () => {
         path.join(settingsDir, 'settings.local.json'),
         JSON.stringify({ permissions: { allow: ['Bash(git:*)'] } }, null, 2),
       );
-      return '✅ composed permissions (mocked -- my-beads-db-27m.15)';
+      return '[OK] composed permissions (mocked -- my-beads-db-27m.15)';
     });
   });
 

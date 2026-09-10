@@ -56,6 +56,65 @@ import path from 'node:path';
 
 const nodeExecFileAsync = promisify(nodeExecFile);
 
+// ---------------------------------------------------------------------------
+// Child-process stdout buffer (dolt sync budget review round 2, item 1)
+// ---------------------------------------------------------------------------
+//
+// Node's execFile/execFileSync default `maxBuffer` is 1MiB, and exceeding it
+// does not truncate -- it KILLS the child and rejects with
+// ERR_CHILD_PROCESS_STDIO_MAXBUFFER. Measured on this repo's tracker:
+// `bd list --all --limit 0 --json` (scope-overlap.mjs's launch-overlap guard
+// and dashboard.mjs's progress bars) emitted ~2.96MB at 766 issues, i.e. every
+// `POST /api/sprints` launch failed; backlog.mjs's open-only fetch was already
+// at ~967KB (92% of the default) for 234 open issues -- one moderately sized
+// issue from the identical crash.
+//
+// The bound is therefore set HERE, once, so every caller inherits it rather
+// than each call site needing to remember its own. 64MB against a measured
+// ~3.9KB average full row is ~16,500 rows of headroom (the tracker peaked at
+// 1,522 rows before a cleanup), and an unused buffer costs nothing -- Node
+// allocates only what the child actually writes.
+//
+// A caller may still pass its own `maxBuffer` (it is spread AFTER this
+// default, so an explicit value wins); omitting it gets 64MB, never 1MiB.
+
+/** Explicit stdout/stderr ceiling for every `bd` invocation. */
+export const BD_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
+/** Warn once an actual `bd` output crosses this, so growth toward the ceiling
+ *  above is visible in logs instead of arriving as a silent cliff. */
+export const BD_LARGE_OUTPUT_WARN_BYTES = 8 * 1024 * 1024;
+
+/** @param {unknown} out @returns {number} */
+function outputByteLength(out) {
+    if (out == null) return 0;
+    if (Buffer.isBuffer(out)) return out.length;
+    if (typeof out === 'string') return Buffer.byteLength(out);
+    return 0;
+}
+
+/**
+ * Emit a warn line when a `bd` invocation's output crosses
+ * BD_LARGE_OUTPUT_WARN_BYTES. Never throws; returns the measured byte length.
+ * @param {string[]} args
+ * @param {unknown} out
+ * @param {(msg: string) => void} [warn]
+ * @returns {number}
+ */
+export function warnIfLargeBdOutput(args, out, warn = console.warn) {
+    const bytes = outputByteLength(out);
+    if (bytes > BD_LARGE_OUTPUT_WARN_BYTES) {
+        const mb = (bytes / (1024 * 1024)).toFixed(1);
+        const capMb = Math.round(BD_MAX_BUFFER_BYTES / (1024 * 1024));
+        try {
+            warn(`[exec-bd] WARNING: 'bd ${args.join(' ')}' returned ${mb}MB of output (buffer ceiling is ${capMb}MB). This grows with tracker size; raise BD_MAX_BUFFER_BYTES or narrow the query before it reaches the ceiling.`);
+        } catch {
+            // A broken logger must never break a bd invocation.
+        }
+    }
+    return bytes;
+}
+
 /**
  * Locates the npm-generated `bd.cmd` shim on PATH and extracts the
  * underlying `bin/bd.js` script path it wraps, so callers can invoke that
@@ -141,7 +200,9 @@ export function execBdSync(args, options = {}, execFileSyncImpl = nodeExecFileSy
     }
     const scriptPath = resolveWindowsBd();
     if (scriptPath) {
-        return execFileSyncImpl(process.execPath, [scriptPath, ...args], { ...options, shell: false });
+        const out = execFileSyncImpl(process.execPath, [scriptPath, ...args], { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: false });
+        warnIfLargeBdOutput(args, out);
+        return out;
     }
     // Fallback: pre-fix behavior. On POSIX this is what already worked (a
     // real `bd` binary/symlink execs fine without a shell); on win32 this
@@ -150,7 +211,9 @@ export function execBdSync(args, options = {}, execFileSyncImpl = nodeExecFileSy
     // shebang-script limitation -- see the module doc's fallback note for
     // why this one remaining path still carries the quoting risk.
     const needsShell = (process.platform === 'win32');
-    return execFileSyncImpl('bd', args, { ...options, shell: needsShell });
+    const out = execFileSyncImpl('bd', args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: needsShell });
+    warnIfLargeBdOutput(args, out);
+    return out;
 }
 
 // execBdAsync's two current callers (backlog.mjs's fetchAllBeadsRaw(),
@@ -203,12 +266,24 @@ function assertSafeArgs(args) {
  * @param {string[]} args - argv passed to `bd` (e.g. ['list', '--json', '--limit', '0']); every element must match `SAFE_ARG_PATTERN`.
  * @param {import('node:child_process').ExecFileOptions} [options] - forwarded as-is (cwd, encoding, ...); `shell` is always forced to `true` regardless of what is passed here.
  * @param {typeof nodeExecFileAsync} [execFileAsyncImpl] - injectable for tests (same signature as `promisify(require('node:child_process').execFile)`); defaults to the real one.
+ * @param {(msg: string) => void} [warn] - injectable warn sink for the large-output line.
  * @returns {Promise<{stdout: string|Buffer, stderr: string|Buffer}>}
  */
-export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFileAsync) {
+export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFileAsync, warn = console.warn) {
+    // Deliberately NOT an `async function`: both argument-shape rejections
+    // below must throw SYNCHRONOUSLY (they are programmer errors, and callers
+    // /tests rely on it), so the promise chain only starts once the args are
+    // known safe.
     if (!Array.isArray(args)) {
         throw new TypeError('execBdAsync requires args to be an array of strings');
     }
     assertSafeArgs(args);
-    return execFileAsyncImpl('bd', args, { ...options, shell: true });
+    // maxBuffer first so an explicit caller-supplied value still wins; without
+    // it Node's 1MiB default kills the child on a large `bd list` (see the
+    // BD_MAX_BUFFER_BYTES block above).
+    return Promise.resolve(execFileAsyncImpl('bd', args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: true }))
+        .then((res) => {
+            warnIfLargeBdOutput(args, res ? res.stdout : null, warn);
+            return res;
+        });
 }

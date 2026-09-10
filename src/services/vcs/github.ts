@@ -109,6 +109,31 @@ async function deployPat(
 }
 
 export const githubProvider: VcsProviderService = {
+  // apra-fleet-5co8.3.1: moved VERBATIM out of the provider switch in
+  // src/tools/provision-vcs-auth.ts -- same default mode ('github-app'), same
+  // required-field check and same error text, so no behaviour moves with it.
+  // GitHub is the one provider with an auth-MODE axis; keeping that knowledge
+  // here is the whole point of the seam.
+  buildCredentials(input) {
+    const mode = input.github_mode ?? 'github-app';
+    if (mode === 'pat') {
+      if (!input.token) return 'GitHub PAT mode requires "token" field.';
+      return { type: 'pat', token: input.token };
+    }
+    return { type: 'github-app', git_access: input.git_access, repos: input.repos };
+  },
+
+  // apra-fleet-5co8.3.1: the former
+  // `if (provider === 'github' && (github_mode ?? 'github-app') === 'pat' &&
+  //     token === undefined)` block, verbatim. github-app mode mints its own
+  // token server-side and must NEVER prompt, which is exactly what the mode
+  // check in isMissing preserves.
+  missingCredential: {
+    field: 'token',
+    isMissing: (input) => (input.github_mode ?? 'github-app') === 'pat' && input.token === undefined,
+    promptFor: (memberName) => `Enter GitHub personal access token for ${memberName}`,
+  },
+
   async deploy(agent, cmds, exec, credentials, label?, scopeUrl?) {
     const creds = credentials as GitHubCredentials;
     return creds.type === 'github-app'

@@ -127,6 +127,10 @@ src/providers/
   index.ts       - getProvider() singleton factory
 ```
 
+### Optional Capability Methods
+
+Not every provider CLI can do everything -- some capabilities (e.g. session forking) only exist on a subset of providers. Rather than making every `ProviderAdapter` implement a capability it may not be able to honor, or maintaining a separate out-of-band capability registry, the interface declares such capabilities as an **optional method pair**: a `supportsX?(): boolean` check plus the flag/command builder it gates (e.g. `forkFlag?(sourceSessionId): string`). A provider that has not implemented the pair is capability-incapable by default -- there is no third state and no fallback that fakes the capability through some other mechanism. Callers must always check the support method (`provider.supportsX?.() ?? false`) before calling the builder; calling the builder without checking support first is a caller bug, not a case the interface guards against for you. This keeps capability detection colocated with the capability itself (same file, same provider), avoids a growing "which providers support what" table that drifts from the actual adapter code, and lets a capability request against an unsupporting provider fail loudly and specifically (a dedicated terminal error) instead of degrading silently into different, unexpected behavior.
+
 ### Mix-and-Match Fleet
 
 A fleet can have members on different providers simultaneously. The PM dispatches work to members by name  -- it doesn't need to know which LLM backend each member uses. The fleet server resolves the correct CLI commands per member at runtime.
@@ -241,8 +245,7 @@ manifest is not a trusted-by-construction input.
 dynamic `import()` of on-disk ESM works from inside a SEA main script on
 all three target OSes.
 
-**Install/uninstall/update lifecycle (Phases 1-3, closed this sprint,
-`apra-fleet-7pm`):** `install.ts`'s workflow-install step and its extraction
+**Install/uninstall/update lifecycle:** `install.ts`'s workflow-install step and its extraction
 logic (extract-to-temp-then-rename, with Windows EBUSY retry/backoff) were
 factored out into `src/cli/workflow-assets.ts` so more than one caller can
 share the exact same code path instead of re-implementing it:
@@ -267,7 +270,7 @@ share the exact same code path instead of re-implementing it:
   built-in workflow assets to the new version while preserving any
   user-authored workflows already on disk.
 
-**CI coverage (Phase 4, closed this sprint):** `build:binary` smoke tests
+**CI coverage:** `build:binary` smoke tests
 exercise the packaged SEA binary's `workflow` subcommand and the
 fleet-sprint-as-built-in-workflow path end-to-end (not just the source
 `.ts`/`.mjs` files), and a regression-guard test suite
@@ -276,10 +279,8 @@ command surface (`install --help`, `uninstall --dry-run`, `--version`,
 stdio handshake) against golden fixtures so future workflow-subsystem work
 can't silently change unrelated command output.
 
-The workflow subsystem is now installable, self-healing, uninstallable, and
-update-safe end-to-end; remaining gaps for this feature are tracked as
-individual open issues under `apra-fleet-7pm`, not as a phase-level
-placeholder.
+The workflow subsystem is installable, self-healing, uninstallable, and
+update-safe end-to-end.
 
 **Cooperative pause/resume** is a generic engine primitive available to any
 workflow run (`requestPause()`/`requestResume()`/`setPauseGuard()`), separate
@@ -322,6 +323,8 @@ The PM skill and its role agent definitions (planner, plan-reviewer, doer, revie
 
 Remote fleet members do not share the operator's home directory, so `register_member`, `update_member`, and (starting with the first dispatch after an orchestrator upgrade) `execute_prompt` each independently hash-diff the canonical agent set against the remote box and push anything missing or stale. See [docs/mcp-tools.md](mcp-tools.md) for per-tool behavior details.
 
+The sprint engine (`packages/apra-fleet-se/fleet-sprint/`) and these role prompts are generic: they drive a sprint against any target repo, and apra-fleet building itself with them is only one target. A mechanical guard keeps apra-fleet-specific assumptions out of their LLM-facing text -- see [docs/generic-engine-boundary.md](generic-engine-boundary.md).
+
 ## Key Design Decisions
 
 ### Strategy Pattern for Member Types
@@ -361,8 +364,8 @@ The tools break into natural groups in **[mcp-tools.md](mcp-tools.md)**:
 **[Lifecycle](mcp-tools.md#1-lifecycle-tools)**  -- `register_member`, `list_members`, `update_member`, `remove_member`, `shutdown_server`
 Manage the fleet roster and server lifecycle. Registration validates connectivity, detects the OS, and checks that Claude CLI is available. Removal includes best-effort cleanup of auth credentials on the member.
 
-**[Work](mcp-tools.md#2-work-tools)**  -- `send_files`, `execute_prompt`, `execute_command`, `reset_session`
-The core workflow. Push files to a member, run prompts against it, run shell commands directly, manage conversation sessions.
+**[Work](mcp-tools.md#2-work-tools)**  -- `send_files`, `receive_files`, `execute_prompt`, `execute_command`, `stop_prompt`, `monitor_task`
+The core workflow. Push and pull files, run prompts against a member, run shell commands directly, and stop a running prompt.
 
 **[Infrastructure](mcp-tools.md#3-infrastructure-tools)**  -- `provision_llm_auth`, `setup_ssh_key`, `update_llm_cli`
 One-time setup and maintenance. Provision auth (copy OAuth credentials or deploy API key for any provider), migrate from password to key auth, update the LLM CLI on members.
@@ -372,4 +375,4 @@ Two-layer monitoring. `fleet_status` gives a quick summary table across all memb
 
 ## Cross-Platform Support
 
-Members can run Windows, macOS, or Linux. The `platform.ts` utility generates the right shell commands for each OS  -- different commands for checking processes, reading memory, setting environment variables. The OS is auto-detected during registration (`uname -s` on Unix, `cmd /c ver` on Windows) and stored in the member record so subsequent tool calls don't need to re-detect.
+Members can run Windows, macOS, or Linux. The `os/*` command builders generate the right shell commands for each OS -- different commands for checking processes, reading memory, and setting environment variables -- while `src/utils/platform.ts` handles OS detection and path resolution. The OS is auto-detected during registration (`uname -s` on Unix, `cmd /c ver` on Windows) and stored in the member record so subsequent tool calls don't need to re-detect.

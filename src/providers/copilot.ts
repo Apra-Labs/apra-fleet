@@ -2,6 +2,7 @@ import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExec
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
 import { logWarn } from '../utils/log-helpers.js';
 
 // Known exception: Copilot CLI cannot take a caller-supplied session ID.
@@ -22,7 +23,12 @@ export class CopilotProvider implements ProviderAdapter {
     return 'copilot --version 2>&1';
   }
 
-  installCommand(os: 'linux' | 'macos' | 'windows'): string {
+  // `shell` is intentionally unused: `winget install ...` is a plain exe
+  // invocation with no PowerShell-only syntax, so it runs unchanged whether
+  // the member's registered shell is gitbash or PowerShell
+  // (apra-fleet-7dir.2.7 -- named here as a windows-branch adapter that needs
+  // no per-shell variant, not skipped silently).
+  installCommand(os: 'linux' | 'macos' | 'windows', _shell?: MemberShell): string {
     if (os === 'macos') {
       return 'brew install --cask copilot';
     }
@@ -224,7 +230,7 @@ export class CopilotProvider implements ProviderAdapter {
     return `-p "${promptLiteral}"`;
   }
 
-  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40 was scoped to the Claude workspace-trust gate (see the
     // provider-trust-matrix note on the parent bug); Copilot was not part of that
     // investigation and no equivalent per-project trust gate is known. No-op until a

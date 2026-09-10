@@ -68,6 +68,8 @@ export const updateMemberSchema = z.object({
     .describe('Free-form labels for this member (max 10 tags, each max 64 chars). Empty array clears all tags; non-empty array replaces existing tags.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Change the code-intelligence provider for this member.'),
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
+  shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
+  vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('Directly set (override) this member\'s VCS provider -- an explicit operator value, never auto-detected. Use this to correct a wrong auto-detect from register_member, or to set the provider for a member with no credentials to provision (so provision_vcs_auth is not required just to record it). Pass "none" to clear it, declaring the member deliberately has no VCS provider.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -202,6 +204,13 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.tags !== undefined) updates.tags = input.tags.length === 0 ? undefined : input.tags;
   if (input.code_intel_provider !== undefined) updates.codeIntelProvider = input.code_intel_provider;
   if (input.unreservable !== undefined) updates.unreservable = input.unreservable;
+  if (input.shell !== undefined) updates.shell = input.shell;
+  // Explicit operator override -- never auto-detected (that only happens in
+  // register_member). 'none' clears vcsProvider, matching how register_member
+  // records it (Agent.vcsProvider has no 'none' member -- see src/types.ts).
+  if (input.vcs_provider !== undefined) {
+    updates.vcsProvider = input.vcs_provider === 'none' ? undefined : input.vcs_provider;
+  }
   if (input.model_cheap !== undefined) updates.modelCheap = input.model_cheap;
   if (input.model_standard !== undefined) updates.modelStandard = input.model_standard;
   if (input.model_premium !== undefined) updates.modelPremium = input.model_premium;
@@ -295,6 +304,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     result += `  Auth:    ${updated.authType}\n`;
   }
   result += `  Provider: ${updated.llmProvider ?? 'claude'}\n`;
+  if (input.vcs_provider !== undefined) {
+    result += `  VCS Provider: ${updated.vcsProvider ?? 'none'}\n`;
+  }
   if (updated.modelCheap) result += `  Model Cheap: ${updated.modelCheap}\n`;
   if (updated.modelStandard) result += `  Model Standard: ${updated.modelStandard}\n`;
   if (updated.modelPremium) result += `  Model Premium: ${updated.modelPremium}\n`;

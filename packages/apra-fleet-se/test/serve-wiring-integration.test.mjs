@@ -76,10 +76,24 @@ function getFreePort() {
     });
 }
 
-/** Poll until `pred()` is truthy or the deadline passes; throws on timeout. */
-async function waitFor(pred, { timeoutMs = scaledTimeout(15000), intervalMs = 100, label = 'condition' } = {}) {
+/**
+ * Poll until `pred()` is truthy or the deadline passes; throws on timeout.
+ *
+ * `isAlive`, when provided, is checked on every iteration BEFORE `pred()`:
+ * if it returns false the poll throws immediately instead of burning the
+ * rest of `timeoutMs`. This lets a caller pass a generous, contention-safe
+ * ceiling (needed so the poll survives real scheduling load -- e.g. running
+ * right after a full root `vitest run`, apra-fleet-7dir.18) while still
+ * failing FAST -- well under that ceiling -- when the thing being waited on
+ * (e.g. the spawned `serve` subprocess) has genuinely died, rather than
+ * degrading a real crash into a slow timeout.
+ */
+async function waitFor(pred, { timeoutMs = scaledTimeout(15000), intervalMs = 100, label = 'condition', isAlive } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
+        if (isAlive && !isAlive()) {
+            throw new Error(`${label}: process exited before the condition was met`);
+        }
         // eslint-disable-next-line no-await-in-loop
         const val = await pred();
         if (val) return val;
@@ -130,6 +144,11 @@ function httpPostJson(port, urlPath, payload, host = '127.0.0.1') {
 describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real supervisor process', () => {
     let serve;
     let port;
+    // apra-fleet-7dir.18: flipped by the spawned `serve` subprocess's own
+    // 'exit' event, so the readiness polls below (isAlive) can fail FAST if
+    // the process has genuinely died, independent of however generous their
+    // timeoutMs ceiling is.
+    let serveExited = false;
 
     // The suite shares ONE real `fleet-se serve` subprocess across every
     // assertion below (matching supervisor-lifecycle.test.mjs's (a) case):
@@ -146,6 +165,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
         });
         track(serve.pid);
+        serve.on('exit', () => { serveExited = true; });
 
         // apra-fleet-ryk / apra-fleet-33c.1: same contention-starvation fix
         // already applied to the GET / wait below -- this boot-wait must also
@@ -155,6 +175,15 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         // silently fell back to its unscaled 15s baseMs while genuinely
         // running 8-wide, starving the real-subprocess boot under contention
         // (observed CI failure: timed out at ~15116ms).
+        //
+        // apra-fleet-7dir.18: the fixed 3x multiplier (45s) still isn't
+        // enough when this suite runs immediately after a full root
+        // `vitest run` -- the machine is under heavier residual load than a
+        // standalone run of this package exercises. Rather than replace the
+        // poll with a bigger flat literal, widen its multiplier (still a
+        // BOUNDED poll, just a more generous one) and add the isAlive
+        // fast-fail above so a genuine crash is still caught promptly
+        // instead of silently eating the whole widened ceiling.
         await waitFor(async () => {
             try {
                 const res = await httpGet(port, '/api/health');
@@ -162,7 +191,11 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
             } catch {
                 return false;
             }
-        }, { timeoutMs: scaledTimeout(15000, { concurrency: 8 }), label: 'supervisor /api/health to answer' });
+        }, {
+            timeoutMs: scaledTimeout(15000, { concurrency: 8, multiplier: 6 }),
+            label: 'supervisor /api/health to answer',
+            isAlive: () => !serveExited,
+        });
     });
 
     after(async () => {
@@ -211,6 +244,15 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         // value both the plain `test` script and run-tests.mjs use) so this
         // boot-check always gets the full contention-aware budget regardless
         // of which script invoked the suite or whether that env var is set.
+        //
+        // apra-fleet-7dir.18: the fixed 3x multiplier (45s) still isn't
+        // enough when this suite runs immediately after a full root
+        // `vitest run` (heavier residual machine load than a standalone run
+        // of this package exercises) -- observed timeout at ~50040ms against
+        // the 45000ms budget. Widen the multiplier (still a BOUNDED poll,
+        // not a flat literal) and pass isAlive so a genuinely crashed
+        // `serve` subprocess still fails fast instead of eating the whole
+        // widened ceiling.
         const res = await waitFor(async () => {
             try {
                 const attempt = await httpGet(port, '/');
@@ -218,7 +260,11 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
             } catch {
                 return false;
             }
-        }, { timeoutMs: scaledTimeout(15000, { concurrency: 8 }), label: 'GET / to render the dashboard' });
+        }, {
+            timeoutMs: scaledTimeout(15000, { concurrency: 8, multiplier: 6 }),
+            label: 'GET / to render the dashboard',
+            isAlive: () => !serveExited,
+        });
         assert.equal(res.status, 200, res.body);
         assert.ok(res.headers['content-type'].includes('text/html'), res.headers['content-type']);
         // supervisor-viewer-parity: section labels are now `.panel-header`

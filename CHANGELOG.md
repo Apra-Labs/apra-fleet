@@ -205,6 +205,397 @@ Pricing source: all 39 priced dispatch(es) used real per-member rates (get_membe
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
 
+## [Unreleased] -- execute_prompt: session forking
+
+Sprint goal: let `execute_prompt` branch a new, independent session from an
+existing session's context (`fork`), instead of only being able to continue
+a session in place (`resume`) -- enabling reusable-priming workflows where
+expensive shared context is built once and then forked per task without
+re-spending tokens to rebuild it each time.
+
+What shipped:
+
+- **`fork` parameter on `execute_prompt`**, mirroring `resume`'s shape
+  (`boolean | string`): `true` best-effort-forks the member's stored last
+  session (falling back to a fresh session with a logged warning if that
+  session is stale or absent); a session-id string forks exactly that
+  source session, with unknown/expired sources failing as a terminal
+  `session_not_found` and no LLM call -- no silent wrong-context fallback.
+- **`resume`/`fork` and `session_id`/`fork` mutual exclusivity**, rejected
+  as a validation error before any member resolution or LLM call, since the
+  two express contradictory intents (continue in place vs. branch away).
+- **Provider capability model**: fork support is declared per-provider via
+  an optional capability-method pair (a support check plus a flag builder),
+  the same pattern any future provider-specific capability can reuse.
+  Claude Code is fork-capable today; a `fork` request against a
+  non-fork-capable provider is rejected outright (`fork_unsupported`, no
+  LLM call) rather than silently downgraded to resume or a fresh session.
+- **Fork descriptor threaded through both POSIX and Windows command
+  builders**, so a fork-mode dispatch emits the provider's fork invocation
+  in place of the ordinary resume/session-id flags on every supported OS.
+- **Retry/self-heal safety**: every internal retry path (transient dispatch
+  failure, stale-session retry, server-overload retry, self-heal retry)
+  dispatches as an ordinary fresh/resume attempt on retry, never re-forking
+  from the same source -- re-forking on every retry would multiply, not
+  save, token spend.
+- **`apra-fleet-client` updated** in the same change to keep the client
+  wrapper's `ExecutePromptOptions` in sync with the new server-side option.
+
+Carried forward (filed as open backlog; not blocking): a coverage gap for
+the `fork_unsupported` terminal-rejection path in `execute_prompt` itself
+(existing tests exercise it only against a fork-capable provider), and a
+follow-up to actually wire `fork` into a reusable-priming workflow lane to
+realize the token-savings motivation end to end.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $13.5981.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3278 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 33 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- Dolt sync budget: fewer, cheaper beads syncs per sprint
+
+A read-only investigation into where a fleet-sprint spends its `bd dolt pull` /
+`bd dolt push` minutes found four cheap wins, all landed here. Together they
+remove essentially all of the `sync.remote` probe spawns, most of the D-pull
+spawns, and turn a multi-minute pre-launch guard into a single bulk query.
+
+- **Pre-launch scope guard: one bulk fetch instead of one subprocess per bead**
+  (apra-fleet-72o0). `POST /api/sprints` awaits the issue-scope overlap guard
+  before it answers, and that guard walked the scope tree by spawning one
+  `bd list --parent <id> --json` per discovered node, sequentially -- then
+  repeated the whole walk for every already-active sprint's roots. A ~45-bead
+  epic took minutes and timed the launch client out. `createScopeGuard` now
+  accepts a `listAllBeads` dependency (default: one bulk fetch per
+  `checkLaunch`), builds a child index once, and expands both the request's
+  roots and every ledger sprint's roots from that same in-memory index -- the
+  pattern `backlog.mjs` and `runner.js`'s `bdListScoped` already used. The old
+  per-node walk is kept as an explicit test seam.
+  - **Correctness fix in the same path:** the bulk fetch passes `--all`.
+    `bd list` hides closed issues by default, so a CLOSED intermediate parent
+    silently dropped its OPEN subtree from the overlap check -- two sprints
+    with genuinely overlapping open work could both launch. The new guard is
+    strictly more complete than the one it replaces, not just faster.
+- **The `sync.remote` probe is memoized per member** (apra-fleet-akuv).
+  `bd config get sync.remote --json` was re-spawned on every D-pull pre-gate,
+  every D-push pre-gate and every `status()` probe -- measured at roughly
+  90-160 spawns (about 0.6s each) per sprint, re-reading a value that never
+  changes mid-run. It is now cached for the process lifetime, and ONLY when
+  the answer was positively parsed: every fail-safe path (command threw,
+  failSoft error, empty or unparseable output) still reports "configured"
+  and is deliberately NOT cached, so a transient probe failure can never pin
+  the fail-safe answer. Invalidated explicitly -- no TTL -- on any
+  `bd config set` / `bd dolt remote` / `bd init` / `bd bootstrap` the
+  orchestrator issues for that member (via the runner's central `command()`
+  wrapper), on the auth self-heal firing, and on `repair()`. Every one of
+  those seams drops the remote-tip fingerprint below alongside the memo.
+  - **A settled dispatch MARKS the member rather than wiping it.** An
+    agent's own `bd` commands never pass through `command()`, so the central
+    `agent()` wrapper tells DoltSync when a dispatch settles. An earlier cut
+    made that an unconditional wipe of both memos, which emptied the
+    fingerprint before every dispatch bracket and re-spawned the probe once
+    per dispatch (the golden mock-sprint transcript went from 1 probe to
+    14) -- the primary path then paid an extra `ls-remote` and skipped
+    nothing. The hazards do not warrant it: `bd bootstrap` (the one
+    self-heal this repo's agent instructions prescribe) is non-destructive
+    and, where it creates a DB, clones it from `sync.remote` -- a surviving
+    fingerprint stays TRUE; a forced `bd init` yields an unrelated history no
+    pull can fix, and its next push diverges into the terminals that already
+    forget the tip. The one event a surviving fingerprint would get wrong --
+    an agent-side `bd config set sync.remote <other>` -- is handled: the
+    fingerprint is bound to the URL it was minted against, and a member
+    dispatched-to since its memo was last read has `sync.remote` RE-READ (one
+    `bd config get`, a plain config.yaml read) before any pull is skipped on
+    it; a changed or unreadable answer forces a real pull. A member memoized
+    as having NO remote is the one case that never reaches that check (both
+    pre-gates exit on it first), so its memo is re-read once after any
+    dispatch too -- otherwise an agent wiring a remote mid-dispatch would
+    leave every later D-push of that member reporting a benign no-remote
+    skip while its bead closes never left the clone. So the re-read is paid
+    once per skip-after-dispatch for a member with a remote (one probe per
+    process when the remote is quiet) and once per dispatch only for a member
+    without one (sandboxes; the no-remote mock sprint's golden transcript
+    shows exactly that shape).
+  - **The tip probe cannot hang on a credential prompt and disables itself
+    after two consecutive failures.** The probe runs with
+    `-c credential.interactive=never -c core.askPass=` so a member without a
+    usable credential helper fails at once instead of sitting on the 30s
+    probe timeout; and after two consecutive failed probes the member's probe
+    is switched off for the process (re-armed by the same hard seams that
+    drop the memos), so a member that cannot list the remote pays nothing
+    further and every pull is simply real, as before the feature.
+- **The transient retry ladder is time-boxed, not count-boxed.** Widening the
+  ladder to 8 retries with a 30s backoff cap fixed a real Windows `git.exe`
+  spawn outage (measured 1-3 minutes) but applied that budget to every
+  transient kind, and took the unit suite from 80s to 6m15s. The ladder is now
+  split by error class: a SPAWN OUTAGE (`fork/exec ...`, "Not enough memory
+  resources") is retried against a 3-minute WALL-CLOCK budget with the 30s cap
+  -- so the bound is the same 3 minutes whether attempts return instantly or
+  sit on the 600s step timeout -- while every other transient keeps the short
+  pre-widening ladder (5 retries, 8s cap). An explicitly passed
+  `maxTransientRetries` is honored by BOTH ladders (a hard attempt cap on the
+  spawn-outage ladder as well, with the wall-clock budget still underneath);
+  only the default changed.
+- **Remote-tip fingerprint: a D-pull is skipped only when the remote provably
+  has not moved.** The shared remote's `refs/dolt/data` is the only channel
+  through which beads state moves between machines, so "is a pull needed?" has
+  a cheap exact answer. Before a real `bd dolt pull`, one
+  `git ls-remote <sync.remote> refs/dolt/data` (one round trip, no Dolt engine
+  startup) is compared against the SHA that member last synchronized to; on a
+  match the pull is not spawned and the step reports
+  `{ skipped: true, reason: 'remote-unchanged' }`. The recorded tip is minted
+  in exactly one place: the SHA observed immediately BEFORE a successful pull
+  (a push racing in merely forces the next pull to be real). A successful
+  push FORGETS the member's tip and never records one -- the push mutex only
+  serializes this fleet's own pushes, so a post-push read of the remote can
+  observe an unrelated machine's later commit and would record a SHA this
+  clone has never seen; and for bd's git-backed remote the pushed SHA is a
+  git commit minted inside the push itself, with no stable local ref to read
+  it from. The pusher pays one real pull at its next bracket, after which the
+  skip is re-armed. No `ls-remote` is issued inside the D-push bracket at
+  all. Every uncertainty -- no recorded tip, an `ls-remote` failure or
+  timeout, unparseable output, a `sync.remote` that could not be positively
+  read or whose URL fails a strict safe-charset check -- falls through to a
+  REAL pull. There is no path in which doubt produces a skip. The probe target
+  is always resolved from `sync.remote` (via the memo above), never from git's
+  `origin`, since the two can legitimately differ on a member -- which is why
+  a scheme-less `sync.remote` (a bare Dolt remote NAME such as `origin`, or a
+  bare path) yields no probe at all: `git ls-remote origin` would silently
+  resolve against git's origin. An http(s) userinfo (`user:token@`) is
+  stripped from the URL before it becomes part of the probe command, because
+  the workflow journals every command string verbatim into the persisted,
+  dashboard-visible transcript; the stripped URL authenticates through the
+  git credential helper every provisioned member carries, and a member
+  without one gets a failed probe, i.e. a real pull. Disable per call site
+  with `remoteTipFingerprint: false`.
+
+- **The supervisor dashboard had the same `--all` gap, with a worse
+  consequence.** `dashboard.mjs`'s progress bars and `decomposedParentIds`
+  check reused `backlog.mjs`'s `bdListAllBeads()` -- the same fetcher that
+  deliberately omits `--all` for the visible Backlog board (which intentionally
+  shows open work only). Reused for progress computation, that omission meant
+  every sprint's `closed` count was silently always `0` (`bd list` excludes
+  closed issues entirely, and `computeSprintProgress()` derives `closed` by
+  filtering for `status === 'closed'`), on top of the same closed-parent-
+  hides-open-subtree hole. The dashboard's default `listAllBeads` now uses
+  `scope-overlap.mjs`'s `bdListAllBeadsWithClosed()` (`--all`) instead, with
+  `buildSprintViews()` normalizing the raw rows itself. The Backlog board's
+  own fetch (`bdListAllBeadsRaw()`/`bdListAllBeads()`) is unchanged by design
+  -- it intentionally excludes closed work from that view.
+
+This deliberately does NOT include the two larger items from the same review:
+squashing Dolt history plus a fleet-wide re-bootstrap (a destructive
+operational change needing a quiescent window and its own runbook), and moving
+the Dolt remote off the git transport onto a bucket.
+
+## [Unreleased] -- Member VCS-provider registration and dispatch-time self-heal
+
+Umbrella context: apra-fleet-5oo ("member sprint-role readiness is never
+provisioned or preflight-verified -- gaps surface reactively mid-sprint").
+
+`register_member` could fully register a dispatch-capable member
+(`llm_provider: "claude"`) while leaving its `vcsProvider` completely unset --
+registration never asked for or detected it. The gap only surfaced hours
+later, mid-sprint, as fleet-sprint's `VCSModule.resolveProvider()` throwing
+"member has no registered VCS provider" on the member's first push or PR, on a
+path whose own self-heal died on the same lookup and so could never heal it.
+
+- **`register_member` now takes `vcs_provider`** (`github` | `bitbucket` |
+  `azure-devops` | `none`), and `apra-fleet register-member` takes the matching
+  `--vcs-provider` flag. An explicit value always wins and skips all probing.
+- **Best-effort auto-detection at registration time.** With no explicit value,
+  the member's git `origin` remote is read and its host mapped to a provider
+  (`src/utils/vcs-provider-detect.ts`, covering https / ssh / scp-like URL
+  forms with anchored host matching). Modelled on the existing Windows
+  shell probe: it never blocks registration, and the result reports
+  `VCS Provider: <provider> (auto-detected from origin)`.
+- **A loud warning when detection fails.** Registering before cloning is a
+  normal flow, so registration still succeeds -- but a dispatch-capable member
+  with no resolvable provider now says so at registration time instead of
+  failing hours into an unattended sprint. `llm_provider: "none"` members and
+  an explicit `vcs_provider: "none"` are exempt.
+- **Dispatch-time self-heal for members already in that state**
+  (`provisionVcsAuthForMember`, fleet-sprint runner). When `resolveProvider`
+  throws, the provider is resolved from the git remote the function has
+  ALREADY read for its repos scope -- through the same provider registry every
+  other host decision uses, never a provider literal -- and the subsequent
+  `provision_vcs_auth` call persists it server-side as an existing side
+  effect. An unreadable or unrecognized remote still raises the original
+  error: there is nothing to detect, so nothing is guessed. Benefits both the
+  reactive self-heal and the proactive preflight, which share the call site.
+- **`BitbucketVCS` now declares `matchesHost`** (anchored to `bitbucket.org` /
+  `www.bitbucket.org` / `altssh.bitbucket.org`, character-for-character in step
+  with `vcs-provider-detect.ts`), so the host registry names it for a Bitbucket
+  remote instead of falling through to the `generic-git` catch-all. Required
+  for the fallback above to detect Bitbucket at all; behaviour-neutral for
+  `VCSModule.capabilities()`.
+- **Credential provisioning now resolves hosts through an ANCHORED matcher**
+  (security). `GitHubVCS.matchesHost()` is deliberately a substring test -- a
+  GitHub Enterprise Server install has no fixed domain, and that matcher
+  answers `capabilities()`'s "could a PR be opened here?", where a wrong yes
+  costs only a failed PR attempt. Auto-PROVISIONING is a different risk class:
+  it mints a real push credential, and a substring test would hand it to
+  `mygithubmirror.attacker.io`. GitHub now also declares
+  `matchesHostForAuth()` (`/^(?:www\.|ssh\.)?github\.com$/i`), and the
+  dispatch-time fallback resolves through a new
+  `resolveVcsAuthProviderForHost()` that asks that matcher, considers only
+  registered auth backends, and returns `null` -- never the `generic-git`
+  catch-all -- for an unclaimed host. GitHub Enterprise is therefore not
+  auto-provisioned on either layer; register those members with an explicit
+  `vcs_provider`.
+- **The dispatch-time fallback's catch is narrow.** `resolveProvider()` also
+  throws for a `member_detail` RPC failure, an unresolvable member name, and a
+  malformed registry response -- none of which a git remote can heal. It now
+  stamps `code: VCS_NO_REGISTERED_PROVIDER` on the one self-healable failure,
+  and the fallback triggers on that code alone; every other error propagates
+  unchanged instead of being papered over with a provider guess.
+- **`update_member` now takes `vcs_provider`** too -- an explicit operator
+  override (never auto-detected) to correct a wrong auto-detect or set the
+  provider directly without provisioning credentials. `apra-fleet-client`'s
+  `UpdateMemberOptions` and both `docs/mcp-tools.md` /
+  `packages/apra-fleet-client/docs/api-reference.md` are updated to match.
+- **Fixed the "register this member again" remedy text.** Re-registering a
+  member's folder is rejected as a duplicate, so it was never an actual fix
+  for an undetermined `vcs_provider`. `register_member`'s warning (and the
+  matching `docs/mcp-tools.md` text) now points at `provision_vcs_auth`
+  (which already sets `vcsProvider` as a side effect of provisioning
+  credentials) and the new `update_member --vcs-provider` override.
+- **Clarified `remoteUrlOverride` provenance in fleet-sprint's runner.js.**
+  Several logs/comments claimed a detected provider came from "the member's
+  own git remote" even when `remoteUrlOverride` was supplied -- which can
+  carry a DIFFERENT member's origin (e.g. provisioning `orchestratorMember`
+  for a repo it has no checkout of). Reworded to state the URL's real
+  provenance without changing behavior.
+
+## [Unreleased] -- Azure DevOps VCS auth: credential assembly, PR publish path, and regression-sandbox hardening (sprint FAILED)
+
+Sprint goal: make `provision_vcs_auth` and the fleet-sprint VCS layer support
+Azure DevOps end-to-end -- guided PAT creation and storage, provisioning a
+user's existing PAT to local and remote members, clean actionable surfacing
+of Azure DevOps auth failure modes, and doing all of it through the existing
+provider-abstraction rather than ad hoc conditionals -- alongside hardening
+the regression-test-playbook's sandbox lifecycle so it cannot collide with a
+real, concurrently-running supervisor on the same machine.
+
+**Verdict: FAIL.** Full-suite tests pass at branch head and the code quality
+on the named scope is high, but: both scope issues remain open (Azure DevOps
+VCS auth, P0; regression-sandbox hardening, P1); Deploy halted at its
+documented active-sprints precondition in every attempted cycle, so nothing
+in this sprint was ever verified against an installed build and the
+integration-test lane never ran; and several verify-routed items are still
+open and unverified end-to-end. Treat everything below as landed-but-not-
+yet-proven-stable, not as a finished, user-facing integration.
+
+What shipped:
+
+- **Azure DevOps host/URL recognition and repo-reference parsing**, dispatched
+  from shared VCSModule code rather than hardcoded into the runner.
+- **Provider-owned credential assembly**: `buildCredentials`/
+  `missingCredential`/`testConnectivity` for Azure DevOps accept a PAT via
+  either of two field names, validate an optional expiry at assembly time
+  (rejecting an unparseable value instead of silently degrading), prefer the
+  exact URL the credential was scoped to when testing connectivity, and test
+  connectivity with an authenticated `git ls-remote` against a validated,
+  concrete repo URL instead of an unauthenticated call to the org root.
+- **A `setTimeout`-overflow guard on credential auto-cleanup**: a long-lived
+  Azure DevOps PAT's expiry can exceed what a 32-bit signed millisecond delay
+  can express; scheduling a raw timer for it would have silently fired
+  almost immediately and auto-revoked the credential just deployed. The
+  cleanup scheduler now skips scheduling entirely beyond that ceiling and
+  relies on day-scale expiry warnings and reactive failure classification
+  instead.
+- **Azure DevOps auth-failure classification**: TF-numbered error codes and
+  REST status codes are mapped to the same provider-neutral failure taxonomy
+  every other provider uses, distinguishing an expired/revoked PAT
+  (re-minting fixes it) from a missing-scope PAT (widening scopes fixes it)
+  from an ambiguous repo-not-found-or-no-access response (neither remedy
+  necessarily fixes it) -- and prints PAT-specific remedy text acknowledging
+  that, unlike a GitHub App token, an Azure DevOps PAT cannot be re-minted by
+  the fleet itself.
+- **Azure DevOps pull-request and comment REST builders**, with the
+  provider owning its own response-field mapping (Azure DevOps has no
+  web-URL field and uses `pullRequestId`, not GitHub's `number`/`html_url`)
+  and its own success/already-exists interpretation contract.
+- **The runner's publish path now consumes that provider-owned PR response
+  mapping** end to end, and mock-sprint gained hermetic coverage exercising
+  the publish path against canned Azure DevOps responses, plus an opt-in,
+  env-gated real end-to-end harness (provision, verify, publish) against a
+  live Azure DevOps org.
+- **Regression-test-playbook sandbox hardening**: a busy/stale/owner-release
+  sandbox lockfile guards the smoke-test sandbox against concurrent runs;
+  Setup now guards the toy dev server's port and a scripted, fail-loud
+  port-verification gate replaces a silent check; dolt-orphan-sweep kills
+  are scoped to the owning supervisor instance instead of a machine-wide
+  heuristic; and `start` now refuses to reuse an already-running server on a
+  version mismatch instead of silently continuing against a stale binary.
+- **Documentation**: `docs/design-azure-devops-vcs-auth.md` captures the
+  credential-assembly seam, classification rules, PAT-lifetime handling, and
+  a harness-vs-production quoting distinction worth knowing before assuming
+  an Azure DevOps test failure is a runtime bug;
+  `docs/design-regression-sandbox-lifecycle.md` (new) captures the sandbox's
+  cross-instance isolation design and the MSYS-vs-native pid mismatch
+  invariant future contributors must respect when adding any Windows
+  liveness/lock check.
+
+Since the previous update to this entry, further cycles landed: a deploy
+active-sprints gate that distinguishes a sprint's own live reservation from
+a foreign one (closing the recurring deploy-blocked failure mode below, once
+the dispatching process itself is relaunched from a build containing the
+fix -- see `docs/design-regression-sandbox-lifecycle.md`); the mock-sprint
+unmocked-network-command guard now matches curl/wget by command basename, so
+a path-prefixed invocation no longer slips past it; the Azure DevOps
+`testConnectivity` skipped-check result now carries a machine-detectable
+`skipped: true` flag instead of being indistinguishable from a verified
+pass; and slow-lane log-persistence test hardening. Verdict is still FAIL.
+
+Carried forward (filed as open issues, not blocking further sprints from
+starting, but blocking these epics' own completion):
+
+- Deploy still has not completed against an installed build this sprint.
+  The active-sprints gate itself now correctly distinguishes self from
+  foreign reservations, but every attempted cycle was dispatched from a
+  process that predated that fix landing in the tree, so the gate kept
+  blocking as if no self-identity check existed at all. Nothing landed in
+  this sprint has been verified against an installed build, and the
+  integration-test lane never ran.
+- Six verify-routed items are open and unverified end-to-end: the
+  `canOpenPullRequest` capability-table pin (fixed in the diff, unverified
+  post-install), the Azure DevOps create-pull-request builder, server-reuse
+  version-mismatch handling, the sandbox lockfile, the port-3001 Setup
+  guard, and the opt-in real Azure DevOps end-to-end lane.
+- The sandbox lockfile's liveness check is not safely closable as-is: on
+  Git Bash on Windows -- the platform this sprint runs on -- a pid captured
+  from the shell's `$$` is an MSYS pid, but the liveness check uses a native
+  `process.kill(pid, 0)`, so a live holder can read as stale or an unrelated
+  native process can read as busy.
+- `.claude/settings.json` now grants a blanket `Edit`/`Write` permission to
+  every agent dispatch; this widening is not justified by any scope item
+  here and should be reviewed.
+- `dolt-orphan-sweep`'s owner-scope filter is inert when the sweep's data
+  directory falls back to a relative path -- a known, not-yet-test-pinned
+  gap.
+- The build-lock preflight step run ahead of `install --force` kills every
+  non-self, non-ancestor holder of this checkout's build artifacts with no
+  built-in exclusion for a live foreign sprint's own child process --
+  deploy operators currently have to hand-verify this after the fact.
+- Regression-pass carryover from this sprint's full-suite run (a resumed,
+  not freshly re-run, real-bd functional pass; a slow-lane failure tied to
+  a pre-existing watchdog/recording-drift issue; and known Part-2
+  smoke-test credential-provisioning blockers) is tracked as standalone,
+  parent-less backlog and is unrelated to the Azure DevOps/sandbox scope
+  itself.
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $17.1504.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 58 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Supervisor dashboard: live-refresh parity with the per-run viewer
 
 Sprint goal: bring the multi-sprint supervisor's own dashboard up to the same
@@ -341,6 +732,179 @@ Tracked spend (priced dispatches only): $8.4210.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.1315 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
 Pricing source: all 18 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
+## [Unreleased] -- Windows shell selection: finish wiring fleet-sprint through the registered shell
+
+Sprint goal: close out the remaining scope of the Windows shell-selection
+epic -- wire the fleet-sprint-side command builders into their real call
+sites (previously present as source but unused), mirror the registered
+`shell` field into the MCP client's type definitions, align the
+Windows-Git-Bash candidate list between probe and command builder, and fix
+an unrelated, independently-discovered native-addon lock-detection gap in
+the pre-build lock-clearing script. Final verdict is a PASS: all in-scope
+work items closed, with the two remaining follow-ups noted below carried
+forward as their own tracked items rather than blocking this sprint.
+
+What shipped:
+
+- **fleet-sprint dolt-settle now routes through the registered shell**:
+  installing, probing, killing, and spawning the pinned local dolt server,
+  plus the SQL/node-eval command strings sent around it, are built via the
+  shell-aware command-builder classes instead of a fixed PowerShell
+  assumption. A dedicated shell-aware SQL-escaping primitive and a
+  wrap-PowerShell primitive for gitbash members were added to the
+  fleet-sprint command-builder set to support this. Any command body that
+  is embedded in a WMI/`Win32_Process` script (used for the pinned-dolt
+  install/kill/spawn lifecycle) is now resolved in PowerShell dialect
+  specifically, separately from the member's own shell-dialect path, since
+  such script bodies are always interpreted by PowerShell regardless of
+  the target member's registered shell -- a distinction that was not
+  previously made and would otherwise silently break a gitbash member.
+- **Runner threads the registered shell everywhere it settles state**: the
+  remaining call sites that build a settle callback now resolve and pass
+  the member's registered shell, closing the last gap where fleet-sprint
+  fell back to a fixed PowerShell assumption regardless of what shell a
+  Windows member actually runs.
+- **MCP client typedefs mirror the server schema**: the client wrapper's
+  register/update-member option typedefs and its member-detail result
+  typedef now declare the `shell` field and the curated model-tier enums,
+  matching the real server-side zod schemas -- closing a docs/typedef gap
+  where the client already forwarded the field correctly at runtime but
+  did not declare it. A parity test now reads the real zod schemas on both
+  sides and asserts they agree, rather than relying on the two staying in
+  sync by convention.
+- **Git-bash candidate list unified**: the shell probe's remote discovery
+  script and the local command-builder's resolver now consume one shared
+  candidate-list literal (including the shared user-scope install-path
+  suffix), with the parity test-asserted. The local resolver no longer
+  falls back to a bare, PATH-resolved `bash.exe` when no known-good
+  candidate checks out -- it now throws, rather than silently
+  reintroducing the WSL/System32 Git-Bash-impersonation ambiguity the
+  probe exists to close.
+- **`isPosixShell` consolidated**: the several previously-deliberate
+  private copies of the POSIX-vs-PowerShell branch predicate are now
+  routed through one exported, overloaded helper (plus a convenience
+  wrapper that reads both fields off an agent), with semantics unchanged.
+- **Pre-build lock-clearing script hardened** (independently discovered,
+  not part of the shell-selection epic's original scope): the script now
+  also detects processes that hold a native build addon open as a mapped
+  module rather than only processes whose own image path or command line
+  lives inside the checkout -- closing a real gap where a native addon
+  loaded by an unrelated host process (a system interpreter, an editor
+  language server, a leftover test worker) was invisible to the previous
+  matcher. It now re-probes empirically before reporting failure, names
+  the blocking process when it cannot clear a lock instead of reporting a
+  false success, and supports a dry-run mode.
+- **Docs**: see
+  [docs/windows-shell-selection.md](docs/windows-shell-selection.md) and
+  [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md),
+  both updated this sprint to describe the now-completed fleet-sprint
+  wiring, the consolidated `isPosixShell` helper, and the PowerShell
+  error-guard requirement for any script-emitting wrapper -- including
+  ones serving gitbash members.
+
+Carried forward (not closed this sprint):
+
+- Adding the PowerShell error-guard envelope
+  (`$ErrorActionPreference = 'Stop'` + try/catch + explicit exit code) to
+  the gitbash-specific wrap-PowerShell primitive, which currently emits an
+  unguarded `-EncodedCommand` invocation unlike its sibling wrappers
+  elsewhere in the codebase. Each current call site is independently
+  protected by its own result-gating, so this is not believed to be
+  live-exploitable today, but the gap should be closed rather than relied
+  upon.
+- Test coverage for the pre-build lock-clearing script rewrite, which
+  shipped without its own test suite.
+- A same-sprint regression pass (informational, does not gate this
+  sprint's verdict) reconfirmed several pre-existing, parent-less
+  carry-over issues (a long-running integration test, a KB
+  remote-scope test, a publish-push-failure test, and the
+  test-suite-file-duration budget) and surfaced one new, low-confidence
+  candidate in the same family as a known bd-init-template-collision
+  class of intermittent failure; a known sandbox-smoke-test
+  credential-provisioning environment block (unrelated to this sprint's
+  changes) was also reconfirmed. None of this blocks the sprint verdict.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $12.7413.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3455 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 22 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- Windows shell selection: probe and register the real shell, not just the OS
+
+Sprint goal: stop assuming every Windows member runs PowerShell. Add a
+registered `shell` field (`gitbash | pwsh7 | powershell5`) alongside the
+existing `os` field, probe for it at registration time, and route
+Windows-bound command construction through the registered shell instead of
+a fixed PowerShell assumption. Final verdict is a FAIL: the probe/register
+path and the core command-construction routing landed and are verified
+real and passing, but the epic as a whole is materially incomplete against
+its own acceptance criteria (see "Carried forward" below).
+
+What shipped:
+
+- **Shell probe and registration**: registration now probes, in order,
+  Git-for-Windows Bash, PowerShell 7, then PowerShell 5.1, trusting a
+  candidate only when a real smoke command returns both exit code 0 and an
+  expected stdout marker -- never on path/presence alone. A PATH-resolved
+  `bash.exe` is rejected as a Git-for-Windows Bash candidate unless it is
+  both outside known WSL/System32/WindowsApps launcher locations AND its
+  own `uname` output confirms a real MINGW/MSYS environment, closing the
+  WSL-launcher-impersonation gap. If every probe fails, registration still
+  succeeds and degrades to `powershell5` with a surfaced warning rather than
+  failing outright.
+- **Shell-aware command construction (core)**: a new `WindowsGitBashCommands`
+  implementation (extends the POSIX command builder, overriding only the
+  Windows-native surface) is now selected for any member registered with
+  `shell: 'gitbash'`. Command-construction call sites across member-home
+  resolution, provider install commands, workspace-trust seeding, the
+  local-execution strategy's process-kill and clean-env paths, credential
+  escaping, and prompt-transfer/durable-mirror/orphan-recovery now branch on
+  the registered shell (`isPosixShell(os, shell)`) rather than on `os`
+  alone.
+- **Docs**: see
+  [docs/windows-shell-selection.md](docs/windows-shell-selection.md) for the
+  probe design, the shell-vs-os distinction, the git-bash candidate-list
+  invariant, and the design decision to keep the core and fleet-sprint
+  implementations of this pattern independent rather than sharing a
+  package.
+
+Carried forward (epic left open; none of the following were closed this
+sprint):
+
+- Mirroring the new `shell` field into the MCP client wrapper's type
+  definitions and API-reference documentation (the client already forwards
+  the field correctly at runtime, so this is a docs/typedef gap, not a
+  functional break).
+- Wiring the fleet-sprint-side shell-command modules into their intended
+  call site (the runner's encoded-PowerShell-command wrapper) -- the module
+  set exists as source but nothing outside itself imports it yet, so it has
+  no effect on fleet-sprint's actual behavior today.
+- Aligning the Windows-Git-Bash command builder's candidate-path list with
+  the probe's candidate list, so a user-scope (non-admin) Git for Windows
+  install resolves consistently between probing and command construction
+  instead of falling back to an unqualified, PATH-resolved `bash.exe`.
+- Closing out the remaining Windows-equals-PowerShell survey sites (a
+  shell-aware-string test-assertion gap remains against otherwise-verified
+  production code).
+- Consolidating the several current copies of the POSIX-shell-branch
+  predicate behind one shared helper (currently deliberate, intentional
+  duplication, not a defect).
+- A deploy step that did not complete: `npm ci` failed reproducibly on
+  attempting to unlink a native build addon file, before the build/binary
+  and install steps could run; a working-tree hygiene follow-up (a few
+  scratch files at repo root not yet covered by ignore rules); and a
+  regression pass carry-over unrelated to this sprint's own changes.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $41.1657.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2004 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 55 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- Windows/PowerShell shell portability and schema-repair retry correctness

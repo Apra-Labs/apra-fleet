@@ -1,16 +1,16 @@
-# Session Lifecycle — PID Registry, Activity Timeout, and Cancellation
+# Session Lifecycle -- PID Registry, Activity Timeout, and Cancellation
 
-Covers the design decisions behind three related features shipped in Sprint 1:
+Covers the design decisions behind three related features:
 
-- **#147** — Kill previous agent instances before a new session
-- **#160** — Activity-aware (rolling inactivity) timeout
-- **#148** — Background agent cancellation via `stop_prompt`
+- Kill previous agent instances before a new session
+- Activity-aware (rolling inactivity) timeout
+- Background agent cancellation via `stop_prompt`
 
 ---
 
 ## Problem These Features Solve
 
-`execute_prompt` can be called while a previous LLM process is still running on the member machine. Before Sprint 1 this produced silent zombie processes — up to three per call (initial + two internal retries) — because:
+`execute_prompt` can be called while a previous LLM process is still running on the member machine. Without PID tracking this produces silent zombie processes -- up to three per call (initial + two internal retries) -- because:
 
 1. Each retry in `executePrompt` called `strategy.execCommand` without killing the previous process.
 2. `result.code` reflects the SSH/local exec exit code, not the LLM process exit code. Any network blip or SSH timeout causes a non-zero code, triggering the retry path even when the LLM is still alive and running.
@@ -19,7 +19,7 @@ Observed impact: five LLM processes running concurrently on one member, all doin
 
 ---
 
-## Shell Wrapper — PID Capture (#147)
+## Shell Wrapper -- PID Capture
 
 ### Design decision
 
@@ -41,20 +41,20 @@ exit $p.ExitCode
 
 ### Why this approach
 
-The PID line must arrive on stdout **before** the LLM produces any output — this was validated as the riskiest assumption in Task 1. The backgrounded-then-waited Unix pattern guarantees ordering because the `echo` runs synchronously in the outer shell before `wait` yields control to the child.
+The PID line must arrive on stdout **before** the LLM produces any output -- this was validated as the riskiest assumption in the design. The backgrounded-then-waited Unix pattern guarantees ordering because the `echo` runs synchronously in the outer shell before `wait` yields control to the child.
 
-The alternative — writing the PID to a side-channel file — was ruled out because it requires coordination on both write and read timing. The alternative of using stderr was viable but complicates output handling.
+The alternative -- writing the PID to a side-channel file -- was ruled out because it requires coordination on both write and read timing. The alternative of using stderr was viable but complicates output handling.
 
 ---
 
-## In-Memory PID Store (#147)
+## In-Memory PID Store
 
 ### Design decision
 
 PIDs are stored in a `Map<string, number>` keyed by agent ID, scoped to the fleet server process lifetime (`src/utils/agent-helpers.ts`).
 
 ```
-_activePids: Map<agentId → pid>
+_activePids: Map<agentId -> pid>
 ```
 
 Three operations: `getStoredPid`, `setStoredPid`, `clearStoredPid`.
@@ -73,8 +73,8 @@ The `activePid` field on `Agent` is a type-level remnant from early design; the 
 
 `tryKillPid` is called at two points in `executePrompt`:
 
-1. **At call entry** — before writing the prompt file, kill any PID stored from a previous call.
-2. **Before each retry** — kill the stored PID before spawning the retry command.
+1. **At call entry** -- before writing the prompt file, kill any PID stored from a previous call.
+2. **Before each retry** -- kill the stored PID before spawning the retry command.
 
 `tryKillPid` is non-blocking and swallows "process not found" errors. Kill commands:
 - Unix: `kill -9 <pid>`
@@ -82,11 +82,11 @@ The `activePid` field on `Agent` is a type-level remnant from early design; the 
 
 ---
 
-## Rolling Inactivity Timer (#160)
+## Rolling Inactivity Timer
 
 ### Design decision
 
-`timeout_s` was resemanticised from a hard wall-clock deadline to an **inactivity timeout** — the process is killed only when no stdout/stderr output has arrived for `timeout_s` seconds.
+`timeout_s` was resemanticised from a hard wall-clock deadline to an **inactivity timeout** -- the process is killed only when no stdout/stderr output has arrived for `timeout_s` seconds.
 
 The implementation is Option 1 (rolling `lastActivityAt` timestamp) rather than Option 2 (tool-call awareness). Each `data` event on the stream resets `lastActivityAt`. The watchdog fires when `now - lastActivityAt > timeout_s * 1000`.
 
@@ -102,7 +102,7 @@ An optional second timer, `max_total_s`, provides a hard ceiling that is **never
 - Preventing runaway sessions that continuously produce output
 - Budget enforcement for token-intensive tasks
 
-If `max_total_s` is omitted, there is no total time limit — only inactivity kills apply.
+If `max_total_s` is omitted, there is no total time limit -- only inactivity kills apply.
 
 ### Backward compatibility
 

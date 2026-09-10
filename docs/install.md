@@ -6,7 +6,7 @@ which skills are installed, uninstalling, and self-updating.
 ## Requirements
 
 - An AI coding agent CLI on the machine where you run Fleet - Claude Code,
-  Antigravity (agy), Codex, or Copilot.
+  Antigravity (agy), Codex, Copilot, or OpenCode.
 - SSH access to any remote machines you want to register as members. The local
   machine needs nothing extra; remote members need only an SSH server.
 
@@ -57,8 +57,8 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 .\apra-fleet-installer-win-x64.exe
 ```
 
-> The `install` subcommand is still accepted and does the same thing:
-> `./apra-fleet-installer install` works exactly as before.
+> The `install` subcommand is also accepted and does the same thing:
+> `./apra-fleet-installer install`.
 
 ## What `install` writes
 
@@ -68,7 +68,7 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | `~/.apra-fleet/hooks/` | Shell hooks (statusline, etc.) |
 | `~/.apra-fleet/scripts/` | Helper scripts |
 | `~/.apra-fleet/node_modules/` | Shared on-disk workflow runtime (`@apralabs/apra-fleet-workflow`, `@apralabs/apra-fleet-client`, vendored `ajv` + deps) that `apra-fleet workflow <name>` and any user-authored workflow resolve bare specifiers against -- see `docs/authoring-workflows.md` |
-| `~/.apra-fleet/schemas/` | Installed agent role verdict/input JSON schemas (17 files); the `APRA_FLEET_SE_SCHEMAS_DIR` default the workflow launcher sets |
+| `~/.apra-fleet/schemas/` | Installed agent role verdict/input JSON schemas; the `APRA_FLEET_SE_SCHEMAS_DIR` default the workflow launcher sets |
 | `~/.apra-fleet/workflows/` | Installed workflows (`.installed.json` + one directory per workflow, built-in or user-authored); run with `apra-fleet workflow <name> [args...]` -- see `docs/authoring-workflows.md` |
 | `~/.claude/skills/fleet/` | Fleet skill (MCP tool docs for Claude) |
 | `~/.claude/skills/pm/` | PM orchestration skill |
@@ -92,19 +92,17 @@ implementations:
 
 | | `auto-sprint` (Claude Code workflow) | `fleet-sprint` (apra-fleet CLI workflow) |
 |---|---|---|
-| Written by | `install` (table above) | The root `@apralabs/apra-fleet` npm package's `bin.fleet-sprint`, resolving to `dist/fleet-sprint.mjs` |
-| Providers | Claude Code only | Any provider a fleet member is registered with (Claude, Codex, Copilot, Antigravity/agy) |
-| Source package | `packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js` | `packages/apra-fleet-se` (esbuild-bundled, apra-fleet-3ns.2) |
+| Written by | `install` (table above) | `install` populates `~/.apra-fleet/workflows/`; the engine ships as source inside the `@apralabs/apra-fleet` package |
+| Providers | Claude Code only | Any provider a fleet member is registered with (Claude, Codex, Copilot, Antigravity/agy, OpenCode) |
+| Source package | `packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js` | `packages/apra-fleet-se` (shipped unbundled as source) |
 | Model selection | Literal Claude model names | Fleet's `cheap`/`standard`/`premium` tier keywords, per-member |
-| How you run it | `/auto-sprint <bead-ids>` inside a Claude Code session (the Workflow tool) | `apra-fleet workflow fleet-sprint --issue ... --members ... --branch ... --base ...` -- the normal form. The same bundle is also exposed directly as a `fleet-sprint` bin (`npx fleet-sprint ...`, or bare if `@apralabs/apra-fleet` is installed with `-g`). See `packages/apra-fleet-se/docs/cli-reference.md` |
+| How you run it | `/auto-sprint <bead-ids>` inside a Claude Code session (the Workflow tool) | `apra-fleet workflow fleet-sprint --issue ... --members ... --branch ... --base ...`. See `packages/apra-fleet-se/docs/cli-reference.md` |
 
-If you installed `apra-fleet` via `npm install -g @apralabs/apra-fleet`
-(or `npx @apralabs/apra-fleet`), the `fleet-sprint` bin is available
-immediately alongside `apra-fleet` -- no separate install step. It requires
-the `apra-fleet` MCP server to be reachable (it spawns/connects to it over
-stdio the same way `apra-fleet` itself does); see
-`packages/apra-fleet-se/docs/cli-reference.md` for its server- and
-schema-resolution order across dev/bundled/standalone layouts.
+There is no separate `fleet-sprint` bin: the root package's `bin` field
+contains only `apra-fleet`, and the engine is reached through
+`apra-fleet workflow fleet-sprint`. See `docs/npm-packaging.md` for the
+shipped package layout and `packages/apra-fleet-se/docs/cli-reference.md` for
+the engine's server- and schema-resolution order.
 
 ### The `apra-fleet workflow <name>` subcommand
 
@@ -120,11 +118,10 @@ always separate processes. Set `APRA_FLEET_TRANSPORT=http` (the default) or
 `APRA_FLEET_TRANSPORT=stdio` to control how the launcher reaches that
 server: `http` (default) attaches to the already-running installed-service
 singleton at `http://localhost:${APRA_FLEET_PORT:-7523}/mcp` and spawns
-nothing; `stdio` self-spawns a private server the same way the `fleet-sprint`
-bin does. See `docs/adr-workflow-server-resolution.md` for the full
+nothing; `stdio` self-spawns a private server as a subprocess. See `docs/adr-workflow-server-resolution.md` for the full
 resolution order (this same order also governs where role schemas resolve
 from in the installed-binary case: `APRA_FLEET_SE_SCHEMAS_DIR`, set by the
-launcher to `~/.apra-fleet/schemas`, is now tier 1 of the schema resolution
+launcher to `~/.apra-fleet/schemas`, is tier 1 of the schema resolution
 described in `packages/apra-fleet-se/docs/cli-reference.md`).
 
 **What `install` does NOT do:**
@@ -149,7 +146,7 @@ control exactly which skills are installed:
 | `install --skill none` | neither |
 | `install --no-skill` | neither (same as `--skill none`) |
 
-## Install for other providers (Antigravity, Codex, Copilot)
+## Install for other providers (Antigravity, Codex, Copilot, OpenCode)
 
 By default, `install` configures Apra Fleet for **Claude Code**. Use the `--llm`
 flag to install for a different provider instead:
@@ -158,11 +155,12 @@ flag to install for a different provider instead:
 apra-fleet --llm agy         # Google Antigravity CLI
 apra-fleet --llm codex       # OpenAI Codex CLI
 apra-fleet --llm copilot     # GitHub Copilot CLI
+apra-fleet --llm opencode    # OpenCode CLI
 apra-fleet --llm claude      # Claude Code (the default)
 ```
 
 The `install` subcommand is also accepted and does the same thing:
-`apra-fleet install --llm agy` works exactly as before.
+`apra-fleet install --llm agy`.
 
 `--llm` decides which provider's configuration the installer writes to. The MCP
 server registration, hooks, statusline, permissions, and skills all go into that
@@ -171,7 +169,8 @@ Antigravity -- instead of `~/.claude/`. To support more than one provider on the
 same machine, run `install` once per provider.
 
 `--llm` combines with `--skill`, e.g. `apra-fleet install --llm agy --skill
-pm`. Supported values: `claude` (default), `agy`, `codex`, `copilot`.
+pm`. Supported values: `claude` (default), `agy`, `codex`, `copilot`,
+`opencode`.
 
 After a non-Claude install, load the server by restarting that provider's CLI --
 only Claude Code uses `/mcp`.
@@ -203,7 +202,7 @@ apra-fleet uninstall
 | `--dry-run` | Preview what would be removed, without modifying anything |
 | `--force` | Automatically stop the running fleet server before uninstalling |
 | `--yes` | Skip the confirmation prompt |
-| `--llm <provider>` | Remove only a specific provider (`claude`, `agy`, `codex`, `copilot`) |
+| `--llm <provider>` | Remove only a specific provider (`claude`, `agy`, `codex`, `copilot`, `opencode`) |
 | `--skill fleet\|pm\|workflows\|all` | Remove only the specified skill directories (default: `all`) |
 
 `--skill workflows` removes the shared workflow runtime and schemas
@@ -272,7 +271,7 @@ If you set `APRA_FLEET_DATA_DIR`, the file lives at
 }
 ```
 
-Provider keys: `claude`, `codex`, `copilot`, `agy`. Tier keys:
+Provider keys: `claude`, `codex`, `copilot`, `agy`, `opencode`. Tier keys:
 `cheap`, `standard`, `premium`. All fields are optional -- omitted tiers fall
 back to the provider's built-in default.
 

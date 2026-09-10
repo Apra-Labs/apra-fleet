@@ -281,6 +281,9 @@ export function majorVersionFromId(id) {
 export function assertVersionPin(role, schema, expectedMajor) {
     const actualMajor = majorVersionFromId(schema && schema.$id);
     if (actualMajor !== expectedMajor) {
+        // GENERIC-BOUNDARY-EXCEPTION: developer-facing Error about this product's own vendored schema --
+        // thrown at module load and read by an apra-fleet developer, never dispatched to a sprint
+        // agent; it must name the package whose vendored schema drifted (docs/generic-engine-boundary.md).
         throw new Error(
             `[contracts] Version-pin mismatch for role "${role}": this module was written against ` +
                 `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` +
@@ -1027,4 +1030,32 @@ export function appendSchemaInstruction(prompt, schema) {
         throw new TypeError('[contracts] appendSchemaInstruction requires a JSON schema object');
     }
     return `${prompt}\n\nOnly provide your response strictly as per this JSON schema:\n${JSON.stringify(schema, null, 2)}`;
+}
+
+// ---------------------------------------------------------------------------
+// 7. Credential-store name validation (apra-fleet-5co8.2.3)
+// ---------------------------------------------------------------------------
+//
+// Pattern for valid credential-store entry names, shared with src/tools/ (see
+// credential-store-set.ts). Used by the per-sprint Azure DevOps PAT secret
+// name override validation (runner.js's validateArgs).
+
+const CREDENTIAL_STORE_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
+/**
+ * Validates a credential-store entry name against the pattern used by
+ * credential_store_set (alphanumeric, underscores, hyphens, 1-64 chars).
+ * Throws with a clear message on rejection.
+ * @param {unknown} name
+ * @param {string} label - human-readable arg name, used in the error message
+ * @returns {string}
+ */
+export function validateCredentialStoreName(name, label) {
+    if (typeof name !== 'string' || name.length === 0 || !CREDENTIAL_STORE_NAME_PATTERN.test(name)) {
+        throw new Error(
+            `[Arg Contract] Invalid ${label} "${name}": must match ${CREDENTIAL_STORE_NAME_PATTERN} ` +
+            `(alphanumeric, underscores, hyphens, 1-64 chars).`
+        );
+    }
+    return name;
 }

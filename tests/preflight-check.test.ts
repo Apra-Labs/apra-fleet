@@ -46,6 +46,7 @@ vi.mock('../src/providers/index.js', () => ({
 // Mock agent helpers
 vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: () => 'linux',
+  getAgentShell: () => undefined,
 }));
 
 // Mock log helpers

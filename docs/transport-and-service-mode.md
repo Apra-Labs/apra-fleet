@@ -1,4 +1,4 @@
-<!-- llm-context: Deep-dive on how the Fleet server runs and how clients connect to it -- transport protocol, the event bus, OS service registration, and which interfaces are actually supported. Migrated out of README.md on 2026-07-24 to keep the README landing page short; content unchanged. -->
+<!-- llm-context: Deep-dive on how the Fleet server runs and how clients connect to it -- transport protocol, the event bus, OS service registration, and which interfaces are actually supported. -->
 <!-- keywords: transport, HTTP, SSE, stdio, server.json, event bus, service mode, systemd, LaunchAgent, Scheduled Task, singleton, supported interfaces, cli.mjs -->
 <!-- see-also: ../README.md (quickstart), install.md (installation), architecture.md (internals) -->
 

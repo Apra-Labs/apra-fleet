@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     DoltSync,
@@ -8,6 +8,9 @@ import {
     getDegradedSyncRecords,
     clearDegradedSyncRecords,
     doltPushAfter,
+    invalidateSyncRemoteCache,
+    clearLastSyncedTip,
+    clearTipProbeFailures,
 } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
 
@@ -40,6 +43,16 @@ const LIVE_2026_08_02_CREDENTIAL_STDERR =
 const REAL_DIVERGENCE_STDERR =
     'error: failed to push some refs to origin/main\n'
     + 'hint: Updates were rejected because the remote contains work that you do not have locally.';
+
+// dolt-sync.mjs keeps two PROCESS-GLOBAL maps keyed by member name (the
+// sync.remote memo and the remote-tip fingerprint). Tests in this file reuse
+// member names, so without this reset a later test can inherit an earlier
+// test's cached remote/tip and pass (or fail) purely on execution order.
+beforeEach(() => {
+    invalidateSyncRemoteCache();
+    clearLastSyncedTip();
+    clearTipProbeFailures();
+});
 
 function makeCommandMock(script) {
     const calls = [];

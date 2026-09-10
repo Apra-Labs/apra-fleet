@@ -5,10 +5,10 @@ the design intent behind these.
 
 ## Shipped
 
-- **Per-task model assignment.** The planner assigns each task an exact model
-  based on complexity (haiku for mechanical work, sonnet for standard
-  development, opus for planning and high-ambiguity tasks). The reviewer
-  escalates to at least sonnet regardless of the doer's model.
+- **Per-task model assignment.** The planner assigns each task a model tier
+  based on complexity (`cheap` for mechanical work, `standard` for standard
+  development, `premium` for planning and high-ambiguity tasks). The reviewer
+  escalates to at least `standard` regardless of the doer's tier.
 - **Sprint cost estimation and calibration loop.** The plan-reviewer classifies
   each task into a complexity bucket (S/M/L) and reads the assigned model.
   After plan approval, a pure-JavaScript cost function generates an optimistic /
@@ -18,15 +18,18 @@ the design intent behind these.
 - **Durable per-sprint cost logs.** Each sprint writes a JSONL file at
   `sprint-logs/<branch>-<yyyymmdd_hhmmss>.jsonl`. Logs are never deleted and
   never collide across parallel sprints on the same branch.
+- **Bucket calibration from log data.** `accumulateBucketTokens` joins doer log
+  entries back to their S/M/L buckets, so the calibration loop updates
+  `historical.bucket_avg_tokens` alongside the per-role token averages.
 
 ## Near term
 
 - **Deploy runbook template.** A starter `deploy.md` structure for teams that
   have not yet written one.
-- **Bucket calibration from log data.** The calibration loop currently updates
-  per-role token averages but not per-bucket (S/M/L) doer estimates. Matching
-  log entries back to task assignments would close this gap.
-- **Broader e2e coverage.** More scenarios across providers and the OS matrix.
+- **Parallel doers by default.** Worktree fan-out exists but ships opt-in
+  (`parallelism.max_doers` defaults to 1) until cross-platform worktree handling
+  is hardened. See `docs/auto-sprint-parallel-doers.md`.
+- **Broader e2e coverage.** More scenarios across providers.
 
 ## Open questions
 

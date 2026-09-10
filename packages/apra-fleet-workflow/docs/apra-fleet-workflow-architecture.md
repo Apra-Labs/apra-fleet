@@ -22,14 +22,23 @@ dashboard.
 | `src/workflow/vetting.mjs` | `VettingEngine` -- an advisory (non-blocking by default) heuristic scan of a script's source for review purposes. |
 | `src/viewer/index.mjs` | `createDashboardViewer()` -- an HTTP server + Server-Sent-Events dashboard that visualizes a running `FleetWorkflow` in real time. |
 | `src/viewer/html-utils.mjs` | `escapeHtml()` -- the single shared HTML-escaping implementation used by both the core viewer and any dashboard extension. |
-| `src/viewer/debounced-writer.mjs` | Coalesced, atomic, flush-on-exit continuous state persistence -- see "Continuous state persistence" below. |
-| `src/viewer/sprint-state-paths.mjs` | Path resolution for a sprint's continuous state file, keyed by a stable sprint id (`running/<id>.json` while live, moved to `old_sprints/<id>.json` on completion). |
+| `src/viewer/debounced-writer.mjs` | Coalesced, atomic, flush-on-exit continuous state persistence. |
+| `src/viewer/run-state-paths.mjs` | Path resolution for a run's continuous state file, keyed by run id, under the service data directory (`running/<runId>.json` while live, moved to `old_runs/<runId>.json` on completion). Domain-neutral: it knows about workflow runs, not about any particular workflow. |
+| `src/viewer/sprint-state-paths.mjs` | The same path resolution keyed by a stable sprint id (`running/<id>.json` while live, moved to `old_sprints/<id>.json` on completion). |
+| `src/viewer/lean-state.mjs` | Pure transform that strips extension-owned items in the outgoing `GET /state` payload down to short summaries -- see "Lean polling for large state" below. It never touches the live `state` object or the persisted full-fidelity snapshots. |
+| `src/viewer/command-output-cap.mjs` | Bounds how much of a `command()` activity's captured stdout is ever STORED in live run state (and therefore in the persisted snapshots), as opposed to `lean-state.mjs`'s narrower job of trimming each outgoing poll payload. |
+| `src/viewer/run-title.mjs` | Builds the short, human-readable run-title sentence for the dashboard header from `state.args`, for callers that opt into publishing it. |
 
-The package's `exports` map (see `package.json`) exposes four import paths:
+The package's `exports` map (see `package.json`) exposes eight import
+paths: the root entry, `./engine`, `./viewer`, and five viewer sub-modules
+(`./viewer/html-utils`, `./viewer/run-state-paths`,
+`./viewer/sprint-state-paths`, `./viewer/debounced-writer`,
+`./viewer/lean-state`). The ones a workflow author normally touches:
 
 ```javascript
 import { FleetWorkflow, WorkflowError, MemberNotFoundError, AgentOutputError,
-         CommandError, FleetTransportError, BudgetExceededError, CancelledError }
+         AgentDispatchError, CommandError, FleetTransportError,
+         BudgetExceededError, CancelledError }
   from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
@@ -84,16 +93,20 @@ await engine.executeFile('./my-workflow.js', { targetIssue: 'X-1' });
 - `publishState(namespace, data)`: emits a `state` event carrying an arbitrary payload under
   a namespace; the dashboard forwards this to any registered viewer extension as a
   `workflow:state:<namespace>` browser `CustomEvent` (see section 6).
+- `setPauseGuard(fn)`: lets the script declare where a clean pause boundary is (section 4.7).
+  `requestPause`/`requestResume`/`requestStop` are deliberately NOT on the context -- they are
+  instance-level, driven by the viewer or an orchestrator.
+- `workflow(nameOrRef, args)`: reserved for running another script inline; nested workflows
+  are not implemented and this throws.
 
 ## 3. Execution model: per-run isolation
 
-Before a workflow ran, `FleetWorkflow` kept "current run" state (`args`, `currentPhase`,
-`currentGroup`, `budget`) as plain mutable instance fields. That breaks as soon as two
-`executeFile()` calls run concurrently on the same `FleetWorkflow` instance, or a single
-run's `parallel()` branches each call `phase()` with a different value -- both would stomp
-on shared state.
+"Current run" state (`args`, `currentPhase`, `currentGroup`, `budget`) cannot live in plain
+mutable instance fields on `FleetWorkflow`: two `executeFile()` calls running concurrently on
+the same instance, or a single run's `parallel()` branches each calling `phase()` with a
+different value, would stomp on that shared state.
 
-`FleetWorkflow` instead keeps this state in a small per-run store threaded automatically
+`FleetWorkflow` therefore keeps this state in a small per-run store threaded automatically
 through the async call graph via Node's `AsyncLocalStorage` (`runStorage` in
 `index.mjs`):
 
@@ -197,15 +210,23 @@ and `.details`, and preserves the original failure on `.cause` where applicable)
   structured error; see `docs/structured-errors-proposal.md` for the server-side fix this is
   a stopgap for.
 - `AgentOutputError` (`code: AGENT_OUTPUT_INVALID`) -- empty content from the fleet, or
-  (when a schema was requested) exhaustion of the repair loop above.
+  (when a schema was requested) exhaustion of the repair loop above. This means the LLM
+  answered and the answer was unusable.
+- `AgentDispatchError` (`code: AGENT_DISPATCH_FAILED`) -- `execute_prompt`'s dispatch itself
+  failed BEFORE any real LLM content was produced: a busy or reserved member, a transport
+  exception, a non-zero CLI exit. Classified from `structuredContent.isError`/`reason` on
+  `execute_prompt`'s response (`src/tools/execute-prompt.ts`), and deliberately never fed
+  into the schema-repair loop -- re-asking the same broken prompt with "here's why your JSON
+  was invalid" framing cannot fix a busy member, and would burn repair attempts while
+  reporting a dispatch rejection as a schema problem.
 - `CommandError` (`code: COMMAND_FAILED`) -- an `isError: true` result from `command()`.
 - `FleetTransportError` (`code: TRANSPORT_ERROR`) -- the underlying `fleetApi` call itself
   rejected (network/MCP transport failure); the original error is on `.cause`.
 - `BudgetExceededError` (`code: BUDGET_EXCEEDED`) -- see section 4.5.
 - `CancelledError` (`code: CANCELLED`) -- see section 4.6.
 
-All six classes are exported from the package's top-level entry point, so callers can
-`instanceof`-match them.
+All seven classes, plus the `WorkflowError` base, are exported from the package's top-level
+entry point, so callers can `instanceof`-match them.
 
 ### 4.5 Budget accounting
 

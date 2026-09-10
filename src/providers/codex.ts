@@ -2,6 +2,7 @@ import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExec
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
 
 // Known exception: Codex CLI cannot take a caller-supplied session ID.
 // It uses a positional 'resume' keyword; session discovery relies on the mtime-scan
@@ -21,7 +22,10 @@ export class CodexProvider implements ProviderAdapter {
     return 'codex --version 2>&1';
   }
 
-  installCommand(os: 'linux' | 'macos' | 'windows'): string {
+  // `shell` is intentionally unused: no windows branch exists here -- `npm
+  // install -g` runs unchanged from any shell (apra-fleet-7dir.2.7: named
+  // here as an adapter needing no per-shell variant, not skipped silently).
+  installCommand(os: 'linux' | 'macos' | 'windows', _shell?: MemberShell): string {
     if (os === 'macos') {
       return 'brew install --cask codex';
     }
@@ -228,7 +232,7 @@ export class CodexProvider implements ProviderAdapter {
     return `exec "${promptLiteral}"`;
   }
 
-  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40 was scoped to the Claude workspace-trust gate (see the
     // provider-trust-matrix note on the parent bug); Codex was not part of that
     // investigation and no equivalent per-project trust gate is known. No-op until a

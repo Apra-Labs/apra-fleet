@@ -45,9 +45,9 @@ Some dispatches write a single file and do not produce outputs that the
 workflow reads. These must be fire-and-forget: dispatched but not awaited.
 
 Current fire-and-forget dispatches:
-- `appendNewEntries` -- flushes new sprint-log entries to disk. The file is
-  later committed in `beads-export-cleanup` with an unconditional `git add
-  sprint-logs/`.
+- `appendNewEntries` -- flushes new sprint-log entries to disk. `beads-export-cleanup`
+  later runs an unconditional `git add sprint-logs/`, which picks up the tracked
+  deliverables in that directory (the `.jsonl` ledgers themselves are gitignored).
 - Dev-loop `commitFeedback` -- writes `feedback.md` only (no commit, no push).
   The file is evicted in `beads-export-cleanup` with `git rm -f` + `rm -f`.
 
@@ -80,7 +80,7 @@ When a `dispatchShell` produces multiple outputs, every callsite must address
 outputs by the exact index they were assigned at dispatch time. Implicit
 positional assumptions (e.g. "second output is always headSha") are fragile.
 
-Patterns established this sprint:
+Established patterns:
 
 - **push + head-sha:** a single `dispatchShell` runs `git push ... && git
   rev-parse HEAD`. The SHA is always at `outputs[1]`.
@@ -100,9 +100,8 @@ Patterns established this sprint:
 
 ## Plan-commit: pre-built command list
 
-`write-quote` and `plan-commit` were formerly two separate dispatches.
-They are now one `dispatchShell` whose command list is pre-built in
-`taskAssignments` by the planner session. This means:
+`write-quote` and `plan-commit` are a single `dispatchShell` whose command list is
+pre-built in `taskAssignments` by the planner session. This means:
 
 - The command list is deterministic and testable before any dispatch runs.
 - `maxTurns` is `planCommitCmds.length + 2` (extra turn for bd export).
@@ -113,8 +112,7 @@ They are now one `dispatchShell` whose command list is pre-built in
 
 ## CI watcher: post-PR placement
 
-The `ci-watcher` dispatch was moved from its previous pre-PR position to
-after the PR is created. Rationale:
+The `ci-watcher` dispatch runs after the PR is created, not before. Rationale:
 
 - CI runs are associated with a PR number via `gh run list --pr N`.
   Without a PR the query returns an empty list, causing a false
@@ -140,8 +138,7 @@ entries to cycles must filter on `type` to distinguish them.
 
 ## Harvester: sprint analysis as Step 1
 
-The sprint-analysis-write dispatch was removed from `auto-sprint.js`.
-Instead:
+There is no separate sprint-analysis-write dispatch in `auto-sprint.js`. Instead:
 
 - The `harvester` agent writes the analysis artifact as its **first action**
   (Step 1 of `agents/harvester.md`) before any other doc updates.
@@ -201,16 +198,15 @@ bd dolt push
   `null-recovery` patterns.
 - Remaining risks: `goalMet=false` flag + open issue ids at close.
 
-**Wiring:** appended to `sprintSummary.summaryText` unconditionally at line ~1818,
-before the `goalMet`/fallback branch. This means the Execution Summary reaches
-`.analysis.md` on BOTH the harvester path and the JS fallback path.
+**Wiring:** appended to `sprintSummary.summaryText` unconditionally, before the
+`goalMet`/fallback branch. This means the Execution Summary reaches `.analysis.md`
+on BOTH the harvester path and the JS fallback path.
 
 **Per-phase timing limitation:** in production, `dispatchLedger` entries carry no
-`ts` field; the timing rows will always emit "n/a (no timestamps)". The JSONL log
-does contain `ts`, but it is never merged into `logEntries` at the callsite.
-This is a known gap -- timing data degrades gracefully and the section remains
-useful for token/cost data. A follow-up is needed to merge JSONL `ts` into
-`logEntries` so timing populates.
+`ts` field, so the timing rows always emit "n/a (no timestamps)". The JSONL log
+does contain `ts`, but it is not merged into `logEntries` at the callsite. This is
+a known gap -- timing data degrades gracefully and the section remains useful for
+token/cost data. Closing it means merging the JSONL `ts` values into `logEntries`.
 
 ---
 
@@ -254,7 +250,7 @@ estimate basis to total context tokens.
 ### Null-return recovery
 
 When the doer dispatch returns `null` (crash, timeout, or forced termination), the
-workflow no longer aborts. Instead it:
+workflow does not abort. Instead it:
 
 1. Dispatches a Haiku shell to list all `in_progress` tasks.
 2. Resets each to `open` via `bd update <id> --status=open`.

@@ -1,8 +1,11 @@
-# fleet-sprint Per-Issue Phase Routing -- Design Proposal
+# fleet-sprint Per-Issue Phase Routing -- Design
 
-Status: DRAFT for review. The first review round's open questions have all
-been resolved by the repo owner and are incorporated below as decisions
-(recorded in section 7). No code has been written against this document.
+Status: Accepted design, partially implemented. Open questions from review
+have been resolved and are incorporated below as decisions (recorded in
+section 7). The `verify` route has landed in the sprint engine
+(`classifyVerifySet()` in `packages/apra-fleet-se/fleet-sprint/runner.js`,
+which cites this document); the general per-issue routing step described
+here is not yet built.
 
 Scope: `packages/apra-fleet-se/fleet-sprint/runner.js` (the sprint engine),
 its vendored agent contracts (`packages/apra-fleet-se/apra-pm/agents/*.md`
@@ -107,8 +110,9 @@ introduces no new special-casing at all -- see section 5.
 
 ## 2. Current Architecture (as actually implemented)
 
-All references are to `packages/apra-fleet-se/fleet-sprint/runner.js`
-(~8,800 lines) at branch `chore/integration-binary-fixes-and-auth-selfheal`.
+All references are to `packages/apra-fleet-se/fleet-sprint/runner.js` (the
+sprint engine). Line numbers below are approximate and drift as that file
+changes; use the named functions to locate the code.
 
 ### 2.1 Scope resolution
 

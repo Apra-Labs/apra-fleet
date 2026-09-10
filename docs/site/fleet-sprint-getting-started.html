@@ -1512,14 +1512,13 @@
     <figcaption>assets/marketing/fleet-topology-{light,dark}.svg</figcaption>
   </figure>
 
-  <p>fleet-sprint is not yet published to the npm registry, so install from the binary distribution:</p>
+  <p>fleet-sprint ships inside the <code>@apralabs/apra-fleet</code> package. Install it from npm (Node.js 22+):</p>
 
-<pre><code>git clone https://github.com/Apra-Labs/apra-fleet &amp;&amp; cd apra-fleet
-npm install &amp;&amp; npm run build:binary   <span class="cm"># -&gt; dist/apra-fleet-installer-&lt;platform&gt;-&lt;arch&gt;[.exe]</span>
-dist/apra-fleet-installer-win-x64.exe install --force
-~/.apra-fleet/bin/apra-fleet start</code></pre>
+<pre><code>npm install -g @apralabs/apra-fleet
+apra-fleet                                <span class="cm"># installs for Claude Code (default)</span>
+cd ~/.apra-fleet/bin &amp;&amp; apra-fleet start  <span class="cm"># start the fleet server</span></code></pre>
 
-  <p>The installer is a single self-contained executable: running it unpacks the fleet runtime into <code>~/.apra-fleet/</code> and puts the <code>apra-fleet</code> binary on disk at <code>~/.apra-fleet/bin</code>. Substitute your own platform/arch in the installer filename (<code>darwin-arm64</code>, <code>linux-x64</code>, <code>win-x64</code>).</p>
+  <p>Alternatively, download the standalone installer for your platform from <a href="https://github.com/Apra-Labs/apra-fleet/releases">GitHub Releases</a> (<code>apra-fleet-installer-darwin-arm64</code>, <code>apra-fleet-installer-linux-x64</code>, <code>apra-fleet-installer-win-x64.exe</code>) and run it &mdash; installation is the default action. Either way, the fleet runtime is unpacked into <code>~/.apra-fleet/</code> with the <code>apra-fleet</code> binary at <code>~/.apra-fleet/bin</code>.</p>
 
   <p>Then load the fleet MCP server in Claude Code (<code>/mcp</code>) and register members conversationally &mdash; registration is driven through your agent in plain language, e.g. "Register a local member called <code>dev1</code>, work folder <code>C:\work\myapp</code>." Registration validates connectivity and that the CLI is present; remote machines work over SSH, with passwords collected out-of-band (never typed into the chat).</p>
 
@@ -1538,7 +1537,7 @@ dist/apra-fleet-installer-win-x64.exe install --force
 <section>
   <h2 id="s3"><span class="num">Section 3</span>How do I run it</h2>
 
-  <p>Not by invoking a CLI directly. The supported entry point is the <strong>always-on supervisor</strong> (<code>fleet-se serve</code>), a small local HTTP service (default port 8787) that owns a reservation ledger &mdash; it knows which members and which issue scopes are already claimed by a running sprint, and refuses launches that would collide (an HTTP 409 naming the conflicting sprint). Launching a sprint is one POST:</p>
+  <p>Not by invoking a CLI directly. The supported entry point is the <strong>always-on supervisor</strong> (<code>fleet-se-serve</code>), a small local HTTP service (default port 8787) that owns a reservation ledger &mdash; it knows which members and which issue scopes are already claimed by a running sprint, and refuses launches that would collide (an HTTP 409 naming the conflicting sprint). Launching a sprint is one POST:</p>
 
 <pre><code>POST http://127.0.0.1:8787/api/sprints
 {

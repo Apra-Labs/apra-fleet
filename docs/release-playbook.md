@@ -16,19 +16,19 @@ that commit.
 
 ```json
 // package.json
-"version": "0.3.6"
+"version": "X.Y.Z"
 ```
 
 ```json
 // version.json
-{ "version": "0.3.6" }
+{ "version": "X.Y.Z" }
 ```
 
 Commit the bump:
 
 ```bash
 git add package.json package-lock.json version.json
-git commit -m "chore: bump version to 0.3.6"
+git commit -m "chore: bump version to X.Y.Z"
 git push
 ```
 
@@ -39,14 +39,14 @@ in `.github/workflows/ci.yml`, which builds the binaries and creates the
 GitHub release.
 
 ```bash
-git tag v0.3.6
-git push origin v0.3.6
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 ## 3. Wait for CI
 
 ```bash
-gh run list --workflow=ci.yml --branch v0.3.6 --limit 3
+gh run list --workflow=ci.yml --branch vX.Y.Z --limit 3
 ```
 
 Wait until it shows `completed / success`.
@@ -59,8 +59,8 @@ not the final notes -- always replace them with a short, human-written
 summary:
 
 ```bash
-gh release view v0.3.6                 # see the auto-generated draft
-gh release edit v0.3.6 --notes "..."   # replace with a clean summary
+gh release view vX.Y.Z                 # see the auto-generated draft
+gh release edit vX.Y.Z --notes "..."   # replace with a clean summary
 ```
 
 Keep the summary short: what changed and why. It's fine to leave GitHub's

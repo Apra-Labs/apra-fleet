@@ -18,6 +18,8 @@ while (open issues above goal threshold > 0):
   Test     -- deploy build, run integration tests, file bugs for failures
   Check    -- has the goal been met? any progress since last cycle?
 
+Finalize -- one regression pass over regression-test-playbook.md (informational:
+            failures carry over as beads, they do not gate this sprint)
 Harvest  -- update documentation, CHANGELOG, raise PR
 ```
 
@@ -37,9 +39,9 @@ feature is verifiable: integration tests either pass or fail against it.
 
 **Task** -- the smallest unit of work. A task belongs to exactly one feature
 and is sized to complete in a single agent session (roughly 1-3 file changes).
-Tasks carry an assigned model chosen by the planner based on complexity.
+Tasks carry an assigned model tier chosen by the planner based on complexity.
 
-**Sprint goal** -- the exit criterion, expressed as a priority threshold:
+**Goal** -- the exit criterion, expressed as a priority threshold:
 - `P1` -- exits when no P1 issues remain open
 - `P1/P2` -- exits when no P1 or P2 issues remain open (default)
 - `P1/P2/P3` -- tightest bar; exits only when no P1-P3 issues remain
@@ -134,13 +136,22 @@ Commands to fully shut down and clean up.
 If the playbook does not exist, the workflow skips integration testing and
 proceeds to harvest. The team will not receive integration test feedback.
 
-### 4. .claude/settings.json permissions
+### 4. regression-test-playbook.md (optional)
 
-The workflow reads the `## Permissions` sections from both `deploy.md` and
-`integ-test-playbook.md` at startup and merges them into `.claude/settings.json`
+A runbook for the once-per-sprint regression pass, owned by the
+regression-test-runner. Same `## Permissions` format. If it is absent, the workflow
+logs a warning and skips the regression pass. Regression failures never gate the
+current sprint's verdict -- they are filed as carry-over beads for a future sprint.
+
+### 5. .claude/settings.json permissions
+
+The workflow reads the `## Permissions` sections from `deploy.md`,
+`integ-test-playbook.md`, and `regression-test-playbook.md` at startup and merges
+them into `.claude/settings.json`
 before any agent is dispatched. If a `## Permissions` section is missing or
-incomplete, the executing agent (deployer for `deploy.md`, integ-test-runner
-for the playbook) will hit interactive prompts and block.
+incomplete, the executing agent (deployer for `deploy.md`, integ-test-runner for
+`integ-test-playbook.md`, regression-test-runner for `regression-test-playbook.md`)
+will hit interactive prompts and block.
 
 ```bash
 cat .claude/settings.json | jq '.permissions.allow'
@@ -206,6 +217,10 @@ From a Claude Code session in the project repository:
 | `max_cycles` | no | `5` | Hard ceiling on cycles. |
 | `requirementsFile` | no | none | Additional context file for the planner. |
 | `base_branch` | no | `main` | PR target branch. |
+| `skip_dolt_push` | no | `false` | Skip the Harvest `bd dolt push` (used by CI/e2e). |
+
+Invoke the `auto-sprint-args` skill for the full argument contract, including the
+common launch mistakes.
 
 ---
 
@@ -244,10 +259,12 @@ completed work.
 The develop loop works through tasks in dependency order until no ready tasks
 remain. Within each iteration:
 
-1. **Model streaks** -- ready tasks are grouped by assigned model (all haiku
-   tasks together, all sonnet tasks together, etc.). One developer agent is
+1. **Model streaks** -- ready tasks are grouped by assigned tier (all `cheap`
+   tasks together, all `standard` tasks together, etc.). One developer agent is
    dispatched per group. This minimises model-switching cost while preserving
-   dependency order.
+   dependency order. A streak is truncated when its estimated output tokens
+   exceed `calibration.doer_token_ceiling[tier]` or when it would not fit the
+   doer's usable context; the deferred tasks resurface next iteration.
 
 2. **Developer agent** -- works its assigned tasks, runs fast tests after each,
    and stops at a VERIFY checkpoint. A task is only closed by the developer
@@ -258,9 +275,9 @@ remain. Within each iteration:
    feedback to `feedback.md`, reopens the relevant tasks in beads, and the
    develop loop picks them up in the next iteration.
 
-The reviewer model is matched to the work: if any task in the iteration ran on
-opus, the reviewer uses opus; otherwise sonnet. Haiku work is always reviewed
-by at least sonnet.
+The reviewer tier is matched to the work: if any task in the iteration ran on
+`premium`, the reviewer uses `premium`; otherwise `standard`. `cheap` work is
+always reviewed at `standard` or above.
 
 ### Test
 
@@ -302,27 +319,37 @@ what has already been done:
 - Any tasks left in `in_progress` state from a crashed agent are reset to
   `open` so they re-enter the develop queue cleanly.
 
-No state is stored in memory -- everything is reconstructed from beads and git.
+Position is reconstructed from beads and git, plus a branch-keyed checkpoint at
+`sprint-logs/.state/<branch>.state.json` that records the last good cycle and phase
+so a resume skips setup and completed phases. That file's mtime doubles as a
+liveness lock: while it is fresher than the TTL, a second launch on the same branch
+is refused rather than allowed to corrupt the checkout. It is deleted on clean
+completion. If a run truly crashed, wait out the TTL or delete the file.
 
 ---
 
 ## Model assignment
 
 Matching model power to task complexity is a core capability, not an option.
-The planner assigns an exact model to every task when it builds the DAG:
+The planner assigns a model tier to every task when it builds the DAG, stored in
+the task's beads metadata as `{"model": "<tier>"}`:
 
-| Model | When the planner uses it |
+| Tier | When the planner uses it |
 |---|---|
-| haiku | Mechanical work: rename, config tweak, move file, simple wiring |
-| sonnet | Standard work: new function, test suite, API endpoint, refactor |
-| opus | Hard work: architecture, multi-file design, ambiguous requirements |
+| `cheap` | Mechanical work: rename, config tweak, move file, simple wiring |
+| `standard` | Standard work: new function, test suite, API endpoint, refactor |
+| `premium` | Hard work: architecture, multi-file design, ambiguous requirements |
+
+Tier names are provider-agnostic. `TIER_TO_MODEL` in `auto-sprint.js` is the only
+place a tier maps to a concrete model family, so `calibration.json` and beads
+metadata never carry a provider-specific model ID.
 
 The planner tries to group tasks so consecutive tasks in dependency order share
-a model -- this forms a streak that runs in a single agent dispatch rather than
+a tier -- this forms a streak that runs in a single agent dispatch rather than
 switching models between each task.
 
-Reviewers and planners always use the strongest model. Only developer tasks run
-on the planner-assigned model.
+Reviewers and planners always use the strongest tier. Only developer tasks run
+on the planner-assigned tier.
 
 ---
 
@@ -366,7 +393,7 @@ sanitized (path separators and special characters replaced with dashes) and a
 branches never write to the same file. Each line records:
 
 ```json
-{"cycle":1,"phase":"Develop","label":"doer-c1-i0","model":"claude-sonnet-4-6","context":"tasks BD-5, BD-6","outTokens":967,"costUsd":0.0145}
+{"cycle":1,"phase":"Develop","label":"doer-c1-i0","model":"standard","context":"tasks BD-5, BD-6","outTokens":967,"costUsd":0.0145}
 ```
 
 At sprint end, a cost summary is printed grouped by role:
@@ -415,8 +442,8 @@ When the sprint goal is met:
 - A reviewed pull request is open against `base_branch`
 - `docs/` is updated with architecture decisions and feature documentation
 - `CHANGELOG.md` has a new entry summarising the sprint
-- `sprint-logs/<branch>.jsonl` is written locally with per-dispatch cost data
-  (gitignored -- see the sprint-log note above)
+- `sprint-logs/<branch>-<timestamp>.jsonl` is written locally with per-dispatch cost
+  data (gitignored -- see the sprint-log note above)
 - `sprint-logs/calibration.json` is committed with the updated historical averages
 - `sprint-logs/<branch>-<timestamp>.analysis.md` is committed with a Sprint Execution
   Summary: cycles, per-phase token/cost/dispatch table, failures/retries, and

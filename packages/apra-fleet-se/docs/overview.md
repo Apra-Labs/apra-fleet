@@ -3,7 +3,7 @@
 `@apralabs/apra-fleet-se` ("sprint engine") implements **fleet-sprint**: a
 CLI-driven, autonomous sprint runner. It dispatches a fixed sequence of AI
 agent roles -- planner, plan-reviewer, doer, reviewer, deployer,
-integ-test-runner, harvester -- against a [beads](https://github.com/gastownhall/beads)
+integ-test-runner, regression-test-runner, harvester -- against a [beads](https://github.com/gastownhall/beads)
 (`bd`) issue tracker, using `@apralabs/apra-fleet-workflow` as its execution
 engine, to autonomously plan, implement, review, deploy/integration-test, and
 publish a batch of work with no human in the loop until the final PR review.
@@ -17,7 +17,8 @@ viewer, the journal) is generic and documented in
 fleet-sprint specifically uses those primitives.
 
 **The per-sprint CLI is not the supported entry point for end users.** An
-always-on supervisor process (`fleet-se serve`) owns a reservation ledger
+always-on supervisor process (`bin/serve.mjs`, installed as the
+`fleet-se-serve` command) owns a reservation ledger
 (which members and which issue-scope are already claimed by a running
 sprint) and launches each sprint as a detached child running the same CLI
 underneath. Users launch and watch sprints through the supervisor's HTTP API
@@ -66,8 +67,12 @@ runs as a loop of **cycles**, up to `--max-cycles`. Each cycle is:
 
 Once the loop exits (goal satisfied, or `max_cycles` reached), the runner
 performs sprint-level **Finalization**: a `reviewer` agent renders an
-evidence-based PASS/FAIL **final verdict** for the whole sprint, a
-`harvester` agent extracts durable knowledge into `docs/`, updates
+evidence-based PASS/FAIL **final verdict** for the whole sprint; if a
+`regression-test-playbook.md` exists, a `regression-test-runner` agent then
+runs the full regression pass once (informational -- it files parent-less
+`[regression][carry-over]` bugs rather than blocking this sprint's already
+decided verdict); a `harvester` agent extracts durable knowledge into
+`docs/`, updates
 `README.md`/`CHANGELOG.md` (with a pre-computed cost block), and defers
 low-priority open issues; then the runner pushes the sprint branch and opens
 (but never auto-merges) a PR whose title/body states the final verdict
@@ -111,6 +116,7 @@ explicitly).
 | `reviewer` | Develop/Review phase, Cycle Evaluation re-review, Finalization | 1 per develop round + conditional re-review + 1 final | `premium` |
 | `deployer` | Deploy phase (conditional on `deploy.md`) | 0 or 1 | `standard` |
 | `integ-test-runner` | Integration phase (conditional on `deploy.md` + `integ-test-playbook.md` + successful deploy) | 0 or 1 | `standard` |
+| `regression-test-runner` | Finalization, once per sprint (conditional on `regression-test-playbook.md`) | 0 or 1 per sprint | `standard` |
 | `harvester` | Finalization | 1 | `standard` |
 | `ci-watcher` | Not dispatched by this runner today (contract exists in `contracts.mjs`/vendor for future use) | -- | -- |
 

@@ -30,7 +30,7 @@ the "SSH is being replaced by hub relay" framing of `docs/hub-spoke-master-plan.
 3. **`src/hub-service/` (the Postgres-backed service built during the
    hub-and-spoke migration sprint) is retired to reference-only status**
    (`apra-fleet-yp3`). It is not deployed to fleet.apralabs.com and receives no
-   further production feature work. Its code and its 2133 tests are kept,
+   further production feature work. Its code and its test suite are kept,
    unmodified and undeleted, because they are a verified specification of the
    wire-protocol and workspace-isolation semantics (at-least-once relay
    delivery, TTL/redelivery, JWT-scoped isolation) that whichever team builds

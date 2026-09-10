@@ -11,7 +11,7 @@
 import { createHash } from 'node:crypto';
 import type { Agent, LlmProvider } from '../types.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { getStrategy } from './strategy.js';
 import { uploadContentToHome } from './sftp.js';
 import { loadAgentAssets } from '../cli/install.js';
@@ -73,7 +73,7 @@ export async function probeRemoteAgentHashes(
   agent: Agent,
   dir: string
 ): Promise<{ hashes: Map<string, string> | null; failed: boolean }> {
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
 
   let result;

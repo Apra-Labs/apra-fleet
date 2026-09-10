@@ -105,6 +105,154 @@ export function isSpawnFailure(err) {
     return err.code === undefined || err.code === 'ENOENT';
 }
 
+// apra-fleet-5co8.16: any curl/network-shaped command must be intercepted by
+// a dedicated handler ABOVE the generic runCmd() fallback in executeCommand
+// below -- this mock exists precisely so a sprint under test never touches
+// the real network. A command matching this shape that reaches the fallback
+// is therefore a harness bug (a missing/incomplete mock), not something to
+// silently forward to runCmd(): that is exactly how the C4 regression
+// manifested as a real `curl (6) Could not resolve host` error instead of a
+// loud, clear "this is unmocked" failure. Mirrors vcs-module.mjs's
+// `logSafeCommand` convention (see its module doc comment): the raw command
+// is never surfaced, only a redacted copy.
+//
+// apra-fleet-5co8.32: the original anchored regex `/^(curl|wget)(?:\.exe)?\s/i`
+// only ever matched curl/wget as the literal FIRST token of the whole command
+// string, so any composed shape -- `cd /tmp && curl ...`, a `curl` wrapped
+// inside `bash -c "..."`, or an `env VAR=1 curl ...` prefix -- slipped
+// straight through to the real runCmd() fallback below undetected. A first
+// replacement (isNetworkShapedTokens gated on an "at command start" cursor
+// plus a wrapper allowlist for env-assignment/bash/sh) still missed further
+// wrapper shapes it did not special-case (`env curl ...` with no assignment,
+// `timeout 30 curl ...`, `nohup curl ... &`, `bash -lc "..."`) because it
+// enumerated by WRAPPER, which just fails again on the next wrapper. This is
+// inverted: isNetworkShapedTokens now matches an UNQUOTED curl/wget token at
+// ANY position (dropping the position/wrapper allowlist entirely), plus a
+// generalized recursion into a `bash`/`sh` invocation's script-flag argument
+// (any flag token containing `c`, e.g. `-c`, `-lc`, so `bash -lc "curl ..."`
+// is caught, not just the exact `-c` token). For a test-harness guard whose
+// job is to keep sprint tests off the real network, a false positive costs a
+// clear one-line error a developer fixes in a minute; a false negative costs
+// a real network call, so the risk is deliberately pointed toward matching
+// too much rather than too little. It still does not treat "curl" as
+// network-shaped merely because the substring appears inside a QUOTED token
+// (e.g. a `-d`/`-m` payload/message that just happens to mention "curl") --
+// only an unquoted token counts, so a literal 'curl' mentioned inside
+// another command's quoted payload/message text does not false-positive.
+const CURL_WGET_TOKEN_RE = /^(curl|wget)(\.exe)?$/i;
+
+// apra-fleet-5co8.40: CURL_WGET_TOKEN_RE above anchors the WHOLE token, so a
+// path-prefixed invocation (`/usr/bin/curl`, `./curl`, a Windows
+// `C:\...\curl.exe` path) never matches and walks past this guard to the
+// real runCmd() fallback. Match on the command BASENAME instead: strip
+// everything up to and including the last `/` or `\` before testing.
+function isCurlOrWgetToken(text) {
+    const lastSep = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
+    const basename = lastSep === -1 ? text : text.slice(lastSep + 1);
+    return CURL_WGET_TOKEN_RE.test(basename);
+}
+
+// Minimal shell-like tokenizer: quoted substrings ('...'/"...") become a
+// single token with quotes stripped (quoted: true); &&, ||, ;, |, (, ) become
+// operator tokens; everything else splits on whitespace. Good enough for
+// scanning composed shell command STRINGS the way this harness receives them
+// (opts.command) -- not a full shell grammar/parser.
+export function tokenizeShellLikeCommand(command) {
+    const str = String(command);
+    const tokens = [];
+    let i = 0;
+    const n = str.length;
+    while (i < n) {
+        const c = str[i];
+        if (/\s/.test(c)) { i += 1; continue; }
+        if (c === '"' || c === "'") {
+            const close = str.indexOf(c, i + 1);
+            // apra-fleet-5co8.32: an UNBALANCED quote (no matching close, e.g.
+            // the apostrophe in `echo it's fine && curl ...`) used to swallow
+            // the rest of the command string into one quoted token, hiding
+            // any curl/wget that followed. Treat an unclosed quote mark as a
+            // single literal, unquoted character instead of a quote-open, so
+            // scanning continues normally and a later curl/wget is still seen.
+            if (close === -1) {
+                tokens.push({ text: c, quoted: false, op: false });
+                i += 1;
+                continue;
+            }
+            tokens.push({ text: str.slice(i + 1, close), quoted: true, op: false });
+            i = close + 1;
+            continue;
+        }
+        const rest = str.slice(i);
+        const opMatch = rest.match(/^(&&|\|\||;|\||\(|\))/);
+        if (opMatch) {
+            tokens.push({ text: opMatch[0], quoted: false, op: true });
+            i += opMatch[0].length;
+            continue;
+        }
+        let j = i;
+        while (j < n && !/\s/.test(str[j]) && str[j] !== '"' && str[j] !== "'" && !str.slice(j).match(/^(&&|\|\||;|\|)/)) {
+            j += 1;
+        }
+        tokens.push({ text: str.slice(i, j), quoted: false, op: false });
+        i = j;
+    }
+    return tokens;
+}
+
+function isNetworkShapedTokens(tokens) {
+    for (let idx = 0; idx < tokens.length; idx += 1) {
+        const tok = tokens[idx];
+        if (tok.op || tok.quoted) continue;
+        if (isCurlOrWgetToken(tok.text)) return true;
+        if (/^(bash|sh)(\.exe)?$/i.test(tok.text)) {
+            for (let k = idx + 1; k < tokens.length && !tokens[k].op; k += 1) {
+                const flag = tokens[k];
+                // Accept any script-flag shape containing `c` (-c, -lc, -cx,
+                // ...), not just the exact `-c` token, so `bash -lc "..."`
+                // is recursed into the same as `bash -c "..."`.
+                if (!flag.quoted && /^-\w*c\w*$/i.test(flag.text) && tokens[k + 1] && !tokens[k + 1].op) {
+                    if (isNetworkShapedTokens(tokenizeShellLikeCommand(tokens[k + 1].text))) return true;
+                    break;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+export function isNetworkShapedCommand(command) {
+    return isNetworkShapedTokens(tokenizeShellLikeCommand(command));
+}
+
+// Same redaction marker vcs-providers/*.mjs uses for logSafeCommand, so a
+// redacted command here reads the same way a production log line would.
+const CREDENTIAL_REDACTION_MARKER = '***REDACTED***';
+
+// Strips known credential shapes out of a command string for safe inclusion
+// in an error message: HTTP Basic auth via `-u user:token` (Azure DevOps'
+// `-u :PAT` form), `Authorization: Bearer <token>` / `Authorization: Basic
+// <token>` headers (GitHub), userinfo embedded directly in a URL
+// (`https://user:token@host/...`), a `token=`/`access_token=` query/body
+// param, any OTHER `-H`/`--header '<name>: <value>'` whose header name looks
+// credential-shaped (token/auth/key/secret -- e.g. GitLab's `PRIVATE-TOKEN`,
+// a generic `X-Api-Key`, or a bespoke `X-...-Token` header a new provider's
+// mock never anticipated), and a `"token"`/`"password"` JSON field carried
+// in a `-d`/`--data` body. Defense-in-depth, not an allowlist: any of these
+// shapes anywhere in the command text is redacted regardless of quoting
+// style (apra-fleet-5co8.31 widened the last two shapes -- the guard fires
+// precisely when an UNKNOWN provider/endpoint was added without a mock, so
+// its credential shape is, by definition, exactly the kind not already on
+// this list).
+export function redactNetworkCommandForLog(command) {
+    return String(command)
+        .replace(/(-u\s+['"]?)([^\s'":]*):([^\s'"]+)/gi, `$1$2:${CREDENTIAL_REDACTION_MARKER}`)
+        .replace(/(Authorization:\s*(?:Bearer|Basic)\s+)([^\s'"]+)/gi, `$1${CREDENTIAL_REDACTION_MARKER}`)
+        .replace(/(:\/\/[^\s'"@/]+:)([^\s'"@/]+)(@)/gi, `$1${CREDENTIAL_REDACTION_MARKER}$3`)
+        .replace(/((?:access_)?token=)([^\s&'"]+)/gi, `$1${CREDENTIAL_REDACTION_MARKER}`)
+        .replace(/((?:-H|--header)\s+['"][^'":]*(?:token|auth|key|secret)[^'":]*:\s*)([^'"]+)(['"])/gi, `$1${CREDENTIAL_REDACTION_MARKER}$3`)
+        .replace(/("(?:token|password)"\s*:\s*")([^"]+)(")/gi, `$1${CREDENTIAL_REDACTION_MARKER}$3`);
+}
+
 // apra-fleet-tfx.8: the Publish PR / finalizeAbort PR-raising call sites now
 // mint a just-in-time push+pr credential via `args.callTool('provision_vcs_auth',
 // ...)` (ApraFleet.provisionVcsAuth) immediately before building/dispatching
@@ -636,15 +784,37 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             //      provision_vcs_auth deployed -- answered with a fixed mock
             //      'password=' line, mirroring the real script's protocol/
             //      host/username/password output.
-            //   2. VCSModule's `curl -sS -X POST ... /pulls` REST call itself
-            //      -- answered with a fake JSON body + trailing HTTP status
-            //      line (mirroring buildCreatePrCommand's `-w '\n%{http_code}'`),
-            //      reusing the SAME prExistsState idempotency simulation the
-            //      old `gh pr create` mock used to provide.
-            if (/^\$HOME\/\.fleet-git-credential-/.test(opts.command)) {
+            //   2. VCSModule's `curl -sS -X POST ... /pulls` (GitHub) or
+            //      `curl -sS -X POST .../pullrequests?api-version=...` (Azure
+            //      DevOps) REST call itself -- answered with a fake JSON body
+            //      + trailing HTTP status line (mirroring buildCreatePrCommand's
+            //      `-w '\n%{http_code}'`), reusing the SAME prExistsState
+            //      idempotency simulation the old `gh pr create` mock used to
+            //      provide.
+            //      apra-fleet-5co8.14.1: the ADO branch here only has to be
+            //      hermetic BY DEFAULT for scenarios that supply no canned
+            //      prCurlResponseQueueLocal at all (e.g. the preflight suite).
+            //      The canned 201/409-TF401179 response queue and the
+            //      already-exists response-mapping assertions for Azure
+            //      DevOps belong to apra-fleet-lzfv.6 (same mutex file) -- do
+            //      not build those out further here.
+            //      The match is an EXACT per-provider file -- the label
+            //      provision_vcs_auth deploys under is the provider name
+            //      ('github' from defaultMockCallTool(), 'azure-devops' for
+            //      the scenarios that override callTool with an Azure DevOps
+            //      member) -- never a bare `.fleet-git-credential-` prefix:
+            //      a prefix match hid a real label mismatch in runner.js
+            //      (the PR-raise reading the github file for an Azure DevOps
+            //      member). A read of any OTHER label falls through to the
+            //      real exec() and fails like the missing file it is.
+            if (/^\$HOME\/\.fleet-git-credential-github$/.test(opts.command)) {
                 return mockCmdResult(0, 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n', '');
             }
-            if (/^curl(?:\.exe)? -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
+            if (/^\$HOME\/\.fleet-git-credential-azure-devops$/.test(opts.command)) {
+                return mockCmdResult(0, 'protocol=https\nhost=dev.azure.com\nusername=\npassword=mock-azure-devops-pat\n', '');
+            }
+            const isAzureDevOpsCreatePr = /\/pullrequests\?/.test(opts.command);
+            if (/^curl(?:\.exe)? -sS -X POST\b/.test(opts.command) && (/\/pulls\b/.test(opts.command) || isAzureDevOpsCreatePr)) {
                 if (prCurlResponseQueueLocal && prCurlResponseQueueLocal.length > 0) {
                     const next = prCurlResponseQueueLocal.length > 1 ? prCurlResponseQueueLocal.shift() : prCurlResponseQueueLocal[0];
                     const resolved = typeof next === 'function' ? next() : next;
@@ -660,6 +830,17 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     // HTTP status, which prExistsState below cannot express,
                     // so those scenarios should prefer a dedicated handler).
                     return mockCmdResult(1, '', gitGhFailureMessage || `mock curl failure (injected) for: ${opts.command}`);
+                }
+                if (isAzureDevOpsCreatePr) {
+                    // Azure DevOps' create-pull-request payload carries
+                    // sourceRefName/targetRefName (full 'refs/heads/...'
+                    // names), not GitHub's bare "head" field -- see
+                    // buildAzureDevOpsCreatePrCommand in
+                    // vcs-providers/azure-devops.mjs. No already-exists
+                    // simulation here (that's lzfv.6's canned-queue scope);
+                    // always answer with a hermetic default success.
+                    const body = JSON.stringify({ pullRequestId: 101, _links: { web: { href: 'https://dev.azure.com/mock-org/mock-project/_git/mock-repo/pullRequest/101' } } });
+                    return mockCmdResult(0, `${body}\n201`, '');
                 }
                 const headMatch = /"head":"([^"]*)"/.exec(opts.command);
                 const branch = headMatch ? headMatch[1] : null;
@@ -721,6 +902,22 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // src/tools/execute-command.ts and return normal nonzero-exit
                 // data instead of isError.
                 return mockCmdResult(1, '', `mock command failure (injected) for: ${opts.command}`);
+            }
+
+            // apra-fleet-5co8.16: fail loudly instead of falling through to
+            // runCmd() (which would exec this for real against tempDir --
+            // there is no live network here, so this is exactly the shape of
+            // the C4 regression: a `curl (6) Could not resolve host` error
+            // instead of a clear unmocked-command failure). Every currently
+            // known curl shape (GitHub /pulls, Azure DevOps /pullrequests,
+            // the git-credential-helper script read) is intercepted by a
+            // dedicated handler ABOVE this point, so reaching here with a
+            // network-shaped command means either a new endpoint/provider
+            // was added without a mock, or an existing mock's match regex
+            // stopped matching -- both are harness bugs to fix, not commands
+            // to run for real.
+            if (isNetworkShapedCommand(opts.command)) {
+                throw new Error(`mock-sprint-harness: unmocked network command reached the runCmd() fallback -- refusing to execute it against the real network. command=${redactNetworkCommandForLog(opts.command)}`);
             }
 
             // No stale intercepts here otherwise: runner.js's Deploy/Integ

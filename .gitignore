@@ -27,6 +27,8 @@ CLAUDE.md
 *.db
 .beads-credential-key
 .beads/
+# Per-clone beads-DB backup directories (created by pre-clone safety copies); never commit
+.beads.bak-*/
 
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/
@@ -84,7 +86,11 @@ COPILOT-INSTRUCTIONS.md
 
 # Fleet orchestrator review and plan scaffold outputs -- per-round reviewer/planner scratch, never commit
 .fleet-review*.json
-.fleet-plan-review-output.json
+.fleet-plan*.json
+
+# Planner and beads scratch files left in repo root
+/tasks.json
+/.scratch-dolt-settle/
 
 # Ad-hoc `bd show --json` / `bd list --json` scratch dumps left at repo root
 /all.json
@@ -113,6 +119,23 @@ packages/apra-fleet-se/auto-sprint/logs/
 # repo root by review/doer sessions. These are scratch, not deliverables --
 # whatever writes them should target a temp dir, but until every caller does,
 # ignore the known dump names so they stop failing the clean-worktree gate.
-/all.json
-/open.json
 /ready.json
+
+# Orchestrator planner-round scratch output. Scoped to this one file, NOT a
+# blanket '.fleet/' rule: .fleet/kb-canonical.json (the KB export) is a
+# tracked deliverable living in the same directory -- see the sprint-logs/
+# note above for why a directory-level rule here would shadow it the same
+# way.
+.fleet/planner-output.json
+
+# Per-bead review scratch dumps (reviewer working files), never commit.
+.review-tmp/
+
+# Ad-hoc `bd` issue-dump scratch left at repo root (same class as /all.json
+# above, different name).
+/open.json
+
+# Sprint-runtime verdict/scratch output the orchestrator writes at repo root
+# (e.g. .fleet-out/plan-review-verdict.json) -- per-run, never commit. Its own
+# directory, so a directory rule shadows nothing tracked (unlike .fleet/).
+/.fleet-out/

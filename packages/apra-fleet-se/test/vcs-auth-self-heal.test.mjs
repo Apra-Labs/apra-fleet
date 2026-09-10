@@ -177,9 +177,18 @@ describe('createVcsAuthSelfHealCallback', () => {
         );
     });
 
-    test('a member with NO registered VCS provider throws a typed ASCII "ERROR:" naming the member and never calls provision_vcs_auth (no silent GitHub default)', async () => {
+    // apra-fleet-5oo NARROWED THIS CASE. The rule pinned here has always been
+    // "no silent GitHub DEFAULT" -- a provider assumed with no evidence.
+    // provisionVcsAuthForMember now has ONE evidence-based fallback: the
+    // member's own git remote, which it already reads for its repos scope. A
+    // remote whose host no registered auth provider claims (or one that cannot
+    // be read at all) is still evidence of nothing, and must still raise
+    // resolveProvider's typed ERROR rather than default to GitHub. The
+    // healed-from-a-real-remote counterpart lives in
+    // test/vcs-provider-missing-selfheal.test.mjs.
+    test('a member with NO registered VCS provider AND a remote no provider claims throws a typed ASCII "ERROR:" naming the member and never calls provision_vcs_auth (no silent GitHub default)', async () => {
         const calls = [];
-        const command = async () => ({ ok: true, output: 'https://github.com/acme/widgets.git', error: null });
+        const command = async () => ({ ok: true, output: 'https://gitlab.example.com/acme/widgets.git', error: null });
         const callTool = async (name, args) => {
             if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: undefined }) }] };
             calls.push({ name, args });
@@ -196,5 +205,70 @@ describe('createVcsAuthSelfHealCallback', () => {
             },
         );
         assert.equal(calls.length, 0, `expected NO provision_vcs_auth call for a member with no registered provider, got: ${JSON.stringify(calls)}`);
+    });
+
+    // =========================================================================
+    // apra-fleet-5co8.13: onAuthFailure's authRemedy hint lookup used to call
+    // resolveProvider() and then provisionVcsAuthForMember() called it AGAIN
+    // for the same member, making two member_detail round trips per self-heal
+    // attempt. The resolved provider is now threaded through, so exactly ONE
+    // member_detail call should happen per successful self-heal.
+    // =========================================================================
+    test('performs exactly ONE member_detail round trip per self-heal attempt', async () => {
+        let memberDetailCalls = 0;
+        const command = async (cmd) => {
+            if (cmd === 'git remote get-url origin') {
+                return { ok: true, output: 'https://github.com/acme/widgets.git', error: null };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') {
+                memberDetailCalls += 1;
+                return MEMBER_DETAIL_GITHUB;
+            }
+            return { status: 'ok' };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await onAuthFailure({ member: 'fleet-mac', label: 'G-push', error: 'auth failure' });
+
+        assert.equal(memberDetailCalls, 1, `expected exactly ONE member_detail round trip per self-heal attempt, got ${memberDetailCalls}`);
+    });
+
+    test('a resolution failure during the authRemedy hint lookup does not short-circuit the self-heal attempt', async () => {
+        const calls = [];
+        let memberDetailCalls = 0;
+        const command = async (cmd) => {
+            if (cmd === 'git remote get-url origin') {
+                return { ok: true, output: 'https://github.com/acme/widgets.git', error: null };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') {
+                memberDetailCalls += 1;
+                // First (hint-lookup) call fails transiently; the fallback
+                // lookup inside provisionVcsAuthForMember (second call)
+                // succeeds, so the self-heal attempt still completes.
+                if (memberDetailCalls === 1) throw new Error('fleet server transiently unreachable');
+                return MEMBER_DETAIL_GITHUB;
+            }
+            calls.push({ name, args });
+            return { status: 'ok' };
+        };
+        const logs = [];
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command, log: (m) => logs.push(m) });
+
+        await onAuthFailure({ member: 'fleet-mac', label: 'G-push', error: 'auth failure' });
+
+        assert.equal(memberDetailCalls, 2, `expected the hint lookup to fail once and the fallback lookup to still run, got ${memberDetailCalls} member_detail calls`);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].name, 'provision_vcs_auth');
+        assert.ok(
+            logs.some((l) => /could not resolve member 'fleet-mac'.*auth remedy hint/.test(l)),
+            `expected a hint-lookup-failure log entry that still proceeds, got: ${JSON.stringify(logs)}`,
+        );
+        assert.ok(logs.some((l) => /provision_vcs_auth succeeded/.test(l)), `expected the self-heal to still succeed, got: ${JSON.stringify(logs)}`);
     });
 });

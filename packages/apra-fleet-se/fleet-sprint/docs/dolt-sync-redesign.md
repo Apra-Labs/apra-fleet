@@ -1,13 +1,18 @@
 # Dolt sync redesign: from a 3-tier recovery ladder to one deterministic settle step
 
-Status: BEING IMPLEMENTED on branch `fix/dolt-settle-recovery` (written
-2026-08-13). Per-part implementation status is tracked in "Implementation
-status" immediately below; Part 4's verification table is the live-run record.
+Status: IMPLEMENTED. Every part of this design has landed. The document is
+retained as the reference for WHY the system is shaped this way, and the
+source cites its Part numbers directly (`dolt-settle.mjs`, `dolt-sync.mjs`,
+`runner.js`, `bin/serve.mjs`, `src/supervisor/server.mjs`,
+`dolt-orphan-sweep.mjs`, `dolt-mutex.mjs`, `fleet-members.mjs`, and several
+tests), so **the Part numbering here is load-bearing -- do not renumber it.**
+Part 4's table is the live-run verification record.
+
 See `dolt-manual-recovery-verified.md` for the live-verified mechanical spec
 (exact flags, exact commands, exact OS-specific detachment technique) this
 design's `settle()` step is built from.
 
-### Implementation status
+### What landed, part by part
 
 | Part | Item | Status |
 |------|------|--------|
@@ -1479,4 +1484,229 @@ so the list below reads as history rather than as a pending action:
   apra-fleet-bnb.1... bead does not exist") -- a Dolt-DB-adjacent data
   integrity bug (a filed bead reference vanished), but not a sync/conflict
   issue and not something settle() affects. Left open, unrelated.
+
+## Part 9 -- sync COST: fewer and cheaper syncs per sprint
+
+Parts 1-8 are about sync CORRECTNESS (what happens when a sync conflicts).
+This part is about sync COST, from a separate read-only review of where a
+fleet-sprint actually spends its `bd dolt pull` / `bd dolt push` minutes. The
+measured shape on the reference machine: about 20 D-pull/D-push pairs per
+sprint, each bracketed by 1-2 uncached `bd config get sync.remote` probes
+(0.6s each), against a 548 MB embedded Dolt store whose full open-and-walk
+cost is paid on every invocation regardless of how little changed.
+
+Three changes landed in `dolt-sync.mjs` (a fourth, in the supervisor's
+pre-launch scope guard, is described in `src/supervisor/scope-overlap.mjs`).
+
+### 9.1 The `sync.remote` probe is memoized per member
+
+`isMemberSyncRemoteConfigured()` spawned a fresh `bd config get sync.remote
+--json` on every call -- the D-pull pre-gate, the D-push pre-gate, and
+`status()` -- which totals roughly 90-160 spawns per sprint for a value that
+never changes mid-run. A codebase search confirmed no production path in this
+package writes `sync.remote` during a live sprint; only test fixtures and
+one-time setup scripts do.
+
+The result is now cached per member for the process lifetime (one runner
+process per sprint). Two properties matter:
+
+- **Only a positively parsed answer is cached.** Every fail-safe path (the
+  command threw, a `failSoft` error result, no output, unparseable output)
+  still reports "configured" and is deliberately NOT cached, so one transient
+  probe failure cannot pin the fail-safe answer for the rest of the run. The
+  fail-CLOSED contract is unchanged.
+- **Explicit invalidation, not a TTL.** A TTL re-adds spawns for no real
+  safety. Three HARD seams drop the memo, and every one of them drops the 9.3
+  remote-tip fingerprint alongside it (the two are always forgotten
+  together): `noteMemberCommand()`, called from the runner's central
+  `command()` wrapper for any `bd config set` / `bd dolt remote` / `bd init` /
+  `bd bootstrap` the orchestrator issues on that member; the auth self-heal
+  firing inside `runDoltStep`; and `repair()`.
+- **The per-dispatch seam is SOFT (round 4).** A dispatched agent runs its
+  `bd` commands in its own session on the member, never through the
+  `command()` wrapper, so `noteMemberCommand()` cannot see them; the runner's
+  central `agent()` wrapper calls `noteMemberDispatchCompleted()` the moment
+  any dispatch settles. Round 3 made that an unconditional wipe of both
+  memos. Combined with "a push never mints a fingerprint" (9.3), the
+  fingerprint was then EMPTY at the start of every dispatch bracket -- the
+  module's primary path -- so the primary path paid one `ls-remote` more
+  than before the feature and skipped nothing, and the probe was re-spawned
+  once per dispatch (golden mock-sprint transcript: 1 -> 14). The hazards
+  the wipe guarded were checked against what bd actually does:
+  `bd bootstrap` -- the one self-heal this repo's agent instructions
+  prescribe -- is non-destructive (an existing DB is validated and reported,
+  never replaced) and, where it creates a DB, CLONES it from `sync.remote`,
+  so a surviving fingerprint that still equals the remote tip is still the
+  truth; `bd init` refuses on an existing DB unless forced, and a forced
+  re-init yields an unrelated history that no pull can fast-forward (its next
+  push diverges into the terminals that already forget the tip and settle).
+  The one event a surviving fingerprint would get WRONG is an agent-side
+  `bd config set sync.remote <other>`. So the seam now MARKS the member as
+  dispatched-since-verified and drops nothing; the fingerprint is bound to
+  the URL it was minted against; and a marked member's `sync.remote` is
+  re-read (one `bd config get`, a plain config.yaml read, no Dolt engine)
+  only at the one decision a stale memo could turn into stale data -- the
+  moment a D-pull is about to be SKIPPED on that fingerprint. Same URL:
+  skip. Different or unreadable: fingerprint forgotten, real pull. Every
+  other consumer of the memo fails closed anyway (a wrong "configured"
+  answer just issues a real pull/push against whatever remote bd itself has
+  configured). The re-read is therefore paid once per skip-after-dispatch,
+  never per dispatch; a bracket whose tip moved pays nothing extra; a
+  member with a remote is back to one probe per process. The one case that
+  never reaches that check is a member memoized as having NO remote (both
+  pre-gates exit on it first): its memo is re-read once after any dispatch,
+  because an agent wiring a remote mid-dispatch would otherwise leave every
+  later D-push of that member reporting a benign no-remote skip -- success
+  -- while its bead closes never left the clone. That costs one config.yaml
+  read per dispatch for no-remote members only (sandboxes; the no-remote
+  mock sprint's golden transcript shows one probe per dispatch for exactly
+  this reason).
+- **The probe never waits on a prompt, and switches itself off when it
+  cannot work.** The probe URL carries no userinfo (9.3), so a member whose
+  only credential for the host was URL-embedded would have git try to
+  PROMPT -- under Git Credential Manager on Windows, a dialog that blocks
+  until the 30s probe timeout, on every bracket. The probe runs with
+  `-c credential.interactive=never -c core.askPass=` (config flags, never a
+  shell env prefix -- the member's shell may be PowerShell) so it fails at
+  once, and after two consecutive failed probes the member's probe is
+  disabled for the process (re-armed by the hard seams), so every pull is
+  simply real again. Two rather than one so a single blip does not cost the
+  feature.
+
+### 9.2 The transient retry ladder is time-boxed, not count-boxed
+
+The ladder was widened to 8 retries with a 30s backoff cap to survive a live
+Windows machine-wide `git.exe` spawn outage (`fork/exec ... "Not enough memory
+resources"`), measured at 1-3 minutes. That was the right diagnosis but the
+wrong bound: it applied the long budget to EVERY transient kind, and the unit
+suite went from 80s to 6m15s because ordinary transients in fixtures now
+walked the full ladder (91.5s of pure sleep in one exhausted ladder, before
+counting the 600s per-attempt timeout).
+
+The budget was never really about a count -- it was about spanning a
+wall-clock outage window. So the ladder is split by error class:
+
+| class | bound | backoff cap |
+|---|---|---|
+| spawn outage (`fork/exec`, "Not enough memory resources") | 3 min WALL CLOCK | 30s |
+| every other transient | 5 retries (`maxTransientRetries`) | 8s |
+
+A wall-clock bound is the same 3 minutes whether each attempt returns
+instantly or sits on the 600s step timeout; the old count-based bound
+multiplied out to a worst case of 9 attempts x 600s. The generic default is
+the pre-widening 5 (a first cut mis-restored it as 2; corrected). An
+explicitly passed `maxTransientRetries` is honored by BOTH ladders: it bounds
+the generic class as before, and it is a hard attempt cap on the spawn-outage
+ladder too (the wall-clock budget still applies underneath it). Left unset --
+the production shape, since no runner call site passes one -- the spawn-outage
+class keeps its full wall-clock budget. A `diverged` classification is still
+never retried, under either ladder. The spawn-outage sub-classifier matches
+only the `fork/exec` line: the "Not enough memory resources" wording on its
+own never classifies `transient` in the first place (it is not in the dolt
+provider's TRANSIENT table), so a pattern for it was dead and was removed.
+
+### 9.3 Remote-tip fingerprint: skip a D-pull only when it is provably a no-op
+
+**The correctness anchor.** The shared remote's `refs/dolt/data` is the ONLY
+channel through which beads state moves between machines. A member's clone can
+therefore be stale in exactly one way: that ref advanced since the member last
+pulled or pushed. "Is a D-pull needed?" then has a cheap, EXACT answer --
+compare the remote SHA now against the SHA this member last synchronized to --
+rather than a policy bet about who else might be writing.
+
+This is why the alternatives were rejected. "Skip for read-only roles" and
+"skip within N seconds of the last pull" both trade real staleness for speed:
+a reviewer reads acceptance criteria a remote doer just pushed, and a
+plan-reviewer reads the planner's freshly pushed DAG. Any fixed bound is a
+guess about other writers, and a wrong guess produces exactly the
+false-FAILED-streak failure the post-streak verify pull exists to prevent. A
+tip-equal skip removes only pulls that are provably no-ops, so no operator has
+to pick a risk bound at all.
+
+**Mechanism.** Before a real `bd dolt pull`, one `git ls-remote <sync.remote>
+refs/dolt/data` -- one network round trip, no Dolt engine startup, no 548 MB
+chunk store to open (0.35s measured, against multi-minute real pulls). On a
+match the pull is not spawned and the step returns `{ ok: true, member,
+skipped: true, reason: 'remote-unchanged', remoteTip }`.
+
+**The recorded tip is minted in exactly one place, from a value the clone is
+provably current with:**
+
+- after a successful PULL, record the SHA observed IMMEDIATELY BEFORE it --
+  never one read afterwards. A push racing in during the pull is not in what
+  was fetched, so recording the later SHA would claim freshness the clone does
+  not have. Recording the earlier one can only cost one redundant future pull.
+- after a successful PUSH by this member, FORGET the recorded tip. A push never
+  records anything.
+
+**Why a push cannot mint a fingerprint.** Two earlier cuts recorded a SHA read
+from the remote after the push -- unconditionally at first, then only when the
+ref had "advanced" past a pre-push read. Both lose the same race: the push
+mutex serializes this fleet's pushes against each other and nothing else, so
+an unrelated machine can push in the gap between our push landing and our
+post-push `ls-remote` returning. That read then observes a stranger's commit
+this clone has never seen, records it as ours, and the next D-pull is wrongly
+skipped -- exactly the staleness the feature exists to prevent. A network read
+of "the remote's current tip" is never a proxy for "what my push published".
+Nor is there a local proxy for this transport: bd's git-backed remote is Dolt's
+git blobstore, where a push wraps the chunk-store manifest in a fresh git
+commit built inside the push on top of the remote head it just fetched. That
+commit -- the remote's new `refs/dolt/data` -- is not a function of local Dolt
+state, is not printed by `bd dolt push`, and lands locally only in a
+per-process UUID-named ref (`refs/dolt/blobstore/<remote>/dolt/data/<uuid>`)
+inside a sha256-named cache dir under `.beads/`, reachable only by a
+shell-dialect-specific scan of the member's disk (verified against a live
+clone: the cache repo's tracking refs and `FETCH_HEAD` already disagreed with
+the remote's live tip). So the pusher forgets its tip and pays one real pull
+at its next bracket, after which the skip is re-armed. A no-op push is treated
+identically -- it proves nothing about the clone's freshness. As a side
+effect no `ls-remote` is issued anywhere in the D-push bracket: the mutex hold
+is exactly push + reconcile + settle.
+
+**Fail-open, always.** Every uncertainty falls through to a REAL pull: no
+recorded tip yet, an `ls-remote` failure or timeout, unparseable output, a
+`sync.remote` that could not be positively read, or a URL that fails the
+strict safe-charset gate. A divergence, a settle, a successful push, an auth
+self-heal, a `repair()`, an orchestrator-issued `bd init`/`bootstrap`/`config
+set`, and a `sync.remote` found changed under a dispatch (9.1) all FORGET the
+recorded tip rather than leave a stale one. The recorded tip is bound to the
+URL it was observed at and never validates a probe of any other URL. There
+is deliberately no path in which doubt produces a skip.
+
+**Three implementation constraints worth restating:**
+
+- The probe target is resolved from `sync.remote` (through the 9.1 memo, so it
+  costs no extra `bd config get`), NEVER from git's `origin`. The two can
+  legitimately differ on a member, and probing `origin` would compare this
+  member's freshness against the wrong ref. bd spells a git-transport remote
+  `git+https://...`; the `git+` prefix is bd's own scheme marker and is
+  stripped before `ls-remote`. A `sync.remote` with NO scheme -- a bare Dolt
+  remote NAME (`origin`, which the integration fixtures legitimately set) or
+  a bare path (a Dolt file remote, never a git repository) -- yields no probe
+  at all, because `git ls-remote origin` would silently resolve against
+  git's origin, the exact target this rule forbids.
+- The probe command string is journaled VERBATIM into the persisted,
+  dashboard-visible run transcript (`silent` only suppresses the console
+  line). An http(s) userinfo (`user:token@`) in `sync.remote` is therefore
+  stripped before the URL is interpolated into the command; previously such
+  a token only ever appeared as command OUTPUT (`bd config get`). The
+  stripped URL still authenticates through the git credential helper every
+  provisioned member carries (that is how `git push` works on members); a
+  member whose only credential was URL-embedded gets a failed probe, which is
+  a real pull. ssh URLs keep their `git@` -- a login name, not a secret.
+- The probe string reaches the member's own shell, which may be PowerShell or
+  a POSIX shell. Rather than trying to quote correctly for both, any remote URL
+  containing a character outside a conservative safe charset (no whitespace,
+  no quote, no metacharacter of either dialect) is REFUSED -- which yields no
+  fingerprint and a real pull, the safe direction.
+
+Disable per call site with `remoteTipFingerprint: false`.
+
+### 9.4 Not done here, on purpose
+
+Two larger items from the same review are deliberately out of scope: squashing
+the Dolt history and re-bootstrapping every member clone (the largest per-op
+win, but a destructive operational change needing a quiescent window and its
+own runbook), and moving `sync.remote` off the git transport onto a native
+Dolt bucket remote.
 

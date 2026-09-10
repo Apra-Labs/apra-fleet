@@ -60,7 +60,7 @@ session). Use WMI:
 ```powershell
 $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
   CommandLine = 'cmd /c ""C:\Users\<you>\.apra-fleet\bin\dolt.exe" sql-server --host 127.0.0.1 --port 13401 --data-dir "<ABSOLUTE data dir from step 0>" > "%TEMP%\dolt-settle-local.log" 2>&1"'
-  CurrentDirectory = 'C:\akhil\git\apra-fleet'
+  CurrentDirectory = '<absolute path to your repo checkout>'
 }
 $result.ProcessId   # record for teardown -- this is cmd.exe's PID, not dolt's (see step 5)
 ```

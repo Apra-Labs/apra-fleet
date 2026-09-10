@@ -6,25 +6,20 @@ re-introduce role-based wording.
 
 ---
 
-## What changed and why
+## Why tags, not roles
 
-Before this sprint the pm skill dispatched fleet members using a `role:` field
-(e.g. `role: doer`, `role: reviewer`). Fleet member selection by role is a
-legacy interface that predates the tag system. Tag-based selection
-(`tags: ['doer']`, `tags: ['reviewer']`) is the canonical, forward-compatible
-interface exposed by the fleet skill's `compose_permissions` tool.
+The pm skill selects fleet members by tag (`tags: ['doer']`, `tags: ['reviewer']`),
+never by a `role:` field. Role-based selection was a legacy interface that predated
+the tag system; the fleet `list_members` tool no longer accepts a `role` parameter at
+all, so any role-based wording in the skill text is dead on arrival.
 
-The migration (sprint feat/pm-tag-dispatch, 2026-07) updates three skill docs:
+Three skill files carry the tag-based dispatch wording and must keep it:
 
-| File | What changed |
-|------|-------------|
-| `skills/pm/SKILL.md` R9 | `selecting members by tags: ['doer'] / tags: ['reviewer']` replaces role |
-| `skills/pm/fleet-addendum.md` Permissions + Doer-reviewer pairing | tag-based selection stated explicitly |
-| `skills/pm/doer-reviewer-loop.md` Continuity + Resume rules + Safeguards | `tags: ['doer'] / tags: ['reviewer']` replaces `role: doer / role: reviewer` |
-
-The legacy `role` parameter still works during the transition period. The
-backward-compatibility note in SKILL.md R9 is intentional and must stay until
-fleet removes the role parameter from its API.
+| File | Where |
+|------|-------|
+| `skills/pm/SKILL.md` | member-selection rule |
+| `skills/pm/fleet-addendum.md` | Permissions + doer-reviewer pairing |
+| `skills/pm/doer-reviewer-loop.md` | Continuity + Resume rules + Safeguards |
 
 ---
 
@@ -97,19 +92,7 @@ in the dispatch prompt.
 
 ---
 
-## Scope of the tag-based migration
-
-The migration covers the in-repo pm skill files. All sprint issues are closed:
-
-| Issue | Phase | Status |
-|-------|-------|--------|
-| apra-pm-136 | Phase 4a: SKILL.md R9 + fleet-addendum permissions | closed |
-| apra-pm-jnq | Phase 4b: doer-reviewer-loop.md dispatch references | closed |
-| apra-pm-g6q | Phase 5: Member selection section in SKILL.md | closed |
-
-Cross-repo work (updating fleet Phase 2 to emit `tags` instead of `role` in the
-member registry) requires changes to the `apra-fleet` repo and is tracked
-separately outside this sprint.
+## Test coverage
 
 The test suite (`test/skill-pm-tags-dispatch.test.mjs`) covers:
 

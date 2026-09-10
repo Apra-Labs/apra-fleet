@@ -12,8 +12,11 @@ A workflow script is a real ES module. It must export an async entry point funct
 the object built by `FleetWorkflow.runWithContext()` (what `WorkflowEngine.executeFile()`
 uses internally) or `FleetWorkflow.createContext()` (for direct, non-`executeFile()` usage).
 The context exposes `agent`, `command`, `sequential`, `pipeline`, `parallel`, `transform`,
-`nullTransform`, `log`, `phase`, `group`, `endGroup`, `publishState`, `args`, and `budget`.
-Destructure whatever primitives you need:
+`nullTransform`, `log`, `phase`, `group`, `endGroup`, `publishState`, `setPauseGuard`,
+`workflow`, `args`, and `budget`. (`workflow()` is a placeholder for running another script
+inline; nested workflows are not implemented and calling it throws.) Cancellation and
+pause/resume are driven from the `FleetWorkflow` instance, not the context -- see
+"Cooperative cancellation" below. Destructure whatever primitives you need:
 
 ```javascript
 export const meta = { name: 'my-workflow' };
@@ -243,14 +246,17 @@ failure, an exceeded budget, or a cooperative cancellation -- is raised as a typ
 
 * `MemberNotFoundError` (`code: MEMBER_NOT_FOUND`)
 * `AgentOutputError` (`code: AGENT_OUTPUT_INVALID`) -- empty content, or schema-repair
-  exhaustion
+  exhaustion: the LLM answered, and the answer was unusable
+* `AgentDispatchError` (`code: AGENT_DISPATCH_FAILED`) -- the dispatch itself failed before
+  any LLM content existed (busy or reserved member, transport exception, non-zero CLI exit).
+  Never retried through the schema-repair loop, since repair cannot fix a dispatch rejection
 * `CommandError` (`code: COMMAND_FAILED`) -- `isError: true` results
 * `FleetTransportError` (`code: TRANSPORT_ERROR`) -- the underlying `fleetApi` call itself
   rejected; the original error is preserved on `.cause`
 * `BudgetExceededError` (`code: BUDGET_EXCEEDED`) -- see "Budget" below
 * `CancelledError` (`code: CANCELLED`) -- see "Cooperative cancellation" below
 
-All six extend the base `WorkflowError`, which carries `.code` and `.details`. These classes
+All seven extend the base `WorkflowError`, which carries `.code` and `.details`. These classes
 are exported from the package entry point (`@apralabs/apra-fleet-workflow`), so callers can
 `instanceof`-match them:
 
@@ -267,11 +273,11 @@ try {
 }
 ```
 
-The apra-fleet MCP server currently reports some of these conditions (e.g. a missing member)
-via plain response text rather than a structured error -- see
-`docs/structured-errors-proposal.md`. The classification above is a client-side stopgap; once
-the server ships a structured error contract, the same error classes will be raised from that
-path instead of a text sniff.
+`execute_prompt`/`execute_command` report dispatch-level failures through a structured
+`structuredContent.isError`/`reason` payload, which is what `AgentDispatchError` is
+classified from. A few other conditions -- notably a missing member -- are still only
+reported as plain response text, and are classified by a text sniff here. See
+`docs/structured-errors-proposal.md` for what remains.
 
 ### `resume` default (`AgentOptions.resume`)
 
@@ -349,6 +355,11 @@ process.on('SIGINT', () => workflow.requestStop('Interrupted by SIGINT'));
 
 This is local/client-side cancellation only -- a remote fleet member that already accepted a
 job may keep running to completion even after your run unwinds as cancelled.
+
+`FleetWorkflow` also has a separate, non-terminal pause gate --
+`requestPause()`/`requestResume()`, with `context.setPauseGuard(fn)` for a script to declare
+where a clean pause boundary is and `setPreResumeHook(fn)` for work that must finish before
+the first post-resume dispatch. See architecture doc section 4.7.
 
 ## Resuming a run
 

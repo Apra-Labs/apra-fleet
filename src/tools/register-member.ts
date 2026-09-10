@@ -6,6 +6,7 @@ import type { CloudConfig } from '../services/cloud/types.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { detectOS } from '../utils/platform.js';
 import { getOsCommands } from '../os/index.js';
+import { shouldProbeShell, probeWindowsShell } from '../services/shell-probe.js';
 import { getProvider } from '../providers/index.js';
 import { addAgent, getAllAgents, hasDuplicateFolder } from '../services/registry.js';
 import { credentialResolve, credentialSet } from '../services/credential-store.js';
@@ -25,6 +26,7 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { composePermissions } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { getMemberHomeDir } from '../services/member-home.js';
+import { detectVcsProviderFromRemoteUrl } from '../utils/vcs-provider-detect.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -41,6 +43,7 @@ export const registerMemberSchema = z.object({
   work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a remote member.'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
+  vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('VCS provider this member pushes to and opens pull requests against. Omit to auto-detect it from the member\'s git "origin" remote; pass "none" to record that this member deliberately has no VCS provider (suppresses the auto-detect warning). A member with no VCS provider CANNOT push or open a PR.'),
   // Cloud fields
   cloud_provider: z.enum(['aws'], {
     errorMap: () => ({ message: "Only 'aws' is supported as a cloud provider. GCP and Azure support is planned." }),
@@ -70,6 +73,7 @@ export const registerMemberSchema = z.object({
   }).optional().describe('Per-member model tier map. Keys: cheap, standard, premium. Values: model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model recommended for opencode members.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Code-intelligence provider for this member (default: fleet-wide config).'),
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it. Default: false.'),
+  shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
@@ -282,6 +286,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     createdAt: new Date().toISOString(),
     gitAccess: input.git_access,
     gitRepos: input.git_repos,
+    // apra-fleet-5oo: an explicitly-supplied provider always wins and is never
+    // probed for. 'none' is an explicit "this member has no VCS provider"
+    // declaration -- it is NOT an Agent.vcsProvider value (src/types.ts), so it
+    // is recorded as absent here and only suppresses the warning below.
+    vcsProvider: (input.vcs_provider && input.vcs_provider !== 'none') ? input.vcs_provider : undefined,
     cloud: cloudConfig,
     llmProvider: input.llm_provider ?? 'claude',
     modelCheap: input.model_cheap,
@@ -293,6 +302,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     tags: input.tags,
     codeIntelProvider: input.code_intel_provider,
     unreservable: input.unreservable ?? false,
+    shell: input.shell,
   };
 
   // --- SSH-dependent steps (skipped for stopped cloud instances) ---
@@ -300,6 +310,10 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   let claudeVersion: string | undefined;
   let connResult: { ok: boolean; latencyMs?: number; error?: string } = { ok: true };
   let agentProvisionResult: ProvisionResult | undefined;
+  // apra-fleet-5oo: true only when the provider below was resolved by probing
+  // the member's own git remote (never when the caller supplied it), so the
+  // result line can say where the value came from.
+  let vcsProviderAutoDetected = false;
 
   if (!skipSshOps) {
     const strategy = getStrategy(tempAgent);
@@ -338,7 +352,27 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     }
     tempAgent.os = detectedOS;
 
-    const cmds = getOsCommands(detectedOS);
+    // Step 2b: probe which Windows shell this member actually has (gitbash /
+    // pwsh7 / powershell5). Windows-only, and skipped entirely when the
+    // operator supplied `shell` explicitly -- an explicit value always wins
+    // (apra-fleet-7dir.1.3). Never fails registration: probeWindowsShell
+    // degrades to powershell5 with a warning.
+    if (shouldProbeShell(detectedOS, tempAgent.shell)) {
+      // A remote member's raw command strings are handed straight to its own
+      // sshd DefaultShell (see shell-probe.ts's isProvenRemoteBashChannel doc
+      // comment) -- a Git-bash binary being installed there proves nothing
+      // about that, unlike a local member where LocalStrategy spawns the
+      // resolved bash.exe path directly.
+      const probeTransport = tempAgent.agentType === 'local' ? 'local' : 'ssh';
+      const probe = await probeWindowsShell((command, timeoutMs) => strategy.execCommand(command, timeoutMs), probeTransport);
+      tempAgent.shell = probe.shell;
+      if (probe.warning) warnings.push(probe.warning);
+    }
+
+    // The registration-time probes below must speak the SAME shell the member
+    // was just registered with, so pass it -- a gitbash member gets bash
+    // strings, every other value resolves exactly as before.
+    const cmds = getOsCommands(detectedOS, tempAgent.shell);
     const provider = getProvider(input.llm_provider ?? 'claude');
     const providerName = provider.name;
     // No-LLM members (apra-fleet-us9.14) have no CLI to verify or authenticate --
@@ -367,7 +401,45 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       : strategy.execCommand(cmds.mkdir(input.work_folder), 10000)
           .catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); });
 
-    await Promise.all([versionCheck, authCheck, mkdirCheck]);
+    // Step 3b: best-effort VCS-provider detection (apra-fleet-5oo).
+    //
+    // Registration could previously mint a fully dispatch-capable member with
+    // Agent.vcsProvider left unset -- nothing here ever asked for or detected
+    // it -- and the gap only surfaced hours later, mid-sprint, when
+    // fleet-sprint's VCSModule.resolveProvider() threw "member has no
+    // registered VCS provider" on the member's first push/PR.
+    //
+    // Modelled on the Windows shell probe above (shouldProbeShell /
+    // probeWindowsShell) in both spirit and failure behavior: an explicit
+    // operator value skips the probe entirely, and the probe itself NEVER
+    // fails registration -- a work folder with no git repo in it yet is the
+    // common "register before clone" case, not an error. It degrades to a
+    // loud warning below instead.
+    //
+    // Runs INSIDE the Promise.all below rather than after it: the probe is
+    // independent of the CLI/auth/mkdir checks, so sequencing it behind them
+    // would add a whole extra SSH round trip to every registration for no
+    // ordering reason. Racing mkdirCheck is harmless in particular: a folder
+    // mkdir had to CREATE cannot contain a git repo, so the probe's answer is
+    // the same ("no remote") whichever of the two lands first.
+    const vcsProviderCheck = input.vcs_provider
+      ? Promise.resolve()
+      : strategy.execCommand(cmds.gitRemoteOrigin(input.work_folder), 15000)
+          .then(remoteRes => {
+            // Take stdout regardless of exit code: both OS builders swallow
+            // the failure ("|| true" / "try {} catch {}") so an absent repo
+            // yields empty output rather than a non-zero code, and stderr is
+            // never a URL.
+            const remoteUrl = String(remoteRes.stdout ?? '').trim().split(/\r?\n/)[0].trim();
+            const detected = detectVcsProviderFromRemoteUrl(remoteUrl);
+            if (detected) {
+              tempAgent.vcsProvider = detected;
+              vcsProviderAutoDetected = true;
+            }
+          })
+          .catch(() => { /* Best effort -- fall through to the warning below. */ });
+
+    await Promise.all([versionCheck, authCheck, mkdirCheck, vcsProviderCheck]);
 
     // --- Provision role-agent definition files (planner.md, doer.md, ...) ---
     // Remote members have their own home dir and never receive these via install() --
@@ -395,6 +467,17 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       warnings.push('Agent files not provisioned -- run update_member after the instance starts.');
       warnings.push('Workspace trust not seeded -- run update_member after the instance starts.');
     }
+  }
+
+  // apra-fleet-5oo: registration must never silently produce a dispatch-capable
+  // member that cannot push or open a PR. Registration is NOT refused (that
+  // would break the common "register the member, then clone into its work
+  // folder" flow), but the gap is surfaced HERE, loudly, at registration time
+  // rather than reactively hours into an unattended sprint. A member with
+  // llm_provider 'none' never dispatches an agent and never pushes, so it is
+  // exempt; so is an explicit vcs_provider (including 'none').
+  if (!tempAgent.vcsProvider && !input.vcs_provider && (input.llm_provider ?? 'claude') !== 'none') {
+    warnings.push('VCS provider could not be determined (no git remote found, or vcs_provider not supplied) -- this member will be UNABLE to push or open a PR until provisioned. Run provision_vcs_auth with an explicit provider (github/bitbucket/azure-devops) -- it requires the provider, it does not detect one, and sets vcsProvider as a side effect of provisioning credentials. Or run update_member with vcs_provider set to record the provider directly, without provisioning credentials. Re-registering this member is NOT a remedy -- the same folder path is rejected as a duplicate registration.');
   }
 
   // OS support warning for cloud members: cloud features are designed for Linux
@@ -554,6 +637,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   result += `  OS:      ${detectedOS}\n`;
   result += `  Folder:  ${tempAgent.workFolder}\n`;
   result += `  Provider: ${tempAgent.llmProvider ?? 'claude'}\n`;
+  if (tempAgent.vcsProvider) {
+    result += `  VCS Provider: ${tempAgent.vcsProvider}${vcsProviderAutoDetected ? ' (auto-detected from origin)' : ''}\n`;
+  } else if (input.vcs_provider === 'none') {
+    result += `  VCS Provider: none (declared explicitly -- this member cannot push or open a PR)\n`;
+  }
   if (tempAgent.category) {
     result += `  Category: ${tempAgent.category}\n`;
   }

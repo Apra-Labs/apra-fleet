@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
-import { updateMember } from '../src/tools/update-member.js';
+import { updateMember, updateMemberSchema } from '../src/tools/update-member.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
 import { invalidatePreflightCache } from '../src/services/preflight-check.js';
@@ -200,6 +200,33 @@ describe('updateMember', () => {
     expect(updated?.category).toBeUndefined();
   });
 
+  it('stores a valid shell value', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, shell: 'pwsh7' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.shell).toBe('pwsh7');
+  });
+
+  it('rejects an invalid shell value with a schema validation error', async () => {
+    const { updateMemberSchema } = await import('../src/tools/update-member.js');
+    const parsed = updateMemberSchema.safeParse({ member_id: 'x', shell: 'cmd' });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(JSON.stringify(parsed.error.issues)).toContain('shell');
+    }
+  });
+
+  it('leaves shell unset for a member updated without a shell value', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.shell).toBeUndefined();
+  });
+
   it('adds tags to a member', async () => {
     const member = makeTestLocalAgent();
     addAgent(member);
@@ -391,7 +418,9 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
 
     expect(result).toContain('Member "test-agent" updated.');
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os);
+    // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
+    // member records no shell, so seedWorkspaceTrust forwards undefined.
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os, member.shell);
     spy.mockRestore();
   });
 
@@ -421,8 +450,78 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
 
     expect(result).toContain('updated');
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os);
+    // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument.
+    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell);
     expect(mockTestConnection).not.toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// vcs_provider: explicit operator override (never auto-detected -- see
+// register-member-vcs-provider.test.ts for the auto-detect path this is NOT).
+// ---------------------------------------------------------------------------
+
+describe('updateMember -- vcs_provider (explicit override)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    mockExecCommand.mockReset();
+    mockTestConnection.mockReset();
+    mockUploadContentToHome.mockReset();
+    mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('sets a valid vcs_provider directly, with no remote probe', async () => {
+    const member = makeTestAgent({ vcsProvider: undefined });
+    addAgent(member);
+
+    const result = await updateMember({ member_id: member.id, vcs_provider: 'github' });
+
+    expect(result).toContain('Member "test-agent" updated.');
+    expect(result).toContain('VCS Provider: github');
+    expect(getAllAgents().find(a => a.id === member.id)?.vcsProvider).toBe('github');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('overrides an existing vcs_provider (correcting a wrong auto-detect)', async () => {
+    const member = makeTestAgent({ vcsProvider: 'github' });
+    addAgent(member);
+
+    const result = await updateMember({ member_id: member.id, vcs_provider: 'azure-devops' });
+
+    expect(result).toContain('VCS Provider: azure-devops');
+    expect(getAllAgents().find(a => a.id === member.id)?.vcsProvider).toBe('azure-devops');
+  });
+
+  it('setting vcs_provider to "none" clears it', async () => {
+    const member = makeTestAgent({ vcsProvider: 'github' });
+    addAgent(member);
+
+    const result = await updateMember({ member_id: member.id, vcs_provider: 'none' });
+
+    expect(result).toContain('VCS Provider: none');
+    expect(getAllAgents().find(a => a.id === member.id)?.vcsProvider).toBeUndefined();
+  });
+
+  it('leaves vcs_provider untouched when not passed', async () => {
+    const member = makeTestAgent({ vcsProvider: 'bitbucket' });
+    addAgent(member);
+
+    await updateMember({ member_id: member.id, category: 'doers' });
+
+    expect(getAllAgents().find(a => a.id === member.id)?.vcsProvider).toBe('bitbucket');
+  });
+
+  it('rejects an invalid vcs_provider enum value at the schema level', () => {
+    // updateMember() itself trusts its typed input (the MCP framework
+    // validates via updateMemberSchema before dispatch -- same contract as
+    // register_member's CLI wrapper) -- so the enum rejection is asserted
+    // directly against the schema here.
+    const result = updateMemberSchema.safeParse({ member_id: 'x', vcs_provider: 'gitlab' });
+    expect(result.success).toBe(false);
   });
 });

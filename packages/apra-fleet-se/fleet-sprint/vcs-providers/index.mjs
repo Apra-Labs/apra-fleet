@@ -22,8 +22,89 @@
  *     rules:      { [VCS_FAILURE_KIND]: RegExp[] }   // classifyFailure() axis
  *     precedence: string[]|undefined      // optional kind-check order override
  *     extractProviderCode: (raw) => string|null       // classifyFailure() axis
- *     matchesHost: (host) => boolean                  // capabilities() axis
- *     capabilitiesForHost: (host) => { canOpenPullRequest: boolean }  // capabilities() axis
+ *     matchesHost: (host) => boolean                  // OPTIONAL; capabilities()
+ *                                          // axis. Which remote hosts this
+ *                                          // provider claims, for
+ *                                          // resolveVcsProviderForHost()
+ *                                          // below. Omit for a provider that
+ *                                          // never owns a host (dolt), and
+ *                                          // for the generic-git catch-all
+ *                                          // it returns true unconditionally.
+ *     matchesHostForAuth: (host) => boolean // OPTIONAL; the CREDENTIAL-
+ *                                          // PROVISIONING axis, for
+ *                                          // resolveVcsAuthProviderForHost()
+ *                                          // below. Declare it ONLY when a
+ *                                          // provider's matchesHost() is
+ *                                          // deliberately wider than the set
+ *                                          // of hosts it is safe to auto-mint
+ *                                          // a push credential for (see
+ *                                          // ./github.mjs). Omitted means
+ *                                          // "matchesHost is already exactly
+ *                                          // right for auth too", which is
+ *                                          // the case for every anchored
+ *                                          // matcher.
+ *     capabilitiesForHost: (host) => { canOpenPullRequest: boolean }  // OPTIONAL;
+ *                                          // capabilities() axis. What a
+ *                                          // claimed host supports. MUST stay
+ *                                          // in lockstep with `builders`:
+ *                                          // report canOpenPullRequest:false
+ *                                          // while the create-pull-request
+ *                                          // builder is absent, so publish
+ *                                          // never builds an unsupported
+ *                                          // command (see ./azure-devops.mjs).
+ *                                          // A provider that omits this hook
+ *                                          // is treated as capability-less.
+ *     parseRepoRef: (url) => { org, project, repo, canonical }|null   // OPTIONAL;
+ *                                          // remote-URL axis. Parse a git
+ *                                          // remote URL into the coordinates
+ *                                          // this provider's REST API needs,
+ *                                          // for providers whose identity is
+ *                                          // not the portable "owner/name"
+ *                                          // pair (see ./azure-devops.mjs).
+ *                                          // MUST return null -- never throw,
+ *                                          // never a partial guess -- for
+ *                                          // input it does not recognize, so
+ *                                          // the caller can raise its own
+ *                                          // typed ERROR naming the expected
+ *                                          // shape.
+ *     repoRefHint: string                 // OPTIONAL; remote-URL axis. The
+ *                                          // human-readable remote shape
+ *                                          // parseRepoRef() expects, e.g.
+ *                                          // 'https://dev.azure.com/ORG/
+ *                                          // PROJECT/_git/REPO'. Quoted
+ *                                          // verbatim into the typed ERROR
+ *                                          // VCSModule.parseProviderRepoRef()
+ *                                          // raises for a claimed-but-
+ *                                          // unrecognized remote, which is
+ *                                          // what keeps that remedy text --
+ *                                          // and every other provider-specific
+ *                                          // literal -- out of the shared
+ *                                          // callers. Only meaningful
+ *                                          // alongside parseRepoRef.
+ *     buildProvisionArgs: (ctx) => { args }|{ error }   // OPTIONAL;
+ *                                          // provisioning axis. Build the
+ *                                          // provision_vcs_auth argument
+ *                                          // object for a member of this
+ *                                          // provider, given the shared
+ *                                          // caller's `base` args, this
+ *                                          // provider's own parseRepoRef()
+ *                                          // output for the member's remote
+ *                                          // (`repoRef`) and the credential-
+ *                                          // store entry names the caller
+ *                                          // observed (`availableSecrets`,
+ *                                          // null when unreadable). Omit it
+ *                                          // and the caller sends its shared
+ *                                          // GitHub-App-shaped arguments
+ *                                          // unchanged. MUST return a typed
+ *                                          // 'ERROR: ' string in `error`
+ *                                          // rather than prompting: the
+ *                                          // callers are unattended preflight
+ *                                          // and self-heal paths, where an
+ *                                          // out-of-band prompt stalls a
+ *                                          // sprint. MUST pass a secret as a
+ *                                          // {{secure.NAME}} placeholder,
+ *                                          // never a value -- resolution is
+ *                                          // hub-side (see ./azure-devops.mjs).
  *     defaultAuthMode: string|null        // OPTIONAL, but declaring it (even
  *                                          // as null) is what makes a provider
  *                                          // part of resolveProvider()'s/
@@ -33,12 +114,91 @@
  *                                          // classification-only provider
  *                                          // (generic-git, dolt) that is not a
  *                                          // member-facing VCS auth backend.
+ *     pullRequestResponse: {              // OPTIONAL; response axis
+ *       idField: string,                  //   apra-fleet-lzfv.4. How to read a
+ *       webUrlField: string|null,         //   create-pull-request 2xx response
+ *       webUrlTemplate: string|null,      //   BODY, which is as provider-
+ *       map: (body, ctx) => { id, url }   //   specific as the request is:
+ *     }                                   //   GitHub answers with `number` +
+ *                                          //   `html_url`, Azure DevOps with
+ *                                          //   `pullRequestId` and NO web-URL
+ *                                          //   field at all (its `url` is the
+ *                                          //   REST resource, not a page), so
+ *                                          //   its browsable URL must be
+ *                                          //   CONSTRUCTED from the request's
+ *                                          //   own org/project/repo plus the
+ *                                          //   returned id. Declaring the
+ *                                          //   mapping on the descriptor is
+ *                                          //   what keeps either dialect out
+ *                                          //   of the shared caller, which
+ *                                          //   until this hook existed read
+ *                                          //   `html_url` off the body itself.
+ *                                          //   `idField`/`webUrlField`/
+ *                                          //   `webUrlTemplate` are the
+ *                                          //   DECLARATION (what a consumer
+ *                                          //   mirroring this contract in
+ *                                          //   another language/package
+ *                                          //   restates); `map` is the single
+ *                                          //   executable source of truth and
+ *                                          //   MUST read those same declared
+ *                                          //   fields rather than repeat them.
+ *                                          //   `map` MUST NOT throw and MUST
+ *                                          //   return { id: number|null,
+ *                                          //   url: string|null } -- an
+ *                                          //   unreadable id or a coordinate
+ *                                          //   missing from `ctx` yields null,
+ *                                          //   never a guessed value, so a
+ *                                          //   successful PR is never turned
+ *                                          //   into a crash by its own
+ *                                          //   reporting step. `ctx` is the
+ *                                          //   request-side coordinates
+ *                                          //   (org/project/repo, or a
+ *                                          //   `repoRef` object -- the same
+ *                                          //   shape the builders take); a
+ *                                          //   provider whose body is
+ *                                          //   self-sufficient ignores it.
  *     builders:   { [action]: Function }|null  // create-pull-request/comment
  *                                                // command builders; null means
  *                                                // "known provider, action(s)
  *                                                // not yet implemented" (fails
  *                                                // closed with a typed ERROR:,
  *                                                // never a silently wrong command)
+ *     authRemedy: {                       // OPTIONAL; auth-self-heal axis
+ *       serverSideReMintable: boolean,    //   (apra-fleet-5co8.4.2). Whether
+ *       hint: string                      //   the REACTIVE self-heal callback
+ *     }                                   //   (runner.js's
+ *                                          //   createVcsAuthSelfHealCallback)
+ *                                          //   can actually fix an
+ *                                          //   auth-classified failure by
+ *                                          //   calling provision_vcs_auth
+ *                                          //   again on its own: true for a
+ *                                          //   GitHub App installation token
+ *                                          //   (minted fresh server-side
+ *                                          //   every call) or a credential the
+ *                                          //   fleet can otherwise regenerate
+ *                                          //   without a human; false for a
+ *                                          //   long-lived PAT/app password the
+ *                                          //   fleet only ever stores and
+ *                                          //   redeploys, never mints (see
+ *                                          //   ./azure-devops.mjs) -- re-
+ *                                          //   provisioning there just
+ *                                          //   redeploys the SAME dead
+ *                                          //   secret, so the self-heal
+ *                                          //   attempt is expected to fail
+ *                                          //   again. `hint` is the exact
+ *                                          //   operator-facing remedy text
+ *                                          //   printed alongside the self-
+ *                                          //   heal attempt when
+ *                                          //   `serverSideReMintable` is
+ *                                          //   false, so a provider-specific
+ *                                          //   literal never leaks into the
+ *                                          //   shared runner.js caller.
+ *                                          //   Omitting this hook (or
+ *                                          //   omitting `serverSideReMintable`
+ *                                          //   from it) means "assume
+ *                                          //   re-mintable" -- the
+ *                                          //   pre-existing GitHub/generic
+ *                                          //   behavior, unchanged.
  *   }
  *
  * The manifest is an explicit import list rather than a directory scan on
@@ -92,6 +252,22 @@ export function registerVcsProvider(impl) {
     if (impl.extractProviderCode != null && typeof impl.extractProviderCode !== 'function') {
         throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`extractProviderCode\`.`);
     }
+    // apra-fleet-5co8.1.1: the host/URL-axis hooks. All OPTIONAL (a
+    // classification-only provider declares none of them), but validated up
+    // front for the same reason as `extractProviderCode` above -- a malformed
+    // hook must fail at registration, not inside resolveVcsProviderForHost()
+    // or a remote-URL preflight where the error would mask the real failure.
+    for (const hook of ['matchesHost', 'matchesHostForAuth', 'capabilitiesForHost', 'parseRepoRef', 'buildProvisionArgs']) {
+        if (impl[hook] != null && typeof impl[hook] !== 'function') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`${hook}\`.`);
+        }
+    }
+    // apra-fleet-5co8.1.2: the remedy text quoted into a preflight ERROR. A
+    // non-string here would land the literal 'undefined'/'[object Object]' in
+    // an operator-facing error, so reject it at registration too.
+    if (impl.repoRefHint != null && typeof impl.repoRefHint !== 'string') {
+        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-string \`repoRefHint\`.`);
+    }
     // apra-fleet-647.1.5.1: the two auth-backend fields folded in from
     // vcs-module.mjs's former BUILDERS/DEFAULT_AUTH_MODES tables. Both are
     // OPTIONAL (a classification-only provider like generic-git/dolt omits
@@ -99,6 +275,46 @@ export function registerVcsProvider(impl) {
     // same rationale as `rules`/`extractProviderCode` above.
     if (Object.prototype.hasOwnProperty.call(impl, 'defaultAuthMode') && impl.defaultAuthMode !== null && typeof impl.defaultAuthMode !== 'string') {
         throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-string, non-null \`defaultAuthMode\`.`);
+    }
+    // apra-fleet-lzfv.4: the create-pull-request RESPONSE mapping. OPTIONAL
+    // (a classification-only provider, or one with no PR builder, declares
+    // none), but validated up front for the same reason as the hooks above --
+    // a malformed mapping must fail at registration, not while reporting an
+    // already-created pull request, where the error would mask a success.
+    if (impl.pullRequestResponse != null) {
+        const prr = impl.pullRequestResponse;
+        if (typeof prr !== 'object') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`pullRequestResponse\`.`);
+        }
+        if (typeof prr.idField !== 'string' || !prr.idField.trim()) {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with no non-empty string \`idField\`.`);
+        }
+        if (typeof prr.map !== 'function') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with a non-function \`map\`.`);
+        }
+        for (const field of ['webUrlField', 'webUrlTemplate']) {
+            if (prr[field] != null && typeof prr[field] !== 'string') {
+                throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with a non-string, non-null \`${field}\`.`);
+            }
+        }
+    }
+    // apra-fleet-5co8.4.2: the auth-self-heal remedy axis. OPTIONAL (omitting
+    // it means "assume re-mintable", the pre-existing behavior), but
+    // validated up front for the same reason as the hooks above -- a
+    // malformed remedy must fail at registration, not while reporting an
+    // already-failed self-heal attempt, where the error would mask the real
+    // auth failure.
+    if (impl.authRemedy != null) {
+        const remedy = impl.authRemedy;
+        if (typeof remedy !== 'object') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`authRemedy\`.`);
+        }
+        if (typeof remedy.serverSideReMintable !== 'boolean') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has an \`authRemedy\` with a non-boolean \`serverSideReMintable\`.`);
+        }
+        if (typeof remedy.hint !== 'string' || !remedy.hint.trim()) {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has an \`authRemedy\` with no non-empty string \`hint\`.`);
+        }
     }
     if (impl.builders != null) {
         if (typeof impl.builders !== 'object') {
@@ -211,6 +427,39 @@ export function resolveVcsProviderForHost(host) {
         }
     }
     return registry.get('generic-git') || GenericGitVCS;
+}
+
+/**
+ * The CREDENTIAL-PROVISIONING sibling of resolveVcsProviderForHost().
+ *
+ * Same dispatch, one deliberate difference: a provider that declares
+ * `matchesHostForAuth` is asked THAT instead of `matchesHost`. Recognizing a
+ * host for capabilities() ("could a PR be opened here?") is cheap to get
+ * wrong -- the worst case is a PR attempt that fails. Recognizing it for auth
+ * is not: the caller mints a real push credential and points it at the host,
+ * so a substring matcher (see ./github.mjs's matchesHost, deliberately wide
+ * for GitHub Enterprise Server) would hand that credential to any lookalike
+ * domain containing the vendor name. Providers whose matcher is already
+ * anchored (bitbucket, azure-devops) declare no separate hook and are
+ * unaffected.
+ *
+ * Returns null rather than the generic-git catch-all: "no registered auth
+ * backend claims this host" is the answer a provisioning caller needs, and a
+ * catch-all descriptor there would read as a detection when it is a guess.
+ *
+ * @param {string|null} host
+ * @returns {object|null} an auth-backend provider descriptor, or null.
+ */
+export function resolveVcsAuthProviderForHost(host) {
+    for (const provider of [...registry.values()].reverse()) {
+        if (provider.name === 'generic-git') continue;
+        if (!isAuthBackend(provider)) continue;
+        const matcher = typeof provider.matchesHostForAuth === 'function'
+            ? provider.matchesHostForAuth
+            : provider.matchesHost;
+        if (typeof matcher === 'function' && matcher(host)) return provider;
+    }
+    return null;
 }
 
 for (const impl of BUILT_IN_PROVIDERS) registerVcsProvider(impl);

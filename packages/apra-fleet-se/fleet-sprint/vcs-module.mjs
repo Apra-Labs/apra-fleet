@@ -37,6 +37,8 @@ import {
     getVcsProvider,
     resolveVcsProviderChain,
     resolveVcsProviderForHost,
+    resolveVcsAuthProviderForHost,
+    isAuthBackend,
 } from './vcs-providers/index.mjs';
 
 /**
@@ -117,6 +119,21 @@ export function buildCreatePrCommand(params) {
  * @param {{ fleetApi: { memberDetail: (opts: { member_name: string, format?: string }) => Promise<any> } }} opts
  * @returns {Promise<{ provider: string, authMode: string|null }>}
  */
+/**
+ * The `code` resolveProvider() stamps on the ONE failure that means "this
+ * member simply has no usable registered VCS provider" -- as opposed to a
+ * member_detail RPC failure, an unresolvable member name, or a malformed
+ * response, all of which resolveProvider() also throws for.
+ *
+ * A caller that wants to self-heal ONLY that case (runner.js's dispatch-time
+ * VCS-provider fallback) must be able to tell them apart: applying a
+ * git-remote-derived guess after a network blip would paper over a real
+ * failure with a possibly-wrong provider. Matching on the message text would
+ * make that wording load-bearing, so the signal is a stable property instead.
+ * @type {string}
+ */
+export const VCS_NO_REGISTERED_PROVIDER = 'VCS_NO_REGISTERED_PROVIDER';
+
 export async function resolveProvider(member, { fleetApi } = {}) {
     if (!fleetApi || typeof fleetApi.memberDetail !== 'function') {
         throw new Error(`ERROR: VCSModule: resolveProvider requires an injected fleetApi.memberDetail() -- cannot resolve a VCS provider for member '${member}' without one.`);
@@ -149,7 +166,11 @@ export async function resolveProvider(member, { fleetApi } = {}) {
 
     const provider = parsed && typeof parsed.vcsProvider === 'string' ? parsed.vcsProvider : null;
     if (!provider || !known.includes(provider)) {
-        throw new Error(`ERROR: VCSModule: resolveProvider: member '${member}' has no registered VCS provider (vcsProvider: ${provider ? `"${provider}"` : '(absent)'}) -- known providers: ${known.join(', ')}. Provision one via provision_vcs_auth with an explicit 'provider' before relying on resolveProvider.`);
+        const err = new Error(`ERROR: VCSModule: resolveProvider: member '${member}' has no registered VCS provider (vcsProvider: ${provider ? `"${provider}"` : '(absent)'}) -- known providers: ${known.join(', ')}. Provision one via provision_vcs_auth with an explicit 'provider' before relying on resolveProvider.`);
+        // See VCS_NO_REGISTERED_PROVIDER above: this is the only failure a
+        // caller may self-heal from, so it is the only one that carries a code.
+        err.code = VCS_NO_REGISTERED_PROVIDER;
+        throw err;
     }
 
     const impl = getVcsProvider(provider);
@@ -404,8 +425,59 @@ export function capabilities(remoteUrl) {
     return { hasRemote: true, canOpenPullRequest: !!providerCaps.canOpenPullRequest, host: parsed.host };
 }
 
+/**
+ * Resolve a git remote URL into the repository coordinates its OWN provider
+ * defines, by dispatching to that provider's optional parseRepoRef() hook
+ * (apra-fleet-5co8.1.2). This is the shared half of the remote-URL axis: the
+ * host is parsed here, the provider is chosen by the registry, and every
+ * provider-specific rule -- which URL shapes are legal, what the coordinates
+ * are called, what shape to tell the operator to use -- lives in the provider
+ * file, so no caller (runner.js in particular) needs a provider conditional.
+ *
+ * Three outcomes, deliberately distinct so a caller can tell "not my business"
+ * apart from "your remote is wrong":
+ *   - null            no provider claims this host, or the claiming provider
+ *                     has no parseRepoRef hook. The caller keeps its own
+ *                     generic owner/repo parse -- behavior unchanged for
+ *                     GitHub and every other provider.
+ *   - { canonical, ref, provider }
+ *                     the provider recognized the remote; `canonical` is its
+ *                     display/identity key (e.g. org/project/repo for Azure
+ *                     DevOps) and `ref` the full coordinate object.
+ *   - { error }       the provider CLAIMS this host but does not recognize the
+ *                     URL -- a malformed remote, not an unknown one. A typed
+ *                     'ERROR: ' string naming the shape the provider expects
+ *                     (its optional `repoRefHint`), for the caller to surface
+ *                     as a preflight failure rather than proceeding with
+ *                     half-parsed coordinates.
+ *
+ * @param {unknown} remoteUrl
+ * @returns {{ canonical: string, ref: object, provider: string }|{ error: string }|null}
+ */
+export function parseProviderRepoRef(remoteUrl) {
+    const url = String(remoteUrl ?? '').trim();
+    const parsed = parseRemote(url);
+    if (!parsed || !parsed.host) return null;
+
+    const provider = resolveVcsProviderForHost(parsed.host);
+    if (!provider || typeof provider.parseRepoRef !== 'function') return null;
+
+    const ref = provider.parseRepoRef(url);
+    if (ref && typeof ref.canonical === 'string' && ref.canonical) {
+        return { canonical: ref.canonical, ref, provider: provider.name };
+    }
+
+    const hint = (typeof provider.repoRefHint === 'string' && provider.repoRefHint.trim())
+        ? provider.repoRefHint.trim()
+        : '(this provider documents no expected remote shape)';
+    return {
+        error: `ERROR: git remote '${url}' is claimed by VCS provider '${provider.name}' but is not a repository URL it recognizes; expected the shape ${hint}`,
+    };
+}
+
 export const VCSModule = {
     buildCreatePrCommand,
+    parseProviderRepoRef,
     buildCommentCommand,
     classifyFailure,
     toGitVerdict,
@@ -418,6 +490,10 @@ export const VCSModule = {
     listVcsProviders,
     listVcsAuthProviders,
     getVcsProvider,
+    resolveVcsProviderForHost,
+    resolveVcsAuthProviderForHost,
+    isAuthBackend,
+    VCS_NO_REGISTERED_PROVIDER,
     DEFAULT_VCS_PROVIDER,
 };
 
@@ -430,6 +506,19 @@ export {
     listVcsProviders,
     listVcsAuthProviders,
     getVcsProvider,
+    // apra-fleet-5oo: re-exported so runner.js can ask "which registered
+    // provider claims this remote host?" without reaching past this module
+    // into ./vcs-providers/index.mjs directly -- same seam every other
+    // provider-registry helper above is reached through.
+    resolveVcsProviderForHost,
+    // apra-fleet-5oo review fix: the credential-provisioning sibling of the
+    // above (anchored host matching, auth backends only), plus the predicate
+    // that defines "auth backend" -- reached through this same seam rather
+    // than runner.js reaching past it into ./vcs-providers/index.mjs.
+    resolveVcsAuthProviderForHost,
+    isAuthBackend,
+    // VCS_NO_REGISTERED_PROVIDER is already exported at its `export const`
+    // declaration above -- listing it again here is a duplicate-export error.
 };
 
 export default VCSModule;

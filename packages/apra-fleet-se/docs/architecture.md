@@ -25,7 +25,11 @@ truth for what a caller (the CLI, or a test bypassing the CLI and calling
 
 - Rejects any key not in `KNOWN_ARG_KEYS` (`target_issues`, `target_issue`
   [legacy single-issue form], `members`, `branch`, `base_branch`, `goal`,
-  `max_cycles`, `requirementsFile`, `roleMap`, `budget`).
+  `max_cycles`, `requirementsFile`, `roleMap`, `budget`,
+  `dispatch_timeout_s`, `serviceUrl`, `run_id`, `assignee`,
+  `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`,
+  `azdevops_pat_secret_name`, `callTool`). Several of these have no CLI flag
+  and are programmatic/test-only -- see `docs/fleet-sprint-cli-contract.md`.
 - Re-validates issue ids and branch names against the same
   `ISSUE_ID_PATTERN`/`BRANCH_NAME_PATTERN` the CLI already checked (A7
   defense-in-depth: a malformed id/branch name can never reach a `command()`
@@ -294,20 +298,21 @@ runner-owned policy table, not a live read of fleet configuration):
 | `reviewer` | `premium` | Vendored contract: "always use model: premium" |
 | `deployer` | `standard` | Mostly mechanical: follow `deploy.md` |
 | `integ-test-runner` | `standard` | Mostly mechanical: follow `integ-test-playbook.md` |
+| `regression-test-runner` | `standard` | Mostly mechanical: follow `regression-test-playbook.md` |
 | `harvester` | `standard` | Docs/CHANGELOG synthesis, not code-critical |
+| `streakAssignment` | `cheap` | This runner's own "group these ready bead ids" call -- a small, fully-specified classification task with no vendored persona |
 
 These tier keywords (`cheap`/`standard`/`premium`) are resolved to a concrete
 model **per member, server-side** (`execute-prompt.ts`'s
 `resolveModelForTier()`, via each member's registered `model_tiers`) -- this
 is what makes a mixed-provider fleet (Claude, AGY, Codex, Copilot,
-OpenCode, ...) work correctly. Earlier revisions of this runner hardcoded
-Claude-specific literal model names (`opus`/`sonnet`) here instead. That was
-a real bug, not a stylistic choice: a fixed `opus` dispatch to a non-Claude
-member was passed through verbatim as a literal model ID that meant nothing
-to that provider, silently assuming a Claude-only fleet regardless of the
-member's actual provider. The fix (apra-fleet-dv5) was to stop emitting
-Claude-specific literals here and use the provider-agnostic tier vocabulary
-instead.
+OpenCode, ...) work correctly. Never emit a provider-specific literal model
+name (`opus`, `sonnet`, ...) from this table or any other dispatch site: such
+a literal is passed through verbatim as a model ID, so a fixed `opus`
+dispatch to a non-Claude member means nothing to that provider and silently
+assumes a Claude-only fleet regardless of the member's actual provider. The
+tier vocabulary exists precisely so that resolution happens per member,
+server-side.
 
 `doer` dispatches instead price themselves off the **per-bead model tier**
 the planner recorded as beads metadata (`bd create ... --metadata
@@ -412,13 +417,18 @@ VCSModule replaces that with a provider-agnostic seam:
   never pattern-matches host-specific text itself. Only the raw text is
   host-specific; the `kind` it resolves to never is.
 - **A provider registry**, one file per provider (GitHub and a generic-git
-  fallback ship built in; Azure DevOps/Bitbucket/GitLab are structured as
-  drop-in additions), each exporting a descriptor of failure-text patterns
-  plus a `capabilities()` table declaring which failure kinds that provider
-  can ever produce. Adding a provider is adding one file to the registry and
+  fallback ship built in; Bitbucket/GitLab are structured as drop-in
+  additions; Azure DevOps is fully registered, not just structured as one --
+  it carries its own host/URL parsing, failure classification, PR/comment
+  REST builders and a `capabilities()` table with `canOpenPullRequest: true`),
+  each exporting a descriptor of failure-text patterns plus a
+  `capabilities()` table declaring which failure kinds that provider can ever
+  produce. Adding a provider is adding one file to the registry and
   registering it -- not editing the runner's dispatch/classification logic.
   A synthetic/unregistered provider still classifies correctly through the
   generic-git fallback rather than falling through to `unknown` by default.
+  See the repo-root `docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
+  own credential-assembly, PR-response-mapping and PAT-lifetime details.
 - **The member registry, not a hardcoded literal, decides which provider
   applies.** A member's configured VCS provider is resolved from its
   registration and threaded into every classification and PR-creation call
@@ -523,7 +533,7 @@ Both primitives exist in **two independent implementations that must stay
 semantically identical**, not because of duplication oversight but because
 neither host alone can reach every launch topology:
 
-- The **supervisor** (`fleet-se serve`) hosts the original mutex/allocator
+- The **supervisor** (`fleet-se-serve`) hosts the original mutex/allocator
   (`src/supervisor/dolt-mutex.mjs`, `src/supervisor/id-allocator.mjs`) over
   its own HTTP routes, reachable by any sprint launched *through* the
   supervisor via `--service-url`. This covers supervisor-launched sprints
@@ -866,16 +876,16 @@ off by default (zero I/O, zero behavior change, unless a caller opts in).
 
 **`fleet-sprint`'s CLI does not currently expose flags for this** --
 `bin/cli.mjs`'s call to `engine.executeFile()` passes neither `journal` nor
-`resumeJournal`, so every `fleet-se sprint` run today executes live with no
+`resumeJournal`, so every `fleet-sprint` run today executes live with no
 journal written. The mechanism is available to any direct caller of
 `engine.executeFile('fleet-sprint/runner.js', args, { journal: true })` (e.g.
 a test, or a future CLI flag), and this package's own tests exercise it
 (see `packages/apra-fleet-se/test/`), but there is no supported way to
-resume a crashed `fleet-se sprint` invocation from the CLI today.
+resume a crashed `fleet-sprint` invocation from the CLI today.
 
 ## Supervisor: reservation ledger and scope freshness (apra-fleet-eft.5)
 
-`fleet-se serve` (`bin/serve.mjs`, `src/supervisor/`) is a separate, always-on
+`fleet-se-serve` (`bin/serve.mjs`, `src/supervisor/`) is a separate, always-on
 process from the per-sprint `bin/cli.mjs` invocation described above. It owns
 one combined reservation ledger (`src/supervisor/ledger.mjs`) that claims two
 axes per launched sprint in lockstep -- the reserved member set and the
@@ -891,10 +901,25 @@ The check runs strictly before `ledger.claim()`, so a rejected launch never
 touches the ledger.
 
 **Issue-scope overlap** (`src/supervisor/scope-overlap.mjs`): re-expands each
-sprint's live parent-child subtree (via `bd list --parent`, one id at a time,
-walked breadth-first) at every launch attempt rather than trusting a
-launch-time snapshot, so a bead created mid-sprint under an already-claimed
-root is still detected.
+sprint's live parent-child subtree at every launch attempt rather than
+trusting a launch-time snapshot, so a bead created mid-sprint under an
+already-claimed root is still detected.
+
+Expansion is done from ONE bulk `bd list --all --limit 0 --json` per
+`checkLaunch()`, with the child index built in memory and both the request's
+roots and every ledger sprint's roots walked from that same index -- the same
+pattern `backlog.mjs` and `runner.js`'s `bdListScoped` use. It previously
+spawned one `bd list --parent <id>` subprocess per discovered node,
+sequentially, and then repeated the whole walk per active sprint, which turned
+a ~45-bead epic into minutes of pre-response latency (this guard is awaited
+before `POST /api/sprints` answers). The per-node walk survives only as an
+injectable test seam.
+
+The `--all` is load-bearing, not an optimization: `bd list` hides closed
+issues by default, so a CLOSED intermediate parent silently dropped its OPEN
+subtree from the overlap check, and two sprints with genuinely overlapping
+open work could both launch. The bulk version is strictly more complete than
+the per-node walk it replaced.
 
 **Known best-effort limitation -- scope freshness.** Both overlap checks above
 reason over the supervisor process's OWN service-local view of `bd` state.
@@ -930,7 +955,7 @@ bug.
 
 ## Supervisor: process model
 
-`fleet-se serve` boots one always-on process that owns the reservation ledger
+`fleet-se-serve` boots one always-on process that owns the reservation ledger
 and an HTTP API, and never exits because a sprint finished or a sprint's child
 process crashed -- it exits only on an explicit shutdown request or signal.
 Each sprint runs as the *existing* per-sprint CLI, launched fully detached
@@ -1047,8 +1072,10 @@ loader tries a build artifact directory first, then falls back to the
 package-local (shipped) schema directory, then to hand-written literal
 schemas. A guarded, falling-back read of a source-only path is fine; an
 unguarded import of one is the self-containment bug this invariant exists to
-prevent. See `packages/apra-fleet-se/docs/supervisor-selfcontainment-audit.md`
-for the full enumerated audit of every supervisor-reachable module.
+prevent. `test/installed-supervisor.test.mjs` is the enforcing guard: it
+builds a real installed tree and walks the full static import graph from the
+installed `bin/serve.mjs`, so it is also the authoritative, always-current
+enumeration of which modules the supervisor reaches.
 
 ## Dashboard
 

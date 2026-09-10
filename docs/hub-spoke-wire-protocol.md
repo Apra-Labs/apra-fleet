@@ -171,9 +171,8 @@ large payloads are doing.
 - **Member-level status** (online/busy, per apra-fleet-2xs.7's local state
   machine) is carried as a field inside `presence.announce`/incremental
   status-change envelopes (a lighter-weight `presence.member_status`
-  sub-kind may be added when 2xs.7 lands; this document reserves the name
-  but does not spec its body, since 2xs.7 is tier-2-local and unimplemented
-  as of this writing) -- the hub relays it upward for dashboard display and
+  sub-kind may be added later; this document reserves the name but does not
+  spec its body) -- the hub relays it upward for dashboard display and
   downward to OTHER spokes in the workspace that need to know (e.g. a
   caller deciding mode (a) vs (b) for a remote execute_prompt must know the
   TARGET's status, which lives on the target's machine -- this is why

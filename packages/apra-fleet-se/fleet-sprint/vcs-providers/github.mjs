@@ -26,45 +26,11 @@
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
+import { shQuote, shQuoteJson, curlBinary, assertToken } from './shell-helpers.mjs';
 
 const GITHUB_API = 'https://api.github.com';
 const REDACTED = '***REDACTED***';
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
-
-/** Single-quote a string for embedding in a shell command. The built curl
- *  command is dispatched through the member's own shell -- POSIX sh/bash
- *  closes/reopens the quote around an embedded single quote ('\''), but
- *  Windows PowerShell (the shell every Windows member's commands actually
- *  run through -- see wrapPowerShellEncoded()/isWindows in
- *  src/tools/remove-member.ts) escapes an embedded single quote inside a
- *  single-quoted string by DOUBLING it (''), not by backslash-closing. Using
- *  the POSIX form on a Windows member breaks the quoting outright (observed
- *  live: Publish PR crashing on any title/body containing an apostrophe).
- *  `os` is one of resolveMemberOs()'s return values ('windows'/'linux'/
- *  'darwin'); anything other than 'windows' keeps the POSIX behavior
- *  byte-identical to before this branch existed. */
-function shQuote(value, os) {
-    if (os === 'windows') {
-        return `'${String(value).replace(/'/g, "''")}'`;
-    }
-    return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
-
-/** Which curl binary token to emit for a given member OS. On Windows the bare
- *  word `curl` is a built-in PowerShell alias for Invoke-WebRequest, NOT the
- *  real curl -- Invoke-WebRequest's -Headers parameter wants a hashtable, not
- *  curl's repeatable `-H 'k: v'` string syntax, so a bare `curl -H ...`
- *  command sent to a Windows/PowerShell member fails with a parameter-bind
- *  error (observed live on the Publish PR step). The real curl.exe binary has
- *  shipped in %SystemRoot%\System32 since Windows 10 1803 and is resolvable
- *  from PowerShell's default PATH (verified locally: `where curl.exe` and
- *  `Get-Command curl.exe` both resolve on a live Windows box), so emitting
- *  the explicit `curl.exe` token sidesteps the alias entirely without
- *  needing a different request mechanism. Non-Windows os values keep the
- *  bare `curl` token byte-identical to before this branch existed. */
-function curlBinary(os) {
-    return os === 'windows' ? 'curl.exe' : 'curl';
-}
 
 function assertRepo(repo) {
     const value = String(repo ?? '').trim();
@@ -74,18 +40,10 @@ function assertRepo(repo) {
     return value;
 }
 
-function assertToken(token) {
-    const value = String(token ?? '');
-    if (!value) {
-        throw new Error('ERROR: VCSModule: no token supplied -- caller must mint one via provision_vcs_auth before calling VCSModule.');
-    }
-    return value;
-}
-
 /** Build the GitHub REST "create pull request" curl command.
  *  POST /repos/{owner}/{repo}/pulls -- see
  *  https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request */
-function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os }) {
+function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os, shell }) {
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
@@ -99,12 +57,12 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os }
 
     const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X POST`,
-        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os)}`,
-        `-H ${shQuote('Accept: application/vnd.github+json', os)}`,
-        `-H ${shQuote('Content-Type: application/json', os)}`,
-        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os)}`,
-        `-d ${shQuote(payloadJson, os)}`,
-        `-w ${shQuote('\n%{http_code}', os)}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
 
@@ -132,7 +90,7 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os }
  *  raised (rather than opening a second PR for the same head).
  *  POST /repos/{owner}/{repo}/issues/{issue_number}/comments -- see
  *  https://docs.github.com/en/rest/issues/comments#create-an-issue-comment */
-function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token, os }) {
+function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token, os, shell }) {
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     if (!issueNumber) throw new Error('ERROR: VCSModule: "issue_number" is required to build a comment command.');
@@ -143,12 +101,12 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
 
     const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X POST`,
-        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os)}`,
-        `-H ${shQuote('Accept: application/vnd.github+json', os)}`,
-        `-H ${shQuote('Content-Type: application/json', os)}`,
-        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os)}`,
-        `-d ${shQuote(payloadJson, os)}`,
-        `-w ${shQuote('\n%{http_code}', os)}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
 
@@ -162,6 +120,46 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
         },
     };
 }
+
+// ---------------------------------------------------------------------------
+// Pull-request RESPONSE mapping (apra-fleet-lzfv.4)
+// ---------------------------------------------------------------------------
+//
+// GitHub's create-pull-request 2xx body carries the PR number as `number` and
+// the browsable page as `html_url`. That mapping was previously IMPLICIT -- a
+// consumer (runner.js's raiseVcsPrForMember) read `html_url` off the body
+// directly, which is a GitHub dialect literal living in a provider-agnostic
+// caller. It is declared here instead, so a provider whose body speaks a
+// different dialect (see ./azure-devops.mjs: `pullRequestId`, and no web-URL
+// field at all) is read through the SAME descriptor hook rather than a caller
+// branch. See ./index.mjs for the contract.
+
+const PR_ID_FIELD = 'number';
+const PR_WEB_URL_FIELD = 'html_url';
+
+/** Map a GitHub create-pull-request response body to { id, url }. Reads the
+ *  DECLARED field names above rather than hardcoding them a second time, and
+ *  reproduces runner.js's historical behavior exactly: a missing or non-string
+ *  `html_url` yields `url: null` rather than a guessed URL. `ctx` is unused --
+ *  GitHub's body already carries the browsable URL. */
+function mapPullRequestResponse(body, _ctx) {
+    const source = (body && typeof body === 'object') ? body : {};
+    const rawId = source[PR_ID_FIELD];
+    let id = null;
+    if (typeof rawId === 'number' && Number.isFinite(rawId)) id = rawId;
+    else if (typeof rawId === 'string' && /^\d+$/.test(rawId.trim())) id = Number(rawId.trim());
+    const rawUrl = source[PR_WEB_URL_FIELD];
+    return { id, url: typeof rawUrl === 'string' ? rawUrl : null };
+}
+
+const pullRequestResponse = Object.freeze({
+    idField: PR_ID_FIELD,
+    webUrlField: PR_WEB_URL_FIELD,
+    // The web URL is READ from the body, never constructed, so there is no
+    // template -- contrast ./azure-devops.mjs.
+    webUrlTemplate: null,
+    map: mapPullRequestResponse,
+});
 
 /** GitHub's credential-rejection literals. "remote: Invalid username or
  *  token/password" is what a git push over HTTPS gets back from GitHub with a
@@ -217,6 +215,34 @@ function matchesHost(host) {
     return typeof host === 'string' && /github/i.test(host);
 }
 
+/** github.com and its ssh/www aliases -- ANCHORED. Kept character-for-
+ *  character in step with src/utils/vcs-provider-detect.ts's
+ *  GITHUB_HOST_RE (the registration-time half of the same decision). */
+const AUTH_HOST_RE = /^(?:www\.|ssh\.)?github\.com$/i;
+
+/** Host-recognition for the CREDENTIAL-PROVISIONING axis
+ *  (resolveVcsAuthProviderForHost() in ./index.mjs), deliberately NARROWER
+ *  than matchesHost() above.
+ *
+ *  matchesHost() is a substring test on purpose: it answers "can this host
+ *  open a pull request?" for capabilities(), and a GitHub Enterprise Server
+ *  install has no fixed domain, so the vendor name in the hostname is the
+ *  only portable signal (pinned by test/vcs-capabilities-table.test.mjs).
+ *  Answering YES there costs nothing -- the worst case is a PR attempt that
+ *  fails.
+ *
+ *  Auto-PROVISIONING is a different risk class entirely: it mints a real
+ *  GitHub App push credential and points it at the host. A substring test
+ *  would let a lookalike domain ("mygithubmirror.attacker.io",
+ *  "github.com.evil.example") claim this provider and receive that
+ *  credential -- exactly the leak src/utils/vcs-provider-detect.ts anchors
+ *  against on the registration-time path. So GitHub Enterprise is NOT
+ *  auto-detected for auth on either side: an operator registers a GHE
+ *  member with an explicit `vcs_provider`. */
+function matchesHostForAuth(host) {
+    return typeof host === 'string' && AUTH_HOST_RE.test(host.trim());
+}
+
 /** Every host this provider matches can open a PR via the REST call
  *  buildGitHubCreatePrCommand() builds -- github.com and GitHub Enterprise
  *  Server alike speak the same `/repos/{owner}/{repo}/pulls` shape. */
@@ -232,6 +258,7 @@ export const GitHubVCS = Object.freeze({
     }),
     extractProviderCode,
     matchesHost,
+    matchesHostForAuth,
     capabilitiesForHost,
     // apra-fleet-647.1.5.1: GitHub's own default auth mode (App, never PAT --
     // see vcs-module.mjs resolveProvider()'s header note on why this must stay
@@ -242,6 +269,9 @@ export const GitHubVCS = Object.freeze({
     // makes a provider part of resolveProvider()'s/buildVcsCommand()'s known
     // vocabulary -- see ./index.mjs's isAuthBackend().
     defaultAuthMode: 'github-app',
+    // apra-fleet-lzfv.4: GitHub's create-pull-request response dialect, stated
+    // explicitly instead of left implicit in a caller (see above).
+    pullRequestResponse,
     builders: Object.freeze({
         'create-pull-request': buildGitHubCreatePrCommand,
         comment: buildGitHubCommentCommand,

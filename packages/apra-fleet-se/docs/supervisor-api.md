@@ -19,12 +19,16 @@ Source files: `src/supervisor/api.mjs`, `server.mjs`, `dashboard.mjs`,
 `launch()` in `api.mjs` runs these checks strictly in order; any failure
 short-circuits before anything downstream runs:
 
-1. **Request-shape validation** (`validateLaunchRequest`) -- `issue` via
-   `validateIssueId`, `branch`/`base` via `validateBranchName` (both
-   imported from `fleet-sprint/runner.js` -- the SAME regexes the CLI and
-   the engine itself re-check, single source of truth), `members`
-   non-empty after normalization. Any failure -> `400` naming the field.
-2. **apra-fleet-gey.2 relaunch gate** -- looks up
+1. **Request-shape validation** (`validateLaunchRequest`) -- `issue` is
+   comma-split by `splitIssueIds()` (trim, drop empties) and then EACH id is
+   validated with `validateIssueId`; `branch`/`base` via `validateBranchName`
+   (both imported from `fleet-sprint/runner.js` -- the SAME regexes the CLI
+   and the engine itself re-check, single source of truth); `members` (a
+   string array or a comma-separated string) non-empty after normalization.
+   Any failure -> `400` naming the field. Note the split has to happen first:
+   `ISSUE_ID_PATTERN` has no comma in its charset, so an un-split `"a,b"`
+   would be rejected.
+2. **Relaunch gate** -- looks up
    `history.latestForIssueRoot(issue)`. If that prior incarnation's record
    is "deterministic" (see below) and the request did not pass
    `overrideRelaunchGate: true`, the launch is refused with `409` (field
@@ -32,7 +36,7 @@ short-circuits before anything downstream runs:
    deterministic failure will almost certainly recur immediately on an
    identical relaunch, so it is not worth burning a spawn/reservation
    attempt to re-hit it.
-3. **eft.5.2 member-overlap guard** (`defaultMemberOverlapGuard`) -- runs
+3. **Member-overlap guard** (`defaultMemberOverlapGuard`) -- runs
    only if step 2 passed. Computes the full member UNION (the request's
    `members` PLUS every value in every `roleMap` role list, including the
    `orchestrator` pseudo-role) and rejects with `409` (field `members`) if
@@ -46,31 +50,38 @@ short-circuits before anything downstream runs:
      tool and never touched this ledger at all).
    This check runs strictly BEFORE `ledger.claim()`, so a rejected launch
    never touches the ledger -- byte-identical, no partial claim.
-4. **`ledger.claim()`** -- atomically reserves both axes (member set AND
+4. **Issue-scope overlap guard** (`createScopeGuard().checkLaunch()` in
+   `src/supervisor/scope-overlap.mjs`) -- the second overlap axis, over the
+   same ledger. It runs only if the member axis passed: `bin/serve.mjs`'s
+   `composeBeforeLaunch({ memberOverlapGuard, scopeGuard })` is what the live
+   `createSprintController()` is given as its `beforeLaunch`, and it awaits
+   the member guard first, then `scopeGuard.checkLaunch(issueRoots)`. A
+   conflict throws the same `ApiError(409, ...)` shape as the member guard,
+   with field `issue` and a `formatScopeConflict()` message naming the
+   conflicting sprint(s) and the overlapping bead ids. Either axis failing
+   rejects the whole launch; a launch overlapping on neither succeeds.
+   (`expandScope()` from the same module is also used live for rendering --
+   the Backlog tree's partial-claim overlay in `backlog.mjs`.)
+   `checkLaunch()` costs ONE bulk `bd list --all --limit 0 --json` and an
+   in-memory tree walk, regardless of how many nodes the request's scope has
+   or how many sprints are active -- it used to be one `bd list --parent`
+   subprocess per node, awaited sequentially and repeated per active sprint,
+   which is why a large epic could stall this endpoint for minutes before it
+   answered. The `--all` is required for correctness, not speed: without it a
+   closed intermediate parent hides its open subtree from the overlap check.
+5. **`ledger.claim()`** -- atomically reserves both axes (member set AND
    issue-scope root) in one disk write, so they always claim/release
    together. The generated `sprintId` (`<issue>-<uuid>`) is minted BEFORE
    spawning so it can be forwarded into the child's own `--run-id` argv --
    the ledger reservation and the engine's own run-state agree on one
    identity for this launch, rather than the child falling back to reusing
    a relaunch-shared branch name.
-5. **Spawn** -- `spawner.spawnSprint()`.
+6. **Spawn** -- `spawner.spawnSprint()`.
 
-**Known gap (not enforced today): issue-scope overlap.** `docs/architecture.md`
-documents an "Issue-scope overlap" guard (`src/supervisor/scope-overlap.mjs`,
-`createScopeGuard`) as a second overlap axis alongside the member-overlap
-guard. Reading the actual wiring in `bin/serve.mjs`, `createSprintController()`
-is constructed WITHOUT a `beforeLaunch` override, so it falls back to
-`defaultMemberOverlapGuard` alone -- `createScopeGuard` is exercised only by
-unit tests (`test/supervisor-scope-overlap.test.mjs`,
-`test/supervisor-reservation.test.mjs`), never composed into the live
-`POST /api/sprints` path. In the current build, two sprints CAN be launched
-against overlapping/nested issue scopes as long as their member sets don't
-overlap -- only the member axis is actually guarded at launch time. `expandScope()`
-from the same module IS used live, but only for rendering (the Backlog
-tree's partial-claim overlay in `backlog.mjs`), not as a launch-time reject.
-This looked like a real contract inconsistency worth a bead -- flagged, not fixed.
+Both overlap guards (steps 3 and 4) run strictly before `ledger.claim()`, so
+a launch rejected on either axis leaves the ledger completely untouched.
 
-## "Deterministic terminal reason" (the gey.2 gate's trigger)
+## "Deterministic terminal reason" (the relaunch gate's trigger)
 
 A history record counts as deterministic (`isDeterministicTerminalReason()`
 in `history.mjs`) iff either:
@@ -151,8 +162,8 @@ These are two different operator actions, easy to confuse:
   observe it.
 - **`POST /api/reservations/:sprintId/force-release`** is UNCONDITIONAL: it
   releases both ledger axes immediately regardless of whether the child is
-  still alive, and (apra-fleet-3i3.1) best-effort SIGKILLs the child if a
-  pid was recorded. Use this to recover a wedged reservation whose child is
+  still alive, and best-effort SIGKILLs the child if a pid was recorded. Use
+  this to recover a wedged reservation whose child is
   unresponsive to the cooperative stop, or already gone but never observed
   as released. It records a `force-released` history event and echoes back
   enough of the original launch (`branch`, `base`, `goal`, `childPid`,
@@ -202,7 +213,8 @@ spawner injected as `FLEET_SE_SERVICE_URL`, not a side channel.
 Three different "look at sprint :id" surfaces that are easy to conflate:
 
 - **`/sprints/:id/live` (+ `/live/events`, `/live/state`, `/live/stop`,
-  `/live/save_logs`, `/live/extensions/...`, `/live/activities/...`)** is a
+  `/live/pause`, `/live/resume`, `/live/save_logs`, `/live/extensions/...`,
+  `/live/activities/...`)** is a
   REVERSE PROXY to the still-running child's own `--viewer-port` HTTP
   server -- it only works while the child is alive and its port is known.
   The base route (`/sprints/:id/live` with no suffix) is the one exception:
@@ -244,8 +256,9 @@ directory.
   port and no history (`/sprints/:id/live` subpaths), no persisted state
   (`/sprints/:id/history`), no recorded/on-disk log
   (`/sprints/:id/log`, `/supervisor/log`).
-- **409** -- used ONLY by `POST /api/sprints` (relaunch gate, member-overlap
-  guard) and `POST /api/sprints/:id/stop` (reservation exists but no
+- **409** -- used ONLY by `POST /api/sprints` (relaunch gate and member-overlap
+  guard, both field `issue`/`members`; plus the issue-scope overlap guard,
+  field `issue`) and `POST /api/sprints/:id/stop` (reservation exists but no
   reachable child port). The dolt-mutex and id-allocator surfaces
   deliberately never use 409 -- see above.
 - **500** -- generic unhandled-error isolation (`server.mjs`'s dispatcher

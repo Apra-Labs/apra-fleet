@@ -7,6 +7,7 @@ import { getStrategy } from '../services/strategy.js';
 import { testAuthConnection } from '../services/ssh.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getOsCommands } from '../os/index.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { logLine } from '../utils/log-helpers.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
 import type { Agent } from '../types.js';
@@ -87,7 +88,7 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
     fs.writeFileSync(publicKeyPath, opensshPubKey, { mode: 0o644 });
 
     // Step 2: Deploy public key to remote using OS-specific commands
-    const cmds = getOsCommands(agent.os ?? 'linux');
+    const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
     const deployCommands = cmds.deploySSHPublicKey(opensshPubKey);
 
     for (const cmd of deployCommands) {

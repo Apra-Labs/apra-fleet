@@ -2,6 +2,7 @@ import type { Agent } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import { getStrategy } from '../services/strategy.js';
 import { getProvider } from '../providers/index.js';
+import { getAgentShell } from './agent-helpers.js';
 import { logLine, logWarn } from './log-helpers.js';
 
 /**
@@ -32,6 +33,9 @@ export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy,
       agent.workFolder,
       (command: string, timeoutMs?: number) => strat.execCommand(command, timeoutMs),
       agent.os,
+      // The member's REGISTERED shell, not just its OS: a gitbash Windows
+      // member needs POSIX trust-seeding strings (apra-fleet-7dir.2.8).
+      getAgentShell(agent),
     );
     logLine(tag, `workspace trust for "${agent.friendlyName}": ${result.detail}`, agent);
   } catch (e: any) {

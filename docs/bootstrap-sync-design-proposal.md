@@ -236,16 +236,14 @@ requirements, not left as suggestions):**
 ## Status after round 2 -- AGREED
 
 All 5 questions settled with zero open objections from fleet-dashboard's
-round 2 response. Two prerequisites now block implementation, both on
-fleet-dashboard's side, both already correctly sequenced into the beads
-below rather than blocking this design's AGREED status:
+round 2 response.
 
-1. **fleet-dashboard-anw** (ironWall missing on members.ts) must close
-   before apra-fleet-6bf (enrollment) builds against 1b.
-2. **`GET /v1/ws/:id/bootstrap`** does not exist yet and is fleet-
-   dashboard's own new work (their round 2 response commits to filing a
-   bead for it) -- apra-fleet-aho (pull-sync) cannot start until it
-   exists.
+Implementation status on this repo's side: the enrollment flow (1b, the
+long-lived member JWT the operator copy-pastes) is implemented in
+`src/cli/join.ts`, and pull-sync against `GET /v1/ws/:id/bootstrap` is
+implemented in `src/services/cloud-sync.ts` with coverage in
+`tests/cloud-sync.test.ts`. The dependency on fleet-dashboard shipping that
+endpoint, which originally blocked pull-sync, has been satisfied.
 
 Residual, non-blocking item flagged by fleet-dashboard's own review:
 whether members CRUD should ALSO require an owner/admin role (not just

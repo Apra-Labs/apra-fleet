@@ -13,8 +13,8 @@
 
 <!-- Describe the tests you ran and how to reproduce them. -->
 
-- [ ] Ran `npm test` — all tests pass
-- [ ] Ran `npm run build` — build succeeds
+- [ ] Ran `npm test` -- all tests pass
+- [ ] Ran `npm run build` -- build succeeds
 - [ ] Manually tested the affected functionality
 
 ## Checklist
@@ -23,3 +23,4 @@
 - [ ] I have updated documentation where necessary
 - [ ] Breaking changes are noted above and in the commit message
 - [ ] No new linting errors introduced
+- [ ] Changes under `packages/apra-fleet-se/fleet-sprint/` or `apra-pm/agents/` keep the engine generic: no apra-fleet-specific build commands, env vars, ports, repo paths, bead ids, or undocumented deploy.md/playbook sections in LLM-facing text (`node packages/apra-fleet-se/scripts/check-generic-boundary.mjs` passes; see docs/generic-engine-boundary.md)

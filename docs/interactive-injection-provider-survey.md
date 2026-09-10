@@ -21,7 +21,7 @@ apra-fleet-us9.9. Method: each provider's public documentation and/or
 JSON config schema was fetched directly (URLs cited per finding) rather than
 inferred from memory, except where noted as unreachable.
 
-Confidence legend (matches docs/opencode-exploration.md convention):
+Confidence legend:
 - [OK]   = confirmed by reading the provider's own docs/schema directly, today.
 - [DOC]  = stated by docs but not exercised end-to-end against a live instance.
 - [TBD]  = could not be confirmed in the time available; open question.
@@ -36,7 +36,7 @@ Confidence legend (matches docs/opencode-exploration.md convention):
 | Codex | [OK] | [FAIL] no equivalent push mechanism found (has MCP *elicitation*, which is the opposite direction -- see 2.2) |
 | GitHub Copilot CLI | [DOC] (VS Code/Copilot MCP config conventions; live doc page for the standalone CLI's exact flag syntax was unreachable, see 3.3) | [TBD] |
 | AGY (Antigravity) | [TBD] -- no public reference found (matches apra-fleet-2xs.5's "AGY: unknown, needs investigation" finding for MCP registration generally) | [TBD] |
-| OpenCode | [OK] (already documented in docs/opencode-exploration.md section 6) | [TBD] -- MCP client role confirmed, but push-from-server-into-live-session was not found in the docs read; needs a live test, not just doc reading |
+| OpenCode | [OK] | [TBD] -- MCP client role confirmed, but push-from-server-into-live-session was not found in the docs read; needs a live test, not just doc reading |
 
 **Bottom line for mode (b)'s real reach:** as of this survey, mode (b) (server-driven
 mid-session prompt injection) has NO confirmed equivalent outside Claude Code. The
@@ -200,20 +200,20 @@ correct current URL.
 
 ## 6. OpenCode (sst/opencode)
 
-Source: docs/opencode-exploration.md section 6 (already-verified project
+Source: prior verified project
 notes) plus opencode.ai/docs/mcp-servers/ (cited there as [DOC]).
 
 ### 6.1 Attach with custom headers -- [OK] (already confirmed in this repo's own notes)
 
 - `opencode.json` supports remote MCP servers via
   `{"mcp": {"<name>": {"type": "remote", "url": "https://...", "headers":
-  {"Authorization": "Bearer ..."}}}}` (docs/opencode-exploration.md line 145).
+  {"Authorization": "Bearer ..."}}}}` .
   This is directly reusable for `registerMcpEndpoint()`
   (apra-fleet-fnz.3 already tracks confirming/implementing this path).
 
 ### 6.2 Mid-session server-push injection -- [TBD]
 
-- docs/opencode-exploration.md section 6 confirms MCP client support (tools,
+- OpenCode supports the MCP client role (tools,
   local+remote) as [DOC]/partially [OK], but does not address server-initiated
   push into an already-running headless/TUI session; that question was out of
   scope for the exploration notes as written (they focus on local-model

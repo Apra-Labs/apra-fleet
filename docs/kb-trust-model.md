@@ -35,16 +35,15 @@ capture at INFERRED, then promote to CONFIRMED after the reviewer approves.
 
 ## Forward-only enforcement (no migration)
 
-The gate is forward-looking. The KB contains historical entries that were written
+The gate is forward-looking. The KB may contain historical entries that were written
 directly at CONFIRMED before the gate existed; these are NOT rewritten or migrated.
 Enforcement applies only to captures made from the gate onward.
 
 ## Exceptions and low-trust paths
 
-- user-directive (D6, Phase 3): a standing instruction the user gives during a
+- user-directive: a standing instruction the user gives during a
   sprint ("always do X", "never do Y", "we decided Z"). This is the single entry
-  type captured at CONFIRMED directly -- the sole exemption from the clamp. It is
-  implemented in Phase 3.
+  type captured at CONFIRMED directly -- the sole exemption from the clamp.
 - Auto-harvest: entries produced by the kb_harvest autowire are regex-extracted
   from session transcripts, unreviewed, and always captured at UNVERIFIED. Harvest
   can never mint CONFIRMED -- the same gate covers it.

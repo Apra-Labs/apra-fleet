@@ -2,15 +2,12 @@
 
 The always-on supervisor serves one multi-sprint dashboard (`GET /`) listing
 every currently-running sprint as a "Sprint Stack" of rows, plus a Backlog
-tab. Historically this was a single monolithic server-rendered page: the only
-way to see any change (a new sprint launched, a status flip, a progress-bar
-tick) was a full page reload. Each individual sprint already had its own
-per-run viewer with a lightweight incremental-refresh architecture (a lean
-JSON state endpoint plus a change-signal stream driving a debounced client
-poll). The supervisor dashboard now adopts that **same** architecture for its
-own Sprint Stack, rather than inventing a second, divergent one -- so there is
-exactly one live-refresh pattern in the codebase for anyone to learn, extend,
-or debug.
+tab. Rather than reloading the whole page to see a change (a new sprint
+launched, a status flip, a progress-bar tick), the Sprint Stack refreshes
+incrementally, using the **same** architecture each individual sprint's
+per-run viewer uses: a lean JSON state endpoint plus a change-signal stream
+driving a debounced client poll. There is exactly one live-refresh pattern in
+the codebase for anyone to learn, extend, or debug.
 
 ## Design goal
 
@@ -100,13 +97,13 @@ There is no full-page reload anywhere in this path.
 
 Each Sprint Stack row's "claimed scope" (used for both the raw bead count and
 the progress bar) is the full parent-child subtree under that sprint's root
-issue(s). The original implementation expanded that subtree by issuing one
-subprocess call per discovered graph node, which made a full dashboard render
-take tens of seconds once more than a few sprints (each with a non-trivial
-subtree) were running concurrently. The fix: fetch the full bead list exactly
-once per render, build an in-memory parent-to-children index from that single
-fetch, and expand every sprint's scope by walking that index in memory (same
-breadth-first algorithm, same result set, zero additional subprocess spawns).
+issue(s). Expanding that subtree with one subprocess call per discovered graph
+node makes a full dashboard render take tens of seconds once more than a few
+sprints (each with a non-trivial subtree) run concurrently. Instead, the
+render fetches the full bead list exactly once, builds an in-memory
+parent-to-children index from that single fetch, and expands every sprint's
+scope by walking that index in memory (same breadth-first algorithm, same
+result set, zero additional subprocess spawns).
 The one-fetch-per-render discipline is applied project-wide within the
 render, not just for scope expansion -- a decomposed-parent lookup used for
 progress-bar filtering is derived from the same single fetch as well, so a

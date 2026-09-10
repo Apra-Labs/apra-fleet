@@ -17,7 +17,9 @@ import { createSupervisor } from '../src/supervisor/server.mjs';
 // apra-fleet-x8r.7: every `createDashboard({ listAllBeads })` fixture below is
 // built via this helper (raw rows routed through the real normalizeBead()),
 // so a fixture can never assert on a field the production listAllBeads path
-// (bdListAllBeads() -> normalizeBead()) actually strips.
+// (apra-fleet-72o0: bdListAllBeadsWithClosed() -> normalizeBead(), run inside
+// dashboard.mjs's own buildSprintViews() now, not by the fetcher itself)
+// actually strips.
 import { normalizedBeadFixtures } from './helpers/normalized-bead-fixture.mjs';
 
 // apra-fleet-eft.6.1 -- sprint-stack index dashboard. GET / renders one
@@ -453,6 +455,65 @@ describe('dashboard -- createDashboard', () => {
         // Eligible set: root, decomposed-child -- both closed -> N/N, even
         // though the raw scope contains two other, still-open beads.
         assert.deepEqual(view.progress, { closed: 2, required: 2, fraction: 1 });
+    });
+
+    test('apra-fleet-72o0 (dashboard follow-up): default listAllBeads wiring is bdListAllBeadsWithClosed (--all), never backlog.mjs bdListAllBeads', async () => {
+        // Source-text assertion (same technique 72o0-scope-guard-bulk-fetch.test.mjs
+        // uses for scope-overlap.mjs): proves the PRODUCTION default -- not just an
+        // injected test fixture -- is wired to the `--all`-inclusive fetcher.
+        // bdListAllBeads() (backlog.mjs) silently excludes every closed bead, which
+        // zeroes out computeSprintProgress()'s `closed` count for every sprint and
+        // reintroduces the closed-parent-hides-open-subtree hole apra-fleet-72o0
+        // already closed for the launch guard.
+        const fs = await import('node:fs');
+        const url = await import('node:url');
+        const srcPath = url.fileURLToPath(new URL('../src/supervisor/dashboard.mjs', import.meta.url));
+        const src = fs.readFileSync(srcPath, 'utf8');
+        assert.match(src, /bdListAllBeadsWithClosed\s*}\s*from\s*'\.\/scope-overlap\.mjs'/);
+        assert.match(src, /deps\.listAllBeads\s*\?\?\s*bdListAllBeadsWithClosed/);
+        assert.doesNotMatch(src, /deps\.listAllBeads\s*\?\?\s*bdListAllBeads\b/);
+    });
+
+    test('apra-fleet-72o0 (dashboard follow-up): progress counts CLOSED beads and sees through a closed intermediate parent, from RAW (unnormalized) bd rows', async () => {
+        // Unlike the fixtures above (pre-normalized via normalizedBeadFixtures()),
+        // this returns rows shaped exactly like `bd list --all --json` output --
+        // `parent`/`dependencies` instead of `parentId`, snake_case `issue_type` --
+        // to prove buildSprintViews() itself now normalizes (bdListAllBeadsWithClosed
+        // returns raw rows, unlike the old bdListAllBeads default which normalized
+        // internally).
+        const dashboard = createDashboard({
+            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['epic'], childPid: 1 }]),
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            // No explicit expandScope injected: exercises the real in-memory
+            // buildChildIndex()/expandScopeInMemory() path off the raw fetch below.
+            listAllBeads: async () => [
+                { id: 'epic', status: 'open', issue_type: 'epic' },
+                // CLOSED intermediate parent -- must still surface its child below.
+                { id: 'closed-parent', status: 'closed', dependencies: [
+                    { type: 'parent-child', issue_id: 'closed-parent', depends_on_id: 'epic' },
+                ] },
+                { id: 'still-open-grandchild', status: 'open', dependencies: [
+                    { type: 'parent-child', issue_id: 'still-open-grandchild', depends_on_id: 'closed-parent' },
+                ] },
+                { id: 'done-grandchild', status: 'closed', dependencies: [
+                    { type: 'parent-child', issue_id: 'done-grandchild', depends_on_id: 'closed-parent' },
+                ] },
+                { id: 'unrelated', status: 'open' },
+            ],
+            driftCheck: async () => null,
+        });
+        const [view] = await dashboard.buildSprintViews();
+        // Scope must include the closed parent's descendants (closed-parent-hides-
+        // subtree fix) -- 4 nodes: epic, closed-parent, still-open-grandchild,
+        // done-grandchild. 'unrelated' stays out of scope.
+        assert.equal(view.beadCount, 4);
+        // 'epic' and 'closed-parent' are both someone's grouping parent, so
+        // computeSprintProgress()'s decomposedParentIds filter excludes them from
+        // required/closed the same way runner.js's completion gate does (x8r.4) --
+        // leaving the two leaf grandchildren. closed must be > 0 (done-grandchild):
+        // the whole point of this fix is that `--all` makes closed beads visible at
+        // all, instead of computeSprintProgress() always seeing closed: 0.
+        assert.deepEqual(view.progress, { closed: 1, required: 2, fraction: 0.5 });
     });
 
     test('apra-fleet-x8r.2: a failed bulk beads fetch leaves progress null (placeholder) for every sprint, without throwing', async () => {

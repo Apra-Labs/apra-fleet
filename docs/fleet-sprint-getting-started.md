@@ -155,6 +155,12 @@ own role definition):
   needs allowed in its CLI permission settings. The deployer checks this *before
   running anything* and stops with a clear report if your allowlist is missing
   entries, rather than failing mid-deploy.
+- A sandbox / isolated test-deploy mode (optional) -- if `deploy.md` distinguishes
+  one from its production deploy, sprint-dispatched deploys (always for
+  integration/regression testing) use it, leave the instance running for the
+  test phase, and your test playbooks own its teardown. Every phase's dispatch
+  prompt carries the sprint's own `sprintId` line, so a runbook can key the
+  instance's location on it.
 
 The deployer is explicitly forbidden from improvising: if `deploy.md` is absent,
 the deploy and integration-test phases are **skipped cleanly** -- the sprint still
@@ -216,20 +222,21 @@ of your repo. The fleet server dispatches all agent work to members.
   <img src="../assets/marketing/fleet-topology-light.svg" alt="apra-fleet topology: a control plane dispatching agent work to registered members across machines and providers.">
 </picture>
 
-fleet-sprint is not yet published to the npm registry, so install from the binary
-distribution:
+fleet-sprint ships inside the `@apralabs/apra-fleet` package. Install it from npm
+(Node.js 22+):
 
 ```bash
-git clone https://github.com/Apra-Labs/apra-fleet && cd apra-fleet
-npm install && npm run build:binary   # -> dist/apra-fleet-installer-<platform>-<arch>[.exe]
-dist/apra-fleet-installer-win-x64.exe install --force
-~/.apra-fleet/bin/apra-fleet start
+npm install -g @apralabs/apra-fleet
+apra-fleet                                # installs for Claude Code (default)
+cd ~/.apra-fleet/bin && apra-fleet start  # start the fleet server
 ```
 
-The installer is a single self-contained executable: running it unpacks the fleet
-runtime into `~/.apra-fleet/` and puts the `apra-fleet` binary on disk at
-`~/.apra-fleet/bin`. Substitute your own platform/arch in the installer filename
-(`darwin-arm64`, `linux-x64`, `win-x64`).
+Alternatively, download the standalone installer for your platform from
+[GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases)
+(`apra-fleet-installer-darwin-arm64`, `apra-fleet-installer-linux-x64`,
+`apra-fleet-installer-win-x64.exe`) and run it -- installation is the default
+action. Either way, the fleet runtime is unpacked into `~/.apra-fleet/` with the
+`apra-fleet` binary at `~/.apra-fleet/bin`.
 
 Then load the fleet MCP server in Claude Code (`/mcp`) and register members
 conversationally -- registration is driven through your agent in plain language,
@@ -240,8 +247,8 @@ work over SSH, with passwords collected out-of-band (never typed into the chat).
 One member is enough to start, and a single-member sprint avoids the multi-clone
 topology questions entirely. You will also want git credentials provisioned for
 the member so it can push the branch and open the PR -- apra-fleet's
-`provision_vcs_auth` supports **GitHub**, Bitbucket, and **Azure DevOps** (org URL+ PAT), 
-so a GitHub- or AzDevOps-hosted git repo is fully supported.
+`provision_vcs_auth` supports **GitHub**, Bitbucket, and **Azure DevOps** (org URL
++ PAT), so a GitHub- or AzDevOps-hosted git repo is fully supported.
 
 ### 2.5 Scale sideways: one member per sprint, several sprints at once
 
@@ -267,7 +274,7 @@ Start with one member per sprint and add sprints, not doers.
 ## 3. How do I run it
 
 Not by invoking a CLI directly. The supported entry point is the **always-on
-supervisor** (`fleet-se serve`), a small local HTTP service (default port 8787)
+supervisor** (`fleet-se-serve`), a small local HTTP service (default port 8787)
 that owns a reservation ledger -- it knows which members and which issue scopes
 are already claimed by a running sprint, and refuses launches that would collide
 (an HTTP 409 naming the conflicting sprint). Launching a sprint is one POST:

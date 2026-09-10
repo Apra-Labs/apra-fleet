@@ -103,7 +103,7 @@ registerMcpEndpoint(opts: {
 
 - **Claude**: `claude mcp add --transport http --scope project apra-fleet-member <url> --header "Authorization: Bearer <token>"` (needs a live check that this actually persists headers -- same verification `apra-fleet-2xs.5` already calls for, just via the CLI instead of guessing at file shape).
 - **AGY**: needs investigation of AGY's own MCP registration mechanism (config file? CLI verb? env-var-based?). Unknown today -- this is new research, not yet started anywhere in the plan.
-- **OpenCode**: `opencode-exploration.md` (per user memory) already has real findings from earlier OpenCode work; its MCP config shape is referenced in the SSE plan (`{type:'remote', url}` under HTTP default) -- reuse and confirm that path handles bearer auth headers, or find the native registration verb if one exists.
+- **OpenCode**: its MCP config shape is `{type: 'remote', url}` under the HTTP default -- reuse and confirm that path handles bearer auth headers, or find the native registration verb if one exists.
 
 This turns 3b from "which file" into "one investigation task per provider," each
 producing a concrete adapter implementation, converging on the same interface.
@@ -140,7 +140,7 @@ docs). These are the mechanisms each provider's `registerMcpEndpoint()` should u
   AGY today; every registration is effectively machine-global. Follow-up ticket
   `apra-fleet-fnz.2` should implement this.
 
-- **OpenCode** -- confirmed via `docs/opencode-exploration.md`: remote MCP servers
+- **OpenCode** -- remote MCP servers
   are configured under `"mcp"` in `opencode.json` with
   `{ "type": "remote", "url": "...", "headers": { "Authorization": "Bearer ..." } }`,
   which already covers bearer-token auth headers natively -- no gap to close.

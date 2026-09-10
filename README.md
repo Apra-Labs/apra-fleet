@@ -106,8 +106,8 @@ double-click it (installation is the default action):
 
 ```bash
 npm install -g @apralabs/apra-fleet
-apra-fleet                   # installs for Claude Code (default)
-apra-fleet --llm agy         # or OpenCode/Codex/Copilot
+apra-fleet install           # installs for Claude Code (default)
+apra-fleet install --llm agy # or --llm opencode / codex / copilot
 cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
@@ -176,7 +176,7 @@ flowchart LR
     CP["Control Plane<br/>(Server, Engine, Supervisor)"] -->|Dispatch & Sync| M1["MacBook<br/>(Claude)"] & M2["Linux GPU<br/>(vLLM)"] & M3["Cloud VM<br/>(AGY)"] & M4["Windows<br/>(OpenCode)"]
 ```
 
-- **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet.
+- **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet. `execute_prompt` supports session forking (`fork`) on fork-capable providers -- branch a new, independent session from an existing one's context (e.g. a primed session reused across per-task dispatches) without continuing to write into the source session. See [docs/mcp-tools.md](docs/mcp-tools.md#execute_prompt) for the parameter contract.
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket.
 - **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, per-activity persistent state, and a cooperative pause/resume gate any workflow can hook into.
 - **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger, crash watchdog (including a live "paused" state and base-branch-drift indicator), run history.
@@ -297,7 +297,12 @@ Secrets are entered out-of-band into a credential store and referenced as
 any LLM or log. Credentials scope to members, expire on TTL, and can carry
 a network egress policy (allow / deny / confirm). Every member runs with
 composed, provider-native permission files -- allow-listed tools, not
-god-mode. VCS access is provisioned and revocable per member. Permission
+god-mode. VCS access is provisioned and revocable per member, across GitHub,
+Bitbucket, and Azure DevOps -- host differences (URL shape, PR REST dialect,
+auth pattern, error vocabulary) are hidden behind a per-provider descriptor
+rather than leaking into shared code; see
+`docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
+credential-assembly and PAT-lifetime details. Permission
 composition verifies its own delivery: a grant is read back off the target
 member and structurally compared against what was intended before it is
 reported as applied, so a failed or partial write is surfaced as an
@@ -424,6 +429,8 @@ third-party verticals.
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
+| Windows shell selection (probe order, gitbash/pwsh7/powershell5, shell vs os) | [docs/windows-shell-selection.md](docs/windows-shell-selection.md) |
+| Cross-shell command construction for member-bound commands | [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md) |
 | Knowledge Layer (setup, usage, provider swap) | [docs/knowledge-layer.md](docs/knowledge-layer.md) |
 | Code intelligence provider abstraction | [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md) |
 | Hub-spoke cloud migration plan (historical; see tier-3 ownership ADR) | [docs/hub-spoke-master-plan.md](docs/hub-spoke-master-plan.md) |
@@ -441,7 +448,6 @@ third-party verticals.
 | Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
 | Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
 | fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
-| fleet-supervisor packaging self-containment audit | [packages/apra-fleet-se/docs/supervisor-selfcontainment-audit.md](packages/apra-fleet-se/docs/supervisor-selfcontainment-audit.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
 | MCP client SDK getting started | [packages/apra-fleet-client/docs/getting-started.md](packages/apra-fleet-client/docs/getting-started.md) |

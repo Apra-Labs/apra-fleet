@@ -2,11 +2,8 @@
 
 ## Supported Versions
 
-| Version | Supported |
-| ------- | --------- |
-| 0.1.x   | Yes       |
-
-Older versions do not receive security fixes. Please upgrade to the latest 0.1.x release.
+Only the latest released version (the `version` in `package.json`) receives security
+fixes. Older versions do not; please upgrade before reporting.
 
 ## Reporting a Vulnerability
 

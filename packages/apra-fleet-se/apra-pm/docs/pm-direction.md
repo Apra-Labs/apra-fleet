@@ -13,14 +13,14 @@ this doc and the skill itself otherwise stand on their own.
 
 ## What pm is
 
-The repo ships two surfaces that share the same eight agent definitions:
+The package ships two surfaces that share the same agent definitions in `agents/`:
 
 - **pm skill** -- one orchestrator session dispatches `planner`, `plan-reviewer`,
   `doer`, and `reviewer` (plus optionally `deployer` and `harvester`) via natural
   language from any provider. State lives in git files (`PLAN.md`, `progress.json`,
   `feedback.md`) and beads. Designed for provider-agnostic, interactive use.
 
-- **auto-sprint workflow** -- a deterministic JavaScript loop that drives all eight
+- **auto-sprint workflow** -- a deterministic JavaScript loop that drives the sprint
   agents in fixed order until a beads-based quality goal is met. State lives
   entirely in beads (no PLAN.md or progress.json); all routing logic is in the
   workflow script. Claude Code only.
@@ -77,8 +77,8 @@ models available in the current environment. In the pm skill the assignment is
 written into `PLAN.md`; in auto-sprint it is stored in beads task metadata. The
 orchestrator dispatches each doer with that model verbatim. The planner,
 plan-reviewer, and reviewer always run on the strongest model available, since
-planning and review are the quality gates. The reviewer escalates to at least sonnet
-regardless of the doer's assigned model.
+planning and review are the quality gates. The reviewer escalates to at least the
+`standard` tier regardless of the doer's assigned tier.
 
 ## Lifecycle
 

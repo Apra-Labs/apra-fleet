@@ -6,7 +6,7 @@ import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult } from '../types.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-hosts.js';
-import { setStoredPid, clearStoredPid, getAgentOS } from '../utils/agent-helpers.js';
+import { setStoredPid, clearStoredPid, getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { getOsCommands } from '../os/index.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -186,7 +186,7 @@ export async function execCommand(
   function killRemoteTree() {
     if (capturedPid === undefined) return;
     try {
-      const killCmd = getOsCommands(getAgentOS(agent)).killPid(capturedPid);
+      const killCmd = getOsCommands(getAgentOS(agent), getAgentShell(agent)).killPid(capturedPid);
       // Best-effort, fire-and-forget on a FRESH channel -- the timed-out
       // command's own channel may itself be wedged and must not be relied
       // on to carry the kill.

@@ -8,6 +8,7 @@ import {
     resolveDoltAsset,
     resolveDoltStatus,
     ensurePinnedDolt,
+    spawnEphemeralServer,
     DOLT_VERSION,
     DEFAULT_EMBEDDED_DATA_DIR,
     RECOVERY_SQL_SERVER_HOST,
@@ -16,6 +17,7 @@ import {
     parseDoltJsonRows,
 } from '../fleet-sprint/dolt-settle.mjs';
 import { DoltDivergedError, DoltSyncError, DoltBinaryUnavailableError } from '../fleet-sprint/errors.mjs';
+import { getSeCommands, SePosixCommands, SeWindowsCommands, SeWindowsGitbashCommands } from '../fleet-sprint/se-os-commands.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -90,6 +92,62 @@ test('escapeSqlForShell: single quotes (every DOLT_CONFLICTS_RESOLVE argument) p
     const sql = "CALL DOLT_CONFLICTS_RESOLVE('--theirs', 'issues');";
     assert.equal(escapeSqlForShell('linux', sql), sql);
     assert.equal(escapeSqlForShell('win32', sql), sql);
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-7dir.19: the escaping primitive tested DIRECTLY on the Se* class
+// set (not only indirectly through dolt-settle.mjs's escapeSqlForShell, which
+// merely delegates to it) -- so a regression in the primitive itself, with no
+// dolt-settle.mjs call site involved, still fails here.
+// ---------------------------------------------------------------------------
+
+test('SeWindowsCommands#escapeSqlArg: PowerShell dialect (backtick escaping), matches escapeSqlForShell(\'win32\', ...) byte-for-byte', () => {
+    const bq = String.fromCharCode(96);
+    const sql = `SELECT ${bq}x${bq} FROM t WHERE a = "b" AND c = '$d';`;
+    const direct = new SeWindowsCommands().escapeSqlArg(sql);
+    assert.equal(direct, escapeSqlForShell('win32', sql), 'the class primitive and the dolt-settle wrapper must produce identical output');
+    check(direct.includes(bq + bq), 'a literal backtick is a DOUBLED backtick in PowerShell');
+    check(direct.includes(bq + '"'), 'a literal double quote is backtick-quote in PowerShell');
+    check(direct.includes(bq + '$'), 'a literal $ must be backtick-escaped or PowerShell would expand it');
+    check(!direct.includes('\\' + bq), 'PowerShell escaping must never use a backslash');
+});
+
+test('SePosixCommands#escapeSqlArg: bash dialect (backslash escaping), matches escapeSqlForShell(\'linux\', ...) byte-for-byte', () => {
+    const bq = String.fromCharCode(96);
+    const sql = `SELECT ${bq}table${bq} FROM dolt_conflicts;`;
+    const direct = new SePosixCommands().escapeSqlArg(sql);
+    assert.equal(direct, escapeSqlForShell('linux', sql), 'the class primitive and the dolt-settle wrapper must produce identical output');
+    check(direct.includes('\\' + bq), 'bash needs the backtick backslash-escaped, or the shell would EXECUTE the identifier as command substitution');
+    check(!/(^|[^\\])`/.test(direct), 'no unescaped backtick may survive into a bash double-quoted argument');
+});
+
+test('SeWindowsGitbashCommands#escapeSqlArg: inherits the POSIX (bash) dialect, NOT the PowerShell dialect, even though its member is Windows', () => {
+    const bq = String.fromCharCode(96);
+    const sql = `SELECT ${bq}x${bq} FROM t WHERE a = "b" AND c = '$d';`;
+    const gitbash = new SeWindowsGitbashCommands().escapeSqlArg(sql);
+    const posix = new SePosixCommands().escapeSqlArg(sql);
+    const powershell = new SeWindowsCommands().escapeSqlArg(sql);
+    assert.equal(gitbash, posix, 'a Windows member running gitbash must escape identically to POSIX');
+    assert.notEqual(gitbash, powershell, 'the gitbash dialect must differ from the PowerShell dialect for SQL containing backticks/quotes/$');
+});
+
+test('getSeCommands(...).escapeSqlArg resolution matches escapeSqlForShell for every point in the shell matrix', () => {
+    const bq = String.fromCharCode(96);
+    const sql = `SELECT ${bq}x${bq} FROM t WHERE a = "b" AND c = '$d';`;
+    const matrix = [
+        { target: 'linux', legacy: 'linux' },
+        { target: 'darwin', legacy: 'linux' },
+        { target: { os: 'windows', shell: 'gitbash' }, legacy: 'linux' },
+        { target: { os: 'windows', shell: 'pwsh7' }, legacy: 'win32' },
+        { target: { os: 'windows', shell: 'powershell5' }, legacy: 'win32' },
+        { target: { os: 'windows', shell: '' }, legacy: 'win32' },
+    ];
+    for (const { target, legacy } of matrix) {
+        const viaClass = getSeCommands(target).escapeSqlArg(sql);
+        const viaWrapper = escapeSqlForShell(target, sql);
+        assert.equal(viaWrapper, viaClass, `escapeSqlForShell must delegate straight through to the class primitive for target ${JSON.stringify(target)}`);
+        assert.equal(viaWrapper, escapeSqlForShell(legacy, sql), `target ${JSON.stringify(target)} must match the legacy bare-platform-string dialect '${legacy}'`);
+    }
 });
 
 // ---------------------------------------------------------------------------
@@ -579,4 +637,276 @@ test('settleDoltConflicts: teardown still runs on a mid-procedure throw (finally
     await assert.rejects(() => settleDoltConflicts('m1', { command, platform: 'win32' }));
     check(serverSpawned, 'server must have been spawned before the simulated failure');
     check(killedInFinally, 'the finally block must have torn the server down even though the procedure threw mid-way');
+});
+
+// =============================================================================
+// apra-fleet-7dir.19: the wrapped command builders (installPinnedDolt,
+// killProcessAtPath, spawnEphemeralServer, killServerAndVerify) across the
+// FULL windows shell matrix -- gitbash gets a bash-invocable -EncodedCommand
+// wrap, pwsh7/powershell5/no-shell-recorded stay byte-identical to each other
+// (and to the pre-shell-aware win32 output). None of these four are exported,
+// so they are exercised through their real exported callers
+// (ensurePinnedDolt, spawnEphemeralServer, settleDoltConflicts) exactly as
+// dolt-settle.mjs dispatches them -- never re-derived here.
+// =============================================================================
+
+/** Decode a `-EncodedCommand` wrapped command back to its PowerShell script
+ *  text; returns the command unchanged (and wrapped:false) if it carries no
+ *  such envelope. */
+function decodeIfWrapped(cmd) {
+    const m = String(cmd).match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)$/i);
+    if (!m) return { wrapped: false, text: String(cmd) };
+    return { wrapped: true, text: Buffer.from(m[1], 'base64').toString('utf16le') };
+}
+
+function checkGitbashWrap(cmd, label) {
+    check(/^powershell -NoProfile -EncodedCommand [A-Za-z0-9+/=]+$/.test(cmd), `${label}: a gitbash target must dispatch a bash-invocable -EncodedCommand wrapper, got: ${cmd}`);
+}
+
+function makeShellMatrixInstallFixture({ initialVersion = null } = {}) {
+    const calls = [];
+    let installed = initialVersion;
+    const command = async (cmd) => {
+        calls.push(cmd);
+        const { text } = decodeIfWrapped(cmd);
+        if (/version"?$/.test(text.trim())) {
+            return installed ? { ok: true, output: `dolt version ${installed}\n`, error: null } : { ok: false, output: '', error: 'not found' };
+        }
+        if (/Invoke-WebRequest/.test(text)) {
+            installed = DOLT_VERSION.replace(/^v/, '');
+            return { ok: true, output: '', error: null };
+        }
+        return { ok: true, output: '', error: null };
+    };
+    return { command, calls };
+}
+
+test('installPinnedDolt (via ensurePinnedDolt): golden win32 byte-identity across pwsh7/powershell5/no-shell-recorded, and a distinct gitbash wrap', async () => {
+    const psShellResults = {};
+    for (const shell of ['pwsh7', 'powershell5', '']) {
+        const { command, calls } = makeShellMatrixInstallFixture();
+        const result = await ensurePinnedDolt({ command, member: `m-${shell || 'none'}`, platform: 'win32', shell });
+        assert.equal(result.pinned, true);
+        const installCall = calls.find((c) => /Invoke-WebRequest/.test(c));
+        check(installCall, `shell=${shell}: an install command must have been dispatched`);
+        check(!/-EncodedCommand/i.test(installCall), `shell=${shell}: a PowerShell-shell member must receive the raw script text, unwrapped`);
+        psShellResults[shell || 'none'] = installCall;
+    }
+    assert.equal(psShellResults.pwsh7, psShellResults.none, 'pwsh7 install command must be byte-identical to the no-shell-recorded (historical) install command');
+    assert.equal(psShellResults.powershell5, psShellResults.none, 'powershell5 install command must be byte-identical to the no-shell-recorded (historical) install command');
+
+    const { command: gbCommand, calls: gbCalls } = makeShellMatrixInstallFixture();
+    await ensurePinnedDolt({ command: gbCommand, member: 'm-gitbash', platform: 'win32', shell: 'gitbash' });
+    const gbInstallCall = gbCalls.find((c) => decodeIfWrapped(c).wrapped && /Invoke-WebRequest/.test(decodeIfWrapped(c).text));
+    check(gbInstallCall, 'gitbash: a wrapped install command must have been dispatched');
+    checkGitbashWrap(gbInstallCall, 'installPinnedDolt');
+    const decoded = decodeIfWrapped(gbInstallCall).text;
+    assert.equal(decoded, psShellResults.none, 'the PowerShell payload wrapped for gitbash must be byte-identical to the unwrapped script a plain PowerShell member receives');
+    check(decoded.includes('$env:USERPROFILE'), 'the wrapped install script body must still use $env:USERPROFILE (PowerShell dialect)');
+    check(!decoded.includes('$HOME'), 'the wrapped install script body must never use $HOME -- that would not expand inside PowerShell');
+});
+
+test('killProcessAtPath (via ensurePinnedDolt locked-file retry): golden win32 byte-identity across pwsh7/powershell5/no-shell-recorded, and a distinct gitbash wrap', async () => {
+    function makeLockedFixture() {
+        const calls = [];
+        let installAttempts = 0;
+        let installed = '1.86.3';
+        const command = async (cmd) => {
+            calls.push(cmd);
+            const { text } = decodeIfWrapped(cmd);
+            if (/version"?$/.test(text.trim())) {
+                return { ok: true, output: `dolt version ${installed}\n`, error: null };
+            }
+            if (/Invoke-WebRequest/.test(text)) {
+                installAttempts += 1;
+                if (installAttempts === 1) return { ok: false, output: '', error: 'Access to the path is denied: being used by another process' };
+                installed = DOLT_VERSION.replace(/^v/, '');
+                return { ok: true, output: '', error: null };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        return { command, calls };
+    }
+
+    const psShellResults = {};
+    for (const shell of ['pwsh7', 'powershell5', '']) {
+        const { command, calls } = makeLockedFixture();
+        const result = await ensurePinnedDolt({ command, member: `m-${shell || 'none'}`, platform: 'win32', shell });
+        assert.equal(result.pinned, true);
+        const killCall = calls.find((c) => /Stop-Process/.test(c) && /Get-Process/.test(c));
+        check(killCall, `shell=${shell}: a kill command must have been dispatched for a locked-file retry`);
+        check(!/-EncodedCommand/i.test(killCall), `shell=${shell}: a PowerShell-shell member must receive the raw kill script text, unwrapped`);
+        psShellResults[shell || 'none'] = killCall;
+    }
+    assert.equal(psShellResults.pwsh7, psShellResults.none, 'pwsh7 kill command must be byte-identical to the no-shell-recorded (historical) kill command');
+    assert.equal(psShellResults.powershell5, psShellResults.none, 'powershell5 kill command must be byte-identical to the no-shell-recorded (historical) kill command');
+
+    const { command: gbCommand, calls: gbCalls } = makeLockedFixture();
+    await ensurePinnedDolt({ command: gbCommand, member: 'm-gitbash', platform: 'win32', shell: 'gitbash' });
+    const gbKillCall = gbCalls.find((c) => decodeIfWrapped(c).wrapped && /Stop-Process/.test(decodeIfWrapped(c).text) && /Get-Process/.test(decodeIfWrapped(c).text));
+    check(gbKillCall, 'gitbash: a wrapped kill command must have been dispatched');
+    checkGitbashWrap(gbKillCall, 'killProcessAtPath');
+    const decoded = decodeIfWrapped(gbKillCall).text;
+    assert.equal(decoded, psShellResults.none, 'the PowerShell payload wrapped for gitbash must be byte-identical to the unwrapped script a plain PowerShell member receives');
+    check(decoded.includes('$env:USERPROFILE'), 'killProcessAtPath\'s wrapped script must still reference the PowerShell-dialect path');
+    check(!decoded.includes('$HOME'), 'killProcessAtPath\'s wrapped script must never leak the bash $HOME form');
+});
+
+test('spawnEphemeralServer: golden win32 byte-identity across pwsh7/powershell5/no-shell-recorded, and a distinct gitbash wrap', async () => {
+    const psDoltPath = '"$env:USERPROFILE\\.apra-fleet\\bin\\dolt.exe"';
+    const psShellResults = {};
+    for (const shell of ['pwsh7', 'powershell5', '']) {
+        let captured = null;
+        const command = async (cmd) => { captured = cmd; return { ok: true, output: 'PID:5150' }; };
+        const result = await spawnEphemeralServer({
+            command, member: `m-${shell || 'none'}`, platform: 'win32', doltPath: psDoltPath,
+            dataDir: 'C:\\data', host: '127.0.0.1', port: 13302, shell,
+        });
+        assert.equal(result.pid, 5150);
+        check(!/-EncodedCommand/i.test(captured), `shell=${shell}: a PowerShell-shell member must receive the raw spawn script text, unwrapped`);
+        psShellResults[shell || 'none'] = captured;
+    }
+    assert.equal(psShellResults.pwsh7, psShellResults.none, 'pwsh7 spawn command must be byte-identical to the no-shell-recorded (historical) spawn command');
+    assert.equal(psShellResults.powershell5, psShellResults.none, 'powershell5 spawn command must be byte-identical to the no-shell-recorded (historical) spawn command');
+
+    let gbCaptured = null;
+    const gbCommand = async (cmd) => { gbCaptured = cmd; return { ok: true, output: 'PID:5150' }; };
+    await spawnEphemeralServer({
+        command: gbCommand, member: 'm-gitbash', platform: 'win32', doltPath: psDoltPath,
+        dataDir: 'C:\\data', host: '127.0.0.1', port: 13302, shell: 'gitbash',
+    });
+    checkGitbashWrap(gbCaptured, 'spawnEphemeralServer');
+    const decoded = decodeIfWrapped(gbCaptured).text;
+    assert.equal(decoded, psShellResults.none, 'the PowerShell payload wrapped for gitbash must be byte-identical to the unwrapped script a plain PowerShell member receives');
+    check(decoded.includes('$env:USERPROFILE'), 'the wrapped spawn script body must still use $env:USERPROFILE (PowerShell dialect)');
+    check(!decoded.includes('$HOME'), 'the wrapped spawn script body must never leak the bash $HOME form');
+});
+
+// ---------------------------------------------------------------------------
+// killServerAndVerify -- unexported, so exercised end to end through
+// settleDoltConflicts' teardown call (both the happy-path pre-republish kill
+// and the guaranteed finally-block kill share the same function). A minimal
+// happy-path fixture: dolt already pinned, one spawn, zero conflicted
+// tables, so the run reaches teardown with the least ceremony.
+// ---------------------------------------------------------------------------
+
+function makeMinimalTeardownFixture() {
+    const calls = [];
+    let killed = false;
+    const command = async (cmd) => {
+        calls.push(cmd);
+        if (cmd === 'bd dolt status') return { ok: true, output: `Dolt engine: embedded (in-process, no server)\n  Data: ${DEFAULT_EMBEDDED_DATA_DIR}\n`, error: null };
+        const { text } = decodeIfWrapped(cmd);
+        if (/version"?$/.test(text.trim())) return { ok: true, output: `dolt version ${DOLT_VERSION.replace(/^v/, '')}\n`, error: null };
+        if (/FREEPORT/.test(text)) return { ok: true, output: 'FREEPORT:13303', error: null };
+        if (/PROBE:True/.test(text)) return { ok: true, output: killed ? 'PROBE:False' : 'PROBE:True', error: null };
+        const isWinSpawn = /\$exe\s*=/.test(text) && /Invoke-CimMethod/.test(text) && /ReturnValue/.test(text);
+        if (isWinSpawn) return { ok: true, output: 'PID:7070', error: null };
+        if (/Stop-Process -Id 7070/.test(text)) { killed = true; return { ok: true, output: '', error: null }; }
+        if (/--no-tls --host=/.test(text)) {
+            if (/CALL DOLT_MERGE/.test(text)) return { ok: true, output: '', error: null };
+            if (/SELECT \* FROM dolt_conflicts/.test(text)) return { ok: true, output: '{}\n\n{"rows": []}\n', error: null };
+            if (/SELECT COUNT\(\*\) AS n FROM dolt_conflicts/.test(text)) return { ok: true, output: '{}\n\n{"rows": [{"n":0}]}\n', error: null };
+            return { ok: true, output: '', error: null };
+        }
+        if (cmd === 'bd dolt pull') return { ok: true, output: '', error: null };
+        if (cmd === 'bd dolt push') return { ok: true, output: '', error: null };
+        return { ok: true, output: '', error: null };
+    };
+    return { command, calls, findKillCall: () => calls.find((c) => decodeIfWrapped(c).text.includes('Stop-Process -Id 7070')) };
+}
+
+test('killServerAndVerify (via settleDoltConflicts teardown): golden win32 byte-identity across pwsh7/powershell5/no-shell-recorded', async () => {
+    const psShellResults = {};
+    for (const shell of ['pwsh7', 'powershell5', '']) {
+        const { command, findKillCall } = makeMinimalTeardownFixture();
+        const result = await settleDoltConflicts(`m-${shell || 'none'}`, { command, platform: 'win32', shell });
+        assert.equal(result.ok, true);
+        const killCall = findKillCall();
+        check(killCall, `shell=${shell}: a kill/verify command must have been dispatched during teardown`);
+        check(!/-EncodedCommand/i.test(killCall), `shell=${shell}: a PowerShell-shell member must receive the raw kill/verify script text, unwrapped`);
+        check(killCall.includes('Get-CimInstance Win32_Process'), 'killServerAndVerify must issue the belt-and-braces port-scoped WMI sweep, not just the recorded-pid kill');
+        psShellResults[shell || 'none'] = killCall;
+    }
+    assert.equal(psShellResults.pwsh7, psShellResults.none, 'pwsh7 kill/verify command must be byte-identical to the no-shell-recorded (historical) kill/verify command');
+    assert.equal(psShellResults.powershell5, psShellResults.none, 'powershell5 kill/verify command must be byte-identical to the no-shell-recorded (historical) kill/verify command');
+});
+
+test('killServerAndVerify (via settleDoltConflicts teardown): a gitbash target dispatches a bash-invocable -EncodedCommand wrap, byte-identical PowerShell payload inside', async () => {
+    const { command, findKillCall } = makeMinimalTeardownFixture();
+    const result = await settleDoltConflicts('m-gitbash', { command, platform: 'win32', shell: 'gitbash' });
+    assert.equal(result.ok, true);
+    const killCall = findKillCall();
+    check(killCall, 'a kill/verify command must have been dispatched during teardown for a gitbash member');
+    checkGitbashWrap(killCall, 'killServerAndVerify');
+
+    // Compare against the plain-PowerShell golden form to prove the wrapped
+    // payload is the SAME script, only invoked differently.
+    const { command: psCommand, findKillCall: psFindKillCall } = makeMinimalTeardownFixture();
+    await settleDoltConflicts('m-plain', { command: psCommand, platform: 'win32', shell: '' });
+    const psKillCall = psFindKillCall();
+
+    const decoded = decodeIfWrapped(killCall).text;
+    assert.equal(decoded, psKillCall, 'the PowerShell payload wrapped for gitbash must be byte-identical to the unwrapped script a plain PowerShell member receives');
+    check(decoded.includes('Get-CimInstance Win32_Process'), 'the belt-and-braces WMI sweep must survive inside the wrapped payload');
+});
+
+// ---------------------------------------------------------------------------
+// nodeEval (the TCP probe's builder, unexported) -- dialect is resolved off
+// the member's REGISTERED shell, not platform: a gitbash member must take
+// the POSIX (unescaped) branch even though platform is 'win32', while a
+// plain PowerShell member keeps the backslash-escaped-double-quote
+// workaround. Exercised through the TCP probe dispatched during
+// settleDoltConflicts (platformAwareTcpProbe -> tcpProbeScript -> nodeEval).
+// ---------------------------------------------------------------------------
+
+function findProbeCommand(calls) {
+    return calls.find((c) => /net\.connect\(/.test(c) && /PROBE:True/.test(c));
+}
+
+test('nodeEval: a windows+gitbash target takes the POSIX (unescaped) node -e branch, not the PowerShell backslash-escaped-quote workaround', async () => {
+    const { command, calls } = makeMinimalTeardownFixture();
+    await settleDoltConflicts('m-gitbash-probe', { command, platform: 'win32', shell: 'gitbash' });
+    const probeCmd = findProbeCommand(calls);
+    check(probeCmd, 'a TCP probe command must have been dispatched');
+    check(probeCmd.startsWith("node -e '"), `probe command must be a bare node -e invocation, got: ${probeCmd}`);
+    check(!probeCmd.includes('\\"'), `a gitbash target must NOT carry the PowerShell backslash-escaped-quote workaround: ${probeCmd}`);
+    check(probeCmd.includes('require("net")'), 'the double quotes inside the JS body must survive unescaped for a gitbash/bash target');
+});
+
+test('nodeEval: windows with no shell recorded (plain PowerShell member) keeps the backslash-escaped-quote workaround', async () => {
+    const { command, calls } = makeMinimalTeardownFixture();
+    await settleDoltConflicts('m-plain-probe', { command, platform: 'win32', shell: '' });
+    const probeCmd = findProbeCommand(calls);
+    check(probeCmd, 'a TCP probe command must have been dispatched');
+    check(probeCmd.includes('require(\\"net\\")'), `a plain PowerShell target must carry the backslash-escaped-quote workaround (PowerShell 5.1 strips unescaped quotes in native-argument passing), got: ${probeCmd}`);
+});
+
+test('nodeEval: a POSIX (linux) target also takes the unescaped branch, matching gitbash', async () => {
+    const calls = [];
+    let killed = false;
+    const command = async (cmd) => {
+        calls.push(cmd);
+        if (cmd === 'bd dolt status') return { ok: true, output: `Dolt engine: embedded (in-process, no server)\n  Data: ${DEFAULT_EMBEDDED_DATA_DIR}\n`, error: null };
+        if (/version"?$/.test(cmd.trim())) return { ok: true, output: `dolt version ${DOLT_VERSION.replace(/^v/, '')}\n`, error: null };
+        if (/FREEPORT/.test(cmd)) return { ok: true, output: 'FREEPORT:13304', error: null };
+        if (/PROBE:True/.test(cmd)) return { ok: true, output: killed ? 'PROBE:False' : 'PROBE:True', error: null };
+        const isPosixSpawn = /\(\s*\$SETSID nohup .+sql-server.+< \/dev\/null\s*&\s*\)/.test(cmd) && /pgrep -f/.test(cmd);
+        if (isPosixSpawn) return { ok: true, output: 'PID:7071', error: null };
+        if (/^kill 7071/.test(cmd)) { killed = true; return { ok: true, output: '', error: null }; }
+        if (/--no-tls --host=/.test(cmd)) {
+            if (/CALL DOLT_MERGE/.test(cmd)) return { ok: true, output: '', error: null };
+            if (/SELECT \* FROM dolt_conflicts/.test(cmd)) return { ok: true, output: '{}\n\n{"rows": []}\n', error: null };
+            if (/SELECT COUNT\(\*\) AS n FROM dolt_conflicts/.test(cmd)) return { ok: true, output: '{}\n\n{"rows": [{"n":0}]}\n', error: null };
+            return { ok: true, output: '', error: null };
+        }
+        if (cmd === 'bd dolt pull') return { ok: true, output: '', error: null };
+        if (cmd === 'bd dolt push') return { ok: true, output: '', error: null };
+        return { ok: true, output: '', error: null };
+    };
+    const result = await settleDoltConflicts('m-linux-probe', { command, platform: 'linux' });
+    assert.equal(result.ok, true);
+    const probeCmd = findProbeCommand(calls);
+    check(probeCmd, 'a TCP probe command must have been dispatched');
+    check(!probeCmd.includes('\\"'), `POSIX must never carry the PowerShell backslash-escaped-quote workaround: ${probeCmd}`);
 });

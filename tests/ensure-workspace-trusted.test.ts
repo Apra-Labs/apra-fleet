@@ -172,6 +172,31 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     expect(JSON.parse(getFileContent()!).projects['C:/akhil/git/project-a'].hasTrustDialogAccepted).toBe(true);
   });
 
+  it('apra-fleet-7dir.2.9: a gitbash Windows member gets the POSIX delivery path (cat/heredoc), not PowerShell -- the PowerShell strings fail with "command not found" on bash', async () => {
+    const provider = new ClaudeProvider();
+    const { exec, calls, getFileContent } = makeFakeExec(null);
+
+    const result = await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', exec, 'windows', 'gitbash');
+
+    expect(result.seeded).toBe(true);
+    expect(calls.some(c => c.includes('cat "') || c.includes("<< 'FLEET_TRUST_EOF'"))).toBe(true);
+    expect(calls.some(c => c.includes('Get-Content') || c.includes('WriteAllText'))).toBe(false);
+    expect(JSON.parse(getFileContent()!).projects['C:/akhil/git/project-a'].hasTrustDialogAccepted).toBe(true);
+  });
+
+  it('apra-fleet-7dir.2.9: a powershell5 Windows member (and one with no shell recorded) keeps the exact PowerShell delivery path, unchanged', async () => {
+    const legacy = makeFakeExec(null);
+    const powershell5 = makeFakeExec(null);
+
+    const provider = new ClaudeProvider();
+    await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', legacy.exec, 'windows');
+    await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', powershell5.exec, 'windows', 'powershell5');
+
+    expect(legacy.exec.mock.calls.map(c => c[0])).toEqual(powershell5.exec.mock.calls.map(c => c[0]));
+    expect(powershell5.calls.some(c => c.includes('Get-Content'))).toBe(true);
+    expect(powershell5.calls.some(c => c.includes('WriteAllText') && c.includes('Move-Item'))).toBe(true);
+  });
+
   it('tolerates a corrupted/unparseable ~/.claude.json by starting fresh instead of throwing', async () => {
     const provider = new ClaudeProvider();
     const { exec, getFileContent } = makeFakeExec('not-json-at-all{{{');

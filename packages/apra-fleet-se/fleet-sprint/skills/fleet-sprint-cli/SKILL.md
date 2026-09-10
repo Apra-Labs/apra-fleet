@@ -36,7 +36,8 @@ on this list -- flags evolve and this skill can drift.
 ## Flag notes
 
 - `--issue` takes comma-separated **beads parent/epic IDs**. Scope is
-  resolved internally via `bd list --parent <id>`, so it only ever
+  resolved internally by walking the parent-child tree down from each target
+  id (every descendant at any depth, any status), so it only ever
   understands the parent-child hierarchy. A `blocked-by`-only manifest bead
   is invisible to the scope filter no matter what you pass -- only true
   children are picked up. See the epics/manifest-bead guidance in

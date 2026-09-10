@@ -68,6 +68,17 @@ describe('backlog -- parentIdOf / normalizeBead', () => {
         assert.deepEqual(keys, ['id', 'issueType', 'parentId', 'priority', 'status', 'title']);
     });
 
+    // A server-computed `placement` is the one extra field computeSprintProgress()
+    // branches on (before its numeric priority filter), so it passes through
+    // when present and only then -- the pinned key set above is for raw rows.
+    test('normalizeBead passes a string `placement` through, and adds no key when absent', () => {
+        const placed = normalizeBead({ ...trackerBead('c1', 'C1', 'E'), placement: 'sprint' });
+        assert.equal(placed.placement, 'sprint');
+        assert.equal(normalizeBead(placed).placement, 'sprint', 'idempotent on its own output');
+        assert.equal('placement' in normalizeBead(trackerBead('c2', 'C2', 'E')), false);
+        assert.equal('placement' in normalizeBead({ ...trackerBead('c3', 'C3', 'E'), placement: 42 }), false);
+    });
+
     test('normalizeBead preserves a numeric priority, and normalizes a missing/non-numeric one to null (never a numeric default)', () => {
         const withPriority = normalizeBead({ ...trackerBead('c1', 'C1', 'E'), priority: 2 });
         assert.equal(withPriority.priority, 2);

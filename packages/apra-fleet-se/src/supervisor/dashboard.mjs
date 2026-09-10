@@ -44,7 +44,20 @@ import { EventEmitter } from 'node:events';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
-import { renderBacklogPanelHtml, bdListAllBeads, expandScopeInMemory, buildChildIndex } from './backlog.mjs';
+import { renderBacklogPanelHtml, normalizeBead, expandScopeInMemory, buildChildIndex } from './backlog.mjs';
+// apra-fleet-72o0 (dashboard follow-up): progress bars and the structural
+// decomposedParentIds check below both need CLOSED beads present in the bulk
+// fetch -- computeSprintProgress() derives its `closed` count by filtering
+// for status === 'closed' (sprint-progress.mjs), and a closed intermediate
+// parent must still surface its open descendants to expandScopeInMemory(),
+// same correctness requirement scope-overlap.mjs's launch guard already has.
+// backlog.mjs's own bdListAllBeads()/bdListAllBeadsRaw() deliberately omit
+// `--all` (that fetch feeds the visible backlog BOARD, which intentionally
+// shows open work only) -- reusing it here would silently zero out every
+// sprint's closed count and repeat the closed-parent-hides-subtree hole this
+// module's progress bars were meant to close. Use scope-overlap.mjs's
+// `--all` fetcher instead; it is the one correctness-appropriate default.
+import { bdListAllBeadsWithClosed } from './scope-overlap.mjs';
 // apra-fleet-x8r.2: the SAME closed/required helper apra-fleet-x8r.1 landed
 // for the fleet-sprint viewer's Sprint Stack widget (and its HTML renderer) --
 // deliberately reused here rather than a second count implementation, so
@@ -1000,13 +1013,15 @@ export function createDashboard(deps = {}) {
     // fetch it already makes for progress bars, via buildChildIndex() +
     // expandScopeInMemory() -- never a subprocess walker.
     const explicitExpand = deps.expandScope ?? null;
-    // apra-fleet-x8r.2: one bulk `bd list --json` fetch per renderIndexPage()
-    // call (reused across every sprint row below), not one per row -- same
-    // "one query fewer" discipline bdListScoped('') documents in runner.js.
-    // Reuses backlog.mjs's already-tested bdListAllBeads() (normalizeBead()
-    // shape: `{ id, status, ... }`) rather than a second bulk-fetch
-    // implementation.
-    const listAllBeads = deps.listAllBeads ?? bdListAllBeads;
+    // apra-fleet-x8r.2: one bulk `bd list --all --json` fetch per
+    // renderIndexPage() call (reused across every sprint row below), not one
+    // per row -- same "one query fewer" discipline bdListScoped('')
+    // documents in runner.js. Reuses scope-overlap.mjs's already-tested
+    // bdListAllBeadsWithClosed() (normalizeBead()-compatible raw rows, `--all`
+    // included) rather than a second bulk-fetch implementation -- see the
+    // apra-fleet-72o0 note on the import above for why this must NOT be
+    // backlog.mjs's bdListAllBeads().
+    const listAllBeads = deps.listAllBeads ?? bdListAllBeadsWithClosed;
     // apra-fleet-3i3.2: best-effort per-sprint metadata (branch/goal/member
     // roles). Defaults to reading branch/goal straight off the ledger entry
     // (which now persists them -- see ledger.mjs) when the caller injects
@@ -1064,7 +1079,19 @@ export function createDashboard(deps = {}) {
         // below), never a thrown page render.
         let allBeads = null;
         try {
-            allBeads = await listAllBeads();
+            const rawBeads = await listAllBeads();
+            // The default fetcher (bdListAllBeadsWithClosed) returns RAW,
+            // unnormalized `bd list` rows -- normalizeBead() derives
+            // `parentId` (buildChildIndex()/decomposedParentIdsAll below both
+            // need it) and coerces `priority` to a number|null
+            // (computeSprintProgress() requires that shape). A test-injected
+            // `deps.listAllBeads` may already return normalized rows;
+            // normalizeBead() is idempotent on its own six fields and passes
+            // a `placement` field through (the one extra field
+            // computeSprintProgress() branches on), so mapping unconditionally
+            // is safe either way. It is NOT identity-preserving for any other
+            // extra field an injector might add -- none is consumed here.
+            allBeads = (Array.isArray(rawBeads) ? rawBeads : []).map(normalizeBead).filter((b) => b.id.length > 0);
         } catch (err) {
             logError('[dashboard] bulk beads fetch failed (progress bars will show placeholders this round):', err);
         }

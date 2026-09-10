@@ -22,10 +22,11 @@ node dist/index.js install     # Dev-mode install
 - Never push to `main` directly; open a PR
 - See [Architecture](docs/architecture.md) for internal structure
 - ASCII only: never write non-ASCII characters to any file. Use `-` for dashes, `->` for arrows, `[OK]` for checkmarks, etc.
-- Permission blocks must be surfaced, not routed around: if a tool or git invocation is blocked by the permission layer, stop and report the block to the user/orchestrator. Do not author a wrapper script, alternate binary, or other workaround whose purpose is to bypass the block, even if the underlying operation is judged safe. See `scripts/recovery.sh` disposition note in the 2026-07-02 incident writeup (RECOVERY.md) for the precedent this guards against.
+- Permission blocks must be surfaced, not routed around: if a tool or git invocation is blocked by the permission layer, stop and report the block to the user/orchestrator. Do not author a wrapper script, alternate binary, or other workaround whose purpose is to bypass the block, even if the underlying operation is judged safe.
 - `packages/apra-fleet-client` must always be updated to catch up with any changes to the fleet MCP tools (`src/tools/*` schemas/behavior) in the same change -- it is the thin client wrapper other packages (fleet-sprint, apra-pm, workflows) use to call those tools, and a drifted client silently gives callers a stale or inconsistent view of what the server actually accepts/does. This is not optional cleanup; treat it as part of the tool change itself.
-- Never rely on shell-level variable expansion in a member-bound command string ($VAR/path, ~/, backticks) -- the target member's shell may be PowerShell, not POSIX. Resolve paths in JavaScript before building the command using probeCommandFor(targetOs) (src/services/member-home.ts:53-56) or branching on agent.os (src/providers/claude.ts:373-374). Wrap PowerShell commands explicitly (powershell -EncodedCommand, per src/os/windows.ts) rather than assuming the member's shell. A POSIX-only feature must hard-fail on Windows or gate with a surfaced error -- an advisory warning that never blocks is a false success.
+- Never rely on shell-level variable expansion in a member-bound command string ($VAR/path, ~/, backticks) -- the target member's shell may be PowerShell, not POSIX. Resolve paths in JavaScript before building the command using `probeCommandFor(targetOs, shell)` (src/services/member-home.ts) or branching on the member's OS/shell via `isPosixShell(agentOs, shell)` (src/providers/claude.ts). Wrap PowerShell commands explicitly (powershell -EncodedCommand, per src/os/windows.ts) rather than assuming the member's shell. A POSIX-only feature must hard-fail on Windows or gate with a surfaced error -- an advisory warning that never blocks is a false success.
 - Never cite a bead id (apra-fleet-XXXX) in any LLM-facing text: prompts, playbooks, schema descriptions, or strings a script prints/writes at runtime. Bead ids are fine only in code comments and docs/.
+- The fleet-sprint engine (`packages/apra-fleet-se/fleet-sprint/**` plus the role prompts in `packages/apra-fleet-se/apra-pm/agents/**`) is a GENERIC product that runs sprints for any target repo; apra-fleet building itself with it is the build method, not the product scope. LLM-facing text there (prompt strings, role-prompt markdown) must never assume the target is apra-fleet -- its build commands, env vars, ports, repo layout, bead ids, or deploy.md/playbook sections beyond the documented contract. Target-specific content belongs in the target's own deploy.md/playbooks/CLAUDE.md. Enforced by `packages/apra-fleet-se/scripts/check-generic-boundary.mjs` (part of `npm test`); rule and exception mechanism in docs/generic-engine-boundary.md.
 
 ## DeepWiki
 
@@ -103,6 +104,51 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 - Do not commit or push without clear authority from the active profile or the current user request.
 - If a required sync or push is blocked, stop and report the exact command and error.
 <!-- END BEADS INTEGRATION -->
+
+<!-- gitnexus:start -->
+# GitNexus -- Code Intelligence
+
+This project is indexed by GitNexus as **apra-fleet** (12888 symbols, 30673 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root -- it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash -> `npm i -g gitnexus`; #1939).
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol -- callers, callees, which execution flows it participates in -- use `context({name: "symbolName"})`.
+- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source->sink flows; needs `analyze --pdg`).
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace -- use `rename` which understands the call graph.
+- NEVER commit changes without running `detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/apra-fleet/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/apra-fleet/clusters` | All functional areas |
+| `gitnexus://repo/apra-fleet/processes` | All execution flows |
+| `gitnexus://repo/apra-fleet/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->
 
 ## Non-Interactive Print Mode Keep-Alive Rule
 If you are running in non-interactive print mode (such as via `agy -p` / `--print`) and are waiting for a background task or checkpoint:

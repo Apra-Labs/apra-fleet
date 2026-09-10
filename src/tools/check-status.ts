@@ -6,7 +6,7 @@ import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { formatAgentHost, getAgentOS, groupByCategory } from '../utils/agent-helpers.js';
+import { formatAgentHost, getAgentOS, getAgentShell, groupByCategory } from '../utils/agent-helpers.js';
 import { serverVersion } from '../version.js';
 import { DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
@@ -130,7 +130,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     if (connResult.status === 'fulfilled' && connResult.value.ok) {
       row.status = 'online';
 
-      const cmds = getOsCommands(getAgentOS(agent));
+      const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
       const provider = getProvider(agent.llmProvider);
 
       // Run fleet process check and GPU utilization in parallel
@@ -176,7 +176,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
       row.status = 'online';
 
       try {
-        const cmds = getOsCommands(getAgentOS(agent));
+        const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
         const provider = getProvider(agent.llmProvider);
         const busyCheck = await strategy.execCommand(
           cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),

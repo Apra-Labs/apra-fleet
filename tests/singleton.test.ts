@@ -93,6 +93,10 @@ describe('(b) health endpoint check', () => {
       if (result.running) {
         expect(result.pid).toBe(process.pid);
         expect(result.url).toContain('/mcp');
+        // Regression guard (apra-fleet-yru.2): checkRunningInstance() must
+        // surface the version server.json recorded, so callers (runStart)
+        // can compare it against the locally installed version.
+        expect(result.version).toBe('v0.0.1');
       }
     } finally {
       await new Promise<void>(resolve => mockServer.close(() => resolve()));

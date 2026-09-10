@@ -1,8 +1,9 @@
 # Writing a skill
 
-Fleet ships two skills -- `fleet` (the MCP tool reference) and `pm` (the Project
-Manager workflow). A skill is how you package a *workflow* on top of Fleet so it
-can be invoked by name and reused. This page explains what a skill is and how to
+Fleet ships the `fleet` skill (the MCP tool reference) and the `pm` skill (the
+Project Manager workflow), plus two small companion skills -
+`auto-sprint-args` and `fleet-sprint-cli`. A skill is how you package a
+*workflow* on top of Fleet so it can be invoked by name and reused. This page explains what a skill is and how to
 build your own.
 
 ## What a skill is
@@ -25,8 +26,9 @@ Skills are installed into your provider's skills directory:
 | Claude | `~/.claude/skills/<name>/` |
 | Antigravity (agy) | `~/.gemini/antigravity-cli/skills/<name>/` |
 
-Fleet's installer writes `fleet/` and `pm/` there. Your own skill is just
-another directory alongside them.
+Fleet's installer writes `fleet/`, `pm/`, `auto-sprint-args/` and
+`fleet-sprint-cli/` there. Your own skill is just another directory alongside
+them.
 
 ## Anatomy
 
@@ -99,7 +101,7 @@ The two skills in this repository are the best reference:
 
 - [`skills/fleet/SKILL.md`](../skills/fleet/SKILL.md) -- the MCP tool reference
   and member-management mechanics.
-- [`skills/pm/SKILL.md`](../skills/pm/SKILL.md) -- a full multi-step workflow:
+- [`packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md`](../packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md) -- a full multi-step workflow:
   sprint variants, doer-reviewer pairing, templates, and lifecycle commands.
 
 Read those alongside this page when designing your own.

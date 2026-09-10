@@ -40,12 +40,40 @@ const AUTH_EXPIRED = [
     /Invalid or expired app password/i,
 ];
 
+/** Bitbucket Cloud's own hosts, ANCHORED (never a substring test -- the same
+ *  reasoning as ./azure-devops.mjs's HOST_RE, and unlike GitHub Enterprise
+ *  Server which has no fixed domain):
+ *    - bitbucket.org        https and ssh remotes
+ *    - www.bitbucket.org    the www alias (bitbucket.org redirects it, and a
+ *                           remote copy-pasted from a browser address bar can
+ *                           carry it)
+ *    - altssh.bitbucket.org the alternate-port ssh host
+ *  A self-hosted Bitbucket Data Center install has an arbitrary domain and is
+ *  deliberately left to GenericGitVCS's catch-all rather than guessed at.
+ *
+ *  apra-fleet-5oo: declaring this makes resolveVcsProviderForHost() name
+ *  'bitbucket' for a Bitbucket remote, which is what lets runner.js's
+ *  dispatch-time VCS-provider fallback detect it. Behaviour-neutral for
+ *  VCSModule.capabilities(): this provider declares no capabilitiesForHost,
+ *  and the caller's default (canOpenPullRequest:false) matches what
+ *  GenericGitVCS returned for these hosts before.
+ *
+ *  Kept character-for-character in step with
+ *  src/utils/vcs-provider-detect.ts's BITBUCKET_HOST_RE -- the two halves of
+ *  the same decision must never disagree about who owns a host. */
+const HOST_RE = /^(?:www\.|altssh\.)?bitbucket\.org$/i;
+
+function matchesHost(host) {
+    return typeof host === 'string' && HOST_RE.test(host.trim());
+}
+
 export const BitbucketVCS = Object.freeze({
     name: 'bitbucket',
     extends: 'generic-git',
     rules: Object.freeze({
         [K.AUTH_EXPIRED]: AUTH_EXPIRED,
     }),
+    matchesHost,
     defaultAuthMode: null,
     builders: null,
 });

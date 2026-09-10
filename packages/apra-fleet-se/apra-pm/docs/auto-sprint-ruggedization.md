@@ -1,23 +1,22 @@
-# Auto-Sprint Ruggedization -- Design & Implementation Spec
+# Auto-Sprint Ruggedization -- Design and Implementation Spec
 
-Status: implemented. Branch: `ruggedize/auto-sprint-preflight-checkpoint`.
+Status: implemented. This is the design record for the preflight, checkpoint/resume, and
+context-fit machinery in `.claude/workflows/auto-sprint.js`; the sections below describe what
+the workflow does today and why.
+
+The guarantees are deliberately self-contained: auto-sprint must be safe on its own and must
+NOT depend on any operator's personal `~/.claude/CLAUDE.md` or memories.
 
 Known limitation: the concurrency lock uses a branch-keyed state file whose mtime acts as a
 TTL heartbeat (`SPRINT_STATE_TTL_S = 3600`). It reliably blocks a *resume* that overlaps a
-still-live run (the observed git-corruption incident), but two brand-new launches fired at the
-exact same instant on the same branch can both pass the check before either writes the file
-(a TOCTOU window at t=0, before any file exists). Launches are manual, so this is acceptable;
-a hard mutex would need an atomic create (O_EXCL) which is a future refinement.
+still-live run, but two brand-new launches fired at the exact same instant on the same branch
+can both pass the check before either writes the file (a TOCTOU window at t=0, before any file
+exists). Launches are manual, so this is acceptable; a hard mutex would need an atomic create
+(O_EXCL), which remains a future refinement.
 
 Note on parallel sprints: this lock prevents ACCIDENTAL overlap on the SAME branch. Running
 two sprints DELIBERATELY on DIFFERENT branches still requires separate git worktrees, because
-one working tree cannot be checked out to two branches at once (confirmed the hard way during
-this very change, when another auto-sprint switched the shared checkout mid-edit).
-
-This spec ruggedizes `.claude/workflows/auto-sprint.js` against the recurring failure
-modes observed across projects (apra-pm, fleet-dashboard, apra-fleet). It is written so
-the fixes live **inside the workflow product itself** -- auto-sprint must be self-contained
-and must NOT depend on any operator's personal `~/.claude/CLAUDE.md` or memories to be safe.
+one working tree cannot be checked out to two branches at once.
 
 ## Global constraints (do not violate)
 
@@ -26,15 +25,16 @@ and must NOT depend on any operator's personal `~/.claude/CLAUDE.md` or memories
   `dispatchShell` (inside those subprocesses `Date.now()` is fine -- the ban is on the
   workflow script body only).
 - **No TDZ.** Every `const`/`let` must be declared before any code path that reads it.
-  New pure helpers go **before the `// PURE_FUNCTIONS_END` marker (line ~955)**. New
-  module-level state (`let`) goes in the STATE section (~line 1099) or later, never
-  referenced above its declaration.
+  New pure helpers go **before the `// PURE_FUNCTIONS_END` marker**. New module-level
+  state (`let`) goes in the STATE section or later, never referenced above its
+  declaration.
 - **Cross-platform.** Runs in Git Bash on Windows but must also work on macOS/Linux. Prefer
   `node -e "..."` for filesystem/time/stat operations over `stat -c`/`stat -f` (which differ
   by platform). `mkdir -p` is fine in the bash contexts already used.
 - **Idempotent shell.** Every setup/preflight shell command must be safe to re-run (resume).
-- Keep the byte-for-byte duplication note at line ~46 in mind, but `lib/parse-sprint-args.mjs`
-  is out of scope unless arg parsing changes shape.
+- The workflow's inline arg parsing is duplicated byte-for-byte in
+  `lib/parse-sprint-args.mjs` (see the note at the top of the workflow); keep them in
+  step whenever arg parsing changes shape.
 
 ## Failure-mode -> fix map
 
@@ -47,7 +47,7 @@ and must NOT depend on any operator's personal `~/.claude/CLAUDE.md` or memories
 | Stale pinned model IDs | `checkModelAliasStaleness()` -- warn if any TIER_TO_MODEL value looks dated (`-\d{8}$`) | WARN |
 | Concurrent runs corrupt checkout | branch-keyed lock in state file with mtime-based liveness (TTL) | FAIL if lock live |
 | Mid-sprint crash re-does work / junk issues | phase-level `.state.json` checkpoint + resume (skip setup, resume at saved cycle/phase) | resume forward |
-| Doer context exhaustion -> null -> work lost | `predictStreakFits()` -- proactively split a streak that won't fit usable context | split + requeue before dispatch |
+| Doer context exhaustion -> null -> work lost | `fitStreakToContext()` -- proactively split a streak that won't fit usable context | split + requeue before dispatch |
 
 ## 1. Arg-schema validation (pure) -- HARD-FAIL, earliest
 
@@ -82,7 +82,7 @@ function validateSprintArgs(opts, rawArgs) {
 }
 ```
 
-Call site: immediately after the arg-parsing block (after `opts` is resolved, ~line 71,
+Call site: immediately after the arg-parsing block (after `opts` is resolved,
 before deriving `branch`/`rootIds`). If `!ok`, `log()` the detail and `return { error }`.
 Note: bare-string / array arg forms are normalized to `{issues}` by the existing parser, so
 they still pass. The check exists to catch genuinely malformed input with a helpful message.
@@ -101,10 +101,10 @@ Required numeric paths to assert (fill from DEFAULT_CALIBRATION if missing/NaN):
 - `input_cost_multiplier.value`
 - `outlier_thresholds[notable_pct|outlier_pct|calibration_failure_pct]`
 - `doer_token_ceiling[cheap|standard|premium]`
-- `context_limits.model_context_tokens[cheap|standard|premium]` (NEW, see Sec. 7)
+- `context_limits.model_context_tokens[cheap|standard|premium]` (see Sec. 7)
 - `context_limits.autocompact_headroom_fraction`, `.base_prompt_tokens`, `.per_task_input_overhead_tokens`
 
-Call site: right after the `const calibration = Object.assign(...)` deep-merge (~line 1245).
+Call site: right after the `const calibration = Object.assign(...)` deep-merge.
 Replace `const calibration` usage so the healed object is used downstream; log each healed
 path as `WARN: calibration field <path> missing/invalid -- healed to <default>`.
 
@@ -123,7 +123,7 @@ Call site: once during preflight (after TIER_TO_MODEL is in scope). WARN only.
 
 ## 4. Latest-HEAD / branch-from-origin -- AUTO-HEAL, FAIL on fetch failure
 
-Modify the setup shell (`setupShellCmds`, ~line 1127). Requirements:
+Modify the setup shell (`setupShellCmds`). Requirements:
 - Prepend a `git fetch origin --quiet && echo FETCHED || echo FETCH_FAIL` command; capture
   its output at a fixed index. (Renumber the "Fixed output indices" comment accordingly and
   update every `_outs[i]` read + the `SETUP_SCHEMA`/downstream index assumptions. Keep indices
@@ -172,9 +172,10 @@ Shape:
 }
 ```
 Liveness: mtime-based via node -- `AGE_S = (Date.now() - fs.statSync(f).mtimeMs)/1000` computed
-in a node subprocess. `LOCK_TTL_S = 1800`. If a state file exists and `AGE_S < TTL` -> a run is
-live -> FAIL `preflight: another auto-sprint run appears active on <branch> (state age <n>s < TTL)`.
-If `AGE_S >= TTL` (or process crashed) -> treat as resumable.
+in a node subprocess. `SPRINT_STATE_TTL_S = 3600`. If a state file exists and `AGE_S < TTL` -> a
+run is live -> FAIL `preflight: another auto-sprint run appears active on <branch>`. If
+`AGE_S >= TTL` (or the process crashed) -> treat as resumable. A single develop iteration can
+exceed the TTL, so the workflow heartbeats the state file as it goes (see step 5).
 
 Startup sequence (add a `readState`/`writeState` helper pair using `dispatchShell` with node):
 1. Read state file + AGE via one node subprocess.
@@ -244,7 +245,7 @@ function fitStreakToContext(streakIds, bucketById, calibration, tier) {
 }
 ```
 
-Integration (line ~1547): compute BOTH truncations and take the more restrictive prefix:
+Integration: compute BOTH truncations and take the more restrictive prefix:
 ```js
 const ceilFit = truncateStreakToCeiling(streak.ids, bucketById, calibration, streak.model);
 const ctx = fitStreakToContext(streak.ids, bucketById, calibration, streak.model);
@@ -262,7 +263,8 @@ After every edit: `node --check .claude/workflows/auto-sprint.js` must pass. A f
 confirm no new `Date.now(`/`Math.random(`/`new Date(` in the script body, and that every new
 pure function sits above `PURE_FUNCTIONS_END`.
 
-## Out of scope for this branch (file follow-up beads)
+## Deliberately not covered here
 
-- Per-phase wall-clock timing (ledger `ts` field) -- mode E, separate issue.
-- Cross-epic dependency validation in the planner -- mode G, separate issue.
+- Per-phase wall-clock timing (ledger `ts` field) -- see
+  `docs/auto-sprint-parallel-doers.md`.
+- Cross-epic dependency validation in the planner.
