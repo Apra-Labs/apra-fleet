@@ -356,7 +356,9 @@ const EXPECTED_COMMAND_COUNT = 29;
 // max_turns-exhaustion resume -- moved onto the dispatchRole engine, starting
 // the execution-side half of the migration. Two agent() call sites left
 // runner.js; none were added.
-const EXPECTED_AGENT_COUNT = 12;
+// 12 -> 10 (same bead): the deployer ladder -- its dispatch and its
+// max_turns-exhaustion resume -- followed the harvester onto the engine.
+const EXPECTED_AGENT_COUNT = 10;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in

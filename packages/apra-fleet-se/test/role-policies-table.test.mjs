@@ -181,22 +181,8 @@ const ROLE_SOURCE = {
         region: ['const FINAL_REVIEW_MAX_TURNS', 'const REGRESSION_TEST_MAX_TURNS'],
         attempts: { kind: 'wrapper', call: 'runFinalReviewAttempt(' },
     },
-    deployer: {
-        anchor: '(\n                        deployerPrompt,',
-        secondary: 'Continue the deploy exactly where you left off',
-        // apra-fleet-3swo.32: the start bound used to be 'const sprintSelfId =',
-        // a shared per-cycle variable declared far ABOVE the deployer's own
-        // dispatch block (it is also read by the integ-test-runner prompt).
-        // That made the region span nearly 3000 unrelated lines, including the
-        // doer's own "Retrying once." log line -- which RETRY_ONCE_MARKER then
-        // matched, making derivedAttempts() wrongly conclude the deployer
-        // ladder retries. 'const DEPLOYER_MAX_TURNS = 500;' is the deployer's
-        // own region-start constant, matching every other role's convention
-        // (PLANNER_MAX_TURNS, INTEG_TEST_MAX_TURNS, ...) and tightly bounding
-        // the region to just this ladder's real dispatch/retry/degrade code.
-        region: ['const DEPLOYER_MAX_TURNS = 500;', 'deployedThisCycle = deployResult.deployed === true;'],
-        attempts: { kind: 'single' },
-    },
+    // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
+    deployer: { engine: true },
     'integ-test-runner': {
         anchor: '(\n                    featurePrompt,',
         secondary: 'Continue the integration test run exactly where you left off',

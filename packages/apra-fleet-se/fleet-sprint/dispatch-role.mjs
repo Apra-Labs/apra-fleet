@@ -64,6 +64,8 @@ const SCOPED_REPLAN_PLANNER_MAX_TURNS = 500;
 const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 500;
 /** Harvester turn base: it writes docs/changelog across the whole epic. */
 const HARVESTER_MAX_TURNS = 500;
+/** Deployer turn base: it runs real deploy commands per a runbook. */
+const DEPLOYER_MAX_TURNS = 500;
 
 /**
  * Every turn-base constant a policy's `maxTurns.base` may name, keyed by that
@@ -77,6 +79,7 @@ export const TURN_BASES = Object.freeze({
     SCOPED_REPLAN_PLANNER_MAX_TURNS,
     SCOPED_REPLAN_REVIEWER_MAX_TURNS,
     HARVESTER_MAX_TURNS,
+    DEPLOYER_MAX_TURNS,
 });
 
 /**

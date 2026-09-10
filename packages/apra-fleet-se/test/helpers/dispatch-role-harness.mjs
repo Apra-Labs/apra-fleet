@@ -374,6 +374,16 @@ export const ROLE_CALL_OPTS = Object.freeze({
         roleLabel: 'Scoped Replan Review',
         label: 'Scoped Replan Review',
     },
+    deployer: {
+        prompt: 'DEPLOYER PROMPT',
+        resumePrompt: 'DEPLOYER RESUME PROMPT',
+        roleLabel: 'Deployer',
+        resumeLabel: 'Deploy (resume, max_turns=1000)',
+        synthesizedNotes: {
+            schema: (err) => `HARNESS-SCHEMA-CLASS: ${err.message}`,
+            dispatch: (err) => `HARNESS-DISPATCH-CLASS: ${err.message}`,
+        },
+    },
     harvester: {
         prompt: 'HARVESTER PROMPT',
         resumePrompt: 'HARVESTER RESUME PROMPT',
