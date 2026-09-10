@@ -21,6 +21,7 @@ import {
     splitTopLevelArgs,
     dispatchLadderModulePaths,
     moduleSetSourceWithOffsets,
+    DISPATCH_LADDER_MODULES,
 } from './helpers/dispatch-pin-scanner.mjs';
 import { PLANNING_LADDERS, PLANNING_ENGINE_DISPATCHES } from './helpers/planning-ladders.mjs';
 import { EXECUTION_INLINE_LADDERS, EXECUTION_ENGINE_DISPATCHES } from './helpers/execution-ladders.mjs';
@@ -89,6 +90,44 @@ const REPO_ROOT = path.join(SE_DIR, '../..');
 const FLEET_SPRINT_DIR = path.join(SE_DIR, 'fleet-sprint');
 const RUNNER_SRC = fs.readFileSync(path.join(FLEET_SPRINT_DIR, 'runner.js'), 'utf8');
 const DISPATCH_ROLE_SRC = fs.readFileSync(path.join(FLEET_SPRINT_DIR, 'dispatch-role.mjs'), 'utf8');
+
+// apra-fleet-3swo.6.2: runner.js is no longer the whole engine-CONSUMER
+// surface. runSprintCycle is being sliced one phase() boundary at a time into
+// fleet-sprint/phases/*, and a sliced phase takes its dispatchRole() call
+// sites with it -- the Plan phase took the planner and plan-reviewer
+// dispatches into phases/plan.mjs.
+//
+// Two of this file's censuses are about the CONSUMER side ("who calls
+// dispatchRole", "does any inline ladder survive"), and reading only
+// runner.js turns both of them into the wrong question the moment a phase
+// moves: the roles a sliced phase dispatches would read as "migrated but
+// never reached", and an inline ladder that survived INSIDE a phase module
+// would go unnoticed. So they scan the shared DISPATCH_LADDER_MODULES set
+// (test/helpers/dispatch-pin-scanner.mjs) instead, which is maintained for
+// exactly this and already lists the phase modules in the load-bearing
+// position ahead of role-policies.mjs.
+//
+// Deliberately NOT applied to the two DISPATCH_ROLE_SRC/RUNNER_SRC checks
+// that are genuinely about one specific file (the agent() wrapper's sprint_id
+// injection lives in runner.js and nowhere else; the engine's own single
+// agent()/withGitSync()/withDispatchWatchdog() sites live in
+// dispatch-role.mjs). Widening those would weaken them.
+// The CONSUMER half of DISPATCH_LADDER_MODULES: runner.js plus every phase
+// module sliced out of it. Derived by FILTERING the shared list rather than
+// re-typing one, so a later slice that registers its module there is picked up
+// here with no edit.
+//
+// dispatch-role.mjs and role-policies.mjs are excluded on purpose: they are
+// the ENGINE and its data table, not consumers. Leaving dispatch-role.mjs in
+// would make the "no inline agent() survives" check below fail against the
+// engine's own single, sanctioned agent() call site -- the very thing the
+// next assertion in that test requires to exist.
+const CONSUMER_MODULES = DISPATCH_LADDER_MODULES.filter(
+    (f) => f === 'runner.js' || f.startsWith('phases/')
+);
+const CONSUMER_SRC = moduleSetSourceWithOffsets(
+    dispatchLadderModulePaths(FLEET_SPRINT_DIR, CONSUMER_MODULES)
+).source;
 const GOLDEN_FIXTURE_REL = 'packages/apra-fleet-se/test/fixtures/golden-transcript';
 
 /**
@@ -992,13 +1031,18 @@ describe('(5) a role with no policy row fails loudly rather than falling back to
 // two is absence: no inline agent() ladder, and none of the per-role
 // brackets-and-watchdog scaffolding that wrapped them, may survive in runner.js.
 // -----------------------------------------------------------------------------
-describe('(6) no inline role ladder or its bracket/watchdog scaffolding survives in runner.js', () => {
-    test('runner.js contains no agent() call site at all, and the engine hosts exactly one', () => {
-        const runnerSites = findCallSites(RUNNER_SRC, 'agent', { excludeDeclaration: true });
+describe('(6) no inline role ladder or its bracket/watchdog scaffolding survives on the consumer side', () => {
+    test('no engine-consumer module contains an agent() call site at all, and the engine hosts exactly one', () => {
+        // apra-fleet-3swo.6.2: scanned across the whole consumer set, not just
+        // runner.js -- an inline ladder that survived inside a sliced phase
+        // module is the same defect, and a runner.js-only scan would call it
+        // clean.
+        const consumerSites = findCallSites(CONSUMER_SRC, 'agent', { excludeDeclaration: true });
         assert.deepStrictEqual(
-            runnerSites.map((s) => `runner.js:${s.line}`),
+            consumerSites.map((s) => `engine-consumer set:${s.line}`),
             [],
-            'an inline agent() dispatch survives in runner.js. Every role dispatch must route through dispatchRole().'
+            'an inline agent() dispatch survives on the consumer side (runner.js or a phases/* module). Every role ' +
+            'dispatch must route through dispatchRole().'
         );
         const { source } = moduleSetSourceWithOffsets(dispatchLadderModulePaths(FLEET_SPRINT_DIR));
         assert.strictEqual(
@@ -1015,14 +1059,15 @@ describe('(6) no inline role ladder or its bracket/watchdog scaffolding survives
 
     test('the per-role bracket and watchdog scaffolding moved with the ladders', () => {
         assert.deepStrictEqual(
-            findCallSites(RUNNER_SRC, 'withGitSync', { excludeDeclaration: true }).map((s) => `runner.js:${s.line}`),
+            findCallSites(CONSUMER_SRC, 'withGitSync', { excludeDeclaration: true }).map((s) => `engine-consumer set:${s.line}`),
             [],
-            'a per-dispatch withGitSync(...) bracket survives in runner.js -- the engine opens the one shared bracket.'
+            'a per-dispatch withGitSync(...) bracket survives on the consumer side (runner.js or a phases/* module) ' +
+            '-- the engine opens the one shared bracket.'
         );
         assert.deepStrictEqual(
-            findCallSites(RUNNER_SRC, 'withDispatchWatchdog', { excludeDeclaration: true }).map((s) => `runner.js:${s.line}`),
+            findCallSites(CONSUMER_SRC, 'withDispatchWatchdog', { excludeDeclaration: true }).map((s) => `engine-consumer set:${s.line}`),
             [],
-            'a per-dispatch withDispatchWatchdog(...) race survives in runner.js.'
+            'a per-dispatch withDispatchWatchdog(...) race survives on the consumer side (runner.js or a phases/* module).'
         );
         // ...and the engine really is where both now live, exactly once each.
         // These are ctx.* calls, which the shared call-site scanner deliberately
@@ -1042,37 +1087,42 @@ describe('(6) no inline role ladder or its bracket/watchdog scaffolding survives
         );
     });
 
-    test('every dispatchRole() call site in runner.js names a migrated role, and together they cover the whole set', () => {
-        const sites = findCallSites(RUNNER_SRC, 'dispatchRole', { excludeDeclaration: true });
-        assert.ok(sites.length > 0, 'runner.js makes no dispatchRole() call at all.');
+    test('every dispatchRole() call site in the engine-consumer module set names a migrated role, and together they cover the whole set', () => {
+        const sites = findCallSites(CONSUMER_SRC, 'dispatchRole', { excludeDeclaration: true });
+        assert.ok(sites.length > 0, 'the engine-consumer module set makes no dispatchRole() call at all.');
         const dispatchedByName = sites.map((site) => {
             const args = splitTopLevelArgs(site.callText);
             const raw = (args[1] || '').trim();
             assert.match(
                 raw,
                 /^'[^']+'$/,
-                `runner.js:${site.line} dispatches a role by EXPRESSION (${raw}) rather than by literal name -- a ` +
-                'computed role name cannot be audited for coverage here.'
+                `engine-consumer set, line ${site.line} dispatches a role by EXPRESSION (${raw}) rather than by ` +
+                'literal name -- a computed role name cannot be audited for coverage here.'
             );
             return raw.slice(1, -1);
         });
         for (const role of dispatchedByName) {
-            assert.ok(ROLE_NAMES.includes(role), `runner.js dispatches unknown role '${role}'.`);
-            assert.strictEqual(ROLE_POLICIES[role].migrated, true, `runner.js dispatches '${role}', which is not marked migrated.`);
+            assert.ok(ROLE_NAMES.includes(role), `the engine-consumer module set dispatches unknown role '${role}'.`);
+            assert.strictEqual(
+                ROLE_POLICIES[role].migrated,
+                true,
+                `the engine-consumer module set dispatches '${role}', which is not marked migrated.`
+            );
         }
         // COVERAGE, discovered rather than counted: every migrated role must be
-        // reachable, and the only one runner.js does not name is the doer's
-        // resume -- which is the SAME frozen object as the doer's secondary and
-        // is reached through the doer path. An assertion written against the
-        // number of call sites would leave exactly that role unverified.
+        // reachable, and the only one the consumer set does not name is the
+        // doer's resume -- which is the SAME frozen object as the doer's
+        // secondary and is reached through the doer path. An assertion written
+        // against the number of call sites would leave exactly that role
+        // unverified.
         const reachedByName = new Set(dispatchedByName);
         const notDispatchedByName = migratedRoleNames().filter((role) => !reachedByName.has(role));
         for (const role of notDispatchedByName) {
             const owner = ROLE_NAMES.find((name) => ROLE_POLICIES[name].secondary === ROLE_POLICIES[role]);
             assert.ok(
                 owner && reachedByName.has(owner),
-                `'${role}' is marked migrated but runner.js never dispatches it by name and it is not the secondary ` +
-                'of a role that is -- so nothing in production reaches it.'
+                `'${role}' is marked migrated but no module in the engine-consumer set dispatches it by name, and ` +
+                'it is not the secondary of a role that is -- so nothing in production reaches it.'
             );
         }
         assert.ok(
