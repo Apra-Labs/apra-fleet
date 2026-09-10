@@ -26,6 +26,7 @@ import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities,
 import { getSeCommands } from './se-os-commands.mjs';
 import { resultText, toolErrorText } from './mcp-result.mjs';
 import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache } from './member-target.mjs';
+import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from './sprint-state.mjs';
 import {
     parseOwnerRepoFromRemoteUrl, parseRepoScopeFromRemoteUrl, vcsCredentialLabelForProvider,
     buildCredentialReadCommand, raiseVcsPrForMember, PR_SKIPPED_NO_MCP_CLIENT,
@@ -1141,6 +1142,7 @@ export {
  *   onAuthFailure?: Function,
  *   resolveMemberProvider?: (member: string) => Promise<string|undefined>,
  *   args?: { callTool?: Function },
+ *   sprintState?: object,
  * }} opts
  * @returns {Promise<{ ok: true, member: string, gPush: object, dPush: object }>}
  */
@@ -1148,7 +1150,7 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     const {
         command, pushCode = true, pushBeads = true, log = () => {},
         mutex, sprintId, branch, maxTransientRetries = 1, remote = 'origin',
-        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider, args,
+        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider, args, sprintState,
     } = opts;
 
     let gPush;
@@ -1185,7 +1187,7 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     // the pre-dispatch bracket does (apra-fleet-7dir.16/.24), guarded on
     // `args.callTool` so a caller with no MCP client (mock-sprint scenarios)
     // keeps the pre-shell-aware default.
-    const shell = await resolveSettleShell({ args, member, log });
+    const shell = await resolveSettleShell({ args, member, log, sprintState });
     const settle = buildSettleCallback(member, { command, log, shell });
     const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, settle });
     return { ok: true, member, gPush, dPush };
@@ -1435,13 +1437,38 @@ export function createMemberSessionGuard(opts = {}) {
  * throwing or hanging on a fleetApi call that has nothing to answer it.
  * Shared by every remaining buildSettleCallback call site so each one does
  * not have to re-implement the guard (apra-fleet-7dir.24).
- * @param {{ args?: { callTool?: Function }, member: string, log?: Function }} opts
+ *
+ * apra-fleet-3swo.6.1: this no longer builds a fleet client of its own. It
+ * used to run `new ApraFleet({ callTool: args.callTool })` on EVERY call, at
+ * seven call sites, several of them per dispatch. The client is now
+ * sprint-scoped state (fleet-sprint/sprint-state.mjs), resolved once per
+ * sprint:
+ *   1. `sprintState` -- the object runSprintCycle creates once at sprint start
+ *      and threads down. Every in-cycle call site passes it.
+ *   2. `args.callTool` alone -- the fallback for the call sites reached from
+ *      OUTSIDE runSprintCycle's closure (syncMemberAfterOrdered, called by
+ *      git-sync.mjs's withGitSync teardown, which is handed `args` and no
+ *      sprint state). sprintScopedFleetApi memoizes per callTool identity, so
+ *      this path shares the sprint's single client rather than building one
+ *      per call.
+ *   3. neither -- the empty string, the pre-shell-aware default (see above).
+ *
+ * The resolved { os, shell } itself is deliberately NOT memoized here or in
+ * sprint state: member-target.mjs owns that cache and does not cache its
+ * degrade, so a transiently-unreachable member is re-resolved next call
+ * (apra-fleet-ot2z.13). See sprint-state.mjs's header.
+ *
+ * @param {{ args?: { callTool?: Function }, member: string, log?: Function, sprintState?: object }} opts
  * @returns {Promise<string>}
  */
-async function resolveSettleShell({ args, member, log = () => {} }) {
+async function resolveSettleShell({ args, member, log = () => {}, sprintState }) {
+    if (sprintState) return sprintState.resolveSettleShell({ member, log });
     if (!(args && typeof args.callTool === 'function')) return '';
-    const target = await resolveMemberTarget({ fleetApi: new ApraFleet({ callTool: args.callTool }), member, log });
-    return target.shell;
+    return resolveSettleShellWith({
+        fleetApi: sprintScopedFleetApi({ callTool: args.callTool, log }),
+        member,
+        log,
+    });
 }
 
 /**
@@ -1735,10 +1762,10 @@ export async function createChildBeadWithAllocatedId(opts) {
  * Returns the ids that are NOT closed after the D-pull-then-read. An empty
  * array means the streak genuinely closed everything it was assigned.
  *
- * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function, args?: { callTool?: Function } }} opts
+ * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function, args?: { callTool?: Function }, sprintState?: object }} opts
  * @returns {Promise<string[]>} the still-unclosed bead ids
  */
-export async function verifyDoerStreakClosed({ command, orchestratorMember, beadIds, log = () => {}, args }) {
+export async function verifyDoerStreakClosed({ command, orchestratorMember, beadIds, log = () => {}, args, sprintState }) {
     // D-pull FIRST so the orchestrator's clone observes the doer's just-pushed
     // closes. Routed through the single dolt-sync module's purpose-based BEFORE
     // bracket (apra-fleet-417.2.1); behavior is identical to the previous
@@ -1746,7 +1773,7 @@ export async function verifyDoerStreakClosed({ command, orchestratorMember, bead
     // Thread the orchestrator member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
-    const shell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    const shell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
     await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell }) });
     const label = `bd show ${beadIds.join(' ')} --json`;
     const showRes = await command(label, { member_name: orchestratorMember, silent: true });
@@ -2935,6 +2962,26 @@ async function runSprintCycle(context) {
         };
     })();
 
+    // (apra-fleet-3swo.6.1) THE sprint's resolved state, created exactly ONCE
+    // here at sprint start and threaded from this point down -- never rebuilt
+    // per phase, per cycle or per call site. It owns two things that used to
+    // be re-derived at their point of use:
+    //   - the sprint-scoped fleet client every settle-shell resolution shares
+    //     (resolveSettleShell used to build a fresh ApraFleet per call, at
+    //     seven call sites);
+    //   - the per-member VCS provider resolver, RELOCATED here from the
+    //     construction site a few statements below (it was already built once
+    //     per sprint and already carried its own per-member cache, so this is
+    //     a relocation, not new caching) so the phase modules Phase 4 slices
+    //     out of this function receive it through sprint state instead of
+    //     closing over a local.
+    // See sprint-state.mjs's header for what it deliberately does NOT cache
+    // (the resolved { os, shell }, whose degrade must stay re-resolvable).
+    const sprintState = createSprintState({
+        callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+        log,
+    });
+
     // Guards every resume re-dispatch below against spawning a second
     // concurrent session on top of a prior one that is presumed dead/timed out
     // but may still be alive (see createMemberSessionGuard's doc comment).
@@ -2992,19 +3039,21 @@ async function runSprintCycle(context) {
     //      `FleetWorkflow.createContext()`), which nothing in this codebase
     //      does today (apra-fleet-417.9) -- kept for parity with its
     //      siblings' shape, not because it is exercised.
-    //   2. `args.callTool` -- the real VCSModule.resolveProvider() lookup via
-    //      createMemberVcsProviderResolver (this file). THIS is the tier
-    //      every real caller and every mock-sprint scenario reaches (see
+    //   2. `sprintState.resolveMemberProvider` -- the real
+    //      VCSModule.resolveProvider() lookup via
+    //      createMemberVcsProviderResolver, which sprint-state.mjs now
+    //      constructs (apra-fleet-3swo.6.1 RELOCATED the construction out of
+    //      this statement; the resolver is still built exactly once per
+    //      sprint, still carries its own per-member cache, and is undefined
+    //      when no `args.callTool` is wired -- the behavior here is
+    //      unchanged). THIS is the tier every real caller and every
+    //      mock-sprint scenario reaches (see
     //      mock-sprint-member-vcs-provider-threading.test.mjs, apra-fleet-
     //      417.9, for end-to-end coverage of a non-GitHub member's G-push
     //      auth failure classifying via this exact wiring).
     //   3. neither -- undefined: every runGitStep call below falls back to
     //      the default 'github' chain, exactly as before this bead.
-    const resolveMemberVcsProvider = context.resolveMemberVcsProvider ?? (
-        (args && typeof args.callTool === 'function')
-            ? createMemberVcsProviderResolver({ callTool: args.callTool, log })
-            : undefined
-    );
+    const resolveMemberVcsProvider = context.resolveMemberVcsProvider ?? sprintState.resolveMemberProvider;
 
     // The PROACTIVE counterpart to onAuthFailure above. Unlike onAuthFailure,
     // this defaults to a callable async no-op rather than undefined, so
@@ -3727,7 +3776,7 @@ async function runSprintCycle(context) {
     // Thread the orchestrator member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
-    const preflightSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    const preflightSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
     await gitSync.syncBeadsBefore(orchestratorMember, { readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: preflightSettleShell }) });
 
     // =======================
@@ -4042,7 +4091,7 @@ async function runSprintCycle(context) {
     // Thread the orchestrator member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
-    const verifyReadSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    const verifyReadSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
     await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: verifyReadSettleShell }) });
 
     await updateDashboard();
@@ -4441,7 +4490,7 @@ async function runSprintCycle(context) {
                 // looks like a childless ready leaf" failure this fix closes.
                 afterAttempt: async () => {
                     if (plannerSharesOrchestratorClone) return;
-                    const postPlanSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+                    const postPlanSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
                     await gitSync.syncBeadsBefore(orchestratorMember, {
                         fatal: true,
                         settle: buildSettleCallback(orchestratorMember, { command, log, shell: postPlanSettleShell }),
@@ -5155,7 +5204,7 @@ async function runSprintCycle(context) {
                     // (DoltSync.syncBefore) -- treat the whole call as one bracket.
                     verifyStreakClosed: async (phase) => {
                         const unclosed = await gitSync.withOpenSyncBracket(() => verifyDoerStreakClosed({
-                            command, orchestratorMember, beadIds: actualBeadIds, log, args,
+                            command, orchestratorMember, beadIds: actualBeadIds, log, args, sprintState,
                         }));
                         if (phase === 'preDispatch' && unclosed.length === 0) {
                             log(
@@ -5341,7 +5390,7 @@ async function runSprintCycle(context) {
                     // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
                     // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
                     const unclosedIds = await gitSync.withOpenSyncBracket(() => verifyDoerStreakClosed({
-                        command, orchestratorMember, beadIds: actualBeadIds, log, args,
+                        command, orchestratorMember, beadIds: actualBeadIds, log, args, sprintState,
                     }));
                     const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
                     log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);
@@ -6052,7 +6101,7 @@ async function runSprintCycle(context) {
         // Thread the orchestrator member's REGISTERED shell into dolt-settle,
         // guarded on args.callTool the same way the pre-dispatch bracket is
         // (apra-fleet-7dir.24).
-        const cycleEvalSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+        const cycleEvalSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
         await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: cycleEvalSettleShell }) });
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
@@ -6355,7 +6404,7 @@ async function runSprintCycle(context) {
     // Thread the orchestrator member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
-    const finalReviewSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log });
+    const finalReviewSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
     await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: finalReviewSettleShell }) });
     const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),

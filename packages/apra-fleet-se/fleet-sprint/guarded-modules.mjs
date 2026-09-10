@@ -68,6 +68,14 @@ export const GUARDED_MODULES = [
     // must be scanned by dispatch-safety-guard (member_name at the call
     // site) exactly like the runner.js ladders it replaces.
     'dispatch-role.mjs',
+    // apra-fleet-3swo.6.1: the per-sprint resolved state (the sprint-scoped
+    // fleet client every settle-shell resolution shares, plus the relocated
+    // per-member VCS provider resolver). It builds no member-bound command
+    // string today, but it is the module every future phase module asks for
+    // the member's resolved shell -- exactly the input the shell-command
+    // invariant is about -- so it is registered from the start rather than
+    // retrofitted later.
+    'sprint-state.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left
