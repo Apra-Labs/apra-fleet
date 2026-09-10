@@ -33,6 +33,22 @@ import {
     pushesCode,
 } from '../fleet-sprint/role-policies.mjs';
 import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
+import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
+import { PLANNING_LADDERS, ENGINE_DISPATCHES } from './helpers/planning-ladders.mjs';
+import {
+    createRecordingCtx,
+    ROLE_CALL_OPTS,
+    DISPATCH_TIMEOUT_S,
+    FIXED_ROLE_TIER,
+    SCHEMAS,
+    turnExhaustionError,
+    authError,
+    trustError,
+    busyError,
+    schemaError,
+    transportError,
+    postDispatchSyncError,
+} from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
 // apra-fleet-3swo.5.2 -- the per-role dispatch POLICY TABLE, proven against
@@ -417,14 +433,39 @@ function dispatchRows() {
     for (const role of ROLE_NAMES) {
         const entry = ROLE_POLICIES[role];
         const src = ROLE_SOURCE[role];
-        rows.push({ name: role, policy: entry, anchor: src.anchor, role });
+        // apra-fleet-3swo.5.3: a MIGRATED role has no inline runner.js ladder
+        // left to anchor on -- its ROLE_SOURCE entry is `{ engine: true }` and
+        // every field below is re-derived by RUNNING the engine instead (see
+        // the engine-derivation section at the end of this file).
+        const engine = entry.migrated === true;
+        assert.strictEqual(
+            engine,
+            src.engine === true,
+            `${role}: ROLE_SOURCE must say { engine: true } for exactly the roles role-policies.mjs marks migrated.`
+        );
+        rows.push({ name: role, policy: entry, anchor: engine ? null : src.anchor, role, engine });
         if (entry.secondary && role !== 'doer') {
-            assert.ok(src.secondary, `${role}: policy declares a secondary dispatch but ROLE_SOURCE names no anchor for it.`);
-            rows.push({ name: `${role} (${entry.secondary.kind})`, policy: entry.secondary, anchor: src.secondary, role });
+            if (!engine) {
+                assert.ok(src.secondary, `${role}: policy declares a secondary dispatch but ROLE_SOURCE names no anchor for it.`);
+            }
+            rows.push({
+                name: `${role} (${entry.secondary.kind})`,
+                policy: entry.secondary,
+                anchor: engine ? null : src.secondary,
+                role,
+                engine,
+            });
         }
     }
     return rows;
 }
+
+/** Roles whose ladder still lives inline in runner.js (textual derivation). */
+const INLINE_ROLES = ROLE_NAMES.filter((role) => ROLE_POLICIES[role].migrated !== true);
+/** Roles whose ladder runs on the engine (behavioural derivation). */
+const MIGRATED_ROLES = ROLE_NAMES.filter((role) => ROLE_POLICIES[role].migrated === true);
+/** The engine's census entry in the planning-side pin table. */
+const ENGINE_CENSUS = PLANNING_LADDERS.find((pin) => pin.mode === 'engine');
 
 // -----------------------------------------------------------------------------
 // (1) Shape: every role carries every policy field, drawn from closed vocabularies.
@@ -503,10 +544,20 @@ describe('role policy table: coverage against the behaviour pins', () => {
     test('the table describes all 22 dispatches, anchored on exactly the anchors the two pin files use', () => {
         const rows = dispatchRows();
         assert.strictEqual(rows.length, 22, `Expected 22 dispatch policies, found ${rows.length}.`);
+
+        // apra-fleet-3swo.5.3: the 22 dispatches are now covered on TWO sides.
+        // A still-inline dispatch is covered by a source ANCHOR (unchanged);
+        // an engine-served one is covered by an entry in ENGINE_DISPATCHES,
+        // the planning pin file's behavioural pin table. Neither side may drop
+        // a dispatch, and no dispatch may appear on both.
+        const inlineRows = rows.filter((r) => !r.engine);
+        const engineRows = rows.filter((r) => r.engine);
+
         assert.strictEqual(
-            new Set(rows.map((r) => siteFor(r.anchor).line)).size,
-            22,
-            'Each policy must anchor a DISTINCT dispatch site -- two rows on one site would leave a dispatch undescribed.'
+            new Set(inlineRows.map((r) => siteFor(r.anchor).line)).size,
+            inlineRows.length,
+            'Each still-inline policy must anchor a DISTINCT dispatch site -- two rows on one site would leave a ' +
+            'dispatch undescribed.'
         );
 
         // The anchors the pin files themselves use, parsed out of their pin
@@ -521,11 +572,31 @@ describe('role policy table: coverage against the behaviour pins', () => {
                 pinAnchors.add(raw.replace(/\\n/g, '\n').replace(/\\(['"\\])/g, '$1'));
             }
         }
-        assert.strictEqual(pinAnchors.size, 22, `Expected 22 pinned anchors across the two pin files, found ${pinAnchors.size}.`);
+        // The engine's own census anchor pins the ENGINE's call site, not any
+        // one role's dispatch, so it is accounted for separately rather than
+        // matched against a policy row.
+        assert.ok(
+            pinAnchors.delete(ENGINE_CENSUS.anchor),
+            'The planning pin table must carry the engine census entry, so the engine\'s own agent() site stays pinned.'
+        );
+        assert.strictEqual(
+            pinAnchors.size,
+            inlineRows.length,
+            `Expected ${inlineRows.length} pinned inline anchors across the two pin files, found ${pinAnchors.size}.`
+        );
         assert.deepStrictEqual(
-            rows.map((r) => r.anchor).sort(),
+            inlineRows.map((r) => r.anchor).sort(),
             [...pinAnchors].sort(),
-            'Every dispatch the pin files pin must have a policy row, and every policy row must sit on a pinned dispatch.'
+            'Every still-inline dispatch the pin files pin must have a policy row, and every inline policy row must ' +
+            'sit on a pinned dispatch.'
+        );
+
+        // Engine-served dispatches: covered by role+kind rather than by text.
+        assert.deepStrictEqual(
+            ENGINE_DISPATCHES.map((d) => `${d.role}:${d.kind}`).sort(),
+            engineRows.map((r) => `${r.policy.role}:${r.policy.kind}`).sort(),
+            'Every migrated dispatch must have a behavioural pin in ENGINE_DISPATCHES, and every such pin must ' +
+            'correspond to a migrated policy row.'
         );
     });
 
@@ -540,7 +611,7 @@ describe('role policy table: coverage against the behaviour pins', () => {
 // (3) Per-dispatch policy fields, re-derived from runner.js.
 // -----------------------------------------------------------------------------
 describe('role policy table: per-dispatch fields match runner.js', () => {
-    for (const row of dispatchRows()) {
+    for (const row of dispatchRows().filter((r) => !r.engine)) {
         test(`${row.name}: member, model, turn budget, timeouts, bracket, watchdog, KB source and schema`, () => {
             const site = siteFor(row.anchor);
             const opts = effectiveOpts(site);
@@ -614,7 +685,7 @@ describe('role policy table: per-dispatch fields match runner.js', () => {
 // (4) Ladder-level policy fields: retry and degrade.
 // -----------------------------------------------------------------------------
 describe('role policy table: retry ladders match runner.js', () => {
-    for (const role of ROLE_NAMES) {
+    for (const role of INLINE_ROLES) {
         test(`${role}: attempts, backoff, resume escalation, auth self-heal and sync-failure handling`, () => {
             const p = policyFor(role);
             const region = regionOf(role);
@@ -722,7 +793,7 @@ describe('role policy table: retry ladders match runner.js', () => {
 });
 
 describe('role policy table: degrade behaviour matches runner.js', () => {
-    for (const role of ROLE_NAMES) {
+    for (const role of INLINE_ROLES) {
         test(`${role}: what the ladder produces when its attempts are spent`, () => {
             const p = policyFor(role);
             const region = regionOf(role, 'degradeRegion');
@@ -855,7 +926,7 @@ function escapeRe(text) {
 }
 
 describe('role policy table: pre-dispatch and post-result steps match runner.js', () => {
-    for (const row of dispatchRows()) {
+    for (const row of dispatchRows().filter((r) => !r.engine)) {
         test(`${row.name}: every recorded step is a step runner.js really performs`, () => {
             const p = row.policy;
             const haystackRegion = regionOf(row.role);
@@ -884,13 +955,34 @@ describe('role policy table: pre-dispatch and post-result steps match runner.js'
         for (const p of killers) {
             assert.strictEqual(p.kind, 'max-turns-resume', `${p.role}: only a resume dispatch kills a stale session.`);
         }
-        const extraInfraKills = ROLE_NAMES.reduce((n, role) => n + policyFor(role).retry.infraResumeAttempts, 0);
+        // apra-fleet-3swo.5.3: a MIGRATED ladder no longer owns a kill site of
+        // its own -- dispatch-role.mjs performs the kill once, generically, for
+        // every resume it runs (its 'kill-stale-session' preDispatch handler).
+        // So the census is: one inline site per still-inline resume dispatch,
+        // plus the infra-recovery kills of still-inline ladders, plus the
+        // engine's single shared site. Counting the engine's site as if it were
+        // a per-role one would make this assertion drift by exactly the number
+        // of roles migrated, which is the failure this split avoids.
+        const inlineKillers = killers.filter((p) => !ROLE_POLICIES[p.ladder].migrated);
+        const extraInfraKills = ROLE_NAMES
+            .filter((role) => !policyFor(role).migrated)
+            .reduce((n, role) => n + policyFor(role).retry.infraResumeAttempts, 0);
+        const engineKillSites = (stripComments(
+            fs.readFileSync(path.join(FLEET_SPRINT_DIR, 'dispatch-role.mjs'), 'utf8'),
+        ).match(/memberSessionGuard\.killIfAlive\(/g) || []).length;
+        assert.strictEqual(
+            engineKillSites,
+            1,
+            'The engine must kill a stale session in exactly ONE generic place -- a second site would be a per-role ' +
+            'special case creeping back into the engine.'
+        );
         const killSites = (stripComments(SRC).match(/memberSessionGuard\.killIfAlive\(/g) || []).length;
         assert.strictEqual(
             killSites,
-            killers.length + extraInfraKills,
-            `runner.js has ${killSites} session-kill sites; the table accounts for ${killers.length} resume dispatches ` +
-            `plus ${extraInfraKills} infra-recovery resumes.`
+            inlineKillers.length + extraInfraKills + engineKillSites,
+            `The scanned module set has ${killSites} session-kill sites; the table accounts for ` +
+            `${inlineKillers.length} still-inline resume dispatches plus ${extraInfraKills} infra-recovery resumes ` +
+            `plus the engine's ${engineKillSites} shared site.`
         );
     });
 
@@ -951,7 +1043,15 @@ describe('role policy table: every named variance is expressed as data', () => {
             ['planner:main', 'planner:max-turns-resume', 'scoped-replan-planner:main'].sort(),
             'Only the interactive planner, its resume, and the scoped replan planner arm a client-side watchdog.'
         );
-        assert.strictEqual(armed.length, WATCHDOG_SITES.length, 'The table must arm exactly as many watchdogs as runner.js does.');
+        // Only the still-inline armed dispatches have a runner.js
+        // withDispatchWatchdog(...) site of their own; a migrated one is armed
+        // by the engine's single generic race, proved behaviourally below.
+        const inlineArmed = armed.filter((p) => ROLE_POLICIES[p.ladder].migrated !== true);
+        assert.strictEqual(
+            inlineArmed.length,
+            WATCHDOG_SITES.length,
+            'The table must arm exactly as many watchdogs as runner.js still does inline.'
+        );
         for (const p of armed) {
             assert.strictEqual(p.member.role, 'planner', 'Every watchdog-armed dispatch targets the planner member.');
         }

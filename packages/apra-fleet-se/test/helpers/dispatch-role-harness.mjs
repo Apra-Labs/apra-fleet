@@ -1,0 +1,270 @@
+// Shared BEHAVIOURAL harness for the dispatchRole engine
+// (fleet-sprint/dispatch-role.mjs, apra-fleet-3swo.5.3).
+//
+// WHY THIS EXISTS -- and why it is not "a table compared to a table":
+// before the dispatchRole migration, a planning ladder's facts (which member
+// it routes to, whether it is bracketed, its turn budget, how many attempts
+// it makes, what it degrades to) were only knowable by SCANNING runner.js's
+// source text, because each ladder was a closure over per-run state inside
+// one enormous function with no seam to call. ./dispatch-pin-scanner.mjs
+// exists for exactly that, and it stays the right tool for every ladder still
+// living inline in runner.js.
+//
+// Once a ladder moves onto the engine, source scanning stops being able to
+// answer those questions AT ALL: the engine's retry loop is `for (let attempt
+// = 1; attempt <= attempts; attempt++)`, so "how many attempts does the
+// planner make?" is no longer a textual property of any source region -- a
+// regex over dispatch-role.mjs would report the same answer for every role.
+// The honest replacement is not a weaker scan, it is a STRONGER one: RUN the
+// real engine, with the real frozen ROLE_POLICIES row, against a recording
+// ctx, and observe what it actually does. Every fact the old textual pins
+// asserted is then re-derived from real executed source (dispatch-role.mjs +
+// role-policies.mjs) rather than from source text -- and a pin can now catch
+// a behavioural regression a text scan never could (e.g. a policy field that
+// is read but never applied).
+//
+// NOTHING IS STUBBED THAT MATTERS: dispatchRole takes every runner-side
+// primitive through `ctx` by design (see dispatch-role.mjs's header), so this
+// harness supplies recording implementations of exactly those primitives and
+// runs the engine's OWN control flow unmodified. The values it feeds in are
+// the real ones wherever a real one exists: FIXED_ROLE_TIER is read out of
+// runner.js's own source rather than re-typed here, and the schemas are the
+// real contracts.mjs objects.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { AgentOutputError, AgentDispatchError, FleetTransportError } from '@apralabs/apra-fleet-workflow';
+
+import { objectLiteralFor, objectEntries } from './dispatch-pin-scanner.mjs';
+import { planReviewerVerdict, streakAssignment } from '../../fleet-sprint/contracts.mjs';
+import { isNoMutationDispatchFailure } from '../../fleet-sprint/runner.js';
+import { PostDispatchSyncError } from '../../fleet-sprint/errors.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FLEET_SPRINT_DIR = path.join(__dirname, '..', '..', 'fleet-sprint');
+
+// The engine's timed backoff sleeps exist for production busy-lock
+// resilience only; the documented hermetic-mock flag makes the ladder run its
+// full LOGIC (and emit its unchanged "waiting Ns" log lines, which is how
+// this harness re-derives retry.backoffMs) with zero wall-clock.
+process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF = '1';
+
+/**
+ * FIXED_ROLE_TIER, read out of runner.js's REAL source rather than re-typed
+ * as a duplicate literal -- so a pin asserting "the planner dispatches at
+ * FIXED_ROLE_TIER.planner" is still tied to the runner constant, exactly as
+ * the pre-migration textual pin was.
+ */
+export const FIXED_ROLE_TIER = Object.freeze(Object.fromEntries(
+    [...objectEntries(objectLiteralFor(
+        fs.readFileSync(path.join(FLEET_SPRINT_DIR, 'runner.js'), 'utf8'),
+        'FIXED_ROLE_TIER',
+    ))].map(([k, v]) => [k, v.replace(/^['"]|['"]$/g, '')]),
+));
+
+/**
+ * A stand-in numeric value for the symbolic budget name role-policies.mjs
+ * records ('DISPATCH_TIMEOUT_S'). The NUMBER is irrelevant and deliberately
+ * not 900/5400/whatever the CLI default happens to be -- it comes from the
+ * validated CLI args at run time. What a pin asserts is that the engine
+ * resolves the budget the policy NAMES, so a distinctive sentinel makes a
+ * mis-resolution (or a hard-coded fallback) impossible to miss.
+ */
+export const DISPATCH_TIMEOUT_S = 4242;
+
+/** The real schema objects, keyed by the name role-policies.mjs records. */
+export const SCHEMAS = Object.freeze({ planReviewerVerdict, streakAssignment });
+
+/** An AgentDispatchError whose details.reason marks the turn budget spent. */
+export function turnExhaustionError(message = 'max turns spent') {
+    return new AgentDispatchError(message, { details: { reason: 'max_turns_exhausted' } });
+}
+
+/** An LLM-credential dispatch failure (self-healable, and non-retryable). */
+export function authError(message = 'authentication failed for member') {
+    return new AgentDispatchError(message, { details: { reason: 'auth' } });
+}
+
+/** A workspace-trust failure: non-retryable, and NOT self-healable. */
+export function trustError(message = 'workspace not trusted') {
+    return new AgentDispatchError(message, { details: { reason: 'workspace_not_trusted' } });
+}
+
+/** A plain transient dispatch failure (the busy-lock case the ladders retry). */
+export function busyError(message = 'execute_prompt is already running for bob') {
+    return new AgentDispatchError(message, { details: { reason: 'busy' } });
+}
+
+/** Schema-repair exhaustion: agent()'s own bounded repair loop gave up. */
+export function schemaError(message = 'no schema-valid output after repair') {
+    return new AgentOutputError(message);
+}
+
+/** A dropped transport, which every ladder treats exactly like a dispatch failure. */
+export function transportError(message = 'connection dropped') {
+    return new FleetTransportError(message);
+}
+
+/** The dispatch RAN; only its post-dispatch sync failed. */
+export function postDispatchSyncError(message = 'post-dispatch sync failed') {
+    return new PostDispatchSyncError(message, { member: 'bob' });
+}
+
+/**
+ * Builds a recording ctx plus the timeline it records.
+ *
+ * `responses` is consumed one entry per agent() call: an Error is thrown, a
+ * function is called with the recorded dispatch and its result used, anything
+ * else is returned as the dispatch's value. Once it is exhausted every
+ * further call yields `defaultResponse`.
+ *
+ * @param {object} [options]
+ * @returns {{ctx: object, rec: object}}
+ */
+export function createRecordingCtx(options = {}) {
+    const {
+        responses = [],
+        defaultResponse = 'dispatch ok',
+        members = {},
+        healed = false,
+        noMutation = isNoMutationDispatchFailure,
+        budgets = { DISPATCH_TIMEOUT_S },
+        steps = {},
+    } = options;
+
+    const rec = {
+        /** One entry per real agent() call the engine made. */
+        dispatches: [],
+        /** Every ctx.log() line, in order. */
+        logs: [],
+        /** Ordered timeline of every observable side effect. */
+        events: [],
+        /** Members whose stale session the engine killed. */
+        kills: [],
+        /** Every onLlmAuthFailure({member,label,error}) the engine performed. */
+        authHeals: [],
+        /** How many times the engine dropped the orchestrator's beads cache. */
+        invalidations: 0,
+    };
+
+    const queue = [...responses];
+    let bracketFrame = null;
+
+    const ctx = {
+        agent: async (prompt, opts) => {
+            const entry = {
+                prompt,
+                options: { ...opts },
+                member: opts.member_name,
+                bracket: bracketFrame ? { ...bracketFrame } : null,
+                watchdog: null,
+            };
+            rec.dispatches.push(entry);
+            rec.events.push({ type: 'dispatch', entry });
+            const next = queue.length > 0 ? queue.shift() : defaultResponse;
+            const value = typeof next === 'function' ? await next(entry) : next;
+            if (value instanceof Error) throw value;
+            return value;
+        },
+        withGitSync: async (member, pushCode, dispatchFn, bracketOptions) => {
+            const previous = bracketFrame;
+            bracketFrame = { member, pushCode, options: { ...(bracketOptions || {}) } };
+            rec.events.push({ type: 'bracket-open', member, pushCode, options: { ...(bracketOptions || {}) } });
+            try {
+                return await dispatchFn();
+            } finally {
+                bracketFrame = previous;
+            }
+        },
+        withDispatchWatchdog: (dispatchPromise, watchdogOptions) => {
+            // The engine evaluates `agent(...)` FIRST and passes the pending
+            // promise in here, so the dispatch this watchdog races is always
+            // the most recently recorded one.
+            const last = rec.dispatches[rec.dispatches.length - 1];
+            const armed = {
+                timeoutS: watchdogOptions.timeoutS,
+                member: watchdogOptions.member,
+                label: watchdogOptions.label,
+                hasLog: typeof watchdogOptions.log === 'function',
+            };
+            if (last) last.watchdog = armed;
+            rec.events.push({ type: 'watchdog', armed });
+            return dispatchPromise;
+        },
+        log: (message) => {
+            rec.logs.push(message);
+            rec.events.push({ type: 'log', message });
+        },
+        getMemberForRole: (role) => members[role] ?? `member:${role}`,
+        memberSessionGuard: {
+            killIfAlive: async (member) => {
+                rec.kills.push(member);
+                rec.events.push({ type: 'kill', member });
+            },
+        },
+        onLlmAuthFailure: async ({ member, label, error }) => {
+            rec.authHeals.push({ member, label, error });
+            rec.events.push({ type: 'auth-heal', member, label, error });
+            return healed;
+        },
+        fixedRoleTier: FIXED_ROLE_TIER,
+        budgets,
+        schemas: SCHEMAS,
+        isNoMutationDispatchFailure: noMutation,
+        invalidateAllBeadsCache: () => {
+            rec.invalidations++;
+            rec.events.push({ type: 'invalidate-beads-cache' });
+        },
+        steps,
+    };
+    return { ctx, rec };
+}
+
+/**
+ * The per-call `opts` a planning role needs from its runner call site, filled
+ * in with harness placeholders. A test overrides only what it is asserting
+ * on; nothing here is policy (see role-policies.mjs's "deliberately out of
+ * scope" note on labels and prompts).
+ */
+export const ROLE_CALL_OPTS = Object.freeze({
+    planner: {
+        prompt: 'PLANNER PROMPT',
+        resumePrompt: 'PLANNER RESUME PROMPT',
+        roleLabel: 'Planner',
+        resumeArg: 'session-abc',
+        resumeLabel: 'Plan (resume, max_turns=1000)',
+    },
+    'plan-reviewer': {
+        prompt: 'PLAN REVIEW PROMPT',
+        resumePrompt: 'PLAN REVIEW RESUME PROMPT',
+        roleLabel: 'Plan Reviewer',
+        resumeLabel: 'Plan Review (resume, max_turns=1000)',
+    },
+    'scoped-replan-planner': {
+        prompt: 'SCOPED REPLAN PLANNER PROMPT',
+        roleLabel: 'Scoped Replan Plan',
+        label: 'Scoped Replan Plan (interactive)',
+    },
+    'scoped-replan-plan-reviewer': {
+        prompt: 'SCOPED REPLAN REVIEW PROMPT',
+        roleLabel: 'Scoped Replan Review',
+        label: 'Scoped Replan Review',
+    },
+    'streak-assignment': {
+        prompt: 'STREAK ASSIGNMENT PROMPT',
+        roleLabel: 'Streak Assignment',
+        label: 'Streak Assignment',
+        repairLabel: 'Streak Assignment (semantic repair)',
+        repairPrompt: (reason) => `STREAK ASSIGNMENT PROMPT\n\nYour previous answer was REJECTED: ${reason}.`,
+    },
+});
+
+/** The five planning roles this migration bead moved onto the engine. */
+export const MIGRATED_PLANNING_ROLES = Object.freeze([
+    'planner',
+    'plan-reviewer',
+    'scoped-replan-planner',
+    'scoped-replan-plan-reviewer',
+    'streak-assignment',
+]);

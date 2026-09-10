@@ -63,6 +63,11 @@ export const GUARDED_MODULES = [
     'beads-transitions.mjs',
     'role-policies.mjs',
     'inline-ladder-guard.mjs',
+    // apra-fleet-3swo.5.3: the dispatchRole engine. It hosts the ONE real
+    // agent() dispatch every migrated role ladder now runs through, so it
+    // must be scanned by dispatch-safety-guard (member_name at the call
+    // site) exactly like the runner.js ladders it replaces.
+    'dispatch-role.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left
