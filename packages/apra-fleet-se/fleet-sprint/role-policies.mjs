@@ -744,6 +744,8 @@ deployer.secondary = secondary(deployer, 'deployer', 'max-turns-resume', {
 });
 
 const integTestRunner = policy('integ-test-runner', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: 'featurePrompt,',
     member: roleMember('integ-test-runner'),
     agentType: 'integ-test-runner',
@@ -765,7 +767,29 @@ const integTestRunner = policy('integ-test-runner', {
     }),
     // An infrastructure failure produced no test evidence, so it must never be
     // recorded as a test FAILURE.
-    degrade: degrade({ kind: 'inconclusive', marker: 'integInfraInconclusive' }),
+    //
+    // THE ASYMMETRY IS THE VARIANCE. A schema-repair exhaustion or an ordinary
+    // dispatch failure DID reach a running test pass and legitimately record
+    // passed:false -- those two classes are in `classes` and fabricate the
+    // report below. An 'infra'-class failure did not: the member CLI died
+    // mid-turn and lost its result envelope without ever reporting pass or
+    // fail. That class is deliberately NOT in `classes`, so the engine
+    // fabricates nothing for it and instead returns an `inconclusive` record
+    // (reason + message) that the caller turns into an INCONCLUSIVE cycle
+    // entry. classifiesInfraFailures is what makes the class reachable at all;
+    // without it an envelope-less failure would fall into 'dispatch' and be
+    // recorded as a test failure that never happened.
+    degrade: degrade({
+        kind: 'inconclusive',
+        marker: 'integInfraInconclusive',
+        classifiesInfraFailures: true,
+        classes: ['schema', 'dispatch'],
+        synthesized: { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [] },
+        verdictField: 'passed',
+        notesField: 'summary',
+        paths: 2,
+        neverSynthesizes: [true],
+    }),
 });
 integTestRunner.secondary = secondary(integTestRunner, 'integ-test-runner', 'max-turns-resume', {
     ladderAnchor: 'Continue the integration test run exactly where you left off',

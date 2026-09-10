@@ -3305,7 +3305,14 @@ async function runSprintCycle(context) {
         onLlmAuthFailure,
         fixedRoleTier: FIXED_ROLE_TIER,
         budgets: { DISPATCH_TIMEOUT_S, INTEG_MAX_TOTAL_S, REGRESSION_TEST_MAX_TOTAL_S },
-        schemas: { planReviewerVerdict, streakAssignment, harvesterReport, deployerReport, regressionReport },
+        schemas: {
+            planReviewerVerdict,
+            streakAssignment,
+            harvesterReport,
+            deployerReport,
+            regressionReport,
+            integReport,
+        },
         isNoMutationDispatchFailure,
         invalidateAllBeadsCache,
         // The named steps role-policies.mjs records for a row, implemented
@@ -5917,194 +5924,140 @@ async function runSprintCycle(context) {
             // guard short-circuits).
             verifySetForIntegTest = [];
             let verifySetIdSet = new Set();
-            try {
-                // integ-test-runner.md's contract requires "an explicit list of
-                // feature ids ... already scoped for you by the orchestrator" as
-                // a required input, and forbids the agent from deriving that list
-                // itself via a bare, unscoped `bd list --type=feature`. Fetch the
-                // scope's open features here and name them explicitly -- always
-                // dispatch, even with zero open features this cycle: deploy
-                // succeeded and a playbook exists, so this phase runs regardless,
-                // per the fixed per-cycle phase sequence every other
-                // cycle-evaluation check in this file assumes.
-                const openFeatures = await bdListScoped('--type=feature --status=open --json');
-                // apra-fleet-jfo: replaces the old bug-only pendingClosureBugs
-                // derivation. Any issue_type qualifies (bug, feature, task-parent,
-                // epic); classified against the FULL unfiltered project bead list
-                // (fetchAllBeadsShared, not a scope-filtered subset) so an
-                // out-of-scope open child still blocks eligibility. These beads
-                // have no other closure owner: doers refuse non-task beads,
-                // reviewers may not close, and the plain feature prompt below only
-                // names features -- without this they would linger open at goal
-                // priority forever. The integ runner has bead-closing authority
-                // and pushBeads: true, so it owns verify-set closure.
-                ({ verifyIds: verifySetForIntegTest } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues));
-                // apra-fleet-66u.2: a bead can become verify-eligible AFTER
-                // this cycle's Route step already ran (e.g. its last child
-                // closes during THIS cycle's own Develop/Review, before
-                // Deploy/IntegTest) -- this classifyVerifySet call, not the
-                // Route step's, is what first discovers it. Feed it into
-                // verifyEverIds here too so the exit-gate's
-                // stillOpenVerifyIds safety net (further down) never has a
-                // same-cycle blind spot for a bead that was genuinely just
-                // dispatched to verify but not yet closed.
-                for (const id of verifySetForIntegTest) verifyEverIds.add(id);
-                verifySetIdSet = new Set(verifySetForIntegTest);
-                // Dedupe: a feature already in the verify set gets the stronger
-                // verify clause below (real evidence, gap filed under itself), not
-                // also the generic "run tests for this feature" line.
-                const openFeaturesNotInVerifySet = openFeatures.filter((f) => !verifySetIdSet.has(f.id));
-                const verifyClause = verifySetForIntegTest.length > 0
-                    ? ` Additionally, these bead(s) have ALL their children closed and await ` +
-                      `verification-closure: ${verifySetForIntegTest.join(', ')}. For each, verify against the ` +
-                      `deployed build per the playbook. If your pass shows the underlying work holds (the ` +
-                      `defect no longer reproduces, or the feature behaves as specified), close it (bd close) ` +
-                      `with a note citing the commands run and the observed output. If it does NOT hold, leave ` +
-                      `it open and file a bug describing the gap with evidence, parented under THAT bead ` +
-                      `specifically (--parent <that bead's own id>, NOT ${targetIssues[0]}) -- filing it under ` +
-                      `the right parent is required so the gap is correctly attributed and that parent is ` +
-                      `re-routed to development next cycle instead of staying stuck in verify.`
-                    : '';
-                // The per-cycle Integ Test phase is FEATURE CLOSURE ONLY:
-                // integ-test-playbook.md owns no sandbox, no smoke test, and no
-                // real-bd suite -- those belong to regression-test-playbook.md,
-                // dispatched once per sprint in Finalization below.
-                const featurePrompt = (openFeaturesNotInVerifySet.length > 0
-                    ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
-                      `${openFeaturesNotInVerifySet.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
-                      `--parent ${targetIssues[0]}.`
-                    : `Run tests using integ-test-playbook.md. No open type=feature beads are in scope ` +
-                      `this cycle -- report nothing to test. Add bug beads if needed, filed under ` +
-                      `--parent ${targetIssues[0]}.`) + verifyClause +
-                    // Generic hand-off to a target that deploys an isolated test
-                    // instance per sprint (see sprintSelfIdLine above): the
-                    // playbook, not this engine, says how to locate it from the
-                    // id and what tearing it down means.
-                    `\n${sprintSelfIdLine}\n` +
-                    `If this cycle's deploy stood up an isolated test instance for this sprint, the playbook ` +
-                    `says how to locate it from that id; tear it down before you return, pass or fail.`;
-                // integ-test-runner does NOT touch code (pushCode: false, no git
-                // push) but it DOES mutate beads -- it closes passing features
-                // and files bug beads -- so it must D-push those mutations
-                // (pushBeads: true), a D-push with no git push. G-pull before,
-                // no-op G-push after.
-                // apra-fleet-63x.3: sizing the integ turn ceiling so it is NOT
-                // the routinely-binding constraint.
-                //
-                // Intended design: on a run that is actually making progress the
-                // WALL-CLOCK ceiling (max_total_s == INTEG_MAX_TOTAL_S, up to 2h
-                // at the default) should be what bounds the dispatch, never the
-                // turn count. A compliant runner spends ~1 turn per liveness poll
-                // (integ-test-runner.md caps polling at ~1 per 2 min), but a real
-                // per-feature pass also spends fast, sub-poll turns -- bd show /
-                // bd dep list, reading test output, re-checking a backgrounded
-                // suite -- so the true turn-spend rate over a multi-feature cycle
-                // is several times the poll floor. At 200 (the pre-fix value)
-                // those chatty-but-legitimate runs exhausted max_turns before the
-                // time budget, the false exhaustion apra-fleet-63x tracks (4/4
-                // historical runs). 300 gives the wall-clock ceiling the headroom
-                // to bind first on any progressing run, so a max_turns exhaustion
-                // now signals genuine runaway scope rather than a normal long
-                // cycle. Paired with the tightened scope/turn-economy guidance in
-                // integ-test-runner.md (one feature at a time, no redundant suite
-                // re-runs, respect the poll cadence) a normal cycle needs far
-                // fewer than 300 turns. The resume ladder below still doubles from
-                // here (to 600) when a run legitimately needs more.
-                const INTEG_TEST_MAX_TURNS = 500;
-                const integDispatchOpts = {
-                    member_name: getMemberForRole('integ-test-runner'),
-                    agentType: 'integ-test-runner',
-                    schema: integReport,
-                    model: FIXED_ROLE_TIER['integ-test-runner'],
-                    // Runs a full test suite, plausibly long-running.
-                    //
-                    // max_total_s is a HARD kill at elapsed time regardless of
-                    // activity, and a timer kill surfaces as a plain
-                    // AgentDispatchError -- the resume ladder below only matches
-                    // max_turns_exhausted, so a killed-at-the-ceiling run becomes
-                    // a FALSE passed:false with no resume. Give the ceiling real
-                    // headroom while keeping the shorter INACTIVITY timer: a
-                    // genuinely hung runner still dies on silence; an active long
-                    // pass is never killed mid-progress.
-                    timeout_s: DISPATCH_TIMEOUT_S,
-                    max_total_s: INTEG_MAX_TOTAL_S,
-                    max_turns: INTEG_TEST_MAX_TURNS,
-                };
-                const dispatchIntegOnce = () => withGitSync(getMemberForRole('integ-test-runner'), false, () => agent(
-                    featurePrompt,
-                    { ...integDispatchOpts, member_name: getMemberForRole('integ-test-runner') }
-                ), { pushBeads: true });
-                // A resumed dispatch DELIVERS A NEW PROMPT ARTIFACT to the member
-                // (replacing the original one, e.g. .fleet-task.md), so a bare
-                // "continue" resume erases the dispatch's scope from the artifact
-                // a contract may treat as its scope source of truth. Every resume
-                // prompt that carries per-dispatch scope must restate it.
-                const dispatchIntegResume = () => withGitSync(getMemberForRole('integ-test-runner'), false, () => agent(
+            // apra-fleet-3swo.5.7: the try/catch that used to wrap this whole
+            // block was the integ ladder's degrade, which is now the
+            // 'integ-test-runner' policy row executed by dispatchRole. Nothing
+            // else it covered was ever caught by it: the bd scope reads below
+            // throw CommandError, which the old catch's final `else` rethrew
+            // anyway, so removing the wrapper changes no failure path.
+            // integ-test-runner.md's contract requires "an explicit list of
+            // feature ids ... already scoped for you by the orchestrator" as
+            // a required input, and forbids the agent from deriving that list
+            // itself via a bare, unscoped `bd list --type=feature`. Fetch the
+            // scope's open features here and name them explicitly -- always
+            // dispatch, even with zero open features this cycle: deploy
+            // succeeded and a playbook exists, so this phase runs regardless,
+            // per the fixed per-cycle phase sequence every other
+            // cycle-evaluation check in this file assumes.
+            const openFeatures = await bdListScoped('--type=feature --status=open --json');
+            // apra-fleet-jfo: replaces the old bug-only pendingClosureBugs
+            // derivation. Any issue_type qualifies (bug, feature, task-parent,
+            // epic); classified against the FULL unfiltered project bead list
+            // (fetchAllBeadsShared, not a scope-filtered subset) so an
+            // out-of-scope open child still blocks eligibility. These beads
+            // have no other closure owner: doers refuse non-task beads,
+            // reviewers may not close, and the plain feature prompt below only
+            // names features -- without this they would linger open at goal
+            // priority forever. The integ runner has bead-closing authority
+            // and pushBeads: true, so it owns verify-set closure.
+            ({ verifyIds: verifySetForIntegTest } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues));
+            // apra-fleet-66u.2: a bead can become verify-eligible AFTER
+            // this cycle's Route step already ran (e.g. its last child
+            // closes during THIS cycle's own Develop/Review, before
+            // Deploy/IntegTest) -- this classifyVerifySet call, not the
+            // Route step's, is what first discovers it. Feed it into
+            // verifyEverIds here too so the exit-gate's
+            // stillOpenVerifyIds safety net (further down) never has a
+            // same-cycle blind spot for a bead that was genuinely just
+            // dispatched to verify but not yet closed.
+            for (const id of verifySetForIntegTest) verifyEverIds.add(id);
+            verifySetIdSet = new Set(verifySetForIntegTest);
+            // Dedupe: a feature already in the verify set gets the stronger
+            // verify clause below (real evidence, gap filed under itself), not
+            // also the generic "run tests for this feature" line.
+            const openFeaturesNotInVerifySet = openFeatures.filter((f) => !verifySetIdSet.has(f.id));
+            const verifyClause = verifySetForIntegTest.length > 0
+                ? ` Additionally, these bead(s) have ALL their children closed and await ` +
+                  `verification-closure: ${verifySetForIntegTest.join(', ')}. For each, verify against the ` +
+                  `deployed build per the playbook. If your pass shows the underlying work holds (the ` +
+                  `defect no longer reproduces, or the feature behaves as specified), close it (bd close) ` +
+                  `with a note citing the commands run and the observed output. If it does NOT hold, leave ` +
+                  `it open and file a bug describing the gap with evidence, parented under THAT bead ` +
+                  `specifically (--parent <that bead's own id>, NOT ${targetIssues[0]}) -- filing it under ` +
+                  `the right parent is required so the gap is correctly attributed and that parent is ` +
+                  `re-routed to development next cycle instead of staying stuck in verify.`
+                : '';
+            // The per-cycle Integ Test phase is FEATURE CLOSURE ONLY:
+            // integ-test-playbook.md owns no sandbox, no smoke test, and no
+            // real-bd suite -- those belong to regression-test-playbook.md,
+            // dispatched once per sprint in Finalization below.
+            const featurePrompt = (openFeaturesNotInVerifySet.length > 0
+                ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
+                  `${openFeaturesNotInVerifySet.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
+                  `--parent ${targetIssues[0]}.`
+                : `Run tests using integ-test-playbook.md. No open type=feature beads are in scope ` +
+                  `this cycle -- report nothing to test. Add bug beads if needed, filed under ` +
+                  `--parent ${targetIssues[0]}.`) + verifyClause +
+                // Generic hand-off to a target that deploys an isolated test
+                // instance per sprint (see sprintSelfIdLine above): the
+                // playbook, not this engine, says how to locate it from the
+                // id and what tearing it down means.
+                `\n${sprintSelfIdLine}\n` +
+                `If this cycle's deploy stood up an isolated test instance for this sprint, the playbook ` +
+                `says how to locate it from that id; tear it down before you return, pass or fail.`;
+            // integ-test-runner does NOT touch code (pushCode: false, no git
+            // push) but it DOES mutate beads -- it closes passing features
+            // and files bug beads -- so it must D-push those mutations
+            // (pushBeads: true), a D-push with no git push. G-pull before,
+            // no-op G-push after.
+            // apra-fleet-3swo.5.7: the integ ladder -- its dispatch, its
+            // pushBeads git-sync bracket, its max_turns-exhaustion resume
+            // at doubled turns, its ONE bounded infra-failure recovery
+            // resume, its auth self-heal and its degrade -- is now the
+            // 'integ-test-runner' row of fleet-sprint/role-policies.mjs.
+            //
+            // WHY THE INCONCLUSIVE PATH IS POLICY DATA. An INFRA dispatch
+            // failure (empty_response / inactivity timeout / orphan-recovery
+            // timeout) is NOT a test verdict: the runner's CLI died mid-turn
+            // or lost its result envelope without ever reporting pass or
+            // fail. Recording it as passed:false is a false negative that
+            // blocks the sprint's confidence check on an infra fault. The
+            // row says this as data: degrade.classifiesInfraFailures makes
+            // 'infra' a class of its own, retry.infraResumeAttempts spends
+            // ONE session resume trying to recover it (the run may have made
+            // real progress and merely lost its envelope, and the resume
+            // prompt already restates the full scope), and 'infra' is
+            // deliberately absent from degrade.classes so the engine
+            // fabricates no report for it -- it returns an `inconclusive`
+            // record instead, which is what this call site turns into an
+            // INCONCLUSIVE cycle entry below.
+            //
+            // The max_total_s ceiling is a HARD kill regardless of activity
+            // and surfaces as a plain AgentDispatchError, so it gets real
+            // headroom (INTEG_MAX_TOTAL_S) while the shorter INACTIVITY
+            // timer still kills a genuinely hung runner. Both budgets are
+            // named symbolically by the row.
+            const integOutcome = await dispatchRole(dispatchCtx, 'integ-test-runner', {
+                prompt: featurePrompt,
+                // A resumed dispatch DELIVERS A NEW PROMPT ARTIFACT to the
+                // member (replacing the original one, e.g. .fleet-task.md),
+                // so a bare "continue" resume erases the dispatch's scope
+                // from the artifact a contract may treat as its scope source
+                // of truth. Every resume prompt that carries per-dispatch
+                // scope must restate it.
+                resumePrompt:
                     'Continue the integration test run exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining suites, close passing features / file bugs per your contract, and return your final report now. ' +
                     'Your original scope, restated so a resumed dispatch never loses it: ' + featurePrompt,
-                    {
-                        ...integDispatchOpts,
-                        member_name: getMemberForRole('integ-test-runner'),
-                        label: `Integ Test (resume, max_turns=${INTEG_TEST_MAX_TURNS * 2})`,
-                        resume: true,
-                        max_turns: INTEG_TEST_MAX_TURNS * 2,
-                    }
-                ), { pushBeads: true });
-                try {
-                    integResult = await dispatchIntegOnce();
-                } catch (err) {
-                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        log(`Integ Test Runner exhausted its turn limit (max_turns=${INTEG_TEST_MAX_TURNS}) -- resuming the same session with max_turns=${INTEG_TEST_MAX_TURNS * 2} instead of restarting the run.`);
-                        await memberSessionGuard.killIfAlive(getMemberForRole('integ-test-runner'));
-                        integResult = await dispatchIntegResume();
-                    } else if (err instanceof AgentDispatchError && isInfraDispatchFailure(err)) {
-                        // An INFRA dispatch failure (empty_response / inactivity
-                        // timeout / orphan-recovery timeout) is NOT a test
-                        // verdict: the runner's CLI died mid-turn or lost its
-                        // result envelope without ever reporting pass or fail.
-                        // Retry ONCE by resuming the same session -- the run may
-                        // have made real progress and merely lost its envelope,
-                        // and the resume ladder already restates the full scope.
-                        // If the resume ALSO fails for an infra reason, let it
-                        // propagate to the outer catch, which records the cycle as
-                        // INCONCLUSIVE (never a false passed:false FAIL) so the
-                        // infra fault stays distinguishable from a genuine test
-                        // failure.
-                        log(`Integ Test Runner: infrastructure dispatch failure (${err.details?.reason}) -- the member CLI produced no test verdict (no result envelope). This is NOT a test failure; resuming the same session once to recover before recording anything.`);
-                        await memberSessionGuard.killIfAlive(getMemberForRole('integ-test-runner'));
-                        integResult = await dispatchIntegResume();
-                    } else {
-                        throw err;
-                    }
-                }
-            } catch (err) {
-                if (err instanceof AgentOutputError) {
-                    log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
-                    integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
-                } else if (err instanceof AgentDispatchError && isInfraDispatchFailure(err)) {
-                    // The dispatch failed for an INFRASTRUCTURE reason even after
-                    // the single resume retry above -- the member CLI never
-                    // delivered a test verdict. Record it as INCONCLUSIVE below,
-                    // NOT as a genuine passed:false FAIL: an infra fault must
-                    // never masquerade as a real test failure and block the
-                    // sprint's confidence check. integResult is stubbed only so
-                    // downstream references stay defined; the
-                    // integInfraInconclusive branch below owns what gets recorded.
-                    integInfraInconclusive = { reason: err.details?.reason ?? 'unknown', message: err.message };
-                    log(`Integ Test Runner: infrastructure dispatch failure (${integInfraInconclusive.reason}) persisted after a resume retry -- recording INCONCLUSIVE, NOT a test FAIL: ${err.message}`);
-                    integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner infra dispatch failure (${integInfraInconclusive.reason}): ${err.message}` };
-                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                    // Self-heal now so the next cycle's Integ Test Runner dispatch
-                    // on this same member isn't walking into the identical
-                    // unhealed auth failure.
-                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                        await onLlmAuthFailure({ member: getMemberForRole('integ-test-runner'), label: 'Integ Test Runner dispatch', error: err.message });
-                    }
-                    log(`Integ Test Runner: agent dispatch failed, treating as passed:false: ${err.message}`);
-                    integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner dispatch failed: ${err.message}` };
-                } else {
-                    throw err;
-                }
+                roleLabel: 'Integ Test Runner',
+                resumeLabel: `Integ Test (resume, max_turns=${TURN_BASES.INTEG_TEST_MAX_TURNS * 2})`,
+                synthesizedNotes: {
+                    schema: (err) => `Integ test runner failed to return a schema-valid report after repair attempts: ${err.message}`,
+                    dispatch: (err) => `Integ test runner dispatch failed: ${err.message}`,
+                },
+            });
+            integResult = integOutcome.value;
+            integInfraInconclusive = integOutcome.inconclusive;
+            if (integInfraInconclusive) {
+                // integResult is stubbed only so downstream references stay
+                // defined; the integInfraInconclusive branch below owns what
+                // actually gets recorded.
+                integResult = {
+                    featuresClosed: 0,
+                    issuesCreated: 0,
+                    passed: false,
+                    bugsFiled: [],
+                    summary: `Integ test runner infra dispatch failure (${integInfraInconclusive.reason}): ${integInfraInconclusive.message}`,
+                };
             }
             // No duplicate log() dump -- see dispatchReview() for why.
             //

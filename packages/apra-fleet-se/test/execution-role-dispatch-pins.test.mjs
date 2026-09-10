@@ -43,6 +43,7 @@ import {
     cancelledError,
     budgetError,
     postDispatchSyncError,
+    infraError,
 } from './helpers/dispatch-role-harness.mjs';
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
 import { PLANNING_LADDERS } from './helpers/planning-ladders.mjs';
@@ -548,31 +549,77 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         );
     });
 
-    test('integ: an infrastructure dispatch failure is INCONCLUSIVE, never a false test FAIL', () => {
-        const region = stripComments(regionBetween(SRC, 'const dispatchIntegOnce =', 'Feature closure is judged'));
-        assert.ok(
-            /isInfraDispatchFailure\(err\)/.test(region),
-            'The integ ladder must separate an INFRA dispatch failure (no result envelope) from a genuine test verdict.'
+    test('integ: an infrastructure dispatch failure is INCONCLUSIVE, never a false test FAIL', async () => {
+        // apra-fleet-3swo.5.7: re-anchored onto the engine. Same facts, now
+        // proved by running it:
+        //   isInfraDispatchFailure(err) separates infra from a verdict
+        //        -> the row's degrade.classifiesInfraFailures, and an infra
+        //           failure really lands in its own class
+        //   integInfraInconclusive = { reason, message }
+        //        -> the engine really returns that record, and ONLY under an
+        //           'inconclusive' degrade
+        //   exactly two paths into the resume dispatch
+        //        -> turn exhaustion and ONE infra recovery, counted as real
+        //           dispatches
+        //   the stubbed passed:false integResult
+        //        -> the engine fabricates NOTHING for the infra class; the
+        //           downstream stub is the caller's, which is what "the
+        //           INCONCLUSIVE branch owns what is recorded" always meant
+        //   'throw err;' (unrecognised)   -> really propagates
+        const p = policyFor('integ-test-runner');
+        assert.strictEqual(p.degrade.kind, 'inconclusive');
+        assert.strictEqual(p.degrade.classifiesInfraFailures, true, 'The integ ladder must separate an INFRA dispatch failure from a genuine test verdict.');
+        assert.strictEqual(p.retry.infraResumeAttempts, 1, 'ONE bounded infra-failure recovery attempt, distinct from the max_turns resume.');
+        assert.ok(!p.degrade.classes.includes('infra'), 'An INCONCLUSIVE degrade fabricates no test report for the infra class at all.');
+
+        // TWO paths into the resume dispatch, and no more.
+        const viaTurns = await driveEngineDispatch('integ-test-runner', 'max-turns-resume');
+        assert.strictEqual(viaTurns.rec.dispatches.length, 2, 'Turn exhaustion resumes the same session.');
+        const viaInfra = createRecordingCtx({ responses: [infraError()] });
+        const recovered = await dispatchRole(viaInfra.ctx, 'integ-test-runner', ROLE_CALL_OPTS['integ-test-runner']);
+        assert.strictEqual(viaInfra.rec.dispatches.length, 2, 'An infra failure resumes the same session ONCE to recover.');
+        assert.deepStrictEqual(
+            viaInfra.rec.kills,
+            [viaInfra.ctx.getMemberForRole('integ-test-runner')],
+            'The infra recovery kills a still-alive session first, exactly as the turn resume does.'
         );
-        assert.ok(
-            /integInfraInconclusive = \{ reason: err\.details\?\.reason \?\? 'unknown', message: err\.message \};/.test(region),
-            'A persistent infra failure records the INCONCLUSIVE marker rather than a verdict.'
+        assert.strictEqual(recovered.ok, true, 'A recovered infra failure is a normal result, not an INCONCLUSIVE one.');
+        assert.strictEqual(recovered.inconclusive, null);
+
+        // A PERSISTENT infra failure records the marker rather than a verdict.
+        const persistent = createRecordingCtx({ responses: [infraError('envelope lost'), infraError('envelope lost again')] });
+        const outcome = await dispatchRole(persistent.ctx, 'integ-test-runner', ROLE_CALL_OPTS['integ-test-runner']);
+        assert.strictEqual(persistent.rec.dispatches.length, 2, 'Exactly one recovery resume, never an unbounded ladder.');
+        assert.strictEqual(outcome.degraded, true);
+        assert.deepStrictEqual(
+            outcome.inconclusive,
+            { reason: 'empty_response', message: 'envelope lost again' },
+            'A persistent infra failure records the INCONCLUSIVE reason and message rather than a verdict.'
         );
-        // The single infra resume retry, distinct from the max_turns resume.
         assert.strictEqual(
-            (region.match(/integResult = await dispatchIntegResume\(\);/g) || []).length,
-            2,
-            'There are exactly two paths into the resume dispatch: max_turns exhaustion and ONE infra-failure recovery attempt.'
+            outcome.value,
+            null,
+            'It fabricates NO test report -- the caller stubs one only so downstream references stay defined.'
         );
-        assert.ok(
-            /passed: false/.test(region),
-            'The stubbed integResult keeps downstream references defined; the INCONCLUSIVE branch owns what is actually recorded.'
+        assert.strictEqual(p.degrade.marker, 'integInfraInconclusive', 'The marker names what the caller records it as.');
+
+        // ...while a schema or ordinary dispatch failure DID reach a running
+        // pass and legitimately records passed:false. That asymmetry is the
+        // whole variance.
+        for (const make of [schemaError, transportError]) {
+            const { ctx } = createRecordingCtx({ responses: [make(), make()] });
+            const failed = await dispatchRole(ctx, 'integ-test-runner', ROLE_CALL_OPTS['integ-test-runner']);
+            assert.strictEqual(failed.value.passed, false, 'A real dispatch/schema failure is recorded as a failed pass.');
+            assert.notStrictEqual(failed.value.passed, true);
+            assert.strictEqual(failed.inconclusive, null, 'It is NOT inconclusive -- there was a verdict channel, and it failed.');
+        }
+
+        const unrecognised = createRecordingCtx({ responses: [new TypeError('not a dispatch failure at all')] });
+        await assert.rejects(
+            () => dispatchRole(unrecognised.ctx, 'integ-test-runner', ROLE_CALL_OPTS['integ-test-runner']),
+            TypeError,
+            'An unrecognised error class still propagates.'
         );
-        assert.ok(
-            /err instanceof AgentDispatchError && isInfraDispatchFailure\(err\)/.test(region),
-            'The INCONCLUSIVE branch must be reached only for an infra-flavoured dispatch error.'
-        );
-        assert.ok(/throw err;/.test(region), 'An unrecognised error class still propagates.');
     });
 
     test('final review: the auth self-heal short-circuits the generic retry so a healed verdict is never discarded', () => {

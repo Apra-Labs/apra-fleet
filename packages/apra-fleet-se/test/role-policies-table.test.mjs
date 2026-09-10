@@ -187,12 +187,8 @@ const ROLE_SOURCE = {
     },
     // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
     deployer: { engine: true },
-    'integ-test-runner': {
-        anchor: '(\n                    featurePrompt,',
-        secondary: 'Continue the integration test run exactly where you left off',
-        region: ['const INTEG_TEST_MAX_TURNS = 500;', 'Feature closure is judged'],
-        attempts: { kind: 'single' },
-    },
+    // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
+    'integ-test-runner': { engine: true },
     // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
     'regression-test-runner': { engine: true },
     // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
@@ -1049,8 +1045,30 @@ describe('role policy table: every named variance is expressed as data', () => {
     test('the integ runner degrades to INCONCLUSIVE, never to a test failure', () => {
         const p = policyFor('integ-test-runner');
         assert.strictEqual(p.degrade.kind, 'inconclusive');
-        assert.strictEqual(p.degrade.synthesized, null, 'An INCONCLUSIVE degrade fabricates no verdict at all.');
+        // apra-fleet-3swo.5.7: sharpened from "fabricates no verdict at all"
+        // to name WHICH class fabricates nothing, which is the real invariant.
+        // A schema-repair exhaustion or an ordinary dispatch failure DID reach
+        // a running pass and legitimately records passed:false (that is what
+        // runner.js always did, and the report shape is now in the row). An
+        // 'infra'-class failure produced no verdict channel at all, so it is
+        // deliberately absent from degrade.classes: the engine fabricates
+        // nothing for it and returns an `inconclusive` record instead.
+        assert.ok(
+            !p.degrade.classes.includes('infra'),
+            'An INCONCLUSIVE degrade must fabricate no test report for the class that produced no test evidence.'
+        );
+        assert.deepStrictEqual(p.degrade.classes, ['schema', 'dispatch']);
+        assert.strictEqual(p.degrade.classifiesInfraFailures, true, 'Only a policy that asks for it can tell an infra failure apart from a dispatch failure.');
+        assert.deepStrictEqual(
+            ROLE_NAMES.filter((r) => policyFor(r).degrade.classifiesInfraFailures),
+            ['integ-test-runner'],
+            'Only the role whose dispatch produces test evidence needs the distinction.'
+        );
         assert.strictEqual(p.retry.infraResumeAttempts, 1, 'One bounded infra-failure recovery attempt, distinct from the turn resume.');
+        assert.deepStrictEqual(
+            ROLE_NAMES.filter((r) => policyFor(r).retry.infraResumeAttempts > 0),
+            ['integ-test-runner'],
+        );
         assert.deepStrictEqual(
             ROLE_NAMES.filter((r) => policyFor(r).degrade.kind === 'inconclusive'),
             ['integ-test-runner'],
