@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
-import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -34,6 +34,23 @@ export function isMaxTurnsSignal(obj: any): boolean {
     obj.stop_reason === 'max_turns'
   );
 }
+
+// apra-fleet-hzeb.1: the Claude result event's `api_error_status` carries the
+// upstream HTTP status (e.g. 429) when the CLI terminated on an API error. The
+// parser previously dropped it; capture it (coercing a numeric string) so
+// detectUsageLimit can distinguish a 429 usage limit. Returns undefined when
+// absent or non-numeric.
+export function extractApiErrorStatus(obj: any): number | undefined {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const raw = obj.api_error_status;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim() !== '' && Number.isFinite(Number(raw))) return Number(raw);
+  return undefined;
+}
+
+// apra-fleet-hzeb.1: Claude's own usage-limit message shape, e.g.
+// "You've hit your session limit", "hit your weekly limit", "hit your opus limit".
+const CLAUDE_LIMIT_MESSAGE_RE = /hit your (session|weekly|opus|\w+) limit/i;
 
 export class ClaudeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'claude';
@@ -179,6 +196,7 @@ export class ClaudeProvider implements ProviderAdapter {
         usage: extractUsage(obj.usage),
         subtype: obj.subtype,
         terminalReason: obj.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
+        apiErrorStatus: extractApiErrorStatus(obj),
       };
     };
 
@@ -205,6 +223,7 @@ export class ClaudeProvider implements ProviderAdapter {
           usage: extractUsage(parsed.usage),
           subtype: parsed.subtype,
           terminalReason: parsed.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
+          apiErrorStatus: extractApiErrorStatus(parsed),
         };
       }
     } catch { /* not valid JSON - try line-by-line JSONL below */ }
@@ -235,6 +254,19 @@ export class ClaudeProvider implements ProviderAdapter {
       usage: undefined,
       terminalReason: maxTurnsSeen ? 'max_turns' : undefined,
     };
+  }
+
+  // apra-fleet-hzeb.1: Claude signals a usage limit via a 429 api_error_status OR a
+  // terminal_reason of 'api_error', accompanied by its own "hit your <...> limit"
+  // message -- independent of process exit code (exit 1 with is_error, OR exit 0
+  // carrying the message as the result text). This is the MINIMAL guessed path;
+  // parsing Claude's actual reset time is layered on in the follow-up task, so this
+  // only ever returns a guessed signal.
+  detectUsageLimit(_result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
+    const statusOrTerminalHit = parsed.apiErrorStatus === 429 || parsed.terminalReason === 'api_error';
+    if (!statusOrTerminalHit) return null;
+    if (!CLAUDE_LIMIT_MESSAGE_RE.test(parsed.result ?? '')) return null;
+    return guessedUsageLimitSignal(parsed.result);
   }
 
   supportsResume(): boolean {
