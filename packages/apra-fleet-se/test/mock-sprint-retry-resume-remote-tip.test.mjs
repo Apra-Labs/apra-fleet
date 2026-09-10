@@ -4,6 +4,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { syncMemberBefore, syncMemberAfter } from '../fleet-sprint/runner.js';
+// apra-fleet-3swo.5.7: the doer's retry flag is policy data now, not a literal
+// at a runner.js call site.
+import { policyFor, ROLE_NAMES } from '../fleet-sprint/role-policies.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -124,6 +127,7 @@ test('syncMemberBefore: resetToRemoteTip defaults false, so a non-retry (or non-
 test('guard: withGitSync source still has a skipPreDispatchSync short-circuit distinct from (and preceding) the resumeOntoRemoteTip resync path', async () => {
     const runnerSource = await fs.readFile(path.join(__dirname, '../fleet-sprint/runner.js'), 'utf-8');
     const gitSyncSource = await fs.readFile(path.join(__dirname, '../fleet-sprint/git-sync.mjs'), 'utf-8');
+    const dispatchRoleSource = await fs.readFile(path.join(__dirname, '../fleet-sprint/dispatch-role.mjs'), 'utf-8');
 
     check(
         /async function withGitSync\(ctx, member, pushCode, dispatchFn, \{[^}]*skipPreDispatchSync = false[^}]*resumeOntoRemoteTip = false[^}]*\}/.test(gitSyncSource),
@@ -144,8 +148,27 @@ test('guard: withGitSync source still has a skipPreDispatchSync short-circuit di
     // doer-streak throw-retry call site passes only resumeOntoRemoteTip, and
     // the terminal-no-mutation-failure retry ladder passes only
     // skipPreDispatchSync -- never both true together.
+    // apra-fleet-3swo.5.7: RE-ANCHORED. The doer's generic-throw retry used to
+    // be a literal `dispatchDoer({ resumeOntoRemoteTip: true })` call in
+    // runner.js; the ladder migrated onto fleet-sprint/dispatch-role.mjs, where
+    // the flag is set from the 'doer' row's retry.resumeOntoRemoteTipOnRetry.
+    // Both halves of the original fact are still pinned: the row declares it,
+    // and the engine really passes it -- on a RETRY only, and never after a
+    // provably no-mutation auth failure, which had nothing to publish.
     check(
-        /dispatchDoer\(\{ resumeOntoRemoteTip: true \}\)/.test(runnerSource),
-        'the generic-throw doer streak retry call site must still request resumeOntoRemoteTip (this is what apra-fleet-eft.87.1 wired up)'
+        policyFor('doer').retry.resumeOntoRemoteTipOnRetry === true,
+        "the doer row must still declare retry.resumeOntoRemoteTipOnRetry (this is what apra-fleet-eft.87.1 wired up)"
+    );
+    check(
+        /resumeOntoRemoteTip: true/.test(dispatchRoleSource),
+        'the engine must still set resumeOntoRemoteTip on the bracket options for a ladder that declares it'
+    );
+    check(
+        // doer-resume inherits the doer's retry block by spread (it is the
+        // same ladder's secondary), so the doer LADDER is the only one.
+        [...new Set(ROLE_NAMES
+            .filter((r) => policyFor(r).retry.resumeOntoRemoteTipOnRetry)
+            .map((r) => policyFor(r).ladder))].join(',') === 'doer',
+        'the doer streak is the only ladder that resumes a retry onto the branch remote tip'
     );
 });

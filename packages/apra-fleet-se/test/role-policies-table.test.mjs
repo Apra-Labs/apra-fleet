@@ -155,20 +155,10 @@ const ROLE_SOURCE = {
     'scoped-replan-plan-reviewer': { engine: true },
     // apra-fleet-3swo.5.3: MIGRATED -- see section (7).
     'streak-assignment': { engine: true },
-    doer: {
-        anchor: '(\n                        doerPrompt,',
-        secondary: null,
-        region: ['const BASE_DOER_MAX_TURNS = 500;', 'kbWork.apply(ROLE_DOER'],
-        attempts: { kind: 'wrapper', call: 'dispatchDoer(' },
-    },
-    'doer-resume': {
-        anchor: 'Continue exactly where you left off from this same session',
-        secondary: null,
-        region: ['const BASE_DOER_MAX_TURNS = 500;', 'kbWork.apply(ROLE_DOER'],
-        // Shares the doer's ladder outright: the resume is dispatched from
-        // inside it, so its attempt budget is the doer's, re-derived here too.
-        attempts: { kind: 'wrapper', call: 'dispatchDoer(' },
-    },
+    // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
+    doer: { engine: true },
+    // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
+    'doer-resume': { engine: true },
     // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
     reviewer: { engine: true },
     // apra-fleet-3swo.5.7: MIGRATED -- see section (7).
@@ -742,15 +732,36 @@ describe('role policy table: retry ladders match runner.js', () => {
         });
     }
 
-    test('the doer resume ladder is bounded by the runner constant the policy records', () => {
+    test('the doer resume ladder is bounded, and really escalates by doubling', async () => {
+        // apra-fleet-3swo.5.7: re-anchored. The bound used to be runner.js's
+        // MAX_TURN_RESUME_ATTEMPTS constant and the escalation a
+        // `currentMaxTurns *= 2;` line; both moved onto the engine, where the
+        // bound is retry.resumeAttempts and the escalation is performed by the
+        // runtime turn budget the row names. Counting the resumes the engine
+        // REALLY issues, and reading the budgets it REALLY passed, proves both.
+        const p = policyFor('doer');
+        // One exhaustion more than the ladder is allowed to answer, so the
+        // BOUND is what stops it rather than the supply of failures running out.
+        const { ctx, rec } = createRecordingCtx({
+            responses: Array.from({ length: p.retry.resumeAttempts + 1 }, () => turnExhaustionError()),
+        });
+        await dispatchRole(ctx, 'doer', ROLE_CALL_OPTS.doer);
+        const resumes = rec.dispatches.filter((d) => d.options.resume === true);
         assert.strictEqual(
-            numericConstant(SRC, 'MAX_TURN_RESUME_ATTEMPTS'),
-            ROLE_POLICIES.doer.retry.resumeAttempts,
-            'doer.retry.resumeAttempts must equal MAX_TURN_RESUME_ATTEMPTS.'
+            resumes.length,
+            p.retry.resumeAttempts,
+            'doer.retry.resumeAttempts must equal the number of resumes the engine really issues, never an unbounded ladder.'
         );
-        assert.ok(
-            /currentMaxTurns \*= 2;/.test(regionOf('doer')),
-            'doer.retry.turnEscalation="double" must be the escalation the resume ladder really performs.'
+        assert.strictEqual(p.retry.turnEscalation, 'double');
+        assert.deepStrictEqual(
+            resumes.map((d) => d.options.max_turns),
+            [TURN_BASES.BASE_DOER_MAX_TURNS * 2, TURN_BASES.BASE_DOER_MAX_TURNS * 4],
+            'Each further turn exhaustion doubles again, from the base the row names.'
+        );
+        assert.strictEqual(
+            ROLE_POLICIES['doer-resume'].maxTurns.kind,
+            'runtime',
+            'A doubling ladder has no constant budget to record -- the row says so.'
         );
     });
 });
@@ -949,18 +960,39 @@ describe('role policy table: pre-dispatch and post-result steps match runner.js'
         );
     });
 
-    test('the doer resume checks the streak is not already closed BEFORE killing the session', () => {
+    test('the doer resume checks the streak is not already closed BEFORE killing the session', async () => {
         const p = ROLE_POLICIES['doer-resume'];
         assert.deepStrictEqual(
             p.preDispatch,
             ['verify-streak-closed', 'kill-stale-session'],
             'The closed-streak short-circuit must run first: a streak whose beads all closed gets no resume dispatch at all.'
         );
-        const region = regionOf('doer-resume');
-        assert.ok(
-            region.indexOf('preResumeUnclosed.length === 0') < region.indexOf('killIfAlive(doerMember)'),
-            'runner.js must still perform the short-circuit check before the kill, in the order the policy records.'
+        // apra-fleet-3swo.5.7: re-anchored. The order used to be a property of
+        // runner.js text (the `preResumeUnclosed.length === 0` check sitting
+        // above `killIfAlive(doerMember)`); it is now a property of what the
+        // engine really does with the row's recorded step order.
+        // The step implementation is the runner's, mirrored here: an empty
+        // unclosed list at the preDispatch placement means "already done".
+        const alreadyClosed = createRecordingCtx({
+            responses: [turnExhaustionError()],
+            steps: {
+                'verify-streak-closed': async ({ phase }) => (phase === 'preDispatch'
+                    ? { shortCircuit: true, value: null }
+                    : []),
+            },
+        });
+        const outcome = await dispatchRole(alreadyClosed.ctx, 'doer', ROLE_CALL_OPTS.doer);
+        assert.strictEqual(
+            alreadyClosed.rec.dispatches.length,
+            1,
+            'A turn-exhausted streak whose beads are ALL already closed is a success and gets NO resume dispatch.'
         );
+        assert.deepStrictEqual(
+            alreadyClosed.rec.kills,
+            [],
+            'The short-circuit must run BEFORE the kill: a streak that needs no resume needs no session killed either.'
+        );
+        assert.strictEqual(outcome.ok, true, 'It is a SUCCESS, not a failure -- the doer merely missed its VERIFY checkpoint.');
     });
 });
 
@@ -1198,8 +1230,15 @@ function engineDispatchesOf(role) {
     return rows;
 }
 
+// 'doer-resume' is registered as a role of its own (it shares nothing but its
+// member with the dispatch it continues), but it is not a LADDER of its own:
+// it is the doer's secondary, reachable only after the doer spends its turns.
+// engineDispatchesOf('doer') already covers it, so driving it as a standalone
+// main dispatch would assert a ladder that does not exist.
+const MIGRATED_LADDER_ROLES = MIGRATED_ROLES.filter((role) => ROLE_POLICIES[role].kind === 'main');
+
 describe('role policy table: migrated roles re-derived by running the engine', () => {
-    for (const role of MIGRATED_ROLES) {
+    for (const role of MIGRATED_LADDER_ROLES) {
         for (const row of engineDispatchesOf(role)) {
             test(`${row.name}: member, model, turn budget, timeouts, bracket, watchdog, KB source and schema`, async () => {
                 const { ctx, dispatch, opts } = await driveEngineDispatch(role, row.kind);
@@ -1337,7 +1376,12 @@ describe('role policy table: migrated roles re-derived by running the engine', (
             }
 
             // --- max_turns resume ---------------------------------------------
-            const exhausted = createRecordingCtx({ responses: [turnExhaustionError()] });
+            // One exhaustion per resume the ladder is allowed to issue, so a
+            // BOUNDED escalating ladder (the doer's) is driven to its bound
+            // rather than stopping because the failures ran out.
+            const exhausted = createRecordingCtx({
+                responses: Array.from({ length: Math.max(p.retry.resumeAttempts, 1) }, () => turnExhaustionError()),
+            });
             let resumeThrew = null;
             try {
                 await dispatchRole(exhausted.ctx, role, withValidate);
@@ -1361,6 +1405,13 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                     exhausted.rec.dispatches[0].options.max_turns * 2,
                     `${role}: retry.turnEscalation='double' must be the escalation the resume really performs.`
                 );
+                for (let i = 2; i < exhausted.rec.dispatches.length; i++) {
+                    assert.strictEqual(
+                        exhausted.rec.dispatches[i].options.max_turns,
+                        exhausted.rec.dispatches[i - 1].options.max_turns * 2,
+                        `${role}: every further resume must double again, not repeat the same budget.`
+                    );
+                }
                 assert.strictEqual(p.retry.turnEscalation, 'double');
             } else {
                 assert.strictEqual(p.retry.resumeAttempts, 0);
@@ -1427,14 +1478,32 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                 );
             }
 
-            // --- axes that must be OFF for this ladder ------------------------
-            for (const d of spent.rec.dispatches) {
-                if (!d.bracket) continue;
+            // --- resuming a retry onto the branch's remote tip ----------------
+            // A RETRY only: the first attempt of any ladder keeps plain
+            // ff-only pre-dispatch sync, and only a retry that follows a
+            // failure which may have COMMITTED needs to build on already-
+            // published work instead of creating a divergent, content-identical
+            // duplicate commit.
+            const bracketed = spent.rec.dispatches.filter((d) => d.bracket);
+            for (const d of bracketed) {
+                const isFirst = d === bracketed[0];
                 assert.strictEqual(
                     d.bracket.options.resumeOntoRemoteTip === true,
-                    p.retry.resumeOntoRemoteTipOnRetry,
-                    `${role}: retry.resumeOntoRemoteTipOnRetry must match whether a retry really resumes onto the remote tip.`
+                    p.retry.resumeOntoRemoteTipOnRetry && !isFirst,
+                    `${role}: retry.resumeOntoRemoteTipOnRetry must match whether a RETRY really resumes onto the remote tip.`
                 );
+            }
+            if (p.retry.resumeOntoRemoteTipOnRetry) {
+                // ...and NOT after an auth/trust failure, which provably ran
+                // nothing: there is no published work for it to build on.
+                const healedRun = await runSpent(() => authError(), { healed: true });
+                for (const d of healedRun.rec.dispatches.filter((x) => x.bracket)) {
+                    assert.notStrictEqual(
+                        d.bracket.options.resumeOntoRemoteTip,
+                        true,
+                        `${role}: a retry after a provably no-mutation auth failure must not reset onto the remote tip.`
+                    );
+                }
             }
             // --- infra-failure recovery resume ---------------------------------
             // An envelope-less dispatch failure is a DIFFERENT condition from
@@ -1634,10 +1703,14 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                         invoked.length > 0,
                         `${row.name}: policy records preDispatch step '${step}', but the engine never invoked it.`
                     );
+                    // Compared against the dispatch this step PRECEDES -- for a
+                    // secondary that is the resume, not the main dispatch that
+                    // already ran (same rule the kill-stale-session branch uses).
                     const stepIndex = rec.events.findIndex((e) => e.type === 'step' && e.step === step);
-                    const firstDispatchIndex = rec.events.findIndex((e) => e.type === 'dispatch');
+                    const precedes = row.kind === 'main' ? rec.dispatches[0] : rec.dispatches[1];
+                    const dispatchIndex = rec.events.findIndex((e) => e.type === 'dispatch' && e.entry === precedes);
                     assert.ok(
-                        stepIndex >= 0 && (firstDispatchIndex < 0 || stepIndex < firstDispatchIndex),
+                        stepIndex >= 0 && (dispatchIndex < 0 || stepIndex < dispatchIndex),
                         `${row.name}: preDispatch step '${step}' must run BEFORE the dispatch, not after it.`
                     );
                 }

@@ -167,6 +167,17 @@ export const PRE_DISPATCH_STEPS = Object.freeze([
 ]);
 
 /**
+ * The subset of PRE_DISPATCH_STEPS that must run INSIDE the dispatch's
+ * git-sync bracket rather than before it. This is a property of the STEP, not
+ * of the role that records it, which is why it lives here rather than as a
+ * per-row field: claiming beads is only meaningful once the bracket's D-pull
+ * has brought in which beads other sprints already hold, so a claim made
+ * before the bracket opens is a claim made against stale remote state. Every
+ * other step is cheaper and safer outside.
+ */
+export const PRE_DISPATCH_STEPS_IN_BRACKET = Object.freeze(['claim-beads-batched']);
+
+/**
  * Steps the engine runs AFTER the dispatch's result (or its failure) is in
  * hand.
  *   'invalidate-beads-cache'   -- the dispatch mutated beads on its own clone
@@ -263,6 +274,13 @@ const retry = (over) => ({
     resumeAttempts: 0,
     /** How the turn budget grows per resume. */
     turnEscalation: null,
+    /**
+     * A spent escalating resume ladder ENDS the ladder rather than falling
+     * through to another full attempt. A streak that could not finish at
+     * four times its base turn budget has proved it is too large for one
+     * streak; re-dispatching it at the base budget only reproduces that.
+     */
+    abortAfterSpentResumeLadder: false,
     /** Extra resumes granted for an infrastructure (no-envelope) failure. */
     infraResumeAttempts: 0,
     /** Bounded re-asks that feed the validation failure back to the model. */
@@ -591,6 +609,8 @@ streakAssignment.secondary = secondary(streakAssignment, 'streak-assignment', 's
 });
 
 const doer = policy('doer', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
     ladderAnchor: 'doerPrompt,',
     member: runtimeMember('doerMember'),
     agentType: 'doer',
@@ -611,11 +631,15 @@ const doer = policy('doer', {
         maxTurnsResume: true,
         resumeAttempts: 2,
         turnEscalation: 'double',
+        abortAfterSpentResumeLadder: true,
     }),
     degrade: degrade({
         kind: 'per-bead-attribution',
-        // The streak error is re-thrown AFTER attribution so the parallel
-        // runner isolates this streak; it never ends the sprint.
+        // Fabricates NOTHING (degrade.classes is empty): a failed streak's
+        // real outcome is decided by reading which of its beads actually
+        // closed, which is the caller's per-bead attribution pass. The streak
+        // error is re-thrown AFTER that attribution so the parallel runner
+        // isolates this streak; it never ends the sprint.
         rethrowsUnrecognisedErrors: false,
     }),
     preDispatch: ['claim-beads-batched'],

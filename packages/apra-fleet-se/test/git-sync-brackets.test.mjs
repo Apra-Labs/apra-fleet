@@ -127,30 +127,37 @@ const SEVEN_DISPATCH_MARKERS = Object.fromEntries(
 );
 
 test('(a) every one of the seven dispatch types is wrapped in a withGitSync(...) bracket', () => {
-    const src = fs.readFileSync(RUNNER_PATH, 'utf8');
-    const ranges = withGitSyncRanges(src);
-    check(
-        ranges.length >= Object.keys(SEVEN_DISPATCH_MARKERS).length,
-        `expected at least one withGitSync(...) call site per still-inline dispatch role ` +
-        `(${Object.keys(SEVEN_DISPATCH_MARKERS).length}), found ${ranges.length}`
+    // apra-fleet-3swo.5.7: this census has now RETIRED ITSELF exactly as its
+    // own escape hatch said it must. Every dispatch ladder has migrated onto
+    // fleet-sprint/dispatch-role.mjs, so SEVEN_DISPATCH_MARKERS is empty and a
+    // runner.js text scan for role markers inside withGitSync ranges would
+    // pass vacuously forever.
+    //
+    // The FACT it pinned -- that every role-identified dispatch is bracketed --
+    // is unchanged and moves to the policy table plus the engine: the table
+    // says which dispatches are bracketed, and the two dispatch-pin files run
+    // the real engine and observe the bracket it really opens around each one.
+    assert.equal(
+        Object.keys(SEVEN_DISPATCH_MARKERS).length,
+        0,
+        'a role has an INLINE ladder again -- restore the runner.js marker census below for it, or migrate it',
     );
-    check(
-        Object.keys(SEVEN_DISPATCH_MARKERS).length > 0,
-        'every dispatch role has migrated onto the engine -- this runner.js census now proves nothing and must be retired, ' +
-        'not left passing vacuously'
+    const bracketed = allDispatchPolicies().filter((p) => p.bracket.wrapped);
+    const unbracketed = allDispatchPolicies().filter((p) => !p.bracket.wrapped);
+    assert.equal(
+        bracketed.length + unbracketed.length,
+        allDispatchPolicies().length,
+        'every dispatch must record whether it is bracketed',
     );
-
-    const inSomeRange = (idx) => ranges.some(([s, e]) => idx > s && idx < e);
-
-    for (const [role, re] of Object.entries(SEVEN_DISPATCH_MARKERS)) {
-        re.lastIndex = 0;
-        const markerIdxs = [];
-        let m;
-        while ((m = re.exec(src)) !== null) markerIdxs.push(m.index);
-        check(markerIdxs.length > 0, `no dispatch marker found for role '${role}' -- the 3.3 table role marker was renamed?`);
-        check(
-            markerIdxs.some((idx) => inSomeRange(idx)),
-            `dispatch for role '${role}' is NOT inside any withGitSync(...) bracket -- the 3.3 sync bracket was removed or un-nested`,
+    assert.deepEqual(
+        [...new Set(unbracketed.map((p) => p.role))],
+        ['streak-assignment'],
+        'only the pure-compute grouping call runs outside a bracket; every role-identified dispatch is bracketed',
+    );
+    for (const role of Object.keys(ALL_DISPATCH_MARKERS)) {
+        assert.ok(
+            bracketed.some((p) => p.ladder === role),
+            `dispatch for role '${role}' must still have at least one bracketed dispatch in the policy table`,
         );
     }
 });

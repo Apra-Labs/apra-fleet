@@ -16,6 +16,9 @@ import {
 } from '../fleet-sprint/runner.js';
 import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
+// apra-fleet-3swo.5.7: the D-push flags now live in the policy table, so the
+// census below reads them from there rather than from runner.js source.
+import { allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
 
 // The sync.remote probe memo and the remote-tip fingerprint are both
 // module-level, process-lifetime caches keyed by member name (apra-fleet-akuv,
@@ -978,61 +981,33 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // 4 -> 2 (same bead): the per-round reviewer's two read-side brackets
     // followed them; neither carried pushBeads, so the count below is
     // unchanged. Only the doer pair is left inline.
-    assert.equal(sites.length, 2, `expected 2 withGitSync(...) dispatch brackets, found ${sites.length}`);
-
-    // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
-    // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch
-    // sync skip), so match pushBeads: true anywhere inside the options object
-    // literal rather than requiring it to be the object's only property.
-    const hasPushBeads = (t) => /\{[^{}]*\bpushBeads:\s*true\b[^{}]*\}/.test(t);
-    const pushBeadsSites = sites.filter(hasPushBeads);
-
-    // Four roles mutate beads: planner (new tasks), doer (closes),
-    // integ-test-runner (feature-close + bug-file), harvester (issue-defer).
-    // Doer and integ-test-runner each have TWO pushBeads:true sites
-    // (dispatch + same-session turn-exhaustion resume), so 8 base sites.
-    // apra-fleet-eft.68.1: the in-cycle SCOPED replan's planner dispatch is a
-    // ninth pushBeads:true bracket (it mutates beads by re-scoping the flagged
-    // subtree); the paired scoped plan-review is read-side (no pushBeads).
-    // 9 -> 11 (integ/regression split): the once-per-sprint
-    // regression-test-runner is a fifth beads-mutating role (it files
-    // parent-less carry-over bug beads), and like the doer/integ runner it
-    // has TWO pushBeads:true sites -- dispatch and same-session resume.
-    // 11 -> 9 (apra-fleet-3swo.5.3): the planner's own dispatch+resume pair
-    // moved onto the engine (see above), taking two pushBeads:true brackets
-    // with them. The scoped-replan planner's bracket stays inline.
-    // 9 -> 8 (same bead): the scoped-replan planner's pushBeads:true bracket
-    // moved onto the engine, so no planner-role bracket is left inline.
-    // 8 -> 6 (apra-fleet-3swo.5.7): the harvester's dispatch+resume pair moved
-    // onto the engine. Its pushBeads:true bracket is now opened generically
-    // from fleet-sprint/dispatch-role.mjs and is asserted behaviourally by
-    // test/execution-role-dispatch-pins.test.mjs instead.
-    // 6 -> 4 (same bead): the regression runner's pair moved onto the engine;
-    // its pushBeads:true bracket is now opened generically and asserted
-    // behaviourally by test/execution-role-dispatch-pins.test.mjs.
-    // 4 -> 2 (same bead): the integ runner's pair moved onto the engine.
+    // apra-fleet-3swo.5.7: RE-ANCHORED, not deleted. Every dispatch ladder has
+    // migrated onto fleet-sprint/dispatch-role.mjs, whose single withGitSync
+    // call passes `pushBeads` as an EXPRESSION read out of the policy row, so
+    // runner.js has no dispatch bracket left for a text scan to find -- a scan
+    // that stayed here would pass vacuously forever.
+    //
+    // The FACT it pinned -- WHICH roles mutate beads and therefore D-push --
+    // is unchanged and is asserted against the policy table that now carries
+    // it. That the flag is really PASSED to a real bracket is proved
+    // behaviourally by the two dispatch-pin files, which run the engine.
     assert.equal(
-        pushBeadsSites.length,
-        2,
-        `expected exactly 2 withGitSync(...) brackets with pushBeads:true (doer+resume), found ${pushBeadsSites.length}`,
+        sites.length,
+        0,
+        `expected 0 INLINE withGitSync(...) dispatch brackets now that every ladder runs on the engine, found ${sites.length}`,
     );
 
-    // apra-fleet-3swo.5.3: 'planner' is no longer in this list -- every
-    // planner-role dispatch (main, resume and scoped replan) now runs through
-    // the dispatchRole engine, which opens the same pushBeads:true bracket
-    // from fleet-sprint/dispatch-role.mjs. That bracket is asserted
-    // behaviourally by test/planning-role-dispatch-pins.test.mjs and
-    // test/role-policies-table.test.mjs; keeping a runner.js-only marker for
-    // it here would just be a standing false failure.
-    // apra-fleet-3swo.5.7: 'harvester', 'regression-test-runner' and
-    // 'integ-test-runner' left this list for the same reason.
-    const roleMarkers = [
-        { name: 'doer', re: /agentType:\s*'doer'/ },
-    ];
-    for (const { name, re } of roleMarkers) {
-        assert.ok(
-            pushBeadsSites.some((t) => re.test(t)),
-            `the ${name} dispatch must be one of the pushBeads:true brackets (its beads mutations must be D-pushed)`,
-        );
+    // Five roles mutate beads: planner (new tasks, plus the scoped replan),
+    // doer (closes), integ-test-runner (feature-close + bug-file),
+    // regression-test-runner (carry-over bugs) and harvester (issue-defer).
+    const beadPushers = allDispatchPolicies().filter((p) => p.bracket.pushBeads === true);
+    assert.deepEqual(
+        [...new Set(beadPushers.map((p) => p.ladder))].sort(),
+        ['doer', 'harvester', 'integ-test-runner', 'planner', 'regression-test-runner', 'scoped-replan-planner'],
+        'exactly the beads-mutating roles may D-push; a read-only role that starts pushing beads is the regression this pins',
+    );
+    for (const p of allDispatchPolicies()) {
+        if (p.bracket.wrapped) continue;
+        assert.equal(p.bracket.pushBeads, null, `${p.role}: an unbracketed dispatch carries no push flags`);
     }
 });

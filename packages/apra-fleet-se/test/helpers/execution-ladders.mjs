@@ -46,12 +46,86 @@
 // replacements run through was already counted.
 
 /**
+ * The resolved VALUES of the runner-local bindings the execution rows name.
+ * Kept here (rather than imported from the harness) so this file stays pure
+ * data with no imports; test/helpers/dispatch-role-harness.mjs's BINDINGS is
+ * the same map and asserts the two agree.
+ */
+export const BINDING_VALUES = Object.freeze({
+    'reviewerPool[0]': 'member:reviewer-pool-head',
+    doerMember: 'member:doer-3',
+    doerModel: 'premium',
+    maxTurns: 1000,
+});
+
+/**
  * Every dispatch the dispatchRole engine serves on the EXECUTION side, with
  * the values it must RESOLVE for each. Same field vocabulary as
  * planning-ladders.mjs's ENGINE_DISPATCHES -- see that file for what each
  * field means.
  */
 export const EXECUTION_ENGINE_DISPATCHES = [
+    {
+        role: 'doer',
+        kind: 'main',
+        name: 'doer (streak)',
+        // The doer dispatches to the member its worklist was assigned to -- a
+        // runner-local value, so the pin names the BINDING.
+        memberRole: null,
+        memberBinding: 'doerMember',
+        agentType: 'doer',
+        // The ONE role dispatched at a per-bead DECLARED tier instead of a
+        // FIXED_ROLE_TIER constant. Pre-migration this pin read the source
+        // expression 'doerModel'; post-migration it is the value that binding
+        // resolves to.
+        modelTier: BINDING_VALUES.doerModel,
+        maxTurns: 500,
+        timeoutS: 'DISPATCH_TIMEOUT_S',
+        maxTotalS: 'DISPATCH_TIMEOUT_S',
+        bracketed: true,
+        // Writes CODE (commits) and BEADS (closes), so it is one of only four
+        // dispatches that G-push, and it D-pushes too.
+        pushCode: true,
+        pushBeads: true,
+        watchdog: false,
+        watchdogLabel: null,
+        schema: 'doerReport',
+        // 'call-site': the worklist resume argument the runner computes inside
+        // the bracket, after the claim.
+        resume: 'call-site',
+    },
+    {
+        // Registered as a ROLE of its own, because it shares nothing but its
+        // member with the dispatch it continues: its tier is inherited rather
+        // than declared, and its turn budget is a run-time value from the
+        // escalating ladder. It is still DRIVEN through the doer's ladder --
+        // `driveAs` -- because a max-turns resume only happens after the main
+        // dispatch spends its turns.
+        role: 'doer-resume',
+        driveAs: 'doer',
+        kind: 'max-turns-resume',
+        name: 'doer (resume after max_turns exhaustion)',
+        memberRole: null,
+        memberBinding: 'doerMember',
+        agentType: 'doer',
+        // Deliberately null: the tier was already resolved and priced on the
+        // main dispatch this resume continues.
+        modelTier: null,
+        // A RUNTIME budget, not a constant: the escalating ladder computes it
+        // per resume attempt (BASE * 2^n). This pin is the FIRST resume, whose
+        // budget is the base doubled; the escalation itself is pinned in the
+        // retry/degrade block of execution-role-dispatch-pins.test.mjs.
+        maxTurns: 1000,
+        timeoutS: 'DISPATCH_TIMEOUT_S',
+        maxTotalS: 'DISPATCH_TIMEOUT_S',
+        bracketed: true,
+        pushCode: true,
+        pushBeads: true,
+        watchdog: false,
+        watchdogLabel: null,
+        schema: 'doerReport',
+        resume: true,
+    },
     {
         role: 'reviewer',
         kind: 'main',
@@ -311,40 +385,4 @@ export const EXECUTION_ENGINE_DISPATCHES = [
  *                    (the doer's escalating resume ladder), pinned separately
  */
 export const EXECUTION_INLINE_LADDERS = [
-    {
-        ladder: 'doer',
-        name: 'doer (streak)',
-        anchor: '(\n                        doerPrompt,',
-        member: 'doerMember',
-        agentType: "'doer'",
-        // The doer is the ONE role dispatched at a per-bead declared tier
-        // instead of a FIXED_ROLE_TIER constant.
-        modelTier: 'doerModel',
-        maxTurnsExpr: 'BASE_DOER_MAX_TURNS',
-        maxTurnsValue: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'true',
-        pushBeads: 'true',
-        schema: 'doerReport',
-        resume: 'worklistResumeArg',
-    },
-    {
-        ladder: 'doer',
-        name: 'doer (resume after max_turns exhaustion)',
-        anchor: 'Continue exactly where you left off from this same session',
-        member: 'doerMember',
-        agentType: "'doer'",
-        // Deliberately undefined: the tier was already resolved and priced on
-        // the main dispatch this resume continues.
-        modelTier: 'undefined',
-        maxTurnsExpr: 'maxTurns',
-        maxTurnsValue: null,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'true',
-        pushBeads: 'true',
-        schema: 'doerReport',
-        resume: 'true',
-    },
 ];

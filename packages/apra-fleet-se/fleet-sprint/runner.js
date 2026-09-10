@@ -59,6 +59,9 @@ import { createSyncBrackets, createGitSync } from './git-sync.mjs';
 // consumes them, and a few runner-side presentation labels still interpolate
 // a resume's doubled budget.
 import { dispatchRole, TURN_BASES } from './dispatch-role.mjs';
+// The policy TABLE the engine executes. runner.js reads it only to state, in a
+// log line, the bound the row itself sets -- never to re-implement a ladder.
+import { policyFor } from './role-policies.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
 // verbatim out of runner.js (apra-fleet-3swo.4.3).
@@ -3314,6 +3317,7 @@ async function runSprintCycle(context) {
             integReport,
             finalVerdict,
             reviewerVerdict,
+            doerReport,
         },
         isNoMutationDispatchFailure,
         invalidateAllBeadsCache,
@@ -3345,6 +3349,40 @@ async function runSprintCycle(context) {
             // fabricated is exempt -- it is marked dispatchFailed and stands
             // for an infrastructure failure, not the reviewer contradicting
             // itself.
+            // Claim once per streak turn, INSIDE the bracket so the claim is
+            // made against the remote state the pre-dispatch D-pull just
+            // brought in (role-policies.mjs's PRE_DISPATCH_STEPS_IN_BRACKET).
+            // The streak's bead list is per-dispatch runner state, so the row
+            // names the step and the call site supplies the work -- the same
+            // discipline as a policy naming a member by binding.
+            'claim-beads-batched': async ({ opts }) => {
+                if (typeof opts.claimBeads !== 'function') {
+                    throw new Error(
+                        "dispatch: the 'claim-beads-batched' step needs opts.claimBeads -- the streak's bead list " +
+                        'is per-dispatch runner state the engine cannot know.'
+                    );
+                }
+                await opts.claimBeads();
+            },
+            // Never trust a doer's own success claim: verify via `bd show` that
+            // the assigned beads really closed. Recorded in TWO placements, and
+            // the placement decides what it means. As a preDispatch step on the
+            // RESUME it is a SHORT-CIRCUIT: a turn-exhausted streak whose beads
+            // are all already closed is a success that merely missed its VERIFY
+            // checkpoint, and resuming it would spend a dispatch on a session
+            // with nothing left to do. As a postResult step it is the
+            // attribution input the caller reads back off `stepResults`.
+            'verify-streak-closed': async ({ phase, opts }) => {
+                if (typeof opts.verifyStreakClosed !== 'function') {
+                    throw new Error(
+                        "dispatch: the 'verify-streak-closed' step needs opts.verifyStreakClosed -- the streak's " +
+                        'bead list is per-dispatch runner state the engine cannot know.'
+                    );
+                }
+                const unclosed = await opts.verifyStreakClosed(phase);
+                if (phase !== 'preDispatch') return unclosed;
+                return unclosed.length === 0 ? { shortCircuit: true, value: null } : undefined;
+            },
             'reviewer-contract-guard': ({ value }) => {
                 if (!isReviewerContractViolation(value)) return undefined;
                 return {
@@ -5023,351 +5061,279 @@ async function runSprintCycle(context) {
                 let actualBeadIds = streak.map((b) => b.id);  // May be reduced by claiming if assignee is set
                 let hasClaimedBeads = false;  // Track whether we've done claiming yet
 
-                // Explicit base turn budget (rather than the fleet's own
-                // default) so the max-turns-exhaustion resume path below has a
-                // known baseline to escalate from. Sized so a typical streak
-                // finishes in one dispatch and resume stays the exception.
-                const BASE_DOER_MAX_TURNS = 500;
-                // Bounded resume-and-continue attempts after a max_turns
-                // exhaustion, each doubling the turn budget. An identical retry
-                // is pointless (the doer would deterministically run out of
-                // turns again on the same prompt), but a SESSION RESUME
-                // continues the same context with a larger budget, which is what
-                // lets a longer-than-expected streak finish. Bounded so a
-                // genuinely too-large streak still fails after a few escalations
-                // rather than burning unbounded budget.
-                const MAX_TURN_RESUME_ATTEMPTS = 2;
-
-                // The doer is a code-writing role (pushCode: true) -- G-pull
-                // before, G-push after every attempt (including the
-                // resume-and-continue retry below) so the shared branch always
-                // reflects this member's committed work before the next dispatch
-                // reads it. It also writes BEADS: it closes its assigned beads,
-                // which must be D-pushed (pushBeads: true) so the orchestrator's
-                // verification D-pull + `bd show` below sees the closes instead
-                // of falsely reporting the streak FAILED. Per-bead claiming
-                // happens INSIDE the brackets, right after the D-pull brings in
-                // which beads other sprints already claimed, so claims are made
-                // against current remote state.
-                // `syncOpts` lets a RETRY re-dispatch ask for resumeOntoRemoteTip
-                // so the pre-dispatch sync resets the local branch onto the
-                // streak branch's remote tip before the doer commits again. The
-                // FIRST attempt passes nothing and keeps plain ff-only
-                // pre-dispatch sync.
-                const dispatchDoer = (syncOpts = {}) => withGitSync(doerMember, true, async () => {
-                    // Claim once per streak turn, after the D-pull. Batched into ONE
-                    // bd update id-list --claim --json call (apra-fleet-7h6n.7)
-                    // instead of one bd update id --claim call per bead -- see the
+                // The base turn budget the resume ladder escalates from. Read
+                // out of the ENGINE's TURN_BASES (apra-fleet-3swo.5.7) rather
+                // than re-declared here: the 'doer' policy row records its turn
+                // budget symbolically, by the NAME of this constant, and a
+                // second copy in runner.js is a second thing to drift.
+                const BASE_DOER_MAX_TURNS = TURN_BASES.BASE_DOER_MAX_TURNS;
+                // apra-fleet-3swo.5.7: the doer ladder -- its dispatch, its
+                // pushCode/pushBeads git-sync bracket, its bounded escalating
+                // max_turns resume ladder, its closed-streak short-circuit, its
+                // refusal to re-dispatch a streak whose post-dispatch sync
+                // failed, its auth self-heal plus bounded retry, its generic
+                // retry onto the streak branch's remote tip, and its per-bead
+                // attribution degrade -- is now the 'doer'/'doer-resume' rows of
+                // fleet-sprint/role-policies.mjs, executed by dispatchRole.
+                //
+                // THREE things make this ladder different from every other one,
+                // and all three are expressed as data:
+                //
+                //  1. The claim runs INSIDE the bracket. Per-bead claiming is
+                //     only meaningful once the bracket's D-pull has brought in
+                //     which beads other sprints already hold, so
+                //     'claim-beads-batched' is one of role-policies.mjs's
+                //     PRE_DISPATCH_STEPS_IN_BRACKET. It can NARROW the streak,
+                //     which is why the prompt, the label and the tier this
+                //     dispatch is priced at are all built by `prepare` -- inside
+                //     the bracket, after the claim -- rather than passed in.
+                //
+                //  2. The resume ladder ESCALATES and is bounded. The row records
+                //     resumeAttempts: 2 and a 'runtime' turn budget; the bindings
+                //     thunk below is handed the attempt number and doubles from
+                //     the base each time. A resume that fails for any reason
+                //     other than spending its turns again is not something more
+                //     turns can fix, and the engine stops escalating there.
+                //
+                //  3. A turn-exhausted streak whose beads are ALL already closed
+                //     is a SUCCESS, not a failure -- the doer merely ran past its
+                //     VERIFY checkpoint. That is the 'verify-streak-closed'
+                //     preDispatch step on the RESUME dispatch, recorded before
+                //     'kill-stale-session' precisely so the check happens before
+                //     anything is killed or re-dispatched, and it short-circuits
+                //     the resume entirely.
+                //
+                // The per-bead attribution below is what the CALLER does with a
+                // failed outcome, so it stays here: the row's degrade is
+                // 'per-bead-attribution' and fabricates nothing.
+                const streakScope = () => `[${actualBeadIds.join(', ')}]`;
+                const doerOutcome = await dispatchRole(dispatchCtx, 'doer', {
+                    roleLabel: `Doer streak ${streakScope()}`,
+                    // Never used: `prepare` builds both prompts, because both
+                    // depend on the streak the claim actually secured.
+                    prompt: null,
+                    resumePrompt: null,
+                    onSessionId: (id, meta) => {
+                        if (!worklistCtx) return;
+                        worklistCtx.sessionId = id;
+                        worklistCtx.usage = meta && meta.usage ? meta.usage : null;
+                    },
+                    // The escalating resume ladder: BASE * 2^n, bounded by the
+                    // row's resumeAttempts. resumeAttempt 0 is the main
+                    // dispatch, which takes its budget from the row's constant.
+                    bindings: ({ resumeAttempt }) => ({
+                        doerMember,
+                        maxTurns: BASE_DOER_MAX_TURNS * (2 ** Math.max(resumeAttempt, 1)),
+                    }),
+                    // Claim once per streak turn, after the D-pull. Batched into
+                    // ONE bd update id-list --claim --json call
+                    // (apra-fleet-7h6n.7) instead of one call per bead -- see the
                     // claimBeadsBatched doc comment above for the verified
                     // multi-id --claim contract (non-atomic, JSON-array-only
                     // success signal) this relies on.
-                    if (!hasClaimedBeads) {
+                    claimBeads: async () => {
+                        if (hasClaimedBeads) return;
                         hasClaimedBeads = true;
-                        if (validated.assignee) {
-                            const { claimedBeadIds, skippedBeadIds } = await claimBeadsBatched({
-                                command, orchestratorMember, beadIds: actualBeadIds, log,
-                            });
-                            if (claimedBeadIds.length === 0) {
-                                // All beads in this streak are already claimed by other sprints.
-                                // Skip this streak entirely.
-                                log(`Doer streak: all beads [${actualBeadIds.join(', ')}] are already claimed by other sprints -- skipping this streak.`);
-                                throw new WorkflowError(
-                                    `All beads already claimed by other sprints`,
-                                    { beadIds: actualBeadIds, reason: 'all-beads-already-claimed' }
-                                );
-                            }
-                            if (skippedBeadIds.length > 0) {
-                                actualBeadIds = claimedBeadIds; // Update to only the successfully claimed ones
-                            }
-                        }
-                    }
-
-                    const feedbackForStreak = actualBeadIds
-                        .map((id) => perBeadFeedback.get(id))
-                        .filter(Boolean)
-                        .join('\n\n');
-
-                    // Resolve the model to price this dispatch against. Beads are
-                    // normally streaked one-per-model, but when a streak DOES
-                    // span beads with different declared models this
-                    // deterministically picks the first (by bead-id order, not
-                    // dispatch completion order) and logs the discrepancy rather
-                    // than guessing a blended price. A bead with no `model`
-                    // metadata resolves to `undefined`, which FleetWorkflow
-                    // treats the same as never passing `model` -- the dispatch
-                    // still runs, it is simply not priced (calculateCost()
-                    // returns null; see pricing.mjs).
-                    // CAVEAT: this is the model the PLANNER ASKED the doer to run
-                    // on. The fleet does not echo back the model it actually
-                    // resolved/ran with, so this -- and therefore budget._spent /
-                    // BudgetExceededError -- is an ESTIMATE, not a verified
-                    // actual.
-                    const streakModels = [...new Set(actualBeadIds.map((id) => modelByBeadId.get(id)).filter(Boolean))];
-                    let doerModel = streakModels[0];
-                    // In a PACKED worklist round a streak must never dispatch
-                    // below its REQUIRED tier (the max of its beads' declared
-                    // models) -- override the first-bead pick with that tier. The
-                    // non-packed (streaks <= doers) path keeps the first-bead
-                    // behavior.
-                    if (packed) {
-                        const requiredTier = streakRequiredTier(streak);
-                        if (requiredTier) doerModel = requiredTier;
-                    }
-                    if (streakModels.length > 1) {
-                        log(`Doer streak [${actualBeadIds.join(', ')}] spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${doerModel}'.`);
-                    }
-
-                    // Mode (ii) RESUMED SEQUENCE: resume the doer's OWN
-                    // prior-streak session by EXPLICIT session id when one was
-                    // captured for this worklist and hasContextHeadroomForResume()
-                    // passes. On refusal, or when no session id exists (first
-                    // streak of the worklist, provider without resume support,
-                    // prior streak failed), fall back to a FRESH session carrying
-                    // the FULL prompt -- never a delta prompt into a fresh
-                    // session.
-                    let worklistResumeArg = false;
-                    if (worklistCtx && worklistCtx.sessionId) {
-                        if (hasContextHeadroomForResume(worklistCtx.usage)) {
-                            worklistResumeArg = worklistCtx.sessionId;
-                        } else {
-                            log(
-                                `Doer worklist on '${doerMember}': context headroom insufficient to resume session ` +
-                                `'${worklistCtx.sessionId}' for streak ${worklistPosition + 1}/${worklistLength} ` +
-                                `[${actualBeadIds.join(', ')}] -- starting a FRESH session with the full prompt instead.`
+                        if (!validated.assignee) return;
+                        const { claimedBeadIds, skippedBeadIds } = await claimBeadsBatched({
+                            command, orchestratorMember, beadIds: actualBeadIds, log,
+                        });
+                        if (claimedBeadIds.length === 0) {
+                            // All beads in this streak are already claimed by
+                            // other sprints. Skip this streak entirely.
+                            log(`Doer streak: all beads ${streakScope()} are already claimed by other sprints -- skipping this streak.`);
+                            throw new WorkflowError(
+                                `All beads already claimed by other sprints`,
+                                { beadIds: actualBeadIds, reason: 'all-beads-already-claimed' }
                             );
-                            worklistCtx.sessionId = null;
-                            worklistCtx.usage = null;
                         }
-                    }
-                    if (worklistResumeArg) {
-                        log(
-                            `Doer worklist on '${doerMember}': dispatching streak ${worklistPosition + 1}/${worklistLength} ` +
-                            `[${actualBeadIds.join(', ')}] as a RESUME of session '${worklistResumeArg}'` +
-                            `${doerModel ? ` (model=${doerModel})` : ''} -- warm context carries over.`
-                        );
-                    }
-
-                    // The doer cannot read the KB itself (the member's composed
-                    // permission config disables the fleet MCP server), so the
-                    // entries primed for THIS member travel in its prompt.
-                    // Relevance-ranked read for THESE beads, falling back to the
-                    // sprint-start primed set when the query returns nothing.
-                    // The query terms are the bead ids and titles the engine
-                    // already holds; expand_related on that call is what
-                    // traverses the refines/contradiction_of edges.
-                    const doerRepoPath = kbPriming.folderOf(doerMember);
-                    const doerKnowledge = await kbWork.relevantKnowledge(doerRepoPath, kbQueryTerms(streak, actualBeadIds));
-                    const basePrompt = buildDoerPrompt({
-                        beadIds: actualBeadIds,
-                        branch: validated.branch,
-                        feedback: feedbackForStreak || null,
-                        kbKnowledge: doerKnowledge.length > 0 ? doerKnowledge : kbPriming.knowledgeOf(doerMember),
-                    });
-                    let doerPrompt = basePrompt;
-                    if (batchStreaks) {
-                        // Mode (i) BATCH: one dispatch carries the whole ordered
-                        // worklist. The prompt names each streak boundary and
-                        // mandates strict in-order completion.
-                        doerPrompt =
-                            'ORDERED MULTI-STREAK WORKLIST (single batched dispatch): your assigned beads below form ' +
-                            `${batchStreaks.length} streak(s). Work them strictly in this order, fully completing each ` +
-                            'streak (implement, verify, `bd close` its beads) before starting the next: ' +
-                            batchStreaks.map((s, i) => `streak ${i + 1}: [${s.map((b) => b.id).join(', ')}]`).join('; ') +
-                            '.\n\n' + basePrompt;
-                    } else if (worklistResumeArg) {
-                        // A resumed dispatch restates its FULL scope (the entire
-                        // buildDoerPrompt output), never a bare "continue" delta
-                        // -- the preamble only tells the session it may reuse its
-                        // warm context.
-                        doerPrompt =
-                            'WORKLIST CONTINUATION: you are the same doer session that just completed the previous ' +
-                            'streak of your worklist. Your warm context (repository layout, conventions, files already ' +
-                            'read) carries over -- do not re-explore the repository from scratch. Your NEXT assigned ' +
-                            'streak follows, with its scope restated in full.\n\n' + basePrompt;
-                    }
-
-                    return agent(
-                        doerPrompt,
-                        {
-                            member_name: doerMember,
-                            agentType: 'doer',
-                            label: `Streak [${actualBeadIds.join(', ')}]`,
-                            schema: doerReport,
-                            model: doerModel,
-                            resume: worklistResumeArg,
-                            // Capture this dispatch's session id + usage so the
-                            // NEXT streak in this worklist can resume the same
-                            // session (warm-context carryover). A provider
-                            // without resume support never reports a session id,
-                            // so the callback simply never fires and every streak
-                            // stays fresh (capability signal, not a
-                            // provider-name check).
-                            onSessionId: (id, meta) => {
-                                if (!worklistCtx) return;
-                                worklistCtx.sessionId = id;
-                                worklistCtx.usage = meta && meta.usage ? meta.usage : null;
-                            },
-                            // Doer streaks run a full impl+test+commit cycle,
-                            // categorically heavier than a one-shot prompt, so the
-                            // generic execute_prompt timeout default is too short.
-                            // For a silent-until-done CLI inactivity equals total
-                            // runtime, so the inactivity timer must match the
-                            // max_total_s ceiling.
-                            timeout_s: DISPATCH_TIMEOUT_S,
-                            max_total_s: DISPATCH_TIMEOUT_S,
-                            max_turns: BASE_DOER_MAX_TURNS,
+                        if (skippedBeadIds.length > 0) {
+                            actualBeadIds = claimedBeadIds; // Only the successfully claimed ones
                         }
-                    );
-                }, { pushBeads: true, ...syncOpts });
+                    },
+                    // CRITICAL: never trust the doer's own success claim -- verify
+                    // via `bd show` that the assigned bead ids are actually
+                    // closed. verifyDoerStreakClosed() D-pulls the orchestrator's
+                    // OWN beads clone BEFORE this read: the doer closed its beads
+                    // in ITS clone and D-pushed them, so on a multi-member sprint
+                    // the orchestrator's clone is a DIFFERENT clone and without
+                    // that D-pull this read sees stale (still-open) status and
+                    // EVERY remote doer streak is falsely marked FAILED.
+                    // (apra-fleet-p2to.4.1) it D-pulls internally
+                    // (DoltSync.syncBefore) -- treat the whole call as one bracket.
+                    verifyStreakClosed: async (phase) => {
+                        const unclosed = await gitSync.withOpenSyncBracket(() => verifyDoerStreakClosed({
+                            command, orchestratorMember, beadIds: actualBeadIds, log, args,
+                        }));
+                        if (phase === 'preDispatch' && unclosed.length === 0) {
+                            log(
+                                `Doer streak ${streakScope()} on member '${doerMember}' exhausted its turn limit ` +
+                                '(max_turns), but all assigned bead id(s) are already closed -- WARNING: the doer ' +
+                                'missed the VERIFY checkpoint (kept running after its last bd close instead of ' +
+                                'stopping). Treating this streak as a successful completion, not a failure; ' +
+                                'issuing NO resume dispatch.'
+                            );
+                        }
+                        return unclosed;
+                    },
+                    // Built INSIDE the bracket, after the claim: the streak this
+                    // dispatch actually owns is only known once the claim has run.
+                    prepare: async ({ dispatch, resumeAttempt }) => {
+                        if (dispatch.kind === 'max-turns-resume') {
+                            const resumeTurns = BASE_DOER_MAX_TURNS * (2 ** resumeAttempt);
+                            log(
+                                `Doer streak ${streakScope()} on member '${doerMember}' exhausted its turn limit ` +
+                                `(max_turns) -- resuming the same session with max_turns=${resumeTurns} ` +
+                                `(attempt ${resumeAttempt}/${policyFor('doer').retry.resumeAttempts}) instead of ` +
+                                'giving up or regrouping.'
+                            );
+                            return {
+                                // Restate the streak's scope: a resumed dispatch
+                                // replaces the delivered prompt artifact, so a
+                                // bare "continue" leaves the session with no
+                                // record of what it was asked to do.
+                                prompt:
+                                    'Continue exactly where you left off from this same session -- do not restart, re-read from scratch, or re-plan. ' +
+                                    `Your scope, restated so a resumed dispatch never loses it: assigned bead id(s) ${actualBeadIds.join(', ')} on sprint branch ${validated.branch}. ` +
+                                    'Pick up from your last action on those bead(s) and proceed to the VERIFY checkpoint.',
+                                label: `Streak ${streakScope()} (resume, max_turns=${resumeTurns})`,
+                            };
+                        }
 
-                // The resume-and-continue retry is the SAME logical doer
-                // streak continuing (same session, same code/bead-writing
-                // responsibilities), so it gets the identical git+dolt sync
-                // bracket treatment as the original dispatch above.
-                const dispatchDoerResume = (maxTurns) => withGitSync(doerMember, true, () => agent(
-                    // Restate the streak's scope: a resumed dispatch replaces the
-                    // delivered prompt artifact, so a bare "continue" leaves the
-                    // session with no record of what it was asked to do.
-                    'Continue exactly where you left off from this same session -- do not restart, re-read from scratch, or re-plan. ' +
-                    `Your scope, restated so a resumed dispatch never loses it: assigned bead id(s) ${actualBeadIds.join(', ')} on sprint branch ${validated.branch}. ` +
-                    'Pick up from your last action on those bead(s) and proceed to the VERIFY checkpoint.',
-                    {
-                        member_name: doerMember,
-                        agentType: 'doer',
-                        label: `Streak [${actualBeadIds.join(', ')}] (resume, max_turns=${maxTurns})`,
-                        schema: doerReport,
-                        model: undefined,  // Model is resolved in main dispatch
-                        timeout_s: DISPATCH_TIMEOUT_S,
-                        max_total_s: DISPATCH_TIMEOUT_S,
-                        resume: true,
-                        max_turns: maxTurns,
-                        // A successful max-turns ladder resume leaves the session
-                        // valid for the worklist's NEXT streak -- re-record its
-                        // id + latest usage so the next streak's headroom
-                        // admission judges the CURRENT session size.
-                        onSessionId: (id, meta) => {
-                            if (!worklistCtx) return;
-                            worklistCtx.sessionId = id;
-                            worklistCtx.usage = meta && meta.usage ? meta.usage : null;
-                        },
-                    }
-                ), { pushBeads: true });
+                        const feedbackForStreak = actualBeadIds
+                            .map((id) => perBeadFeedback.get(id))
+                            .filter(Boolean)
+                            .join('\n\n');
 
-                let report = null;
-                let wasRetried = false;
-                let dispatchError = null;
-                try {
-                    report = await dispatchDoer();
-                } catch (err) {
+                        // Resolve the model to price this dispatch against. Beads
+                        // are normally streaked one-per-model, but when a streak
+                        // DOES span beads with different declared models this
+                        // deterministically picks the first (by bead-id order, not
+                        // dispatch completion order) and logs the discrepancy
+                        // rather than guessing a blended price. A bead with no
+                        // `model` metadata resolves to `undefined`, which
+                        // FleetWorkflow treats the same as never passing `model`
+                        // -- the dispatch still runs, it is simply not priced
+                        // (calculateCost() returns null; see pricing.mjs).
+                        // CAVEAT: this is the model the PLANNER ASKED the doer to
+                        // run on. The fleet does not echo back the model it
+                        // actually resolved/ran with, so this -- and therefore
+                        // budget._spent / BudgetExceededError -- is an ESTIMATE,
+                        // not a verified actual.
+                        const streakModels = [...new Set(actualBeadIds.map((id) => modelByBeadId.get(id)).filter(Boolean))];
+                        let doerModel = streakModels[0];
+                        // In a PACKED worklist round a streak must never dispatch
+                        // below its REQUIRED tier (the max of its beads' declared
+                        // models) -- override the first-bead pick with that tier.
+                        // The non-packed (streaks <= doers) path keeps the
+                        // first-bead behavior.
+                        if (packed) {
+                            const requiredTier = streakRequiredTier(streak);
+                            if (requiredTier) doerModel = requiredTier;
+                        }
+                        if (streakModels.length > 1) {
+                            log(`Doer streak ${streakScope()} spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${doerModel}'.`);
+                        }
+
+                        // Mode (ii) RESUMED SEQUENCE: resume the doer's OWN
+                        // prior-streak session by EXPLICIT session id when one was
+                        // captured for this worklist and
+                        // hasContextHeadroomForResume() passes. On refusal, or
+                        // when no session id exists (first streak of the worklist,
+                        // provider without resume support, prior streak failed),
+                        // fall back to a FRESH session carrying the FULL prompt --
+                        // never a delta prompt into a fresh session.
+                        let worklistResumeArg = false;
+                        if (worklistCtx && worklistCtx.sessionId) {
+                            if (hasContextHeadroomForResume(worklistCtx.usage)) {
+                                worklistResumeArg = worklistCtx.sessionId;
+                            } else {
+                                log(
+                                    `Doer worklist on '${doerMember}': context headroom insufficient to resume session ` +
+                                    `'${worklistCtx.sessionId}' for streak ${worklistPosition + 1}/${worklistLength} ` +
+                                    `${streakScope()} -- starting a FRESH session with the full prompt instead.`
+                                );
+                                worklistCtx.sessionId = null;
+                                worklistCtx.usage = null;
+                            }
+                        }
+                        if (worklistResumeArg) {
+                            log(
+                                `Doer worklist on '${doerMember}': dispatching streak ${worklistPosition + 1}/${worklistLength} ` +
+                                `${streakScope()} as a RESUME of session '${worklistResumeArg}'` +
+                                `${doerModel ? ` (model=${doerModel})` : ''} -- warm context carries over.`
+                            );
+                        }
+
+                        // The doer cannot read the KB itself (the member's
+                        // composed permission config disables the fleet MCP
+                        // server), so the entries primed for THIS member travel in
+                        // its prompt. Relevance-ranked read for THESE beads,
+                        // falling back to the sprint-start primed set when the
+                        // query returns nothing. The query terms are the bead ids
+                        // and titles the engine already holds; expand_related on
+                        // that call is what traverses the refines/contradiction_of
+                        // edges.
+                        const doerRepoPath = kbPriming.folderOf(doerMember);
+                        const doerKnowledge = await kbWork.relevantKnowledge(doerRepoPath, kbQueryTerms(streak, actualBeadIds));
+                        const basePrompt = buildDoerPrompt({
+                            beadIds: actualBeadIds,
+                            branch: validated.branch,
+                            feedback: feedbackForStreak || null,
+                            kbKnowledge: doerKnowledge.length > 0 ? doerKnowledge : kbPriming.knowledgeOf(doerMember),
+                        });
+                        let doerPrompt = basePrompt;
+                        if (batchStreaks) {
+                            // Mode (i) BATCH: one dispatch carries the whole
+                            // ordered worklist. The prompt names each streak
+                            // boundary and mandates strict in-order completion.
+                            doerPrompt =
+                                'ORDERED MULTI-STREAK WORKLIST (single batched dispatch): your assigned beads below form ' +
+                                `${batchStreaks.length} streak(s). Work them strictly in this order, fully completing each ` +
+                                'streak (implement, verify, `bd close` its beads) before starting the next: ' +
+                                batchStreaks.map((s, i) => `streak ${i + 1}: [${s.map((b) => b.id).join(', ')}]`).join('; ') +
+                                '.\n\n' + basePrompt;
+                        } else if (worklistResumeArg) {
+                            // A resumed dispatch restates its FULL scope (the
+                            // entire buildDoerPrompt output), never a bare
+                            // "continue" delta -- the preamble only tells the
+                            // session it may reuse its warm context.
+                            doerPrompt =
+                                'WORKLIST CONTINUATION: you are the same doer session that just completed the previous ' +
+                                'streak of your worklist. Your warm context (repository layout, conventions, files already ' +
+                                'read) carries over -- do not re-explore the repository from scratch. Your NEXT assigned ' +
+                                'streak follows, with its scope restated in full.\n\n' + basePrompt;
+                        }
+                        return {
+                            prompt: doerPrompt,
+                            label: `Streak ${streakScope()}`,
+                            resumeArg: worklistResumeArg,
+                            bindings: { doerMember, doerModel },
+                        };
+                    },
+                });
+                const report = doerOutcome.value;
+                const dispatchError = doerOutcome.error;
+                // A streak that needed a second dispatch of any kind -- a generic
+                // retry or a turn-exhaustion resume -- is recorded as retried.
+                const wasRetried = doerOutcome.attempts > 1 || doerOutcome.resumesIssued > 0;
+                if (dispatchError) {
                     // A dispatch-level failure means this worklist's captured
                     // session can no longer be trusted (the failed attempt may
-                    // have run partial turns in it) -- clear it so every in-body
-                    // retry below AND the worklist's next streak start from a
-                    // FRESH session with the full prompt, mirroring
-                    // createRoundSessionRegistry's clear-on-failure rule. (The
-                    // max-turns ladder is unaffected: it resumes the member's
-                    // last session via `resume: true`, not this id.)
+                    // have run partial turns in it) -- clear it so the worklist's
+                    // NEXT streak starts from a FRESH session with the full
+                    // prompt, mirroring createRoundSessionRegistry's
+                    // clear-on-failure rule. (The max-turns ladder is unaffected:
+                    // it resumes the member's last session via `resume: true`,
+                    // not this id.)
                     if (worklistCtx) {
                         worklistCtx.sessionId = null;
                         worklistCtx.usage = null;
                     }
-                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        // Before resuming (or ultimately failing) a turn-exhausted
-                        // streak, check whether every assigned bead id is ALREADY
-                        // closed -- verifyDoerStreakClosed() does the mandatory
-                        // D-pull-then-read (see its doc comment). A doer that closes
-                        // its last bead and then keeps running past the VERIFY
-                        // checkpoint until it hits max_turns has genuinely
-                        // SUCCEEDED: resuming it wastes a dispatch on a session with
-                        // nothing left to do, and classifying it 'failed' would
-                        // falsely re-lane already-completed work.
-                        // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
-                        // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
-                        const preResumeUnclosed = await gitSync.withOpenSyncBracket(() => verifyDoerStreakClosed({
-                            command, orchestratorMember, beadIds: actualBeadIds, log, args,
-                        }));
-                        if (preResumeUnclosed.length === 0) {
-                            log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns), but all assigned bead id(s) are already closed -- WARNING: the doer missed the VERIFY checkpoint (kept running after its last bd close instead of stopping). Treating this streak as a successful completion, not a failure; issuing NO resume dispatch.`);
-                            dispatchError = null;
-                        } else {
-                            wasRetried = true;
-                            let currentMaxTurns = BASE_DOER_MAX_TURNS * 2;
-                            let resumeAttempt = 0;
-                            dispatchError = err;
-                            while (resumeAttempt < MAX_TURN_RESUME_ATTEMPTS) {
-                                resumeAttempt += 1;
-                                log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- resuming the same session with max_turns=${currentMaxTurns} (attempt ${resumeAttempt}/${MAX_TURN_RESUME_ATTEMPTS}) instead of giving up or regrouping.`);
-                                try {
-                                    await memberSessionGuard.killIfAlive(doerMember);
-                                    report = await dispatchDoerResume(currentMaxTurns);
-                                    dispatchError = null;
-                                    break;
-                                } catch (resumeErr) {
-                                    dispatchError = resumeErr;
-                                    if (resumeErr instanceof AgentDispatchError && resumeErr.details?.reason === 'max_turns_exhausted') {
-                                        currentMaxTurns *= 2;
-                                        continue;
-                                    }
-                                    // A non-max_turns failure on resume (e.g. stale
-                                    // session, transport error) isn't something
-                                    // more turns can fix -- stop escalating.
-                                    break;
-                                }
-                            }
-                            if (dispatchError) {
-                                log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
-                            }
-                        }
-                    } else if (isPostDispatchSyncFailure(err)) {
-                        // The doer turn itself COMPLETED -- only its
-                        // post-dispatch G-push/D-push failed, and withGitSync
-                        // already retried that step on its own. Re-running the
-                        // streak would redo an LLM turn whose commits/bead closes
-                        // already exist locally. The per-bead attribution pass
-                        // below still runs, so any bead this streak really did
-                        // close is credited.
-                        log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' COMPLETED but its post-dispatch sync failed: ${err.message} Not re-dispatching -- the work is already committed locally.`);
-                        dispatchError = err;
-                    } else if (isNonRetryableDispatchError(err)) {
-                        // Auth/trust failures cannot be fixed by retrying the
-                        // identical dispatch. An LLM-auth (not workspace-trust)
-                        // failure gets one self-heal attempt plus one bounded
-                        // retry first.
-                        let healedAndRetried = false;
-                        if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                            const healed = await onLlmAuthFailure({ member: doerMember, label: `Doer streak [${actualBeadIds.join(', ')}]`, error: err.message });
-                            if (healed) {
-                                try {
-                                    log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}': LLM auth self-heal succeeded -- retrying once.`);
-                                    report = await dispatchDoer();
-                                    dispatchError = null;
-                                    healedAndRetried = true;
-                                } catch (retryErr) {
-                                    dispatchError = retryErr;
-                                    healedAndRetried = true;
-                                }
-                            }
-                        }
-                        if (!healedAndRetried) {
-                            log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' threw a non-retryable error (auth/trust): ${err.message}. Not retrying.`);
-                            dispatchError = err;
-                        }
-                    } else {
-                        log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
-                        wasRetried = true;
-                        try {
-                            // This retry's prior attempt was NOT a provable
-                            // no-mutation failure (a generic throw -- it may have
-                            // committed and/or pushed its streak before failing).
-                            // Resume onto the streak branch's remote tip so the
-                            // retry builds on any already-published work instead
-                            // of re-implementing the task as a divergent,
-                            // content-identical duplicate commit that can never
-                            // fast-forward.
-                            report = await dispatchDoer({ resumeOntoRemoteTip: true });
-                        } catch (err2) {
-                            dispatchError = err2;
-                        }
+                    if (isPostDispatchSyncFailure(dispatchError)) {
+                        log(`Doer streak ${streakScope()} on member '${doerMember}' COMPLETED but its post-dispatch sync failed: ${dispatchError.message} Not re-dispatching -- the work is already committed locally.`);
+                    } else if (doerOutcome.resumesIssued > 0) {
+                        log(`Doer streak ${streakScope()} on member '${doerMember}' still failing after ${doerOutcome.resumesIssued} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
                     }
                 }
 
@@ -5428,25 +5394,15 @@ async function runSprintCycle(context) {
                 // doer that returns a success-looking report but leaves a bead
                 // open is treated as a FAILED streak regardless of what it said.
                 //
-                // verifyDoerStreakClosed() D-pulls the orchestrator's OWN beads
-                // clone BEFORE this read. The doer closed its beads in ITS clone
-                // and D-pushed them; on a multi-member (remote) sprint the
-                // orchestrator's clone is a DIFFERENT clone, so without that
-                // D-pull this read sees stale (still-open) status and EVERY
-                // remote doer streak is falsely marked FAILED -- the single most
-                // divergence-sensitive read in the file.
-                // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
-                // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
-                const unclosedIds = await gitSync.withOpenSyncBracket(() => verifyDoerStreakClosed({
-                    command, orchestratorMember, beadIds: actualBeadIds, log, args,
-                }));
+                // apra-fleet-3swo.5.7: that verification is the 'doer' row's
+                // 'verify-streak-closed' postResult step, which the engine ran
+                // immediately after the successful dispatch -- read its answer
+                // back off the outcome rather than doing the (D-pulling) read a
+                // second time. The row's 'kb-apply' step ran right after it:
+                // the doer decides what to capture and the engine executes it
+                // against the repo THAT doer worked in.
+                const unclosedIds = doerOutcome.stepResults['verify-streak-closed'];
                 const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
-
-                // KB trust pipeline Phase 2: the doer decides what to capture,
-                // the engine executes it against the repo THAT doer worked in.
-                // Captures are honoured regardless of the streak outcome -- a
-                // gotcha found on the way to a failed streak is still true.
-                await kbWork.apply(ROLE_DOER, kbPriming.folderOf(doerMember), report);
 
                 // apra-fleet-eft.76.4: per-bead failure attribution -- always
                 // emitted (not only when something failed) so every streak's
