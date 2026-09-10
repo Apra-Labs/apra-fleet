@@ -47,6 +47,7 @@ import {
     streakValidate,
     REJECTED_CANDIDATE,
     ACCEPTED_CANDIDATE,
+    sentinelNotePolicies,
 } from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
@@ -574,10 +575,17 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
     // apra-fleet-3swo.5.3: RE-ANCHORED onto the engine, same facts.
     test('plan-reviewer: two attempts per round, and every failure degrades to CHANGES_NEEDED with dispatchFailed set -- never to an approval', async () => {
         const opts = ROLE_CALL_OPTS['plan-reviewer'];
+        // apra-fleet-3swo.5.4: the per-class failure NOTE is table data
+        // (degrade.noteTemplates), not a note builder this call site passes
+        // in, so the sentinels that prove per-class routing are spliced into
+        // the table the engine reads. A ladder that fell back to one shared
+        // message -- or to a per-role branch in the engine -- would stop
+        // reproducing them.
+        const notePolicies = sentinelNotePolicies('plan-reviewer');
 
         // Two attempts per round: an infrastructure failure gets exactly one
         // extra attempt WITHIN the round, without consuming a planning round.
-        const spent = createRecordingCtx({ responses: [schemaError(), transportError(), 'never reached'] });
+        const spent = createRecordingCtx({ responses: [schemaError(), transportError(), 'never reached'], policies: notePolicies });
         const outcome = await dispatchRole(spent.ctx, 'plan-reviewer', opts);
         assert.strictEqual(spent.rec.dispatches.length, 2, 'The plan review must be attempted exactly twice per round.');
 
@@ -592,7 +600,7 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
         assert.deepStrictEqual(outcome.value.taskAssignments, []);
         assert.match(outcome.value.notes, /^HARNESS-DISPATCH-CLASS: connection dropped$/, 'A transport failure must be noted through the dispatch-class note builder.');
 
-        const schemaOnly = createRecordingCtx({ responses: [schemaError(), schemaError()] });
+        const schemaOnly = createRecordingCtx({ responses: [schemaError(), schemaError()], policies: notePolicies });
         const schemaOutcome = await dispatchRole(schemaOnly.ctx, 'plan-reviewer', opts);
         assert.strictEqual(schemaOutcome.value.verdict, 'CHANGES_NEEDED');
         assert.strictEqual(schemaOutcome.value.dispatchFailed, true);

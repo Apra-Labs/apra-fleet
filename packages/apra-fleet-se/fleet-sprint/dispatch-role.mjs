@@ -23,6 +23,13 @@ import { AgentOutputError, AgentDispatchError, FleetTransportError, WorkflowErro
 // genuinely NOT policy: the prompt text, the presentation labels, the runtime
 // bindings a policy names, and what the caller does with the outcome.
 //
+// apra-fleet-3swo.5.4 finished the job on the DEGRADE side: the failure TEXT
+// a degraded value carries used to arrive as a per-call `synthesizedNotes`
+// map of note builders, i.e. six runner.js call sites each spelling out the
+// same two sentences. It is now `degrade.noteTemplates` data in
+// role-policies.mjs, rendered by renderDegradeNote() below -- ONE
+// implementation of verdict/report fallback text for every role.
+//
 // WHY IT IS NOT A PASS-THROUGH: a dispatchRole that merely wrapped the
 // original inline ladders would leave every behavioural axis duplicated per
 // role, which is the condition role-policies.mjs was built to remove. There
@@ -377,12 +384,46 @@ function synthesizeDegradedValue(policy, opts, err, errorClass) {
     // 'fallback-value', the scoped replan's 'defer-to-next-cycle') hands the
     // caller null on purpose.
     if (!degrade.synthesized || !degrade.classes.includes(errorClass)) return null;
-    const notes = opts.synthesizedNotes && opts.synthesizedNotes[errorClass]
-        ? opts.synthesizedNotes[errorClass](err)
-        : `${opts.roleLabel || policy.role} dispatch failed: ${err.message}`;
-    const value = { ...degrade.synthesized, [degrade.notesField]: notes };
+    const value = { ...degrade.synthesized, [degrade.notesField]: renderDegradeNote(policy, err, errorClass) };
     if (degrade.marker) value[degrade.marker] = true;
     return value;
+}
+
+/**
+ * apra-fleet-3swo.5.4: the ONE place a degraded value's failure TEXT is
+ * built, for every role.
+ *
+ * Each runner.js dispatch site used to hand the engine its own map of
+ * per-class note builders, so six call sites carried six near-identical
+ * copies of the same two sentences and any change to the wording had six
+ * places to drift. The wording is now `degrade.noteTemplates` DATA in
+ * role-policies.mjs and this function is the only thing that reads it.
+ *
+ * A class the ladder fabricates for but has no template for THROWS rather
+ * than falling back to a generic sentence: a silent generic note is exactly
+ * how a role's distinct degrade text (the regression phase's "may not have
+ * reached the shared remote") would quietly disappear while every test that
+ * only checks `typeof notes === 'string'` kept passing.
+ *
+ * `{message}` falls back to String(err) so a non-Error throw (which only the
+ * regression catch-all's 'unknown' class can even reach) still reads as
+ * something rather than as an empty note.
+ */
+function renderDegradeNote(policy, err, errorClass) {
+    const { noteTemplates } = policy.degrade;
+    const template = noteTemplates && noteTemplates[errorClass];
+    if (typeof template !== 'string') {
+        throw new Error(
+            `dispatch-role: policy '${policy.role}' fabricates a value for error class '${errorClass}' but records ` +
+            'no degrade.noteTemplates entry for it -- add the template to role-policies.mjs rather than letting the ' +
+            'degrade write an empty note.'
+        );
+    }
+    return template.replace(/\{(message|name)\}/g, (_, field) => {
+        if (field === 'name') return String((err && err.name) || 'Error');
+        const message = err && err.message;
+        return message ? String(message) : String(err);
+    });
 }
 
 /**
@@ -429,9 +470,6 @@ async function runDegradeSteps(ctx, policy, err, errorClass) {
  *   attemptOptions   -- ({ attempt, skipPreDispatchSync }) => extra withGitSync options
  *   afterAttempt     -- async (value) => void, run INSIDE the attempt's try so
  *                       a failure in it is classified by the same ladder
- *   synthesizedNotes -- { schema(err), dispatch(err), infra(err), sync(err),
- *                       unknown(err) } -- one note builder per ERROR_CLASS
- *                       this role's `degrade.classes` fabricates for
  *   onResultRejected -- (reason) => Error, the error a `retryOnInvalidResult`
  *                       ladder throws once its budget is spent on results its
  *                       own validator keeps rejecting

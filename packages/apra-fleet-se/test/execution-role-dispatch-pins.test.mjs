@@ -47,6 +47,7 @@ import {
     trustError,
     turnExhaustionError,
     TURN_BASES,
+    sentinelNotePolicies,
 } from './helpers/dispatch-role-harness.mjs';
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
 import { PLANNING_LADDERS } from './helpers/planning-ladders.mjs';
@@ -997,8 +998,15 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
             ['sync', divergedError, 'HARNESS-SYNC-CLASS'],
             ['unknown', () => new TypeError('not a dispatch failure at all'), 'HARNESS-UNKNOWN-CLASS'],
         ];
+        // apra-fleet-3swo.5.4: the per-class summary text is table data
+        // (degrade.noteTemplates) rather than a per-call note builder, so the
+        // sentinels are spliced into the table the engine reads. A catch-all
+        // that collapsed four classes into one shared message -- or an engine
+        // that grew a per-role branch instead of reading the table -- would
+        // stop reproducing them.
+        const notePolicies = sentinelNotePolicies('regression-test-runner');
         for (const [errorClass, make, marker] of classDrivers) {
-            const { ctx } = createRecordingCtx({ responses: [make()] });
+            const { ctx } = createRecordingCtx({ responses: [make()], policies: notePolicies });
             const outcome = await dispatchRole(ctx, 'regression-test-runner', ROLE_CALL_OPTS['regression-test-runner']);
             assert.strictEqual(outcome.degraded, true, `a ${errorClass}-class failure must degrade, never propagate`);
             assert.strictEqual(outcome.value.passed, false, 'Only an explicit passed:true is treated as a green regression pass.');
@@ -1015,7 +1023,7 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         // A completed pass whose post-dispatch sync failed is NOT re-dispatched
         // (the pass already ran), but it still reports honestly that its
         // carry-over beads may be local-only.
-        const syncFailed = createRecordingCtx({ responses: [postDispatchSyncError(), postDispatchSyncError()] });
+        const syncFailed = createRecordingCtx({ responses: [postDispatchSyncError(), postDispatchSyncError()], policies: notePolicies });
         const syncOutcome = await dispatchRole(syncFailed.ctx, 'regression-test-runner', ROLE_CALL_OPTS['regression-test-runner']);
         assert.strictEqual(syncFailed.rec.dispatches.length, 1, 'A pass that already ran is never re-dispatched.');
         assert.ok(syncOutcome.value.summary.startsWith('HARNESS-SYNC-CLASS'), 'It is reported as a sync failure, not as a failed pass.');
