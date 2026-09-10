@@ -61,14 +61,29 @@ import {
 // The execution/verification-side roles (doer, reviewer, deployer, integ,
 // final review, regression, harvester) belong to the sibling file.
 //
-// HOW THESE PIN: runner.js's dispatch sites are not separately importable
-// today -- they are closures over per-run state inside one very large
-// function, which is the condition the refactor exists to fix. So each ladder
+// HOW THESE PIN, BEFORE AND AFTER THE MIGRATION. An UNMIGRATED ladder is not
+// separately importable -- it is a closure over per-run state inside one very
+// large function, which is the condition the refactor exists to fix -- so it
 // is located STRUCTURALLY in runner.js's source (by its prompt/label anchor,
-// never by line number -- runner.js keeps shrinking as extraction phases land)
-// and its dispatch options are resolved the way the JS engine would: the
-// spread base object first, then the call site's own inline keys on top. The
-// shared scanner lives in ./helpers/dispatch-pin-scanner.mjs.
+// never by line number: runner.js keeps shrinking as extraction phases land)
+// and its dispatch options are resolved the way the JS engine would, spread
+// base object first then the call site's own inline keys on top. The shared
+// scanner lives in ./helpers/dispatch-pin-scanner.mjs.
+//
+// A MIGRATED ladder (apra-fleet-3swo.5.3) has no such source text left, so its
+// pins are RE-ANCHORED onto fleet-sprint/dispatch-role.mjs plus
+// fleet-sprint/role-policies.mjs and proved by running the real engine against
+// a recording ctx (./helpers/dispatch-role-harness.mjs). No pinned FACT is
+// dropped in that move -- only the evidence changes, from "this text appears
+// in runner.js" to "the engine really did this". The per-pin inventory mapping
+// each pre-migration assertion to its post-migration replacement is in the
+// engine section at the end of this file.
+//
+// As of apra-fleet-3swo.5.3 all five planning ladders are migrated, so the
+// inline half of this file currently pins nothing and the engine half pins all
+// eight dispatches. The inline machinery is deliberately KEPT: it is what the
+// execution-side sibling still uses, and what this file would use again if a
+// planning ladder were ever un-migrated.
 //
 // WHAT EACH LADDER PINS: member routing, sync bracketing + push flags,
 // max_turns, timeout, watchdog arming, retry/degrade behaviour, KB knowledge
@@ -77,12 +92,12 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FLEET_SPRINT_DIR = path.join(__dirname, '..', 'fleet-sprint');
-// SRC now scans the module SET dispatch-pin-scanner.mjs defines
-// (DISPATCH_LADDER_MODULES: runner.js today, plus role-policies.mjs and,
-// once it exists, dispatch-role.mjs), not one hard-coded runner.js path --
-// see that file's header for why. Every pin below is unchanged: they all
-// still resolve against runner.js's real text, which is still exactly
-// what is in SRC today.
+// SRC scans the module SET dispatch-pin-scanner.mjs defines
+// (DISPATCH_LADDER_MODULES: runner.js, role-policies.mjs and dispatch-role
+// .mjs), not one hard-coded runner.js path -- see that file's header for why.
+// Every INLINE pin still resolves against runner.js's real text; the engine's
+// own call site is pinned as a census entry here and asserted behaviourally
+// (see the engine section at the end of this file).
 // MODULE_OFFSETS (apra-fleet-3swo.28) lets failure messages resolve a
 // concatenation-relative site.line back to the real {file, line} it came
 // from, instead of assuming runner.js is the only (or first) module.
