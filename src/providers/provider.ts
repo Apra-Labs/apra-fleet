@@ -119,6 +119,64 @@ export interface PromptOptions {
   agentName?: string;
 }
 
+/**
+ * apra-fleet-hzeb.1: a provider-agnostic "this dispatch hit a usage/quota limit
+ * and cannot make progress until `resumeAt`" signal. Distinct from a transient
+ * overload (529/overloaded), which is retryable after a short backoff -- a usage
+ * limit needs a real wall-clock wait until the quota window resets.
+ *
+ * `resumeAt` is ALWAYS a concrete ISO-8601 UTC timestamp, never null: when the
+ * provider CLI exposes a real reset time we parse it (`resumeAtSource: 'parsed'`);
+ * otherwise we fall back to a guessed window (`resumeAtSource: 'guessed'`), so a
+ * consumer can always schedule a resume without special-casing "unknown".
+ */
+export interface UsageLimitSignal {
+  type: 'usage_limit';
+  /** ISO-8601 UTC instant at which work may resume. Never null. */
+  resumeAt: string;
+  /** Whether `resumeAt` was parsed from the provider's own reset time, or guessed. */
+  resumeAtSource: 'parsed' | 'guessed';
+  /** The raw message/output that identified this as a usage limit (for logging). */
+  message: string;
+}
+
+/**
+ * apra-fleet-hzeb.1: THE provider-adapter default resume window for a guessed
+ * usage-limit signal (1 hour). This is the single source of truth for the guess --
+ * fleet-sprint and other consumers must read the signal's `resumeAt`, never
+ * hardcode their own 1h fallback.
+ */
+export const DEFAULT_USAGE_LIMIT_RESUME_MS = 60 * 60 * 1000;
+
+/**
+ * apra-fleet-hzeb.1: build a guessed usage-limit signal whose `resumeAt` is
+ * `now + DEFAULT_USAGE_LIMIT_RESUME_MS`. `now` is injectable for deterministic
+ * tests.
+ */
+export function guessedUsageLimitSignal(message: string, now: number = Date.now()): UsageLimitSignal {
+  return {
+    type: 'usage_limit',
+    resumeAt: new Date(now + DEFAULT_USAGE_LIMIT_RESUME_MS).toISOString(),
+    resumeAtSource: 'guessed',
+    message,
+  };
+}
+
+/**
+ * apra-fleet-hzeb.1: generic quota/usage-limit detector shared by the
+ * non-Claude adapters. Matches the durable "you are out of quota" signatures
+ * (a bare 429, "rate limit", "quota exceeded", "usage limit", "credit limit",
+ * "resource_exhausted") and returns a GUESSED signal. Transient overload
+ * (529 / "overloaded") deliberately does NOT match here -- that stays a
+ * retryable overload, not a usage limit.
+ */
+const USAGE_LIMIT_QUOTA_RE = /\b429\b|rate limit|quota exceeded|usage limit|credit limit|resource_exhausted/i;
+
+export function defaultUsageLimitSignal(output: string, now: number = Date.now()): UsageLimitSignal | null {
+  if (!output || !USAGE_LIMIT_QUOTA_RE.test(output)) return null;
+  return guessedUsageLimitSignal(output, now);
+}
+
 export interface ParsedResponse {
   result: string;
   sessionId?: string;
@@ -129,6 +187,12 @@ export interface ParsedResponse {
   subtype?: string;
   /** e.g. 'max_turns' -- the CLI result event's own terminal_reason, when present. */
   terminalReason?: string;
+  /** apra-fleet-hzeb.1: the Claude result event's api_error_status (e.g. 429), when
+   *  present -- previously dropped by the parser. Used by detectUsageLimit. */
+  apiErrorStatus?: number;
+  /** apra-fleet-hzeb.1: set by execute_prompt (from detectUsageLimit) when this
+   *  dispatch was terminated by a provider usage/quota limit. */
+  usageLimit?: UsageLimitSignal;
 }
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: single source of truth for classifying a
@@ -223,6 +287,14 @@ export interface ProviderAdapter {
 
   // Response parsing
   parseResponse(result: SSHExecResult): ParsedResponse;
+
+  /** apra-fleet-hzeb.1: detect whether this dispatch was terminated by a provider
+   *  usage/quota limit (as opposed to a transient overload). Returns a
+   *  {@link UsageLimitSignal} with a concrete `resumeAt`, or null when this was not
+   *  a usage limit. REQUIRED on every adapter: none.ts returns null; the non-Claude
+   *  adapters delegate to {@link defaultUsageLimitSignal} on their raw output; Claude
+   *  keys off its api_error_status / terminal_reason plus its own limit message. */
+  detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null;
 
   // Session management
   supportsResume(): boolean;
