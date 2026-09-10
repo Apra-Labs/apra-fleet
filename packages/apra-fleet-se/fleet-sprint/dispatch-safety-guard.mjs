@@ -75,17 +75,70 @@ export function skipStringLiteral(src, start, quoteChar) {
 }
 
 /**
+ * Replaces every comment's characters with spaces (newlines preserved), so
+ * the result has the SAME length and line numbering as `src` but no comment
+ * text -- mirrors test/helpers/dispatch-pin-scanner.mjs's maskComments()
+ * (that file's stripComments() helper is NOT length-preserving, which would
+ * corrupt the positional index math extractBalancedCall depends on).
+ *
+ * WHY THIS EXISTS (apra-fleet-3swo.34): extractBalancedCall()'s depth walk
+ * skips over string literals but, before this fix, did not skip comments.
+ * runner.js's prose comments are full of apostrophes (e.g. "the streak's
+ * scope"); an unmasked walk reads that apostrophe as an opening quote and
+ * swallows everything -- including real closing parens -- until the next
+ * apostrophe, so a call site's balanced range can silently run away to the
+ * end of the file. Masking comments out before walking parens/quotes is what
+ * makes the balanced range trustworthy; the returned callText is still
+ * sliced from the ORIGINAL (unmasked) src so callers keep seeing real
+ * comment text, just with correct boundaries.
+ *
+ * @param {string} src
+ * @returns {string}
+ */
+export function maskComments(src) {
+    let out = '';
+    for (let i = 0; i < src.length; i++) {
+        const ch = src[i];
+        if (ch === '"' || ch === "'" || ch === '`') {
+            const end = skipStringLiteral(src, i, ch);
+            out += src.slice(i, end + 1);
+            i = end;
+            continue;
+        }
+        if (ch === '/' && src[i + 1] === '/') {
+            while (i < src.length && src[i] !== '\n') { out += ' '; i++; }
+            out += '\n';
+            continue;
+        }
+        if (ch === '/' && src[i + 1] === '*') {
+            const end = src.indexOf('*/', i + 2);
+            const stop = end < 0 ? src.length - 1 : end + 1;
+            for (; i <= stop; i++) out += src[i] === '\n' ? '\n' : ' ';
+            i--;
+            continue;
+        }
+        out += ch;
+    }
+    return out;
+}
+
+/**
  * Given the index of an opening '(' in `src`, returns the full call-site
  * text from that '(' through its matching ')', tracking paren depth and
  * skipping over string/template-literal contents (so parens embedded in
  * string/template content, e.g. `bd show ${ids.join(' ')}`, never disturb
- * the depth count).
+ * the depth count) AND over comment spans (so an apostrophe in prose, e.g.
+ * "the streak's scope", is never misread as opening a string -- see
+ * maskComments() above). The depth/quote walk runs over a comment-masked
+ * copy of `src`, but the returned text is sliced from the ORIGINAL `src` so
+ * real comment content is preserved in the output.
  */
 export function extractBalancedCall(src, openParenIdx) {
+    const masked = maskComments(src);
     let depth = 0;
     let i = openParenIdx;
-    for (; i < src.length; i++) {
-        const ch = src[i];
+    for (; i < masked.length; i++) {
+        const ch = masked[i];
         if (ch === '(') {
             depth++;
         } else if (ch === ')') {
@@ -94,7 +147,7 @@ export function extractBalancedCall(src, openParenIdx) {
                 return src.slice(openParenIdx, i + 1);
             }
         } else if (ch === '"' || ch === "'" || ch === '`') {
-            i = skipStringLiteral(src, i, ch);
+            i = skipStringLiteral(masked, i, ch);
         }
     }
     // Unbalanced -- should never happen against real, syntactically-valid
