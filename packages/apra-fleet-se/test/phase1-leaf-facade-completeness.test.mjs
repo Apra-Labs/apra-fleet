@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // Namespace import on purpose (see vcs-auth-extraction-facade.test.mjs and
 // phase0-seams-facade.test.mjs): a STATIC named import of a symbol this suite
@@ -233,13 +233,13 @@ describe('(1) runner.js re-exports every symbol it exported before the Phase 1 l
                 'expected runner.js to contain the exact decideEnsureBranchAction re-export line this test removes',
             );
 
-            const before = await import(`${sandboxRunnerPath}?facade-sanity=${Date.now()}-${Math.random()}`);
+            const before = await import(`${pathToFileURL(sandboxRunnerPath).href}?facade-sanity=${Date.now()}-${Math.random()}`);
             assert.equal(typeof before.decideEnsureBranchAction, 'function', 'sandbox copy must be faithful before any mutation');
 
             const brokenContent = originalContent.replace(`${reExportLine}\n`, '');
             assert.notEqual(brokenContent, originalContent, 'the re-export line must actually have been removed');
             fs.writeFileSync(sandboxRunnerPath, brokenContent, 'utf-8');
-            const broken = await import(`${sandboxRunnerPath}?facade-broken=${Date.now()}-${Math.random()}`);
+            const broken = await import(`${pathToFileURL(sandboxRunnerPath).href}?facade-broken=${Date.now()}-${Math.random()}`);
             assert.equal(
                 broken.decideEnsureBranchAction,
                 undefined,
@@ -255,7 +255,7 @@ describe('(1) runner.js re-exports every symbol it exported before the Phase 1 l
             assert.equal(Object.prototype.hasOwnProperty.call(broken, 'decideEnsureBranchAction'), false);
 
             fs.writeFileSync(sandboxRunnerPath, originalContent, 'utf-8');
-            const restored = await import(`${sandboxRunnerPath}?facade-restored=${Date.now()}-${Math.random()}`);
+            const restored = await import(`${pathToFileURL(sandboxRunnerPath).href}?facade-restored=${Date.now()}-${Math.random()}`);
             assert.equal(typeof restored.decideEnsureBranchAction, 'function', 'the re-export line must be restored before this task completes');
             assert.equal(fs.readFileSync(sandboxRunnerPath, 'utf-8'), originalContent, 'sandbox runner.js must be byte-identical to its original content once restored');
         } finally {
