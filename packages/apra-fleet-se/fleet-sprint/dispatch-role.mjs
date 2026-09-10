@@ -62,6 +62,8 @@ const PLAN_REVIEWER_MAX_TURNS = 500;
 const SCOPED_REPLAN_PLANNER_MAX_TURNS = 500;
 /** Scoped replan plan-reviewer turn base. */
 const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 500;
+/** Harvester turn base: it writes docs/changelog across the whole epic. */
+const HARVESTER_MAX_TURNS = 500;
 
 /**
  * Every turn-base constant a policy's `maxTurns.base` may name, keyed by that
@@ -74,6 +76,7 @@ export const TURN_BASES = Object.freeze({
     PLAN_REVIEWER_MAX_TURNS,
     SCOPED_REPLAN_PLANNER_MAX_TURNS,
     SCOPED_REPLAN_REVIEWER_MAX_TURNS,
+    HARVESTER_MAX_TURNS,
 });
 
 /**
@@ -544,7 +547,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             };
             value = await runAttempt(attemptOpts);
             if (opts.afterAttempt) await opts.afterAttempt(value);
-            await runPostResultSteps(ctx, policy, value, opts);
+            await runPostResultSteps(ctx, policy, value, opts, member);
             // A ladder that declares retryOnInvalidResult spends a whole
             // attempt on a schema-valid answer its own validator rejects,
             // rather than handing the caller a result it has already judged
@@ -789,7 +792,7 @@ async function runPreDispatchSteps(ctx, dispatch, member, opts = {}) {
  * until it is dropped. 'select-streaks-validate' IS opts.validate, performed
  * by the semantic-repair path above, so it is a no-op here.
  */
-async function runPostResultSteps(ctx, policy, value, opts = {}) {
+async function runPostResultSteps(ctx, policy, value, opts = {}, member = null) {
     for (const step of policy.postResult) {
         if (step === 'select-streaks-validate') continue;
         if (step === 'invalidate-beads-cache') {
@@ -804,6 +807,6 @@ async function runPostResultSteps(ctx, policy, value, opts = {}) {
         // is about what the dispatch actually returned ('kb-apply' applies the
         // report's KB work, 'verify-streak-closed' checks the closes it
         // claims), so a step that could not see the value could not do its job.
-        await hook({ policy, value, opts });
+        await hook({ policy, value, opts, member });
     }
 }

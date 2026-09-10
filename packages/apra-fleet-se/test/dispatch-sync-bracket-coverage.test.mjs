@@ -104,8 +104,14 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // and every remaining runner.js agent() site must be bracketed -- a strictly
 // stronger statement than before. withGitSync stays at 14: the two dispatches
 // that left were the two that never had a bracket.
-const EXPECTED_AGENT_COUNT = 14;
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 14;
+// 14 -> 12 (apra-fleet-3swo.5.7): the harvester ladder -- its dispatch and its
+// max_turns-exhaustion resume -- moved onto the dispatchRole engine, starting
+// the execution-side half of the migration. Two agent() call sites left
+// runner.js; none were added.
+const EXPECTED_AGENT_COUNT = 12;
+// 14 -> 12 (apra-fleet-3swo.5.7): the harvester's dispatch and resume brackets
+// moved onto the dispatchRole engine's one generic withGitSync call.
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 12;
 // apra-fleet-3swo.5.3: EMPTY. The two Streak Assignment dispatches -- the only
 // documented, deliberate exemptions from the bracket invariant -- now run
 // through the dispatchRole engine, whose policy row records `bracket: {wrapped:
@@ -260,19 +266,23 @@ test('pushCode is set true only for the code-writing dispatch roles (doer, harve
         'Every withGitSync(...) call site must pass a literal true/false pushCode argument (second positional arg) so this check can classify it.'
     );
 
-    // Two roles write code today: doer and harvester -- but doer now has TWO
+    // Two roles write code today: doer and harvester -- but doer has TWO
     // pushCode:true sites (dispatchDoer and its max_turns-exhaustion
-    // dispatchDoerResume, the same logical streak continuing), so 3 sites
-    // total: doer, doer-resume, harvester.
+    // dispatchDoerResume, the same logical streak continuing).
+    // apra-fleet-3swo.5.7: the harvester's two moved onto the dispatchRole
+    // engine, whose bracket passes an EXPRESSION rather than a literal
+    // pushCode, so it is deliberately not counted here -- that flag is proved
+    // behaviourally by test/execution-role-dispatch-pins.test.mjs. Two literal
+    // pushCode:true sites remain inline: doer and doer-resume.
     assert.strictEqual(
         pushCodeTrueSites.length,
-        4,
-        `Expected exactly 4 withGitSync(...) call sites with pushCode:true (doer, doer-resume, harvester, harvester-resume), found ${pushCodeTrueSites.length}.`
+        2,
+        `Expected exactly 2 withGitSync(...) call sites with a literal pushCode:true (doer, doer-resume), found ${pushCodeTrueSites.length}.`
     );
     for (const site of pushCodeTrueSites) {
         assert.ok(
-            /agentType:\s*'doer'/.test(site.callText) || /getMemberForRole\('harvester'\)/.test(site.callText),
-            `withGitSync(...) call site with pushCode:true must be doer or harvester, got: ${site.callText.slice(0, 120)}...`
+            /agentType:\s*'doer'/.test(site.callText),
+            `withGitSync(...) call site with pushCode:true must be the doer, got: ${site.callText.slice(0, 120)}...`
         );
     }
 });

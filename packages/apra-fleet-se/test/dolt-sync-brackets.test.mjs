@@ -963,7 +963,11 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // 15 -> 14 (same bead): the scoped-replan plan-reviewer's read-side
     // bracket followed them; it carried no pushBeads, so the count below is
     // unchanged.
-    assert.equal(sites.length, 14, `expected 14 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 14 -> 12 (apra-fleet-3swo.5.7): the harvester's dispatch+resume pair
+    // moved onto the engine, starting the execution-side migration. Both were
+    // pushCode:true / pushBeads:true, so the pushBeads count below drops by
+    // two with them.
+    assert.equal(sites.length, 12, `expected 12 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch
@@ -988,10 +992,14 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // with them. The scoped-replan planner's bracket stays inline.
     // 9 -> 8 (same bead): the scoped-replan planner's pushBeads:true bracket
     // moved onto the engine, so no planner-role bracket is left inline.
+    // 8 -> 6 (apra-fleet-3swo.5.7): the harvester's dispatch+resume pair moved
+    // onto the engine. Its pushBeads:true bracket is now opened generically
+    // from fleet-sprint/dispatch-role.mjs and is asserted behaviourally by
+    // test/execution-role-dispatch-pins.test.mjs instead.
     assert.equal(
         pushBeadsSites.length,
-        8,
-        `expected exactly 8 withGitSync(...) brackets with pushBeads:true (doer+resume, integ+resume, regression+resume, harvester+resume), found ${pushBeadsSites.length}`,
+        6,
+        `expected exactly 6 withGitSync(...) brackets with pushBeads:true (doer+resume, integ+resume, regression+resume), found ${pushBeadsSites.length}`,
     );
 
     // apra-fleet-3swo.5.3: 'planner' is no longer in this list -- every
@@ -1001,11 +1009,11 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // behaviourally by test/planning-role-dispatch-pins.test.mjs and
     // test/role-policies-table.test.mjs; keeping a runner.js-only marker for
     // it here would just be a standing false failure.
+    // apra-fleet-3swo.5.7: 'harvester' left this list for the same reason.
     const roleMarkers = [
         { name: 'doer', re: /agentType:\s*'doer'/ },
         { name: 'integ-test-runner', re: /getMemberForRole\('integ-test-runner'\)|agentType:\s*'integ-test-runner'/ },
         { name: 'regression-test-runner', re: /getMemberForRole\('regression-test-runner'\)|agentType:\s*'regression-test-runner'/ },
-        { name: 'harvester', re: /getMemberForRole\('harvester'\)|agentType:\s*'harvester'/ },
     ];
     for (const { name, re } of roleMarkers) {
         assert.ok(

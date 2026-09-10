@@ -52,6 +52,49 @@
  * field means.
  */
 export const EXECUTION_ENGINE_DISPATCHES = [
+    {
+        role: 'harvester',
+        kind: 'main',
+        name: 'harvester (once)',
+        memberRole: 'harvester',
+        agentType: 'harvester',
+        // Pre-migration this pin read 'FIXED_ROLE_TIER.harvester' -- the source
+        // expression at the call site. Post-migration it is the VALUE that
+        // expression resolves to, read out of runner.js's own FIXED_ROLE_TIER
+        // by the harness rather than re-typed here. Same fact, resolved.
+        modelTier: 'standard',
+        maxTurns: 500,
+        timeoutS: 'DISPATCH_TIMEOUT_S',
+        maxTotalS: 'DISPATCH_TIMEOUT_S',
+        bracketed: true,
+        // Writes docs/changelog/sprint-analysis commits AND defers low-priority
+        // beads, so it is one of only four dispatches that G-push, and it
+        // D-pushes too.
+        pushCode: true,
+        pushBeads: true,
+        watchdog: false,
+        watchdogLabel: null,
+        schema: 'harvesterReport',
+        resume: null,
+    },
+    {
+        role: 'harvester',
+        kind: 'max-turns-resume',
+        name: 'harvester (resume after max_turns exhaustion)',
+        memberRole: 'harvester',
+        agentType: 'harvester',
+        modelTier: 'standard',
+        maxTurns: 1000,
+        timeoutS: 'DISPATCH_TIMEOUT_S',
+        maxTotalS: 'DISPATCH_TIMEOUT_S',
+        bracketed: true,
+        pushCode: true,
+        pushBeads: true,
+        watchdog: false,
+        watchdogLabel: null,
+        schema: 'harvesterReport',
+        resume: true,
+    },
 ];
 
 /**
@@ -260,38 +303,6 @@ export const EXECUTION_INLINE_LADDERS = [
         pushCode: 'false',
         pushBeads: 'true',
         schema: 'regressionReport',
-        resume: 'true',
-    },
-    {
-        ladder: 'harvester',
-        name: 'harvester (once)',
-        anchor: '(\n                harvesterPrompt,',
-        member: "getMemberForRole('harvester')",
-        agentType: "'harvester'",
-        modelTier: 'FIXED_ROLE_TIER.harvester',
-        maxTurnsExpr: 'HARVESTER_MAX_TURNS',
-        maxTurnsValue: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'true',
-        pushBeads: 'true',
-        schema: 'harvesterReport',
-        resume: null,
-    },
-    {
-        ladder: 'harvester',
-        name: 'harvester (resume after max_turns exhaustion)',
-        anchor: 'Continue your harvest exactly where you left off',
-        member: "getMemberForRole('harvester')",
-        agentType: "'harvester'",
-        modelTier: 'FIXED_ROLE_TIER.harvester',
-        maxTurnsExpr: 'HARVESTER_MAX_TURNS * 2',
-        maxTurnsValue: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
-        maxTotalS: 'DISPATCH_TIMEOUT_S',
-        pushCode: 'true',
-        pushBeads: 'true',
-        schema: 'harvesterReport',
         resume: 'true',
     },
 ];
