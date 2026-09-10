@@ -361,6 +361,18 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
             'Streak Assignment is a small fully-specified classification call and dispatches at the cheap tier.'
         );
     });
+
+    test('the planning-side anchors each resolve to a distinct dispatch site', () => {
+        // To verify this assertion can fail, temporarily change a pin's anchor
+        // to match another: e.g., change one of the plan-reviewer anchors to
+        // "label: 'Plan (interactive)',".
+        const lines = new Set(PLANNING_LADDERS.map((pin) => siteFor(pin.anchor).line));
+        assert.strictEqual(
+            lines.size,
+            PLANNING_LADDERS.length,
+            'Each pin must anchor a DISTINCT dispatch site -- two pins resolving to one site would leave a dispatch unpinned.'
+        );
+    });
 });
 
 describe('planning-role dispatch: retry and degrade ladders', () => {
