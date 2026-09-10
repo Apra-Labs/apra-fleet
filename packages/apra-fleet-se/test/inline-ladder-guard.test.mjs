@@ -6,8 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { checkModules, findInlineLadderViolations, memberExprFor } from '../fleet-sprint/inline-ladder-guard.mjs';
+import { findCallSites } from '../fleet-sprint/dispatch-safety-guard.mjs';
 import { GUARDED_MODULES, guardedModulePaths, guardedModuleBasenames } from '../fleet-sprint/guarded-modules.mjs';
-import { ROLE_POLICIES, ROLE_NAMES, migratedRoleNames } from '../fleet-sprint/role-policies.mjs';
+import { ROLE_POLICIES, ROLE_NAMES, migratedRoleNames, allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -492,4 +493,87 @@ describe('inline-ladder guard: (d) anchor uniqueness over the REAL ROLE_POLICIES
     // real table -- AC#5b requires (d) to own that check standalone, so its
     // falsifiability does not depend on (and is not provided by) the guard's
     // matching code at all.
+});
+
+describe('inline-ladder guard: (apra-fleet-3swo.35) every real dispatch anchor pins to a real agent() call site', () => {
+    // WHY THIS EXISTS: a dispatch's ladderAnchor exists only to disambiguate
+    // a real call site once inline-ladder-guard's member-expression
+    // pre-filter matches (see that module's header -- the member expression
+    // alone is not role-unique). Nothing before this test asserted an anchor
+    // still corresponds to a real agent() call site in the guarded-module
+    // set: if a migration bead, or any unrelated prompt reword, renames
+    // plannerPrompt, changes a label literal, or edits the first sentence of
+    // a resume prompt, the anchor silently stops matching ANYTHING. The
+    // guard would then report zero violations for that role forever --
+    // exactly the false-negative apra-fleet-3swo.24 was written to prevent,
+    // now reintroduced through the anchor itself rather than through the
+    // member-expression check it replaced. This test pins every anchor to
+    // the real source today, so that drift is caught here instead of by a
+    // guard that has gone silently inert.
+    //
+    // apra-fleet-3swo.35 confirmed by hand: all 22 real dispatches
+    // (allDispatchPolicies(), de-duplicated the same way this file's case
+    // (d) block does) have an anchor occurring in runner.js today.
+    //
+    // AT-LEAST-ONE, not exactly-one (per apra-fleet-3swo.35's own text): the
+    // stronger "exactly one call site" form was considered, and it does NOT
+    // hold even after apra-fleet-3swo.34's extractBalancedCall comment-mask
+    // fix (verified: re-ran this scan post-fix). Two of the 22 real
+    // dispatches -- integ-test-runner's and regression-test-runner's MAIN
+    // anchors, 'featurePrompt,' and 'regressionPrompt,' -- each genuinely
+    // match TWO agent() call sites, because each role's OWN resume prompt
+    // re-embeds the same prompt variable verbatim, e.g. runner.js:6205's
+    // "'...restated so a resumed dispatch never loses it: ' + featurePrompt,"
+    // inside dispatchIntegResume's call text (mirrored at :7081 for
+    // regressionPrompt/dispatchRegressionResume). That is real, deliberate
+    // source text -- not a residue of the comment-swallowing bug -- so an
+    // "exactly one" assertion would be a standing false failure for these two
+    // roles unless/until their anchors are redesigned to exclude the shared
+    // prompt variable name, which is anchor-authoring work outside this
+    // bead's scope (its title pins an anchor to A real call site, not to its
+    // own EXCLUSIVE call site).
+    const agentSitesByFile = new Map(
+        guardedModulePaths().map((p) => [
+            path.basename(p),
+            findCallSites(fs.readFileSync(p, 'utf8')).filter((s) => s.fnName === 'agent'),
+        ])
+    );
+
+    /** {file, line}[] of every real agent() call site whose text contains `anchor`. */
+    function sitesMatchingAnchor(anchor) {
+        const matches = [];
+        for (const [file, sites] of agentSitesByFile) {
+            for (const site of sites) {
+                if (site.callText.includes(anchor)) matches.push(`${file}:${site.line}`);
+            }
+        }
+        return matches;
+    }
+
+    for (const dispatch of allDispatchPolicies()) {
+        test(`role '${dispatch.role}' (kind=${dispatch.kind}) anchor ${JSON.stringify(dispatch.ladderAnchor)} matches a real agent() call site`, () => {
+            const matches = sitesMatchingAnchor(dispatch.ladderAnchor);
+            assert.ok(
+                matches.length >= 1,
+                `role '${dispatch.role}' (kind=${dispatch.kind}) ladderAnchor ${JSON.stringify(dispatch.ladderAnchor)} ` +
+                'matches NO agent() call site in the guarded-module set -- if this role were ever marked migrated, ' +
+                'the inline-ladder guard would silently report zero violations for it no matter what runner.js still does.'
+            );
+        });
+    }
+
+    test('every real dispatch anchor is covered by the loop above (count sanity)', () => {
+        // Guards the loop itself: if allDispatchPolicies() ever returned an
+        // empty/short list (e.g. a de-duplication bug), the per-dispatch
+        // tests above would silently not exist rather than fail.
+        assert.strictEqual(allDispatchPolicies().length, 22, 'expected 22 distinct real dispatches (11 role ladders x main + resume/re-ask) -- if this changed, a role ladder was added/removed; update this count deliberately.');
+    });
+
+    test('falsification: an anchor that matches no source text is caught', () => {
+        // FALSIFIABILITY: proves the assertion above is not vacuous by
+        // running the SAME matcher against an anchor that cannot occur in
+        // real source, and checking it correctly finds nothing.
+        const bogusAnchor = '__apra_fleet_3swo_35_this_anchor_never_appears_in_runner_js__';
+        assert.deepStrictEqual(sitesMatchingAnchor(bogusAnchor), []);
+    });
 });
