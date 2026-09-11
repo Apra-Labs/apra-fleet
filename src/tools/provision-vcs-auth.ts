@@ -71,11 +71,12 @@ export const provisionVcsAuthSchema = z.object({
   // whose PAT is merely nearing expiry, not gone. This field only ever flows
   // into deploy metadata to warn/cleanup, never to delete a stored secret.
   // A malformed value here is NOT harmless: it is truthy, so it reaches
-  // vcsTokenExpiresAt verbatim, makes every checkVcsTokenExpiry comparison
-  // NaN (silencing the warning entirely) and makes scheduleCredentialCleanup
-  // fall back to its 55-minute DEFAULT_TTL_MS -- i.e. it would auto-revoke the
-  // PAT that was just deployed. Rejected at the schema boundary so no caller
-  // can construct that state.
+  // vcsTokenExpiresAt verbatim and makes every checkVcsTokenExpiry comparison
+  // NaN, silencing the day-scale expiry warning entirely (scheduleCredentialCleanup
+  // itself now treats an unparseable expiresAt the same as an absent one --
+  // it skips scheduling rather than falling back to any default TTL -- so
+  // the risk here is the silenced warning, not an auto-revoke). Rejected at
+  // the schema boundary so no caller can construct that state.
   pat_expires_at: z.string().refine((v) => !Number.isNaN(Date.parse(v)), {
     message: 'pat_expires_at must be a parseable date/time (ISO 8601, e.g. 2027-08-20T00:00:00Z)',
   }).optional().describe('ISO 8601 date/time the Azure DevOps PAT expires, as chosen when creating the token. Propagated to the member registry so provisioning can warn when the PAT is nearing expiry.'),
@@ -147,6 +148,26 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   try {
     await exec(cmds.gitCredentialHelperRemove(host));
   } catch { /* best-effort */ }
+
+  // The agent record only tracks ONE active (label, scopeUrl) pair for
+  // cleanup purposes, and cancelCredentialCleanup() above just discarded
+  // whatever timer belonged to it. If this deploy is SUPERSEDING a different
+  // previously-provisioned credential (a different label and/or scopeUrl,
+  // or even a different provider), that superseded credential's timer is now
+  // gone forever and nothing else will ever revoke it -- explicitly revoke it
+  // here so its git-config registration and on-disk file don't stay orphaned
+  // indefinitely. A same-label/same-scopeUrl re-provision (a plain refresh)
+  // skips this: gitCredentialHelperWrite's --replace-all below overwrites the
+  // existing entry in place, so there is nothing to revoke first.
+  if (agent.vcsProvider && agent.vcsCredentialLabel !== undefined &&
+      (agent.vcsCredentialLabel !== label || agent.vcsCredentialScopeUrl !== scopeUrl)) {
+    const supersededService = providers[agent.vcsProvider];
+    if (supersededService) {
+      try {
+        await supersededService.revoke(agent, cmds, exec, agent.vcsCredentialLabel, agent.vcsCredentialScopeUrl);
+      } catch { /* best-effort */ }
+    }
+  }
 
   let deployResult;
   try {

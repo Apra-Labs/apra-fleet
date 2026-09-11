@@ -1,9 +1,20 @@
 /**
- * Regression coverage for apra-fleet's credential-cleanup label/scope-url
- * bug: gitCredentialHelperWrite and gitCredentialHelperRemove must resolve
- * the SAME credential FILE path (label-scoped) and git-config KEY
+ * Characterization coverage for the OS credential-helper command builders
+ * underpinning the credential-cleanup label/scope-url bug (apra-fleet-7bjs):
+ * gitCredentialHelperWrite and gitCredentialHelperRemove must resolve the
+ * SAME credential FILE path (label-scoped) and git-config KEY
  * (scopeUrl-scoped) for a given (label, scopeUrl) pair, and two different
  * credentials on the same host must never collide on either path.
+ *
+ * These builders were never the buggy part of the code (the bug was the
+ * CALLERS omitting label/scopeUrl, not these functions resolving them
+ * wrong) -- this file would pass against the pre-fix code too. It exists to
+ * prove the fix, once wired through correctly by the callers, lands on a
+ * command-string pair that actually agrees, and to catch a future change to
+ * either builder that breaks that agreement. The regression coverage that
+ * would have failed against the actual pre-fix bug (the callers not passing
+ * label/scopeUrl through) lives in tests/credential-cleanup.test.ts,
+ * tests/provision-vcs-auth.test.ts, and tests/remove-member-decomm.test.ts.
  */
 import { describe, it, expect } from 'vitest';
 import { getOsCommands } from '../src/os/index.js';
@@ -25,12 +36,20 @@ describe.each([
     expect(removeCmd).toContain('https://github.com/my-org');
   });
 
-  it('default (no label/scopeUrl) write and remove agree on the bare file and host-default config key', () => {
+  it('default (no label/scopeUrl) write and remove agree on both the bare credential file and the host-default config key', () => {
     const writeCmd = cmds.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghu_tok');
     const removeCmd = cmds.gitCredentialHelperRemove('github.com');
 
+    // Config key (was already correct pre-fix -- host/scopeUrl-scoped).
     expect(writeCmd).toContain('credential.https://github.com.helper');
     expect(removeCmd).toContain('credential.https://github.com.helper');
+
+    // Credential file (the half that was actually broken pre-fix): the bare,
+    // unlabeled filename, with no trailing "-<label>" suffix.
+    expect(writeCmd).toContain('fleet-git-credential');
+    expect(removeCmd).toContain('fleet-git-credential');
+    expect(writeCmd).not.toMatch(/fleet-git-credential-\w/);
+    expect(removeCmd).not.toMatch(/fleet-git-credential-\w/);
   });
 
   it('revoking credential A (label X) never references credential B\'s (label Y) file or config key', () => {

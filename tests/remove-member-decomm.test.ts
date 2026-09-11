@@ -108,6 +108,31 @@ describe('removeMember - decommissioning', () => {
     expect(mockRevokeGithub).toHaveBeenCalledOnce();
   });
 
+  // Regression: revoke must be called with the SAME label/scopeUrl that was
+  // actually persisted at provision time -- omitting them (the old 3-arg
+  // shape) targets the unlabeled/default-host credential-helper file/
+  // config-key pair instead of the real one, leaving the token file
+  // orphaned, unrevoked, on a machine being decommissioned.
+  it('revokes VCS auth using the member\'s persisted vcsCredentialLabel/vcsCredentialScopeUrl', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'vcs-labeled-worker',
+      vcsProvider: 'github',
+      vcsCredentialLabel: 'work-github',
+      vcsCredentialScopeUrl: 'https://github.com/my-org',
+    });
+    addAgent(member);
+
+    await removeMember({ member_id: member.id });
+
+    expect(mockRevokeGithub).toHaveBeenCalledWith(
+      expect.objectContaining({ id: member.id }),
+      expect.anything(),
+      expect.any(Function),
+      'work-github',
+      'https://github.com/my-org',
+    );
+  });
+
   it('skips VCS revoke for local member', async () => {
     const member = makeTestAgent({ friendlyName: 'local-worker', agentType: 'local', vcsProvider: 'github' });
     addAgent(member);

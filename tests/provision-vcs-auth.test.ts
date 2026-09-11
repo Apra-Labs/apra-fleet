@@ -171,8 +171,8 @@ describe('provisionVcsAuth', () => {
   // apra-fleet-5co8.5.1: tool-registry hands the MCP payload to
   // provisionVcsAuth() with an `as any` cast, so the zod refine on
   // pat_expires_at is not the only line of defence -- buildCredentials must
-  // also refuse an unparseable expiry rather than let it become a 55-minute
-  // auto-revoke of the PAT just deployed.
+  // also refuse an unparseable expiry rather than let it silently reach
+  // vcsTokenExpiresAt and permanently silence checkVcsTokenExpiry's warning.
   it('azure-devops: rejects an unparseable pat_expires_at before deploying', async () => {
     const member = makeTestAgent({ friendlyName: 'az-bad-expiry' });
     addAgent(member);
@@ -328,6 +328,65 @@ describe('provisionVcsAuth', () => {
     const updated = getAgent(member.id)!;
     expect(updated.vcsCredentialLabel).toBe('work-github');
     expect(updated.vcsCredentialScopeUrl).toBe('https://github.com/my-org');
+  });
+
+  // Regression: the agent record only tracks ONE active (label, scopeUrl)
+  // pair for cleanup purposes. Deploying credential B under a DIFFERENT
+  // label than the previously-deployed credential A cancels A's cleanup
+  // timer (re-provisioning always does) -- without an explicit revoke here,
+  // A's git-config registration and on-disk token file would be silently
+  // orphaned forever (never scheduled for cleanup again, never revoked).
+  // Assert the superseded credential (label-a) is actually revoked as part
+  // of deploying the new one.
+  it('github: revokes a superseded credential (different label) when a new one is provisioned', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-supersede' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_token_a', label: 'label-a',
+    });
+    mockExecCommand.mockClear();
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_token_b', label: 'label-b',
+    });
+
+    const execCmds = mockExecCommand.mock.calls.map(c => String(c[0]));
+    expect(execCmds.some(cmd => cmd.includes('fleet-git-credential-label-a'))).toBe(true);
+
+    const updated = getAgent(member.id)!;
+    expect(updated.vcsCredentialLabel).toBe('label-b');
+  });
+
+  // Same-label re-provision is a plain refresh (gitCredentialHelperWrite's
+  // --replace-all overwrites the existing entry in place) -- it must NOT
+  // trigger a superseded-credential revoke against itself.
+  it('github: same-label re-provision does not revoke its own just-deployed credential', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-refresh' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_token_v1', label: 'stable-label',
+    });
+    mockExecCommand.mockClear();
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_token_v2', label: 'stable-label',
+    });
+
+    const execCmds = mockExecCommand.mock.calls.map(c => String(c[0]));
+    // No `rm -f`/`Remove-Item` style revoke command targeting stable-label's
+    // own file should appear -- only the legacy-migration remove (unlabeled)
+    // and the fresh write.
+    expect(execCmds.filter(cmd => cmd.includes('fleet-git-credential-stable-label') && (cmd.includes('rm -f') || cmd.includes('Remove-Item'))).length).toBe(0);
   });
 
   // --- {{secure.NAME}} token resolution ---

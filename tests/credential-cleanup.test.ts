@@ -186,28 +186,34 @@ describe('scheduleCredentialCleanup', () => {
   });
 
   // Core regression scenario for the "silently clobbers a valid credential"
-  // bug: two credentials (different labels) deployed to the same member on
-  // the same host. Credential A's cleanup timer firing must revoke ONLY A's
-  // label/scopeUrl -- it must never touch B's still-valid registration. This
-  // test asserts the call-site contract (the exact label/scopeUrl revoke is
-  // invoked with); the credential-file/config-key isolation itself is
-  // asserted independently in tests/os/linux-credential-helper.test.ts (or
-  // equivalent OS command builder tests) by comparing the two commands.
-  it('cleanup for credential A never carries credential B\'s label/scopeUrl, even when both target the same host', async () => {
-    const credA = makeAgent({ id: 'member-1', vcsCredentialLabel: 'label-a', vcsCredentialScopeUrl: 'https://github.com' });
-    mockGetAllAgents.mockReturnValue([credA]);
+  // bug: two DIFFERENT members each hold their own credential (different
+  // labels) on the same host. Member A's cleanup timer firing must revoke
+  // ONLY member A's label/scopeUrl -- member B's still-live timer, and the
+  // arguments it will eventually be revoked with, must be completely
+  // unaffected. This asserts the call-site contract (the exact
+  // label/scopeUrl each revoke is invoked with); credential-file/config-key
+  // isolation for a given (label, scopeUrl) pair is asserted independently
+  // in tests/git-credential-helper-scoping.test.ts by comparing the actual
+  // OS command strings.
+  it('cleanup for member A never carries member B\'s label/scopeUrl, even when both target the same host', async () => {
+    const memberA = makeAgent({ id: 'member-1', vcsCredentialLabel: 'label-a', vcsCredentialScopeUrl: 'https://github.com' });
+    const memberB = makeAgent({ id: 'member-2', vcsCredentialLabel: 'label-b', vcsCredentialScopeUrl: 'https://github.com' });
+    mockGetAllAgents.mockReturnValue([memberA, memberB]);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
     mockRevoke.mockResolvedValue({ success: true, message: 'revoked' });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-    scheduleCredentialCleanup('member-1', expiresAt);
+    // Member B's expiry is far enough out that only A's timer fires below.
+    scheduleCredentialCleanup('member-1', new Date(Date.now() + 30 * 60 * 1000).toISOString());
+    scheduleCredentialCleanup('member-2', new Date(Date.now() + 60 * 60 * 1000).toISOString());
+
     await vi.advanceTimersByTimeAsync(30 * 60 * 1000 + 1000);
 
-    const [, , , calledLabel, calledScopeUrl] = mockRevoke.mock.calls[0];
-    expect(calledLabel).toBe('label-a');
-    expect(calledLabel).not.toBe('label-b');
-    expect(calledScopeUrl).toBe('https://github.com');
+    // Only member A's credential was revoked, with exactly A's label/scopeUrl.
+    expect(mockRevoke).toHaveBeenCalledOnce();
+    expect(mockRevoke).toHaveBeenCalledWith(memberA, {}, expect.any(Function), 'label-a', 'https://github.com');
+    // Member B's own timer is still pending, untouched by A's cleanup firing.
+    expect(_getCleanupTimers().has('member-2')).toBe(true);
   });
 });
 

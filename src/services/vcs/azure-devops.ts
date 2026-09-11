@@ -53,9 +53,10 @@ export const azureDevOpsProvider: VcsProviderService = {
   // The pat_expires_at check stays defence in depth behind the zod refine in
   // the tool schema: tool-registry casts the MCP payload with `as any`, so a
   // caller can bypass zod, and an unparseable expiry is worse than none at all
-  // (NaN silences every checkVcsTokenExpiry comparison and makes
-  // scheduleCredentialCleanup fall back to its 55-minute default, auto-revoking
-  // the PAT that was just deployed).
+  // (NaN silences every checkVcsTokenExpiry comparison; scheduleCredentialCleanup
+  // treats an unparseable expiresAt the same as an absent one and skips
+  // scheduling entirely, so this rejection is about the silenced-warning
+  // half of the failure mode, not an auto-revoke risk).
   buildCredentials(input) {
     const azPat = input.pat ?? input.token;
     if (!input.org_url || !azPat) return 'Azure DevOps requires "org_url" and "pat" (or "token") fields.';

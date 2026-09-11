@@ -37,10 +37,14 @@ export function scheduleCredentialCleanup(agentId: string, expiresAt?: string): 
   // scheduling entirely trades that for a real tradeoff of its own: a
   // credential deployed with no derivable expiry now lives on disk/in git
   // config until something explicit revokes it (revoke_vcs_auth, or a later
-  // provision_vcs_auth call that supplies a real expiry) -- it is not
-  // auto-revoked at all. checkVcsTokenExpiry's day-scale warning is the
-  // reactive backstop for operator awareness in this case, same as it is for
-  // the beyond-setTimeout-ceiling case below.
+  // provision_vcs_auth call that supersedes it -- see the supersession-revoke
+  // in provision-vcs-auth.ts) -- it is NOT auto-revoked at all, and unlike the
+  // beyond-setTimeout-ceiling case below, checkVcsTokenExpiry has no warning
+  // to offer either: it is only called (provision-vcs-auth.ts) when an
+  // expiresAt actually exists, so a no-expiry credential gets no reactive
+  // backstop of any kind. This is a deliberate, real security-posture
+  // tradeoff (an indefinitely-live unrevoked credential vs. a blind
+  // self-destruct at an arbitrary time), not a resolved one.
   if (!expiresAt) return;
 
   const expiresMs = new Date(expiresAt).getTime();
