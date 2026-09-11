@@ -56,7 +56,15 @@ describe('register-member interactive bootstrap gate', () => {
         path.join(settingsDir, 'settings.local.json'),
         JSON.stringify({ permissions: { allow: ['Bash(git:*)'] } }, null, 2),
       );
-      return '[OK] composed permissions (mocked -- my-beads-db-27m.15)';
+      // The leading glyph is NOT decoration and must not be swapped for an
+      // ASCII marker: register-member.ts gates success on
+      // composeResult.startsWith(...) against this exact character, so an
+      // ASCII-prefixed string is read as a hard failure and these tests fail
+      // with "member not provisioned". The real composePermissions() returns
+      // this prefix; the mock has to mirror it. Making this ASCII means
+      // migrating the sentinel itself (compose-permissions.ts plus the test
+      // files asserting on it), not editing this line.
+      return '✅ composed permissions (mocked -- my-beads-db-27m.15)';
     });
   });
 

@@ -533,12 +533,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   } catch (e: any) {
     composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
   }
-  // Success sentinel: compose_permissions still emits a leading glyph, but the
-  // repo is migrating status markers to ASCII ([OK]). Accept either so an
-  // ASCII-only caller or fixture is not misread as a failure.
-  const composeSucceeded =
-    composeResult.startsWith('✅') || composeResult.startsWith('[OK]');
-  if (!composeSucceeded) {
+  if (!composeResult.startsWith('✅')) {
     // Strip any leading non-ASCII status glyph from the underlying tool's
     // message so this hard-failure report stays ASCII (repo convention).
     const asciiDetail = composeResult.replace(/^[^\x00-\x7F]+\s*/, '');
