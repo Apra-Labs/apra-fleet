@@ -35,6 +35,13 @@ export interface Agent {
   gitRepos?: string[];
   vcsProvider?: 'github' | 'bitbucket' | 'azure-devops';
   vcsTokenExpiresAt?: string;  // ISO 8601
+  /** The label/scopeUrl actually used for the LAST provision_vcs_auth deploy
+   *  on this agent. scheduleCredentialCleanup's timer reads these back so the
+   *  eventual revoke targets the exact same credential-helper file/config-key
+   *  pair the deploy wrote, instead of guessing at unlabeled/default-host
+   *  values that may belong to a different, still-valid credential. */
+  vcsCredentialLabel?: string;
+  vcsCredentialScopeUrl?: string;
   llmProvider?: LlmProvider;  // default: 'claude' for backwards compat
   modelCheap?: string;
   modelStandard?: string;

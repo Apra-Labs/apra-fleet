@@ -157,10 +157,15 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
 
   if (!deployResult.success) return `❌ ${deployResult.message}`;
 
-  // Persist VCS provider and token expiry in the agent registry
+  // Persist VCS provider, token expiry, and the exact label/scopeUrl this
+  // deploy used, so a later cleanup timer (credential-cleanup.ts) revokes the
+  // SAME credential-helper file/config-key pair, not an unlabeled/default-host
+  // guess that could clobber a different, still-valid credential.
   updateAgent(agent.id, {
     vcsProvider: input.provider,
     vcsTokenExpiresAt: deployResult.metadata?.expiresAt,
+    vcsCredentialLabel: label,
+    vcsCredentialScopeUrl: scopeUrl,
   });
 
   // Schedule auto-cleanup when token expires

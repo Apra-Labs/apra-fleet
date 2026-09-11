@@ -293,6 +293,43 @@ describe('provisionVcsAuth', () => {
     expect(updated.vcsTokenExpiresAt).toBeUndefined();
   });
 
+  // Regression for the credential-cleanup label/scopeUrl bug: the exact
+  // label/scopeUrl actually used to deploy must be persisted on the agent
+  // record so a later cleanup timer (credential-cleanup.ts) revokes the SAME
+  // credential entry, not an unlabeled/default-host guess.
+  it('github: persists the deploy label and scopeUrl (default) on the agent record', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-label-default' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_testtoken123',
+    });
+
+    const updated = getAgent(member.id)!;
+    expect(updated.vcsCredentialLabel).toBe('github');
+    expect(updated.vcsCredentialScopeUrl).toBe('https://github.com');
+  });
+
+  it('github: persists a custom label and scope_url exactly as supplied', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-label-custom' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_testtoken123',
+      label: 'work-github', scope_url: 'https://github.com/my-org',
+    });
+
+    const updated = getAgent(member.id)!;
+    expect(updated.vcsCredentialLabel).toBe('work-github');
+    expect(updated.vcsCredentialScopeUrl).toBe('https://github.com/my-org');
+  });
+
   // --- {{secure.NAME}} token resolution ---
 
   it('resolves {{secure.NAME}} token in github pat token field', async () => {
