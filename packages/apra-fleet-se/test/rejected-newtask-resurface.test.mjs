@@ -14,6 +14,12 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const RUNNER_SOURCE = fs.readFileSync(path.join(__dirname, '../fleet-sprint/runner.js'), 'utf8');
+// apra-fleet-3swo.6.7: the scoped in-cycle replan dispatch moved out of
+// runner.js into its own phase module. The call-site wiring assertion below
+// follows it there rather than being deleted -- a source scan that keeps
+// pointing at runner.js after the code left it does not fail, it passes
+// vacuously.
+const REPLAN_PHASE_SOURCE = fs.readFileSync(path.join(__dirname, '../fleet-sprint/phases/replan.mjs'), 'utf8');
 
 // apra-fleet-19o.2: a rejected reviewer-proposed newTask (validateNewTask()
 // failure) used to dead-end ONLY in the parent bead's notes
@@ -281,7 +287,7 @@ describe('buildPlannerPrompt: rejectedNewTasksToResubmit surfacing (apra-fleet-1
     // not just a builder-shape assertion: it isolates the scoped-replan
     // call-site text (bounded by two source landmarks unique to that block)
     // and asserts the call actually forwards `rejectedNewTasksToResubmit`.
-    test('the scoped in-cycle replan CALL SITE in runner.js actually forwards rejectedNewTasksToResubmit (not just the builder shape)', () => {
+    test('the scoped in-cycle replan CALL SITE actually forwards rejectedNewTasksToResubmit (not just the builder shape)', () => {
         // apra-fleet-3swo.5.3: re-anchored -- the scoped replan's own
         // MAX_TURNS constant moved into the dispatchRole engine with the
         // ladder, so the block now starts at the engine call itself. The
@@ -289,16 +295,38 @@ describe('buildPlannerPrompt: rejectedNewTasksToResubmit surfacing (apra-fleet-1
         // rejectedNewTasksToResubmit into buildPlannerPrompt().
         const startMarker = "dispatchRole(dispatchCtx, 'scoped-replan-planner'";
         const endMarker = "label: 'Scoped Replan Plan (interactive)'";
-        const startIdx = RUNNER_SOURCE.indexOf(startMarker);
-        const endIdx = RUNNER_SOURCE.indexOf(endMarker, startIdx);
-        assert.ok(startIdx !== -1, 'expected to find the scoped in-cycle replan block start marker in runner.js');
-        assert.ok(endIdx !== -1, 'expected to find the scoped in-cycle replan block end marker in runner.js');
-        const callSiteSource = RUNNER_SOURCE.slice(startIdx, endIdx);
+        // apra-fleet-3swo.6.7: re-anchored again -- the whole scoped-replan
+        // block moved verbatim into fleet-sprint/phases/replan.mjs. The two
+        // markers are unchanged; only the file they are sought in moved.
+        const startIdx = REPLAN_PHASE_SOURCE.indexOf(startMarker);
+        const endIdx = REPLAN_PHASE_SOURCE.indexOf(endMarker, startIdx);
+        assert.ok(startIdx !== -1, 'expected to find the scoped in-cycle replan block start marker in phases/replan.mjs');
+        assert.ok(endIdx !== -1, 'expected to find the scoped in-cycle replan block end marker in phases/replan.mjs');
+        assert.ok(
+            !RUNNER_SOURCE.includes(startMarker),
+            'the scoped-replan dispatch must live in exactly one place: a copy left behind in runner.js would let this ' +
+            'assertion pass against a call site that is no longer the one production runs'
+        );
+        const callSiteSource = REPLAN_PHASE_SOURCE.slice(startIdx, endIdx);
         assert.ok(
             callSiteSource.includes('rejectedNewTasksToResubmit'),
             'the scoped in-cycle replan buildPlannerPrompt() call site must pass rejectedNewTasksToResubmit ' +
             '(previously unwired -- see apra-fleet-xuo.5) so a pending rejected newTask is resurfaced into this ' +
             'dispatch too, not only into the next cycle\'s main Plan phase'
+        );
+
+        // ...and the value the phase module forwards must actually REACH it.
+        // The list is a runSprintCycle local, so once the block moved into a
+        // module the builder-side wiring above can be perfectly correct while
+        // runner.js quietly hands the phase nothing -- the same class of
+        // silent skip apra-fleet-xuo.5 fixed, reintroduced by the slice.
+        const handoffIdx = RUNNER_SOURCE.indexOf('await runReplanPhase({');
+        assert.ok(handoffIdx !== -1, 'expected runner.js to dispatch the Replan phase through runReplanPhase()');
+        const handoffSource = RUNNER_SOURCE.slice(handoffIdx, RUNNER_SOURCE.indexOf('});', handoffIdx));
+        assert.ok(
+            handoffSource.includes('pendingRejectedNewTasks'),
+            'runner.js must pass pendingRejectedNewTasks into the Replan phase -- without it the forwarding proven ' +
+            'above resurfaces nothing'
         );
     });
 });

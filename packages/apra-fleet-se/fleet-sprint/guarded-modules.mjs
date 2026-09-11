@@ -105,6 +105,22 @@ export const GUARDED_MODULES = [
     // reads, with every guard still green.
     'phases/ensure-sprint-branch.mjs',
     'phases/plan.mjs',
+    // apra-fleet-3swo.6.7: the next two phase modules sliced out of
+    // runSprintCycle, both from INSIDE its Develop/Review round loop. Same
+    // nested-entry reporting caveat as the pair above (they are always
+    // REPORTED as 'replan.mjs' and 'develop.mjs'), so the same rule applies:
+    // compare a guard's `files` output against guardedModuleBasenames().
+    //
+    // Neither took a command() call site out of runner.js -- replan.mjs's only
+    // repo-side effect is a shared gitSync bracket, and develop.mjs reaches bd
+    // exclusively through runner-exported helpers it is handed -- but each
+    // took TWO dispatchRole() call sites (the scoped planner + scoped
+    // plan-reviewer, and the streak-assignment + doer ladders). Those are
+    // exactly what dispatch-safety-guard and the phase 3 dispatch census read,
+    // so registering them as part of the extraction is what keeps the census
+    // whole instead of quietly shrinking runner.js's scanned surface.
+    'phases/replan.mjs',
+    'phases/develop.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left

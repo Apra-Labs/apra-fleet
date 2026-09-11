@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -146,15 +147,15 @@ test('a full simulated cycle emits the pre-slice phase() sequence, in order', as
 // "fixes" a red phase-order run by emptying or truncating the expectation.
 // -----------------------------------------------------------------------------
 
-test('the phase-order expectation is non-vacuous: it covers both sliced phases and the ones still inline', () => {
+test('the phase-order expectation is non-vacuous: it covers every sliced phase and the ones still inline', () => {
     assert.ok(
         EXPECTED_PHASE_SEQUENCE.length >= 10,
         `a truncated expectation would make the order pin meaningless, got ${EXPECTED_PHASE_SEQUENCE.length} label(s)`
     );
 
-    // The two phases THIS bead sliced out must both still appear -- an
-    // extraction that silently stopped calling its phase() would otherwise
-    // read as a legitimate sequence change.
+    // Every phase sliced out SO FAR must still appear -- an extraction that
+    // silently stopped calling its phase() would otherwise read as a
+    // legitimate sequence change.
     assert.ok(
         EXPECTED_PHASE_SEQUENCE.includes('Ensure Sprint Branch'),
         'the Ensure Sprint Branch phase must still emit its label from phases/ensure-sprint-branch.mjs'
@@ -163,10 +164,19 @@ test('the phase-order expectation is non-vacuous: it covers both sliced phases a
         EXPECTED_PHASE_SEQUENCE.some((p) => /^Plan C\d+ R\d+$/.test(p)),
         'the Plan phase must still emit its per-round label from phases/plan.mjs'
     );
+    // apra-fleet-3swo.6.7 moved Develop into phases/develop.mjs. Its label is
+    // still produced twice by this scenario (the mock reviewer reopens once),
+    // which is the part of the pin that would catch a sliced round phase that
+    // stopped running, ran once, or ran three times.
+    assert.equal(
+        EXPECTED_PHASE_SEQUENCE.filter((p) => /^Develop C\d+ R\d+$/.test(p)).length,
+        2,
+        'the Develop phase must still emit its per-round label from phases/develop.mjs, once per develop round'
+    );
 
     // ...and so must phases that are still INLINE in runner.js, which is what
-    // makes this a slice-boundary pin rather than a two-module pin.
-    for (const stillInline of ['Develop C1 R1', 'Review C1 R1', 'Final Review C1', 'Publish PR C1']) {
+    // makes this a slice-boundary pin rather than a sliced-modules-only pin.
+    for (const stillInline of ['Review C1 R1', 'Final Review C1', 'Publish PR C1']) {
         assert.ok(
             EXPECTED_PHASE_SEQUENCE.includes(stillInline),
             `${stillInline} is still inline in runner.js and must stay covered by this pin`
@@ -182,15 +192,76 @@ test('the phase-order expectation is non-vacuous: it covers both sliced phases a
     );
 });
 
-test('both sliced phase modules are registered for mechanical guard coverage', () => {
+test('every sliced phase module is registered for mechanical guard coverage', () => {
     // Paired with the order pin deliberately: an extracted phase module that
     // works correctly but is unregistered loses all five mechanical guards
     // SILENTLY while they keep reporting green (see guarded-modules.mjs's
     // header). The order pin above would not notice that at all.
-    for (const mod of ['phases/ensure-sprint-branch.mjs', 'phases/plan.mjs']) {
+    for (const mod of [
+        'phases/ensure-sprint-branch.mjs',
+        'phases/plan.mjs',
+        'phases/replan.mjs',
+        'phases/develop.mjs',
+    ]) {
         assert.ok(
             GUARDED_MODULES.includes(mod),
             `${mod} must be registered in GUARDED_MODULES -- registering a newly extracted module is part of the extraction itself`
         );
     }
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-3swo.6.7. The order pin above is a RUNTIME record, so it can only
+// speak about phases this mock scenario actually reaches. Two gaps follow from
+// that, and this test closes both by reading source instead:
+//
+//  (a) Replan is never reached. The in-cycle scoped replan fires only when a
+//      reviewer returns `replanIds`, and the 'reject-then-approve' scenario's
+//      mock reviewer never does -- which is why no 'Replan C1 R1' label appears
+//      in EXPECTED_PHASE_SEQUENCE above. That absence is correct, but it means
+//      a Replan extraction could be half-done (or duplicated) with the runtime
+//      pin still green.
+//
+//  (b) A label that MOVED and a label that was COPIED look identical at
+//      runtime as long as only one of the two copies is on the live path.
+//
+// So: each sliced phase's phase() label literal must exist in exactly one
+// place -- its own module -- and nowhere in runner.js.
+// -----------------------------------------------------------------------------
+
+test('each sliced phase builds its phase() label in its own module and nowhere in runner.js', () => {
+    const runnerSrc = fs.readFileSync(RUNNER_PATH, 'utf8');
+    const phasesDir = path.join(__dirname, '../fleet-sprint/phases');
+
+    // label-building fragment -> the module that must own it.
+    const slicedLabels = {
+        "phase('Ensure Sprint Branch')": 'ensure-sprint-branch.mjs',
+        'phase(`Plan C': 'plan.mjs',
+        'phase(`Replan C': 'replan.mjs',
+        'phase(`Develop C': 'develop.mjs',
+    };
+
+    for (const [fragment, ownerFile] of Object.entries(slicedLabels)) {
+        const ownerSrc = fs.readFileSync(path.join(phasesDir, ownerFile), 'utf8');
+        assert.ok(
+            ownerSrc.includes(fragment),
+            `phases/${ownerFile} must build its own phase() label (${fragment}) -- an extracted phase that left its ` +
+            'phase() call behind, or dropped it, is not a move-only slice'
+        );
+        assert.ok(
+            !runnerSrc.includes(fragment),
+            `runner.js still builds ${fragment}, which belongs to phases/${ownerFile}. A label that was COPIED rather ` +
+            'than MOVED passes the runtime order pin above while leaving two sources of truth for one phase.'
+        );
+    }
+
+    // Non-vacuity: the fragments must be the shape the runner really uses, so
+    // prove at least one phase label IS still built inline (the phases that
+    // have not been sliced yet) -- otherwise a typo'd fragment would make
+    // every "not in runner.js" assertion above pass for free.
+    assert.ok(
+        runnerSrc.includes('phase(`Review C'),
+        'Review is still inline in runner.js; if this fails the label fragments above are stale and the ' +
+        'runner.js half of this test is passing vacuously'
+    );
 });
