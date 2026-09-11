@@ -1,0 +1,12 @@
+{
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/mcp/kb_setup.json#",
+  "name": "kb_setup",
+  "description": "Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo.",
+  "request": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_setup.request.json#"
+  },
+  "response": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_setup.response.json#"
+  },
+  "errors": []
+}

@@ -1,0 +1,431 @@
+{
+  "_meta": {
+    "purpose": "CLOSED set of stable machine error codes for the memory-contract/v1 tool surface. Source of truth for the error model; spec.md's 'Error model' section is prose that POINTS AT this file and adds no code absent from it. Projection into wire formats (the MCP error payload on bindings/mcp, the RFC 9457 shape in the openapi stub) is NOT done here -- it is a separate task that consumes this file.",
+    "sources": [
+      "memory-contract/v1/INVENTORY.md (section 5: error and refusal paths -- the provisional-name vocabulary this file makes canonical)",
+      "memory-contract/v1/methods.json (per-method error_codes citations; this file is a SUPERSET of what methods.json cites, because INVENTORY.md 5.2/5.3 also names tool-level throws that no MemoryProvider member raises)"
+    ],
+    "closed_set_rule": "The union of groups[].codes is the whole error vocabulary of this surface. Anything not in it is either listed in non_error_outcomes (a documented outcome that deliberately gets NO code) or in excluded_from_closed_set (deliberately absent, see the quarantine rule). A consumer that needs a code not present here has found a contract change, not a gap to fill by inventing one: add it here first.",
+    "one_code_one_group": "Every code appears in exactly one group. Groups are a partition, not tags.",
+    "group_definitions": {
+      "validation": "The request (or the input document a request names) is schema-invalid or references something structurally unusable. Decided from the caller's input alone, before any trust decision is made.",
+      "admission": "The entry is well-formed but not admissible into the KB, because it would be structurally unfalsifiable -- no cited basis, or a basis that does not resolve in this worktree.",
+      "authority": "An attempt to write trust ABOVE the INFERRED ceiling is refused. One policy, three branches (see anchor_policy_note): the silent clamp branch is a non-error outcome and gets no code; the promote-path branches below are its refusing branches.",
+      "governance": "A rule about who may retire, activate or override an entry refuses the operation. Includes every directive-activation attempt reachable from a tool: activation is CLI-only and always refused server-side.",
+      "conflict": "Two entries are in a contradiction relationship and the requested resolution cannot be applied to the pair as given. The FLAGGING of a contradiction is not in this group -- it is a non-error outcome (see non_error_outcomes E-CONTRADICTION-FLAGGED); only a refused RESOLUTION is an error here.",
+      "not_found": "A named id has no row.",
+      "provider_internal": "The provider or its configuration cannot serve the call at all. Not the caller's input, not a trust decision."
+    },
+    "surfaced_enum": {
+      "thrown": "Raised as an exception out of the call; the operation did not happen and the caller sees a failure.",
+      "response-field": "The call returns successfully; the refusal or rejection is reported in a named response field. The operation as REQUESTED did not happen.",
+      "silent": "No distinguishable signal exists today. The requested effect did not happen and the response looks like an ordinary success. These are the most easily missed refusals in the surface, which is exactly why they are named here."
+    },
+    "response_field_rule": "A code marked surfaced: 'response-field' MUST carry a `response_field` naming the response property that actually reports it, and that property must exist in the generated response schema of at least one of the code's raising tools. This is enforced by tests/memory-contract-taxonomy.test.ts. The rule exists because 'response-field' is the one surfaced value that makes a code projectable onto the wire WITHOUT the operation having failed -- so a code misfiled here projects a refusal that the kernel never performs, and no drift/parity guard can see it (they check internal consistency, and a misclassification is internally consistent). E-DIRECTIVE-QUARANTINE was filed this way in the T1 skeleton and is now a non_error_outcome; see its reason_no_code there.",
+    "projection_rule": "Only 'thrown' and 'response-field' codes are projectable into a wire error payload. A 'silent' code MUST NOT be projected into a wire enum: the server never emits it, so a consumer branching on it would branch on something unreachable. Silent codes are documented-only until a task gives them a real signal.",
+    "retryable_semantics": "true means retrying the IDENTICAL request unchanged can succeed. Changing the request (fixing a path, supplying a reason) is not a retry.",
+    "retryable_finding": "No code in this closed set is retryable. Every transient failure in this surface is degraded to a non-error outcome rather than propagated as an error: the code_* adapters convert connect and dead-client failures into a structured offline result (see non_error_outcomes N-CODE-PROVIDER-OFFLINE), kb_stats swallows bible read failures, and kb_query swallows relatedClaims failures. There is therefore no retry-with-backoff class in v1.",
+    "anchor_policy_note": "KB constraint, verified against source: the repo_path anchor policy is ONE policy with THREE branches and the closed set accounts for all three. (1) kb_session_prime and kb_stats pass a supplied repo_path to getKbProviders VERBATIM, so an unreachable anchor stays honestly missing -- a non-error outcome, no code (non_error_outcomes N-ANCHOR-VERBATIM-MISSING). (2) kb_export throws instead, because it WRITES into repo_path, and it throws BEFORE getKbProviders so it never anchors at the server cwd either. (3) kb_import throws at the same boundary for the same reason. Branches 2 and 3 share exactly one code, E-REPO-PATH-INVALID -- see that entry's group_decision for why it is validation and not provider_internal.",
+    "directive_activation_absence": {
+      "constraint": "The quarantine of directive activation is expressed by ABSENCE, not by a refusal shape. Any consumer of this file MUST NOT emit a path, an operation, a code, or a schema shape for approving, rejecting or activating a user-directive -- not even one that always refuses. A documented-but-forbidden route is still a route.",
+      "consequence_for_this_file": "The three CLI-only activation error codes named in INVENTORY.md 5.2 are in excluded_from_closed_set, not in any group. They are the error vocabulary OF the activation operations, so publishing them would document that those operations exist.",
+      "what_is_still_in_the_set": "The governance group DOES carry the server-side refusals of activation ATTEMPTS made through tool-reachable paths (E-PROMOTE-REFUSED-DIRECTIVE, E-RESOLVE-DIRECTIVE-PAIR). Those are answers this server really gives to requests it really accepts, and hiding them would misdescribe live behavior. The line is: refusals of attempts on existing routes are published; the error codes of the forbidden route itself are not. The quarantine of a directive CAPTURE is deliberately NOT in this group: that path does not refuse anything, it succeeds and stores a transformed entry, so it lives in non_error_outcomes as E-DIRECTIVE-QUARANTINE."
+    },
+    "raising_methods_shape": "Each raising_methods element cites a methods.json method (method_id + member) plus the tool the path is reachable through, and a position: 'provider' (raised inside the provider member) or 'pre-provider' (raised at the tool boundary before that member is reached -- mirrors methods.json X-1's error_codes_note). Every code has at least one raising method: there are no orphan codes."
+  },
+  "groups": {
+    "validation": {
+      "definition_ref": "_meta.group_definitions.validation",
+      "codes": [
+        {
+          "code": "E-QUERY-NO-SELECTOR",
+          "meaning": "No query selector was supplied: none of query, tag or flagged_only is present, so there is nothing to search on.",
+          "raising_methods": [
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-query.ts:34",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "kb_session_prime also reaches P-3 but cannot raise this: it builds its own selectors."
+        },
+        {
+          "code": "E-PATH-TRAVERSAL",
+          "meaning": "A file list contains an absolute path or a parent-directory traversal.",
+          "raising_methods": [
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/path-validation.ts:6 (absolute), :10 (traversal)",
+          "surfaced": "thrown",
+          "retryable": false
+        },
+        {
+          "code": "E-REPO-PATH-INVALID",
+          "meaning": "An explicitly supplied repo path does not exist or is not a directory. The call refuses rather than silently falling back to the server cwd.",
+          "raising_methods": [
+            { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-export.ts:157, src/tools/kb-import.ts:75",
+          "surfaced": "thrown",
+          "retryable": false,
+          "group_decision": "VALIDATION, not provider_internal. Decided deliberately rather than left to fall through to a generic internal code. The throw happens BEFORE getKbProviders, so no provider exists yet and nothing about the provider has failed; the only thing known to be wrong is a field of the request. Filing it under provider_internal would also imply the wrong retry posture -- an internal error invites a retry, while this one can only be fixed by changing the request. Both tools that raise it write into repo_path, which is why they refuse where the verbatim-passthrough tools tolerate a missing anchor (_meta.anchor_policy_note)."
+        },
+        {
+          "code": "E-BIBLE-NOT-FOUND",
+          "meaning": "The resolved bible file does not exist.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-import.ts:143",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "No methods.json entry cites this code: it is a tool-boundary throw on the kb_import route, reached before P-2 capture. INVENTORY.md 5.2 is the authority for it."
+        },
+        {
+          "code": "E-BIBLE-NOT-JSON",
+          "meaning": "The bible file exists but is not valid JSON.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-import.ts:150",
+          "surfaced": "thrown",
+          "retryable": false
+        },
+        {
+          "code": "E-BIBLE-WRONG-SHAPE",
+          "meaning": "The bible parses as JSON but is neither an entry array nor the v2 envelope.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-import.ts:168",
+          "surfaced": "thrown",
+          "retryable": false
+        }
+      ]
+    },
+    "admission": {
+      "definition_ref": "_meta.group_definitions.admission",
+      "codes": [
+        {
+          "code": "E-NO-BASIS",
+          "meaning": "The entry cites zero source files, so the freshness sweep can never stale it -- it is structurally unfalsifiable and is refused. Exempt: user-directive, which is not a claim about code.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:339 (assertCheckableBasis, KbCaptureRejected('no_source_files'))",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "On the kb_import route this throw is caught per entry and counted -- see E-IMPORT-ENTRY-REJECTED."
+        },
+        {
+          "code": "E-BASIS-MISSING-FILES",
+          "meaning": "The cited source files do not resolve in this worktree. No exemption for harvest-sourced entries or for import mode.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:349 (assertCheckableBasis, KbCaptureRejected('missing_source_files'))",
+          "surfaced": "thrown",
+          "retryable": false
+        },
+        {
+          "code": "E-IMPORT-ENTRY-REJECTED",
+          "meaning": "A single bible entry failed admission (E-NO-BASIS or E-BASIS-MISSING-FILES) and was skipped and counted; the import as a whole still succeeds.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
+          ],
+          "source": "src/tools/kb-import.ts:222-234, surfaced as KbImportReport.rejected",
+          "surfaced": "response-field",
+          "response_field": "rejected",
+          "retryable": false,
+          "note": "Distinct from the 'skipped' counter, which covers per-entry SHAPE failures (isValidBibleEntry, src/tools/kb-import.ts:98-109) and pre-existing ids (:193-196). Only basis rejections land here. No methods.json entry cites this code."
+        }
+      ]
+    },
+    "authority": {
+      "definition_ref": "_meta.group_definitions.authority",
+      "codes": [
+        {
+          "code": "E-PROMOTE-REASON-REQUIRED",
+          "meaning": "The promotion carries no non-trivial reason (absent, or shorter than MIN_PROMOTE_REASON_LENGTH). Writing above INFERRED must record its evidence.",
+          "raising_methods": [
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1366-1370 (isNonTrivialPromoteReason)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "code": "E-PROMOTE-BASIS-UNRESOLVED",
+          "meaning": "The entry cites zero source files, or one or more cited files no longer resolve in this worktree. An unfalsifiable or stale basis cannot earn CONFIRMED.",
+          "raising_methods": [
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1377-1384",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "code": "E-PROMOTE-SUPERSEDED",
+          "meaning": "The target entry is already superseded, so it has no standing to earn a higher tier.",
+          "raising_methods": [
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1343",
+          "surfaced": "thrown",
+          "retryable": false,
+          "group_decision": "AUTHORITY, not conflict. The refusal is about the target's standing to hold a higher tier, which is the same policy as the clamp; it is not about the semantics of a contradiction pair.",
+          "see_also": ["Superseding and AUDN matching"]
+        }
+      ]
+    },
+    "governance": {
+      "definition_ref": "_meta.group_definitions.governance",
+      "absence_constraint_ref": "_meta.directive_activation_absence",
+      "codes": [
+        {
+          "code": "E-PROMOTE-REFUSED-DIRECTIVE",
+          "meaning": "Promotion of a user-directive entry is refused outright; a directive can only become active through the CLI-only consent step.",
+          "raising_methods": [
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1353-1357",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Directive quarantine"]
+        },
+        {
+          "code": "E-RESOLVE-DIRECTIVE-PAIR",
+          "meaning": "The contradiction pair involves an ACTIVE user-directive; directives are never auto-resolved. Writes NOTHING.",
+          "raising_methods": [
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1569-1571",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Directive quarantine"]
+        },
+        {
+          "code": "E-SUPERSEDE-CONSENT-MISSING",
+          "meaning": "A supersedes request took no effect: it applies only if AUDN independently matches that candidate under the dedup gates (same type, symbol overlap, file overlap, target not an ACTIVE user-directive). Otherwise the named target is NOT retired and the request falls through to the ordinary paths.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/audn.ts:145-157 (makeAudnDecision, explicit-supersede branch)",
+          "surfaced": "silent",
+          "retryable": false,
+          "note": "Named here BECAUSE it is silent: audn_decision reports whatever the fallthrough decided, so a caller cannot today distinguish 'your supersede was applied' from 'your supersede was ignored'. Per _meta.projection_rule this code must not be projected into a wire enum until a signal exists.",
+          "see_also": ["Superseding and AUDN matching"]
+        },
+        {
+          "code": "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD",
+          "meaning": "An ACTIVE (CONFIRMED) user-directive candidate can never be superseded or updated by any capture() path; the AUDN loop skips past it.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/audn.ts:224",
+          "surfaced": "silent",
+          "retryable": false,
+          "note": "The candidate degrades to flagged (if a contradiction signal was present) or is skipped, so the guard itself has no distinguishable signal. Same projection restriction as E-SUPERSEDE-CONSENT-MISSING.",
+          "see_also": ["Directive quarantine", "Superseding and AUDN matching"]
+        }
+      ]
+    },
+    "conflict": {
+      "definition_ref": "_meta.group_definitions.conflict",
+      "codes": [
+        {
+          "code": "E-RESOLVE-NOT-A-PAIR",
+          "meaning": "The two ids do not form a genuinely linked contradiction pair, so there is nothing to resolve. Writes NOTHING.",
+          "raising_methods": [
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1564-1566",
+          "surfaced": "thrown",
+          "retryable": false
+        },
+        {
+          "code": "E-RESOLVE-ALREADY-SUPERSEDED",
+          "meaning": "One or both entries in the pair are already superseded, so the resolution cannot be applied. Writes NOTHING.",
+          "raising_methods": [
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1560-1561",
+          "surfaced": "thrown",
+          "retryable": false
+        }
+      ]
+    },
+    "not_found": {
+      "definition_ref": "_meta.group_definitions.not_found",
+      "codes": [
+        {
+          "code": "E-ENTRY-NOT-FOUND",
+          "meaning": "The named entry id has no row.",
+          "raising_methods": [
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1340 (promote), :1431 (feedback)",
+          "surfaced": "thrown",
+          "retryable": false
+        },
+        {
+          "code": "E-RESOLVE-MISSING-ENTRY",
+          "meaning": "One or both ids of a contradiction pair do not exist. Writes NOTHING.",
+          "raising_methods": [
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1554-1555",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "Kept distinct from E-ENTRY-NOT-FOUND rather than merged: it names a PAIR operation that wrote nothing, and INVENTORY.md 5.2 and methods.json X-4 both carry it under its own name."
+        }
+      ]
+    },
+    "provider_internal": {
+      "definition_ref": "_meta.group_definitions.provider_internal",
+      "codes": [
+        {
+          "code": "E-PROVIDER-UNINITIALIZED",
+          "meaning": "A provider member was called before init(). A call-order defect, not a caller-input problem.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "provider" },
+            { "method_id": "P-11", "member": "touch", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-12", "member": "relatedClaims", "tool": "kb_query", "position": "provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" },
+            { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "provider" },
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" },
+            { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "provider" },
+            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:197 (SqliteProvider.getDb)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "methods.json also cites this code on P-6 getLinked and P-9 sync, which have no tool route (tools: []); every member reached through getDb can raise it. init() itself (P-1) has no throw site of its own -- its ABSENCE is what causes this code everywhere else."
+        },
+        {
+          "code": "E-CODE-PROVIDER-UNCONFIGURED",
+          "meaning": "The resolved code-intelligence provider key has no entry in the PROVIDERS map (codebase-memory, gitnexus, none), so no provider can be constructed for the call.",
+          "raising_methods": [
+            { "method_id": "C-1", "member": "graph", "tool": "code_graph", "position": "pre-provider" },
+            { "method_id": "C-2", "member": "impact", "tool": "code_impact", "position": "pre-provider" },
+            { "method_id": "C-3", "member": "query", "tool": "code_query", "position": "pre-provider" },
+            { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "pre-provider" },
+            { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "pre-provider" },
+            { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "pre-provider" },
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" }
+          ],
+          "source": "src/tools/code-intelligence.ts:131-135 (per-member codeIntelProvider override), :151-155 (global config.json provider field)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "The ONLY throwing site on the code_* side. getProvider() runs before the adapter's guarded entry point, so this throw is not converted into an offline result the way connect failures are (see non_error_outcomes N-CODE-PROVIDER-OFFLINE)."
+        }
+      ]
+    }
+  },
+  "non_error_outcomes": [
+    {
+      "name": "N-ANCHOR-VERBATIM-MISSING",
+      "outcome": "A supplied repo_path is passed to getKbProviders VERBATIM with no filesystem check, so an unreachable or not-yet-created anchor stays honestly missing and the call returns an empty/cold result.",
+      "where": "src/tools/kb-session-prime.ts, src/tools/kb-stats.ts, src/services/knowledge/kb-providers.ts; regression-guarded by tests/knowledge/kb-anchor-never-cwd.test.ts",
+      "reason_no_code": "Nothing failed. These tools only READ, so a missing anchor is a legitimate answer ('no knowledge here yet'), and refusing would be worse than answering: it would push callers toward omitting repo_path, which is the one thing that must never silently anchor at the server cwd. The WRITING tools on the same policy do refuse -- that branch has a code, E-REPO-PATH-INVALID."
+    },
+    {
+      "name": "E-CLAMP",
+      "outcome": "An incoming CONFIRMED on a non-directive type is DOWNGRADED to INFERRED, with a bracketed note appended to content. Reported as confidence_clamped: true in the kb_capture response.",
+      "where": "src/tools/kb-capture.ts:105-106 (UX copy), src/services/knowledge/sqlite-provider.ts:889-893 (enforcement)",
+      "reason_no_code": "The capture SUCCEEDED; only the requested tier was lowered, and the lowering is reported in a documented success field. This is the silent branch of the one authority policy -- its refusing branches (the promote path) are the authority group's codes. Giving the clamp an error code would make the normal, expected path of every over-confident capture look like a failure."
+    },
+    {
+      "name": "E-DIRECTIVE-QUARANTINE",
+      "outcome": "A user-directive capture is FORCED to a PENDING PROPOSAL rather than stored as requested: confidence to UNVERIFIED, flagged_for_review set, a 'directive:pending' tag added, and scope forced to 'project'. The capture itself SUCCEEDS and returns an id; activation remains CLI-only and no server code path for it exists.",
+      "where": "src/services/knowledge/sqlite-provider.ts:806-818 (enforcement)",
+      "reason_no_code": "The capture SUCCEEDED and stored a transformed entry -- capture() mutates the input and continues, it never throws. This is structurally the same class as E-CLAMP: a successful write with a forced downward transformation, not a refusal. It was previously classified surfaced: 'response-field', which was wrong on the taxonomy's own definition -- no named response field reports it. kb_capture returns {id, audn_decision, confidence_clamped}, and confidence_clamped is set only by the CONFIRMED-to-INFERRED clamp in src/tools/kb-capture.ts:102-105, independently of the directive path; kb_import surfaces only imported/skipped/rejected. Because the transformation is observable only through a LATER read (tests/DEGRADATION.md D-8), it must not be projected onto the wire: an implementation built from a projection carrying it would REFUSE directive captures that this kernel ACCEPTS. Its refusing siblings on the same directive policy keep their codes in the governance group (E-PROMOTE-REFUSED-DIRECTIVE, E-RESOLVE-DIRECTIVE-PAIR)."
+    },
+    {
+      "name": "E-DEDUP-NONE",
+      "outcome": "AUDN decides audn_decision: none on exact content equality or a same-topic match with no contradiction signal; the capture is skipped.",
+      "where": "src/services/knowledge/audn.ts:180-183 (exact-match pre-pass), :231-233 (loop)",
+      "reason_no_code": "The KB already holds the claim, so the caller's intent is satisfied. Skipping a duplicate is the dedup gate working, not a refusal, and audn_decision already reports it precisely."
+    },
+    {
+      "name": "E-CONTRADICTION-FLAGGED",
+      "outcome": "Symbol overlap plus a contradiction signal (keyword hit or opposite polarity) stores the entry AND links it as contradiction_of the incumbent, reporting audn_decision: flagged.",
+      "where": "src/services/knowledge/audn.ts:196-206 (makeAudnDecision)",
+      "reason_no_code": "Flagging is the designed successful outcome of finding a conflict: both claims are kept and the disagreement is made visible for later resolution. The error side of contradictions is the REFUSED RESOLUTION, which is what the conflict group's codes cover."
+    },
+    {
+      "name": "E-CODE-INTEL-DISABLED",
+      "outcome": "NullProvider returns a text payload naming the disabled method.",
+      "where": "src/tools/code-intelligence.ts:22-26 (nullResult), :28-36 (class body)",
+      "reason_no_code": "'none' is a valid configured provider, not a misconfiguration. The call is answered, with an answer that says the capability is off. The misconfiguration case is a separate code, E-CODE-PROVIDER-UNCONFIGURED."
+    },
+    {
+      "name": "N-CODE-PROVIDER-OFFLINE",
+      "outcome": "The code_* adapters' single guarded entry point catches connect and dead-client failures, resets the shared connection so the next call reconnects, and returns a structured offline result; codebase-memory additionally returns a missing-index result when no index exists.",
+      "where": "src/tools/code-intelligence-gitnexus.ts:172-176 (callGitNexus catch, offlineResult), src/tools/code-intelligence-codebase-memory.ts:176-189 (callCodebaseMemory, missingIndexResult and offlineResult)",
+      "reason_no_code": "Not in the T1.0.2 inventory; added here after reading the adapters, because it is the reason this closed set has no retryable code. The transient failure never reaches the caller as an error: it is converted into an actionable result at the provider boundary. Only getProvider()'s unconfigured-key resolution still throws on this side."
+    },
+    {
+      "name": "E-STATS-UNSUPPORTED",
+      "outcome": "A provider that cannot compute stats returns {supported: false, reason} instead of throwing.",
+      "where": "src/services/knowledge/http-provider.ts:284-287 (design D4)",
+      "reason_no_code": "A documented not-supported result is part of the response schema. Note HttpKbProvider is dead code in this tree (INVENTORY.md 4.4 F-10), so no tool call reaches this branch today."
+    },
+    {
+      "name": "E-BIBLE-READ-DEGRADED",
+      "outcome": "Any failure reading or comparing the canonical bible is swallowed; the response falls back to the absent/drift-zero bible shape.",
+      "where": "src/tools/kb-stats.ts:116-122 (nested catch blocks)",
+      "reason_no_code": "kb_stats never throws over the bible file by design: the bible is an optional enrichment of a health report, so degrading it must not fail the report."
+    },
+    {
+      "name": "E-RELATED-CLAIMS-DEGRADED",
+      "outcome": "A relatedClaims throw is caught; related_claims becomes [] and the query result still returns.",
+      "where": "src/tools/kb-query.ts:113-118",
+      "reason_no_code": "Related claims are an enrichment of a query result, not the result. Failing the whole query over them would be a worse answer than an empty list."
+    },
+    {
+      "name": "E-ROLE-UNKNOWN-DEGRADED",
+      "outcome": "An unrecognised role degrades to the literal 'unknown'; validateAuthor never throws.",
+      "where": "src/tools/kb-capture.ts:16-20 and src/tools/kb-feedback.ts:12-16 (duplicated, not shared)",
+      "reason_no_code": "Authorship is provenance metadata, not an access decision -- nothing is gated on the role -- so an unknown role is recorded honestly rather than refused."
+    }
+  ],
+  "excluded_from_closed_set": {
+    "rule_ref": "_meta.directive_activation_absence",
+    "codes": [
+      {
+        "code": "E-DIRECTIVE-NOT-FOUND",
+        "where": "src/services/knowledge/sqlite-provider.ts:1723 (approveDirective), :1746 (rejectDirective)",
+        "reason_excluded": "An error code OF the CLI-only directive-activation operations. Publishing it would document that an approve/reject route exists on this surface. Not tool-reachable (methods.json not_in_scope)."
+      },
+      {
+        "code": "E-DIRECTIVE-WRONG-TYPE",
+        "where": "src/services/knowledge/sqlite-provider.ts:1725 (approveDirective), :1748 (rejectDirective)",
+        "reason_excluded": "Same as E-DIRECTIVE-NOT-FOUND: activation-operation vocabulary, excluded by absence."
+      },
+      {
+        "code": "E-DIRECTIVE-ALREADY-DECIDED",
+        "where": "src/services/knowledge/sqlite-provider.ts:1726, :1727 (approveDirective), :1749 (rejectDirective)",
+        "reason_excluded": "Same as E-DIRECTIVE-NOT-FOUND: activation-operation vocabulary, excluded by absence."
+      }
+    ]
+  }
+}

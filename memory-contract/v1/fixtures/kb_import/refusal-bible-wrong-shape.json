@@ -1,0 +1,15 @@
+{
+  "tool": "kb_import",
+  "case": "refusal-bible-wrong-shape",
+  "kind": "refusal",
+  "request": {
+    "repo": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "path": "<SCRATCH_REPO_A>\\.fleet\\wrong-shape.json"
+  },
+  "error": {
+    "message": "kb_import: bible file is not a JSON array of entries: <SCRATCH_REPO_A>\\.fleet\\wrong-shape.json",
+    "thrown": true
+  },
+  "expected_error_code": "E-BIBLE-WRONG-SHAPE"
+}

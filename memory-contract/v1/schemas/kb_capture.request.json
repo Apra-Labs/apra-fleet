@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_capture.request.json#",
+  "x-invariant": [
+    "INV-01",
+    "INV-02",
+    "INV-03",
+    "INV-04",
+    "INV-07"
+  ],
+  "$ref": "#/$defs/v1-kb_capture-request",
+  "$defs": {
+    "v1-kb_capture-request": {
+      "type": "object",
+      "properties": {
+        "repo_remote_url": {
+          "type": "string",
+          "description": "Origin remote URL of the repo this call is about. Supply it when repo_path is a path on another host (a remote member work folder), where git cannot be shelled out. When omitted, scope is derived from repo_path as before."
+        },
+        "repo_path": {
+          "type": "string",
+          "description": "Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "context-cache",
+            "learning",
+            "knowledge",
+            "runbook",
+            "user-directive"
+          ],
+          "description": "Content type: context-cache for file summaries, learning for session insights, knowledge for facts, runbook for procedures, user-directive for a standing user instruction/correction. NOTE (F1/D1): a user-directive captured here is stored as a PENDING PROPOSAL (UNVERIFIED, flagged for review, scope forced to project) -- it is NOT an active directive and does NOT gain any trust semantics until a human approves it in their own terminal via \"apra-fleet kb approve-directive <id>\". MCP cannot mint an active directive."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short description (max ~80 chars)"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "2-4 sentence overview"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Full detail (will be truncated at 4000 chars)"
+        },
+        "source_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Related file paths"
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Function/class names this entry covers"
+        },
+        "module": {
+          "type": "string",
+          "description": "Module name"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Labels for filtering"
+        },
+        "source_file": {
+          "type": "string",
+          "description": "File to hash (required when type=context-cache)"
+        },
+        "role": {
+          "type": "string",
+          "description": "Role hint for provenance: doer/reviewer/planner/plan-reviewer/kb-agent/harvest/pm/user. Validated server-side against the Author enum; invalid or absent stamps \"unknown\". source is derived from the validated role/type and is never accepted from the caller."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "CONFIRMED",
+            "INFERRED",
+            "UNVERIFIED"
+          ],
+          "description": "Confidence level (default: INFERRED)"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "project",
+            "global"
+          ],
+          "description": "Scope: project (default) or global for team-wide conventions"
+        },
+        "supersedes": {
+          "type": "string",
+          "description": "Id of an entry this capture REPLACES. Only honored when AUDN independently matches that same entry as a same-topic candidate (same type, overlapping symbols and source_files), so it cannot retire an arbitrary entry. Omit it unless you mean to retire something -- an ordinary refinement links to its predecessor and both stay live. The KB Agent sets this when resolving a flagged pair; doer/reviewer captures should not."
+        }
+      },
+      "required": [
+        "type",
+        "title",
+        "summary",
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

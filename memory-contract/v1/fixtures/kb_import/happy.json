@@ -1,0 +1,18 @@
+{
+  "tool": "kb_import",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo": "<SCRATCH_REPO_B>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-b.git",
+    "path": "<SCRATCH_REPO_A>\\.fleet\\kb-canonical.json"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"imported\":0,\"skipped\":0,\"linked\":0,\"flagged\":0,\"rejected\":1,\"sweep\":{\"checked\":0,\"staled\":0,\"unstaled\":0}}"
+      }
+    ]
+  }
+}

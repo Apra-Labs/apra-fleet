@@ -1,0 +1,27 @@
+{
+  "tool": "kb_capture",
+  "case": "happy-contradiction-b",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "type": "learning",
+    "title": "helperBar now works under concurrent calls",
+    "summary": "helperBar in src/helper.ts now works correctly for concurrent calls after a guard was added.",
+    "content": "helperBar now works: a re-entrancy guard was added so concurrent calls no longer collide.",
+    "source_files": [
+      "src/helper.ts"
+    ],
+    "symbols": [
+      "helperBar"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"b047eace-fbc2-43bf-9cd3-1c8ce8081998\",\"audn_decision\":\"flagged\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

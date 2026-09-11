@@ -171,6 +171,29 @@ jobs:
             exit 1
           fi
 
+      # my-beads-db-27m.10 (T1.5.1): memory-contract drift guard, disk-
+      # mutating half. tests/memory-contract-drift-guard.test.ts (run above by
+      # "npm test") already covers the same content via contract:generate
+      # --check's in-memory compare; that mode deliberately writes nothing.
+      # This step instead runs the real write path (`npm run contract:generate`,
+      # no --check) and diffs the result against what is committed, so an
+      # actual dirty-tree regression -- e.g. a --check-mode bug that agrees
+      # with a stale file it should not -- is still caught. Same
+      # regenerate-then-diff shape as "Verify llms-full.txt is up to date"
+      # above, and the same reason it only runs once, on ubuntu-latest: the
+      # generator's output (zod schemas + response-schemas.mjs + taxonomy.json,
+      # all static, no Date/Math.random/env reads) is OS-agnostic.
+      - name: Verify memory-contract generated files are up to date
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          npm run contract:generate
+          if ! git diff --exit-code -- memory-contract/v1/schemas memory-contract/v1/bindings; then
+            echo ""
+            echo "::error::memory-contract/v1/schemas or memory-contract/v1/bindings is stale."
+            echo "Run 'npm run build && npm run contract:generate' and commit the result."
+            exit 1
+          fi
+
   package:
     needs: build-and-test
     runs-on: ubuntu-latest

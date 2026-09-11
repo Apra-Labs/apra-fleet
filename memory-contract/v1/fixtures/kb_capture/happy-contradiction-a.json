@@ -1,0 +1,27 @@
+{
+  "tool": "kb_capture",
+  "case": "happy-contradiction-a",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "type": "learning",
+    "title": "helperBar is broken",
+    "summary": "helperBar in src/helper.ts is broken under concurrent calls.",
+    "content": "helperBar is broken: it silently drops the second concurrent call.",
+    "source_files": [
+      "src/helper.ts"
+    ],
+    "symbols": [
+      "helperBar"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"2697d23a-1bf9-4a95-b5a9-717cc8020600\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

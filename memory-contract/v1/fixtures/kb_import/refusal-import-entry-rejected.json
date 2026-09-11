@@ -1,0 +1,18 @@
+{
+  "tool": "kb_import",
+  "case": "refusal-import-entry-rejected",
+  "kind": "refusal",
+  "request": {
+    "repo": "<SCRATCH_ROOT>\\repo-import-rejected",
+    "path": "<SCRATCH_REPO_A>\\.fleet\\bible-with-rejected-entry.json"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"imported\":0,\"skipped\":0,\"linked\":0,\"flagged\":0,\"rejected\":1,\"sweep\":{\"checked\":0,\"staled\":0,\"unstaled\":0}}"
+      }
+    ]
+  },
+  "expected_error_code": "E-IMPORT-ENTRY-REJECTED"
+}

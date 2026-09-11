@@ -1,0 +1,17 @@
+{
+  "tool": "kb_setup",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "provider": "sqlite"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"success\":true,\"steps\":[\"Skipped git hook: no .git directory found at <SCRATCH_REPO_A>\",\"Wrote KB config to <SCRATCH_ROOT>\\\\fleet-data\\\\knowledge\\\\config.json\"]}"
+      }
+    ]
+  }
+}

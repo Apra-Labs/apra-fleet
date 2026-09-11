@@ -1,0 +1,16 @@
+{
+  "tool": "kb_promote",
+  "case": "refusal-basis-unresolved",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "bce6c4af-2d17-4858-8e5f-0556ccfef745",
+    "reason": "Second promotion attempted after the cited basis file was deleted."
+  },
+  "error": {
+    "message": "Cannot promote an entry whose basis does not resolve: missing src/soon-to-be-deleted.ts. Entry: bce6c4af-2d17-4858-8e5f-0556ccfef745",
+    "thrown": true
+  },
+  "expected_error_code": "E-PROMOTE-BASIS-UNRESOLVED"
+}

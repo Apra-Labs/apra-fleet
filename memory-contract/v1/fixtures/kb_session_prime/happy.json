@@ -1,0 +1,23 @@
+{
+  "tool": "kb_session_prime",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "hint_symbols": [
+      "exampleFn"
+    ],
+    "session_files": [
+      "src/example.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"session_warm\":false,\"stale_files\":[\"src/example.ts\"],\"top_entries\":[{\"id\":\"e12c88e9-0a56-44dd-b1ee-c522b3559a3e\",\"type\":\"knowledge\",\"title\":\"exampleFn returns x + 1\",\"summary\":\"exampleFn in src/example.ts is a trivial increment helper used by the fixture corpus.\",\"content\":\"\",\"source_files\":[\"src/example.ts\"],\"symbols\":[\"exampleFn\"],\"module\":null,\"tags\":[],\"content_hash\":\"\",\"content_hash_type\":\"sha256\",\"stale\":false,\"flagged_for_review\":false,\"contradiction_of\":null,\"author\":\"doer\",\"source\":\"session\",\"confidence\":\"INFERRED\",\"scope\":\"project\",\"created_at\":\"2026-08-24T16:41:56.866Z\",\"superseded_at\":null,\"promoted_at\":null,\"use_count\":0,\"last_accessed\":null}],\"fresh_summaries\":[],\"recommended_code_calls\":[{\"tool\":\"code_context\",\"args\":{\"name\":\"exampleFn\"}},{\"tool\":\"code_impact\",\"args\":{\"target\":\"src/example.ts\",\"direction\":\"upstream\"}}],\"token_estimate\":22}"
+      }
+    ]
+  }
+}

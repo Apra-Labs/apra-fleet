@@ -1,0 +1,16 @@
+{
+  "tool": "code_map",
+  "case": "happy-no-index",
+  "kind": "happy",
+  "request": {
+    "repo": "<SCRATCH_REPO_CODE>"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"content\":[{\"type\":\"text\",\"text\":\"No code intelligence index found for <SCRATCH_REPO_CODE>. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.\"}],\"isError\":true}"
+      }
+    ]
+  }
+}

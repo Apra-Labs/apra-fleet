@@ -9,12 +9,13 @@ const src = readFileSync(
   'utf-8'
 );
 
-// Extract the PURE_FUNCTIONS block so we can call computeSprintQuote.
+// Extract the PURE_FUNCTIONS block so we can call computeSprintQuote and (since
+// my-beads-db-27m.12) buildExportShrinkGuardCmd -- both are pure and live in this block.
 const match = src.match(/\/\/ PURE_FUNCTIONS_BEGIN[^\n]*\n([\s\S]*?)\/\/ PURE_FUNCTIONS_END/);
 if (!match) throw new Error('PURE_FUNCTIONS_BEGIN/END markers not found');
 // eslint-disable-next-line no-new-func
-const { computeSprintQuote, DEFAULT_CALIBRATION } =
-  new Function(`${match[1]}; return { computeSprintQuote, DEFAULT_CALIBRATION };`)();
+const { computeSprintQuote, DEFAULT_CALIBRATION, buildExportShrinkGuardCmd } =
+  new Function(`${match[1]}; return { computeSprintQuote, DEFAULT_CALIBRATION, buildExportShrinkGuardCmd };`)();
 
 // ---- helpers -----------------------------------------------------------------
 
@@ -26,7 +27,7 @@ function buildPlanCommitCmds(sprintQuote, repo, branch) {
       `doer_tokens=${t.doerTokens} reviewer_tokens=${t.reviewerTokens} output_usd=${t.outputUsd.toFixed(4)}"`
     ),
     `bd export -o "${repo}/.beads/issues.jsonl"`,
-    `git -C "${repo}" add .beads/issues.jsonl`,
+    buildExportShrinkGuardCmd(repo),
     `git -C "${repo}" -c user.name='pm' -c user.email='pm@pm.local' commit --allow-empty -m "plan: approve task DAG"`,
     `git -C "${repo}" push origin ${branch}`,
   ];
@@ -56,19 +57,24 @@ test('planCommitCmds array appends bd export after per-task updates (source chec
   assert.ok(exportIdx > spreadIdx, 'bd export must come after per-task update spread');
 });
 
-test('planCommitCmds ends with git add, git commit, git push in order (source check)', () => {
+test('planCommitCmds ends with the export shrink guard, git commit, git push in order (source check)', () => {
   const cmdsIdx = src.indexOf('const planCommitCmds = [');
   const region = src.slice(cmdsIdx, cmdsIdx + 600);
 
-  const addIdx    = region.indexOf('git -C "${repo}" add .beads/issues.jsonl');
+  // my-beads-db-27m.12: staging .beads/issues.jsonl now goes through the shrink guard,
+  // not a raw `git add`.
+  const guardIdx  = region.indexOf('buildExportShrinkGuardCmd(repo)');
   const commitIdx = region.indexOf('git -C "${repo}" -c user.name=\'pm\'');
   const pushIdx   = region.indexOf('git -C "${repo}" push origin ${branch}');
 
-  assert.ok(addIdx    >= 0, 'planCommitCmds must include git add');
+  assert.ok(guardIdx  >= 0, 'planCommitCmds must include the export shrink guard');
   assert.ok(commitIdx >= 0, 'planCommitCmds must include git commit');
   assert.ok(pushIdx   >= 0, 'planCommitCmds must include git push');
-  assert.ok(addIdx < commitIdx, 'git add must come before git commit');
+  assert.ok(guardIdx < commitIdx, 'export shrink guard must come before git commit');
   assert.ok(commitIdx < pushIdx, 'git commit must come before git push');
+
+  assert.doesNotMatch(region, /git -C "\$\{repo\}" add \.beads\/issues\.jsonl/,
+    'planCommitCmds must not stage .beads/issues.jsonl with a raw, unguarded git add');
 });
 
 test('dispatchShell maxTurns is planCommitCmds.length + 2 (source check)', () => {
@@ -118,9 +124,13 @@ test('buildPlanCommitCmds appends bd export then git add/commit/push after per-t
   // Command at index N: bd export
   assert.match(cmds[N], /^bd export -o /,
     `command[${N}] must be bd export`);
-  // Command at index N+1: git add
-  assert.match(cmds[N + 1], /git.*add .beads\/issues\.jsonl/,
-    `command[${N + 1}] must be git add .beads/issues.jsonl`);
+  // Command at index N+1: the export shrink guard (stages .beads/issues.jsonl only if safe)
+  assert.match(cmds[N + 1], /^node -e /,
+    `command[${N + 1}] must be the export shrink guard`);
+  assert.match(cmds[N + 1], /git add \.beads\/issues\.jsonl/,
+    `command[${N + 1}] must still stage .beads\/issues.jsonl when safe`);
+  assert.match(cmds[N + 1], /AUTO_SPRINT_ALLOW_EXPORT_SHRINK/,
+    `command[${N + 1}] must reference the shrink opt-in env var`);
   // Command at index N+2: git commit
   assert.match(cmds[N + 2], /git.*commit.*plan: approve task DAG/,
     `command[${N + 2}] must be git commit with "plan: approve task DAG"`);

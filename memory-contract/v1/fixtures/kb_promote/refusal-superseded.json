@@ -1,0 +1,16 @@
+{
+  "tool": "kb_promote",
+  "case": "refusal-superseded",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "2697d23a-1bf9-4a95-b5a9-717cc8020600",
+    "reason": "Attempting to re-promote an entry that was already superseded by the contradiction resolution above."
+  },
+  "error": {
+    "message": "Cannot promote superseded entry: 2697d23a-1bf9-4a95-b5a9-717cc8020600",
+    "thrown": true
+  },
+  "expected_error_code": "E-PROMOTE-SUPERSEDED"
+}

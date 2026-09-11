@@ -1,0 +1,16 @@
+{
+  "tool": "kb_promote",
+  "case": "refusal-entry-not-found",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "fixture-does-not-exist",
+    "reason": "Attempting to promote an id that was never captured."
+  },
+  "error": {
+    "message": "Entry not found: fixture-does-not-exist",
+    "thrown": true
+  },
+  "expected_error_code": "E-ENTRY-NOT-FOUND"
+}

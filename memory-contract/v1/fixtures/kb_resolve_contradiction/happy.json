@@ -1,0 +1,20 @@
+{
+  "tool": "kb_resolve_contradiction",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "winnerId": "b047eace-fbc2-43bf-9cd3-1c8ce8081998",
+    "loserId": "2697d23a-1bf9-4a95-b5a9-717cc8020600",
+    "evidence": "Re-read src/helper.ts after the fix landed: the re-entrancy guard is present and concurrent calls no longer collide."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"winnerId\":\"b047eace-fbc2-43bf-9cd3-1c8ce8081998\",\"loserId\":\"2697d23a-1bf9-4a95-b5a9-717cc8020600\"}"
+      }
+    ]
+  }
+}

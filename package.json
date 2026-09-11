@@ -53,6 +53,8 @@
   "scripts": {
     "build": "npm run build:contract && tsc",
     "build:contract": "npm run build --workspace=@apralabs/fleet-api-contract",
+    "contract:generate": "node memory-contract/v1/generate-contract.mjs",
+    "contract:check": "node memory-contract/v1/generate-contract.mjs --check",
     "gen:openapi": "npm run gen:openapi --workspace=@apralabs/fleet-api-contract",
     "dist-pm": "node scripts/dist-pm.mjs",
     "build:sea": "node scripts/build-sea.mjs",
@@ -109,6 +111,8 @@
     "pg-mem": "^3.0.14",
     "postject": "^1.0.0-alpha.6",
     "typescript": "^5.5.0",
-    "vitest": "^4.0.18"
+    "vitest": "^4.0.18",
+    "yaml": "^2.9.0",
+    "zod-to-json-schema": "^3.25.1"
   }
 }

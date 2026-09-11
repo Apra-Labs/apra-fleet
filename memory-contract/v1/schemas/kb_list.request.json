@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_list.request.json#",
+  "$ref": "#/$defs/v1-kb_list-request",
+  "$defs": {
+    "v1-kb_list-request": {
+      "type": "object",
+      "properties": {
+        "repo_remote_url": {
+          "type": "string",
+          "description": "Origin remote URL of the repo this call is about. Supply it when repo_path is a path on another host (a remote member work folder), where git cannot be shelled out. When omitted, scope is derived from repo_path as before."
+        },
+        "repo_path": {
+          "type": "string",
+          "description": "Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "CONFIRMED",
+            "INFERRED",
+            "UNVERIFIED"
+          ],
+          "description": "Filter by confidence tier"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "context-cache",
+            "learning",
+            "knowledge",
+            "runbook",
+            "user-directive"
+          ],
+          "description": "Filter by content type"
+        },
+        "module": {
+          "type": "string",
+          "description": "Filter by exact module name"
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Filter to entries whose symbols array contains this value"
+        },
+        "tag": {
+          "type": "string",
+          "description": "Filter to entries whose tags array contains this value (exact match)"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max entries to return (default: no limit)"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

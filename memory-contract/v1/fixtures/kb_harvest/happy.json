@@ -1,0 +1,19 @@
+{
+  "tool": "kb_harvest",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "session_transcript": "Note: the helper in `computeThing` inside src/example.ts had a subtle rounding bug that is now fixed after tightening the threshold check.",
+    "session_id": "sess-fixture-1"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"entries_captured\":1,\"entries_updated\":0,\"entries_skipped\":0,\"entries_rejected\":0}"
+      }
+    ]
+  }
+}

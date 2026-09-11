@@ -38,7 +38,9 @@ const realBinDir = path.join(root, 'packages', 'apra-fleet-se', 'bin');
  * host even though nothing under test (this test, or cli.mjs) has changed
  * -- an environment-capability gap, not a real regression. The probe
  * creates and immediately removes a throwaway symlink inside a fresh temp
- * dir so it never touches the real bin/ directory.
+ * dir so it never touches the real bin/ directory. Only EPERM is treated as
+ * an environment gap and skipped; any OTHER error is unexpected and must
+ * still surface, not be swallowed into a skip.
  */
 function probeSymlinkCapability(): { ok: boolean; reason: string } {
   const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-eft41-symlink-probe-'));
@@ -49,8 +51,9 @@ function probeSymlinkCapability(): { ok: boolean; reason: string } {
     fs.symlinkSync(target, link, 'dir');
     return { ok: true, reason: '' };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: message };
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === 'EPERM') return { ok: false, reason: e.message };
+    throw e;
   } finally {
     fs.rmSync(probeDir, { recursive: true, force: true });
   }
