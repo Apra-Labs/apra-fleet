@@ -125,6 +125,22 @@ export const DISPATCH_LADDER_MODULES = [
     // appear in after the slice.
     'phases/review.mjs',
     'phases/deploy.mjs',
+    // apra-fleet-3swo.6.8: the Integ Test and Re-Review phases, added in the
+    // SAME position for the SAME reason -- and Integ Test is the sharpest case
+    // of it yet. It took BOTH 'integ-test-runner' rows' ladderAnchor text
+    // ('featurePrompt,' and 'Continue the integration test run exactly where
+    // you left off') out of runner.js, while role-policies.mjs still carries
+    // both literals verbatim as data, so registering it before
+    // role-policies.mjs is what stops an anchor search resolving inside that
+    // data literal instead of the real dispatch site. Re-Review hosts no
+    // dispatch site of its own (like phases/review.mjs it reaches the reviewer
+    // ladder through runner.js's shared dispatchReview() helper, which Final
+    // Review still calls), but it is listed so the CONSUMER census in
+    // phase3-dispatch-engine-completeness.test.mjs -- which filters this list
+    // to runner.js + phases/* -- keeps covering every module a dispatch could
+    // appear in after the slice.
+    'phases/integ-test.mjs',
+    'phases/re-review.mjs',
     'role-policies.mjs',
     'dispatch-role.mjs',
 ];

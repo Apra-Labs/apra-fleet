@@ -138,6 +138,27 @@ export const GUARDED_MODULES = [
     // surface.
     'phases/review.mjs',
     'phases/deploy.mjs',
+    // apra-fleet-3swo.6.8: the per-cycle Integ Test and the Re-Review that
+    // Cycle Evaluation dispatches when the goal-priority count reads 0 but no
+    // review ran this cycle. Same nested-entry reporting caveat as the six
+    // above (they are always REPORTED as 'integ-test.mjs' and
+    // 're-review.mjs'), so the same rule applies: compare a guard's `files`
+    // output against guardedModuleBasenames().
+    //
+    // integ-test.mjs took TWO member_name-bearing command() call sites out of
+    // runner.js -- the verify-fail bounce cap's `bd show <bugId> --json` parent
+    // lookup and its `bd update <parentId> --status=deferred --append-notes`
+    // deferral -- plus ONE dispatchRole site (the integ-test-runner ladder).
+    // re-review.mjs took NEITHER: its reopen/newTask writes go through
+    // applyGuardedReopens (beads-transitions.mjs) and
+    // createChildBeadWithAllocatedId/computeChildFloor, whose command() sites
+    // live in the modules that own them, and the reviewer ladder runs through
+    // runner.js's shared dispatchReview() helper, which Final Review still
+    // calls. Registering both as part of the extraction is what keeps the
+    // guarded command census and the phase 3 dispatch census whole instead of
+    // quietly shrinking runner.js's scanned surface.
+    'phases/integ-test.mjs',
+    'phases/re-review.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left

@@ -88,6 +88,18 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // stayed here.
 import { runReviewPhase } from './phases/review.mjs';
 import { runDeployPhase } from './phases/deploy.mjs';
+// apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
+// Test and the Re-Review that Cycle Evaluation dispatches when the goal-
+// priority count already reads 0 but no review ran this cycle. Integ Test is
+// the body of the `if (hasPlaybook && deployedThisCycle)` branch below (its two
+// runbook probes, the hoisted `verifySetForIntegTest` declaration and both
+// "Skipping Integration Test Phase" else branches stay here) and hands back the
+// three values it REASSIGNS; Re-Review is the body of the
+// `if (openAtGoal.length === 0 && !reviewedThisCycle)` branch and hands back
+// the same three the per-round Review does. See each module's header for where
+// its boundary is drawn and why the surrounding `if`/exit-gate stayed here.
+import { runIntegTestPhase } from './phases/integ-test.mjs';
+import { runReReviewPhase } from './phases/re-review.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
 // verbatim out of runner.js (apra-fleet-3swo.4.3).
@@ -125,6 +137,12 @@ import { createBeadsScope, classifyVerifySet } from './beads-scope.mjs';
 // with the Review phase; that module imports it from this same sibling. Final
 // Review and Re-Review use `applyGuardedReopens` but never fold replanIds, so
 // keeping the name here would have been a dead import, not a seam.
+//
+// apra-fleet-3swo.6.8: `applyGuardedReopens` is still imported here, but for
+// ONE remaining site -- Final Review's. The Re-Review site moved verbatim into
+// ./phases/re-review.mjs, which imports it from this same sibling; the guarded
+// verdict path this bead's predecessor established was carried across intact,
+// not reimplemented there.
 import {
     isReviewerContractViolation, applyGuardedReopens,
     parseIdWithReasonEntry,
@@ -4588,246 +4606,26 @@ async function runSprintCycle(context) {
         // dispatch attempt", not a crash.
         let verifySetForIntegTest = [];
         if (hasPlaybook && deployedThisCycle) {
-            phase(`Integ Test C${cycle}`);
-            await ensureUnattendedAuto(getMemberForRole('integ-test-runner'));
-            await ensureDeployPermissions(getMemberForRole('integ-test-runner'));
-            // apra-fleet-nwh.1: snapshot the running total BEFORE this
-            // cycle's Integ Test dispatch(es) so the delta after (below) is
-            // this phase's own spend, not the whole run's. budget.spent()
-            // may be absent on an injected test double; that degrades to
-            // "not tracked" exactly like buildCostAnalysis()'s own total
-            // spend line already does, never a thrown error.
-            const integSpendBefore = typeof budget?.spent === 'function' ? budget.spent() : null;
-            integTestRunnerDispatchCount += 1;
-            let integResult;
-            // Set when the integ dispatch failed for an INFRASTRUCTURE reason
-            // (empty_response / inactivity timeout / orphan-recovery timeout)
-            // rather than producing a real pass/fail verdict -- recorded as
-            // INCONCLUSIVE below instead of a false passed:false FAIL. Carries
-            // {reason, message} for the note.
-            let integInfraInconclusive = null;
-            // apra-fleet-jfo: verifySetForIntegTest is now declared at the
-            // outer per-cycle scope (apra-fleet-66u.2, just above this `if`
-            // block) rather than here, so the bounce-cap logic after the
-            // try/catch AND Cycle Evaluation's dispatch-outcome tracking can
-            // both still see it even when the try block throws early or
-            // never runs at all. Reset to empty at the top of every dispatch
-            // attempt regardless -- an early-thrown dispatch simply skips the
-            // bounce-cap block below (its `verifySetForIntegTest.length > 0`
-            // guard short-circuits).
-            verifySetForIntegTest = [];
-            let verifySetIdSet = new Set();
-            // apra-fleet-3swo.5.7: the try/catch that used to wrap this whole
-            // block was the integ ladder's degrade, which is now the
-            // 'integ-test-runner' policy row executed by dispatchRole. Nothing
-            // else it covered was ever caught by it: the bd scope reads below
-            // throw CommandError, which the old catch's final `else` rethrew
-            // anyway, so removing the wrapper changes no failure path.
-            // integ-test-runner.md's contract requires "an explicit list of
-            // feature ids ... already scoped for you by the orchestrator" as
-            // a required input, and forbids the agent from deriving that list
-            // itself via a bare, unscoped `bd list --type=feature`. Fetch the
-            // scope's open features here and name them explicitly -- always
-            // dispatch, even with zero open features this cycle: deploy
-            // succeeded and a playbook exists, so this phase runs regardless,
-            // per the fixed per-cycle phase sequence every other
-            // cycle-evaluation check in this file assumes.
-            const openFeatures = await bdListScoped('--type=feature --status=open --json');
-            // apra-fleet-jfo: replaces the old bug-only pendingClosureBugs
-            // derivation. Any issue_type qualifies (bug, feature, task-parent,
-            // epic); classified against the FULL unfiltered project bead list
-            // (fetchAllBeadsShared, not a scope-filtered subset) so an
-            // out-of-scope open child still blocks eligibility. These beads
-            // have no other closure owner: doers refuse non-task beads,
-            // reviewers may not close, and the plain feature prompt below only
-            // names features -- without this they would linger open at goal
-            // priority forever. The integ runner has bead-closing authority
-            // and pushBeads: true, so it owns verify-set closure.
-            ({ verifyIds: verifySetForIntegTest } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues));
-            // apra-fleet-66u.2: a bead can become verify-eligible AFTER
-            // this cycle's Route step already ran (e.g. its last child
-            // closes during THIS cycle's own Develop/Review, before
-            // Deploy/IntegTest) -- this classifyVerifySet call, not the
-            // Route step's, is what first discovers it. Feed it into
-            // verifyEverIds here too so the exit-gate's
-            // stillOpenVerifyIds safety net (further down) never has a
-            // same-cycle blind spot for a bead that was genuinely just
-            // dispatched to verify but not yet closed.
-            for (const id of verifySetForIntegTest) verifyEverIds.add(id);
-            verifySetIdSet = new Set(verifySetForIntegTest);
-            // Dedupe: a feature already in the verify set gets the stronger
-            // verify clause below (real evidence, gap filed under itself), not
-            // also the generic "run tests for this feature" line.
-            const openFeaturesNotInVerifySet = openFeatures.filter((f) => !verifySetIdSet.has(f.id));
-            const verifyClause = verifySetForIntegTest.length > 0
-                ? ` Additionally, these bead(s) have ALL their children closed and await ` +
-                  `verification-closure: ${verifySetForIntegTest.join(', ')}. For each, verify against the ` +
-                  `deployed build per the playbook. If your pass shows the underlying work holds (the ` +
-                  `defect no longer reproduces, or the feature behaves as specified), close it (bd close) ` +
-                  `with a note citing the commands run and the observed output. If it does NOT hold, leave ` +
-                  `it open and file a bug describing the gap with evidence, parented under THAT bead ` +
-                  `specifically (--parent <that bead's own id>, NOT ${targetIssues[0]}) -- filing it under ` +
-                  `the right parent is required so the gap is correctly attributed and that parent is ` +
-                  `re-routed to development next cycle instead of staying stuck in verify.`
-                : '';
-            // The per-cycle Integ Test phase is FEATURE CLOSURE ONLY:
-            // integ-test-playbook.md owns no sandbox, no smoke test, and no
-            // real-bd suite -- those belong to regression-test-playbook.md,
-            // dispatched once per sprint in Finalization below.
-            const featurePrompt = (openFeaturesNotInVerifySet.length > 0
-                ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
-                  `${openFeaturesNotInVerifySet.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
-                  `--parent ${targetIssues[0]}.`
-                : `Run tests using integ-test-playbook.md. No open type=feature beads are in scope ` +
-                  `this cycle -- report nothing to test. Add bug beads if needed, filed under ` +
-                  `--parent ${targetIssues[0]}.`) + verifyClause +
-                // Generic hand-off to a target that deploys an isolated test
-                // instance per sprint (see sprintSelfIdLine above): the
-                // playbook, not this engine, says how to locate it from the
-                // id and what tearing it down means.
-                `\n${sprintSelfIdLine}\n` +
-                `If this cycle's deploy stood up an isolated test instance for this sprint, the playbook ` +
-                `says how to locate it from that id; tear it down before you return, pass or fail.`;
-            // integ-test-runner does NOT touch code (pushCode: false, no git
-            // push) but it DOES mutate beads -- it closes passing features
-            // and files bug beads -- so it must D-push those mutations
-            // (pushBeads: true), a D-push with no git push. G-pull before,
-            // no-op G-push after.
-            // apra-fleet-3swo.5.7: the integ ladder -- its dispatch, its
-            // pushBeads git-sync bracket, its max_turns-exhaustion resume
-            // at doubled turns, its ONE bounded infra-failure recovery
-            // resume, its auth self-heal and its degrade -- is now the
-            // 'integ-test-runner' row of fleet-sprint/role-policies.mjs.
-            //
-            // WHY THE INCONCLUSIVE PATH IS POLICY DATA. An INFRA dispatch
-            // failure (empty_response / inactivity timeout / orphan-recovery
-            // timeout) is NOT a test verdict: the runner's CLI died mid-turn
-            // or lost its result envelope without ever reporting pass or
-            // fail. Recording it as passed:false is a false negative that
-            // blocks the sprint's confidence check on an infra fault. The
-            // row says this as data: degrade.classifiesInfraFailures makes
-            // 'infra' a class of its own, retry.infraResumeAttempts spends
-            // ONE session resume trying to recover it (the run may have made
-            // real progress and merely lost its envelope, and the resume
-            // prompt already restates the full scope), and 'infra' is
-            // deliberately absent from degrade.classes so the engine
-            // fabricates no report for it -- it returns an `inconclusive`
-            // record instead, which is what this call site turns into an
-            // INCONCLUSIVE cycle entry below.
-            //
-            // The max_total_s ceiling is a HARD kill regardless of activity
-            // and surfaces as a plain AgentDispatchError, so it gets real
-            // headroom (INTEG_MAX_TOTAL_S) while the shorter INACTIVITY
-            // timer still kills a genuinely hung runner. Both budgets are
-            // named symbolically by the row.
-            const integOutcome = await dispatchRole(dispatchCtx, 'integ-test-runner', {
-                prompt: featurePrompt,
-                // A resumed dispatch DELIVERS A NEW PROMPT ARTIFACT to the
-                // member (replacing the original one, e.g. .fleet-task.md),
-                // so a bare "continue" resume erases the dispatch's scope
-                // from the artifact a contract may treat as its scope source
-                // of truth. Every resume prompt that carries per-dispatch
-                // scope must restate it.
-                resumePrompt:
-                    'Continue the integration test run exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining suites, close passing features / file bugs per your contract, and return your final report now. ' +
-                    'Your original scope, restated so a resumed dispatch never loses it: ' + featurePrompt,
-                roleLabel: 'Integ Test Runner',
-                resumeLabel: `Integ Test (resume, max_turns=${TURN_BASES.INTEG_TEST_MAX_TURNS * 2})`,
-            });
-            integResult = integOutcome.value;
-            integInfraInconclusive = integOutcome.inconclusive;
-            if (integInfraInconclusive) {
-                // integResult is stubbed only so downstream references stay
-                // defined; the integInfraInconclusive branch below owns what
-                // actually gets recorded.
-                integResult = {
-                    featuresClosed: 0,
-                    issuesCreated: 0,
-                    passed: false,
-                    bugsFiled: [],
-                    summary: `Integ test runner infra dispatch failure (${integInfraInconclusive.reason}): ${integInfraInconclusive.message}`,
-                };
-            }
-            // No duplicate log() dump -- see dispatchReview() for why.
-            //
-            // Feature closure is judged against the features' own `[test]` tasks
-            // in the branch working tree, which is inherently current, so no
-            // SHA-freshness gate is needed here.
-            //
-            // An infra dispatch failure (empty_response / inactivity timeout /
-            // orphan-recovery timeout) produced no test verdict at all, and must
-            // be recorded INCONCLUSIVE -- tagged and worded distinctly -- so the
-            // final reviewer/harvester can tell an infra fault apart from real
-            // test evidence, and it is never counted as a genuine pass or fail.
-            // Checked BEFORE `passed` because the stubbed integResult carries no
-            // meaningful verdict.
-            if (integInfraInconclusive) {
-                const inconclusiveNote = `INCONCLUSIVE (infra dispatch failure -- ${integInfraInconclusive.reason}; the member CLI produced no test verdict): ${integInfraInconclusive.message}`;
-                integFailures.push({ cycle, notes: inconclusiveNote, bugsFiled: [], inconclusive: true });
-                log(`Integration tests INCONCLUSIVE this cycle (C${cycle}): infra dispatch failure (${integInfraInconclusive.reason}) -- not accepted as pass or fail evidence.`);
-            } else if (integResult.passed !== true) {
-                // Never swallow a failure just because the agent chose to (or
-                // didn't) file bugs -- `passed` is the source of truth, checked
-                // explicitly and propagated below regardless of
-                // `bugsFiled.length`.
-                integFailures.push({ cycle, notes: integResult.summary, bugsFiled: integResult.bugsFiled });
-                log(`Integration tests FAILED this cycle (C${cycle}, bugsFiled: ${integResult.bugsFiled.join(', ') || 'none'}): ${integResult.summary}`);
-            } else {
-                // apra-fleet-4bg: a successful/no-op cycle previously produced NO
-                // log line at all, making it indistinguishable from a silent
-                // contract violation (an agent that never touched its scope but
-                // still reported passed:true). Log every outcome, not just
-                // failures.
-                log(`Integration tests PASSED this cycle (C${cycle}): ${integResult.featuresClosed} feature(s) closed, ${integResult.issuesCreated} bug(s) filed. ${integResult.summary}`);
-            }
-            // apra-fleet: Step 1c in integ-test-runner.md requires out-of-scope
-            // failures observed during verification to be cross-linked or filed,
-            // not silently dropped just because the cycle otherwise passed.
-            if (Array.isArray(integResult.observedFailures) && integResult.observedFailures.length > 0) {
-                log(`Integration tests C${cycle}: ${integResult.observedFailures.length} out-of-scope failure(s) observed and tracked -- ` +
-                    integResult.observedFailures.map((f) => `${f.test} (${f.cause}) -> ${f.beadId}`).join(' | '));
-            }
-            // apra-fleet-jfo D6: verify-fail bounce cap. A gap bug filed under a
-            // verify-set parent makes that parent structurally ineligible again
-            // at next classification (its child count now includes an open bug)
-            // -- no sticky "bounced" flag is needed for the round-trip itself.
-            // This only tracks HOW MANY TIMES a given parent has bounced, so a
-            // parent that keeps failing verification is deferred rather than
-            // looping forever.
-            if (Array.isArray(integResult.bugsFiled) && integResult.bugsFiled.length > 0 && verifySetForIntegTest.length > 0) {
-                for (const bugId of integResult.bugsFiled) {
-                    try {
-                        const bugShowRaw = await command(`bd show ${bugId} --json`, { member_name: orchestratorMember, silent: true });
-                        const bugBeads = parseBdJson(bugShowRaw, `bd show ${bugId} --json`);
-                        const parentId = Array.isArray(bugBeads) ? bugBeads[0]?.parent : bugBeads?.parent;
-                        if (!parentId || !verifySetIdSet.has(parentId)) continue;
-                        const gapCount = (verifyGapCounts.get(parentId) ?? 0) + 1;
-                        verifyGapCounts.set(parentId, gapCount);
-                        if (gapCount > VERIFY_GAP_LIMIT) {
-                            log(`Verify-route bounce cap: ${parentId} has failed verification ${gapCount} time(s) this sprint (limit ${VERIFY_GAP_LIMIT}) -- deferring rather than bouncing again.`);
-                            await command(
-                                `bd update ${parentId} --status=deferred --append-notes "Deferred by the verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
-                                { member_name: orchestratorMember, silent: true }
-                            );
-                        } else {
-                            log(`Verify-route bounce: ${parentId} failed verification (gap bug ${bugId} filed), attempt ${gapCount}/${VERIFY_GAP_LIMIT} -- will re-route to plan/develop once ${bugId} closes.`);
-                        }
-                    } catch (bugLookupErr) {
-                        log(`Verify-route bounce-cap lookup for ${bugId} failed (non-fatal, cap tracking skipped for this bug): ${bugLookupErr.message}`);
-                    }
-                }
-            }
-            // apra-fleet-nwh.1: fold this cycle's Integ Test spend (dispatch
-            // plus any resume/retry inside the try/catch above) into the
-            // running total buildCostAnalysis() reports at Harvest time. A
-            // negative/NaN delta (a test double whose spent() does not
-            // monotonically increase) is clamped to 0 rather than corrupting
-            // the accumulator.
-            if (integSpendBefore !== null && typeof budget?.spent === 'function') {
-                const delta = budget.spent() - integSpendBefore;
-                if (Number.isFinite(delta) && delta > 0) integTestRunnerSpend += delta;
-            }
-            await updateDashboard();
+            // The phase body lives in ./phases/integ-test.mjs
+            // (apra-fleet-3swo.6.8), which receives its state explicitly
+            // instead of closing over runSprintCycle's locals. The two
+            // probeFileExists() runbook probes above, the hoisted
+            // `let verifySetForIntegTest = []` and both "Skipping Integration
+            // Test Phase" else branches below all stay here: the probes decide
+            // whether this phase runs at all, and the verify set they feed is
+            // read by Cycle Evaluation whether or not it ran. integFailures,
+            // verifyEverIds and verifyGapCounts are mutated in place exactly as
+            // the closure did; the three genuinely reassigned values come back.
+            ({ verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend } = await runIntegTestPhase({
+                phase, log, command, dispatchCtx,
+                cycle, targetIssues, orchestratorMember, sprintSelfIdLine,
+                budget,
+                integFailures, verifyEverIds, verifyGapCounts,
+                verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend,
+                getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
+                bdListScoped, fetchAllBeadsShared, parseBdJson, updateDashboard,
+                VERIFY_GAP_LIMIT,
+            }));
         } else if (hasPlaybook && !deployedThisCycle) {
             log('Skipping Integration Test Phase (deploy did not succeed this cycle, or no deploy.md was present to attempt)');
         } else {
@@ -4985,114 +4783,25 @@ async function runSprintCycle(context) {
         // silently exiting on a stale verdict nothing this cycle backs, or
         // looping forever with no way to confirm completion.
         if (openAtGoal.length === 0 && !reviewedThisCycle) {
-            phase(`Re-Review C${cycle}`);
-            log(
-                `Cycle ${cycle}: 0 open goal-priority bead(s) but no review ran THIS cycle (Develop/Review ` +
-                `loop was skipped) -- dispatching a fresh re-review of the current state before deciding ` +
-                `whether to exit, rather than trusting a verdict from an earlier cycle.`
-            );
-            const reReviewScope = await bdListScoped('--json');
-            // apra-fleet-jfo.3: this call passed beadIds: [] unconditionally,
-            // which buildReviewerPrompt renders as "Review the work just done
-            // for the following bead id(s): ." -- no ids to review. The
-            // reviewer correctly treats that as missing required input and
-            // refuses (a CHANGES_NEEDED-shaped response with empty
-            // reopenIds/newTasks), which after one retry throws
-            // ReviewerContractViolationError and aborts the WHOLE sprint --
-            // hit live 2026-08-02 on apra-fleet-l7n-style sprints (Deploy
-            // fails on cycle 1 -> IntegTest skipped -> openAtGoal reads 0 ->
-            // this branch -> crash, before the sprint ever gets a real
-            // chance). The sprint's own root issue id(s) are always a valid,
-            // in-scope target for "review the current state" -- pass them as
-            // beadIds so the reviewer has something concrete to ground its
-            // verdict in; acceptanceCriteriaJson still carries the full scope
-            // for context.
-            const reReviewVerdict = await dispatchReview({ beadIds: targetIssues, acceptanceCriteriaJson: JSON.stringify(reReviewScope) });
-            lastReviewVerdict = reReviewVerdict.verdict;
-            reviewedThisCycle = true;
-
-            // Same orchestrator-applies-the-transition contract as the
-            // regular Develop/Review dispatch above: a re-review that
-            // reopens beads or proposes follow-up work must have those
-            // effects actually applied, not silently discarded just because
-            // this dispatch happened outside the normal Develop loop.
-            //
-            // apra-fleet-3swo.4.7: this site used to apply reopenIds with NO
-            // goal-scope guard -- the only one of the three verdict sites that
-            // did. It now goes through the same applyGuardedReopens() path as
-            // the per-round reviewer and Final Review, so a below-goal
-            // DEFERRED bead named here is skipped with the identical
-            // "deferred scope, not reopened" outcome instead of being pulled
-            // back into a sprint that no longer targets it.
-            await applyGuardedReopens({
-                entries: reReviewVerdict.reopenIds,
-                bdListScoped, goalMax, goal: validated.goal, log, command,
-                member: orchestratorMember,
-                logPrefix: 'Re-review reopenIds',
-                buildReopenCommand: ({ id }) => ({
-                    cmd: `bd update ${id} --status=open`,
-                    label: `Reopen ${id} per re-review verdict`,
-                }),
-                // Track per-bead reopen counts for reopen-thrash detection.
-                onReopened: ({ id }) => recordReopen(id),
-            });
-            for (const newTask of reReviewVerdict.newTasks) {
-                const validation = validateNewTask(newTask);
-                if (!validation.ok) {
-                    log(`Re-review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
-                    rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
-                    // Track it for resurfacing into the NEXT planning-phase
-                    // dispatch too -- see trackRejectedNewTaskForResurfacing()'s
-                    // doc comment.
-                    pendingRejectedNewTasks = trackRejectedNewTaskForResurfacing(pendingRejectedNewTasks, {
-                        title: newTask && newTask.title, description: newTask && newTask.description,
-                        reason: validation.reason, cycle,
-                    });
-                    // Never let a rejected finding vanish -- persist it verbatim
-                    // to the parent bead's notes as a fallback (non-fatal;
-                    // degrades to the run log).
-                    try {
-                        await appendRejectedFindingToParentNotes({
-                            command, member: orchestratorMember, parentId: targetIssues[0],
-                            newTask, reason: validation.reason, cycle, log,
-                        });
-                    } catch (noteErr) {
-                        log(`[fleet-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
-                    }
-                    continue;
-                }
-                const { title, description, priority } = validation;
-                // A bead can only have one parent -- when multiple sprint-root
-                // target issues are given, file follow-up work under the first
-                // one. `--parent` never accepts a comma-joined list; passing one
-                // silently creates an unparented/misparented bead.
-                //
-                // Same allocator-minted id path as the Develop/Review newTasks
-                // site above -- concurrent sprints must never mint the same child
-                // id under a shared parent.
-                const persisted = await persistNewTaskBestEffort({
-                    command, member: orchestratorMember, parentId: targetIssues[0],
-                    newTask, cycle, log, stage: 're-review',
-                    createFn: async () => {
-                        const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
-                        await createChildBeadWithAllocatedId({
-                            command, allocator: childIdAllocator, member: orchestratorMember,
-                            title, description, priority, parentId: targetIssues[0],
-                            sprintId: sprintMutexId, floor, log,
-                            label: `Create follow-up task from re-review newTasks: ${title}`,
-                        });
-                    },
-                });
-                // Same resurface-list bookkeeping (title+description) as the
-                // Develop/Review newTasks site above.
-                if (persisted) {
-                    pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, { title, description });
-                }
-            }
-
-            // D-push the orchestrator's applied re-review reopens/newTask
-            // creates, same as the Develop/Review transition site above.
-            await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
+            // The phase body lives in ./phases/re-review.mjs
+            // (apra-fleet-3swo.6.8), which receives its state explicitly
+            // instead of closing over runSprintCycle's locals. The `if` above
+            // stays here: it is built from Cycle Evaluation's own freshly-read
+            // counts, and the stillOpenVerifyIds exit gate below belongs to
+            // Cycle Evaluation, not to this phase. rejectedNewTasks is pushed
+            // to in place exactly as the closure did; the three genuinely
+            // reassigned values come back.
+            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReReviewPhase({
+                phase, log, command,
+                cycle, validated, targetIssues, orchestratorMember,
+                gitSync,
+                rejectedNewTasks,
+                lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
+                dispatchReview, bdListScoped, goalMax, recordReopen,
+                childIdAllocator, sprintMutexId,
+                computeChildFloor, createChildBeadWithAllocatedId,
+                trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+            }));
         }
 
         // apra-fleet-jfo.2: verify-routed beads are decomposed parents, so
