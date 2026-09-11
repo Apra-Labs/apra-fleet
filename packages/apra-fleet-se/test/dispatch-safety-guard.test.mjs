@@ -556,9 +556,12 @@ test('every command() call site in abort.mjs passes member_name or member_id', (
 const ENSURE_SPRINT_BRANCH_PATH = path.join(__dirname, '../fleet-sprint/phases/ensure-sprint-branch.mjs');
 // The base fetch, the sprint-branch fetch, the local-branch probe, the two
 // `git merge-base --is-ancestor` tip comparisons, the checkout, the
-// orphaned-WIP stash and the post-stash checkout retry -- exactly the eight
-// that left runner.js.
-const EXPECTED_ENSURE_SPRINT_BRANCH_COMMAND_COUNT = 8;
+// orphaned-WIP stash and the post-stash checkout retry -- the eight that left
+// runner.js -- plus two diagnostic-only tip-SHA probes (apra-fleet-3swo
+// fleet-mac regression investigation) that run only on the rare 'diverged'
+// abort path, so a human reading the abort message can name the two tips
+// instead of taking the verdict on faith.
+const EXPECTED_ENSURE_SPRINT_BRANCH_COMMAND_COUNT = 10;
 
 const PLAN_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/plan.mjs');
 // The `bd list --parent <id> --json` reconciliation listing, and the plan-cap

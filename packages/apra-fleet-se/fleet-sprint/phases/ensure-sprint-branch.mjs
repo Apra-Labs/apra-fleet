@@ -28,6 +28,24 @@
 // them member_name-bearing, which is precisely why registration is part of
 // this extraction rather than a follow-up -- an unregistered module loses all
 // five mechanical guards silently while they keep reporting green.
+//
+// POST-EXTRACTION FIX (apra-fleet-3swo, fleet-mac regression investigation,
+// not part of the move-only slice above): a 'diverged' abort was reported to
+// an operator whose own checkout showed no local branch of that name at all.
+// Reading decideEnsureBranchAction() and this phase's wiring end to end (plus
+// the passing "no local branch -> fresh checkout" unit and mock-sprint
+// coverage) turned up no misclassification -- the tip-comparison block below
+// is correctly gated on `localBranchExists`, and a 'diverged' verdict is only
+// reachable when git's own `rev-parse --verify --quiet` genuinely resolved
+// the local ref. The much more likely explanation is an operational mismatch
+// (the member's actual command-dispatch working directory, or a stale build,
+// differing from wherever was manually inspected) rather than a code defect.
+// Since a wrong-looking 'diverged' verdict is expensive to debug from the
+// abort message alone, this phase now resolves and reports both tip SHAs on
+// that path (see the diagnostic block below and the shaNote branch in
+// decideEnsureBranchAction()) -- two extra command() call sites, so the
+// EXPECTED_ENSURE_SPRINT_BRANCH_COMMAND_COUNT in
+// test/dispatch-safety-guard.test.mjs went from 8 to 10.
 // =============================================================================
 
 import { decideEnsureBranchAction } from '../branch-ensure.mjs';
@@ -159,6 +177,28 @@ export async function runEnsureSprintBranchPhase({
             }
         }
 
+        // Diagnostic-only, and ONLY on the rare path that is about to abort:
+        // name the two tip SHAs so a human reading the abort message can
+        // immediately tell genuine divergence apart from "this member's
+        // actual git working directory is not the one I just inspected" --
+        // in practice the far more common explanation for a 'diverged'
+        // report that looks wrong from the operator's own checkout. Cheap
+        // and failSoft; never adds a command on the common (non-diverged)
+        // path, and never blocks the abort if a probe itself fails.
+        let localSha, remoteSha;
+        if (localTipStatus === 'diverged') {
+            const localShaRes = await command(
+                `git rev-parse --short ${validated.branch}`,
+                { member_name: member, silent: true, failSoft: true, label: `Resolve local '${validated.branch}' tip SHA for diagnostics on member '${member}'` }
+            );
+            const remoteShaRes = await command(
+                `git rev-parse --short origin/${validated.branch}`,
+                { member_name: member, silent: true, failSoft: true, label: `Resolve 'origin/${validated.branch}' tip SHA for diagnostics on member '${member}'` }
+            );
+            localSha = localShaRes.ok ? localShaRes.output.trim() : undefined;
+            remoteSha = remoteShaRes.ok ? remoteShaRes.output.trim() : undefined;
+        }
+
         // The fetch-outcome / local-probe / tip-comparison -> checkout-command
         // decision lives in the pure decideEnsureBranchAction() helper above;
         // this call site only turns that decision into a command()/log()
@@ -170,6 +210,8 @@ export async function runEnsureSprintBranchPhase({
             branchFetchError: branchFetch.error,
             localBranchExists,
             localTipStatus,
+            localSha,
+            remoteSha,
         });
         if (decision.action === 'abort') {
             throw new Error(`${decision.message} (member '${member}')`);

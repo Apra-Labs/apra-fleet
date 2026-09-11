@@ -96,10 +96,13 @@ export const GUARDED_MODULES = [
     // that function's doc comment below).
     //
     // ensure-sprint-branch.mjs took EIGHT member_name-bearing command() call
-    // sites out of runner.js and plan.mjs took THREE, which is exactly why
-    // both are registered as part of the extraction rather than afterwards:
-    // eleven guarded dispatch sites would otherwise leave runner.js's scanned
-    // surface and land in files no guard reads, with every guard still green.
+    // sites out of runner.js (now TEN -- see the POST-EXTRACTION FIX note in
+    // that file's header for the two diagnostic-only tip-SHA probes added by
+    // apra-fleet-3swo's fleet-mac regression investigation) and plan.mjs took
+    // THREE, which is exactly why both are registered as part of the
+    // extraction rather than afterwards: guarded dispatch sites would
+    // otherwise leave runner.js's scanned surface and land in files no guard
+    // reads, with every guard still green.
     'phases/ensure-sprint-branch.mjs',
     'phases/plan.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
