@@ -73,9 +73,14 @@ describe('scheduleCredentialCleanup', () => {
     vi.useRealTimers();
   });
 
-  it('schedules a timer with default 55-minute TTL when no expiresAt', () => {
+  it('schedules no timer at all when no expiresAt is known (no blind default-TTL self-destruct)', () => {
     scheduleCredentialCleanup('member-1');
-    expect(_getCleanupTimers().has('member-1')).toBe(true);
+    expect(_getCleanupTimers().has('member-1')).toBe(false);
+  });
+
+  it('schedules no timer when expiresAt is unparseable', () => {
+    scheduleCredentialCleanup('member-1', 'not-a-date');
+    expect(_getCleanupTimers().has('member-1')).toBe(false);
   });
 
   it('schedules timer based on expiresAt', () => {
@@ -102,7 +107,8 @@ describe('scheduleCredentialCleanup', () => {
   });
 
   it('cancels an existing timer even when the new expiry is beyond the ceiling', () => {
-    scheduleCredentialCleanup('member-1');
+    const nearExpiry = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', nearExpiry);
     expect(_getCleanupTimers().has('member-1')).toBe(true);
     scheduleCredentialCleanup('member-1', new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString());
     expect(_getCleanupTimers().has('member-1')).toBe(false);
@@ -115,17 +121,33 @@ describe('scheduleCredentialCleanup', () => {
     mockRevoke.mockResolvedValue({ success: true, message: 'revoked' });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    scheduleCredentialCleanup('member-1');
+    const expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', expiresAt);
     await vi.advanceTimersByTimeAsync(55 * 60 * 1000 + 1000);
 
     expect(mockRevoke).toHaveBeenCalledOnce();
     expect(_getCleanupTimers().has('member-1')).toBe(false);
   });
 
+  it('threads the agent\'s persisted vcsCredentialLabel/vcsCredentialScopeUrl into revoke, not an unlabeled/default-host guess', async () => {
+    const member = makeAgent({ vcsCredentialLabel: 'work-github', vcsCredentialScopeUrl: 'https://github.com/my-org' });
+    mockGetAllAgents.mockReturnValue([member]);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
+    mockRevoke.mockResolvedValue({ success: true, message: 'revoked' });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', expiresAt);
+    await vi.advanceTimersByTimeAsync(55 * 60 * 1000 + 1000);
+
+    expect(mockRevoke).toHaveBeenCalledWith(member, {}, expect.any(Function), 'work-github', 'https://github.com/my-org');
+  });
+
   it('does not call revoke when member has no vcsProvider', async () => {
     mockGetAllAgents.mockReturnValue([makeAgent({ vcsProvider: undefined })]);
 
-    scheduleCredentialCleanup('member-1');
+    const expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', expiresAt);
     await vi.advanceTimersByTimeAsync(55 * 60 * 1000 + 1000);
 
     expect(mockRevoke).not.toHaveBeenCalled();
@@ -136,15 +158,17 @@ describe('scheduleCredentialCleanup', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
     mockRevoke.mockRejectedValue(new Error('network error'));
 
-    scheduleCredentialCleanup('member-1');
+    const expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', expiresAt);
     await expect(vi.advanceTimersByTimeAsync(55 * 60 * 1000 + 1000)).resolves.not.toThrow();
   });
 
   it('cancels previous timer when re-provisioning same member', () => {
-    scheduleCredentialCleanup('member-1');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', expiresAt);
     const timer1 = _getCleanupTimers().get('member-1');
 
-    scheduleCredentialCleanup('member-1');
+    scheduleCredentialCleanup('member-1', expiresAt);
     const timer2 = _getCleanupTimers().get('member-1');
 
     expect(timer2).not.toBe(timer1);
@@ -152,11 +176,43 @@ describe('scheduleCredentialCleanup', () => {
   });
 
   it('multiple agents have independent timers', () => {
-    scheduleCredentialCleanup('member-1');
-    scheduleCredentialCleanup('member-2');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', expiresAt);
+    scheduleCredentialCleanup('member-2', expiresAt);
 
     expect(_getCleanupTimers().size).toBe(2);
     expect(_getCleanupTimers().has('member-1')).toBe(true);
+    expect(_getCleanupTimers().has('member-2')).toBe(true);
+  });
+
+  // Core regression scenario for the "silently clobbers a valid credential"
+  // bug: two DIFFERENT members each hold their own credential (different
+  // labels) on the same host. Member A's cleanup timer firing must revoke
+  // ONLY member A's label/scopeUrl -- member B's still-live timer, and the
+  // arguments it will eventually be revoked with, must be completely
+  // unaffected. This asserts the call-site contract (the exact
+  // label/scopeUrl each revoke is invoked with); credential-file/config-key
+  // isolation for a given (label, scopeUrl) pair is asserted independently
+  // in tests/git-credential-helper-scoping.test.ts by comparing the actual
+  // OS command strings.
+  it('cleanup for member A never carries member B\'s label/scopeUrl, even when both target the same host', async () => {
+    const memberA = makeAgent({ id: 'member-1', vcsCredentialLabel: 'label-a', vcsCredentialScopeUrl: 'https://github.com' });
+    const memberB = makeAgent({ id: 'member-2', vcsCredentialLabel: 'label-b', vcsCredentialScopeUrl: 'https://github.com' });
+    mockGetAllAgents.mockReturnValue([memberA, memberB]);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
+    mockRevoke.mockResolvedValue({ success: true, message: 'revoked' });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    // Member B's expiry is far enough out that only A's timer fires below.
+    scheduleCredentialCleanup('member-1', new Date(Date.now() + 30 * 60 * 1000).toISOString());
+    scheduleCredentialCleanup('member-2', new Date(Date.now() + 60 * 60 * 1000).toISOString());
+
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000 + 1000);
+
+    // Only member A's credential was revoked, with exactly A's label/scopeUrl.
+    expect(mockRevoke).toHaveBeenCalledOnce();
+    expect(mockRevoke).toHaveBeenCalledWith(memberA, {}, expect.any(Function), 'label-a', 'https://github.com');
+    // Member B's own timer is still pending, untouched by A's cleanup firing.
     expect(_getCleanupTimers().has('member-2')).toBe(true);
   });
 });
@@ -173,7 +229,8 @@ describe('cancelCredentialCleanup', () => {
   });
 
   it('cancels the timer and removes from map', () => {
-    scheduleCredentialCleanup('member-1');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', expiresAt);
     expect(_getCleanupTimers().has('member-1')).toBe(true);
 
     cancelCredentialCleanup('member-1');
@@ -187,7 +244,8 @@ describe('cancelCredentialCleanup', () => {
   it('prevents revoke from firing after cancellation', async () => {
     mockGetAllAgents.mockReturnValue([makeAgent()]);
 
-    scheduleCredentialCleanup('member-1');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', expiresAt);
     cancelCredentialCleanup('member-1');
 
     await vi.advanceTimersByTimeAsync(55 * 60 * 1000 + 1000);

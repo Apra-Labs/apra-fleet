@@ -73,11 +73,16 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
           await strategy.execCommand(cmd, 10000).catch(() => {});
         }
 
-        // VCS auth revoke: remove git credential helper if a VCS provider is configured
+        // VCS auth revoke: remove git credential helper if a VCS provider is configured.
+        // Must pass the SAME label/scopeUrl persisted at provision time (see
+        // credential-cleanup.ts) -- omitting them targets the unlabeled/
+        // default-host credential-helper file/config-key pair instead of the
+        // one actually deployed, leaving the real token file orphaned,
+        // unrevoked, on a machine that is being decommissioned.
         if (agent.vcsProvider) {
           const vcsService = vcsProviders[agent.vcsProvider];
           if (vcsService) {
-            await vcsService.revoke(agent, cmds, exec).catch(() => {});
+            await vcsService.revoke(agent, cmds, exec, agent.vcsCredentialLabel, agent.vcsCredentialScopeUrl).catch(() => {});
           }
         }
 
