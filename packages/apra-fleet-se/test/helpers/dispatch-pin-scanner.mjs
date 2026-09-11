@@ -101,6 +101,16 @@ export const DISPATCH_LADDER_MODULES = [
     // position.
     'phases/ensure-sprint-branch.mjs',
     'phases/plan.mjs',
+    // apra-fleet-3swo.6.7: the Replan and Develop round phases, added in the
+    // SAME position for the SAME reason -- and this slice is the one the note
+    // above anticipated. Develop took the 'streak-assignment' and 'doer' rows'
+    // ladderAnchor text ("label: 'Streak Assignment'," and 'doerPrompt,') out
+    // of runner.js, and Replan took the two scoped-replan rows' anchors, while
+    // role-policies.mjs still carries every one of those literals verbatim as
+    // data. Registered before role-policies.mjs so an anchor search can never
+    // resolve inside that data literal instead of the real dispatch site.
+    'phases/replan.mjs',
+    'phases/develop.mjs',
     'role-policies.mjs',
     'dispatch-role.mjs',
 ];
