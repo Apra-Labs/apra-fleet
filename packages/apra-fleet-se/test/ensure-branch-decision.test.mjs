@@ -193,3 +193,45 @@ test('decideEnsureBranchAction: successful branch fetch + local branch DIVERGED 
     );
     check(decision.command === undefined, `Expected no checkout command to be proposed on abort, got: ${JSON.stringify(decision)}`);
 });
+
+// apra-fleet-3swo (fleet-mac regression investigation): a 'diverged' abort
+// that looks wrong from an operator's own checkout is, in practice, almost
+// always a "this member dispatches against a different working directory
+// than the one I inspected" mismatch rather than a real divergence -- see
+// branch-ensure.mjs's decideEnsureBranchAction() doc comment. Naming the two
+// tip SHAs in the abort message, when the caller has them, gives a human
+// something concrete to check ("does branch-vv show THIS sha anywhere?")
+// instead of having to take the verdict on faith.
+test('decideEnsureBranchAction: diverged abort names both tip SHAs when the caller supplies them', () => {
+    const decision = decideEnsureBranchAction({
+        branch: 'feat/sprint-service-1',
+        baseBranch: 'main',
+        branchFetchOk: true,
+        branchFetchError: null,
+        localBranchExists: true,
+        localTipStatus: 'diverged',
+        localSha: 'abc1234',
+        remoteSha: 'def5678',
+    });
+
+    check(decision.action === 'abort', `Expected an abort decision, got: ${JSON.stringify(decision)}`);
+    check(decision.message.includes('abc1234'), `Expected the local tip SHA in the message, got: ${decision.message}`);
+    check(decision.message.includes('def5678'), `Expected the remote tip SHA in the message, got: ${decision.message}`);
+});
+
+test('decideEnsureBranchAction: diverged abort omits the SHA note when the caller supplies no SHAs (backward compatible)', () => {
+    const decision = decideEnsureBranchAction({
+        branch: 'feat/sprint-service-1',
+        baseBranch: 'main',
+        branchFetchOk: true,
+        branchFetchError: null,
+        localBranchExists: true,
+        localTipStatus: 'diverged',
+    });
+
+    check(decision.action === 'abort', `Expected an abort decision, got: ${JSON.stringify(decision)}`);
+    check(
+        decision.message.endsWith('safely proceed.'),
+        `Expected no trailing SHA note when no SHAs were supplied, got: ${decision.message}`
+    );
+});
