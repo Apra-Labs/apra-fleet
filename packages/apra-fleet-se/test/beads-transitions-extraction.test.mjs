@@ -384,27 +384,36 @@ describe('apra-fleet-3swo.4.7: the verdict contract predicate moved intact', () 
 describe('apra-fleet-3swo.4.7: the engine routes ALL THREE sites through the shared guard', () => {
     // apra-fleet-3swo.6.5: re-anchored to a SET of files, not runner.js alone.
     // The per-round reviewer site moved verbatim into
-    // fleet-sprint/phases/review.mjs with the Review phase; Final Review and
-    // Re-Review are still inline in runner.js. A scan that kept pointing at
-    // runner.js alone would not have failed on the missing third site -- it
-    // would have kept asserting "exactly three" against two, which is why the
-    // per-file split below is pinned explicitly rather than left to the
+    // fleet-sprint/phases/review.mjs with the Review phase. A scan that kept
+    // pointing at runner.js alone would not have failed on the missing site --
+    // it would have kept asserting "exactly three" against two, which is why
+    // the per-file split below is pinned explicitly rather than left to the
     // concatenated total.
+    //
+    // apra-fleet-3swo.6.8: the Re-Review site then moved into
+    // fleet-sprint/phases/re-review.mjs with the Re-Review phase, so the set
+    // grows to three files and the split becomes 1/1/1. This is the site the
+    // whole extraction exists for -- it was the previously UNGUARDED one --
+    // and a slice that quietly reintroduced a private reopen loop there would
+    // otherwise have left runner.js holding only Final Review while the total
+    // silently dropped to two. Only Final Review is still inline.
     const RUNNER_SRC = fs.readFileSync(RUNNER_PATH, 'utf8');
     const REVIEW_PHASE_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/phases/review.mjs'), 'utf8');
+    const RE_REVIEW_PHASE_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/phases/re-review.mjs'), 'utf8');
     // Scanned as separate files, never concatenated: every assertion below
     // uses lastIndexOf() to prove a marker precedes another IN THE SAME
-    // lexical scope, and concatenating two files would let a landmark in the
-    // first satisfy a match in the second.
+    // lexical scope, and concatenating the files would let a landmark in one
+    // satisfy a match in another.
     const SOURCES = [
         { name: 'fleet-sprint/runner.js', src: RUNNER_SRC },
         { name: 'fleet-sprint/phases/review.mjs', src: REVIEW_PHASE_SRC },
+        { name: 'fleet-sprint/phases/re-review.mjs', src: RE_REVIEW_PHASE_SRC },
     ];
-    /** The file that must own each site's `logPrefix`, after the Review slice. */
+    /** The file that must own each site's `logPrefix`, after the Re-Review slice. */
     const SITE_OWNER = {
         'Reviewer reopenIds': 'fleet-sprint/phases/review.mjs',
         'Final Review reopenIds': 'fleet-sprint/runner.js',
-        'Re-review reopenIds': 'fleet-sprint/runner.js',
+        'Re-review reopenIds': 'fleet-sprint/phases/re-review.mjs',
     };
     // Counted on `applyGuardedReopens({` -- the call-with-options-object shape
     // -- so prose mentions of `applyGuardedReopens()` in the surrounding
@@ -434,12 +443,13 @@ describe('apra-fleet-3swo.4.7: the engine routes ALL THREE sites through the sha
         }
         assert.equal(
             SOURCES.reduce((n, f) => n + countGuardCalls(f.src), 0), 3,
-            'exactly three call sites across runner.js + phases/review.mjs: per-round reviewer, Final Review, Re-Review'
+            'exactly three call sites across runner.js + phases/review.mjs + phases/re-review.mjs: per-round reviewer, Final Review, Re-Review'
         );
         // The split itself, so the total above cannot be satisfied by three
         // sites all landing back in one file.
         assert.equal(countGuardCalls(REVIEW_PHASE_SRC), 1, 'phases/review.mjs owns exactly the per-round reviewer site');
-        assert.equal(countGuardCalls(RUNNER_SRC), 2, 'runner.js keeps exactly the Final Review and Re-Review sites');
+        assert.equal(countGuardCalls(RE_REVIEW_PHASE_SRC), 1, 'phases/re-review.mjs owns exactly the Re-Review site');
+        assert.equal(countGuardCalls(RUNNER_SRC), 1, 'runner.js keeps exactly the Final Review site');
     });
 
     test('no scanned file keeps a private reopen loop or private allowlist of its own', () => {

@@ -339,7 +339,19 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // registered in GUARDED_MODULES, so the aggregate
 // checkModules(guardedModulePaths()) test below scans them, and each gets its
 // own explicit baseline count below.
-const EXPECTED_COMMAND_COUNT = 17;
+// 17 -> 15 (apra-fleet-3swo.6.8): the Integ Test and Re-Review phase()
+// boundaries were sliced out of runSprintCycle. Re-Review took NO command()
+// site (its reopen/newTask writes go through applyGuardedReopens
+// (beads-transitions.mjs) and createChildBeadWithAllocatedId/
+// computeChildFloor, whose command() sites live in the modules that own them,
+// exactly as phases/review.mjs's already did) and Integ Test took exactly TWO
+// -- the verify-fail bounce cap's `bd show <bugId> --json` parent lookup and
+// its `bd update <parentId> --status=deferred --append-notes` deferral -- so
+// this is -2, which is exactly 17 - 15; no site was added, removed or
+// collapsed in the move. Not left unguarded: both new modules are registered
+// in GUARDED_MODULES, so the aggregate checkModules(guardedModulePaths()) test
+// below scans them, and each gets its own explicit baseline count below.
+const EXPECTED_COMMAND_COUNT = 15;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -689,6 +701,75 @@ test('every command() call site in phases/deploy.mjs passes member_name or membe
         sites.filter((s) => s.fnName === 'agent').length,
         0,
         'phases/deploy.mjs must never dispatch an agent() directly -- the deployer ladder runs through the dispatchRole engine.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-3swo.6.8: the Integ Test and Re-Review phase() boundaries. Same
+// per-module baseline reasoning as the four above. The TWO on integ-test.mjs
+// are the only raw bd commands either phase issues directly; re-review.mjs's
+// ZERO is the load-bearing one, for the same reason phases/deploy.mjs's is --
+// it is a phase whose every bead write is supposed to go through an injected
+// helper that owns its own guarded command() site, so a future edit reaching
+// for a raw command() here must turn this red rather than land on a site no
+// per-module baseline is watching.
+// =============================================================================
+const INTEG_TEST_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/integ-test.mjs');
+// The verify-fail bounce cap's `bd show <bugId> --json` parent lookup and its
+// `bd update <parentId> --status=deferred --append-notes` deferral -- exactly
+// the two sites that left runner.js with this phase.
+const EXPECTED_INTEG_TEST_PHASE_COMMAND_COUNT = 2;
+
+const RE_REVIEW_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/re-review.mjs');
+// None: every bead write this phase makes goes through applyGuardedReopens or
+// persistNewTaskBestEffort/computeChildFloor/createChildBeadWithAllocatedId,
+// whose command() sites live in the modules that own them, and its only other
+// repo-side effect is the shared gitSync bracket.
+const EXPECTED_RE_REVIEW_PHASE_COMMAND_COUNT = 0;
+
+test('every command() call site in phases/integ-test.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(INTEG_TEST_PHASE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_INTEG_TEST_PHASE_COMMAND_COUNT,
+        `Expected ${EXPECTED_INTEG_TEST_PHASE_COMMAND_COUNT} command() call site(s) in phases/integ-test.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_INTEG_TEST_PHASE_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'phases/integ-test.mjs must never dispatch an agent() directly -- the integ-test-runner ladder runs through the dispatchRole engine.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+test('every command() call site in phases/re-review.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(RE_REVIEW_PHASE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_RE_REVIEW_PHASE_COMMAND_COUNT,
+        `Expected ${EXPECTED_RE_REVIEW_PHASE_COMMAND_COUNT} command() call site(s) in phases/re-review.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_RE_REVIEW_PHASE_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'phases/re-review.mjs must never dispatch an agent() directly -- its reviewer ladder runs through runner.js\'s shared dispatchReview() helper and the dispatchRole engine.'
     );
     assert.deepStrictEqual(
         violations,
