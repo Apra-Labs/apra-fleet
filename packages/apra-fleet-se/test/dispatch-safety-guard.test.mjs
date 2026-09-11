@@ -327,7 +327,19 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // checkModules(guardedModulePaths()) test below scans all eleven, and each
 // module also gets its own explicit baseline count below -- same precedent as
 // the vcs-auth.mjs/abort.mjs/beads-transitions.mjs extractions above.
-const EXPECTED_COMMAND_COUNT = 18;
+// 18 -> 17 (apra-fleet-3swo.6.5): the Review and Deploy phase() boundaries were
+// sliced out of runSprintCycle. Deploy took NO command() site (its only
+// repo-side effect is the deployer dispatch's own bracket) and Review took
+// exactly ONE -- the `bd show <assignedBeadIds> --json` acceptance-criteria
+// read -- so this is -1, which is exactly 18 - 17; no site was added, removed
+// or collapsed in the move. Review's reopen/newTask writes were already NOT
+// counted here: they go through applyGuardedReopens (beads-transitions.mjs) and
+// createChildBeadWithAllocatedId/computeChildFloor, whose command() sites live
+// in the modules that own them. Not left unguarded: both new modules are
+// registered in GUARDED_MODULES, so the aggregate
+// checkModules(guardedModulePaths()) test below scans them, and each gets its
+// own explicit baseline count below.
+const EXPECTED_COMMAND_COUNT = 17;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -610,6 +622,73 @@ test('every command() call site in phases/plan.mjs passes member_name or member_
         sites.filter((s) => s.fnName === 'agent').length,
         0,
         'phases/plan.mjs must never dispatch an agent() directly -- both its ladders run through the dispatchRole engine.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-3swo.6.5: the Review and Deploy phase() boundaries. Same per-module
+// baseline reasoning as the two above -- and the ZERO baselines here are not
+// decorative: phases/deploy.mjs is where a future edit is most likely to reach
+// for a raw command() (a runbook probe, a teardown) instead of routing through
+// the seams it is handed, and a zero baseline is what turns that into a red
+// test rather than a silently unguarded site.
+// =============================================================================
+const REVIEW_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/review.mjs');
+// The `bd show <assignedBeadIds> --json` acceptance-criteria read -- the one
+// site that left runner.js with this phase.
+const EXPECTED_REVIEW_PHASE_COMMAND_COUNT = 1;
+
+const DEPLOY_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/deploy.mjs');
+// None: the deployer ladder is a dispatchRole row, whose read-side git-sync
+// bracket is the phase's only repo-side effect.
+const EXPECTED_DEPLOY_PHASE_COMMAND_COUNT = 0;
+
+test('every command() call site in phases/review.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(REVIEW_PHASE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_REVIEW_PHASE_COMMAND_COUNT,
+        `Expected ${EXPECTED_REVIEW_PHASE_COMMAND_COUNT} command() call site(s) in phases/review.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_REVIEW_PHASE_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    // The reviewer ladder is a dispatchRole row reached through runner.js's
+    // shared dispatchReview() helper (Re-Review and Final Review call it too),
+    // so this phase module dispatches no agent() of its own.
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'phases/review.mjs must never dispatch an agent() directly -- its ladder runs through the dispatchRole engine.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+test('every command() call site in phases/deploy.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(DEPLOY_PHASE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_DEPLOY_PHASE_COMMAND_COUNT,
+        `Expected ${EXPECTED_DEPLOY_PHASE_COMMAND_COUNT} command() call site(s) in phases/deploy.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_DEPLOY_PHASE_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'phases/deploy.mjs must never dispatch an agent() directly -- the deployer ladder runs through the dispatchRole engine.'
     );
     assert.deepStrictEqual(
         violations,

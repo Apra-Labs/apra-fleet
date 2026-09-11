@@ -111,6 +111,20 @@ export const DISPATCH_LADDER_MODULES = [
     // resolve inside that data literal instead of the real dispatch site.
     'phases/replan.mjs',
     'phases/develop.mjs',
+    // apra-fleet-3swo.6.5: the Review and Deploy phases, added in the SAME
+    // position for the SAME reason. Deploy took the 'deployer' row's
+    // ladderAnchor text ('const deployerPrompt =') out of runner.js while
+    // role-policies.mjs still carries that literal verbatim as data, so
+    // registering it before role-policies.mjs is what stops an anchor search
+    // resolving inside the data literal instead of the real dispatch site.
+    // Review hosts no dispatch site of its own (the reviewer ladder runs
+    // through runner.js's shared dispatchReview() helper, which Re-Review and
+    // Final Review also call), but it is listed so the CONSUMER census in
+    // phase3-dispatch-engine-completeness.test.mjs -- which filters this list
+    // to runner.js + phases/* -- keeps covering every module a dispatch could
+    // appear in after the slice.
+    'phases/review.mjs',
+    'phases/deploy.mjs',
     'role-policies.mjs',
     'dispatch-role.mjs',
 ];

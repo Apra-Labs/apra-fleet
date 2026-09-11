@@ -422,7 +422,15 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
         // property of text and became an ENFORCED INVARIANT: the 'deployer'
         // policy row records a 'sprint-self-id-in-prompt' preDispatch step, and
         // the engine really runs it before dispatching.
-        const region = stripComments(regionBetween(SRC, 'const sprintSelfId =', 'const deployerPrompt ='));
+        // apra-fleet-3swo.6.5: re-anchored again. `const deployerPrompt =`
+        // moved into fleet-sprint/phases/deploy.mjs, which sits AFTER runner.js
+        // in the concatenated SRC -- so keeping it as the region END would have
+        // stretched this region from runner.js's sprintSelfId across every
+        // phase module in between, quietly turning a one-line region into a
+        // few-thousand-line one. `const sprintSelfIdLine =` is the very next
+        // statement after sprintSelfId and stays in runner.js, so the region
+        // remains exactly the declaration this assertion is about.
+        const region = stripComments(regionBetween(SRC, 'const sprintSelfId =', 'const sprintSelfIdLine ='));
         assert.ok(
             /const sprintSelfId = validated\.runId \|\| validated\.branch;/.test(region),
             'sprintSelfId is the forwarded --run-id, falling back to the branch name for a direct/standalone launch -- the same key the supervisor reserves under.'

@@ -381,48 +381,90 @@ describe('apra-fleet-3swo.4.7: the verdict contract predicate moved intact', () 
     });
 });
 
-describe('apra-fleet-3swo.4.7: runner.js routes ALL THREE sites through the shared guard', () => {
-    const src = fs.readFileSync(RUNNER_PATH, 'utf8');
+describe('apra-fleet-3swo.4.7: the engine routes ALL THREE sites through the shared guard', () => {
+    // apra-fleet-3swo.6.5: re-anchored to a SET of files, not runner.js alone.
+    // The per-round reviewer site moved verbatim into
+    // fleet-sprint/phases/review.mjs with the Review phase; Final Review and
+    // Re-Review are still inline in runner.js. A scan that kept pointing at
+    // runner.js alone would not have failed on the missing third site -- it
+    // would have kept asserting "exactly three" against two, which is why the
+    // per-file split below is pinned explicitly rather than left to the
+    // concatenated total.
+    const RUNNER_SRC = fs.readFileSync(RUNNER_PATH, 'utf8');
+    const REVIEW_PHASE_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/phases/review.mjs'), 'utf8');
+    // Scanned as separate files, never concatenated: every assertion below
+    // uses lastIndexOf() to prove a marker precedes another IN THE SAME
+    // lexical scope, and concatenating two files would let a landmark in the
+    // first satisfy a match in the second.
+    const SOURCES = [
+        { name: 'fleet-sprint/runner.js', src: RUNNER_SRC },
+        { name: 'fleet-sprint/phases/review.mjs', src: REVIEW_PHASE_SRC },
+    ];
+    /** The file that must own each site's `logPrefix`, after the Review slice. */
+    const SITE_OWNER = {
+        'Reviewer reopenIds': 'fleet-sprint/phases/review.mjs',
+        'Final Review reopenIds': 'fleet-sprint/runner.js',
+        'Re-review reopenIds': 'fleet-sprint/runner.js',
+    };
+    // Counted on `applyGuardedReopens({` -- the call-with-options-object shape
+    // -- so prose mentions of `applyGuardedReopens()` in the surrounding
+    // comments are not miscounted as call sites.
+    const countGuardCalls = (src) => (src.match(/applyGuardedReopens\(\{/g) || []).length;
 
     test('each of the three site labels is applied via applyGuardedReopens', () => {
-        for (const prefix of ['Reviewer reopenIds', 'Final Review reopenIds', 'Re-review reopenIds']) {
-            const at = src.indexOf(`logPrefix: '${prefix}'`);
-            assert.ok(at > 0, `runner.js has no "${prefix}" site at all`);
-            const guardAt = src.lastIndexOf('applyGuardedReopens({', at);
-            const loopAt = src.lastIndexOf('for (const id of', at);
+        for (const [prefix, ownerName] of Object.entries(SITE_OWNER)) {
+            const owner = SOURCES.find((f) => f.name === ownerName);
+            const at = owner.src.indexOf(`logPrefix: '${prefix}'`);
+            assert.ok(at > 0, `${owner.name} has no "${prefix}" site at all`);
+            const guardAt = owner.src.lastIndexOf('applyGuardedReopens({', at);
+            const loopAt = owner.src.lastIndexOf('for (const id of', at);
             assert.ok(
                 guardAt > 0 && guardAt > loopAt,
-                `runner.js no longer routes the "${prefix}" site through applyGuardedReopens -- a private reopen loop is an unguarded site`
+                `${owner.name} no longer routes the "${prefix}" site through applyGuardedReopens -- a private reopen loop is an unguarded site`
+            );
+            // ...and no OTHER scanned file may also carry it: a site that was
+            // COPIED rather than MOVED leaves two sources of truth for one
+            // reopen path, which the totals below would not notice.
+            for (const other of SOURCES.filter((f) => f.name !== ownerName)) {
+                assert.equal(
+                    other.src.includes(`logPrefix: '${prefix}'`), false,
+                    `${other.name} must not also carry the "${prefix}" site -- it belongs to ${ownerName}`
+                );
+            }
+        }
+        assert.equal(
+            SOURCES.reduce((n, f) => n + countGuardCalls(f.src), 0), 3,
+            'exactly three call sites across runner.js + phases/review.mjs: per-round reviewer, Final Review, Re-Review'
+        );
+        // The split itself, so the total above cannot be satisfied by three
+        // sites all landing back in one file.
+        assert.equal(countGuardCalls(REVIEW_PHASE_SRC), 1, 'phases/review.mjs owns exactly the per-round reviewer site');
+        assert.equal(countGuardCalls(RUNNER_SRC), 2, 'runner.js keeps exactly the Final Review and Re-Review sites');
+    });
+
+    test('no scanned file keeps a private reopen loop or private allowlist of its own', () => {
+        for (const { name, src } of SOURCES) {
+            assert.ok(!/reopenAllowlist/.test(src), `the goal-scope allowlist belongs to beads-transitions.mjs now (${name})`);
+            assert.ok(
+                !/for \(const id of \w*[Vv]erdict\.reopenIds\)/.test(src),
+                `a bare loop over a verdict's reopenIds is exactly the unguarded shape this extraction removed (${name})`
             );
         }
-        // Counted on `applyGuardedReopens({` -- the call-with-options-object
-        // shape -- so prose mentions of `applyGuardedReopens()` in the
-        // surrounding comments are not miscounted as call sites.
-        assert.equal(
-            (src.match(/applyGuardedReopens\(\{/g) || []).length, 3,
-            'exactly three call sites: per-round reviewer, Final Review, Re-Review'
-        );
     });
 
-    test('runner.js keeps NO private reopen loop or private allowlist of its own', () => {
-        assert.ok(!/reopenAllowlist/.test(src), 'the goal-scope allowlist belongs to beads-transitions.mjs now');
-        assert.ok(
-            !/for \(const id of \w*[Vv]erdict\.reopenIds\)/.test(src),
-            'a bare loop over a verdict\'s reopenIds is exactly the unguarded shape this extraction removed'
-        );
-    });
-
-    test('every `bd update ... --status=open` reopen in runner.js is built inside an applyGuardedReopens call', () => {
-        const reopenCmds = [...src.matchAll(/bd update \$\{id\} --status=open/g)];
-        assert.ok(reopenCmds.length >= 3, 'expected the three sites to still build their own command text');
-        for (const m of reopenCmds) {
-            const preceding = src.slice(0, m.index);
-            const lastGuard = preceding.lastIndexOf('applyGuardedReopens({');
-            const lastAwaitCommand = preceding.lastIndexOf('await command(');
-            assert.ok(
-                lastGuard > lastAwaitCommand,
-                `a reopen command near index ${m.index} is not inside an applyGuardedReopens call -- it would bypass the goal-scope guard`
-            );
+    test('every `bd update ... --status=open` reopen is built inside an applyGuardedReopens call', () => {
+        const total = SOURCES.reduce((n, f) => n + [...f.src.matchAll(/bd update \$\{id\} --status=open/g)].length, 0);
+        assert.ok(total >= 3, 'expected the three sites to still build their own command text');
+        for (const { name, src } of SOURCES) {
+            for (const m of src.matchAll(/bd update \$\{id\} --status=open/g)) {
+                const preceding = src.slice(0, m.index);
+                const lastGuard = preceding.lastIndexOf('applyGuardedReopens({');
+                const lastAwaitCommand = preceding.lastIndexOf('await command(');
+                assert.ok(
+                    lastGuard > lastAwaitCommand,
+                    `a reopen command near index ${m.index} in ${name} is not inside an applyGuardedReopens call -- it would bypass the goal-scope guard`
+                );
+            }
         }
     });
 });

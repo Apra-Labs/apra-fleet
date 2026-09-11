@@ -78,6 +78,16 @@ import { runPlanPhase } from './phases/plan.mjs';
 // drawn and why the loop control around it stayed here.
 import { runReplanPhase } from './phases/replan.mjs';
 import { runDevelopPhase } from './phases/develop.mjs';
+// apra-fleet-3swo.6.5: the next two phase() boundaries -- the per-round Review
+// and the per-cycle Deploy. Review still runs inside the Develop/Review round
+// loop (so it too takes `devRounds` already incremented) and hands back the
+// three values it REASSIGNS rather than mutates; Deploy is the body of the
+// `if (hasDeploy)` branch below and hands back `deployedThisCycle`. See each
+// module's header for where its boundary is drawn and why the probe/else
+// around Deploy, and the dashboard/still-open loop control after Review,
+// stayed here.
+import { runReviewPhase } from './phases/review.mjs';
+import { runDeployPhase } from './phases/deploy.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
 // verbatim out of runner.js (apra-fleet-3swo.4.3).
@@ -109,8 +119,14 @@ import { createBeadsScope, classifyVerifySet } from './beads-scope.mjs';
 // now take, the replanIds fold, and the verdict-contract predicate. Extracted
 // out of runner.js (apra-fleet-3swo.4.7), which also brought the previously
 // UNGUARDED Re-Review site under the same guard as the other two.
+//
+// apra-fleet-3swo.6.5: `foldReplanIds` is NOT imported here any more. Its only
+// caller was the per-round reviewer site, which moved to ./phases/review.mjs
+// with the Review phase; that module imports it from this same sibling. Final
+// Review and Re-Review use `applyGuardedReopens` but never fold replanIds, so
+// keeping the name here would have been a dead import, not a seam.
 import {
-    isReviewerContractViolation, applyGuardedReopens, foldReplanIds,
+    isReviewerContractViolation, applyGuardedReopens,
     parseIdWithReasonEntry,
 } from './beads-transitions.mjs';
 
@@ -4477,180 +4493,29 @@ async function runSprintCycle(context) {
             });
 
             // --- Review: self-contained, schema-validated, orchestrator-applied ---
-            phase(`Review C${cycle} R${devRounds}`);
-            // Sort by (title, id) -- not raw outcome-recording order -- so this
-            // evidence-gathering step is deterministic. See the readyTitleById
-            // comment just above.
-            // Failed streaks' beadIds are excluded from this round's review
-            // scope.
-            const assignedBeadIds = streakOutcomes.filter((o) => o.outcome !== 'failed').flatMap((o) => o.beadIds)
-                .slice().sort((a, b) => {
-                    const ta = readyTitleById.get(a) || a;
-                    const tb = readyTitleById.get(b) || b;
-                    return ta.localeCompare(tb) || a.localeCompare(b);
-                });
-            const acceptanceCriteriaJson = assignedBeadIds.length > 0
-                ? await command(`bd show ${assignedBeadIds.join(' ')} --json`, { member_name: orchestratorMember, silent: true })
-                : '[]';
-
-            // Empty-guard: when EVERY streak this round failed, assignedBeadIds
-            // is [] and there is nothing for the Reviewer to look at. Skip the
-            // dispatch entirely rather than sending an empty-scope review: an
-            // empty review is prone to returning CHANGES_NEEDED with empty
-            // reopenIds+newTasks, which trips the contract-violation check below
-            // and, after the retry-once path, throws
-            // ReviewerContractViolationError -- a hard sprint abort over a round
-            // where no work happened at all. The `stillOpen` check just below
-            // still runs, so the loop correctly continues instead of prematurely
-            // treating the cycle as organically complete.
-            if (assignedBeadIds.length === 0) {
-                log(`Develop C${cycle} R${devRounds}: all streaks this round failed with no beadIds assigned -- skipping Review dispatch (nothing to review). Failed-streak beads remain ready for the next Develop round.`);
-            } else {
-            // dispatchReview() applies the shared contract-violation
-            // retry-once-then-throw rule (see its own doc comment and
-            // ReviewerContractViolationError) -- a CHANGES_NEEDED verdict with
-            // both reopenIds and newTasks empty is self-contradictory and must
-            // never be treated as an ordinary "more work needed" round.
-            const verdict = await dispatchReview({ beadIds: assignedBeadIds, acceptanceCriteriaJson });
-            // KB trust pipeline Phase 2: the reviewer decides, the engine
-            // executes. Reviewer is the ONLY role whose kb_promotions are
-            // honoured. apra-fleet-3swo.5.7: performed by the 'reviewer' row's
-            // 'kb-apply' postResult step inside dispatchReview, so BOTH of its
-            // call sites get it and a degraded round (which fabricates a
-            // verdict carrying no KB fields) does not.
-            // A5: the last reviewer verdict seen THIS cycle feeds the Cycle
-            // Evaluation section's completion check below -- goal-priority
-            // completion requires this to be exactly 'APPROVED', not just
-            // an empty ready-bead list.
-            lastReviewVerdict = verdict.verdict;
-            // A review genuinely ran THIS cycle -- the Cycle Evaluation section
-            // below only trusts `lastReviewVerdict` when this is true (see the
-            // `reviewedThisCycle` reset at the top of the cycle loop and the
-            // re-review dispatch it guards).
-            reviewedThisCycle = true;
-
-            // Orchestrator (this code) -- NOT the LLM -- applies every
-            // structured transition: reopenIds via `bd update --status=open`,
-            // newTasks via `bd create`. The reviewer's dispatch prompt above
-            // explicitly forbade it from mutating beads itself; this is the
-            // enforcement side of that contract (SKILL.md).
-            // Deterministic goal-scope guard on reopenIds: the prompt-side
-            // instruction (buildReviewerPrompt) asks the reviewer not to reopen
-            // below-goal beads, but the orchestrator enforces it -- reopening a
-            // DEFERRED P3 feature in a P1/P2 sprint injects out-of-scope work and
-            // pins the verdict at CHANGES_NEEDED forever.
-            // Ids actually reopened this round (survived the goal-scope
-            // allowlist) -- gates which `replanIds` entries below are trusted,
-            // so a reviewer naming a replanIds id that was never really
-            // reopened (out of scope, or simply absent from reopenIds) can
-            // never short-circuit the loop.
-            const reopenedIds = new Set(await applyGuardedReopens({
-                entries: verdict.reopenIds,
-                bdListScoped, goalMax, goal: validated.goal, log, command,
-                member: orchestratorMember,
-                logPrefix: 'Reviewer reopenIds',
-                buildReopenCommand: ({ id }) => ({
-                    cmd: `bd update ${id} --status=open`,
-                    label: `Reopen ${id} per reviewer verdict`,
-                }),
-                onReopened: ({ id }) => {
-                    // Track per-bead reopen counts for reopen-thrash detection.
-                    recordReopen(id);
-                    // Per-bead feedback routing: only beads named in reopenIds
-                    // carry this round's feedback into the next round's doer
-                    // prompt -- never a blanket broadcast.
-                    perBeadFeedback.set(id, verdict.notes);
-                },
+            // The phase body lives in ./phases/review.mjs
+            // (apra-fleet-3swo.6.5), which receives this round's state
+            // explicitly instead of closing over the loop locals here. It is
+            // handed the two values the Develop phase above just returned --
+            // this round's per-streak attribution and the stable (title, id)
+            // sort key -- and it mutates `replanIds`, `replannedThisCycle`,
+            // `perBeadFeedback` and `rejectedNewTasks` in place exactly as the
+            // closure did. Only the three genuinely REASSIGNED values travel
+            // back through this destructuring assignment; on the round where
+            // every streak failed (empty review scope) they come back
+            // unchanged, which is why no `if` is needed here.
+            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReviewPhase({
+                phase, log, command,
+                cycle, validated, targetIssues, orchestratorMember,
+                gitSync,
+                replanIds, replannedThisCycle, perBeadFeedback, rejectedNewTasks,
+                devRounds, streakOutcomes, readyTitleById,
+                lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
+                dispatchReview, bdListScoped, goalMax, recordReopen,
+                childIdAllocator, sprintMutexId,
+                computeChildFloor, createChildBeadWithAllocatedId,
+                trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
             }));
-            // Fold this round's reviewer `replanIds` (absent/undefined on
-            // verdicts that do not use it, so a no-op then) into the cycle's
-            // running union, consulted at the top of the next iteration's
-            // currentReady computation above. Only ids that were ACTUALLY
-            // reopened this round are tracked -- an id the reviewer named in
-            // replanIds without ALSO naming it in reopenIds (contrary to the
-            // buildReviewerPrompt instruction above) is dropped rather than
-            // silently ignored: logged here so the drop is visible in the run
-            // log instead of vanishing with no trace.
-            // This is the replan loop guard's single enforcement point. A bead
-            // that has ALREADY been through one in-cycle scoped replan this cycle
-            // (replannedThisCycle) is refused a SECOND: it stays reopened (real
-            // dev feedback still applies) but is NOT re-added to replanIds, so
-            // the develop loop above never dispatches a second scoped planner
-            // pass for it -- it is handed to the next cycle's planner instead.
-            // This is what makes "max one scoped replan per bead per cycle" hold
-            // regardless of the round budget.
-            for (const id of foldReplanIds({
-                replanIds: verdict.replanIds, reopenedIds, replannedThisCycle, cycle, log,
-            })) {
-                replanIds.add(id);
-            }
-            for (const newTask of verdict.newTasks) {
-                // Validate BEFORE interpolation -- see validateNewTask() above
-                // for why this is an allowlist, not escaping. A rejection is
-                // logged, recorded for the final-review evidence summary, and
-                // skipped; it must never abort the sprint over one bad newTask.
-                const validation = validateNewTask(newTask);
-                if (!validation.ok) {
-                    log(`Reviewer newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
-                    rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
-                    // Track it for resurfacing into the NEXT planning-phase
-                    // dispatch too -- see trackRejectedNewTaskForResurfacing()'s
-                    // doc comment.
-                    pendingRejectedNewTasks = trackRejectedNewTaskForResurfacing(pendingRejectedNewTasks, {
-                        title: newTask && newTask.title, description: newTask && newTask.description,
-                        reason: validation.reason, cycle,
-                    });
-                    // A rejected finding must never simply vanish -- persist it
-                    // verbatim to the parent bead's notes as a fallback (itself
-                    // non-fatal: a notes write failure degrades to the run log,
-                    // never an abort).
-                    try {
-                        await appendRejectedFindingToParentNotes({
-                            command, member: orchestratorMember, parentId: targetIssues[0],
-                            newTask, reason: validation.reason, cycle, log,
-                        });
-                    } catch (noteErr) {
-                        log(`[fleet-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
-                    }
-                    continue;
-                }
-                const { title, description, priority } = validation;
-                // A bead can only have one parent -- see the matching
-                // comment on the re-review newTasks site below.
-                //
-                // Mint the child id through the supervisor-owned allocator so two
-                // concurrent sprints creating follow-up work under the SAME
-                // parent never derive the same child id. Under the null client
-                // (lone sprint) childId is null and bd derives the id as before.
-                const persisted = await persistNewTaskBestEffort({
-                    command, member: orchestratorMember, parentId: targetIssues[0],
-                    newTask, cycle, log, stage: 'develop-review',
-                    createFn: async () => {
-                        const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
-                        await createChildBeadWithAllocatedId({
-                            command, allocator: childIdAllocator, member: orchestratorMember,
-                            title, description, priority, parentId: targetIssues[0],
-                            sprintId: sprintMutexId, floor, log,
-                            label: `Create follow-up task from reviewer newTasks: ${title}`,
-                        });
-                    },
-                });
-                // This title just landed as a real bead -- if it was a
-                // resubmission of an earlier rejected item, drop it from the
-                // pending resurface list so it stops reappearing in future
-                // planning prompts. Pass title+description (not just title) so a
-                // resubmission that also corrected its title still clears via its
-                // unchanged description.
-                if (persisted) {
-                    pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, { title, description });
-                }
-            }
-
-            // The orchestrator just MUTATED beads (reopens + newTask creates) in
-            // its own clone -- D-push so members observe them on their next
-            // dispatch's D-pull.
-            await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
-            } // end assignedBeadIds.length > 0 (Review dispatch + orchestrator-applied transitions)
 
             await updateDashboard();
 
@@ -4693,69 +4558,21 @@ async function runSprintCycle(context) {
         let deployedThisCycle = false;
 
         if (hasDeploy) {
-            phase(`Deploy C${cycle}`);
-            await ensureUnattendedAuto(getMemberForRole('deployer'));
-            await ensureDeployPermissions(getMemberForRole('deployer'));
-            let deployResult;
-            // Turn budget for the deployer, with the same-session
-            // turn-exhaustion resume below: a source-build fallback deploy runs
-            // npm ci plus two builds, comfortably beyond a small default budget.
-            // A sprint-dispatched deploy is ALWAYS for integration/regression
-            // testing, never a production rollout. Saying only "deploy to test
-            // env" left the mode to inference: a target whose deploy.md offers
-            // a production path that restarts a shared, OS-supervised singleton
-            // had that path picked by default, and every deploy in the sprint
-            // failed. So the prompt states the PURPOSE and asks the deployer to
-            // use a sandbox/isolated mode IF the target's own deploy.md defines
-            // one. This engine is generic (fleet-e2e-toy, Docker, k8s targets
-            // all run through here): it never names a section, env var, file
-            // or tool a target's deploy.md must contain -- those mechanics
-            // belong to the target repo's runbook.
-            //
-            // The instance must SURVIVE this phase: Integration Test runs after
-            // Deploy and is the phase that tests against it, so the deployer
-            // leaves it running and the test phase tears it down (locating it
-            // from the sprintId line, per the target's own playbook). The
-            // deployer tears down only what it started if the deploy FAILS.
-            //
-            // sprintSelfIdLine is not decoration: deploy.md's active-sprints
-            // gate stops for any foreign reservation, so a prompt that omits
-            // the sprint's OWN id makes the deploy self-block. That is why the
-            // 'deployer' policy row records a 'sprint-self-id-in-prompt'
-            // preDispatch step -- the engine VERIFIES the id is really in the
-            // prompt before dispatching, rather than trusting this string to
-            // stay assembled correctly.
-            const deployerPrompt =
-                'Deploy to test env using deploy.md.\n' +
-                `${sprintSelfIdLine}\n` +
-                "Use it for deploy.md's active-sprints gate: a reservation whose sprintId is EXACTLY " +
-                'this string is your own sprint, not a foreign one, so the deploy proceeds. Stop only ' +
-                'for a reservation with a different sprintId.\n' +
-                'This deploy is for INTEGRATION/REGRESSION TESTING, not a production rollout. If deploy.md ' +
-                'distinguishes a sandbox/isolated deploy mode for testing from its production deploy, use ' +
-                'that mode; otherwise follow deploy.md as written.\n' +
-                'If you stood up an isolated test instance, leave it RUNNING when you return: the test phase ' +
-                "that follows locates it from the sprintId above (per the repo's own runbook) and owns its " +
-                'teardown. Tear down what you started only if the deploy itself fails.';
-            // apra-fleet-3swo.5.7: the deployer ladder -- its dispatch, its
-            // read-side git-sync bracket, its max_turns-exhaustion resume at
-            // doubled turns, its one bounded LLM-auth self-heal (so the NEXT
-            // cycle's deploy is not walled off identically) and its
-            // deployed:false degrade -- is now the 'deployer' row of
-            // fleet-sprint/role-policies.mjs, executed by dispatchRole.
-            const deployOutcome = await dispatchRole(dispatchCtx, 'deployer', {
-                prompt: deployerPrompt,
-                resumePrompt: 'Continue the deploy exactly where you left off in this same session -- do not restart deploy.md from the top if steps already completed. Finish the remaining steps and the smoke test, and return your final report now.',
-                roleLabel: 'Deployer',
-                resumeLabel: `Deploy (resume, max_turns=${TURN_BASES.DEPLOYER_MAX_TURNS * 2})`,
-            });
-            deployResult = deployOutcome.value;
-            // No duplicate log() dump -- see dispatchReview() for why.
-            deployedThisCycle = deployResult.deployed === true;
-            if (!deployedThisCycle) {
-                deployFailures.push({ cycle, notes: deployResult.notes });
-                log(`Deploy FAILED this cycle (C${cycle}): ${deployResult.notes}. Skipping Integration Test phase.`);
-            }
+            // The phase body lives in ./phases/deploy.mjs
+            // (apra-fleet-3swo.6.5), which receives its state explicitly
+            // instead of closing over runSprintCycle's locals. The
+            // `probeFileExists('deploy.md')` probe above and the `else` branch
+            // below stay here: the probe is what decides whether this phase
+            // runs at all, and the flag it produces is read much later by
+            // Cycle Evaluation. A failure is pushed onto `deployFailures` in
+            // place, exactly as the closure did; `deployedThisCycle` is the one
+            // value that is reassigned, so it comes back as a return value.
+            ({ deployedThisCycle } = await runDeployPhase({
+                phase, log, dispatchCtx,
+                cycle, sprintSelfIdLine,
+                getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
+                deployFailures, deployedThisCycle,
+            }));
         } else {
             log('Skipping Deploy Phase (no deploy.md found, or the probe itself failed -- see prior log line)');
         }

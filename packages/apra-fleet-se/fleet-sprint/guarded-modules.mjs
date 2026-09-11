@@ -121,6 +121,23 @@ export const GUARDED_MODULES = [
     // whole instead of quietly shrinking runner.js's scanned surface.
     'phases/replan.mjs',
     'phases/develop.mjs',
+    // apra-fleet-3swo.6.5: the per-round Review and the per-cycle Deploy
+    // phases. Same nested-entry reporting caveat as the four above (they are
+    // always REPORTED as 'review.mjs' and 'deploy.mjs'), so the same rule
+    // applies: compare a guard's `files` output against
+    // guardedModuleBasenames().
+    //
+    // review.mjs took ONE member_name-bearing command() call site out of
+    // runner.js (the `bd show <ids> --json` acceptance-criteria read) and NO
+    // dispatchRole site -- the reviewer ladder runs through runner.js's
+    // dispatchReview() helper, which the Re-Review and Final Review phases
+    // share, so it stayed there. deploy.mjs took no command() site but ONE
+    // dispatchRole site (the deployer ladder). Registering both as part of the
+    // extraction is what keeps the guarded command census and the phase 3
+    // dispatch census whole instead of quietly shrinking runner.js's scanned
+    // surface.
+    'phases/review.mjs',
+    'phases/deploy.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left
