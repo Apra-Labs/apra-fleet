@@ -173,10 +173,26 @@ test('the phase-order expectation is non-vacuous: it covers every sliced phase a
         2,
         'the Develop phase must still emit its per-round label from phases/develop.mjs, once per develop round'
     );
+    // apra-fleet-3swo.6.5 moved Review into phases/review.mjs. Like Develop it
+    // is a per-ROUND phase, so the same once-per-round count is the pin that
+    // would catch a sliced round phase that stopped running, ran once, or ran
+    // three times.
+    assert.equal(
+        EXPECTED_PHASE_SEQUENCE.filter((p) => /^Review C\d+ R\d+$/.test(p)).length,
+        2,
+        'the Review phase must still emit its per-round label from phases/review.mjs, once per develop round'
+    );
+    // ...and Deploy, which is per-CYCLE, so exactly once in this single-cycle
+    // scenario.
+    assert.equal(
+        EXPECTED_PHASE_SEQUENCE.filter((p) => /^Deploy C\d+$/.test(p)).length,
+        1,
+        'the Deploy phase must still emit its per-cycle label from phases/deploy.mjs, once per cycle'
+    );
 
     // ...and so must phases that are still INLINE in runner.js, which is what
     // makes this a slice-boundary pin rather than a sliced-modules-only pin.
-    for (const stillInline of ['Review C1 R1', 'Final Review C1', 'Publish PR C1']) {
+    for (const stillInline of ['Integ Test C1', 'Final Review C1', 'Publish PR C1']) {
         assert.ok(
             EXPECTED_PHASE_SEQUENCE.includes(stillInline),
             `${stillInline} is still inline in runner.js and must stay covered by this pin`
@@ -202,6 +218,8 @@ test('every sliced phase module is registered for mechanical guard coverage', ()
         'phases/plan.mjs',
         'phases/replan.mjs',
         'phases/develop.mjs',
+        'phases/review.mjs',
+        'phases/deploy.mjs',
     ]) {
         assert.ok(
             GUARDED_MODULES.includes(mod),
@@ -239,6 +257,8 @@ test('each sliced phase builds its phase() label in its own module and nowhere i
         'phase(`Plan C': 'plan.mjs',
         'phase(`Replan C': 'replan.mjs',
         'phase(`Develop C': 'develop.mjs',
+        'phase(`Review C': 'review.mjs',
+        'phase(`Deploy C': 'deploy.mjs',
     };
 
     for (const [fragment, ownerFile] of Object.entries(slicedLabels)) {
@@ -259,9 +279,25 @@ test('each sliced phase builds its phase() label in its own module and nowhere i
     // prove at least one phase label IS still built inline (the phases that
     // have not been sliced yet) -- otherwise a typo'd fragment would make
     // every "not in runner.js" assertion above pass for free.
+    // apra-fleet-3swo.6.5 sliced Review out, so the live-control label moved on
+    // to Integ Test -- the next phase() boundary runSprintCycle still builds
+    // inline. Pick its successor from the still-inline labels whenever the
+    // slice that extracts Integ Test lands.
     assert.ok(
-        runnerSrc.includes('phase(`Review C'),
-        'Review is still inline in runner.js; if this fails the label fragments above are stale and the ' +
+        runnerSrc.includes('phase(`Integ Test C'),
+        'Integ Test is still inline in runner.js; if this fails the label fragments above are stale and the ' +
         'runner.js half of this test is passing vacuously'
     );
+    // Re-Review and Final Review both contain the substring "Review C" while
+    // belonging to phases that are NOT this slice, so pin directly that the
+    // Review fragment above is specific enough to have really moved: the two
+    // still-inline labels must remain in runner.js even though runner.js no
+    // longer builds `phase(`Review C`.
+    for (const stillInlineReviewLabel of ['phase(`Re-Review C', 'phase(`Final Review C']) {
+        assert.ok(
+            runnerSrc.includes(stillInlineReviewLabel),
+            `${stillInlineReviewLabel} is a DIFFERENT phase that is still inline; if it disappeared, the ` +
+            "'phase(`Review C' fragment above may have matched the wrong label"
+        );
+    }
 });
