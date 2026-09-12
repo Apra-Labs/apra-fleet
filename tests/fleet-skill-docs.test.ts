@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -73,6 +73,17 @@ describe('fleet skill: cross-references resolve', () => {
     expect(refs.size).toBeGreaterThan(0);
     const missing = [...refs].filter((r) => !existsSync(join(skillDir, r)));
     expect(missing).toEqual([]);
+  });
+
+  it('every sibling .md is reachable from SKILL.md', () => {
+    // install.ts collects skills/fleet recursively, so any .md here ships. One
+    // that SKILL.md never mentions ships as dead weight nobody reads.
+    const skill = read('SKILL.md');
+    const onDisk = readdirSync(skillDir).filter(
+      (f) => f.endsWith('.md') && f !== 'SKILL.md',
+    );
+    const orphans = onDisk.filter((f) => !skill.includes(`\`${f}\``));
+    expect(orphans).toEqual([]);
   });
 });
 

@@ -55,8 +55,13 @@ setup. This is why local fan-out needs no permission and remote fan-out does.
 
 Step 6 is not optional. Auto-spawn without auto-reap fills the fleet with dead
 members within a week, and a stale member list makes every later decision worse.
-If a run is interrupted before step 6, sweep `auto`-tagged members at the start of
-the next fleet operation.
+
+There is a backstop, but do not rely on it: the fleet server sweeps idle
+`auto`-tagged members on startup, after a TTL (2 hours by default, set via
+`FLEET_AUTO_MEMBER_TTL_MIN`). It only ever touches members carrying the `auto`
+tag, and it never removes one that is busy. Members the user registered by hand
+are never swept. The backstop exists for runs that are interrupted before step 6 -
+it is not a substitute for cleaning up after yourself.
 
 ## Language contract
 

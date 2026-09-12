@@ -160,6 +160,7 @@ async function startServer() {
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
+  const { reapAutoMembers } = await import('./services/member-reaper.js');
   const { checkForUpdate } = await import('./services/update-check.js');
   const { purgeExpiredCredentials } = await import('./services/credential-store.js');
   const { getStallDetector } = await import('./services/stall/index.js');
@@ -304,6 +305,7 @@ async function startServer() {
 
   idleManager.start();
   void cleanupStaleTasks();
+  void reapAutoMembers();
   purgeExpiredCredentials();
   void checkForUpdate();
 
