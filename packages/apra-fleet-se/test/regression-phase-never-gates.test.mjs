@@ -60,7 +60,17 @@ import {
 // regressions above: a phase moved before the verdict, or a rethrow added back
 // into the catch.
 describe('Regression Test phase can never gate or abort the sprint', () => {
-    const regressionPhaseIdx = runnerSource.indexOf('6b. Regression Test (once per sprint, informational -- never a gate)');
+    // apra-fleet-3swo.37: the ordering pins below must be anchored to the
+    // phase's CALL SITE, not to this banner comment. The banner stays behind
+    // in runner.js purely as documentation and does not travel with the phase
+    // body (which lives in phases/regression-test.mjs), so a hoist of the
+    // call site above Final Review that left the banner in place used to keep
+    // `finalVerdictIdx < regressionPhaseIdx` GREEN over a real regression.
+    // regressionBannerIdx is kept only as a separate, clearly-labelled
+    // documentation pin -- the ordering assertions below use
+    // regressionPhaseIdx (the call site) instead.
+    const regressionBannerIdx = runnerSource.indexOf('6b. Regression Test (once per sprint, informational -- never a gate)');
+    const regressionPhaseIdx = runnerSource.indexOf('await runRegressionTestPhase({');
     // apra-fleet-3swo.6.6: `const finalNewTasks = ...` moved into
     // phases/final-review.mjs, so the runner.js-side landmark for "the final
     // verdict exists by here" is now the Final Review CALL SITE -- and it is a
@@ -80,13 +90,17 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
 
     test('the phase exists and is anchored by its banner comment', () => {
         assert.ok(
-            regressionPhaseIdx > 0,
+            regressionBannerIdx > 0,
             'expected the "6b. Regression Test" phase banner in runner.js -- if this phase was renamed, retarget the anchors in this file rather than deleting the pins',
         );
     });
 
     test('runs AFTER the final verdict is computed and its newTasks are persisted', () => {
         assert.ok(finalVerdictIdx > 0, 'expected the Final Review phase call site that binds finalVerdictResult -- re-anchor this pin if the destructuring drifted, never delete it');
+        assert.ok(
+            regressionPhaseIdx > 0,
+            "expected the Regression Test phase call site (await runRegressionTestPhase({) -- re-anchor this pin if the call site drifted, never delete it",
+        );
         assert.ok(
             finalVerdictIdx < regressionPhaseIdx,
             'the Regression Test phase MUST come after Final Review has computed finalVerdictResult and persisted its FAIL findings -- the ordering IS the guarantee that a regression result cannot perturb the sprint verdict. Moving it earlier silently re-introduces a regression pass that can gate the sprint.',
