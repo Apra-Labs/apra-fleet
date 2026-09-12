@@ -4898,10 +4898,15 @@ async function runSprintCycle(context) {
     // here: it wraps Finalization as a WHOLE -- this phase, Regression Test,
     // Harvest and Publish PR -- not this phase alone. rejectedNewTasks is
     // pushed to in place exactly as the closure did; the sprint verdict and the
-    // two closing counts the analysis doc renders come back. That return is
-    // also what pins the ordering below: the Regression Test phase can only run
-    // AFTER this line, because this is the line that produces
-    // finalVerdictResult.
+    // two closing counts the analysis doc renders come back. The Regression
+    // Test phase call site below is placed AFTER this line by
+    // test/regression-phase-never-gates.test.mjs's ordering pin, not because
+    // returning finalVerdictResult here enforces it -- phases/regression-test.mjs
+    // never names finalVerdictResult, so a hoist above this line would not
+    // throw (apra-fleet-3swo.38). This return documents the intended order for
+    // a reader; the test pin plus the A/B mock sprint in
+    // mock-sprint-regression-failure-never-gates.test.mjs are what actually
+    // hold the line.
     const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount } = await runFinalReviewPhase({
         phase, log, command, dispatchCtx,
         args, validated, targetIssues, orchestratorMember, finalCycleLabel, sprintState,

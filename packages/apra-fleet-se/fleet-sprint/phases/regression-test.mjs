@@ -23,13 +23,17 @@
 //   - After Final Review, because `finalVerdictResult` is ALREADY COMPUTED by
 //     the time this runs -- so a regression failure structurally CANNOT perturb
 //     the sprint's verdict. No LLM-trusted "please ignore this" instruction is
-//     needed; the ordering IS the guarantee. Slicing this phase out of runner.js
-//     did not weaken that: ./final-review.mjs RETURNS finalVerdictResult to
-//     runner.js, so this phase's call site cannot even be moved above the Final
-//     Review call without a reference error. The runner.js call-site banner
-//     states the rule, test/regression-phase-never-gates.test.mjs pins the
-//     ordering, and a mock sprint in which this phase reports passed:false
-//     asserts the verdict is unchanged.
+//     needed; the ordering IS the guarantee. That guarantee is enforced by TWO
+//     TEST PINS, not by the language: this phase never so much as NAMES
+//     finalVerdictResult, so there is no binding for a hoist above Final Review
+//     to trip a ReferenceError on -- verified by experiment (apra-fleet-3swo.38)
+//     that hoisting this phase's call site above Final Review runs to
+//     completion with no error. test/regression-phase-never-gates.test.mjs's
+//     source-shape ordering pin and the A/B mock sprint in
+//     test/mock-sprint-regression-failure-never-gates.test.mjs are what
+//     actually hold the line; ./final-review.mjs RETURNING finalVerdictResult
+//     to runner.js documents the intended order for a reader, it does not
+//     enforce it.
 //   - Before Harvest, because the harvester writes
 //     docs/sprint-analysis-<slug>.md and this phase's summary is folded into
 //     that document as an informational section (see buildAnalysisText).
