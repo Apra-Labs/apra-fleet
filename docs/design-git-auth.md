@@ -283,6 +283,14 @@ token appears in no field of any result an orchestrator-side caller can
 read; `readMemberVcsCredentialToken` (the old prose-scraping path) is left in
 place for callers that have not migrated.
 
+Redaction must cover every exit path the substituted command can take, not
+just its successful stdout/stderr -- a dispatch failure that throws (the
+`dispatch_failed` catch branch) can still carry the token verbatim inside
+the thrown error's own message (many transport layers echo the failed
+command back into the error text). A redaction pass applied only to the
+success path leaves that throw path as an unguarded leak of exactly the
+secret the tool exists to protect.
+
 ### Security Properties
 
 | Property | How it's achieved |
