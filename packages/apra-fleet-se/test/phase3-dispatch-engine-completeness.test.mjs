@@ -25,6 +25,7 @@ import {
 } from './helpers/dispatch-pin-scanner.mjs';
 import { PLANNING_LADDERS, PLANNING_ENGINE_DISPATCHES } from './helpers/planning-ladders.mjs';
 import { EXECUTION_INLINE_LADDERS, EXECUTION_ENGINE_DISPATCHES } from './helpers/execution-ladders.mjs';
+import { bdMode } from './helpers/bd-replay.mjs';
 import {
     createRecordingCtx,
     ROLE_CALL_OPTS,
@@ -1198,18 +1199,6 @@ describe('(6) no inline role ladder or its bracket/watchdog scaffolding survives
 // -----------------------------------------------------------------------------
 const DEFAULT_NESTED_SUITE_TIMEOUT_MS = 900_000;
 
-function resolveNestedSuiteTimeoutMs() {
-    const raw = process.env.PHASE3_NESTED_SUITE_TIMEOUT_MS;
-    if (raw === undefined || raw === '') return DEFAULT_NESTED_SUITE_TIMEOUT_MS;
-    const parsed = Number(raw);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new Error(`PHASE3_NESTED_SUITE_TIMEOUT_MS must be a positive number of milliseconds, got: ${JSON.stringify(raw)}`);
-    }
-    return parsed;
-}
-
-const NESTED_SUITE_TIMEOUT_MS = resolveNestedSuiteTimeoutMs();
-
 // -----------------------------------------------------------------------------
 // NESTED-CHILD RESOURCE BUDGET -- why the children are capped, centrally.
 //
@@ -1252,6 +1241,84 @@ function resolveNestedTestConcurrency() {
 }
 
 const NESTED_TEST_CONCURRENCY = resolveNestedTestConcurrency();
+
+// -----------------------------------------------------------------------------
+// apra-fleet-hhjh.1: REAL-BD BUDGET ARITHMETIC.
+//
+// DEFAULT_NESTED_SUITE_TIMEOUT_MS (900_000ms) above was calibrated against
+// MOCK bd -- see the NESTED-CHILD RESOURCE BUDGET note above, which measures
+// the nested mock-sprint step at ~28-65s under mock/replay at this file's
+// concurrency cap. That margin evaporates once APRA_FLEET_BD_MOCK=off
+// propagates into the nested child (nestedChildEnv spreads process.env, so
+// whatever the OUTER real-bd integration lane set is inherited): every one of
+// the mock-sprint-*.test.mjs files then pays real bd+dolt per-dispatch
+// round-trip latency instead of instant mock/replay responses. This is a
+// genuine outer-budget expiry (apra-fleet-hhjh), not a hang: the file's own
+// real-bd trail (apra-fleet-eft.17) records individual mock-sprint files
+// ALONE taking 700-1500s inside the full contended real-bd run (e.g.
+// mock-sprint-happy-path.test.mjs 923-1272s and mock-sprint-stall-
+// oscillation.test.mjs 780-1421s across several passes), and whole-suite
+// cumFileTime/file-count averages of 90-170s per file across multiple full
+// real-bd passes (21917s/242=91s on 2026-09-09; 34308s/201=171s on
+// 2026-08-23).
+//
+// The real-bd budget below is derived, not guessed, from four named
+// constants a reader can recompute:
+//   ASSUMED_REAL_BD_PER_FILE_MS (120_000, i.e. 2min/file -- the middle of the
+//     90-170s/file whole-suite average cited above, applied per mock-sprint
+//     file)
+//   x ASSUMED_MOCK_SPRINT_FILE_COUNT (the count of test/mock-sprint-*.test.mjs
+//     files discovered when this was written -- see the constant below)
+//   / NESTED_TEST_CONCURRENCY (2, defined above -- this nested run's own cap,
+//     not the parent suite's 8)
+//   x REAL_BD_HEADROOM_FACTOR (2, doubling for run-to-run variance, matching
+//     the >2x spread already observed between the two cumFileTime/file-count
+//     averages cited above)
+// -----------------------------------------------------------------------------
+const ASSUMED_REAL_BD_PER_FILE_MS = 120_000;
+const ASSUMED_MOCK_SPRINT_FILE_COUNT = fs
+    .readdirSync(path.join(SE_DIR, 'test'))
+    .filter((name) => name.startsWith('mock-sprint-') && name.endsWith('.test.mjs')).length;
+const REAL_BD_HEADROOM_FACTOR = 2;
+const REAL_BD_NESTED_SUITE_TIMEOUT_MS = Math.ceil(
+    ((ASSUMED_REAL_BD_PER_FILE_MS * ASSUMED_MOCK_SPRINT_FILE_COUNT) / NESTED_TEST_CONCURRENCY) * REAL_BD_HEADROOM_FACTOR,
+);
+
+/**
+ * Resolves the nested-suite timeout budget (in ms) and a human-readable
+ * description of its source. PHASE3_NESTED_SUITE_TIMEOUT_MS, when set, is the
+ * highest-precedence value on either backend. Otherwise the budget is a
+ * function of the bd backend actually in force for this process (and
+ * therefore for the nested child, which inherits it): bdMode() 'replay' is
+ * the mock-calibrated default above; 'real' or 'record' get the derived
+ * real-bd budget computed above. This mirrors the bd-mock-shim contract
+ * documented in test/helpers/bd-replay.mjs (unset/other = replay; 0/false/
+ * off/no/real = real; record = real + refresh) rather than re-deriving it.
+ */
+function resolveNestedSuiteTimeoutBudget() {
+    const raw = process.env.PHASE3_NESTED_SUITE_TIMEOUT_MS;
+    if (raw !== undefined && raw !== '') {
+        const parsed = Number(raw);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+            throw new Error(`PHASE3_NESTED_SUITE_TIMEOUT_MS must be a positive number of milliseconds, got: ${JSON.stringify(raw)}`);
+        }
+        return { ms: parsed, source: `PHASE3_NESTED_SUITE_TIMEOUT_MS=${raw}` };
+    }
+    const mode = bdMode();
+    if (mode === 'replay') {
+        return {
+            ms: DEFAULT_NESTED_SUITE_TIMEOUT_MS,
+            source: `the mock-bd default (backend=${mode}, no PHASE3_NESTED_SUITE_TIMEOUT_MS override set)`,
+        };
+    }
+    return {
+        ms: REAL_BD_NESTED_SUITE_TIMEOUT_MS,
+        source: `the real-bd default (backend=${mode}, no PHASE3_NESTED_SUITE_TIMEOUT_MS override set)`,
+    };
+}
+
+const NESTED_SUITE_TIMEOUT_BUDGET = resolveNestedSuiteTimeoutBudget();
+const NESTED_SUITE_TIMEOUT_MS = NESTED_SUITE_TIMEOUT_BUDGET.ms;
 
 /**
  * Per-nested-child record: { dir, entries }. `dir` is the private temp sandbox
@@ -1304,11 +1371,8 @@ function runNestedSuite(suiteLabel, args, extraOpts = {}) {
         });
     } catch (err) {
         if (err && err.code === 'ETIMEDOUT') {
-            const source = process.env.PHASE3_NESTED_SUITE_TIMEOUT_MS
-                ? `PHASE3_NESTED_SUITE_TIMEOUT_MS=${process.env.PHASE3_NESTED_SUITE_TIMEOUT_MS}`
-                : 'the default (no PHASE3_NESTED_SUITE_TIMEOUT_MS override set)';
             throw new Error(
-                `nested suite '${suiteLabel}' exceeded its ${NESTED_SUITE_TIMEOUT_MS}ms budget, from ${source}. ` +
+                `nested suite '${suiteLabel}' exceeded its ${NESTED_SUITE_TIMEOUT_MS}ms budget, from ${NESTED_SUITE_TIMEOUT_BUDGET.source}. ` +
                 'Raise PHASE3_NESTED_SUITE_TIMEOUT_MS if this run is genuinely this slow here.'
             );
         }
