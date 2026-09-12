@@ -779,6 +779,75 @@ test('every command() call site in phases/re-review.mjs passes member_name or me
 });
 
 // =============================================================================
+// apra-fleet-3swo.6.6: the Final Review and Regression Test phase() boundaries.
+// Same per-module baseline reasoning as the six above, and BOTH baselines here
+// are the load-bearing zero kind.
+//
+// phases/final-review.mjs is the sprint's most consequential phase -- it reads
+// the closing bead counts and applies the verdict's reopens and newTasks -- and
+// every one of those touches bd through an injected seam (bdListScoped) or a
+// helper that owns its own guarded command() site (applyGuardedReopens,
+// computeChildFloor/createChildBeadWithAllocatedId). A future edit reaching for
+// a raw `bd` command here is exactly what a zero baseline must turn red.
+//
+// phases/regression-test.mjs issues no command() at all by design: the
+// carry-over beads it exists to produce are filed by the DISPATCHED runner
+// inside its own repo, never by the orchestrator. A command() appearing here
+// would mean the orchestrator had started filing them itself.
+// =============================================================================
+const FINAL_REVIEW_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/final-review.mjs');
+const EXPECTED_FINAL_REVIEW_PHASE_COMMAND_COUNT = 0;
+
+const REGRESSION_TEST_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/regression-test.mjs');
+const EXPECTED_REGRESSION_TEST_PHASE_COMMAND_COUNT = 0;
+
+test('every command() call site in phases/final-review.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(FINAL_REVIEW_PHASE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_FINAL_REVIEW_PHASE_COMMAND_COUNT,
+        `Expected ${EXPECTED_FINAL_REVIEW_PHASE_COMMAND_COUNT} command() call site(s) in phases/final-review.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_FINAL_REVIEW_PHASE_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'phases/final-review.mjs must never dispatch an agent() directly -- the final-review ladder runs through the dispatchRole engine.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+test('every command() call site in phases/regression-test.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(REGRESSION_TEST_PHASE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_REGRESSION_TEST_PHASE_COMMAND_COUNT,
+        `Expected ${EXPECTED_REGRESSION_TEST_PHASE_COMMAND_COUNT} command() call site(s) in phases/regression-test.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_REGRESSION_TEST_PHASE_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'phases/regression-test.mjs must never dispatch an agent() directly -- the regression-test-runner ladder runs through the dispatchRole engine.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
 // apra-fleet-3swo.34 -- an apostrophe inside a comment must never let
 // extractBalancedCall()'s depth walk run past the call's real closing paren.
 //

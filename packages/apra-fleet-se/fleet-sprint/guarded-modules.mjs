@@ -159,6 +159,27 @@ export const GUARDED_MODULES = [
     // quietly shrinking runner.js's scanned surface.
     'phases/integ-test.mjs',
     'phases/re-review.mjs',
+    // apra-fleet-3swo.6.6: the sprint's closing Final Review and the
+    // once-per-sprint Regression Test. Same nested-entry reporting caveat as
+    // the eight above (they are always REPORTED as 'final-review.mjs' and
+    // 'regression-test.mjs'), so the same rule applies: compare a guard's
+    // `files` output against guardedModuleBasenames().
+    //
+    // NEITHER took a member_name-bearing command() call site out of runner.js
+    // -- final-review.mjs reads beads through the injected bdListScoped and
+    // writes them through applyGuardedReopens (beads-transitions.mjs) and
+    // computeChildFloor/createChildBeadWithAllocatedId, whose command() sites
+    // live in the modules that own them, and regression-test.mjs issues no
+    // bd/git command at all (its carry-over beads are filed by the DISPATCHED
+    // runner inside its own repo). Each took exactly ONE dispatchRole() site
+    // (the final-review and regression-test-runner ladders), which is what
+    // dispatch-safety-guard and the phase 3 dispatch census read.
+    // final-review.mjs additionally owns a real gitSync bracket at each end,
+    // including the findings D-push that apra-fleet-3swo.4.1 brought inside a
+    // bracket -- registering it here is what keeps unbracketed-push-guard
+    // covering that push instead of silently losing it.
+    'phases/final-review.mjs',
+    'phases/regression-test.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left

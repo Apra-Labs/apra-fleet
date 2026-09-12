@@ -202,9 +202,22 @@ test('the phase-order expectation is non-vacuous: it covers every sliced phase a
         'the Integ Test phase must still emit its per-cycle label from phases/integ-test.mjs, once per cycle'
     );
 
+    // apra-fleet-3swo.6.6 moved Final Review into phases/final-review.mjs. It
+    // is once-per-SPRINT, so exactly once here. Its sibling from the same
+    // slice, Regression Test, is deliberately NOT counted: it fires only when
+    // regression-test-playbook.md exists, which this scenario does not provide
+    // -- the source-level label-ownership pin at the bottom of this file is
+    // what covers that half of the slice, exactly as it does for Replan and
+    // Re-Review.
+    assert.equal(
+        EXPECTED_PHASE_SEQUENCE.filter((p) => /^Final Review C\d+$/.test(p)).length,
+        1,
+        'the Final Review phase must still emit its once-per-sprint label from phases/final-review.mjs'
+    );
+
     // ...and so must phases that are still INLINE in runner.js, which is what
     // makes this a slice-boundary pin rather than a sliced-modules-only pin.
-    for (const stillInline of ['Final Review C1', 'Publish PR C1']) {
+    for (const stillInline of ['Harvest C1', 'Publish PR C1']) {
         assert.ok(
             EXPECTED_PHASE_SEQUENCE.includes(stillInline),
             `${stillInline} is still inline in runner.js and must stay covered by this pin`
@@ -234,6 +247,8 @@ test('every sliced phase module is registered for mechanical guard coverage', ()
         'phases/deploy.mjs',
         'phases/integ-test.mjs',
         'phases/re-review.mjs',
+        'phases/final-review.mjs',
+        'phases/regression-test.mjs',
     ]) {
         assert.ok(
             GUARDED_MODULES.includes(mod),
@@ -275,6 +290,12 @@ test('each sliced phase builds its phase() label in its own module and nowhere i
         'phase(`Deploy C': 'deploy.mjs',
         'phase(`Integ Test C': 'integ-test.mjs',
         'phase(`Re-Review C': 're-review.mjs',
+        // apra-fleet-3swo.6.6. Regression Test is the Replan/Re-Review case
+        // again -- the mock scenario ships no regression-test-playbook.md, so
+        // the runtime pin above never sees its label and THIS entry is the
+        // only thing that would catch a half-done or duplicated extraction.
+        'phase(`Final Review C': 'final-review.mjs',
+        'phase(`Regression Test C': 'regression-test.mjs',
     };
 
     for (const [fragment, ownerFile] of Object.entries(slicedLabels)) {
@@ -295,52 +316,67 @@ test('each sliced phase builds its phase() label in its own module and nowhere i
     // prove at least one phase label IS still built inline (the phases that
     // have not been sliced yet) -- otherwise a typo'd fragment would make
     // every "not in runner.js" assertion above pass for free.
-    // apra-fleet-3swo.6.8 sliced Integ Test out, so the live-control label
-    // moved on again -- to Final Review, the next phase() boundary
-    // runSprintCycle still builds inline. Pick its successor from the
-    // still-inline labels (Regression Test, Harvest, Publish PR after this
-    // one) whenever the slice that extracts Final Review lands.
+    // apra-fleet-3swo.6.6 sliced Final Review and Regression Test out, so the
+    // live-control label moved on again -- to Harvest, the next phase()
+    // boundary runSprintCycle still builds inline. Only Publish PR is left
+    // after it; once BOTH are sliced there is no inline control left, and this
+    // non-vacuity check must be re-expressed (e.g. against a deliberately
+    // absent fragment) rather than deleted.
     assert.ok(
-        runnerSrc.includes('phase(`Final Review C'),
-        'Final Review is still inline in runner.js; if this fails the label fragments above are stale and the ' +
+        runnerSrc.includes('phase(`Harvest C'),
+        'Harvest is still inline in runner.js; if this fails the label fragments above are stale and the ' +
         'runner.js half of this test is passing vacuously'
     );
-    // The three labels below all CONTAIN a shorter fragment from the map
-    // above -- 'Re-Review C' and 'Final Review C' both contain 'Review C', and
-    // 'Integ Test C' is the prefix nothing else shares -- so a substring
-    // search is exactly where a slice can appear to have moved a label it
-    // never touched. apra-fleet-3swo.6.8 moved TWO of the three out, leaving
-    // only Final Review inline, which makes the ordering of these checks
-    // load-bearing:
+    // The three Review-family labels all CONTAIN a shorter fragment from the
+    // map above -- 'Re-Review C' and 'Final Review C' both contain 'Review C'
+    // -- so a substring search is exactly where a slice can appear to have
+    // moved a label it never touched. As of apra-fleet-3swo.6.6 all three are
+    // sliced (phases/review.mjs, phases/re-review.mjs, phases/final-review.mjs),
+    // so every "runner.js must not build X" assertion in the loop above now
+    // rests on the map alone, which makes the cross-module exclusivity below
+    // load-bearing rather than a nicety: without it, ONE module carrying all
+    // three literals would satisfy the whole map.
     //
-    //  - runner.js must NOT build 'phase(`Re-Review C' any more (it belongs to
-    //    phases/re-review.mjs). That is already asserted by the loop above,
-    //    but ONLY because 'phase(`Re-Review C' is a strictly longer string
-    //    than 'phase(`Review C' -- the Review check would pass on a runner.js
-    //    that still carried Re-Review inline, since Re-Review's literal does
-    //    not contain Review's leading backtick-R sequence.
-    //  - Conversely, phases/review.mjs must not accidentally satisfy the
-    //    Re-Review fragment, and phases/re-review.mjs must not satisfy the
-    //    Review one. Pin both directions explicitly.
+    // Note the loop above is only sound for 'phase(`Review C' because
+    // 'phase(`Re-Review C' and 'phase(`Final Review C' are not substrings of
+    // it (each has its own leading text before "Review C"), so a module that
+    // built the wrong one could not accidentally satisfy the Review entry.
+    // Pin every direction explicitly rather than relying on that.
     const reviewPhaseSrc = fs.readFileSync(path.join(phasesDir, 'review.mjs'), 'utf8');
     const reReviewPhaseSrc = fs.readFileSync(path.join(phasesDir, 're-review.mjs'), 'utf8');
-    assert.ok(
-        !reviewPhaseSrc.includes('phase(`Re-Review C'),
-        'phases/review.mjs must not build the Re-Review label -- that phase belongs to phases/re-review.mjs'
-    );
-    assert.ok(
-        !reReviewPhaseSrc.includes('phase(`Review C'),
-        "phases/re-review.mjs must build only 'phase(`Re-Review C'; if it also matched 'phase(`Review C' the " +
-        'Review pin above could be satisfied by the wrong module'
-    );
-    // ...and Final Review, the one still-inline member of the family, must
-    // stay in runner.js and out of both phase modules -- otherwise the
-    // "not in runner.js" assertions above could be passing because the
-    // Review-family labels vanished rather than moved.
-    for (const phaseSrc of [reviewPhaseSrc, reReviewPhaseSrc]) {
+    const finalReviewPhaseSrc = fs.readFileSync(path.join(phasesDir, 'final-review.mjs'), 'utf8');
+    const REVIEW_FAMILY = [
+        { file: 'review.mjs', src: reviewPhaseSrc, owns: 'phase(`Review C' },
+        { file: 're-review.mjs', src: reReviewPhaseSrc, owns: 'phase(`Re-Review C' },
+        { file: 'final-review.mjs', src: finalReviewPhaseSrc, owns: 'phase(`Final Review C' },
+    ];
+    for (const mine of REVIEW_FAMILY) {
         assert.ok(
-            !phaseSrc.includes('phase(`Final Review C'),
-            'Final Review is a DIFFERENT phase that is still inline in runner.js; no sliced module may build its label'
+            mine.src.includes(mine.owns),
+            `phases/${mine.file} must build its own Review-family label (${mine.owns})`
+        );
+        for (const other of REVIEW_FAMILY) {
+            if (other.file === mine.file) continue;
+            assert.ok(
+                !mine.src.includes(other.owns),
+                `phases/${mine.file} must not build ${other.owns} -- that label belongs to phases/${other.file}, and ` +
+                'one module carrying two Review-family literals would let the label map above be satisfied by the wrong file'
+            );
+        }
+    }
+    // Regression Test is not a Review-family label, but it is the other half
+    // of this slice and the runtime pin never sees it, so pin the same
+    // exclusivity for it: only phases/regression-test.mjs may build it.
+    const regressionPhaseSrc = fs.readFileSync(path.join(phasesDir, 'regression-test.mjs'), 'utf8');
+    for (const mine of REVIEW_FAMILY) {
+        assert.ok(
+            !mine.src.includes('phase(`Regression Test C'),
+            `phases/${mine.file} must not build the Regression Test label -- it belongs to phases/regression-test.mjs`
         );
     }
+    assert.ok(
+        !regressionPhaseSrc.includes('phase(`Final Review C'),
+        'phases/regression-test.mjs must not build the Final Review label -- a Regression Test module that also owned ' +
+        'the verdict-producing phase would destroy the ordering guarantee the two modules exist to keep apart'
+    );
 });

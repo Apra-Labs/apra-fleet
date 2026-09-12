@@ -147,18 +147,39 @@ describe('apra-fleet-3swo.4.2: the pause guard is false for the FULL duration of
 
 describe('apra-fleet-3swo.4.2: source-level scan -- runner.js has zero unbracketed push sites', () => {
     const RUNNER_PATH = guardedModulePath('runner.js');
+    // apra-fleet-3swo.6.6 sliced the Final Review phase out of runner.js into
+    // fleet-sprint/phases/final-review.mjs, and the findings D-push went WITH
+    // it. Scanning runner.js alone from here would have kept reporting green
+    // while the site this file exists to protect sat in a file nothing scanned
+    // -- so the module is scanned as a SECOND source and the by-name pin below
+    // is re-anchored onto it. Both paths come from guardedModulePath(), so the
+    // shared registration in guarded-modules.mjs is what makes them reachable.
+    const FINAL_REVIEW_PHASE_PATH = guardedModulePath('phases/final-review.mjs');
 
     test('runner.js reports zero unbracketed doltPushAfter()/syncMemberAfter()/DoltSync.syncBefore()/DoltSync.syncAfter() call sites', () => {
         const { violations } = checkUnbracketedPushPath(RUNNER_PATH);
         assert.deepEqual(violations, [], `expected no unbracketed push call sites, got: ${JSON.stringify(violations, null, 2)}`);
     });
 
+    test('phases/final-review.mjs reports zero unbracketed push call sites either', () => {
+        const { violations } = checkUnbracketedPushPath(FINAL_REVIEW_PHASE_PATH);
+        assert.deepEqual(violations, [], `expected no unbracketed push call sites in the sliced Final Review phase, got: ${JSON.stringify(violations, null, 2)}`);
+    });
+
     test('the Final Review findings D-push site calls gitSync.pushBeadsAfter(...) by name', () => {
-        const src = fs.readFileSync(RUNNER_PATH, 'utf8');
+        const src = fs.readFileSync(FINAL_REVIEW_PHASE_PATH, 'utf8');
         assert.match(
             src,
             /if \(dPushNeededAfterFinalFindings\) \{[\s\S]{0,400}?await gitSync\.pushBeadsAfter\(/,
             'the Final Review findings D-push must route through gitSync.pushBeadsAfter(), the bracketed standalone entry point',
+        );
+    });
+
+    test('runner.js no longer owns the Final Review findings D-push -- the pin above is not scanning a leftover copy', () => {
+        const src = fs.readFileSync(RUNNER_PATH, 'utf8');
+        assert.ok(
+            !/if \(dPushNeededAfterFinalFindings\)/.test(src),
+            'the Final Review findings D-push branch must live ONLY in phases/final-review.mjs after apra-fleet-3swo.6.6 -- a duplicate left behind in runner.js would let the two drift apart with both pins green',
         );
     });
 
@@ -248,9 +269,15 @@ describe('apra-fleet-3swo.4.2: falsification -- the scan detects a reverted (bar
     // (mutated in memory only) and prove the current scan catches it.
     // -------------------------------------------------------------------
 
-    test('mutating the real runner.js Final Review D-push back to a bare DoltSync.syncAfter() call is flagged (prior false negative)', () => {
-        const cleanSrc = fs.readFileSync(guardedModulePath('runner.js'), 'utf8');
-        assert.deepEqual(findUnbracketedPushViolations(cleanSrc, 'runner.js'), [], 'sanity: the real, unmutated source must be clean');
+    // apra-fleet-3swo.6.6: the Final Review phase (and its findings D-push)
+    // moved to fleet-sprint/phases/final-review.mjs, so this mutation runs
+    // against THAT module's real source now. Left pointed at runner.js it
+    // would have failed on the `sanctioned` pin rather than silently passing,
+    // but the point of re-anchoring is that the falsification keeps covering
+    // the site itself wherever it lives.
+    test('mutating the real phases/final-review.mjs Final Review D-push back to a bare DoltSync.syncAfter() call is flagged (prior false negative)', () => {
+        const cleanSrc = fs.readFileSync(guardedModulePath('phases/final-review.mjs'), 'utf8');
+        assert.deepEqual(findUnbracketedPushViolations(cleanSrc, 'final-review.mjs'), [], 'sanity: the real, unmutated source must be clean');
 
         const sanctioned = 'await gitSync.pushBeadsAfter(orchestratorMember, { pushBeads: true });';
         assert.ok(cleanSrc.includes(sanctioned), 'the Final Review D-push call text must still match this pin -- re-anchor if it drifted');
@@ -261,7 +288,7 @@ describe('apra-fleet-3swo.4.2: falsification -- the scan detects a reverted (bar
         );
         assert.notEqual(mutated, cleanSrc, 'the replacement must actually have changed the source');
 
-        const violations = findUnbracketedPushViolations(mutated, 'runner.js');
+        const violations = findUnbracketedPushViolations(mutated, 'final-review.mjs');
         assert.ok(
             violations.some((v) => v.includes('bare DoltSync.syncAfter() call site')),
             `expected the reverted Final Review site to be flagged as a bare DoltSync.syncAfter() call, got: ${JSON.stringify(violations, null, 2)}`,

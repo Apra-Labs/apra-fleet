@@ -141,6 +141,18 @@ export const DISPATCH_LADDER_MODULES = [
     // appear in after the slice.
     'phases/integ-test.mjs',
     'phases/re-review.mjs',
+    // apra-fleet-3swo.6.6: the Final Review and Regression Test phases, added
+    // in the SAME position for the SAME reason. Final Review took BOTH
+    // 'final-review' rows' ladderAnchor text ('buildFinalVerdictPrompt({' and
+    // 'Continue your final review exactly where you left off') out of
+    // runner.js, and Regression Test took both 'regression-test-runner' rows'
+    // ('regressionPrompt,' and 'Continue the regression pass exactly where you
+    // left off'), while role-policies.mjs still carries all four literals
+    // verbatim as data -- so registering them BEFORE role-policies.mjs is what
+    // stops an anchor search resolving inside that data literal instead of the
+    // real dispatch site.
+    'phases/final-review.mjs',
+    'phases/regression-test.mjs',
     'role-policies.mjs',
     'dispatch-role.mjs',
 ];
