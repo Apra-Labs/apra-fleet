@@ -247,11 +247,20 @@ export function createSyncBrackets({ setPauseGuard } = {}) {
             // opens, rather than leaving it stranded until some later
             // dispatch happens to hit the gate.
             //
-            // (apra-fleet-3swo.43) This poke MUST run even on a CROSSING
-            // close, so it is placed ahead of the `crossingError` throw
-            // below -- otherwise a pause requested while sync brackets were
-            // open could be left stranded on exactly the path this comment
-            // block exists to prevent.
+            // (apra-fleet-3swo.43) The poke check is placed ahead of the
+            // `crossingError` throw below so it always RUNS (is evaluated) on
+            // a CROSSING close, not just a LIFO one. apra-fleet-3swo.47 proved
+            // this is currently inert on the crossing path specifically: a
+            // crossing close is only ever entered while another bracket
+            // sharing the same exclusiveKey is still open (that is what makes
+            // it "crossing" rather than nesting), and that other bracket has
+            // not yet decremented -- so openSyncBracketCount is provably >= 1
+            // here and the `=== 0` check below is always false at this exact
+            // call site (confirmed empirically: setPauseGuard's call trace is
+            // identical with and without this hoist). It is kept anyway as
+            // defensive hardening -- it costs nothing today and is what keeps
+            // this correct if a future change ever decouples the counter from
+            // the per-key stack. Do not delete this ordering as dead code.
             if (openSyncBracketCount === 0 && typeof setPauseGuard === 'function') {
                 setPauseGuard(() => openSyncBracketCount === 0);
             }
