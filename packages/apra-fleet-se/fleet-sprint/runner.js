@@ -220,7 +220,23 @@ import {
 // command/phase wrappers that implement its invalidation contract. Extracted
 // out of runner.js (apra-fleet-3swo.4.6); beads-scope.mjs's header is the
 // written-down version of that contract.
-import { createBeadsScope, classifyVerifySet } from './beads-scope.mjs';
+import {
+    createBeadsScope, classifyVerifySet,
+    // apra-fleet-3swo.6.13: parseBdJson/goalPriorityMax/partitionByGoalMembership
+    // moved here from runner.js; imported back and re-exported (facade region
+    // below) so no importer of runner.js is edited by the move.
+    parseBdJson, goalPriorityMax, partitionByGoalMembership,
+} from './beads-scope.mjs';
+// The child-bead allocation and batched-claim command surface: computeChildFloor,
+// createChildBeadWithAllocatedId, verifyDoerStreakClosed and claimBeadsBatched.
+// Extracted out of runner.js (apra-fleet-3swo.6.13); imported only to be
+// re-exported below, unchanged, so no importer of runner.js is edited by the
+// move. It imports resolveSettleShell back from this file (module-private
+// composition-root wiring anchored here by test/sprint-state.test.mjs).
+import {
+    computeChildFloor, createChildBeadWithAllocatedId,
+    verifyDoerStreakClosed, claimBeadsBatched,
+} from './beads-children.mjs';
 // The reviewer-verdict bead transitions: the ONE goal-scope-guarded reopen
 // path all three verdict sites (per-round reviewer, Final Review, Re-Review)
 // now take, the replanIds fold, and the verdict-contract predicate. Extracted
@@ -327,6 +343,10 @@ export {
 // isBeadsMutatingCommand were module-private to the pre-move region and stay
 // reachable only from beads-scope.mjs.
 export { classifyVerifySet };
+// Re-exported so importers of the bd-output parser and goal-priority helpers
+// from runner.js keep working; beads-scope.mjs is the single source of truth
+// for their implementation (apra-fleet-3swo.6.13).
+export { parseBdJson, goalPriorityMax, partitionByGoalMembership };
 // Re-exported so importers of the reviewer verdict-contract predicate from
 // runner.js keep working; beads-transitions.mjs is the single source of truth
 // for it and for the reopen/replan transitions it gates
@@ -359,6 +379,15 @@ export { syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, resyncReacqu
 export {
     createMemberSessionGuard, createUnattendedAutoProvisioner,
     createDeployPermissionsProvisioner, stageCommandBodyMemberSide,
+};
+// Re-exported so importers of the child-bead allocation and batched-claim
+// helpers from runner.js keep working; beads-children.mjs is the single
+// source of truth for their implementation (apra-fleet-3swo.6.13). Every
+// symbol that region exported before the move is listed here, under its
+// original name.
+export {
+    computeChildFloor, createChildBeadWithAllocatedId,
+    verifyDoerStreakClosed, claimBeadsBatched,
 };
 
 // ---------------------------------------------------------------------------
@@ -442,156 +471,11 @@ const FIXED_ROLE_TIER = {
 
 export const meta = { name: 'fleet-sprint-runner' };
 
-// ---------------------------------------------------------------------------
-// bd JSON-parse helper
-// ---------------------------------------------------------------------------
-//
-// All `bd ... --json` output must be parsed through this rather than a bare
-// JSON.parse: non-JSON noise on stdout (a warning or deprecation line) would
-// otherwise raise an anonymous SyntaxError deep inside a multi-cycle run. This
-// names the offending command and includes a snippet of the raw output.
-/**
- * @param {string} raw - the raw text returned by `command()`
- * @param {string} commandLabel - the `bd` command that produced `raw`, for diagnostics
- * @returns {any}
- */
-export function parseBdJson(raw, commandLabel) {
-    const text = raw === undefined || raw === null || raw === '' ? '[]' : raw;
-    try {
-        return JSON.parse(text);
-    } catch (err) {
-        const snippet = text.length > 500 ? `${text.slice(0, 500)}... (truncated, ${text.length} chars total)` : text;
-        throw new Error(
-            `[bd JSON Parse Error] Failed to parse JSON output from '${commandLabel}': ${err.message}. ` +
-            `Raw output snippet: ${JSON.stringify(snippet)}`
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Goal-priority helpers
-// ---------------------------------------------------------------------------
-//
-// `validated.goal` is a slash-separated priority list (e.g. 'P1', 'P1/P2'),
-// already validated against GOAL_PATTERN above. The sprint's exit condition
-// (distinct from "is there work dispatchable right now", which `--ready`
-// answers) is: are there any NOT-YET-CLOSED beads in scope at or above
-// (numerically <=) the worst priority named in the goal? `bd list
-// --priority-max=Pn` is inclusive of Pn, so the worst (highest numeric)
-// priority in the goal is exactly the right `--priority-max` value.
-/**
- * @param {string} goal - e.g. 'P1', 'P1/P2', 'P1/P2/P3'
- * @returns {string} the lowest-priority (highest 'Pn' number) tier named in `goal`, e.g. 'P2'
- */
-export function goalPriorityMax(goal) {
-    const tiers = goal.split('/').map((p) => Number(p.slice(1)));
-    const worst = Math.max(...tiers);
-    return `P${worst}`;
-}
-
-// apra-fleet-eft.52.1.3: server-side goal-membership placement for the
-// fleet-sprint dashboard's Sprint vs Backlog split. The viewer must NOT
-// decide this itself (no CSS display:none hiding in the browser, no
-// priority-only guess): goal membership is graph knowledge -- it needs the
-// full dependency edge set to honor the blocks-edge exception below -- so it
-// is computed here, in the state payload, and every task is returned tagged
-// with a `placement` field ('sprint' | 'backlog') the viewer consumes
-// verbatim.
-//
-// Rules, applied to TOP-LEVEL items only (an item whose `parent` points at no
-// other item in the dataset -- same "only an in-dataset parent nests" rule
-// the viewer's containment tree uses; descendants inherit their root's
-// placement):
-//
-//   - A top-level item is a SPRINT item unless it is DEFINITIVELY below the
-//     sprint's goal band -- i.e. it has a finite numeric priority strictly
-//     greater (numerically) than goalPriorityMax(goal). An item with no /
-//     non-numeric priority is NOT demoted (it is in-scope sprint work of
-//     unknown rank, not deliberately-deferred backlog).
-//   - EXCEPTION (visual continuity): a below-goal top-level item connected to
-//     an in-goal top-level item by a 'blocks'-type dependency edge (in either
-//     direction) stays a SPRINT item, so it renders alongside the sprint
-//     subtree it blocks / is blocked by rather than being split off into the
-//     Backlog section.
-//
-// Descendants of a top-level item always inherit that item's placement, so a
-// whole subtree lands in one section.
-/**
- * @param {Array<{id: (string|number), parent?: (string|number), priority?: number, dependencies?: Array<{depends_on_id: (string|number), type: string}>}>} tasks - scoped bead objects
- * @param {string} goal - sprint goal band, e.g. 'P1/P2'
- * @returns {{ sprintTasks: object[], backlogTasks: object[] }} the same tasks, each tagged with a `placement` field, partitioned by section
- */
-export function partitionByGoalMembership(tasks, goal) {
-    const list = Array.isArray(tasks) ? tasks : [];
-    const byId = new Map();
-    list.forEach((t) => {
-        if (t && t.id !== undefined && t.id !== null) byId.set(String(t.id), t);
-    });
-
-    const hasInDatasetParent = (t) => {
-        const p = t && t.parent;
-        return p !== undefined && p !== null && byId.has(String(p));
-    };
-
-    // Walk `parent` up to the top-level in-dataset ancestor (cycle-guarded).
-    const rootOf = (t) => {
-        let cur = t;
-        const seen = new Set();
-        while (hasInDatasetParent(cur) && !seen.has(String(cur.id))) {
-            seen.add(String(cur.id));
-            cur = byId.get(String(cur.parent));
-        }
-        return cur;
-    };
-
-    const goalMaxNum = Number(goalPriorityMax(goal).slice(1));
-    const isBelowGoal = (t) =>
-        typeof t.priority === 'number' && Number.isFinite(t.priority) && t.priority > goalMaxNum;
-
-    const topLevel = list.filter((t) => t && !hasInDatasetParent(t));
-    // In-goal top-level items: everything not definitively below the goal band.
-    const inGoalTopIds = new Set(
-        topLevel.filter((t) => !isBelowGoal(t)).map((t) => String(t.id))
-    );
-
-    // Sprint set starts as the in-goal top-levels, then absorbs below-goal
-    // top-levels connected to an in-goal top-level by a 'blocks' edge, in
-    // either direction.
-    const sprintTopIds = new Set(inGoalTopIds);
-    topLevel.forEach((t) => {
-        const id = String(t.id);
-        if (sprintTopIds.has(id)) return;
-        // Outgoing: this below-goal top-level depends_on (is blocked by) an
-        // in-goal top-level -> keep it in Sprint.
-        const deps = Array.isArray(t.dependencies) ? t.dependencies : [];
-        if (deps.some((d) => d && d.type === 'blocks' && inGoalTopIds.has(String(d.depends_on_id)))) {
-            sprintTopIds.add(id);
-        }
-    });
-    // Incoming: an in-goal top-level depends_on (is blocked by) a below-goal
-    // top-level -> keep that below-goal item in Sprint too.
-    topLevel.forEach((t) => {
-        if (!inGoalTopIds.has(String(t.id))) return;
-        const deps = Array.isArray(t.dependencies) ? t.dependencies : [];
-        deps.forEach((d) => {
-            if (!d || d.type !== 'blocks') return;
-            const other = byId.get(String(d.depends_on_id));
-            if (other && !hasInDatasetParent(other)) sprintTopIds.add(String(other.id));
-        });
-    });
-
-    const sprintTasks = [];
-    const backlogTasks = [];
-    list.forEach((t) => {
-        if (!t) return;
-        const root = rootOf(t);
-        const placement = sprintTopIds.has(String(root.id)) ? 'sprint' : 'backlog';
-        const tagged = { ...t, placement };
-        if (placement === 'backlog') backlogTasks.push(tagged);
-        else sprintTasks.push(tagged);
-    });
-    return { sprintTasks, backlogTasks };
-}
+// apra-fleet-3swo.6.13: parseBdJson, goalPriorityMax and
+// partitionByGoalMembership moved verbatim to ./beads-scope.mjs, alongside
+// this module's other bd-output consumers (buildBeadGraph, discoverScope,
+// classifyVerifySet, createBeadsScope). Imported back and re-exported below
+// (facade region) so no importer of runner.js is edited by the move.
 
 // Every status that means "not yet done" for exit-condition purposes --
 // deliberately NOT `--ready`, which only reflects "dispatchable right now" and
@@ -717,217 +601,13 @@ export async function resolveSettleShell({ args, member, log = () => {}, sprintS
     });
 }
 
-/**
- * The count of children a parent ALREADY has, i.e. the highest trailing `.N`
- * segment across its direct children. Passed to the allocator as `floor` so
- * that on its FIRST allocation under a parent it never mints an id colliding
- * with a child created before the allocator's persisted state was seeded.
- * Best-effort: a failed or unparseable list yields 0 (the allocator's own
- * persisted high-water still guards against re-minting after that).
- *
- * @param {{ command: Function, member: string, parentId: string }} opts
- * @returns {Promise<number>}
- */
-export async function computeChildFloor({ command, member, parentId }) {
-    try {
-        const label = `bd list --parent ${parentId} --json`;
-        const raw = await command(label, { member_name: member, silent: true });
-        const beads = parseBdJson(raw, label);
-        let max = 0;
-        const prefix = `${parentId}.`;
-        for (const b of beads) {
-            if (!b || typeof b.id !== 'string' || !b.id.startsWith(prefix)) continue;
-            const tail = b.id.slice(prefix.length);
-            // Only a DIRECT child (single trailing numeric segment) counts.
-            if (!/^\d+$/.test(tail)) continue;
-            const n = Number(tail);
-            if (Number.isInteger(n) && n > max) max = n;
-        }
-        return max;
-    } catch {
-        return 0;
-    }
-}
-
-/**
- * Create a child bead under `parentId` using an allocator-minted,
- * collision-free explicit id. This is the single bead-creation seam every
- * proposed newTask flows through, so that two concurrent sprints never mint
- * the same child id.
- *
- * Sequence (mirrors the allocator's reserve -> confirm/release contract):
- *   1. allocate() reserves the next distinct child id under the shared parent.
- *   2. `bd create` runs with `--id <childId>` (or, under the null client where
- *      childId is null, lets bd derive the id from `--parent`).
- *   3. On the explicit-id path only, a follow-up `bd update <childId> --parent
- *      <parentId>` establishes the real parent edge.
- *   4. confirm() on success (the id is now durably used) or release() on
- *      failure (the reserved id returns to the pool, never a permanent gap).
- *
- * `bd create` REJECTS `--id` and `--parent` together, so on the explicit-id
- * path `--parent` must be dropped: the allocator's `${parentId}.${seq}` id
- * shape already encodes the hierarchy. A dotted id alone does NOT record the
- * explicit parent edge, which is what the separate `bd update --parent`
- * supplies; that link step is deliberately NOT best-effort -- a failure
- * throws, releases the reservation, and degrades loudly rather than leaving
- * an edgeless child.
- *
- * @param {{
- *   command: Function, allocator: { allocate: Function, confirm: Function, release: Function },
- *   member: string, title: string, description: string, priority: string,
- *   parentId: string, sprintId?: string, floor?: number, label?: string,
- *   log?: Function,
- * }} opts
- * @returns {Promise<{ childId: string|null }>}
- */
-export async function createChildBeadWithAllocatedId(opts) {
-    const { command, allocator, member, title, description, priority, parentId, sprintId, floor, label, log = () => {} } = opts;
-    const grant = await allocator.allocate(parentId, { pid: process.pid, sprintId, floor });
-    // The explicit-id path relies on the allocator's `${parentId}.${seq}` id
-    // shape to carry the hierarchy that `--parent` can no longer carry
-    // alongside `--id` (see the doc comment above). Fail loudly rather than
-    // create a child whose id does not place it under this parent at all.
-    if (grant.childId && !String(grant.childId).startsWith(`${parentId}.`)) {
-        await allocator.release(grant.token);
-        throw new Error(
-            `[id-allocator] allocated child id '${grant.childId}' is not a child of parent '${parentId}' ` +
-            '(expected the `<parentId>.<seq>` shape); released the reservation rather than creating an unparented bead',
-        );
-    }
-    // `bd create` refuses `--id` together with `--parent`: carry EITHER the
-    // allocator-minted explicit id (hierarchy encoded in the id, parent edge
-    // linked immediately after the create) OR `--parent` and let bd derive the
-    // id (null-allocator path).
-    const parentageFlags = grant.childId ? `--id ${grant.childId}` : `--parent ${parentId}`;
-    // The description is LLM-authored free text: stage it to a member-local
-    // temp file (see stageCommandBodyMemberSide) and hand THAT path to `bd
-    // create --body-file` rather than interpolating it into the shell command
-    // string. Only `title` (short, allowlist-validated by validateNewTask)
-    // remains inline.
-    try {
-        const descriptionFile = await stageCommandBodyMemberSide({
-            command, member, content: description,
-            label: `Stage newTask description for '${title}'`,
-        });
-        await command(
-            `bd create "${title}" --body-file "${descriptionFile}" -p "${priority}" ${parentageFlags} --silent`,
-            { member_name: member, silent: true, label: label ?? `Create follow-up task: ${title}` }
-        );
-        // Explicit-id path only: record the real parent edge that `--parent`
-        // would have recorded, had bd allowed it on the same create.
-        if (grant.childId) {
-            await command(
-                `bd update ${grant.childId} --parent ${parentId}`,
-                { member_name: member, silent: true, label: `Link follow-up task ${grant.childId} under ${parentId}` }
-            );
-        }
-    } catch (err) {
-        // The create did NOT land -- return the reserved id to the pool so the
-        // next allocation reuses it (no permanent gap), then re-throw.
-        await allocator.release(grant.token);
-        log(`[id-allocator] bd create failed for '${grant.childId ?? '(bd-derived)'}'; released reservation: ${err.message}`);
-        throw err;
-    }
-    // The create landed locally -- durably commit the id BEFORE the D-push, so a
-    // crash after this point can never reclaim an id that now genuinely exists.
-    await allocator.confirm(grant.token);
-    return { childId: grant.childId ?? null };
-}
-
-/**
- * The orchestrator's post-streak verification read, with its mandatory
- * D-pull. A remote doer closes its assigned beads in its OWN clone and
- * D-pushes them, so the orchestrator MUST D-pull its own clone BEFORE the `bd
- * show` -- otherwise it reads stale (still-open) status and falsely reports
- * every remote doer streak as FAILED.
- *
- * Returns the ids that are NOT closed after the D-pull-then-read. An empty
- * array means the streak genuinely closed everything it was assigned.
- *
- * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function, args?: { callTool?: Function }, sprintState?: object }} opts
- * @returns {Promise<string[]>} the still-unclosed bead ids
- */
-export async function verifyDoerStreakClosed({ command, orchestratorMember, beadIds, log = () => {}, args, sprintState }) {
-    // D-pull FIRST so the orchestrator's clone observes the doer's just-pushed
-    // closes. Routed through the single dolt-sync module's purpose-based BEFORE
-    // bracket (apra-fleet-417.2.1); behavior is identical to the previous
-    // direct doltPullBefore() call.
-    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
-    // guarded on args.callTool the same way the pre-dispatch bracket is
-    // (apra-fleet-7dir.24).
-    const shell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell }) });
-    const label = `bd show ${beadIds.join(' ')} --json`;
-    const showRes = await command(label, { member_name: orchestratorMember, silent: true });
-    const showBeads = parseBdJson(showRes, label);
-    const statusById = new Map(showBeads.map((b) => [b.id, b.status]));
-    return beadIds.filter((id) => statusById.get(id) !== 'closed');
-}
-
-/**
- * Batched per-streak work-claiming (apra-fleet-7h6n.7, audit R6): claims
- * every id in `beadIds` with ONE `bd update <id...> --claim --json`
- * invocation instead of one `bd update <id> --claim` call per bead.
- *
- * RESEARCH FINDING this batching relies on (verified against real `bd`
- * 1.1.0, both by reading `bd update --help`'s `Usage: bd update [id...]`
- * and by exercising a scratch sandbox DB): `bd update` DOES accept a
- * variadic id list, and `--claim --json` on a MULTI-id invocation returns a
- * JSON array containing ONLY the issues that were successfully claimed --
- * an id that fails to resolve, or is already claimed by a DIFFERENT
- * assignee, is silently dropped from the array (its error goes to stderr,
- * not stdout) rather than aborting the whole call. Two non-obvious
- * consequences, both load-bearing for this function's design:
- *   1. This is NOT atomic in the transactional sense -- ids before a
- *      failing one are still committed, there is no all-or-nothing
- *      rollback. It IS enough to cut the streak's claim step from N
- *      subprocess spawns to 1, which is this bead's actual goal.
- *   2. The process exit code stays 0 even when SOME ids in the batch
- *      failed to claim (verified: a lone failing id exits 1, but the exact
- *      same failure mixed into a multi-id batch with a succeeding id exits
- *      0) -- so, unlike the old single-id-per-call loop, success can NEVER
- *      be inferred from "command() did not throw". The returned JSON array
- *      is the only reliable signal, which is why this function always
- *      diffs `beadIds` against the parsed array rather than relying on a
- *      catch block.
- *
- * A total call failure (command() itself throws -- e.g. a transient
- * dispatch/network fault reaching the member) is treated the same way the
- * old loop treated "every id failed": every id is reported skipped, never
- * thrown, so one bad batch degrades the streak (all its beads stay
- * unclaimed, caller decides whether to skip the streak) rather than
- * crashing the sprint.
- *
- * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function }} opts
- * @returns {Promise<{ claimedBeadIds: string[], skippedBeadIds: string[] }>}
- */
-export async function claimBeadsBatched({ command, orchestratorMember, beadIds, log = () => {} }) {
-    if (!Array.isArray(beadIds) || beadIds.length === 0) {
-        return { claimedBeadIds: [], skippedBeadIds: [] };
-    }
-    const label = `bd update ${beadIds.join(' ')} --claim --json`;
-    let raw;
-    try {
-        raw = await command(label, { member_name: orchestratorMember, silent: true });
-    } catch (err) {
-        // A dispatch/exec-level failure (member unreachable, transient
-        // network fault) degrades gracefully -- every id in this batch
-        // stays unclaimed, same as the old per-id loop's catch-and-skip.
-        // This is DISTINCT from a malformed-JSON parse failure below, which
-        // stays fatal (per parseBdJson's own doc comment: a parse failure
-        // must be LOUD, never silently swallowed as "everything skipped").
-        log(`Batched claim failed for [${beadIds.join(', ')}]: ${err.message}`);
-        return { claimedBeadIds: [], skippedBeadIds: [...beadIds] };
-    }
-    const claimed = parseBdJson(raw, label);
-    const claimedIds = new Set((Array.isArray(claimed) ? claimed : []).map((b) => b && b.id).filter(Boolean));
-    const claimedBeadIds = beadIds.filter((id) => claimedIds.has(id));
-    const skippedBeadIds = beadIds.filter((id) => !claimedIds.has(id));
-    if (skippedBeadIds.length > 0) {
-        log(`Batched claim: claimed ${claimedBeadIds.length} bead(s) [${claimedBeadIds.join(', ')}]; skipped ${skippedBeadIds.length} already-claimed/unresolvable bead(s) [${skippedBeadIds.join(', ')}].`);
-    }
-    return { claimedBeadIds, skippedBeadIds };
-}
+// apra-fleet-3swo.6.13: computeChildFloor, createChildBeadWithAllocatedId,
+// verifyDoerStreakClosed and claimBeadsBatched -- the child-bead allocation
+// and batched-claim command surface -- moved verbatim to ./beads-children.mjs.
+// Imported back and re-exported below (facade region) so no importer of
+// runner.js is edited by the move. resolveSettleShell (above) did NOT move;
+// beads-children.mjs imports it back from here, the same back-import pattern
+// member-sync.mjs already uses.
 
 // ---------------------------------------------------------------------------
 // Plan phase prompt builder

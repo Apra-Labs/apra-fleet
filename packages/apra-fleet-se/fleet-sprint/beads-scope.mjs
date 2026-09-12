@@ -99,6 +99,166 @@ export function isBeadsMutatingCommand(cmdStr) {
     return /^bd\b/i.test(trimmed) && !BD_READ_ONLY_RE.test(trimmed);
 }
 
+// ---------------------------------------------------------------------------
+// bd JSON-parse helper
+// ---------------------------------------------------------------------------
+//
+// All `bd ... --json` output must be parsed through this rather than a bare
+// JSON.parse: non-JSON noise on stdout (a warning or deprecation line) would
+// otherwise raise an anonymous SyntaxError deep inside a multi-cycle run. This
+// names the offending command and includes a snippet of the raw output.
+//
+// apra-fleet-3swo.6.13: moved verbatim out of runner.js -- it belongs with
+// this module's other bd-output consumers (buildBeadGraph, discoverScope,
+// classifyVerifySet, createBeadsScope's bdListScoped/fetchAllBeadsShared).
+// runner.js re-exports it unchanged so no importer is edited by the move.
+/**
+ * @param {string} raw - the raw text returned by `command()`
+ * @param {string} commandLabel - the `bd` command that produced `raw`, for diagnostics
+ * @returns {any}
+ */
+export function parseBdJson(raw, commandLabel) {
+    const text = raw === undefined || raw === null || raw === '' ? '[]' : raw;
+    try {
+        return JSON.parse(text);
+    } catch (err) {
+        const snippet = text.length > 500 ? `${text.slice(0, 500)}... (truncated, ${text.length} chars total)` : text;
+        throw new Error(
+            `[bd JSON Parse Error] Failed to parse JSON output from '${commandLabel}': ${err.message}. ` +
+            `Raw output snippet: ${JSON.stringify(snippet)}`
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Goal-priority helpers
+// ---------------------------------------------------------------------------
+//
+// `validated.goal` is a slash-separated priority list (e.g. 'P1', 'P1/P2'),
+// already validated against GOAL_PATTERN above. The sprint's exit condition
+// (distinct from "is there work dispatchable right now", which `--ready`
+// answers) is: are there any NOT-YET-CLOSED beads in scope at or above
+// (numerically <=) the worst priority named in the goal? `bd list
+// --priority-max=Pn` is inclusive of Pn, so the worst (highest numeric)
+// priority in the goal is exactly the right `--priority-max` value.
+//
+// apra-fleet-3swo.6.13: moved verbatim out of runner.js, together with
+// partitionByGoalMembership below, which calls it. runner.js re-exports both
+// unchanged so no importer is edited by the move.
+/**
+ * @param {string} goal - e.g. 'P1', 'P1/P2', 'P1/P2/P3'
+ * @returns {string} the lowest-priority (highest 'Pn' number) tier named in `goal`, e.g. 'P2'
+ */
+export function goalPriorityMax(goal) {
+    const tiers = goal.split('/').map((p) => Number(p.slice(1)));
+    const worst = Math.max(...tiers);
+    return `P${worst}`;
+}
+
+// apra-fleet-eft.52.1.3: server-side goal-membership placement for the
+// fleet-sprint dashboard's Sprint vs Backlog split. The viewer must NOT
+// decide this itself (no CSS display:none hiding in the browser, no
+// priority-only guess): goal membership is graph knowledge -- it needs the
+// full dependency edge set to honor the blocks-edge exception below -- so it
+// is computed here, in the state payload, and every task is returned tagged
+// with a `placement` field ('sprint' | 'backlog') the viewer consumes
+// verbatim.
+//
+// Rules, applied to TOP-LEVEL items only (an item whose `parent` points at no
+// other item in the dataset -- same "only an in-dataset parent nests" rule
+// the viewer's containment tree uses; descendants inherit their root's
+// placement):
+//
+//   - A top-level item is a SPRINT item unless it is DEFINITIVELY below the
+//     sprint's goal band -- i.e. it has a finite numeric priority strictly
+//     greater (numerically) than goalPriorityMax(goal). An item with no /
+//     non-numeric priority is NOT demoted (it is in-scope sprint work of
+//     unknown rank, not deliberately-deferred backlog).
+//   - EXCEPTION (visual continuity): a below-goal top-level item connected to
+//     an in-goal top-level item by a 'blocks'-type dependency edge (in either
+//     direction) stays a SPRINT item, so it renders alongside the sprint
+//     subtree it blocks / is blocked by rather than being split off into the
+//     Backlog section.
+//
+// Descendants of a top-level item always inherit that item's placement, so a
+// whole subtree lands in one section.
+/**
+ * @param {Array<{id: (string|number), parent?: (string|number), priority?: number, dependencies?: Array<{depends_on_id: (string|number), type: string}>}>} tasks - scoped bead objects
+ * @param {string} goal - sprint goal band, e.g. 'P1/P2'
+ * @returns {{ sprintTasks: object[], backlogTasks: object[] }} the same tasks, each tagged with a `placement` field, partitioned by section
+ */
+export function partitionByGoalMembership(tasks, goal) {
+    const list = Array.isArray(tasks) ? tasks : [];
+    const byId = new Map();
+    list.forEach((t) => {
+        if (t && t.id !== undefined && t.id !== null) byId.set(String(t.id), t);
+    });
+
+    const hasInDatasetParent = (t) => {
+        const p = t && t.parent;
+        return p !== undefined && p !== null && byId.has(String(p));
+    };
+
+    // Walk `parent` up to the top-level in-dataset ancestor (cycle-guarded).
+    const rootOf = (t) => {
+        let cur = t;
+        const seen = new Set();
+        while (hasInDatasetParent(cur) && !seen.has(String(cur.id))) {
+            seen.add(String(cur.id));
+            cur = byId.get(String(cur.parent));
+        }
+        return cur;
+    };
+
+    const goalMaxNum = Number(goalPriorityMax(goal).slice(1));
+    const isBelowGoal = (t) =>
+        typeof t.priority === 'number' && Number.isFinite(t.priority) && t.priority > goalMaxNum;
+
+    const topLevel = list.filter((t) => t && !hasInDatasetParent(t));
+    // In-goal top-level items: everything not definitively below the goal band.
+    const inGoalTopIds = new Set(
+        topLevel.filter((t) => !isBelowGoal(t)).map((t) => String(t.id))
+    );
+
+    // Sprint set starts as the in-goal top-levels, then absorbs below-goal
+    // top-levels connected to an in-goal top-level by a 'blocks' edge, in
+    // either direction.
+    const sprintTopIds = new Set(inGoalTopIds);
+    topLevel.forEach((t) => {
+        const id = String(t.id);
+        if (sprintTopIds.has(id)) return;
+        // Outgoing: this below-goal top-level depends_on (is blocked by) an
+        // in-goal top-level -> keep it in Sprint.
+        const deps = Array.isArray(t.dependencies) ? t.dependencies : [];
+        if (deps.some((d) => d && d.type === 'blocks' && inGoalTopIds.has(String(d.depends_on_id)))) {
+            sprintTopIds.add(id);
+        }
+    });
+    // Incoming: an in-goal top-level depends_on (is blocked by) a below-goal
+    // top-level -> keep that below-goal item in Sprint too.
+    topLevel.forEach((t) => {
+        if (!inGoalTopIds.has(String(t.id))) return;
+        const deps = Array.isArray(t.dependencies) ? t.dependencies : [];
+        deps.forEach((d) => {
+            if (!d || d.type !== 'blocks') return;
+            const other = byId.get(String(d.depends_on_id));
+            if (other && !hasInDatasetParent(other)) sprintTopIds.add(String(other.id));
+        });
+    });
+
+    const sprintTasks = [];
+    const backlogTasks = [];
+    list.forEach((t) => {
+        if (!t) return;
+        const root = rootOf(t);
+        const placement = sprintTopIds.has(String(root.id)) ? 'sprint' : 'backlog';
+        const tagged = { ...t, placement };
+        if (placement === 'backlog') backlogTasks.push(tagged);
+        else sprintTasks.push(tagged);
+    });
+    return { sprintTasks, backlogTasks };
+}
+
 /**
  * Build the id->bead and parent->children indexes every scope walk needs.
  *
