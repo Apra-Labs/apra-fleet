@@ -389,6 +389,66 @@ describe('provisionVcsAuth', () => {
     expect(execCmds.filter(cmd => cmd.includes('fleet-git-credential-stable-label') && (cmd.includes('rm -f') || cmd.includes('Remove-Item'))).length).toBe(0);
   });
 
+  // --- legacy-migration step must never drop a live credential registration ---
+  //
+  // Regression for the live 2026-09-11 fleet-lin-dev1 failure. The
+  // legacy-migration step that runs BEFORE every deploy used to call
+  // gitCredentialHelperRemove(host) with no label, which emits
+  // `git config --global --unset-all credential.https://<host>.helper`. That
+  // key is HOST-scoped, not label-scoped, so it dropped the registration of
+  // whatever credential was currently live -- and because it ran before the
+  // deploy, any failure in between left the member with a fresh credential
+  // FILE on disk but no git-config registration ("could not read Username"
+  // while the token was still valid). Scoping that call to the label would NOT
+  // have helped: every variant unsets the same host-scoped key. The step now
+  // removes only the legacy unlabeled FILE and touches no git config.
+
+  it('github: the pre-deploy legacy migration never unsets the git-config credential helper key', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-legacy-migration' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_first_ever', label: 'only-label',
+    });
+
+    const execCmds = mockExecCommand.mock.calls.map(c => String(c[0]));
+    expect(execCmds.some(cmd => cmd.includes('--unset-all'))).toBe(false);
+    // ...but the legacy UNLABELED credential file is still cleaned up, so a
+    // pre-label install does not keep an orphaned, still-valid token on disk.
+    expect(
+      execCmds.some(cmd =>
+        /\.fleet-git-credential(\.bat)?"/.test(cmd) && (cmd.includes('rm -f') || cmd.includes('Remove-Item'))),
+    ).toBe(true);
+  });
+
+  it('github: a live credential registration survives a same-label refresh (no --unset-all)', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-registration-survives' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_v1', label: 'live-label',
+    });
+    mockExecCommand.mockClear();
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_v2', label: 'live-label',
+    });
+
+    const execCmds = mockExecCommand.mock.calls.map(c => String(c[0]));
+    // A plain refresh fires no supersession revoke, so NOTHING in this deploy
+    // may unset the host-scoped helper key: the re-registration is done
+    // in-place by gitCredentialHelperWrite's own --replace-all + --add.
+    expect(execCmds.some(cmd => cmd.includes('--unset-all'))).toBe(false);
+    expect(execCmds.some(cmd => cmd.includes('--replace-all') && cmd.includes('--add'))).toBe(true);
+  });
+
   // --- {{secure.NAME}} token resolution ---
 
   it('resolves {{secure.NAME}} token in github pat token field', async () => {

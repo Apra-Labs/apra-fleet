@@ -748,8 +748,19 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
         // through, so a degraded read/write is always visible to whoever is
         // watching a live sprint -- independent of whether the caller treats
         // it as fatal.
+        //
+        // `selfHealed` reports whether the bounded one-shot auth self-heal
+        // above actually RAN TO COMPLETION for this step -- i.e. credentials
+        // were re-provisioned and the command was then retried and STILL
+        // failed. It is deliberately false on the `catch (healErr)` path
+        // above (that returns early): a self-heal that THREW never
+        // re-provisioned anything, so a credential problem remains a live
+        // explanation there. Callers use this to tell "the credentials are
+        // stale" apart from "the credentials were just refreshed and the
+        // failure text is lying" -- see doltPushGuarded's post-reconcile
+        // re-push branch.
         log(`[Dolt] ${label} FAILED (${kind}) -- reads/writes for member '${member}' may be stale until this is resolved. Raw: ${error}`);
-        return { ok: false, output: res ? res.output : '', error, kind };
+        return { ok: false, output: res ? res.output : '', error, kind, selfHealed: authHealAttempted };
     }
 }
 
@@ -1659,14 +1670,95 @@ export async function doltPushAfter(member, opts = {}) {
         return { ok: true, member, pushed: true, reconciled: true };
     }
 
-    if (push.kind === 'auth') {
+    if (push.kind === 'auth' && !push.selfHealed) {
         // apra-fleet-spp.3: same mislabel class as the first-push/pull paths,
         // just reached via the post-reconcile re-push -- a credential that
         // lapsed mid-reconcile is not a data divergence, so it must not be
         // folded into DoltDivergedError below.
+        //
+        // Reached only when the bounded self-heal did NOT re-provision (no
+        // onAuthFailure wired, or the self-heal itself threw). With no
+        // evidence that the credentials were refreshed, a stale credential is
+        // still the best explanation and this stays an auth terminal.
         throw new DoltSyncError(
             `[Dolt] D-push re-push after reconcile for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- re-provision the member's VCS auth (provision_vcs_auth) and retry. Raw: ${push.error}`,
             { member, doltOutput: push.error, details: { kind: 'auth', operation: 'push-reconcile-repush' } },
+        );
+    }
+
+    if (push.kind === 'auth') {
+        // AUTH-SHAPED BUT PROVABLY NOT AUTH (live 2026-09-11, fleet-lin-dev1).
+        //
+        // Reaching this line means ALL THREE of the following already
+        // happened, in this order, against this same remote:
+        //   1. the FIRST push was rejected non-fast-forward ('diverged') --
+        //      which is itself PROOF the remote authenticated this clone:
+        //      a remote cannot compare refs and reject a push it never let in;
+        //   2. the bounded reconcile D-pull SUCCEEDED;
+        //   3. the re-push failed auth-shaped, runDoltStep's one-shot
+        //      self-heal re-provisioned the credentials (`selfHealed`), and
+        //      the retry with the FRESH credentials failed identically.
+        //
+        // So the credentials are demonstrably fine and re-minting them again
+        // cannot help. Dolt's chunk-upload phase ('addTableFiles,
+        // updateManifestAddFiles') reports a stale/unfinished-reconcile push
+        // with git's credential-prompt text ("could not read Username"),
+        // which classifyDoltFailure -- correctly, in isolation -- reads as
+        // auth. Treating it as auth here is what produced the observed
+        // production pathology: the engine looped provision_vcs_auth (51
+        // repeated failures across one run's logs, each reporting
+        // "provision_vcs_auth succeeded" and then failing identically) and
+        // terminated with the misleading "failed on VCS CREDENTIALS, not a
+        // data divergence" reason, when the actual cause was a local Dolt
+        // clone behind the remote that a plain pull-then-push cleared.
+        //
+        // Do NOT fix this by loosening the 'auth' patterns: each message
+        // classifies correctly on its own, and widening them would regress
+        // apra-fleet-spp (a real credential failure being read as
+        // divergence). The signal is the SEQUENCE, so it is judged here.
+        //
+        // Remedy = the reconcile that did not finish: ONE more bounded
+        // D-pull + re-push cycle, deliberately WITHOUT `onAuthFailure`, so
+        // this path can never re-enter the credential-reprovision loop it
+        // exists to break. Still bounded (two cycles total, never a loop),
+        // keeping apra-fleet-417.3's first-successful-pusher-wins contract.
+        log(`[Dolt] D-push re-push after reconcile for member '${member}' failed with auth-shaped text, but VCS credentials are provably NOT the cause: the first push's non-fast-forward rejection proves the remote authenticated this clone moments earlier, and the credentials have since been re-provisioned and still fail identically. Treating it as an unfinished reconcile (a local clone behind the remote) and running ONE more bounded D-pull + re-push, with credential self-heal disabled. Raw: ${push.error}`);
+
+        const secondReconcile = await runDoltStep({
+            command, member, cmd: 'bd dolt pull',
+            label: `D-push second reconcile pull for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
+        });
+        if (!secondReconcile.ok) {
+            if (secondReconcile.kind === 'diverged') {
+                return await surfaceDivergence(
+                    new DoltDivergedError(
+                        `[Dolt] D-push second reconcile pull for member '${member}' hit an unmergeable beads conflict -- must not be retried blindly: ${secondReconcile.error}`,
+                        { member, doltOutput: secondReconcile.error, operation: 'push-reconcile' },
+                    ),
+                    'push-reconcile',
+                );
+            }
+            throw new DoltSyncError(
+                `[Dolt] D-push second reconcile pull for member '${member}' failed: ${secondReconcile.error}`,
+                { member, doltOutput: secondReconcile.error },
+            );
+        }
+
+        push = await runDoltStep({
+            command, member, cmd: 'bd dolt push',
+            label: `D-push second re-push after reconcile for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
+        });
+        if (push.ok) {
+            forgetTipAfterPush();
+            return { ok: true, member, pushed: true, reconciled: true };
+        }
+
+        return await surfaceDivergence(
+            new DoltDivergedError(
+                `[Dolt] D-push for member '${member}' still rejected after TWO bounded reconcile pulls -- refusing to retry further. The failure text names VCS credentials, but they were re-provisioned mid-ladder and the remote authenticated this clone earlier in the same ladder, so this is a stale/unmergeable clone, not a credential problem: ${push.error}`,
+                { member, doltOutput: push.error, operation: 'push' },
+            ),
+            'push',
         );
     }
 
