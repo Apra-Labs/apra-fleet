@@ -220,6 +220,11 @@ describe('(3) falsification -- the gate is not vacuous', () => {
         const missingExport = "SyntaxError: The requested module '../fleet-sprint/runner.js' does not provide an export named 'someSymbol'";
         assert.equal(classifyFailure(missingExport).klass, 'FACADE_BREAK');
         assert.equal(classifyFailure('Error [ERR_MODULE_NOT_FOUND]: Cannot find module ...').klass, 'FACADE_BREAK');
+        // The facade-side signature, distinct from the consumer-side one above.
+        assert.equal(
+            classifyFailure("SyntaxError: Export 'KB_SELF_INJECTING_ROLES' is not defined in module").klass,
+            'FACADE_BREAK',
+        );
     });
 
     test('classifyFailure refuses to admit an uncorroborated failure as an anchor desync', () => {
@@ -264,24 +269,47 @@ describe('(3) falsification -- the gate is not vacuous', () => {
         }
     });
 
-    test('removing one facade re-export flips a real INTACT file to FACADE_BREAK, and the tracked file is untouched', { timeout: PROBE_BUDGET_MS }, () => {
-        // Mutates a SANDBOX COPY of fleet-sprint/, never the tracked tree --
-        // same discipline as phase1's falsification. The probe is pointed at
-        // the sandbox by running it with the sandbox as the package root.
+    test('dropping one facade re-export really does produce a FACADE_BREAK classification end to end, and the tracked tree is untouched', { timeout: PROBE_BUDGET_MS }, () => {
+        // A real end-to-end falsification, not a string-manipulation stand-in:
+        // build a SANDBOX copy of fleet-sprint/ with exactly one re-export
+        // removed, point a consumer at it, run that consumer the same way the
+        // probe runs its children, and assert the resulting output classifies
+        // as FACADE_BREAK. The tracked tree is never written to; phase1's
+        // falsification uses the same sandbox discipline.
         const before = fs.readFileSync(RUNNER_PATH);
+        const src = before.toString('utf8');
+        const line = src.split('\n').find((l) => /^\s*createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,/.test(l));
+        assert.ok(line, 'expected the kb re-export line to still exist; re-anchor this falsification if the facade was reshaped');
+
         const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'phase4-falsify-'));
         try {
-            const src = before.toString('utf8');
-            const line = src.split('\n').find((l) => /^\s*createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,/.test(l));
-            assert.ok(line, 'expected the kb re-export line to still exist; re-anchor this falsification if the facade was reshaped');
+            fs.cpSync(path.join(SE_DIR, 'fleet-sprint'), path.join(sandbox, 'fleet-sprint'), { recursive: true });
+            // node_modules is reached by symlink so the sandbox module graph
+            // resolves the same dependencies as the real tree.
+            try {
+                fs.symlinkSync(path.join(SE_DIR, 'node_modules'), path.join(sandbox, 'node_modules'), 'junction');
+            } catch { /* already present, or unsupported -- the import below will say so */ }
+
+            const sandboxRunner = path.join(sandbox, 'fleet-sprint/runner.js');
             const broken = src.replace(line, line.replace('KB_SELF_INJECTING_ROLES, ', ''));
             assert.notEqual(broken, src, 'the falsification must actually change the source');
+            fs.writeFileSync(sandboxRunner, broken);
 
-            // Assert the shape of the break the probe would see, without
-            // writing into the tracked tree: a consumer that names the removed
-            // binding can no longer link.
-            assert.ok(!/export[\s\S]*KB_SELF_INJECTING_ROLES/.test(broken.split('\n').filter((l) => /^\s*createKbPrimingClient/.test(l)).join('\n')));
-            fs.writeFileSync(path.join(sandbox, 'runner.broken.js'), broken);
+            const consumer = path.join(sandbox, 'consumer.test.mjs');
+            fs.writeFileSync(consumer, [
+                "import test from 'node:test';",
+                "import { KB_SELF_INJECTING_ROLES } from './fleet-sprint/runner.js';",
+                "test('links', () => { if (!KB_SELF_INJECTING_ROLES) throw new Error('missing'); });",
+                '',
+            ].join('\n'));
+
+            const { ok, output } = runTestFile(consumer, PROBE_BUDGET_MS);
+            assert.equal(ok, false, 'a consumer of a dropped re-export must not pass');
+            assert.equal(
+                classifyFailure(output).klass,
+                'FACADE_BREAK',
+                `expected a FACADE_BREAK classification, got:\n${output.slice(-2000)}`,
+            );
         } finally {
             fs.rmSync(sandbox, { recursive: true, force: true });
         }
