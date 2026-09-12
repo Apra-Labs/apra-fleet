@@ -492,3 +492,93 @@ describe('apra-fleet-3swo.26: a crossing sync-bracket close preserves the bracke
         }
     });
 });
+
+// =============================================================================
+// apra-fleet-3swo.43 / apra-fleet-3swo.47 -- crossing-close pause-guard poke
+// timing.
+//
+// 0b928181 (apra-fleet-3swo.43) hoisted the finally block's pause-guard poke
+// ahead of the crossing-close throw, so the poke is EVALUATED even on a
+// crossing close instead of being skipped by an early throw. apra-fleet-
+// 3swo.47's review found the ORIGINALLY planned assertion for this
+// ("setPauseGuard is still called when the closing bracket was the last open
+// one, on a CROSSING close") describes a state that cannot occur: a crossing
+// close is only ever entered while another bracket sharing the same
+// exclusiveKey is still open (that is what makes it crossing rather than
+// nesting), and that other bracket has not yet decremented -- so
+// openSyncBracketCount is provably >= 1 immediately after our own decrement,
+// and the poke's `=== 0` guard can never be true there. Confirmed
+// empirically (apra-fleet-3swo.47): a standalone driver against
+// createSyncBrackets shows an IDENTICAL setPauseGuard call trace with and
+// without the 0b928181 hoist (0 calls at the crossing close, 1 call at the
+// later LIFO close, either way) -- so this specific reordering is NOT
+// revert-falsifiable, by design; it is kept only as defensive hardening (see
+// the comment in git-sync.mjs above the poke). The tests below therefore pin
+// the actual, reachable behavior instead: the poke does NOT fire at the
+// crossing close, the crossing error still propagates, and it is the
+// SUBSEQUENT LIFO close of the last remaining bracket that (re-)registers
+// the guard -- so a pause requested while sync brackets were open is never
+// permanently stranded, just not engaged at the instant of the crossing
+// close itself.
+// =============================================================================
+describe('apra-fleet-3swo.43/47: crossing-close pause-guard poke timing', () => {
+    test('a crossing close does NOT fire the poke (openBracketCount() >= 1 there); the crossing error still propagates; the poke fires only when the LAST bracket closes via the normal LIFO path', async () => {
+        let pokeCalls = 0;
+        let guard = null;
+        const setPauseGuard = (fn) => { pokeCalls += 1; guard = fn; };
+        const brackets = createSyncBrackets({ setPauseGuard });
+        pokeCalls = 0; // ignore the constructor-time initial registration above
+
+        const gateInner = deferred();
+        let innerOpened = false;
+
+        // outer opens first, inner opens second (sharing the same key), and
+        // outer resolves/closes FIRST while inner is still open -- a crossing
+        // (non-LIFO) close of outer.
+        const pOuter = brackets.withOpenSyncBracket(async () => {
+            while (!innerOpened) await Promise.resolve();
+            return 'outer-result';
+        }, { exclusiveKey: 'poke-timing', label: 'outer' });
+
+        const pInner = brackets.withOpenSyncBracket(async () => {
+            innerOpened = true;
+            await gateInner.promise;
+            return 'inner-result';
+        }, { exclusiveKey: 'poke-timing', label: 'inner' });
+
+        let errOuter = null;
+        try {
+            await pOuter;
+        } catch (e) {
+            errOuter = e;
+        }
+        check(errOuter instanceof ConcurrentSyncBracketError, `outer's crossing close must still throw ConcurrentSyncBracketError, got ${errOuter && errOuter.constructor.name}`);
+        check(brackets.openBracketCount() >= 1, 'invariant: a crossing close implies at least one other bracket (here, inner) is still open');
+        check(pokeCalls === 0, `the poke must NOT fire at the crossing close (count is still >= 1 there) -- got ${pokeCalls} call(s)`);
+
+        gateInner.resolve();
+        const innerRes = await pInner;
+        check(innerRes === 'inner-result', 'the still-open inner bracket completes normally once released');
+        check(brackets.openBracketCount() === 0, 'both brackets have closed by the end');
+        check(pokeCalls === 1, `the poke must fire exactly once, at the LAST (inner) bracket's normal LIFO close -- got ${pokeCalls} call(s)`);
+        check(guard() === true, 'the re-registered guard predicate must read true once every bracket is closed');
+    });
+
+    test('the poke does NOT fire on a nested close that leaves other brackets open (same === 0 gate, exercised without any crossing)', async () => {
+        let pokeCalls = 0;
+        const setPauseGuard = () => { pokeCalls += 1; };
+        const brackets = createSyncBrackets({ setPauseGuard });
+        pokeCalls = 0; // ignore the constructor-time initial registration above
+
+        await brackets.withOpenSyncBracket(async () => {
+            await brackets.withOpenSyncBracket(async () => {
+                check(pokeCalls === 0, 'sanity: no close has happened yet');
+            }, { exclusiveKey: 'nested-poke', label: 'inner' });
+            // Inner has just closed LIFO (openBracketCount() is now 1, outer
+            // still open) -- the poke must not have fired for it.
+            check(pokeCalls === 0, `the poke must not fire when the inner close leaves the outer bracket open -- got ${pokeCalls} call(s)`);
+        }, { exclusiveKey: 'nested-poke', label: 'outer' });
+        check(pokeCalls === 1, `the poke must fire exactly once, when the outer (last) bracket closes -- got ${pokeCalls} call(s)`);
+        check(brackets.openBracketCount() === 0);
+    });
+});
