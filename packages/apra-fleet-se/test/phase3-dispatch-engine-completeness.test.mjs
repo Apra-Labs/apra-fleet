@@ -1648,6 +1648,133 @@ describe('(6b) the extracted handleNestedSuiteSpawnResult helper converts spawn 
 // original short "Command failed: ..." text, never containing "truncated".
 // =============================================================================
 
+// =============================================================================
+// apra-fleet-hhjh.2 -- prove resolveNestedSuiteTimeoutBudget (apra-fleet-
+// hhjh.1's backend-aware budget resolver) is backend-aware, precedence-
+// correct, and self-describing, over the resolver function and manipulated
+// environment values directly -- no real nested suite is spawned by any case
+// here, since that is the very 21-minute cost this fix is about.
+//
+// Falsification (required, this section guards a bug fix): reverting
+// resolveNestedSuiteTimeoutBudget's body to unconditionally return
+// `{ ms: DEFAULT_NESTED_SUITE_TIMEOUT_MS, source: 'the mock-bd default' }`
+// regardless of bdMode() makes the "resolves to a larger, real-bd budget"
+// cases below fail, since budget.ms then equals the mock default instead of
+// exceeding it, and their `source.includes('real-bd default')` assertion
+// fails too. Observed when this was verified against that reverted body:
+// `AssertionError [ERR_ASSERTION]: real-bd budget for APRA_FLEET_BD_MOCK=0
+// must exceed the mock default (900000); got 900000` for every one of the
+// five real-bd-spelling cases. The fix (the live resolver above) was restored
+// before this task closed.
+// =============================================================================
+describe('(6c) resolveNestedSuiteTimeoutBudget is backend-aware, precedence-correct, and self-describing', () => {
+    // Pulled from bd-replay.mjs's own REAL_VALUES set (the bd-mock-shim
+    // contract's source), not re-guessed here: bdMode() maps unset/anything
+    // else to 'replay' (mock) and exactly these five spellings to 'real'. If
+    // that source ever adds/drops a spelling, re-read it from there rather
+    // than from this list.
+    const REAL_BD_SPELLINGS = ['0', 'false', 'off', 'no', 'real'];
+    const PRE_CHANGE_MOCK_BUDGET_MS = 900_000;
+
+    function withEnv(overrides, fn) {
+        const keys = Object.keys(overrides);
+        const originals = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+        try {
+            for (const k of keys) {
+                if (overrides[k] === undefined) delete process.env[k];
+                else process.env[k] = overrides[k];
+            }
+            fn();
+        } finally {
+            for (const k of keys) {
+                if (originals[k] === undefined) delete process.env[k];
+                else process.env[k] = originals[k];
+            }
+            for (const k of keys) {
+                assert.equal(process.env[k], originals[k], `env var ${k} must be restored to its original value`);
+            }
+        }
+    }
+
+    test('unset APRA_FLEET_BD_MOCK resolves to the mock-calibrated default, unchanged from its pre-change shipped value', () => {
+        withEnv({ APRA_FLEET_BD_MOCK: undefined, PHASE3_NESTED_SUITE_TIMEOUT_MS: undefined }, () => {
+            const budget = resolveNestedSuiteTimeoutBudget();
+            assert.equal(budget.ms, PRE_CHANGE_MOCK_BUDGET_MS, 'mock-bd default must equal the pre-change shipped 900000ms value, unaffected by this fix');
+            assert.ok(budget.source.includes('mock-bd default'), `source must name the mock-bd default; got: ${budget.source}`);
+        });
+    });
+
+    for (const spelling of REAL_BD_SPELLINGS) {
+        test(`APRA_FLEET_BD_MOCK=${spelling} resolves to a larger, real-bd budget than the mock default`, () => {
+            withEnv({ APRA_FLEET_BD_MOCK: spelling, PHASE3_NESTED_SUITE_TIMEOUT_MS: undefined }, () => {
+                const budget = resolveNestedSuiteTimeoutBudget();
+                assert.ok(
+                    budget.ms > PRE_CHANGE_MOCK_BUDGET_MS,
+                    `real-bd budget for APRA_FLEET_BD_MOCK=${spelling} must exceed the mock default (${PRE_CHANGE_MOCK_BUDGET_MS}); got ${budget.ms}`,
+                );
+                assert.ok(budget.source.includes('real-bd default'), `source must name the real-bd default; got: ${budget.source}`);
+            });
+        });
+    }
+
+    test('an explicit PHASE3_NESTED_SUITE_TIMEOUT_MS wins over the mock-bd default', () => {
+        withEnv({ APRA_FLEET_BD_MOCK: undefined, PHASE3_NESTED_SUITE_TIMEOUT_MS: '12345' }, () => {
+            const budget = resolveNestedSuiteTimeoutBudget();
+            assert.equal(budget.ms, 12345, 'explicit override must win over the mock-bd default');
+            assert.ok(budget.source.includes('PHASE3_NESTED_SUITE_TIMEOUT_MS=12345'), `source must name the override; got: ${budget.source}`);
+        });
+    });
+
+    test('an explicit PHASE3_NESTED_SUITE_TIMEOUT_MS wins over a real-bd backend', () => {
+        withEnv({ APRA_FLEET_BD_MOCK: 'off', PHASE3_NESTED_SUITE_TIMEOUT_MS: '54321' }, () => {
+            const budget = resolveNestedSuiteTimeoutBudget();
+            assert.equal(budget.ms, 54321, 'explicit override must win over the real-bd default even with a real backend in force');
+            assert.ok(budget.source.includes('PHASE3_NESTED_SUITE_TIMEOUT_MS=54321'), `source must name the override; got: ${budget.source}`);
+        });
+    });
+
+    test('a non-numeric PHASE3_NESTED_SUITE_TIMEOUT_MS throws on the mock backend', () => {
+        withEnv({ APRA_FLEET_BD_MOCK: undefined, PHASE3_NESTED_SUITE_TIMEOUT_MS: 'abc' }, () => {
+            assert.throws(
+                () => resolveNestedSuiteTimeoutBudget(),
+                (err) => {
+                    assert.ok(err.message.includes('must be a positive number'), `error must describe the requirement; got: ${err.message}`);
+                    assert.ok(err.message.includes('abc'), `error must show what was received; got: ${err.message}`);
+                    return true;
+                },
+            );
+        });
+    });
+
+    test('a non-positive PHASE3_NESTED_SUITE_TIMEOUT_MS throws on a real-bd backend', () => {
+        withEnv({ APRA_FLEET_BD_MOCK: 'real', PHASE3_NESTED_SUITE_TIMEOUT_MS: '0' }, () => {
+            assert.throws(
+                () => resolveNestedSuiteTimeoutBudget(),
+                (err) => {
+                    assert.ok(err.message.includes('must be a positive number'), `error must describe the requirement; got: ${err.message}`);
+                    return true;
+                },
+            );
+        });
+    });
+
+    test('mock and real-bd default timeout messages are textually distinguishable', () => {
+        let mockSource;
+        let realSource;
+        withEnv({ APRA_FLEET_BD_MOCK: undefined, PHASE3_NESTED_SUITE_TIMEOUT_MS: undefined }, () => {
+            mockSource = resolveNestedSuiteTimeoutBudget().source;
+        });
+        withEnv({ APRA_FLEET_BD_MOCK: 'real', PHASE3_NESTED_SUITE_TIMEOUT_MS: undefined }, () => {
+            realSource = resolveNestedSuiteTimeoutBudget().source;
+        });
+        assert.notEqual(mockSource, realSource, 'mock and real-bd default sources must differ');
+        assert.ok(mockSource.includes('mock-bd default'), `mock source must say mock-bd default; got: ${mockSource}`);
+        assert.ok(realSource.includes('real-bd default'), `real source must say real-bd default; got: ${realSource}`);
+        assert.ok(!mockSource.includes('real-bd default'), `mock source must not also claim real-bd; got: ${mockSource}`);
+        assert.ok(!realSource.includes('mock-bd default'), `real source must not also claim mock-bd; got: ${realSource}`);
+    });
+});
+
 describe('(7) the mock-sprint suite and both golden transcripts pass on the post-refactor tree', () => {
     test('both golden transcript suites pass without UPDATE_GOLDEN and leave the fixtures untouched', () => {
         const before = goldenFixtureStatus();
