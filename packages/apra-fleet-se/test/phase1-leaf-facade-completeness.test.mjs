@@ -18,6 +18,11 @@ import * as runner from '../fleet-sprint/runner.js';
 // but does not re-export it) -- it is only reachable directly from
 // worklists.mjs, never through the runner.js facade.
 import { selectStreaks } from '../fleet-sprint/worklists.mjs';
+// apra-fleet-3swo.53: shared with phase3-dispatch-engine-completeness.test.mjs
+// -- see that module's header for why this was extracted. (The excerpt cap
+// and excerptChildOutput also live there now, used internally by
+// handleNestedSuiteSpawnResult; this file has no direct use for them.)
+import { handleNestedSuiteSpawnResult } from './helpers/nested-suite-spawn.mjs';
 
 // =============================================================================
 // apra-fleet-3swo.3.7 -- prove Phase 1's leaf extractions (sprint-args.mjs
@@ -70,88 +75,19 @@ function resolveNestedSuiteTimeoutMs() {
 const NESTED_SUITE_TIMEOUT_MS = resolveNestedSuiteTimeoutMs();
 
 // -----------------------------------------------------------------------------
-// apra-fleet-80q3.1: bound how much of a failing child's stdout/stderr gets
-// quoted into the wrapped error message below, so a multi-megabyte nested
-// suite failure cannot flood the outer test report.
+// apra-fleet-3swo.53: this gate's own name/wording for the shared
+// handleNestedSuiteSpawnResult helper imported above.
 // -----------------------------------------------------------------------------
-const MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS = 4000;
+const PHASE1_ENV_VAR_NAME = 'PHASE1_NESTED_SUITE_TIMEOUT_MS';
+const PHASE1_TIMEOUT_EXTRA_GUIDANCE =
+    'or investigate a real hang -- this is not the per-dispatch bd+dolt latency work tracked separately.';
 
-/**
- * Returns a length-capped tail excerpt of a (possibly huge, possibly
- * undefined) child stdout/stderr string, annotated when truncated.
- */
-function excerptChildOutput(text) {
-    if (!text) return '(empty)';
-    if (text.length <= MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS) return text;
-    return (
-        `...[truncated, showing last ${MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS} of ${text.length} chars]...\n` +
-        text.slice(-MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS)
-    );
-}
-
-/**
- * Pure helper: turns a spawnSync error (or lack thereof) into either a pass
- * (returns void) or throws with a descriptive message.
- *
- * This helper is extracted for testing: it takes an already-produced error
- * object (or null for success) and the budget in milliseconds, rather than
- * calling execFileSync itself. The real runNestedSuite below uses this same
- * helper to handle its caught errors (proving single definition per the test
- * acceptance criteria).
- *
- * Node distinguishes a timeout from a genuine non-zero-exit failure at the
- * error-object level (verified directly): a timed-out spawnSync sets
- * `error.code === 'ETIMEDOUT'` and `error.signal === 'SIGTERM'`, while a
- * plain non-zero exit sets `error.status` to the exit code and leaves `code`
- * undefined.
- *
- * apra-fleet-80q3.1: an inner child failure (non-timeout) used to be
- * re-thrown BARE, which made it textually indistinguishable from the outer
- * budget itself expiring once the raw "spawnSync ... ETIMEDOUT"-shaped text
- * reached a report -- an inner mock-sprint/golden-transcript file failing
- * inside the 180s/whatever budget it carries could be misread as this outer
- * gate's own NESTED_SUITE_TIMEOUT_MS having been too small. The two cases are
- * now textually distinguishable: the ETIMEDOUT branch below always names the
- * budget and its source (env override or default); the non-timeout branch
- * instead names the outer suite label, states explicitly that the outer
- * budget did NOT expire, and quotes the child's exit status plus a
- * length-capped tail of its stdout/stderr so the failing inner file is
- * identifiable from the wrapped message alone. The original spawn error
- * (with its full, uncapped stdout/stderr) is preserved as `.cause` on the
- * thrown error, so no information is lost -- only what reaches the message
- * text is bounded.
- *
- * @param {string} suiteLabel - name of the nested suite (e.g., 'golden-transcript')
- * @param {Error|null} spawnError - error from execFileSync (or null on success)
- * @param {number} budgetMs - timeout budget in milliseconds
- * @throws {Error} if spawnError is truthy (wrapped ETIMEDOUT, or wrapped inner failure with cause)
- */
-function handleNestedSuiteSpawnResult(suiteLabel, spawnError, budgetMs) {
-    if (!spawnError) {
-        // Success case: no error, nothing to throw
-        return;
-    }
-    if (spawnError.code === 'ETIMEDOUT') {
-        const budgetSource = process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS
-            ? `PHASE1_NESTED_SUITE_TIMEOUT_MS=${process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS}`
-            : `the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)`;
-        throw new Error(
-            `nested suite "${suiteLabel}" timed out after ${budgetMs}ms (budget from ${budgetSource}). ` +
-                `Raise PHASE1_NESTED_SUITE_TIMEOUT_MS if this nested run is genuinely this slow under the current bd/dolt ` +
-                `backend, or investigate a real hang -- this is not the per-dispatch bd+dolt latency work tracked separately.`,
-        );
-    }
-    // Non-timeout failure: the failure is INSIDE the nested child, not the
-    // outer budget expiring. Wrap it so that fact is stated explicitly,
-    // keeping the original error reachable as `cause`.
-    const status = spawnError.status === undefined || spawnError.status === null ? 'unknown' : spawnError.status;
-    throw new Error(
-        `nested suite "${suiteLabel}" failed, but its outer budget of ${budgetMs}ms did NOT expire -- the failure is ` +
-            `inside the nested child itself, not this gate's own timeout. child exit status: ${status}. ` +
-            `child stdout (tail):\n${excerptChildOutput(spawnError.stdout)}\n` +
-            `child stderr (tail):\n${excerptChildOutput(spawnError.stderr)}`,
-        { cause: spawnError },
-    );
+/** Human-readable description of where NESTED_SUITE_TIMEOUT_MS came from, matching this gate's env override vs default. */
+function resolvePhase1BudgetSource() {
+    const raw = process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
+    return raw
+        ? `${PHASE1_ENV_VAR_NAME}=${raw}`
+        : `the default (no ${PHASE1_ENV_VAR_NAME} override set)`;
 }
 
 /**
@@ -159,9 +95,9 @@ function handleNestedSuiteSpawnResult(suiteLabel, spawnError, budgetMs) {
  * NESTED_SUITE_TIMEOUT_MS budget above, self-describing on timeout instead of
  * letting a bare "spawnSync node ETIMEDOUT" reach the test output.
  *
- * Uses the pure handleNestedSuiteSpawnResult helper above to process the
- * result, ensuring the test suite can verify the same error-handling logic
- * with synthesized results (see test section (6) below).
+ * Uses the shared handleNestedSuiteSpawnResult helper (imported above) to
+ * process the result, ensuring the test suite can verify the same
+ * error-handling logic with synthesized results (see test section (6) below).
  */
 function runNestedSuite(suiteLabel, args, extraOpts = {}) {
     let spawnError;
@@ -176,7 +112,14 @@ function runNestedSuite(suiteLabel, args, extraOpts = {}) {
     } catch (err) {
         spawnError = err;
     }
-    handleNestedSuiteSpawnResult(suiteLabel, spawnError, NESTED_SUITE_TIMEOUT_MS);
+    handleNestedSuiteSpawnResult(
+        suiteLabel,
+        spawnError,
+        NESTED_SUITE_TIMEOUT_MS,
+        resolvePhase1BudgetSource(),
+        PHASE1_ENV_VAR_NAME,
+        PHASE1_TIMEOUT_EXTRA_GUIDANCE,
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -624,7 +567,14 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
         timeoutError.status = null;
 
         assert.throws(
-            () => handleNestedSuiteSpawnResult('my-golden-suite', timeoutError, 900_000),
+            () => handleNestedSuiteSpawnResult(
+                'my-golden-suite',
+                timeoutError,
+                900_000,
+                'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)',
+                PHASE1_ENV_VAR_NAME,
+                PHASE1_TIMEOUT_EXTRA_GUIDANCE,
+            ),
             (err) => {
                 const msg = err.message;
                 assert.ok(
@@ -648,7 +598,7 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
 
         let caughtErr;
         try {
-            handleNestedSuiteSpawnResult('my-suite', nonZeroError, 900_000);
+            handleNestedSuiteSpawnResult('my-suite', nonZeroError, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)');
             assert.fail('should have thrown an error');
         } catch (e) {
             caughtErr = e;
@@ -690,7 +640,14 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
         crossCheckTimeoutError.signal = 'SIGTERM';
         let crossCheckTimeoutErr;
         try {
-            handleNestedSuiteSpawnResult('my-suite', crossCheckTimeoutError, 900_000);
+            handleNestedSuiteSpawnResult(
+                'my-suite',
+                crossCheckTimeoutError,
+                900_000,
+                'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)',
+                PHASE1_ENV_VAR_NAME,
+                PHASE1_TIMEOUT_EXTRA_GUIDANCE,
+            );
             assert.fail('should have thrown an error');
         } catch (e) {
             crossCheckTimeoutErr = e;
@@ -715,7 +672,7 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
 
         let caughtErr;
         try {
-            handleNestedSuiteSpawnResult('huge-suite', hugeError, 900_000);
+            handleNestedSuiteSpawnResult('huge-suite', hugeError, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)');
             assert.fail('should have thrown an error');
         } catch (e) {
             caughtErr = e;
@@ -733,7 +690,7 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
 
     test('case (c): null error (status 0) yields pass (no throw)', () => {
         // Should not throw or return; just complete normally
-        const result = handleNestedSuiteSpawnResult('my-suite', null, 900_000);
+        const result = handleNestedSuiteSpawnResult('my-suite', null, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)');
         assert.equal(result, undefined, 'success case should return undefined');
     });
 
@@ -752,7 +709,14 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
             timeoutError1.signal = 'SIGTERM';
 
             assert.throws(
-                () => handleNestedSuiteSpawnResult('test-suite', timeoutError1, resolved1),
+                () => handleNestedSuiteSpawnResult(
+                    'test-suite',
+                    timeoutError1,
+                    resolved1,
+                    resolvePhase1BudgetSource(),
+                    PHASE1_ENV_VAR_NAME,
+                    PHASE1_TIMEOUT_EXTRA_GUIDANCE,
+                ),
                 (err) => {
                     const msg = err.message;
                     assert.ok(
@@ -778,7 +742,14 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
             timeoutError2.signal = 'SIGTERM';
 
             assert.throws(
-                () => handleNestedSuiteSpawnResult('test-suite', timeoutError2, resolved2),
+                () => handleNestedSuiteSpawnResult(
+                    'test-suite',
+                    timeoutError2,
+                    resolved2,
+                    resolvePhase1BudgetSource(),
+                    PHASE1_ENV_VAR_NAME,
+                    PHASE1_TIMEOUT_EXTRA_GUIDANCE,
+                ),
                 (err) => {
                     const msg = err.message;
                     assert.ok(
@@ -840,7 +811,9 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
     test('the handler is the same function runNestedSuite uses (single definition, import-proven)', () => {
         // Proof of single-definition identity: runNestedSuite calls
         // handleNestedSuiteSpawnResult directly in its catch/error path, and
-        // this test file imports and calls the same function. If
+        // this test file imports the SAME function from the shared
+        // helpers/nested-suite-spawn.mjs module (apra-fleet-3swo.53) that
+        // phase3-dispatch-engine-completeness.test.mjs also imports. If
         // handleNestedSuiteSpawnResult were copied/duplicated for testing only,
         // a mutation here would not propagate to the real calls, and the
         // acceptance criterion would be violated. This test asserts they are
@@ -852,18 +825,18 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
         // Call the function directly (from this test scope)
         let directCallThrew = false;
         try {
-            handleNestedSuiteSpawnResult('test', testErrorOk, 900_000);
+            handleNestedSuiteSpawnResult('test', testErrorOk, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)', PHASE1_ENV_VAR_NAME);
         } catch (e) {
             directCallThrew = true;
         }
         assert.ok(directCallThrew, 'direct call must throw on ETIMEDOUT');
 
-        // The function is imported in this file's scope (it is defined at
-        // module level, before describe() blocks), so there is no re-export
-        // or indirect import: it is the same handleNestedSuiteSpawnResult that
-        // runNestedSuite invokes. This assertion would fail if the function
-        // were only defined in tests (it would be undefined at module scope).
-        assert.equal(typeof handleNestedSuiteSpawnResult, 'function', 'handleNestedSuiteSpawnResult must be defined at module scope for runNestedSuite to use');
+        // The function is imported in this file's scope (import statements
+        // are hoisted above every describe() block), so there is no
+        // re-export or indirect import: it is the same handleNestedSuiteSpawnResult
+        // that runNestedSuite invokes. This assertion would fail if the
+        // import were missing or shadowed.
+        assert.equal(typeof handleNestedSuiteSpawnResult, 'function', 'handleNestedSuiteSpawnResult must be imported at module scope for runNestedSuite to use');
     });
 });
 
