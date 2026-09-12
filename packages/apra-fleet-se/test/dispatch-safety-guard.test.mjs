@@ -1329,6 +1329,46 @@ test('every command() call site in dispatch-failure.mjs passes member_name or me
 });
 
 // =============================================================================
+// apra-fleet-3swo.6.16: the fatal-diagnostics guard and the terminal-state
+// Dolt-conflict classification helpers sliced out of runner.js into
+// fatal-diagnostics.mjs -- installFatalDiagnosticsGuard, findDoltDivergedCause,
+// resolveTerminalReason and captureDoltConflictDump.
+//
+// Its command()/agent() baseline is ZERO/ZERO: installFatalDiagnosticsGuard
+// only wires process-level `unhandledRejection`/`uncaughtException` listeners,
+// and the other three purely classify an already-thrown error's `.cause`
+// chain -- none issues a command() or agent() call of its own. Same
+// per-module baseline reasoning as the modules above: a zero baseline is what
+// turns a future raw command()/agent() landing in this file into a red test
+// rather than a silently unguarded site.
+// =============================================================================
+const FATAL_DIAGNOSTICS_PATH = path.join(__dirname, '../fleet-sprint/fatal-diagnostics.mjs');
+const EXPECTED_FATAL_DIAGNOSTICS_COMMAND_COUNT = 0;
+
+test('every command() call site in fatal-diagnostics.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(FATAL_DIAGNOSTICS_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_FATAL_DIAGNOSTICS_COMMAND_COUNT,
+        `Expected ${EXPECTED_FATAL_DIAGNOSTICS_COMMAND_COUNT} command() call site(s) in fatal-diagnostics.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_FATAL_DIAGNOSTICS_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'fatal-diagnostics.mjs must never dispatch an agent() directly -- it is a diagnostics/classification layer, not a role ladder.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
 // apra-fleet-3swo.34 -- an apostrophe inside a comment must never let
 // extractBalancedCall()'s depth walk run past the call's real closing paren.
 //

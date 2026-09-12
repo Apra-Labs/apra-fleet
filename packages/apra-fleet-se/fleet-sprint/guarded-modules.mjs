@@ -311,6 +311,21 @@ export const GUARDED_MODULES = [
     // test instead of a silently unguarded site.
     'round-session.mjs',
     'dispatch-failure.mjs',
+    // apra-fleet-3swo.6.16: the fatal-diagnostics guard
+    // (installFatalDiagnosticsGuard) and the terminal-state Dolt-conflict
+    // classification helpers (findDoltDivergedCause, resolveTerminalReason,
+    // captureDoltConflictDump), sliced out of runner.js.
+    //
+    // None of the four owns a member_name-bearing command() or dispatchRole()
+    // call site out of runner.js -- installFatalDiagnosticsGuard only wires
+    // process-level event listeners, and the other three purely classify an
+    // already-thrown error's `.cause` chain -- so this module gets a ZERO
+    // baseline in dispatch-safety-guard.test.mjs, same as sprint-report.mjs/
+    // newtask-text.mjs/round-session.mjs/dispatch-failure.mjs above. The zero
+    // is not a formality: it is what turns a future raw command()/agent()
+    // landing in this file into a red test instead of a silently unguarded
+    // site.
+    'fatal-diagnostics.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left
