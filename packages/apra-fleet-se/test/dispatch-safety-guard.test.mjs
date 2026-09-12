@@ -391,7 +391,20 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // left unguarded: member-sync.mjs is registered in GUARDED_MODULES, so the
 // aggregate checkModules(guardedModulePaths()) test below scans it, and it
 // gets its own explicit baseline count below.
-const EXPECTED_COMMAND_COUNT = 11;
+// 11 -> 9 (apra-fleet-3swo.6.12): createMemberSessionGuard,
+// createUnattendedAutoProvisioner, createDeployPermissionsProvisioner and
+// stageCommandBodyMemberSide moved out of runner.js into
+// ./member-provisioning.mjs. Exactly TWO of the four own a command() site of
+// their own: createDeployPermissionsProvisioner's `node -e ...` read of
+// deploy.md's Permissions section, and stageCommandBodyMemberSide's
+// `node -e ...` member-side temp-file write, both verified compliant. The
+// other two (createMemberSessionGuard, createUnattendedAutoProvisioner) issue
+// no command() at all. So this is -2, which is exactly 11 - 9; no site was
+// added, removed or collapsed in the move. Not left unguarded:
+// member-provisioning.mjs is registered in GUARDED_MODULES, so the aggregate
+// checkModules(guardedModulePaths()) test below scans it, and it gets its own
+// explicit baseline count below.
+const EXPECTED_COMMAND_COUNT = 9;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -1053,6 +1066,54 @@ test('every command() call site in member-sync.mjs passes member_name or member_
         sites.filter((s) => s.fnName === 'agent').length,
         0,
         'member-sync.mjs must never dispatch an agent() directly -- its one agent escalation (Tier 2 conflict resolution) runs through conflict-ladder.mjs on an injected agent, not a call site here.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-3swo.6.12: the member-provisioning helpers sliced out of
+// runner.js -- createMemberSessionGuard (the pre-resume stop_prompt guard),
+// createUnattendedAutoProvisioner, createDeployPermissionsProvisioner and
+// stageCommandBodyMemberSide. resolveSettleShell stayed in runner.js (it is
+// module-private composition-root wiring anchored there by
+// test/sprint-state.test.mjs) and is not part of this module's surface.
+//
+// Its baseline is TWO: createDeployPermissionsProvisioner's `node -e ...`
+// read of deploy.md's Permissions section, and stageCommandBodyMemberSide's
+// `node -e ...` member-side temp-file write. Both are shell-agnostic
+// (base64-encoded argv, no `$`-expansion/backticks/template literals) --
+// exactly the invariant shell-command-guard.mjs separately enforces on this
+// same file. createMemberSessionGuard and createUnattendedAutoProvisioner own
+// no command() site of their own, so a THIRD site appearing here means one of
+// those two started issuing a raw command directly.
+//
+// Its agent() baseline is ZERO, same per-module baseline reasoning as the
+// other extracted helper modules above -- a raw `agent(` appearing in this
+// file would mean a role ladder had been re-inlined into a provisioning
+// helper, which is exactly what a zero baseline turns red.
+// =============================================================================
+const MEMBER_PROVISIONING_PATH = path.join(__dirname, '../fleet-sprint/member-provisioning.mjs');
+const EXPECTED_MEMBER_PROVISIONING_COMMAND_COUNT = 2;
+
+test('every command() call site in member-provisioning.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(MEMBER_PROVISIONING_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_MEMBER_PROVISIONING_COMMAND_COUNT,
+        `Expected ${EXPECTED_MEMBER_PROVISIONING_COMMAND_COUNT} command() call site(s) in member-provisioning.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_MEMBER_PROVISIONING_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'member-provisioning.mjs must never dispatch an agent() directly -- it is a provisioning-helper layer, not a role ladder.'
     );
     assert.deepStrictEqual(
         violations,
