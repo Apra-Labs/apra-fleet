@@ -258,6 +258,27 @@ import {
     isReviewerContractViolation, applyGuardedReopens,
     parseIdWithReasonEntry,
 } from './beads-transitions.mjs';
+// The verdict/newTask text surface: extractContestedBeadIds, SAFE_TEXT_RE,
+// normalizeTierToken and the pending-rejected-newTask resurfacing pipeline
+// (trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+// reconcilePendingRejectedNewTasks, buildRejectedNewTaskResurfaceLines).
+// Extracted out of runner.js (apra-fleet-3swo.6.14); imported only to be
+// re-exported below, unchanged, so no importer of runner.js is edited by the
+// move.
+import {
+    extractContestedBeadIds, SAFE_TEXT_RE, normalizeTierToken,
+    trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+    reconcilePendingRejectedNewTasks, buildRejectedNewTaskResurfaceLines,
+} from './newtask-text.mjs';
+// The PR-body and cost-report text surface: sanitizePrText, buildAnalysisText,
+// buildCostAnalysis and computeBranchSlug. Extracted out of runner.js
+// (apra-fleet-3swo.6.14); imported only to be re-exported below, unchanged, so
+// no importer of runner.js is edited by the move. sanitizePrText depends on
+// SAFE_TEXT_RE, which this module imports back from newtask-text.mjs itself
+// rather than from this file.
+import {
+    sanitizePrText, buildAnalysisText, buildCostAnalysis, computeBranchSlug,
+} from './sprint-report.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -389,6 +410,21 @@ export {
     computeChildFloor, createChildBeadWithAllocatedId,
     verifyDoerStreakClosed, claimBeadsBatched,
 };
+// Re-exported so importers of the verdict/newTask text helpers from runner.js
+// keep working; newtask-text.mjs is the single source of truth for their
+// implementation (apra-fleet-3swo.6.14). Every symbol that region exported
+// before the move is listed here, under its original name.
+export {
+    extractContestedBeadIds, SAFE_TEXT_RE, normalizeTierToken,
+    trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+    reconcilePendingRejectedNewTasks, buildRejectedNewTaskResurfaceLines,
+};
+// Re-exported so importers of the PR-body and cost-report text helpers from
+// runner.js keep working; sprint-report.mjs is the single source of truth for
+// their implementation (apra-fleet-3swo.6.14). buildAnalysisText was
+// module-private before the move and is imported (not re-exported) purely for
+// this file's own Harvest-phase call site.
+export { sanitizePrText, buildCostAnalysis, computeBranchSlug };
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
@@ -756,402 +792,6 @@ export function createRoundSessionRegistry(opts = {}) {
 // isReviewerContractViolation lives in beads-transitions.mjs
 // (apra-fleet-3swo.4.7) alongside the reopen/replan transitions that consume
 // the same verdict contract; it is re-exported from this file above.
-
-/**
- * Determines whether a plan-reviewer verdict is CONFINED to specific beads
- * rather than spanning the whole plan. plan-reviewer.md carries no structured
- * per-bead findings field -- `notes` is free text that names the offending
- * bead ids -- so this scans `notes` for literal occurrences of each id already
- * known to be in scope via `taskAssignments`, which plan-reviewer.md requires
- * to be populated on every round including CHANGES_NEEDED.
- *
- * An id matches only at a non-identifier-character boundary (or the string
- * start/end), so a shorter id cannot false-positive inside a longer one that
- * merely extends it.
- *
- * @param {{ notes?: string, taskAssignments?: Array<{ id?: string }> }} verdict
- * @returns {string[]} the subset of taskAssignments ids that notes calls out by name
- */
-export function extractContestedBeadIds(verdict) {
-    if (!verdict || typeof verdict.notes !== 'string' || !Array.isArray(verdict.taskAssignments)) {
-        return [];
-    }
-    const notes = verdict.notes;
-    const allIds = verdict.taskAssignments
-        .map((a) => a && a.id)
-        .filter((id) => typeof id === 'string' && id.length > 0);
-    return allIds.filter((id) => {
-        const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const boundary = '(?:^|[^A-Za-z0-9_-])';
-        const endBoundary = '(?:$|[^A-Za-z0-9_-])';
-        const re = new RegExp(`${boundary}${escaped}${endBoundary}`);
-        return re.test(notes);
-    });
-}
-
-// ---------------------------------------------------------------------------
-// newTasks validation. Reviewer-authored newTasks are LLM output, and the
-// reviewer's context includes the diff under review, so an adversarial
-// diff/commit could try to steer it into emitting text crafted to break out of
-// a shell command.
-//
-// SAFE_TEXT_RE (title only) deliberately excludes: backtick, `$`,
-// double-quote (the command's own quoting delimiter -- allowing it back in
-// would let a title close the quote early regardless of any other
-// restriction), and backslash (blocks a trailing-backslash "escape the
-// closing quote" trick as well as any other backslash-based escape
-// sequence). The allowed punctuation (`.,:;!?()'-_/+[]` plus space) covers
-// realistic task titles while remaining inert as shell syntax in both POSIX
-// and Windows member shells.
-//
-// apra-fleet-v75: `[`, `]` and `+` are allowed. The title is interpolated as
-// `bd create "${title}"` -- inside double quotes, brackets never glob and `+`
-// has no meaning, in POSIX shells or PowerShell. Excluding them rejected this
-// project's own bead-title convention ([bug]/[epic]/[test] prefixes), which
-// `bd create` itself accepts; a real reviewer follow-up was dropped mid-sprint
-// on exactly that. The characters that ARE live inside double quotes --
-// `"`, `\`, backtick, `$` -- remain excluded, which is what this guard is for.
-//
-// `description` no longer reaches this shell-interpolation risk at all
-// (apra-fleet-eft.56.1, transport hardened in eft.73.1):
-// createChildBeadWithAllocatedId() stages it to a member-local temp file
-// (base64-carried, member-side) and hands that path to `bd create
-// --body-file`, never interpolating it into a command string. That removed
-// the injection
-// surface SAFE_TEXT_RE existed to close for descriptions, so
-// SAFE_DESCRIPTION_RE only enforces the repo's own ASCII-only convention
-// (plus non-empty) -- legitimate technical characters ('=', '&', '+', '"',
-// backticks-as-text, '%', '#', '[', ']', etc.) are allowed again.
-export const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/+[\]-]+$/;
-
-/**
- * Normalizes a bead-metadata model value by CONTAINMENT: a value that
- * (case-insensitively) contains exactly ONE of the three tier names --
- * 'cheap', 'standard', 'premium' -- becomes that bare tier name, so
- * 'standard-tier', 'tier-standard' and 'Standard (default)' all resolve to
- * 'standard'. A value containing zero tier names (an explicit provider model
- * id) or more than one (ambiguous) passes through unchanged. This is the
- * single read site for that metadata: an un-normalized alias would reach the
- * dispatch as a literal provider model name and fail it outright.
- * @param {unknown} raw
- * @returns {unknown}
- */
-export function normalizeTierToken(raw) {
-    if (typeof raw !== 'string') return raw;
-    const lowered = raw.toLowerCase();
-    const matches = ['cheap', 'standard', 'premium'].filter((tier) => lowered.includes(tier));
-    return matches.length === 1 ? matches[0] : raw;
-}
-
-// ---------------------------------------------------------------------------
-// Resurfacing rejected newTasks into the next planning dispatch
-// ---------------------------------------------------------------------------
-//
-// A note appended by appendRejectedFindingToParentNotes() is readable by a
-// human but invisible to the planner, which is dispatched without resume and
-// never reads bead notes. These helpers instead track the current set of
-// not-yet-resubmitted rejected newTasks in run state so the planner prompt can
-// carry them as explicit "previously rejected, fix and resubmit" items, and
-// drop each one once resubmitted so the list cannot grow without bound. All
-// are pure: the caller owns the array and none of these mutate it in place.
-
-/**
- * Records a newly-rejected newTask into the pending resurface list, keyed by
- * title -- a newTask rejected twice under the same title keeps only the
- * LATEST rejection reason/cycle (dedup by title), so a repeatedly-resubmitted-
- * and-repeatedly-rejected item cannot grow the list unboundedly.
- * @param {Array<{title: string, description: string, reason: string, cycle: number|string}>} pending
- * @param {{title: unknown, description: unknown, reason: string, cycle: number|string}} rejected
- * @returns {Array<{title: string, description: string, reason: string, cycle: number|string}>} a NEW array
- */
-export function trackRejectedNewTaskForResurfacing(pending, rejected) {
-    const title = String((rejected && rejected.title) || '(untitled)');
-    const description = String((rejected && rejected.description) || '');
-    const entry = { title, description, reason: String(rejected && rejected.reason), cycle: rejected && rejected.cycle };
-    const withoutDup = (Array.isArray(pending) ? pending : []).filter((p) => p.title !== title);
-    return [...withoutDup, entry];
-}
-
-/**
- * Drops any pending rejected-newTask entries matching a newTask that has now
- * been successfully created.
- *
- * `resubmitted` may be a bare title string (title-only match) or a
- * `{title, description}` object, in which case a match on EITHER the title OR
- * a non-empty description clears the entry. Description matching is what
- * clears a resubmission whose title was corrected in response to the
- * rejection reason -- title-only matching would leave such an item pending
- * forever.
- * @param {Array<{title: string, description?: string}>} pending
- * @param {string|{title?: string, description?: string}} resubmitted
- * @returns {Array<{title: string}>} a NEW array
- */
-export function clearResubmittedNewTask(pending, resubmitted) {
-    const list = Array.isArray(pending) ? pending : [];
-    const title = typeof resubmitted === 'string' ? resubmitted : String((resubmitted && resubmitted.title) || '');
-    const description = (resubmitted && typeof resubmitted === 'object' && resubmitted.description)
-        ? String(resubmitted.description) : '';
-    return list.filter((p) => {
-        const titleMatches = p.title === title;
-        const descriptionMatches = description.length > 0 && String((p && p.description) || '') === description;
-        return !(titleMatches || descriptionMatches);
-    });
-}
-
-/**
- * Reconciles the pending resurface list against the parent bead's CURRENT
- * children, matching purely on description and ignoring titles. The planner
- * resubmits a corrected finding directly via `bd create` and never calls
- * clearResubmittedNewTask(), so without this pass a planner resubmission would
- * stay pending and reappear in every later planning prompt of the run. Call it
- * after any phase that may have created children under the parent (chiefly the
- * Plan phase), passing the live child list.
- * @param {Array<{title: string, description?: string}>} pending
- * @param {Array<{description?: string}>} currentChildren
- * @returns {Array<{title: string, description?: string}>} a NEW array
- */
-export function reconcilePendingRejectedNewTasks(pending, currentChildren) {
-    const list = Array.isArray(pending) ? pending : [];
-    if (list.length === 0) return list;
-    const children = Array.isArray(currentChildren) ? currentChildren : [];
-    const childDescriptions = new Set(
-        children
-            .map((c) => String((c && c.description) || '').trim())
-            .filter((d) => d.length > 0)
-    );
-    if (childDescriptions.size === 0) return list;
-    return list.filter((p) => {
-        const description = String((p && p.description) || '').trim();
-        return description.length === 0 || !childDescriptions.has(description);
-    });
-}
-
-/**
- * Formats the pending rejected-newTask items as explicit "previously rejected,
- * fix and resubmit" prompt lines for the planner prompt. Returns `[]` when
- * nothing is pending, so the prompt is unchanged in that case.
- * @param {Array<{title: string, description: string, reason: string, cycle: number|string}>} pending
- * @returns {string[]}
- */
-export function buildRejectedNewTaskResurfaceLines(pending) {
-    if (!Array.isArray(pending) || pending.length === 0) return [];
-    const lines = [
-        `${pending.length} previously REJECTED newTask(s) from an earlier round must be fixed and ` +
-        're-submitted this planning pass. Verbatim title/description below, plus why each was ' +
-        'rejected -- correct the stated defect (do not just resend the item unchanged), then create ' +
-        'it via bd create as normal:',
-    ];
-    pending.forEach((r, i) => {
-        lines.push(`${i + 1}. Title: "${r.title}"\nDescription: ${r.description}\nRejected because: ${r.reason} (cycle ${r.cycle})`);
-    });
-    return lines;
-}
-
-// ---------------------------------------------------------------------------
-// PR body/title text sanitization. The final reviewer's verdict notes are LLM
-// output embedded in the PR title/body that the Publish PR step passes into
-// VCSModule's create-pull-request command builder, which JSON-encodes them
-// into the curl request payload -- the same injection class SAFE_TEXT_RE
-// exists to close for newTask titles, at a different call site.
-//
-// Unlike validateNewTask(), rejecting is not an option here: the PR must still
-// carry the sprint's verdict to a human even when the notes are malformed, and
-// failing closed would drop the one thing that human most needs to read. So
-// this strips instead: every character outside SAFE_TEXT_RE becomes a space,
-// keeping the notes readable while nothing that could break out of the
-// shell-quoted command string VCSModule builds around it.
-/**
- * Sanitizes LLM-authored free text (e.g. finalVerdictResult.notes) before it
- * is embedded in a VCSModule-built PR title/body and dispatched via
- * `command()`. Replaces every character outside SAFE_TEXT_RE with a space,
- * collapses the resulting whitespace, and returns the readable remainder.
- * @param {unknown} text
- * @returns {string}
- */
-export function sanitizePrText(text) {
-    const str = String(text ?? '');
-    let out = '';
-    for (const ch of str) {
-        // Newlines and tabs collapse to a space along with every other
-        // disallowed character: SAFE_TEXT_RE has no multi-line allowance,
-        // because a literal newline inside a double-quoted command-string
-        // argument is not reliably safe across mixed POSIX/Windows shells.
-        out += SAFE_TEXT_RE.test(ch) ? ch : ' ';
-    }
-    return out.replace(/\s+/g, ' ').trim();
-}
-
-// The Regression Test phase is informational-only and must never gate the
-// sprint; packages/apra-fleet-se/test/regression-phase-never-gates.test.mjs
-// enforces that.
-// ---------------------------------------------------------------------------
-// Finalization prompt builders
-// ---------------------------------------------------------------------------
-
-/**
- * Assembles the `analysisText` block for the Harvester dispatch from this
- * run's in-memory tracking state: cycle-by-cycle closed-bead progress,
- * deploy/integration outcomes, rejected reviewer newTasks, the final verdict,
- * and the regression pass. Pure formatting -- every value is computed
- * elsewhere. harvester.md requires this content be written verbatim to
- * `analysisArtifactFile`.
- * @param {object} opts
- * @returns {string}
- */
-function buildAnalysisText({
-    targetIssues, branch, baseBranch, cyclesRun,
-    closedCountHistory, highWaterClosedCount,
-    deployFailures, integFailures, rejectedNewTasks,
-    finalVerdictResult, finalClosedCount, finalOpenAtGoalCount,
-    regressionResult = null,
-}) {
-    // The once-per-sprint Regression Test phase runs after the final verdict
-    // and never gates it. Its failures are filed as parent-less carry-over
-    // beads, so they never appear in the open-at-goal count and are reported
-    // separately here.
-    const regressionLines = regressionResult === null
-        ? ['Regression pass: not run this sprint (no regression-test-playbook.md, or the probe failed).']
-        : [
-            `Regression pass: ${regressionResult.passed === true ? 'PASSED' : 'FAILED'} `
-            + `(real-bd suite: ${regressionResult.suitePassed === true ? 'pass' : 'fail'}, `
-            + `smoke test: ${regressionResult.smokePassed === true ? 'pass' : 'fail'}).`,
-            `Carry-over beads filed: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}.`,
-            `Summary: ${regressionResult.summary || '(none reported)'}`,
-            'Informational only -- this pass ran after the final verdict and did not gate it; any bead '
-            + 'above is parent-less by design and carries over to a future sprint.',
-        ];
-    const lines = [
-        `# Sprint Analysis: ${branch}`,
-        '',
-        `Scope issue id(s): ${targetIssues.join(', ') || '(none specified)'}.`,
-        `Base branch: ${baseBranch}.`,
-        `Cycles run: ${cyclesRun}.`,
-        '',
-        '## Progress',
-        '',
-        `Closed-bead count history (per cycle evaluation): [${closedCountHistory.join(', ') || 'none recorded'}].`,
-        `High-water-mark closed count this sprint: ${highWaterClosedCount}.`,
-        `Final closed count: ${finalClosedCount}.`,
-        `Final open-at-goal-priority count: ${finalOpenAtGoalCount}.`,
-        '',
-        '## Deploy/Integration outcomes',
-        '',
-        deployFailures.length > 0
-            ? `Deploy failures (${deployFailures.length}): ` + deployFailures.map((f) => `C${f.cycle}: ${f.notes}`).join(' | ')
-            : 'No deploy failures recorded this sprint.',
-        integFailures.length > 0
-            ? `Integration test failures (${integFailures.length}): ` + integFailures.map((f) => `C${f.cycle}: ${f.notes} (bugs filed: ${(f.bugsFiled || []).join(', ') || 'none'})`).join(' | ')
-            : 'No integration test failures recorded this sprint.',
-        '',
-        '## Reviewer-proposed newTask rejections',
-        '',
-        rejectedNewTasks.length > 0
-            ? `${rejectedNewTasks.length} newTask(s) rejected before reaching bd create: ` + rejectedNewTasks.map((r) => `C${r.cycle}: ${r.reason}`).join(' | ')
-            : 'None.',
-        '',
-        '## Final verdict',
-        '',
-        `${finalVerdictResult.verdict}${finalVerdictResult.notes ? ` -- ${finalVerdictResult.notes}` : ''}`,
-        '',
-        '## Regression pass (once per sprint, informational)',
-        '',
-        ...regressionLines,
-    ];
-    return lines.join('\n');
-}
-
-/**
- * Builds the `costAnalysis` block for the Harvester dispatch from the live
- * `budget` object. Reports only what is known: an unset ceiling, an absent
- * spent() and an unpriced-model spend gap are each stated as such rather than
- * backfilled with a fabricated number, since harvester.md inserts this block
- * verbatim and never recomputes it. The remaining budget is derived from
- * `total` and `spent()`, not read from the budget object.
- * @param {{ total: number|null, spent?: () => number, pricingSummary?: () => { real: number, fallback: number } }} budget
- * @param {{ spend?: number, dispatchCount?: number }} [integTestRunnerStats] -- apra-fleet-nwh.1:
- *   this sprint's own tracked integ-test-runner spend (a before/after
- *   `budget.spent()` delta accumulated by the caller around each Integ Test
- *   phase dispatch, see runSprintCycle's integTestRunnerSpend/
- *   integTestRunnerDispatchCount) and how many times that phase dispatched.
- *   Reported as its OWN line, distinct from doer/reviewer/overhead, instead
- *   of being silently folded into "overhead" -- often the single longest/
- *   most expensive phase (a full playbook run against a real sandbox).
- * @returns {string}
- */
-export function buildCostAnalysis(budget, integTestRunnerStats = {}) {
-    const total = budget && budget.total;
-    const spent = budget && typeof budget.spent === 'function' ? budget.spent() : null;
-    const lines = [
-        total !== null && total !== undefined
-            ? `Budget ceiling: $${total.toFixed(4)}.`
-            : 'Budget ceiling: not set (no --budget flag) -- unlimited for this run.',
-        typeof spent === 'number'
-            ? `Tracked spend (priced dispatches only): $${spent.toFixed(4)}.`
-            : 'Tracked spend: not tracked -- the budget object did not expose spent() for this run.',
-    ];
-    if (total !== null && total !== undefined && typeof spent === 'number') {
-        lines.push(`Remaining budget: $${(total - spent).toFixed(4)}.`);
-    } else {
-        lines.push('Remaining budget: unknown/unbounded.');
-    }
-    // apra-fleet-nwh.1: an explicit integ-test-runner spend line, broken out
-    // of the totals above (it is a SUBSET of `spent`, not additional spend)
-    // so this often-longest phase is never silently bucketed into
-    // "overhead" by a reader of this block. Honest about all three states:
-    // the phase never dispatched this run, it dispatched but spend was not
-    // trackable (same `spent()`-unavailable case as above), or a real
-    // tracked figure.
-    const integDispatchCount = Number.isInteger(integTestRunnerStats.dispatchCount) ? integTestRunnerStats.dispatchCount : 0;
-    if (integDispatchCount === 0) {
-        lines.push('Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).');
-    } else if (typeof spent !== 'number') {
-        lines.push(`Integ-test-runner spend: not tracked -- ${integDispatchCount} dispatch(es) ran but the budget object did not expose spent() for this run.`);
-    } else {
-        const integSpend = typeof integTestRunnerStats.spend === 'number' ? integTestRunnerStats.spend : 0;
-        lines.push(`Integ-test-runner spend: $${integSpend.toFixed(4)} across ${integDispatchCount} dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).`);
-    }
-    // Report the SOURCE of each priced dispatch's cost -- real per-member
-    // rates vs. pricing.mjs's tier-band fallback -- so the figures above are
-    // not read as uniformly exact.
-    const summary = budget && typeof budget.pricingSummary === 'function' ? budget.pricingSummary() : null;
-    if (summary) {
-        const { real, fallback } = summary;
-        if (real === 0 && fallback === 0) {
-            lines.push('Pricing source: no dispatch was priced this run.');
-        } else if (real > 0 && fallback === 0) {
-            lines.push(`Pricing source: all ${real} priced dispatch(es) used real per-member rates (get_member_model_pricing).`);
-        } else if (real === 0 && fallback > 0) {
-            lines.push(`Pricing source: all ${fallback} priced dispatch(es) used the tier-band/concrete-model fallback estimate (real per-member pricing was unavailable) -- see pricing.mjs.`);
-        } else {
-            lines.push(`Pricing source: mixed -- ${real} dispatch(es) priced via real per-member rates, ${fallback} via the tier-band/concrete-model fallback estimate.`);
-        }
-    }
-    lines.push(
-        'Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- '
-        + 'this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.'
-    );
-    return lines.join('\n');
-}
-
-/**
- * Computes the collision-resistant filesystem slug used for
- * `docs/sprint-analysis-<slug>.md`, the harvester's `analysisArtifactFile`
- * input.
- *
- * Replacing separators alone is not collision-free: two branches differing
- * only in a `/` versus a pre-existing `-` at the same position (e.g.
- * `feat/fleet-reorg` and `feat-fleet-reorg`) would collapse to the same slug
- * and clobber each other's artifact. Appending a short hash of the RAW branch
- * name disambiguates them while staying deterministic per branch, so reruns
- * still produce the same slug.
- * @param {string} branch
- * @returns {string}
- */
-export function computeBranchSlug(branch) {
-    const humanReadablePrefix = branch.replace(/[\\/]+/g, '-');
-    const disambiguatingHash = createHash('sha256').update(branch).digest('hex').slice(0, 8);
-    return `${humanReadablePrefix}-${disambiguatingHash}`;
-}
 
 // Deliberately BROADER than isTypedAbortError(): every terminal WorkflowError
 // except a cooperative cancellation. The two predicates answer two different

@@ -1177,6 +1177,81 @@ test('every command() call site in beads-children.mjs passes member_name or memb
 });
 
 // =============================================================================
+// apra-fleet-3swo.6.14: the verdict/newTask text surface sliced out of
+// runner.js into newtask-text.mjs -- extractContestedBeadIds, SAFE_TEXT_RE,
+// normalizeTierToken, trackRejectedNewTaskForResurfacing,
+// clearResubmittedNewTask, reconcilePendingRejectedNewTasks and
+// buildRejectedNewTaskResurfaceLines.
+//
+// Its command()/agent() baseline is ZERO/ZERO: none of these seven symbols
+// owns a bd or dispatch call site at all -- every one is pure text
+// scanning/formatting/validation. Same per-module baseline reasoning as the
+// phase modules above: a zero baseline is what turns a future raw
+// command()/agent() landing in this file into a red test rather than a
+// silently unguarded site.
+// =============================================================================
+const NEWTASK_TEXT_PATH = path.join(__dirname, '../fleet-sprint/newtask-text.mjs');
+const EXPECTED_NEWTASK_TEXT_COMMAND_COUNT = 0;
+
+test('every command() call site in newtask-text.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(NEWTASK_TEXT_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_NEWTASK_TEXT_COMMAND_COUNT,
+        `Expected ${EXPECTED_NEWTASK_TEXT_COMMAND_COUNT} command() call site(s) in newtask-text.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_NEWTASK_TEXT_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'newtask-text.mjs must never dispatch an agent() directly -- it is a pure text-processing layer, not a role ladder.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-3swo.6.14: the PR-body and cost-report text surface sliced out of
+// runner.js into sprint-report.mjs -- sanitizePrText, buildAnalysisText,
+// buildCostAnalysis and computeBranchSlug.
+//
+// Its command()/agent() baseline is ZERO/ZERO: none of these four symbols
+// owns a bd or dispatch call site at all -- every one is pure text
+// formatting. Same per-module baseline reasoning as newtask-text.mjs above.
+// =============================================================================
+const SPRINT_REPORT_PATH = path.join(__dirname, '../fleet-sprint/sprint-report.mjs');
+const EXPECTED_SPRINT_REPORT_COMMAND_COUNT = 0;
+
+test('every command() call site in sprint-report.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(SPRINT_REPORT_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_SPRINT_REPORT_COMMAND_COUNT,
+        `Expected ${EXPECTED_SPRINT_REPORT_COMMAND_COUNT} command() call site(s) in sprint-report.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_SPRINT_REPORT_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'sprint-report.mjs must never dispatch an agent() directly -- it is a pure text-formatting layer, not a role ladder.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
 // apra-fleet-3swo.34 -- an apostrophe inside a comment must never let
 // extractBalancedCall()'s depth walk run past the call's real closing paren.
 //
