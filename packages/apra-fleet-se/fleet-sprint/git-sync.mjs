@@ -190,6 +190,13 @@ export function createSyncBrackets({ setPauseGuard } = {}) {
             throw err;
         } finally {
             openSyncBracketCount -= 1;
+            // (apra-fleet-3swo.43) The crossing-close error below is captured
+            // rather than thrown immediately, so that a CROSSING close cannot
+            // abandon this finally block before the pause-guard poke further
+            // down runs. Resolve the stack first (still needed either way to
+            // keep exclusiveStacks correct), but defer the throw itself until
+            // after the poke.
+            let crossingError = null;
             if (token) {
                 const stack = exclusiveStacks.get(exclusiveKey) || [];
                 const top = stack[stack.length - 1];
@@ -203,13 +210,14 @@ export function createSyncBrackets({ setPauseGuard } = {}) {
                     // CROSSING close: a bracket that opened AFTER us, sharing
                     // our key, is still open. That is true overlap, not
                     // nesting -- remove ourselves from the stack (wherever we
-                    // are in it) and throw, naming every bracket still open.
+                    // are in it) and throw (after the poke below), naming
+                    // every bracket still open.
                     const idx = stack.findIndex((t) => t.id === token.id);
                     if (idx !== -1) stack.splice(idx, 1);
                     if (stack.length === 0) exclusiveStacks.delete(exclusiveKey);
                     else exclusiveStacks.set(exclusiveKey, stack);
                     const stillOpenLabels = stack.map((t) => t.label);
-                    throw new ConcurrentSyncBracketError(
+                    crossingError = new ConcurrentSyncBracketError(
                         `[Sync] mutual-exclusion violation on key '${exclusiveKey}': bracket '${token.label}' closed while ` +
                         `${stack.length} other bracket(s) sharing the same key ${stack.length === 1 ? 'is' : 'are'} still open ` +
                         `(${stillOpenLabels.join(', ')}) -- these OVERLAPPED rather than nested, which breaks the ` +
@@ -238,9 +246,16 @@ export function createSyncBrackets({ setPauseGuard } = {}) {
             // requested while sync brackets were open the instant this guard
             // opens, rather than leaving it stranded until some later
             // dispatch happens to hit the gate.
+            //
+            // (apra-fleet-3swo.43) This poke MUST run even on a CROSSING
+            // close, so it is placed ahead of the `crossingError` throw
+            // below -- otherwise a pause requested while sync brackets were
+            // open could be left stranded on exactly the path this comment
+            // block exists to prevent.
             if (openSyncBracketCount === 0 && typeof setPauseGuard === 'function') {
                 setPauseGuard(() => openSyncBracketCount === 0);
             }
+            if (crossingError) throw crossingError;
         }
     }
 
