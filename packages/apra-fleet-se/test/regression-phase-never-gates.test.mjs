@@ -7,6 +7,18 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER_PATH = path.join(__dirname, '..', 'fleet-sprint', 'runner.js');
 const runnerSource = fs.readFileSync(RUNNER_PATH, 'utf8');
+// apra-fleet-3swo.6.6 sliced BOTH phases out of runner.js into
+// fleet-sprint/phases/. What stayed behind is exactly what this file's ordering
+// pins need: the "6b. Regression Test" banner, the probeFileExists() that
+// produces hasRegressionPlaybook, the two phase CALL SITES and the Harvest
+// phase() below them. So the ordering below is still read out of runner.js --
+// it is a composition-order fact and runner.js is the composition root -- while
+// the phase-body assertions are re-anchored onto the module that now owns the
+// body. Scanning runner.js alone for the body would have gone quietly vacuous.
+const REGRESSION_PHASE_PATH = path.join(__dirname, '..', 'fleet-sprint', 'phases', 'regression-test.mjs');
+const regressionPhaseSource = fs.readFileSync(REGRESSION_PHASE_PATH, 'utf8');
+const FINAL_REVIEW_PHASE_PATH = path.join(__dirname, '..', 'fleet-sprint', 'phases', 'final-review.mjs');
+const finalReviewPhaseSource = fs.readFileSync(FINAL_REVIEW_PHASE_PATH, 'utf8');
 
 // apra-fleet-3swo.5.7: the phase's soft-fail behaviour is now the
 // 'regression-test-runner' policy row executed by the dispatchRole engine, so
@@ -47,7 +59,14 @@ import {
 // into the catch.
 describe('Regression Test phase can never gate or abort the sprint', () => {
     const regressionPhaseIdx = runnerSource.indexOf('6b. Regression Test (once per sprint, informational -- never a gate)');
-    const finalVerdictIdx = runnerSource.indexOf('const finalNewTasks = Array.isArray(finalVerdictResult.newTasks)');
+    // apra-fleet-3swo.6.6: `const finalNewTasks = ...` moved into
+    // phases/final-review.mjs, so the runner.js-side landmark for "the final
+    // verdict exists by here" is now the Final Review CALL SITE -- and it is a
+    // STRONGER landmark than the old one, because it is the destructuring that
+    // BINDS finalVerdictResult. Nothing below it can read that binding without
+    // it having run first; moving the regression phase above this line is a
+    // reference error, not merely a reordered comment.
+    const finalVerdictIdx = runnerSource.indexOf('const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount } = await runFinalReviewPhase({');
     const harvestIdx = runnerSource.indexOf('phase(`Harvest C${finalCycleLabel}`)');
 
     test('the phase exists and is anchored by its banner comment', () => {
@@ -58,10 +77,47 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
     });
 
     test('runs AFTER the final verdict is computed and its newTasks are persisted', () => {
-        assert.ok(finalVerdictIdx > 0, 'expected the Final Review newTasks persistence block');
+        assert.ok(finalVerdictIdx > 0, 'expected the Final Review phase call site that binds finalVerdictResult -- re-anchor this pin if the destructuring drifted, never delete it');
         assert.ok(
             finalVerdictIdx < regressionPhaseIdx,
             'the Regression Test phase MUST come after Final Review has computed finalVerdictResult and persisted its FAIL findings -- the ordering IS the guarantee that a regression result cannot perturb the sprint verdict. Moving it earlier silently re-introduces a regression pass that can gate the sprint.',
+        );
+        // ...and the newTasks persistence really did move WITH the phase rather
+        // than being dropped by the slice: it is the FAIL findings half of the
+        // claim above, and a scan of runner.js alone can no longer see it.
+        assert.match(
+            finalReviewPhaseSource,
+            /const finalNewTasks = Array\.isArray\(finalVerdictResult\.newTasks\)/,
+            'the Final Review newTasks persistence block must live in phases/final-review.mjs after apra-fleet-3swo.6.6',
+        );
+        assert.doesNotMatch(
+            runnerSource,
+            /const finalNewTasks = Array\.isArray\(finalVerdictResult\.newTasks\)/,
+            'runner.js must not keep a second copy of the Final Review newTasks block -- two sources of truth would let them drift with both pins green',
+        );
+        // The two phases must genuinely be separate modules: a single module
+        // owning both bodies could reorder them internally with every
+        // runner.js-side index above still in the right order. The strongest
+        // form of that is structural -- the regression phase is handed no
+        // verdict at all, so there is nothing for it to perturb. Checked
+        // against CODE only: the module's header and the preserved
+        // catch-all-degrade commentary both discuss finalVerdictResult by name,
+        // and stripping whole-line `//` comments is what keeps this pin about
+        // the code rather than about the prose. (The strip is deliberately
+        // conservative: only lines that are ENTIRELY a comment are removed, so
+        // it can never silently eat a real statement.)
+        const regressionCodeOnly = regressionPhaseSource
+            .split('\n')
+            .filter((line) => !line.trim().startsWith('//'))
+            .join('\n');
+        assert.ok(
+            regressionCodeOnly.includes("dispatchRole(dispatchCtx, 'regression-test-runner'"),
+            'sanity: the comment strip must leave the real dispatch behind -- if this fails the pin below is vacuous',
+        );
+        assert.doesNotMatch(
+            regressionCodeOnly,
+            /finalVerdictResult/,
+            'phases/regression-test.mjs must not so much as NAME finalVerdictResult in its CODE -- it is handed no verdict, which is why it cannot perturb one',
         );
     });
 
@@ -110,7 +166,14 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
         //   4 schema-shaped `regressionResult = {...}` assignments
         //        -> the four degrade classes each really produce a value
         //           carrying every regressionReport.required field
-        const phaseBlock = runnerSource.slice(regressionPhaseIdx, harvestIdx);
+        // apra-fleet-3swo.6.6: the phase BODY is phases/regression-test.mjs now.
+        // The old `runnerSource.slice(regressionPhaseIdx, harvestIdx)` would
+        // still have produced a non-empty string (the banner, the probe, the
+        // call site and the skip branch), so the length/content checks below
+        // would have kept passing over a block that no longer contained the
+        // phase at all -- exactly the quietly-vacuous outcome this re-anchor
+        // avoids.
+        const phaseBlock = regressionPhaseSource;
         const p = policyFor('regression-test-runner');
         const opts = ROLE_CALL_OPTS['regression-test-runner'];
 
@@ -127,6 +190,22 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
         test('the phase block is non-trivial (the slice actually captured the phase)', () => {
             assert.ok(phaseBlock.length > 2000, `expected a substantial phase block, got ${phaseBlock.length} chars`);
             assert.match(phaseBlock, /getMemberForRole\('regression-test-runner'\)/);
+            // ...and runner.js kept only the probe + call site, not a copy of
+            // the body. dispatchRole is how the body reaches the ladder, so its
+            // absence between the banner and Harvest is the sharpest available
+            // proof that the body really left.
+            const runnerRegion = runnerSource.slice(regressionPhaseIdx, harvestIdx);
+            assert.ok(runnerRegion.length > 0, 'sanity: the runner.js banner must still precede Harvest');
+            assert.doesNotMatch(
+                runnerRegion,
+                /dispatchRole\(dispatchCtx, 'regression-test-runner'/,
+                'the regression dispatch belongs to phases/regression-test.mjs after apra-fleet-3swo.6.6; a copy left inline would dispatch the pass twice',
+            );
+            assert.match(
+                runnerRegion,
+                /await runRegressionTestPhase\(\{/,
+                'runner.js must still CALL the sliced phase between the banner and Harvest -- a phase that stopped being called would satisfy every "not inline" assertion above',
+            );
         });
 
         test('handles git/beads sync failures out of its own withGitSync bracket', async () => {

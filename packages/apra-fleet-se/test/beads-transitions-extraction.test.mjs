@@ -396,10 +396,18 @@ describe('apra-fleet-3swo.4.7: the engine routes ALL THREE sites through the sha
     // whole extraction exists for -- it was the previously UNGUARDED one --
     // and a slice that quietly reintroduced a private reopen loop there would
     // otherwise have left runner.js holding only Final Review while the total
-    // silently dropped to two. Only Final Review is still inline.
+    // silently dropped to two.
+    //
+    // apra-fleet-3swo.6.6: the LAST inline site, Final Review, then moved into
+    // fleet-sprint/phases/final-review.mjs. runner.js now owns ZERO of the
+    // three, so its entry below is deliberately kept in SOURCES with an
+    // asserted count of 0 rather than dropped: that is what turns a future
+    // slice leaving a stray copy behind -- or a re-inlined reopen loop -- red
+    // instead of invisible. The split is now 1/1/1/0.
     const RUNNER_SRC = fs.readFileSync(RUNNER_PATH, 'utf8');
     const REVIEW_PHASE_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/phases/review.mjs'), 'utf8');
     const RE_REVIEW_PHASE_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/phases/re-review.mjs'), 'utf8');
+    const FINAL_REVIEW_PHASE_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/phases/final-review.mjs'), 'utf8');
     // Scanned as separate files, never concatenated: every assertion below
     // uses lastIndexOf() to prove a marker precedes another IN THE SAME
     // lexical scope, and concatenating the files would let a landmark in one
@@ -408,11 +416,12 @@ describe('apra-fleet-3swo.4.7: the engine routes ALL THREE sites through the sha
         { name: 'fleet-sprint/runner.js', src: RUNNER_SRC },
         { name: 'fleet-sprint/phases/review.mjs', src: REVIEW_PHASE_SRC },
         { name: 'fleet-sprint/phases/re-review.mjs', src: RE_REVIEW_PHASE_SRC },
+        { name: 'fleet-sprint/phases/final-review.mjs', src: FINAL_REVIEW_PHASE_SRC },
     ];
-    /** The file that must own each site's `logPrefix`, after the Re-Review slice. */
+    /** The file that must own each site's `logPrefix`, after the Final Review slice. */
     const SITE_OWNER = {
         'Reviewer reopenIds': 'fleet-sprint/phases/review.mjs',
-        'Final Review reopenIds': 'fleet-sprint/runner.js',
+        'Final Review reopenIds': 'fleet-sprint/phases/final-review.mjs',
         'Re-review reopenIds': 'fleet-sprint/phases/re-review.mjs',
     };
     // Counted on `applyGuardedReopens({` -- the call-with-options-object shape
@@ -443,13 +452,14 @@ describe('apra-fleet-3swo.4.7: the engine routes ALL THREE sites through the sha
         }
         assert.equal(
             SOURCES.reduce((n, f) => n + countGuardCalls(f.src), 0), 3,
-            'exactly three call sites across runner.js + phases/review.mjs + phases/re-review.mjs: per-round reviewer, Final Review, Re-Review'
+            'exactly three call sites across runner.js + phases/review.mjs + phases/re-review.mjs + phases/final-review.mjs: per-round reviewer, Final Review, Re-Review'
         );
         // The split itself, so the total above cannot be satisfied by three
         // sites all landing back in one file.
         assert.equal(countGuardCalls(REVIEW_PHASE_SRC), 1, 'phases/review.mjs owns exactly the per-round reviewer site');
         assert.equal(countGuardCalls(RE_REVIEW_PHASE_SRC), 1, 'phases/re-review.mjs owns exactly the Re-Review site');
-        assert.equal(countGuardCalls(RUNNER_SRC), 1, 'runner.js keeps exactly the Final Review site');
+        assert.equal(countGuardCalls(FINAL_REVIEW_PHASE_SRC), 1, 'phases/final-review.mjs owns exactly the Final Review site');
+        assert.equal(countGuardCalls(RUNNER_SRC), 0, 'runner.js owns NONE of the three sites after apra-fleet-3swo.6.6 -- a nonzero count here means a phase slice left a copy behind or a reopen loop was re-inlined');
     });
 
     test('no scanned file keeps a private reopen loop or private allowlist of its own', () => {

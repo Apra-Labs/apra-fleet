@@ -100,6 +100,19 @@ import { runDeployPhase } from './phases/deploy.mjs';
 // its boundary is drawn and why the surrounding `if`/exit-gate stayed here.
 import { runIntegTestPhase } from './phases/integ-test.mjs';
 import { runReReviewPhase } from './phases/re-review.mjs';
+// apra-fleet-3swo.6.6: the next two phase() boundaries -- the sprint's closing
+// Final Review and the once-per-sprint Regression Test. Final Review runs from
+// its own phase() call to the findings D-push and RETURNS the sprint verdict
+// plus the two closing counts the analysis doc renders; the group('Finalization')
+// banner around it stays here because it wraps all four Finalization phases.
+// Regression Test is the body of the `if (hasRegressionPlaybook)` branch below
+// (its probe, the null default and the "Skipping Regression Test Phase" else
+// stay here). Their ORDER is a safety property, not a preference: Final Review
+// producing finalVerdictResult before Regression Test runs is what makes a
+// regression failure unable to perturb the sprint verdict. See each module's
+// header for where its boundary is drawn.
+import { runFinalReviewPhase } from './phases/final-review.mjs';
+import { runRegressionTestPhase } from './phases/regression-test.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
 // verbatim out of runner.js (apra-fleet-3swo.4.3).
@@ -4854,243 +4867,26 @@ async function runSprintCycle(context) {
     // 6. Finalization: the evidence-based final verdict drives the return value
     // =======================
     group('Finalization');
-    phase(`Final Review C${finalCycleLabel}`);
-
-    // D-pull the orchestrator's beads clone BEFORE the final-review counts so
-    // the sprint's closing evidence (finalOpenAtGoal / finalClosedCount)
-    // reflects every member's D-pushed beads state, not the orchestrator's
-    // stale local copy.
-    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
-    // guarded on args.callTool the same way the pre-dispatch bracket is
-    // (apra-fleet-7dir.24).
-    const finalReviewSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
-    await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: finalReviewSettleShell }) });
-    const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
-        bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
-        decomposedParentIds(),
-        bdListScoped('--status=closed --json'),
-    ]);
-    const finalOpenAtGoal = finalOpenAtGoalRaw.filter((b) => !finalOpenAtGoalParentIds.has(b.id));
-    const finalClosedCount = finalClosedBeads.length;
-    // apra-fleet-jfo.2: same structural blind spot as the per-cycle exit
-    // check -- verify-routed beads are decomposed parents, so they never
-    // appear in finalOpenAtGoal (post-filtered via decomposedParentIds()),
-    // so a sprint that exhausted MAX_CYCLES with Deploy failing every time
-    // could otherwise reach Final Review reporting "0 open bead(s)" while
-    // the verify-routed targets were never actually re-verified. Surface it
-    // as explicit evidence rather than leaving the Final Review to
-    // rubber-stamp PASS on an incomplete count. Guarded on
-    // `verifyEverIds.size > 0` -- see the per-cycle check above for why.
-    // Uses the same fresh finalClosedBeads read as finalClosedCount above,
-    // not fetchAllBeadsShared()'s cache (apra-fleet-66u.2).
-    let finalUnclosedVerifyIds = [];
-    if (verifyEverIds.size > 0) {
-        const finalClosedIds = new Set(finalClosedBeads.map((b) => b.id));
-        finalUnclosedVerifyIds = [...verifyEverIds].filter((id) => !finalClosedIds.has(id));
-    }
-
-    let finalVerdictResult;
-    // The Final Review covers an entire epic's worth of work, categorically
-    // LARGER than a per-round review, so it gets an explicit budget plus the
-    // same same-session resume-and-continue treatment as the doer and per-round
-    // reviewer. Without it a large sprint's final review dies at the default
-    // turn limit and flips the whole sprint to a FAIL whose notes carry no
-    // findings at all.
-    // apra-fleet-nx7: offer the final reviewer the same INFERRED candidates a
-    // per-round reviewer gets. Fetched once, before the dispatch, so the retry
-    // and resume paths reuse the identical block rather than re-querying a
-    // KB that its own earlier promotions may have already changed.
-    const finalReviewRepoPath = kbPriming.folderOf(getMemberForRole('reviewer'));
-    const finalKbCandidates = await kbWork.promotionCandidates(finalReviewRepoPath);
-    if (finalKbCandidates.length > 0) {
-        log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
-    }
-    // apra-fleet-3swo.5.7: the final-review ladder -- its dispatch, its
-    // read-side git-sync bracket, its max_turns-exhaustion resume at doubled
-    // turns, its retry-once wrapper, its auth self-heal and its FAIL degrade --
-    // is now the 'final-review' row of fleet-sprint/role-policies.mjs.
-    //
-    // WHY THE HEAL SHORT-CIRCUIT IS POLICY DATA. Final Review is the LAST and
-    // most expensive dispatch of the sprint, and its verdict IS the sprint's
-    // outcome. An auth/trust failure is deterministic, so the generic
-    // retry-once ladder would only reproduce it -- but an LLM-auth failure gets
-    // exactly ONE self-heal, and on success the healed verdict is
-    // authoritative and MUST end the ladder: falling through to the generic
-    // retry as well would fire a SECOND full Final Review, silently discard the
-    // healed verdict (a PASS could become a FAIL) and double the cost. That is
-    // retry.authSelfHealShortCircuits. A heal that does NOT succeed leaves the
-    // channel walled off with no judgement to fabricate, so
-    // retry.rethrowsUnhealedNonRetryable propagates it rather than degrading to
-    // a FAIL nobody decided.
-    //
-    // Note Final Review has no role member of its own: it is the REVIEWER role,
-    // dispatching the reviewer persona over the whole sprint -- so its policy
-    // routes to getMemberForRole('reviewer'), unlike the per-round reviewer
-    // which takes the pool head.
-    const finalReviewOutcome = await dispatchRole(dispatchCtx, 'final-review', {
-        prompt: buildFinalVerdictPrompt({
-            targetIssues,
-            branch: validated.branch,
-            baseBranch: validated.baseBranch,
-            goal: validated.goal,
-            cyclesRun: finalCycleLabel,
-            closedCount: finalClosedCount,
-            openAtGoalCount: finalOpenAtGoal.length,
-            deployFailures,
-            integFailures,
-            rejectedNewTasks,
-            unclosedVerifyIds: finalUnclosedVerifyIds,
-            kbCandidates: finalKbCandidates,
-            kbKnowledge: kbPriming.knowledgeOf(getMemberForRole('reviewer')),
-        }),
-        resumePrompt: 'Continue your final review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',
-        roleLabel: 'Final Review',
-        label: 'Final Review',
-        resumeLabel: `Final Review (resume, max_turns=${TURN_BASES.FINAL_REVIEW_MAX_TURNS * 2})`,
+    // The phase body lives in ./phases/final-review.mjs (apra-fleet-3swo.6.6),
+    // which receives its state explicitly instead of closing over
+    // runSprintCycle's locals. The group('Finalization') banner above stays
+    // here: it wraps Finalization as a WHOLE -- this phase, Regression Test,
+    // Harvest and Publish PR -- not this phase alone. rejectedNewTasks is
+    // pushed to in place exactly as the closure did; the sprint verdict and the
+    // two closing counts the analysis doc renders come back. That return is
+    // also what pins the ordering below: the Regression Test phase can only run
+    // AFTER this line, because this is the line that produces
+    // finalVerdictResult.
+    const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount } = await runFinalReviewPhase({
+        phase, log, command, dispatchCtx,
+        args, validated, targetIssues, orchestratorMember, finalCycleLabel, sprintState,
+        gitSync,
+        deployFailures, integFailures, rejectedNewTasks, verifyEverIds,
+        bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
+        kbPriming, kbWork, getMemberForRole,
+        childIdAllocator, sprintMutexId, resolveSettleShell,
+        computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,
     });
-    finalVerdictResult = finalReviewOutcome.value;
-    // No duplicate log() dump -- see dispatchReview() for why.
-    // `finalVerdictResult.verdict` also surfaces via the generic,
-    // workflow-agnostic Result strip in the dashboard header (state.result --
-    // see src/viewer/index.mjs), a second independent reason a raw JSON
-    // re-print here would be redundant.
-
-    // apra-fleet-nx7: the final reviewer's KB decisions are executed through
-    // the same path every per-round review uses -- now as the 'final-review'
-    // row's 'kb-apply' postResult step (apra-fleet-3swo.5.7), which the engine
-    // runs immediately after a successful dispatch. Deliberately NOT gated on
-    // the VERDICT -- a fact can be verified even when the sprint as a whole
-    // fails, and the reviewer contract already says as much ("Not tied to the
-    // verdict"). It is gated on there BEING a verdict: a degraded FAIL is
-    // fabricated by the engine and carries no KB fields at all, so there is
-    // nothing to apply.
-
-    // Publish what this sprint confirmed. Immediately after the LAST promotion
-    // of the run, so the bible carries every CONFIRMED entry including the ones
-    // minted a line above. Without this the sprint's knowledge never left the
-    // member's local sqlite store -- see createKbWorkClient.exportBible.
-    await kbWork.exportBible(finalReviewRepoPath);
-
-    // Persist the Final Review's actionable findings to BEADS -- the only
-    // artifact the next sprint's planner reads (notes reach only the PR body
-    // and the analysis doc). NOT gated to FAIL: a PASS can still surface real
-    // secondary findings (defects that don't block this epic's own
-    // acceptance criteria) that would otherwise be lost prose with no
-    // follow-up mechanism. Same orchestrator-applies contract, allowlist
-    // validation, and id-allocator path as the per-round reviewer's
-    // newTasks; a rejected finding is logged and recorded, never sprint-fatal.
-    const finalNewTasks = Array.isArray(finalVerdictResult.newTasks) ? finalVerdictResult.newTasks : [];
-    let dPushNeededAfterFinalFindings = false;
-    if (finalNewTasks.length > 0) {
-        const createdIds = [];
-        let createdCountUnknownId = 0;
-        for (const newTask of finalNewTasks) {
-            const validation = validateNewTask(newTask);
-            if (!validation.ok) {
-                log(`Final Review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
-                rejectedNewTasks.push({ cycle: finalCycleLabel, reason: validation.reason, raw: newTask });
-                // Never let a rejected finding vanish -- persist it verbatim to
-                // the parent bead's notes as a fallback. This is the
-                // highest-stakes site of the three: Final Review's findings
-                // are the handoff to the next sprint's planner. Non-fatal;
-                // degrades to the run log.
-                try {
-                    await appendRejectedFindingToParentNotes({
-                        command, member: orchestratorMember, parentId: targetIssues[0],
-                        newTask, reason: validation.reason, cycle: finalCycleLabel, log,
-                    });
-                } catch (noteErr) {
-                    log(`[fleet-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
-                }
-                continue;
-            }
-            const { title, description, priority } = validation;
-            const created = await persistNewTaskBestEffort({
-                command, member: orchestratorMember, parentId: targetIssues[0],
-                newTask, cycle: finalCycleLabel, log, stage: 'final-review',
-                createFn: async () => {
-                    const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
-                    return createChildBeadWithAllocatedId({
-                        command, allocator: childIdAllocator, member: orchestratorMember,
-                        title, description, priority, parentId: targetIssues[0],
-                        sprintId: sprintMutexId, floor, log,
-                        label: `Create follow-up task from Final Review findings: ${title}`,
-                    });
-                },
-            });
-            if (created) {
-                dPushNeededAfterFinalFindings = true;
-                if (created.childId) {
-                    createdIds.push(created.childId);
-                    log(`Final Review newTasks: created ${created.childId} ("${title}") under ${targetIssues[0]}.`);
-                } else {
-                    createdCountUnknownId += 1;
-                    log(`Final Review newTasks: created a follow-up task ("${title}") under ${targetIssues[0]} (bd-derived id, not tracked by the allocator).`);
-                }
-            }
-        }
-        if (createdIds.length > 0 || createdCountUnknownId > 0) {
-            log(`Final Review: persisted ${createdIds.length + createdCountUnknownId} finding(s) to beads as follow-up task(s) under ${targetIssues[0]}${createdIds.length > 0 ? `: ${createdIds.join(', ')}` : ''}.`);
-        }
-    }
-
-    // Beads the Final Review flagged for reopening -- each with its OWN
-    // reason (unlike the per-round reviewer's reopenIds, which shares one
-    // blanket `notes` string across every id this round). Same goal-scope
-    // guard as the per-round reviewer: never reopen a below-goal-priority
-    // bead into scope this sprint no longer targets. Reason is appended
-    // (never overwritten) via --append-notes so it never clobbers the
-    // bead's existing notes.
-    const finalReopenIds = Array.isArray(finalVerdictResult.reopenIds) ? finalVerdictResult.reopenIds : [];
-    if (finalReopenIds.length > 0) {
-        // Same guard, same fail-open, same skip log as the other two verdict
-        // sites -- only the entry shape ({id, reason}, both required) and the
-        // --append-notes command text are this site's own.
-        const reopenedIds = await applyGuardedReopens({
-            entries: finalReopenIds,
-            bdListScoped, goalMax, goal: validated.goal, log, command,
-            member: orchestratorMember,
-            logPrefix: 'Final Review reopenIds',
-            parseEntry: parseIdWithReasonEntry,
-            buildReopenCommand: ({ id, reason }) => {
-                // bd update has no --append-notes-file / --stdin equivalent for
-                // notes (only --body-file/--stdin, and only for description) --
-                // --append-notes only accepts an inline string. reason is
-                // LLM-authored free text, so it must go through the same
-                // flatten-to-single-line, shell-injection-safe sanitizer used
-                // for the PR body's notes, never interpolated raw.
-                const safeReason = sanitizePrText(reason);
-                if (!safeReason) {
-                    log(`Final Review reopenIds: SKIPPED '${id}' (reason sanitized to empty -- nothing safe to record).`);
-                    return null;
-                }
-                return {
-                    cmd: `bd update ${id} --status=open --append-notes "[Final Review C${finalCycleLabel}] Reopened -- ${safeReason}"`,
-                    label: `Reopen ${id} per Final Review verdict`,
-                };
-            },
-            onReopened: ({ id, reason }) => {
-                dPushNeededAfterFinalFindings = true;
-                log(`Final Review reopenIds: reopened ${id} -- ${sanitizePrText(reason)}`);
-            },
-            // A single bead's reopen failing must never abort Final Review;
-            // the reason is preserved verbatim in the run log instead.
-            onEntryError: ({ id, reason }, reopenErr) => {
-                log(`[fleet-sprint] Final Review reopen FAILED (non-fatal) for '${id}': ${reopenErr.message} -- reason preserved verbatim in this run log: ${reason}`);
-            },
-        });
-        if (reopenedIds.length > 0) {
-            log(`Final Review: reopened ${reopenedIds.length} bead(s): ${reopenedIds.join(', ')}.`);
-        }
-    }
-    if (dPushNeededAfterFinalFindings) {
-        // (apra-fleet-3swo.4.1) This D-push used to be a BARE doltPushAfter()
-        // outside every bracket, so the clean-state pause guard reported
-        // "safe to pause" while the Final Review findings were mid-push.
-        // pushBeadsAfter() is the bracketed entry point -- there is no
-        // unbracketed way to reach doltPushAfter() from this file any more.
-        await gitSync.pushBeadsAfter(orchestratorMember, { pushBeads: true });
-    }
 
     // =======================
     // 6b. Regression Test (once per sprint, informational -- never a gate)
@@ -5124,78 +4920,20 @@ async function runSprintCycle(context) {
     let regressionResult = null;
     const hasRegressionPlaybook = await probeFileExists('regression-test-playbook.md', getMemberForRole('regression-test-runner'));
     if (hasRegressionPlaybook) {
-        phase(`Regression Test C${finalCycleLabel}`);
-        await ensureUnattendedAuto(getMemberForRole('regression-test-runner'));
-        await ensureDeployPermissions(getMemberForRole('regression-test-runner'));
-        // The real functional suite alone spends roughly one turn per liveness
-        // poll for the better part of an hour, and this single dispatch carries
-        // both it and the sandbox smoke sprint -- hence the large turn budget
-        // and the wider hard ceiling.
-        const regressionPrompt =
-            `Run the full regression pass using regression-test-playbook.md at the repo root: part 1 ` +
-            `(the real functional suite) and part 2 (the sandbox smoke test), then ALWAYS run the ` +
-            `playbook's Teardown before returning, pass or fail. ` +
-            `File every failure you find as a STANDALONE bead: run bd create WITHOUT any --parent flag ` +
-            `and do NOT bd dep add it to any sprint bead, titled "[regression][carry-over] <description>". ` +
-            `Search bd for "[carry-over]" first and update an existing bead rather than filing a duplicate. ` +
-            `Filing these parent-less is what makes them carry over to a future sprint instead of blocking ` +
-            `this one -- do not "helpfully" parent them under a sprint bead. ` +
-            `This sprint's verdict has already been decided and your result is informational: report it ` +
-            `honestly, and never soften a failure because the sprint has otherwise passed.\n` +
-            // Same generic hand-off as the integ prompt: a leftover isolated
-            // test instance from this sprint's deploy (Deploy succeeded but
-            // Integ Test never ran) is the playbook's to sweep, keyed on the id.
-            `${sprintSelfIdLine}\n` +
-            `If an isolated test instance from this sprint's deploy is still up, the playbook says how to ` +
-            `locate it from that id; tear it down too before you return.`;
-        // apra-fleet-3swo.5.7: the regression ladder -- its dispatch, its
-        // pushBeads git-sync bracket, its max_turns-exhaustion resume at
-        // doubled turns, its refusal to re-dispatch a pass that already ran,
-        // and its load-bearing CATCH-ALL degrade -- is now the
-        // 'regression-test-runner' row of fleet-sprint/role-policies.mjs.
-        //
-        // WHY THE CATCH-ALL IS POLICY DATA AND NOT A try/catch HERE: this
-        // phase is informational and must never abort the sprint. The dispatch
-        // is bracketed with pushBeads:true, and this is the ONE phase whose
-        // whole job is mutating beads (filing carry-over bugs), so a D-push
-        // failure is a routine outcome. Among the classes it can throw are
-        // typed sprint aborts (GitDivergedError, DoltDivergedError bare or
-        // wrapped in a PostDispatchSyncError) -- without the catch-all the
-        // top-level handler would turn one into a terminal verdict:'ABORTED',
-        // skipping Harvest AND Publish PR and discarding an already-computed
-        // finalVerdictResult. A green sprint would be reported as ABORTED
-        // because an informational pass could not push a bug bead. The row
-        // says all of that as data: degrade.classes lists all four error
-        // classes it fabricates a summary for, and
-        // degrade.classifiesUnrecognisedErrors is what stops an unknown class
-        // from escaping.
-        //
-        // Two deliberate exceptions, both RUN-level control signals rather than
-        // "the regression phase failed", recorded as
-        // degrade.rethrowsRunControlSignals: CancelledError (honouring an
-        // operator cancellation outranks finishing an informational phase) and
-        // BudgetExceededError (swallowing a blown spend ceiling would let
-        // Harvest keep spending past a limit the operator set).
-        const regressionOutcome = await dispatchRole(dispatchCtx, 'regression-test-runner', {
-            prompt: regressionPrompt,
-            // A resume DELIVERS A NEW prompt artifact, so restate the
-            // dispatch's scope/filing rules -- a bare "continue" would lose the
-            // parent-less filing rule, which is the whole point of this phase.
-            resumePrompt:
-                'Continue the regression pass exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining work, run Teardown, and return your final report now. ' +
-                'Your original instructions, restated so a resumed dispatch never loses them: ' + regressionPrompt,
-            roleLabel: 'Regression Test Runner',
-            resumeLabel: `Regression Test (resume, max_turns=${TURN_BASES.REGRESSION_TEST_MAX_TURNS * 2})`,
-        });
-        regressionResult = regressionOutcome.value;
-        // No duplicate log() dump -- see dispatchReview() for why. Only an
-        // explicit passed:true is treated as a green regression pass.
-        if (regressionResult.passed !== true) {
-            log(`Regression pass reported FAILURES (carry-over beads: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}): ${regressionResult.summary}`);
-        } else {
-            log(`Regression pass PASSED (suite: ${regressionResult.suitePassed}, smoke: ${regressionResult.smokePassed}).`);
-        }
-        await updateDashboard();
+        // The phase body lives in ./phases/regression-test.mjs
+        // (apra-fleet-3swo.6.6). The probeFileExists call that produces
+        // hasRegressionPlaybook, the `let regressionResult = null` default and
+        // the "Skipping Regression Test Phase" else below all stay here,
+        // exactly as ./deploy.mjs's deploy.md probe and ./integ-test.mjs's
+        // runbook probes did. finalVerdictResult is already computed above --
+        // that ordering, not a flag or an LLM instruction, is what makes this
+        // phase structurally unable to gate the sprint.
+        ({ regressionResult } = await runRegressionTestPhase({
+            phase, log, dispatchCtx,
+            finalCycleLabel, sprintSelfIdLine,
+            regressionResult,
+            getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions, updateDashboard,
+        }));
     } else {
         log('Skipping Regression Test Phase (no regression-test-playbook.md found, or the probe itself failed -- see prior log line)');
     }
@@ -5224,7 +4962,7 @@ async function runSprintCycle(context) {
         rejectedNewTasks,
         finalVerdictResult,
         finalClosedCount,
-        finalOpenAtGoalCount: finalOpenAtGoal.length,
+        finalOpenAtGoalCount,
         regressionResult,
     });
     const costAnalysis = buildCostAnalysis(budget, {
