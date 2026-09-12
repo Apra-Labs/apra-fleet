@@ -673,17 +673,22 @@ test('apra-fleet-3swo.33 regression: a nested file whose BASENAME collides with 
     // apra-fleet-3swo.6.7 registered phases/replan.mjs and phases/develop.mjs,
     // apra-fleet-3swo.6.5 then registered phases/review.mjs and
     // phases/deploy.mjs, apra-fleet-3swo.6.8 registered phases/integ-test.mjs
-    // and phases/re-review.mjs, and apra-fleet-3swo.6.6 has now registered
-    // phases/final-review.mjs and phases/regression-test.mjs -- so the control
-    // moved on again, to phases/harvest.mjs, the next unextracted phase()
-    // boundary in the same epic. This is the fifth time this control has had to
-    // move; it will have to move again on the slice that extracts Harvest. Pick
-    // the successor from the phase labels runSprintCycle still emits inline
-    // (Harvest and Publish PR as of this slice -- and once BOTH are sliced
-    // there is no successor left, at which point retire this control onto a
-    // permanently hypothetical nested path rather than inventing a phase
-    // module that will never exist), and pin the premise like this so a stale
-    // control fails loudly instead of silently testing nothing.
+    // and phases/re-review.mjs, apra-fleet-3swo.6.6 registered
+    // phases/final-review.mjs and phases/regression-test.mjs, and
+    // apra-fleet-3swo.6.9 has now registered the LAST two,
+    // phases/harvest.mjs and phases/publish-pr.mjs.
+    //
+    // THE CONTROL IS NOW RETIRED ONTO A PERMANENTLY HYPOTHETICAL PATH, exactly
+    // as the note this comment replaces instructed. All twelve phase()
+    // boundaries are sliced, so there is no "next unextracted phase" left to
+    // borrow: any successor picked from the phase list would be a module that
+    // will never exist, and a control whose premise is a lie rots the moment
+    // someone tries to check it. UNEXTRACTED_CONTROL below is instead a nested
+    // path under a directory that exists, with a basename deliberately chosen
+    // to collide with NOTHING in GUARDED_MODULES or GUARD_REGISTRATION_EXEMPT
+    // -- and the premise is still pinned (it must be neither registered nor
+    // exempt), so a future registration that happened to use this name fails
+    // loudly here instead of silently testing nothing.
     assert.ok(GUARDED_MODULES.includes('phases/replan.mjs'), 'this pin assumes phases/replan.mjs is registered today (apra-fleet-3swo.6.7)');
     assert.ok(GUARDED_MODULES.includes('phases/develop.mjs'), 'this pin assumes phases/develop.mjs is registered today (apra-fleet-3swo.6.7)');
     assert.ok(GUARDED_MODULES.includes('phases/review.mjs'), 'this pin assumes phases/review.mjs is registered today (apra-fleet-3swo.6.5)');
@@ -692,7 +697,23 @@ test('apra-fleet-3swo.33 regression: a nested file whose BASENAME collides with 
     assert.ok(GUARDED_MODULES.includes('phases/re-review.mjs'), 'this pin assumes phases/re-review.mjs is registered today (apra-fleet-3swo.6.8)');
     assert.ok(GUARDED_MODULES.includes('phases/final-review.mjs'), 'this pin assumes phases/final-review.mjs is registered today (apra-fleet-3swo.6.6)');
     assert.ok(GUARDED_MODULES.includes('phases/regression-test.mjs'), 'this pin assumes phases/regression-test.mjs is registered today (apra-fleet-3swo.6.6)');
-    assert.ok(!GUARDED_MODULES.includes('phases/harvest.mjs'), 'this pin assumes phases/harvest.mjs is not registered yet');
+    assert.ok(GUARDED_MODULES.includes('phases/harvest.mjs'), 'this pin assumes phases/harvest.mjs is registered today (apra-fleet-3swo.6.9)');
+    assert.ok(GUARDED_MODULES.includes('phases/publish-pr.mjs'), 'this pin assumes phases/publish-pr.mjs is registered today (apra-fleet-3swo.6.9)');
+    const UNEXTRACTED_CONTROL = 'phases/not-a-phase-module.mjs';
+    assert.ok(
+        !GUARDED_MODULES.includes(UNEXTRACTED_CONTROL),
+        `this control assumes ${UNEXTRACTED_CONTROL} is registered nowhere -- pick another hypothetical name if it ever is`
+    );
+    assert.ok(
+        !Object.prototype.hasOwnProperty.call(GUARD_REGISTRATION_EXEMPT, UNEXTRACTED_CONTROL),
+        `this control assumes ${UNEXTRACTED_CONTROL} is exempt nowhere -- pick another hypothetical name if it ever is`
+    );
+    assert.ok(
+        !GUARDED_MODULES.some((m) => path.basename(m) === path.basename(UNEXTRACTED_CONTROL)) &&
+        !Object.keys(GUARD_REGISTRATION_EXEMPT).some((m) => path.basename(m) === path.basename(UNEXTRACTED_CONTROL)),
+        `this control assumes ${UNEXTRACTED_CONTROL}'s BASENAME collides with nothing -- otherwise it stops being the ` +
+        'no-collision control and silently duplicates the collision cases above'
+    );
 
     // A nested 'phases/index.mjs' must NOT be considered accounted-for merely
     // because a DIFFERENT file, 'vcs-providers/index.mjs', shares its bare
@@ -705,12 +726,10 @@ test('apra-fleet-3swo.33 regression: a nested file whose BASENAME collides with 
     assert.equal(isAccountedFor('phases/dolt-sync.mjs'), false, "phases/dolt-sync.mjs must not ride on dolt-sync.mjs's exemption");
     // Control: a file that shares no basename with anything registered or
     // exempt was already correctly unaccounted-for under either comparison.
-    // Uses phases/harvest.mjs (a later slice in the same epic, not yet
-    // extracted) now that phases/plan.mjs, phases/replan.mjs,
-    // phases/develop.mjs, phases/review.mjs, phases/deploy.mjs,
-    // phases/integ-test.mjs, phases/re-review.mjs, phases/final-review.mjs and
-    // phases/regression-test.mjs are all genuinely registered.
-    assert.equal(isAccountedFor('phases/harvest.mjs'), false, 'phases/harvest.mjs has no colliding basename and must still report unaccounted-for');
+    // Uses the permanently hypothetical UNEXTRACTED_CONTROL pinned above, now
+    // that every phases/ module in the epic -- through harvest.mjs and
+    // publish-pr.mjs, the last two -- is genuinely registered.
+    assert.equal(isAccountedFor(UNEXTRACTED_CONTROL), false, `${UNEXTRACTED_CONTROL} has no colliding basename and must still report unaccounted-for`);
     // The nested entries apra-fleet-3swo.6.2 actually registered are accounted
     // for by their FULL RELATIVE PATH -- the first real exercise of nested
     // registration, and the reason the two assertions below are not redundant
@@ -727,6 +746,8 @@ test('apra-fleet-3swo.33 regression: a nested file whose BASENAME collides with 
     assert.equal(isAccountedFor('phases/re-review.mjs'), true, 'the really-registered nested phase module must be accounted for');
     assert.equal(isAccountedFor('phases/final-review.mjs'), true, 'the really-registered nested phase module must be accounted for');
     assert.equal(isAccountedFor('phases/regression-test.mjs'), true, 'the really-registered nested phase module must be accounted for');
+    assert.equal(isAccountedFor('phases/harvest.mjs'), true, 'the really-registered nested phase module must be accounted for');
+    assert.equal(isAccountedFor('phases/publish-pr.mjs'), true, 'the really-registered nested phase module must be accounted for');
     // ...and registering them must NOT make a bare 'plan.mjs' at the
     // fleet-sprint/ root ride on the nested entry, which is the same
     // directory-blind failure this bead's fix prevents in the other direction.

@@ -22,14 +22,25 @@ import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResol
 // hard-aborting the run at its readiness gate.
 import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider } from './vcs-module.mjs';
+// apra-fleet-3swo.6.9: `capabilities as vcsCapabilities` is no longer imported
+// here. Its ONE consumer was the Publish-PR capability gate, which moved with
+// the phase into ./phases/publish-pr.mjs (that module imports it directly);
+// finalizeAbort's identical gate already imports it in ./abort.mjs. Keeping a
+// dead alias behind would have read as "runner.js still makes a VCS capability
+// decision", which is exactly what test/vcs-capabilities-table.test.mjs now
+// pins at zero.
+import { buildCreatePrCommand, resolveProvider, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resultText, toolErrorText } from './mcp-result.mjs';
 import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache } from './member-target.mjs';
 import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from './sprint-state.mjs';
 import {
     parseOwnerRepoFromRemoteUrl, parseRepoScopeFromRemoteUrl, vcsCredentialLabelForProvider,
-    buildCredentialReadCommand, raiseVcsPrForMember, PR_SKIPPED_NO_MCP_CLIENT,
+    // raiseVcsPrForMember left this import with the Publish PR phase
+    // (apra-fleet-3swo.6.9) -- ./phases/publish-pr.mjs imports it from
+    // vcs-auth.mjs directly, and it was never part of runner.js's export
+    // facade (test/vcs-auth-extraction-facade.test.mjs pins it as private).
+    buildCredentialReadCommand, PR_SKIPPED_NO_MCP_CLIENT,
     createMemberVcsProviderResolver, createVcsAuthSelfHealCallback, createVcsAuthPreflightCallback,
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
@@ -113,6 +124,20 @@ import { runReReviewPhase } from './phases/re-review.mjs';
 // header for where its boundary is drawn.
 import { runFinalReviewPhase } from './phases/final-review.mjs';
 import { runRegressionTestPhase } from './phases/regression-test.mjs';
+// apra-fleet-3swo.6.9: the LAST two phase() boundaries -- Harvest and Publish
+// PR -- which completes the slice: runSprintCycle now contains no inline phase
+// body at all. Harvest runs from its own phase() call to the last of its three
+// harvest-report log branches; Publish PR runs from its own phase() call to
+// where the final endGroup() used to sit and RETURNS `{ pushed }`, from which
+// runner.js builds both of runSprintCycle's return objects (the function's
+// return value is its own contract, and group('Finalization')/endGroup() wrap
+// all four Finalization phases rather than either of these two). Their ORDER
+// is load-bearing: the harvester is a code-writing role whose
+// docs/changelog/sprint-analysis commits must be G-pushed by its own policy
+// bracket before Publish PR pushes the branch and raises the PR a human reads.
+// See each module's header for where its boundary is drawn.
+import { runHarvestPhase } from './phases/harvest.mjs';
+import { runPublishPrPhase } from './phases/publish-pr.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
 // verbatim out of runner.js (apra-fleet-3swo.4.3).
@@ -4938,82 +4963,23 @@ async function runSprintCycle(context) {
         log('Skipping Regression Test Phase (no regression-test-playbook.md found, or the probe itself failed -- see prior log line)');
     }
 
-    phase(`Harvest C${finalCycleLabel}`);
-    // Wire the harvester's required inputs with real, runner-computed values --
-    // see buildAnalysisText()/buildCostAnalysis() above. `branchSlug` (see
-    // computeBranchSlug() below) avoids embedding raw `/` characters from a
-    // branch name like `feat/fleet-reorg` in the artifact path, which would
-    // otherwise create surprise subdirectories. Deliberately no wall-clock
-    // timestamp in this path: it must stay identical across two dispatches of
-    // the same branch (idempotent re-runs, and the golden-transcript
-    // determinism test), and harvester.md Step 1 already overwrites the file at
-    // this path if it exists.
-    const branchSlug = computeBranchSlug(validated.branch);
-    const analysisArtifactFile = `docs/sprint-analysis-${branchSlug}.md`;
-    const analysisText = buildAnalysisText({
-        targetIssues,
-        branch: validated.branch,
-        baseBranch: validated.baseBranch,
-        cyclesRun: finalCycleLabel,
-        closedCountHistory,
-        highWaterClosedCount,
-        deployFailures,
-        integFailures,
-        rejectedNewTasks,
-        finalVerdictResult,
-        finalClosedCount,
-        finalOpenAtGoalCount,
-        regressionResult,
+    // The phase body lives in ./phases/harvest.mjs (apra-fleet-3swo.6.9). It
+    // returns nothing: the sprint-analysis document, the changelog/docs commits
+    // and the issue deferrals are all written by the DISPATCHED harvester in
+    // its own repo, and the 'harvester' policy row's pushCode/pushBeads bracket
+    // publishes them -- so no later phase reads a value from it. It must
+    // nonetheless run HERE, after Regression Test (whose summary it folds into
+    // the analysis document) and before Publish PR (which pushes the branch the
+    // harvester just committed to).
+    await runHarvestPhase({
+        phase, log, dispatchCtx,
+        validated, targetIssues, finalCycleLabel, budget,
+        closedCountHistory, highWaterClosedCount,
+        deployFailures, integFailures, rejectedNewTasks,
+        integTestRunnerSpend, integTestRunnerDispatchCount,
+        finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, regressionResult,
+        computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
-    const costAnalysis = buildCostAnalysis(budget, {
-        spend: integTestRunnerSpend,
-        dispatchCount: integTestRunnerDispatchCount,
-    });
-    const harvesterPrompt = buildHarvesterPrompt({
-        branch: validated.branch,
-        baseBranch: validated.baseBranch,
-        targetIssues,
-        analysisArtifactFile,
-        analysisText,
-        costAnalysis,
-    });
-    // apra-fleet-3swo.5.7: the harvester ladder -- its dispatch, its
-    // pushCode/pushBeads git-sync bracket, its max_turns-exhaustion resume at
-    // doubled turns, its one bounded LLM-auth self-heal and its
-    // proceed-without-a-report degrade -- is now the 'harvester' row of
-    // fleet-sprint/role-policies.mjs, executed by dispatchRole. What stays
-    // here is what is genuinely NOT policy: the prompts, the presentation
-    // labels, and what the caller does with the report.
-    //
-    // The harvester is a code-writing role (pushCode: true) alongside the doer
-    // -- G-pull before, G-push after so the docs/changelog/sprint-analysis
-    // commits it makes are published before anything downstream (Publish PR,
-    // below) reads the branch. It ALSO mutates beads (issue-defer of
-    // low-priority items), so it D-pushes those mutations alongside its git
-    // push. Both flags live in the policy row now.
-    const harvestOutcome = await dispatchRole(dispatchCtx, 'harvester', {
-        prompt: harvesterPrompt,
-        resumePrompt: 'Continue your harvest exactly where you left off in this same session -- do not redo docs or changelog sections already written. Finish the remaining updates, commit them, and return your final report now.',
-        roleLabel: 'Harvester',
-        resumeLabel: `Harvest (resume, max_turns=${TURN_BASES.HARVESTER_MAX_TURNS * 2})`,
-    });
-    const harvesterResult = harvestOutcome.value;
-    // No duplicate log() dump -- see dispatchReview() for why. The file
-    // path itself IS worth a line: it is the durable, committed record of
-    // the Final Review verdict (and everything else in analysisText) --
-    // unlike the verdict object, it survives after this process exits.
-    //
-    // A degraded harvest proceeds WITHOUT a validated report (the sprint
-    // verdict is already decided by this point), so everything below is
-    // gated on actually having one. The report's kb_captures were applied by
-    // the policy's 'kb-apply' postResult step, which only runs on success.
-    if (!harvestOutcome.ok) {
-        log(`Harvester: proceeding without a validated harvester report: ${harvestOutcome.error?.message ?? 'no report'}`);
-    } else if (harvesterResult.status !== 'OK') {
-        log(`Harvester reported FAILED: ${harvesterResult.notes}`);
-    } else {
-        log(`Harvester: wrote sprint analysis (including the Final Review verdict) to ${analysisArtifactFile}.`);
-    }
 
     // =======================
     // 7. Publish: push the sprint branch and raise (but do NOT merge) a PR
@@ -5021,233 +4987,22 @@ async function runSprintCycle(context) {
     // Per the pm skill's R12 rule (never auto-merge), this only pushes and
     // opens the PR -- a human (or a later, explicitly-scoped issue) must
     // review and merge it.
-    phase(`Publish PR C${finalCycleLabel}`);
-    // The branch push is the LAST step of a sprint that has already done all of
-    // its work and computed a final verdict. A transient push failure (a racing
-    // writer, a momentarily unreachable remote, a credential refresh in flight)
-    // used to throw a CommandError from here, which converted a computed PASS
-    // into `verdict: 'ABORTED'` and discarded the whole run's conclusion over a
-    // network hiccup at the very end. So: failSoft plus the same short, bounded
-    // sync backoff every other push round trip uses, and -- if it STILL will not
-    // go through -- log loudly and return the COMPUTED verdict with
-    // `pushed: false` rather than destroying it.
-    //
-    // A persistent failure also skips everything downstream of the push (PR
-    // creation on a hosted remote; direct target-issue closure + D-push on a
-    // non-hosted one). None of that may run against a branch whose commits
-    // never reached the remote: a PR cannot be raised for unpushed work, and
-    // closing the sprint's target issue would advertise a completion nobody can
-    // see. This is the deliberately MINIMAL hardening -- the pluggable-publish
-    // restructure is apra-fleet-647.2, which supersedes it.
-    // apra-fleet: this push and the origin-remote read just below it run on
-    // publishGitMember -- a real dispatch member with an actual git checkout
-    // (harvester, falling back to the fallback pool like every other role
-    // resolution in this file) -- NEVER orchestratorMember, which may be a
-    // shared/unreservable, git-less member (docs/design-orchestrator-
-    // worktree-model-v2.md section 4.3/4.5). raiseVcsPrForMember() below
-    // stays on orchestratorMember: it is a credential-file read + REST call,
-    // not git, and is explicitly designed to stay there (section 4.6).
-    const publishGitMember = getMemberForRole('harvester');
-    let pushed = false;
-    let lastPushError = '';
-    // apra-fleet-9wdh-adjacent (Publish-PR push self-heal): this used to retry
-    // the byte-identical `git push` up to 3 times with no fetch/rebase step in
-    // between -- fine for a transient/busy-remote failure, but a genuine
-    // non-fast-forward rejection ("fetch first") is deterministic, so all 3
-    // attempts failed identically and the branch's work was stranded local-
-    // only. syncMemberAfter() (this file, above) already implements the
-    // correct self-heal for exactly this failure shape -- bounded transient
-    // retry, then one pull-rebase-then-re-push on a genuine non-fast-forward
-    // divergence, never a blind force-push -- and every OTHER post-dispatch
-    // G-push in this file already routes through it. Publish PR is the one
-    // push site that bypassed it. Route through it here too instead of the
-    // raw retry loop. NOTE: no `agent` is passed here, so a real content
-    // conflict during the rebase (not just a plain non-FF race) throws
-    // GitDivergedError directly rather than getting syncMemberAfter's
-    // optional Tier 2 conflict-resolution-agent dispatch -- same as the old
-    // loop, which had no Tier 2 either; not a regression.
-    // (apra-fleet-3swo.4.1) ... and this G-push, unlike the Publish-PR D-push
-    // just below, was never inside a sync bracket either -- a pause could land
-    // mid-`git push` of the sprint branch. pushGitAfter() is the bracketed
-    // syncMemberAfter() entry point; it threads the same command/log/branch/
-    // onAuthFailure/provider-resolver state the bare call passed by hand.
-    try {
-        await gitSync.pushGitAfter(publishGitMember, { remote: 'origin', setUpstream: true });
-        pushed = true;
-    } catch (pushErr) {
-        lastPushError = pushErr.message;
-    }
-    if (!pushed) {
-        log(`[Publish Push Failed] Could not push sprint branch '${validated.branch}' to origin (bounded transient retry, and a rebase-then-re-push if diverged, both exhausted) -- the sprint's work is COMMITTED LOCALLY ONLY and is NOT on the remote. Skipping PR creation and target-issue closure (neither is meaningful for an unpushed branch); the sprint's own computed verdict (${finalVerdictResult.verdict}) is preserved and returned with pushed:false. Push the branch by hand and raise the PR, or re-run finalization once the remote is reachable. Last error: ${lastPushError}`);
-        endGroup();
-        return {
-            status: finalVerdictResult.verdict === 'PASS' ? 'success' : 'failed',
-            verdict: finalVerdictResult.verdict,
-            notes: finalVerdictResult.notes,
-            branch: validated.branch,
-            baseBranch: validated.baseBranch,
-            goal: validated.goal,
-            maxCycles: validated.maxCycles,
-            pushed: false,
-        };
-    }
-    // The final verdict is surfaced directly in the PR title and body -- a
-    // human reviewer must never have to dig through sprint logs to learn
-    // whether the run's own review gate passed. A FAIL verdict still publishes
-    // the PR (never suppressed), with the verdict stated plainly so the
-    // reviewer can weigh it before merging.
-    const finalVerdictLabel = finalVerdictResult.verdict === 'PASS' ? 'PASS' : 'FAIL';
-
-    // Resolve the sprint's own git 'origin' remote and classify it via
-    // VCSModule.capabilities() BEFORE ever attempting the VCSModule REST
-    // create-pull-request call. A remote whose provider cannot open a PR (a
-    // file:// bare mirror, or any other host with no hosting API support)
-    // means PR creation can never succeed, and attempting it anyway throws a
-    // hard 'gh auth login required'-shaped CommandError that would fail the
-    // whole sprint. Resolving the remote is itself failSoft -- an
-    // unresolvable remote fails closed to canOpenPullRequest:false, per
-    // capabilities()'s own contract -- so a probe hiccup here can never kill
-    // the sprint.
-    const originUrlRes = await command('git remote get-url origin', {
-        member_name: publishGitMember,
-        silent: true,
-        failSoft: true,
-        label: 'Resolve origin remote URL',
+    // The phase body lives in ./phases/publish-pr.mjs (apra-fleet-3swo.6.9).
+    // It returns only `pushed` -- whether the sprint branch actually reached
+    // the remote -- and BOTH return objects below are built here, because
+    // runSprintCycle's return value is the function's own contract. A push
+    // that never went through returns pushed:false having deliberately skipped
+    // PR creation and target-issue closure (neither is meaningful for an
+    // unpushed branch) while PRESERVING the sprint's own computed verdict; a
+    // genuine PR-creation failure still throws a typed CommandError out of the
+    // phase, before the endGroup() below, exactly as the inline version did.
+    const { pushed } = await runPublishPrPhase({
+        phase, log, command,
+        args, validated, targetIssues, orchestratorMember, finalCycleLabel,
+        gitSync, getMemberForRole,
+        finalVerdictResult,
+        sanitizePrText,
     });
-    const originUrl = originUrlRes.ok ? originUrlRes.output.trim() : '';
-    // (apra-fleet-3swo.4.10) capabilities() is already the provider-agnostic
-    // hook -- it dispatches to WHICHEVER registered provider's matchesHost()
-    // claims this remote's host (github, azure-devops, bitbucket, ... see
-    // vcs-module.mjs's capabilities()), never a hardcoded GitHub check. The
-    // log line below used to say "not a gh-hostable GitHub remote" even
-    // though the gate itself was already provider-neutral -- that wording
-    // was pure residue, not control flow, but a broken/misconfigured
-    // Azure DevOps or Bitbucket remote hitting this same branch would have
-    // been told (wrongly) that it looked like a GitHub problem. `host` is
-    // carried through so the log names what was actually resolved, matching
-    // finalizeAbort's identical gate (abort.mjs) which never had the stale
-    // GitHub wording in the first place.
-    const publishPrCapabilities = vcsCapabilities(originUrl);
-    const hostedRemote = publishPrCapabilities.canOpenPullRequest;
-
-    if (!hostedRemote) {
-        log(`Publish PR: origin remote '${originUrl || '(unresolved)'}' cannot open a pull request (host: ${publishPrCapabilities.host || 'unknown'}) -- ` +
-            'skipping PR creation entirely (no dependency on any VCS provider\'s auth for this path).');
-        // A non-hosted remote can never complete PR creation, so target-issue
-        // closure cannot be gated on it -- close the target issue(s) directly,
-        // but only when the sprint's own final verdict actually passed. A FAIL
-        // verdict must never be masked by closing the issue anyway; it still
-        // ends the sprint 'failed' via the return value below, same as the
-        // hosted-remote path.
-        if (finalVerdictResult.verdict === 'PASS') {
-            for (const id of targetIssues) {
-                const closeRes = await command(`bd close ${id}`, {
-                    member_name: orchestratorMember,
-                    silent: true,
-                    failSoft: true,
-                    label: `Close target issue '${id}' directly (non-hosted remote, no PR gate)`,
-                });
-                if (closeRes.ok) {
-                    log(`Publish PR: closed target issue '${id}' directly (non-hosted remote, PASS verdict).`);
-                } else {
-                    log(`Publish PR: failed to close target issue '${id}' directly (non-fatal, continuing): ${closeRes.error}`);
-                }
-            }
-            await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
-        } else {
-            log('Publish PR: final verdict is FAIL -- leaving target issue(s) open (not closing on a non-PASS verdict).');
-        }
-    } else {
-        // finalVerdictResult.notes is LLM-authored free text -- sanitize with
-        // sanitizePrText() (see the comment above its definition) BEFORE it is
-        // ever embedded in the VCSModule-built create-pull-request command()
-        // string below. validated.goal/validated.branch need no sanitization
-        // here: both are already validated against shell-injection-safe patterns
-        // (GOAL_PATTERN/BRANCH_NAME_PATTERN) at arg-validation time.
-        const prTitle = `Auto-sprint [${finalVerdictLabel}]: ${validated.branch}`;
-        const safeNotes = sanitizePrText(finalVerdictResult.notes);
-        const prBody = [
-            `Automated apra-fleet-se sprint (goal: ${validated.goal}).`,
-            '',
-            `Final Verdict: ${finalVerdictLabel}`,
-            safeNotes ? `Notes: ${safeNotes}` : null,
-            '',
-            'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
-        ].filter((line) => line !== null).join('\n');
-
-        // Idempotent PR creation via VCSModule (apra-fleet-tfx.8: the reverted
-        // gh-based path is gone). A push+pr credential is minted just-in-time immediately
-        // before this one call (never at sprint setup, never for any other
-        // phase), VCSModule builds the orchestrator-side curl command, and
-        // `orchestratorMember` dispatches it via execute_command -- no gh, no
-        // server-side fallback. A re-run of finalization against a branch
-        // that ALREADY has an open PR from a prior, otherwise-successful run
-        // can be told apart from a genuine failure: the REST create-PR call
-        // returns 422 "already exists" in that case -- that specific outcome
-        // is swallowed (logged, not thrown) because it means the desired end
-        // state (a PR is open for this branch) already holds. Any OTHER
-        // failure (auth, network, a real API error, the injectable mock
-        // failure below) is NOT swallowed -- it is re-raised as a typed
-        // CommandError so it surfaces clearly rather than being silently
-        // invisible.
-        const fleetApiForPr = (args && typeof args.callTool === 'function') ? new ApraFleet({ callTool: args.callTool }) : null;
-        if (!fleetApiForPr) {
-            // Graceful degradation (apra-fleet-tfx.8.1): minting the push+pr
-            // credential VCSModule needs to raise this PR requires an MCP
-            // client. When no callTool is wired (e.g. a mock-sprint scenario
-            // that never opted into an MCP client), the sprint branch is
-            // already pushed by the withGitSync bracket -- so rather than an
-            // unconditional hard-throw that would fail every such pre-existing
-            // scenario at the very last step, this degrades to a clear,
-            // skipped-PR log and lets the sprint report its real verdict. In
-            // production callTool is always wired (bin/cli.mjs), so this branch
-            // never runs there; it exists purely so PR creation is not a hard
-            // MCP dependency for callers that legitimately have none. A genuine
-            // PR-creation FAILURE (auth, network, a real API error) still
-            // throws below -- only the callTool-absent case is degraded.
-            log(`[Publish PR Skipped] no MCP callTool available to mint a push+pr credential for member '${orchestratorMember}' -- branch '${validated.branch}' is pushed but the PR was not raised.`);
-        } else {
-            const prResult = await raiseVcsPrForMember({
-                fleetApi: fleetApiForPr,
-                command,
-                member: orchestratorMember,
-                base: validated.baseBranch,
-                head: validated.branch,
-                title: prTitle,
-                body: prBody,
-                log,
-                logPrefix: '[Publish PR]',
-                // Already resolved above via publishGitMember (a real
-                // git-capable member) for the PR-capability gate -- skip
-                // re-deriving it a second time by shelling out to
-                // orchestratorMember, which may have no git checkout of its
-                // own to read a remote from (docs/design-orchestrator-
-                // worktree-model-v2.md section 4.6: this call stays workspace-
-                // independent by design, credential-file-read + REST only).
-                remoteUrlOverride: originUrl,
-            });
-            if (!prResult.ok) {
-                if (prResult.authFailure) {
-                    // apra-fleet-5co8.15: an auth failure raiseVcsPrForMember
-                    // could not clear -- including one that never got past
-                    // credential provisioning, e.g. a missing Azure DevOps PAT
-                    // credential-store entry -- degrades the publish phase
-                    // instead of aborting the sprint, same policy
-                    // finalizeAbort() already applies to its own authFailure
-                    // outcome (see above). The branch is already pushed; only
-                    // the PR itself is skipped.
-                    log(`[Publish PR Skipped] could not raise a PR for branch '${validated.branch}' -> '${validated.baseBranch}' (branch is pushed) due to an unrecoverable VCS auth failure: ${prResult.error}`);
-                } else {
-                    throw new CommandError(
-                        `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
-                        { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prResult.error } }
-                    );
-                }
-            } else if (prResult.alreadyExists) {
-                log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success.`);
-            }
-        }
-    }
 
     endGroup();
 
@@ -5255,6 +5010,9 @@ async function runSprintCycle(context) {
     // return value, so a downstream caller (CLI, CI, a human reading the run)
     // can tell a genuinely-passing sprint from one that ran to completion but
     // left goal-priority work open, a deploy failing, or integration tests red.
+    // `pushed` comes from the Publish PR phase above and is the ONLY thing it
+    // contributes here: a failed branch push reports pushed:false, and the
+    // verdict it is reported alongside is still the sprint's own computed one.
     return {
         status: finalVerdictResult.verdict === 'PASS' ? 'success' : 'failed',
         verdict: finalVerdictResult.verdict,
@@ -5263,7 +5021,7 @@ async function runSprintCycle(context) {
         baseBranch: validated.baseBranch,
         goal: validated.goal,
         maxCycles: validated.maxCycles,
-        pushed: true,
+        pushed,
     };
 }
 

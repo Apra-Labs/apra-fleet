@@ -155,6 +155,13 @@ describe('apra-fleet-3swo.4.2: source-level scan -- runner.js has zero unbracket
     // is re-anchored onto it. Both paths come from guardedModulePath(), so the
     // shared registration in guarded-modules.mjs is what makes them reachable.
     const FINAL_REVIEW_PHASE_PATH = guardedModulePath('phases/final-review.mjs');
+    // apra-fleet-3swo.6.9 did the same to the OTHER site this file protects:
+    // the Publish PR phase moved into fleet-sprint/phases/publish-pr.mjs and
+    // the sprint branch's own G-push -- gitSync.pushGitAfter(), the single
+    // most consequential push in the run -- went with it. Same re-anchoring as
+    // above, for the same reason: runner.js alone would keep reporting green
+    // over a site no scan reads.
+    const PUBLISH_PR_PHASE_PATH = guardedModulePath('phases/publish-pr.mjs');
 
     test('runner.js reports zero unbracketed doltPushAfter()/syncMemberAfter()/DoltSync.syncBefore()/DoltSync.syncAfter() call sites', () => {
         const { violations } = checkUnbracketedPushPath(RUNNER_PATH);
@@ -183,12 +190,25 @@ describe('apra-fleet-3swo.4.2: source-level scan -- runner.js has zero unbracket
         );
     });
 
+    test('phases/publish-pr.mjs reports zero unbracketed push call sites either', () => {
+        const { violations } = checkUnbracketedPushPath(PUBLISH_PR_PHASE_PATH);
+        assert.deepEqual(violations, [], `expected no unbracketed push call sites in the sliced Publish PR phase, got: ${JSON.stringify(violations, null, 2)}`);
+    });
+
     test('the Publish-PR push site calls gitSync.pushGitAfter(...) by name', () => {
-        const src = fs.readFileSync(RUNNER_PATH, 'utf8');
+        const src = fs.readFileSync(PUBLISH_PR_PHASE_PATH, 'utf8');
         assert.match(
             src,
             /await gitSync\.pushGitAfter\(publishGitMember,/,
             'the Publish-PR G-push must route through gitSync.pushGitAfter(), the bracketed standalone entry point',
+        );
+    });
+
+    test('runner.js no longer owns the Publish-PR G-push -- the pin above is not scanning a leftover copy', () => {
+        const src = fs.readFileSync(RUNNER_PATH, 'utf8');
+        assert.ok(
+            !/gitSync\.pushGitAfter\(/.test(src),
+            'the sprint branch push must live ONLY in phases/publish-pr.mjs after apra-fleet-3swo.6.9 -- a duplicate left behind in runner.js would let the two drift apart with both pins green',
         );
     });
 });
@@ -295,8 +315,14 @@ describe('apra-fleet-3swo.4.2: falsification -- the scan detects a reverted (bar
         );
     });
 
-    test('mutating the real runner.js Publish-PR G-push back to a bare DoltSync.syncBefore() call is flagged (prior false negative)', () => {
-        const cleanSrc = fs.readFileSync(guardedModulePath('runner.js'), 'utf8');
+    // apra-fleet-3swo.6.9: the Publish PR phase (and the sprint branch G-push)
+    // moved to fleet-sprint/phases/publish-pr.mjs, so this mutation runs
+    // against THAT module's real source now -- the same re-anchoring, and for
+    // the same reason, as the Final Review one above.
+    test('mutating the real phases/publish-pr.mjs Publish-PR G-push back to a bare DoltSync.syncBefore() call is flagged (prior false negative)', () => {
+        const cleanSrc = fs.readFileSync(guardedModulePath('phases/publish-pr.mjs'), 'utf8');
+        assert.deepEqual(findUnbracketedPushViolations(cleanSrc, 'publish-pr.mjs'), [], 'sanity: the real, unmutated source must be clean');
+
         const sanctioned = "await gitSync.pushGitAfter(publishGitMember, { remote: 'origin', setUpstream: true });";
         assert.ok(cleanSrc.includes(sanctioned), 'the Publish-PR G-push call text must still match this pin -- re-anchor if it drifted');
 
@@ -306,7 +332,7 @@ describe('apra-fleet-3swo.4.2: falsification -- the scan detects a reverted (bar
         );
         assert.notEqual(mutated, cleanSrc, 'the replacement must actually have changed the source');
 
-        const violations = findUnbracketedPushViolations(mutated, 'runner.js');
+        const violations = findUnbracketedPushViolations(mutated, 'publish-pr.mjs');
         assert.ok(
             violations.some((v) => v.includes('bare DoltSync.syncBefore() call site')),
             `expected the reverted Publish-PR site to be flagged as a bare DoltSync.syncBefore() call, got: ${JSON.stringify(violations, null, 2)}`,

@@ -180,6 +180,31 @@ export const GUARDED_MODULES = [
     // covering that push instead of silently losing it.
     'phases/final-review.mjs',
     'phases/regression-test.mjs',
+    // apra-fleet-3swo.6.9: the LAST two phase modules -- Harvest and Publish
+    // PR -- which complete the runSprintCycle slice. Same nested-entry
+    // reporting caveat as the ten above (they are always REPORTED as
+    // 'harvest.mjs' and 'publish-pr.mjs'), so the same rule applies: compare a
+    // guard's `files` output against guardedModuleBasenames().
+    //
+    // harvest.mjs took NO member_name-bearing command() call site out of
+    // runner.js -- the docs/changelog/sprint-analysis commits are made by the
+    // DISPATCHED harvester inside its own repo and published by the 'harvester'
+    // policy row's pushCode/pushBeads bracket -- but it took ONE dispatchRole()
+    // site (the harvester ladder), which is what dispatch-safety-guard and the
+    // phase 3 dispatch census read.
+    //
+    // publish-pr.mjs is the opposite shape and the more urgent of the two to
+    // register: it took TWO member_name-bearing command() call sites out of
+    // runner.js (the `git remote get-url origin` capability probe on the
+    // git-capable publish member, and the per-target-issue `bd close` on the
+    // orchestrator for a remote that can never open a PR) and NO dispatchRole
+    // site, AND it owns the sprint branch's own push --
+    // gitSync.pushGitAfter(), the bracketed entry point apra-fleet-3swo.4.1
+    // put that push behind. Registering it here is what keeps
+    // unbracketed-push-guard covering that push instead of silently losing the
+    // one site the guard exists for.
+    'phases/harvest.mjs',
+    'phases/publish-pr.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left

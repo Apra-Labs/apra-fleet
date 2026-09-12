@@ -351,7 +351,19 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // collapsed in the move. Not left unguarded: both new modules are registered
 // in GUARDED_MODULES, so the aggregate checkModules(guardedModulePaths()) test
 // below scans them, and each gets its own explicit baseline count below.
-const EXPECTED_COMMAND_COUNT = 15;
+// 15 -> 13 (apra-fleet-3swo.6.9): the LAST two phase() boundaries, Harvest and
+// Publish PR, were sliced out of runSprintCycle, completing the slice. Harvest
+// took NO command() site (its docs/changelog/sprint-analysis commits are made
+// by the DISPATCHED harvester inside its own repo, and its pushes are the
+// 'harvester' policy row's pushCode/pushBeads bracket) and Publish PR took
+// exactly TWO -- the `git remote get-url origin` PR-capability probe on the
+// git-capable publish member, and the per-target-issue `bd close` the
+// non-hosted-remote path runs on the orchestrator -- so this is -2, which is
+// exactly 15 - 13; no site was added, removed or collapsed in the move. Not
+// left unguarded: both new modules are registered in GUARDED_MODULES, so the
+// aggregate checkModules(guardedModulePaths()) test below scans them, and each
+// gets its own explicit baseline count below.
+const EXPECTED_COMMAND_COUNT = 13;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -839,6 +851,81 @@ test('every command() call site in phases/regression-test.mjs passes member_name
         sites.filter((s) => s.fnName === 'agent').length,
         0,
         'phases/regression-test.mjs must never dispatch an agent() directly -- the regression-test-runner ladder runs through the dispatchRole engine.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-3swo.6.9: the Harvest and Publish PR phase() boundaries -- the
+// last two, which complete the runSprintCycle slice. Unlike every pair before
+// them these two get DIFFERENT baselines, and the difference is the point.
+//
+// phases/harvest.mjs is a zero baseline: it issues no command() at all. The
+// docs/CHANGELOG/sprint-analysis commits it exists to produce are made by the
+// DISPATCHED harvester inside its own repo, and they reach the remote through
+// the 'harvester' policy row's pushCode/pushBeads bracket -- never through an
+// orchestrator-side command() here. A command() appearing in this module would
+// mean the orchestrator had started committing or pushing the harvest itself.
+//
+// phases/publish-pr.mjs is the opposite: it is the ONE phase module that took
+// real member_name-bearing command() sites out of runner.js, and both are
+// member-sensitive in a way a zero baseline could never express. The
+// `git remote get-url origin` probe MUST run on the git-capable publish member
+// (a member with an actual checkout), while the per-target-issue `bd close`
+// MUST run on the orchestrator; a future edit that collapses them onto one
+// member, or adds a third site, has to move this number and re-confirm both.
+// Its agent() baseline is zero for a different reason than the phases above:
+// it dispatches no role at all -- the PR is raised over REST by
+// raiseVcsPrForMember, not by an agent.
+// =============================================================================
+const HARVEST_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/harvest.mjs');
+const EXPECTED_HARVEST_PHASE_COMMAND_COUNT = 0;
+
+const PUBLISH_PR_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/publish-pr.mjs');
+const EXPECTED_PUBLISH_PR_PHASE_COMMAND_COUNT = 2;
+
+test('every command() call site in phases/harvest.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(HARVEST_PHASE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_HARVEST_PHASE_COMMAND_COUNT,
+        `Expected ${EXPECTED_HARVEST_PHASE_COMMAND_COUNT} command() call site(s) in phases/harvest.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_HARVEST_PHASE_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'phases/harvest.mjs must never dispatch an agent() directly -- the harvester ladder runs through the dispatchRole engine.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+test('every command() call site in phases/publish-pr.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(PUBLISH_PR_PHASE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_PUBLISH_PR_PHASE_COMMAND_COUNT,
+        `Expected ${EXPECTED_PUBLISH_PR_PHASE_COMMAND_COUNT} command() call site(s) in phases/publish-pr.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_PUBLISH_PR_PHASE_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'phases/publish-pr.mjs must never dispatch an agent() directly -- it raises the PR over REST (raiseVcsPrForMember), not by dispatching a role.'
     );
     assert.deepStrictEqual(
         violations,

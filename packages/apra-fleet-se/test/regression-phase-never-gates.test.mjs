@@ -10,8 +10,10 @@ const runnerSource = fs.readFileSync(RUNNER_PATH, 'utf8');
 // apra-fleet-3swo.6.6 sliced BOTH phases out of runner.js into
 // fleet-sprint/phases/. What stayed behind is exactly what this file's ordering
 // pins need: the "6b. Regression Test" banner, the probeFileExists() that
-// produces hasRegressionPlaybook, the two phase CALL SITES and the Harvest
-// phase() below them. So the ordering below is still read out of runner.js --
+// produces hasRegressionPlaybook, and the two phase CALL SITES. (Harvest was
+// the third landmark until apra-fleet-3swo.6.9 sliced it too, so the Harvest
+// anchor below is now its CALL SITE rather than its phase() literal.) So the
+// ordering below is still read out of runner.js --
 // it is a composition-order fact and runner.js is the composition root -- while
 // the phase-body assertions are re-anchored onto the module that now owns the
 // body. Scanning runner.js alone for the body would have gone quietly vacuous.
@@ -67,7 +69,14 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
     // it having run first; moving the regression phase above this line is a
     // reference error, not merely a reordered comment.
     const finalVerdictIdx = runnerSource.indexOf('const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount } = await runFinalReviewPhase({');
-    const harvestIdx = runnerSource.indexOf('phase(`Harvest C${finalCycleLabel}`)');
+    // apra-fleet-3swo.6.9: Harvest moved into phases/harvest.mjs, taking its
+    // phase(`Harvest C...`) literal with it, so the old runner.js anchor no
+    // longer resolves. Re-anchored onto the Harvest CALL SITE -- the same
+    // re-anchoring, and the same strengthening, as the Final Review one above:
+    // this is the statement that actually RUNS the harvest, so an ordering
+    // assertion against it speaks about execution order rather than about
+    // where a comment happens to sit.
+    const harvestIdx = runnerSource.indexOf('await runHarvestPhase({');
 
     test('the phase exists and is anchored by its banner comment', () => {
         assert.ok(
@@ -122,7 +131,7 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
     });
 
     test('runs BEFORE Harvest, so its summary can fold into the analysis doc', () => {
-        assert.ok(harvestIdx > 0, 'expected the Harvest phase call');
+        assert.ok(harvestIdx > 0, 'expected the Harvest phase call site -- re-anchor this pin if the call drifted, never delete it');
         assert.ok(
             regressionPhaseIdx < harvestIdx,
             'the Regression Test phase MUST come before Harvest -- buildAnalysisText() renders regressionResult into the sprint analysis document the harvester writes',
