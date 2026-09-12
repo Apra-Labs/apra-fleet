@@ -521,6 +521,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
   }
 
+  // apra-fleet-3swo.42: normalise `fork` ONCE, here, before any predicate is
+  // derived from it. Previously `forkRequested` (below) checked
+  // input.fork.length > 0 (untrimmed) while `explicitForkId` (further down)
+  // checked input.fork.trim().length > 0 -- for a whitespace-only fork id the
+  // two disagreed (forkRequested true, explicitForkId undefined), which
+  // silently routed a caller's explicit-but-invalid fork id into the
+  // fork===true best-effort path and could hand back a plain FRESH session
+  // with no error. Both forkRequested and explicitForkId are now derived from
+  // this single normalised value, so an all-whitespace or empty string can
+  // never disagree with itself. Trimming a boolean/undefined value is a
+  // no-op -- the ternary passes it through unchanged.
+  const forkArg = typeof input.fork === 'string' ? input.fork.trim() : input.fork;
   // fork/resume mutual-exclusivity guard (apra-fleet-lmtg.4): fork branches a
   // NEW session from an existing one, resume continues IN PLACE -- the two
   // are semantically incompatible, so a call requesting both is rejected here,
@@ -531,7 +543,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // other than the schema default `true` (i.e. `false`, or an explicit
   // session-id string) -- default-true resume is left alone since fork mode
   // resolution (next task) supersedes it.
-  const forkRequested = input.fork === true || (typeof input.fork === 'string' && input.fork.length > 0);
+  // Deliberately NOT `forkArg.length > 0`: any STRING value of fork (including
+  // '' and whitespace-only, once trimmed to '') is a fork REQUEST -- just one
+  // whose explicit id turns out to be invalid (see explicitForkId below),
+  // rejected with a terminal session_not_found rather than silently treated
+  // as "no fork requested at all".
+  const forkRequested = forkArg === true || typeof forkArg === 'string';
   if (forkRequested) {
     if (input.session_id !== undefined) {
       return 'error: execute_prompt cannot set both "fork" and "session_id" -- session_id is resume shorthand, and fork branches a new session instead of resuming. Specify only one.';
@@ -909,9 +926,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // DEFAULT (true), so fork must SUPERSEDE that default resume here: a fork
   // request forces resuming off so the dispatch mints a fresh distinct output
   // session id instead of continuing the stored one in place.
-  const explicitForkId = (typeof input.fork === 'string' && input.fork.trim().length > 0)
-    ? input.fork.trim()
-    : undefined;
+  // apra-fleet-3swo.42: derived from the SAME normalised forkArg the top-of-
+  // function mutual-exclusivity guard computed forkRequested from (no second,
+  // independently-trimmed copy of the rule). Deliberately NOT gated on
+  // `.length > 0`: an explicit fork string that trims to '' (fork: '' or
+  // fork: '   ') must still be an EXPLICIT id -- just an invalid one -- so it
+  // takes the explicit-id branch below (terminal session_not_found, no LLM
+  // call) instead of being mistaken for the fork===true best-effort path.
+  const explicitForkId = typeof forkArg === 'string' ? forkArg : undefined;
   // forkRequested is already computed at the top of executePrompt for the
   // fork/resume mutual-exclusivity guard (apra-fleet-lmtg.4) -- reuse it here.
   const resumeRequested = (input.resume === true || explicitResumeId !== undefined) && !forkRequested;
