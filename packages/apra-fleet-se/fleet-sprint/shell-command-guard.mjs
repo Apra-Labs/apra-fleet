@@ -38,8 +38,15 @@ import path from 'path';
 //      survives into the emitted text -- one inside a '...'/"..." string, or
 //      written `\${...}` inside a template -- is a violation.
 //   2. Backticks used as JS template-literal delimiters. Only an ESCAPED
-//      backtick (a literal backtick in the emitted string), or a backtick
-//      inside a '...'/"..." JS string, is a violation.
+//      backtick (`\`` -- a literal backtick surviving into the emitted
+//      string) is a violation. An UNescaped backtick inside a '...'/"..."
+//      JS string is DELIBERATELY NOT flagged, even though it sits inside a
+//      quoted string -- it is overwhelmingly a markdown code span in
+//      agent-prompt prose (runner.js has ~24 of them) or a JS fence-builder,
+//      not a dispatched shell substitution, so flagging those would make
+//      this guard pure noise. A reader should take away that a backtick-
+//      wrapped substitution written inside ordinary '...'/"..." quotes in a
+//      member-bound command string is UNGUARDED by this rule.
 //   3. Secure token references. execute_command replaces each secure.NAME
 //      token with a value that has ALREADY been quoted for the target
 //      member's shell (escapePowerShellArg for windows members,

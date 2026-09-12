@@ -233,6 +233,43 @@ test('carve-out: an allow directive with NO reason is itself reported, so suppre
     assert.match(violations[0].reason, /no reason text/);
 });
 
+// -----------------------------------------------------------------------------
+// apra-fleet-3swo.39 -- pins the escaped-backtick-only semantics documented in
+// this guard's header (WHAT IS DELIBERATELY NOT FLAGGED, item 2) against the
+// four cases measured while reconciling that header with the scan loop below.
+// SYNTHESIZED source strings only, never a real dispatch site, so this test
+// stays valid regardless of the current shape of the tree. The header used to
+// claim that a backtick inside a '...'/"..." JS string was ALSO a violation;
+// it is not -- only an escaped backtick (one that survives into the emitted
+// command string) is. This bead is docs-only: it must not change what
+// findShellCommandViolations flags, only confirm the existing behaviour.
+// -----------------------------------------------------------------------------
+test('backtick semantics: only an escaped backtick is flagged, an unescaped one inside a quoted JS string is not (apra-fleet-3swo.39)', () => {
+    // (1) A backtick inside a SINGLE-quoted JS string -- e.g. prose describing
+    // a `code span` -- is deliberately not flagged.
+    const singleQuoted = findShellCommandViolations("const msg = 'wrap it in `backticks` for the reader';");
+    assert.deepEqual(singleQuoted, [], JSON.stringify(singleQuoted));
+
+    // (2) A backtick inside a DOUBLE-quoted JS string is likewise not flagged.
+    const doubleQuoted = findShellCommandViolations('const msg = "wrap it in `backticks` for the reader";');
+    assert.deepEqual(doubleQuoted, [], JSON.stringify(doubleQuoted));
+
+    // (3) An ESCAPED backtick inside a template literal -- the deliberate
+    // "emit a literal backtick into this command string" spelling -- is
+    // exactly the construct this rule exists to catch: exactly 1 violation.
+    const escapedInTemplate = findShellCommandViolations('await command(`echo \\`hostname\\``, { member_name: m });');
+    assert.equal(escapedInTemplate.length, 1, JSON.stringify(escapedInTemplate));
+    assert.match(escapedInTemplate[0].reason, /backtick command substitution/);
+
+    // (4) Control case: a bare $HOME expansion inside a single-quoted string
+    // still yields exactly 1 violation -- proves the scanner actually ran
+    // over this source rather than returning empty for an unrelated reason
+    // (e.g. a carve-out swallowing the whole line).
+    const control = findShellCommandViolations("await command('echo $HOME', { member_name: m });");
+    assert.equal(control.length, 1, JSON.stringify(control));
+    assert.match(control[0].reason, /bare shell variable expansion/);
+});
+
 test('findLineViolations reports a column for each construct on the line', () => {
     const found = findLineViolations('await command(\'cp ~/a "$HOME/b"\', { member_name: m });');
     assert.equal(found.length, 2, JSON.stringify(found));
