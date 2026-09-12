@@ -310,6 +310,11 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     ].join('; ');
   }
 
+  gitCredentialHelperRemoveLegacyFile(): string {
+    // File only -- deliberately no `git config --unset-all`.
+    return `Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue`;
+  }
+
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
     const credFileName = label ? `.fleet-git-credential-${escapeWindowsArg(label).replace(/'/g, "''")}` : '.fleet-git-credential';
