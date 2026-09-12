@@ -1,11 +1,41 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "d5667b95dbcd2a60051df676ea23fbebf4e13be2",
+    "commit": "6774b5958e71c0498e89c370c60414696fca913d",
     "branch": "feat/runner-refactor-standalone",
-    "entry_count": 119
+    "entry_count": 158
   },
   "entries": [
+    {
+      "id": "02a64b6a-8534-4f28-9583-f238ae86a92a",
+      "type": "knowledge",
+      "title": "scaledTimeout() is inert under apra-fleet-se npm test, because only run-tests.mjs exports the concurrency var",
+      "summary": "test/helpers/scaled-timeout.mjs reads APRA_FLEET_TEST_CONCURRENCY, which is set only by scripts/run-tests.mjs; the package.json test script passes --test-concurrency=8 without it, so every scaledTimeout caller runs on its unscaled base budget under the suite that actually has contention.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/scaled-timeout.mjs",
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/test/supervisor-dashboard-no-live-spawn-guard-integrity.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T00:23:27.426Z"
+    },
+    {
+      "id": "0549bd7e-bd05-4fa5-8323-3ddb80ccb8dd",
+      "type": "learning",
+      "title": "serve-wiring-integration.test.mjs times out under full npm test concurrency but passes in isolation",
+      "summary": "test/serve-wiring-integration.test.mjs spawns a real bin/serve.mjs subprocess and waits for its dashboard to render; under the full `npm test` run (test-concurrency=8, ~700 files), its 'GET / returns 200' and outer describe both timed out around 90-92s, but running the file alone passed in 3.7s -- a resource-contention flake, not a functional regression.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/serve-wiring-integration.test.mjs",
+        "packages/apra-fleet-se/src/supervisor/api.mjs",
+        "packages/apra-fleet-se/src/supervisor/dashboard.mjs",
+        "packages/apra-fleet-se/bin/serve.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T00:23:27.430Z"
+    },
     {
       "id": "07003cb6-580b-41de-be4a-8827d7dcf240",
       "type": "learning",
@@ -332,6 +362,41 @@
       "updated_at": "2026-09-08T08:45:09.646Z"
     },
     {
+      "id": "1c4d6528-ced2-49d3-a737-84705e230f40",
+      "type": "learning",
+      "title": "A nested `node --test` child inside the apra-fleet-se suite must cap its own --test-concurrency",
+      "summary": "package.json runs the suite at --test-concurrency=8, so any test file that spawns a nested node --test child at the same concurrency doubles peak parallelism and makes wall-clock-budget tests in unrelated files fail intermittently.",
+      "symbols": [
+        "runNestedSuite",
+        "NESTED_TEST_CONCURRENCY",
+        "DEFAULT_NESTED_TEST_CONCURRENCY"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs",
+        "packages/apra-fleet-se/test/supervisor-dashboard-backlog-no-live-spawn.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T20:18:25.873Z"
+    },
+    {
+      "id": "1c618534-7ebc-47e7-a51f-940933aa0269",
+      "type": "learning",
+      "title": "Migrating a ladder onto dispatchRole reddens a predictable set of runner.js-only source censuses, several of which must be RETIRED rather than count-bumped",
+      "summary": "Six guard files hard-count agent() sites or withGitSync brackets in runner.js. The first migrations only need the counts lowered; the last ones drive the counts to zero and the census must be re-anchored onto the policy table plus a real engine run.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs",
+        "packages/apra-fleet-se/test/dispatch-sync-bracket-coverage.test.mjs",
+        "packages/apra-fleet-se/test/dolt-sync-brackets.test.mjs",
+        "packages/apra-fleet-se/test/git-sync-brackets.test.mjs",
+        "packages/apra-fleet-se/test/role-policies-table.test.mjs",
+        "packages/apra-fleet-se/test/regression-phase-never-gates.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T11:06:51.953Z"
+    },
+    {
       "id": "1c9329b6-dadf-439f-afc7-4e96c1cc8341",
       "type": "runbook",
       "title": "A behaviour change invalidates a bd replay fixture even when the test text is untouched",
@@ -419,6 +484,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-09T23:26:48.881Z"
+    },
+    {
+      "id": "223d121a-eb05-4189-ac68-ca9cff0603b1",
+      "type": "knowledge",
+      "title": "The VCS stderr pattern-table census no longer covers the file that owns the classifier",
+      "summary": "vcs-nongithub-auth-selfheal.test.mjs scans only runner.js for a re-declared GIT_/DOLT_ pattern table, but classifyGitFailure now lives in git-topology.mjs, which nothing scans.",
+      "symbols": [
+        "classifyGitFailure",
+        "GIT_AUTH_PATTERNS",
+        "GIT_TRANSIENT_PATTERNS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/vcs-nongithub-auth-selfheal.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-topology.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T04:53:41.689Z"
     },
     {
       "id": "22e52be3-d44c-4c71-ae51-9f25a498af40",
@@ -554,6 +638,26 @@
       "updated_at": "2026-09-08T03:19:52.245Z"
     },
     {
+      "id": "35824bc9-2233-4676-8a5b-119adaac3c7f",
+      "type": "knowledge",
+      "title": "A sprint-state hoist test must assert constructions AND resolutions, because creating the state alone keeps the construction count at 1",
+      "summary": "Counting only 'at most one fleet client construction per sprint' passes vacuously when resolveSettleShell is reverted to per-call construction, because createSprintState still builds and logs its own client; the resolution-count half is what actually catches a bypass.",
+      "symbols": [
+        "createSprintState",
+        "sprintScopedFleetApi",
+        "resolveSettleShellWith",
+        "resolveSettleShell"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/sprint-state.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/sprint-state.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-sprint-state-client-hoist.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T20:46:31.326Z"
+    },
+    {
       "id": "36f2b30b-4379-4cbc-970d-db0ae39ee7f5",
       "type": "knowledge",
       "title": "The KB scope selector is kbScope(remoteUrl), not scopeOf(repoPath) as bead texts claim",
@@ -571,6 +675,47 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-08T09:28:31.785Z"
+    },
+    {
+      "id": "381be098-5009-48fa-8ed3-10f9e289714a",
+      "type": "knowledge",
+      "title": "The dispatchRole engine must spell agent( and ctx.withGitSync( literally or the guards lose it",
+      "summary": "dispatch-role.mjs destructures agent from ctx so the guards' call-site regexes still match its one dispatch, while the bracket and watchdog stay ctx-qualified and are asserted by regex instead.",
+      "symbols": [
+        "dispatchRole",
+        "findCallSites",
+        "DISPATCH_LADDER_MODULES",
+        "GUARDED_MODULES"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-safety-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/inline-ladder-guard.mjs",
+        "packages/apra-fleet-se/test/helpers/dispatch-pin-scanner.mjs",
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T11:06:51.969Z"
+    },
+    {
+      "id": "3d686160-3f60-4856-b381-71282d660c35",
+      "type": "knowledge",
+      "title": "A regionBetween() anchor pair silently widens when the END anchor moves into a later module of the concatenated scan set",
+      "summary": "execution-role-dispatch-pins builds SRC by concatenating DISPATCH_LADDER_MODULES in order, so moving an end anchor into a phases/* module stretches a one-line region across every module in between -- and the test stays GREEN while measuring almost nothing.",
+      "symbols": [
+        "regionBetween",
+        "moduleSetSourceWithOffsets",
+        "DISPATCH_LADDER_MODULES",
+        "runDeployPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/execution-role-dispatch-pins.test.mjs",
+        "packages/apra-fleet-se/test/helpers/dispatch-pin-scanner.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/deploy.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-11T23:00:51.716Z"
     },
     {
       "id": "41e88d84-a9de-4d5b-aafa-1ee96089a6f9",
@@ -642,6 +787,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.001Z"
+    },
+    {
+      "id": "46c98822-0456-4942-9745-6c95e2e6984b",
+      "type": "learning",
+      "title": "A single unpaired apostrophe in an objectLiteralFor comment is enough to swallow the real closing brace via later string quotes",
+      "summary": "Reverting objectLiteralFor's comment-skip branches turns one stray apostrophe in a `//` or `/* */` comment into a phantom string-open; skipStringLiteral then chains through every subsequent quote character in the file (each closing quote is misread as a new opening quote), consuming the literal's real closing brace along the way and returning null instead of a truncated string.",
+      "symbols": [
+        "objectLiteralFor",
+        "skipStringLiteral"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/dispatch-pin-scanner.mjs",
+        "packages/apra-fleet-se/test/helpers/balanced-call-scanner.mjs",
+        "packages/apra-fleet-se/test/dispatch-pin-scanner-comments.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T04:18:37.941Z"
     },
     {
       "id": "47853939-c3d6-4e79-9c7b-073a4d26976b",
@@ -775,6 +937,20 @@
       "updated_at": "2026-09-07T16:36:39.138Z"
     },
     {
+      "id": "5a544919-d491-41af-8871-a935884b15fa",
+      "type": "runbook",
+      "title": "Falsify a phases/* slice by set-diffing against the pre-commit runner.js in both directions",
+      "summary": "Extract the regions from `git show HEAD:<runner.js>` rather than the diff's minus-lines, normalise whitespace and sort, then run comm both ways: one direction proves nothing was dropped, the other proves nothing but scaffolding was added.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/integ-test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/re-review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-11T23:22:47.052Z"
+    },
+    {
       "id": "5ba01ca7-8c09-4e2c-ae3d-26d914e87acf",
       "type": "learning",
       "title": "guarded-modules.mjs's GUARDED_MODULES baseline is hard-asserted to ['runner.js'] by four tests",
@@ -807,6 +983,27 @@
       "updated_at": "2026-09-08T00:08:13.314Z"
     },
     {
+      "id": "5e0c2cfc-48af-4be2-b4e5-63af3f35366d",
+      "type": "knowledge",
+      "title": "A migrated role's ladderAnchor deliberately matches ZERO agent() sites, so the inline-ladder guard's zero must be falsified per role",
+      "summary": "Once a role is marked migrated the anchor assertion inverts: matching no call site is the expected state, which means checkModules()'s zero says nothing on its own and has to be proven falsifiable by seeding a ladder for every role migratedRoleNames() returns.",
+      "symbols": [
+        "findInlineLadderViolations",
+        "checkModules",
+        "memberExprFor",
+        "migratedRoleNames",
+        "ladderAnchor"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/inline-ladder-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/inline-ladder-guard.test.mjs",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T19:39:14.451Z"
+    },
+    {
       "id": "5e1d195c-cd15-41d8-9691-4b2636852be4",
       "type": "knowledge",
       "title": "kill-port.mjs owns the playbook's bounded-retry port-guard semantics, so playbook guards are one-liners",
@@ -818,6 +1015,43 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.162Z"
+    },
+    {
+      "id": "6028ae10-305b-44a9-a730-c7c9e08cb862",
+      "type": "runbook",
+      "title": "Check a fleet-sprint extraction facade against the pre-move commit export surface",
+      "summary": "Grep the parent commit's runner.js for exported symbols in the moved region to prove the re-export list is complete, rather than eyeballing the new module's exports.",
+      "symbols": [
+        "kbScope",
+        "createKbWorkClient",
+        "vetKbWork"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/kb-extraction-facade.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T04:18:37.970Z"
+    },
+    {
+      "id": "6119b864-fd70-4a02-be28-0fbd99e11e05",
+      "type": "learning",
+      "title": "resolveGitProviderForClassification must gain an export keyword in any git-topology slice",
+      "summary": "It is module-private in runner.js but is called by the syncMember* brackets that stay behind, so extracting the classifier layer forces it across the module boundary even though runner.js must not re-export it.",
+      "symbols": [
+        "resolveGitProviderForClassification",
+        "syncMemberBefore",
+        "syncMemberAfter",
+        "classifyFailure",
+        "toGitVerdict"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T02:50:37.929Z"
     },
     {
       "id": "6241ee4c-ceb3-4b58-b1b4-015a0d8d8ec1",
@@ -898,6 +1132,20 @@
       "updated_at": "2026-09-07T22:40:14.331Z"
     },
     {
+      "id": "6afb626d-aaa5-4554-9ea2-970ae0f7401a",
+      "type": "knowledge",
+      "title": "Moving a phase body into a module loses in-flight reassignments on the throw path, and runSprintCycle is what makes that safe",
+      "summary": "A phase module that reassigns params and returns them keeps success-path semantics exactly, but drops partial assignments if it throws mid-phase; that is unobservable only because no try/catch sits between the phase call sites and the Cycle Evaluation reads.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/deploy.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-11T23:22:47.056Z"
+    },
+    {
       "id": "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e",
       "type": "knowledge",
       "title": "kill-port netstat parsing depends on the colon-anchored port suffix",
@@ -935,6 +1183,25 @@
       "updated_at": "2026-09-07T20:03:09.682Z"
     },
     {
+      "id": "6cf10022-0100-4e7f-ae72-7c8413506bff",
+      "type": "learning",
+      "title": "runner.js sometimes stacks JSDoc blocks in reverse order, detached from their function several hundred lines away",
+      "summary": "Before apra-fleet-3swo.6.11, the JSDoc comments for kbPromotionBlock and kbKnowledgeBlock physically preceded KB_SELF_INJECTING_ROLES's own doc and definition, while the actual kbPromotionBlock/kbKnowledgeBlock function bodies sat 60-100 lines further down with no doc immediately above them. A doc block ending right before another doc block (no code in between) is the tell that it belongs to a function defined later, not the next declaration.",
+      "symbols": [
+        "kbPromotionBlock",
+        "kbKnowledgeBlock",
+        "KB_SELF_INJECTING_ROLES",
+        "kbQueryTerms",
+        "dispatchReview"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T04:18:37.947Z"
+    },
+    {
       "id": "6da788b6-8436-40ef-af6c-1a74768044c4",
       "type": "knowledge",
       "title": "The smoke test's supervisor uptime bound is enforced in Test scenario step 4, not in Teardown",
@@ -965,6 +1232,20 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-10T00:05:18.085Z"
+    },
+    {
+      "id": "7386a70c-cb1f-4a28-8efa-694468916516",
+      "type": "knowledge",
+      "title": "renderDegradeNote throws on a missing template, so degrade.classes and degrade.noteTemplates must move together",
+      "summary": "Adding an error class to a row without adding its note template turns a survivable degrade into an uncaught throw out of dispatchRole; the only thing preventing it is one test.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/role-policies-table.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T04:53:41.682Z"
     },
     {
       "id": "73dc2e09-eff7-4cdb-bec0-54e9403da198",
@@ -1023,6 +1304,24 @@
       "updated_at": "2026-09-08T02:23:21.230Z"
     },
     {
+      "id": "75530e87-3cee-4398-8529-b5339304dfe9",
+      "type": "knowledge",
+      "title": "The engine-derived retry.attempts check in role-policies-table is self-referential",
+      "summary": "role-policies-table.test.mjs feeds the engine retry.attempts+1 failures and then asserts the engine made retry.attempts dispatches, so mutating the shipped value cannot fail that file; the execution pin file is what guards the value.",
+      "symbols": [
+        "ROLE_POLICIES",
+        "policyFor"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/role-policies-table.test.mjs",
+        "packages/apra-fleet-se/test/execution-role-dispatch-pins.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T20:18:25.878Z"
+    },
+    {
       "id": "7bb754ec-5d81-4841-b1d2-f029556908b2",
       "type": "knowledge",
       "title": "role-policies.mjs's secondary() dispatch inherits its main dispatch's member field unless explicitly overridden",
@@ -1054,6 +1353,43 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.281Z"
+    },
+    {
+      "id": "7ce5f8d8-62e0-45c5-93fd-7651f83ac05a",
+      "type": "knowledge",
+      "title": "dispatchRole resolves a dispatch's options INSIDE the git-sync bracket, and opts.prepare is why",
+      "summary": "The engine builds agent() options inside invoke(), i.e. inside withGitSync, because an in-bracket pre-dispatch step can change what the dispatch should say -- the doer's claim narrows its streak after the bracket's D-pull, and the prompt, label and per-bead tier all follow.",
+      "symbols": [
+        "dispatchRole",
+        "runDispatch",
+        "PRE_DISPATCH_STEPS_IN_BRACKET"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T11:06:51.965Z"
+    },
+    {
+      "id": "7ef53a40-ea43-4ac1-97e7-00c301f91f09",
+      "type": "knowledge",
+      "title": "Phase 3 gate caps nested test concurrency and sandboxes each child's TMPDIR",
+      "summary": "runNestedSuite in the Phase 3 completeness gate now sets --test-concurrency centrally (default 2) and points each child's TMPDIR/TMP/TEMP at a sandbox it deletes, so the gate no longer doubles peak parallelism nor leaks temp files.",
+      "symbols": [
+        "runNestedSuite",
+        "nestedChildEnv",
+        "resolveNestedTestConcurrency",
+        "NESTED_SANDBOX_RUNS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs",
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/test/supervisor-dashboard-backlog-no-live-spawn.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T20:46:31.329Z"
     },
     {
       "id": "7fe61086-2df7-44bf-9d40-a16d6081c1f5",
@@ -1102,6 +1438,46 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.329Z"
+    },
+    {
+      "id": "8565a0b9-8fe7-4462-8d88-ce54216c3604",
+      "type": "knowledge",
+      "title": "runSprintCycle now hosts zero inline phase bodies, and that is mechanically pinned rather than described",
+      "summary": "After the final slice, runner.js builds no phase() label at all; phase-sequence-order.test.mjs asserts a zero-match shape scan over runner.js with a >=12 count across phases/* as its non-vacuity control.",
+      "symbols": [
+        "runSprintCycle",
+        "runHarvestPhase",
+        "runPublishPrPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase-sequence-order.test.mjs",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/publish-pr.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T01:09:30.255Z"
+    },
+    {
+      "id": "86702e9e-99bd-4b08-8c83-03041f57f792",
+      "type": "learning",
+      "title": "objectLiteralFor's brace walk was comment-blind, so extractions near FIXED_ROLE_TIER silently broke model-tier pins",
+      "summary": "test/helpers/dispatch-pin-scanner.mjs's objectLiteralFor skipped string literals but not comments, so an apostrophe in a comment opened a phantom string and desynced the walk; it was green only by luck until a runner.js extraction flipped it to null.",
+      "symbols": [
+        "objectLiteralFor",
+        "objectEntries",
+        "maskComments",
+        "FIXED_ROLE_TIER",
+        "findFunctionBodyRange"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/dispatch-pin-scanner.mjs",
+        "packages/apra-fleet-se/test/execution-role-dispatch-pins.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/unbracketed-push-guard.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T03:56:53.345Z"
     },
     {
       "id": "86ea49c4-49a3-4b4a-b98a-a9d430a58db7",
@@ -1172,6 +1548,26 @@
       "updated_at": "2026-09-08T02:23:21.237Z"
     },
     {
+      "id": "8a5f47ee-5ea8-402a-afc9-db1652b23e3a",
+      "type": "knowledge",
+      "title": "ctx.policies is the seam that makes 'this variance is a policy field, not an engine branch' falsifiable",
+      "summary": "dispatchRole reads its row through ctx.policies when supplied, so a test can splice ONE field of ONE row and observe the engine behave differently; without it the claim that a variance is data rather than a branch cannot be tested at all.",
+      "symbols": [
+        "dispatchRole",
+        "policyFor",
+        "splicePolicy",
+        "createRecordingCtx"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/role-policies-table.test.mjs",
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T11:06:51.961Z"
+    },
+    {
       "id": "8fdf21fa-e64c-43d2-a22a-edfd21bd6791",
       "type": "knowledge",
       "title": "Four distinct git-credential-helper file shapes exist across member OS/shell combinations",
@@ -1214,6 +1610,38 @@
       "updated_at": "2026-09-07T16:36:39.376Z"
     },
     {
+      "id": "949f2ef9-dd96-467b-8e46-c2d71180ceed",
+      "type": "learning",
+      "title": "The mock-sprint and golden suites leak temp files, so 'no artifacts outside the sandbox' cannot be shown by running them",
+      "summary": "One full mock-sprint pass leaves exactly 10 fleet-sprint-body-*.txt files in the system temp dir and the golden 3-bead suite leaves one sprint-lock entry, independently of any gate that spawns them; npm test already does this twice today.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs",
+        "packages/apra-fleet-se/test/golden-transcript-3bead.test.mjs",
+        "packages/apra-fleet-se/test/newtask-body-file-roundtrip.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T19:39:14.455Z"
+    },
+    {
+      "id": "94caf82b-80d2-43ee-a557-17cd70be8272",
+      "type": "learning",
+      "title": "Slicing Integ Test and Re-Review breaks exactly four test baselines, and the Review-C substring pin is the subtle one",
+      "summary": "The failing set is dispatch-safety-guard's command count, guarded-modules-coverage's not-registered control, beads-transitions-extraction's reopen census and phase-sequence-order's label ownership; golden transcripts and mock-sprint files do NOT break on a true move-only slice.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
+        "packages/apra-fleet-se/test/beads-transitions-extraction.test.mjs",
+        "packages/apra-fleet-se/test/phase-sequence-order.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/integ-test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/re-review.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-11T23:22:47.047Z"
+    },
+    {
       "id": "96a63862-eb7a-43f3-8352-4cd686412d43",
       "type": "knowledge",
       "title": "gitRepos is an access list; only a single URL-shaped entry is a usable origin",
@@ -1230,6 +1658,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.404Z"
+    },
+    {
+      "id": "98bf5458-fa66-4142-ba56-8c7bb3e5ed64",
+      "type": "learning",
+      "title": "The doer needed three engine capabilities no other ladder did, and a spent resume ladder must be terminal",
+      "summary": "A naive migration of the doer silently changes behaviour in two ways: it re-dispatches a full streak after the escalating resume ladder is spent, and it repeats the D-pulling verifyDoerStreakClosed read.",
+      "symbols": [
+        "abortAfterSpentResumeLadder",
+        "verifyDoerStreakClosed",
+        "runAttempt"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/mock-sprint-doer-max-turns.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-doer-max-turns-verify-bypass.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T11:06:51.973Z"
     },
     {
       "id": "9accad02-cd4e-407b-9440-ddc016066fbe",
@@ -1266,6 +1714,26 @@
       "updated_at": "2026-09-07T16:36:39.430Z"
     },
     {
+      "id": "9e007616-ebff-4e04-bb33-578023ed43c1",
+      "type": "runbook",
+      "title": "Slicing a runSprintCycle phase: pass reassigned locals both IN and OUT so the call site needs no conditional",
+      "summary": "Destructured parameters are assignable in JS, so a moved phase body can keep its `x = ...` statements byte-identical if the caller passes x in and destructures it back out -- which also makes the skip path a no-op without an `if`.",
+      "symbols": [
+        "runReviewPhase",
+        "runDeployPhase",
+        "runReplanPhase",
+        "runSprintCycle"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/deploy.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/replan.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-11T23:00:51.720Z"
+    },
+    {
       "id": "a0b0cc44-6feb-4412-b39a-9c1756a2cc60",
       "type": "learning",
       "title": "The apra-fleet-se workspace suite runs in about 70-90 seconds, not minutes",
@@ -1278,6 +1746,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-09T11:00:21.981Z"
+    },
+    {
+      "id": "a137373a-9de4-4fbd-9e9b-595da0db8032",
+      "type": "knowledge",
+      "title": "A phases/* module cannot import runner.js helpers -- four pure helpers must be injected through the phase state object",
+      "summary": "parseBdJson, extractContestedBeadIds, reconcilePendingRejectedNewTasks and stageCommandBodyMemberSide are exported BY runner.js, and resolveSettleShell is runner-module-private, so a phase module must receive them as explicit state rather than importing them.",
+      "symbols": [
+        "runPlanPhase",
+        "resolveSettleShell",
+        "parseBdJson",
+        "extractContestedBeadIds",
+        "reconcilePendingRejectedNewTasks",
+        "stageCommandBodyMemberSide",
+        "pendingRejectedNewTasks"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/plan.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/ensure-sprint-branch.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/sprint-state.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-11T22:34:51.500Z"
     },
     {
       "id": "a2eec90a-dd1b-4606-af90-685179e6e471",
@@ -1371,6 +1862,22 @@
       "updated_at": "2026-09-09T11:00:21.963Z"
     },
     {
+      "id": "a7fbbf53-c8e4-42d9-9f44-cca7fec79762",
+      "type": "runbook",
+      "title": "Verify a fleet-sprint policy-table test by mutating the table, not by reading it",
+      "summary": "A table-plus-test commit can look thorough while whole fields are unasserted; mutate each field on a clean tree and confirm the test fails, since the file passes either way.",
+      "symbols": [
+        "ROLE_POLICIES",
+        "policyFor"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/role-policies-table.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T11:32:28.120Z"
+    },
+    {
       "id": "a9487fa3-a5e3-4086-a1d7-29c1e770ced7",
       "type": "knowledge",
       "title": "Do not dynamically import every runner.js importer -- scripts/dolt-settle-integration.mjs runs main() at module scope",
@@ -1419,6 +1926,20 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-09T09:20:49.633Z"
+    },
+    {
+      "id": "acd2585c-ba7e-4580-a33a-809bd77eb8f5",
+      "type": "knowledge",
+      "title": "retry.infraResumeAttempts is a boolean gate, not a count -- a value above 1 is silently ignored",
+      "summary": "The engine reads infraResumeAttempts only as `> 0`; the resume loop bound comes from retry.resumeAttempts, and the loop re-iterates only on a repeated max_turns exhaustion, never on a repeated infra failure.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/execution-role-dispatch-pins.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T11:32:28.099Z"
     },
     {
       "id": "ae3674b1-c7c1-4fea-aff8-2455ecadd2b9",
@@ -1552,6 +2073,26 @@
       "updated_at": "2026-09-09T10:34:50.025Z"
     },
     {
+      "id": "b6bb92cf-b27c-4341-8ec2-a9800b0bc338",
+      "type": "knowledge",
+      "title": "degrade.classes, not degrade.kind, decides what a ladder fabricates -- and the integ runner's omission of 'infra' is the whole INCONCLUSIVE variance",
+      "summary": "The engine fabricates a value only for the ERROR_CLASSES a row lists in degrade.classes. The integ row lists schema and dispatch but deliberately NOT infra, which is what turns an envelope-less failure into an `inconclusive` record instead of a false passed:false.",
+      "symbols": [
+        "synthesizeDegradedValue",
+        "classifyLadderError",
+        "ERROR_CLASSES",
+        "inconclusiveOf"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/execution-role-dispatch-pins.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-integ-infra-dispatch-failure.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T11:06:51.957Z"
+    },
+    {
       "id": "b9b63eab-5030-4f45-a210-16d8aec4a16d",
       "type": "knowledge",
       "title": "runner.js makes exactly 22 agent() dispatches, partitioned 8 planning and 14 execution",
@@ -1657,6 +2198,20 @@
       "updated_at": "2026-09-07T16:36:39.620Z"
     },
     {
+      "id": "c5955430-7c56-4aff-9cc5-6a3d42e1c6d2",
+      "type": "knowledge",
+      "title": "Falsify a phases/* slice by set-diffing the diff's removed lines against the new modules",
+      "summary": "Normalizing leading whitespace and sorting lets `comm` prove a move-only extraction dropped nothing and added nothing but scaffolding, which reading a 700-line diff by eye cannot establish.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/replan.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-11T23:00:51.724Z"
+    },
+    {
       "id": "c5f3d5d6-0ccd-4669-a45b-e3dd7dcad5ae",
       "type": "knowledge",
       "title": "extractBalancedCall now masks comments, but still mis-reads a regex literal ending in an escaped slash",
@@ -1718,6 +2273,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.692Z"
+    },
+    {
+      "id": "ca4a4788-acf4-4a94-8a86-51aa0af8ec0b",
+      "type": "knowledge",
+      "title": "Only the settle-shell fleet client was hoisted into sprint state, not every ApraFleet in runner.js",
+      "summary": "apra-fleet-3swo.6.1 hoisted the settle-shell client into sprint-state.mjs; three other new ApraFleet sites remain in runner.js, and fleetApiForPr is still constructed per PR raise.",
+      "symbols": [
+        "createSprintState",
+        "sprintScopedFleetApi",
+        "resolveSettleShell",
+        "fleetApiForPr",
+        "resolveMemberTarget"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/sprint-state.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/sprint-state.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-target.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-11T22:34:51.513Z"
     },
     {
       "id": "cbf627c7-21cc-498f-9012-3ffa829b762c",
@@ -1828,6 +2404,45 @@
       "updated_at": "2026-09-09T13:25:24.327Z"
     },
     {
+      "id": "d7b9182e-54f0-43ab-8962-5c3b10e6308f",
+      "type": "knowledge",
+      "title": "DEGRADE_STEPS is separate from POST_RESULT_STEPS because the reviewer's round session must be dropped on failure and kept on success",
+      "summary": "role-policies.mjs has three step vocabularies, and the split is load-bearing rather than tidy: a step in the wrong list gets the per-round reviewer's session handling exactly backwards.",
+      "symbols": [
+        "DEGRADE_STEPS",
+        "POST_RESULT_STEPS",
+        "runDegradeSteps",
+        "runPostResultSteps",
+        "runPreDispatchSteps",
+        "LadderResultRejectedError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/test/execution-role-dispatch-pins.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T11:06:51.978Z"
+    },
+    {
+      "id": "d82413b0-679b-473a-ae3a-0fa0c748da6d",
+      "type": "runbook",
+      "title": "A nested node --test child silently no-ops unless NODE_TEST_CONTEXT is stripped from its env",
+      "summary": "node --test sets NODE_TEST_CONTEXT on its own process; a child spawned with it still present returns empty stdout and exit 0 without running anything, so any nested-suite gate must delete it and then assert a non-zero '# pass' count.",
+      "symbols": [
+        "runNestedSuite",
+        "assertNestedSuiteReallyRan"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs",
+        "packages/apra-fleet-se/test/phase0-seams-facade.test.mjs",
+        "packages/apra-fleet-se/test/vcs-auth-extraction-facade.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T19:39:14.459Z"
+    },
+    {
       "id": "de1c60a9-b27f-411b-a23c-953e37207536",
       "type": "learning",
       "title": ".fleet/ mixes a tracked deliverable (kb-canonical.json) with per-round scratch (planner-output.json)",
@@ -1838,6 +2453,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.763Z"
+    },
+    {
+      "id": "df75818c-3208-4bb9-aa99-b65a866ff0a8",
+      "type": "knowledge",
+      "title": "Sandbox module imports in fleet-sprint tests must use pathToFileURL().href, not a raw absolute path",
+      "summary": "A raw absolute path handed to dynamic import() fails on Windows (parsed as scheme 'c:') and also fails on POSIX whenever the tmpdir path contains a space or '#'.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase0-seams-facade.test.mjs",
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs",
+        "packages/apra-fleet-se/test/installed-supervisor.test.mjs",
+        "packages/apra-fleet-se/test/contracts-schemas-dir.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T08:25:54.493Z"
     },
     {
       "id": "dfc8c01c-6142-439c-aacb-22681ee75c5b",
@@ -1859,6 +2489,19 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-09T11:00:21.978Z"
+    },
+    {
+      "id": "e09eb8ab-c09b-4204-932b-3b34958b952a",
+      "type": "learning",
+      "title": "The repo's commit hook ASCII check silently no-ops on macOS because it uses grep -P",
+      "summary": "A git commit of N changed files prints N 'grep: invalid option -- P' lines on macOS BSD grep; the commit succeeds and the hook's non-ASCII check never actually runs.",
+      "symbols": [],
+      "source_files": [
+        "CLAUDE.md",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T11:32:28.095Z"
     },
     {
       "id": "e690678c-3d24-426b-87c7-bb74c8eac864",
@@ -1989,6 +2632,43 @@
       "updated_at": "2026-09-07T16:36:39.813Z"
     },
     {
+      "id": "eefa7f9b-f5ca-4390-9027-df486cf7536e",
+      "type": "knowledge",
+      "title": "retry.authSelfHealShortCircuits is inert at final-review's shipped attempts=2 and can only be observed by splicing attempts=3",
+      "summary": "The healed retry consumes attempt one, so at a two-attempt budget the short-circuit and the generic retry coincide; a mutation test must raise attempts on BOTH arms and vary only the flag, otherwise the field reads identically either way and looks unfalsifiable.",
+      "symbols": [
+        "dispatchRole",
+        "authSelfHealShortCircuits",
+        "healRetryIsFinal",
+        "onLlmAuthFailure"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/execution-role-dispatch-pins.test.mjs",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T19:39:14.447Z"
+    },
+    {
+      "id": "f2806923-38e8-4dc2-ab27-729f7ed59128",
+      "type": "learning",
+      "title": "resolveNestedSuiteTimeoutMs is directly callable, so its env override and fallback branches need no module re-init to test",
+      "summary": "The phase1 budget resolver is a pure module-scope function of process.env; asserting only the handler's budgetSource wording leaves the default, override and unparseable branches untested.",
+      "symbols": [
+        "resolveNestedSuiteTimeoutMs",
+        "NESTED_SUITE_TIMEOUT_MS",
+        "DEFAULT_NESTED_SUITE_TIMEOUT_MS",
+        "handleNestedSuiteSpawnResult"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T08:09:01.026Z"
+    },
+    {
       "id": "f49831f2-77d5-44b4-8ca5-a563bcff7538",
       "type": "knowledge",
       "title": "role-policies-table.test.mjs deployer retry-ladder subtest fails on feat/runner-refactor-standalone tip",
@@ -2019,6 +2699,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.838Z"
+    },
+    {
+      "id": "f8604414-0bbf-4850-88bd-6a67e5539341",
+      "type": "knowledge",
+      "title": "The ctx.steps hook bodies are the one part of a migrated ladder no dispatch-pin test executes",
+      "summary": "dispatch-role-harness.mjs supplies recording stubs for ctx.steps, so runner.js's own step implementations are proved to be INVOKED but never proved to be CORRECT by the pin tests.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs",
+        "packages/apra-fleet-se/test/execution-role-dispatch-pins.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-10T11:32:28.115Z"
     },
     {
       "id": "fabcf384-270a-4c4f-a630-6b82597e5207",
