@@ -1257,25 +1257,37 @@ const NESTED_TEST_CONCURRENCY = resolveNestedTestConcurrency();
 // real-bd trail (apra-fleet-eft.17) records individual mock-sprint files
 // ALONE taking 700-1500s inside the full contended real-bd run (e.g.
 // mock-sprint-happy-path.test.mjs 923-1272s and mock-sprint-stall-
-// oscillation.test.mjs 780-1421s across several passes), and whole-suite
-// cumFileTime/file-count averages of 90-170s per file across multiple full
-// real-bd passes (21917s/242=91s on 2026-09-09; 34308s/201=171s on
-// 2026-08-23).
+// oscillation.test.mjs 780-1421s across several passes). Whole-suite
+// cumFileTime/file-count averages of 90-170s per file were also observed
+// across multiple full real-bd passes (21917s/242=91s on 2026-09-09;
+// 34308s/201=171s on 2026-08-23), but that average is NOT used below: it is
+// dominated by ~240 fast non-mock-sprint files and would understate the cost
+// of the 65 mock-sprint files this nested run actually executes, which are
+// the slow tail cited above, not the whole-suite average.
 //
 // The real-bd budget below is derived, not guessed, from four named
 // constants a reader can recompute:
-//   ASSUMED_REAL_BD_PER_FILE_MS (120_000, i.e. 2min/file -- the middle of the
-//     90-170s/file whole-suite average cited above, applied per mock-sprint
-//     file)
+//   ASSUMED_REAL_BD_PER_FILE_MS (1_100_000, i.e. ~18.3min/file -- the mean of
+//     the two mock-sprint-SPECIFIC per-file range midpoints cited above:
+//     happy-path (923+1272)/2=1097.5s and stall-oscillation
+//     (780+1421)/2=1100.5s, averaging to ~1099s, rounded to 1100s. This is a
+//     mock-sprint-file cost, not the whole-suite average discussed above.)
 //   x ASSUMED_MOCK_SPRINT_FILE_COUNT (the count of test/mock-sprint-*.test.mjs
-//     files discovered when this was written -- see the constant below)
+//     files, discovered live via fs.readdirSync below; 65 files at the time
+//     this was written)
 //   / NESTED_TEST_CONCURRENCY (2, defined above -- this nested run's own cap,
 //     not the parent suite's 8)
 //   x REAL_BD_HEADROOM_FACTOR (2, doubling for run-to-run variance, matching
-//     the >2x spread already observed between the two cumFileTime/file-count
-//     averages cited above)
+//     the ~2.14x spread already observed within the mock-sprint-specific
+//     700-1500s range cited above)
+// At the 65 files discovered when this was written, this yields:
+//   1,100,000 x 65 / 2 x 2 = 71,500,000ms (~1192min / ~19.86h).
+// If the mock-sprint-*.test.mjs file count changes later, the shipped budget
+// moves with it (the count is read live), but the four factors above are
+// fixed literals a reader can multiply by whatever count they observe to
+// recompute the number in force at that time.
 // -----------------------------------------------------------------------------
-const ASSUMED_REAL_BD_PER_FILE_MS = 120_000;
+const ASSUMED_REAL_BD_PER_FILE_MS = 1_100_000;
 const ASSUMED_MOCK_SPRINT_FILE_COUNT = fs
     .readdirSync(path.join(SE_DIR, 'test'))
     .filter((name) => name.startsWith('mock-sprint-') && name.endsWith('.test.mjs')).length;
