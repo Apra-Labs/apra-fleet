@@ -205,6 +205,23 @@ export const GUARDED_MODULES = [
     // one site the guard exists for.
     'phases/harvest.mjs',
     'phases/publish-pr.mjs',
+    // apra-fleet-3swo.6.3: the git-topology layer sliced out of runner.js --
+    // the pre-sprint multi-member topology precondition (checkMemberTopology),
+    // the ONE git-failure classifier (classifyGitFailure) and the fail-closed
+    // provider lookup that feeds it, the retrying git-command primitive every
+    // sync bracket issues its commands through (runGitStep), and the
+    // exit-code-based soft-git result adapter (commandResultToSoftGit).
+    //
+    // It took exactly ONE member_name-bearing command() call site out of
+    // runner.js -- runGitStep's single `command(cmd, { member_name: member,
+    // silent: true, failSoft: true, label })` dispatch, which EVERY bracketed
+    // git command in this package funnels through (syncMemberBefore/After/
+    // AfterOrdered here, detectAndAbortRebaseConflict in conflict-ladder.mjs,
+    // and abort.mjs's three finalize-path git calls). That makes it the single
+    // highest-traffic guarded dispatch site in fleet-sprint, so registering it
+    // with the extraction is what keeps dispatch-safety-guard covering it
+    // instead of silently losing it the moment it left runner.js.
+    'git-topology.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left
