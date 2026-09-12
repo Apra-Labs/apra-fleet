@@ -215,14 +215,33 @@ test('the phase-order expectation is non-vacuous: it covers every sliced phase a
         'the Final Review phase must still emit its once-per-sprint label from phases/final-review.mjs'
     );
 
-    // ...and so must phases that are still INLINE in runner.js, which is what
-    // makes this a slice-boundary pin rather than a sliced-modules-only pin.
-    for (const stillInline of ['Harvest C1', 'Publish PR C1']) {
-        assert.ok(
-            EXPECTED_PHASE_SEQUENCE.includes(stillInline),
-            `${stillInline} is still inline in runner.js and must stay covered by this pin`
+    // apra-fleet-3swo.6.9 moved the LAST two -- Harvest into
+    // phases/harvest.mjs and Publish PR into phases/publish-pr.mjs -- so there
+    // is no inline phase left for this pin to speak about. Both are
+    // once-per-SPRINT and both are on this scenario's live path, so each must
+    // appear EXACTLY once: a count rather than an includes() is what would
+    // catch a slice that left a copy of its phase() call behind in runner.js
+    // and now emits the label twice.
+    for (const lastSliced of ['Harvest C1', 'Publish PR C1']) {
+        assert.equal(
+            EXPECTED_PHASE_SEQUENCE.filter((p) => p === lastSliced).length,
+            1,
+            `${lastSliced} must still be emitted exactly once, now from its own phases/ module`
         );
     }
+    // The whole point of the final slice: the recorded sequence must still end
+    // with Publish PR. A phase that escaped its module and ran late (or a
+    // duplicated Publish PR call site) would show up here and nowhere else.
+    assert.equal(
+        EXPECTED_PHASE_SEQUENCE[EXPECTED_PHASE_SEQUENCE.length - 1],
+        'Publish PR C1',
+        'Publish PR must remain the last phase of the sprint'
+    );
+    assert.ok(
+        EXPECTED_PHASE_SEQUENCE.indexOf('Harvest C1') < EXPECTED_PHASE_SEQUENCE.indexOf('Publish PR C1'),
+        'Harvest must run before Publish PR -- the harvester\'s docs/changelog commits are published by its own ' +
+        'policy bracket before Publish PR pushes the branch and raises the PR'
+    );
 
     // Ensure Sprint Branch precedes the first Plan round: the ordering
     // relationship the slice most plausibly breaks, stated directly rather
@@ -249,6 +268,8 @@ test('every sliced phase module is registered for mechanical guard coverage', ()
         'phases/re-review.mjs',
         'phases/final-review.mjs',
         'phases/regression-test.mjs',
+        'phases/harvest.mjs',
+        'phases/publish-pr.mjs',
     ]) {
         assert.ok(
             GUARDED_MODULES.includes(mod),
@@ -296,6 +317,12 @@ test('each sliced phase builds its phase() label in its own module and nowhere i
         // only thing that would catch a half-done or duplicated extraction.
         'phase(`Final Review C': 'final-review.mjs',
         'phase(`Regression Test C': 'regression-test.mjs',
+        // apra-fleet-3swo.6.9 -- the last two. Both ARE on the runtime pin's
+        // live path, so unlike Replan/Re-Review/Regression Test these entries
+        // are not the only cover for their phases; what they add is the
+        // MOVED-not-COPIED half, which the runtime pin cannot see.
+        'phase(`Harvest C': 'harvest.mjs',
+        'phase(`Publish PR C': 'publish-pr.mjs',
     };
 
     for (const [fragment, ownerFile] of Object.entries(slicedLabels)) {
@@ -312,20 +339,47 @@ test('each sliced phase builds its phase() label in its own module and nowhere i
         );
     }
 
-    // Non-vacuity: the fragments must be the shape the runner really uses, so
-    // prove at least one phase label IS still built inline (the phases that
-    // have not been sliced yet) -- otherwise a typo'd fragment would make
-    // every "not in runner.js" assertion above pass for free.
-    // apra-fleet-3swo.6.6 sliced Final Review and Regression Test out, so the
-    // live-control label moved on again -- to Harvest, the next phase()
-    // boundary runSprintCycle still builds inline. Only Publish PR is left
-    // after it; once BOTH are sliced there is no inline control left, and this
-    // non-vacuity check must be re-expressed (e.g. against a deliberately
-    // absent fragment) rather than deleted.
+    // Non-vacuity, RE-EXPRESSED by apra-fleet-3swo.6.9 exactly as the note
+    // this comment replaces instructed. Until this slice, the control was a
+    // live one: assert that the NEXT phase not yet sliced was still built
+    // inline in runner.js, which proved the fragment shape matched what
+    // runner.js really writes and so that the "not in runner.js" assertions
+    // above were reading real text. Harvest and Publish PR were the last two,
+    // so there is no inline label left to point at and the control cannot stay
+    // in that form.
+    //
+    // What replaces it is stronger than what it replaces, and is the slice's
+    // own acceptance criterion stated mechanically: runner.js must build NO
+    // phase() label at all. That is a shape-level scan (a phase( call opened
+    // with any quote style), not a list of fragments, so it cannot go stale as
+    // labels are renamed, and it fails loudly if ANY phase body -- including
+    // one this map has never heard of -- reappears inline in runner.js.
+    const PHASE_LABEL_CALL = /phase\(\s*['"`]/g;
+    assert.deepEqual(
+        runnerSrc.match(PHASE_LABEL_CALL) || [],
+        [],
+        'runSprintCycle must contain no inline phase body: runner.js builds a phase() label of its own, which ' +
+        'means a phase was re-inlined (or a slice left its phase() call behind)'
+    );
+    // ...and the control for THAT assertion, which is what keeps this pair
+    // non-vacuous: the same regex must really match the way the phase modules
+    // write their labels, so a typo in it cannot make the deepEqual above pass
+    // for free. Every module named in the map must contribute at least one
+    // match, and the total must cover all twelve boundaries.
+    let totalPhaseLabelCalls = 0;
+    for (const ownerFile of new Set(Object.values(slicedLabels))) {
+        const ownerSrc = fs.readFileSync(path.join(phasesDir, ownerFile), 'utf8');
+        const matches = ownerSrc.match(PHASE_LABEL_CALL) || [];
+        assert.ok(
+            matches.length >= 1,
+            `phases/${ownerFile} must match the phase-label scan used against runner.js above; if it does not, that ` +
+            'scan is misspelt and its "runner.js builds no phase() label" assertion is vacuous'
+        );
+        totalPhaseLabelCalls += matches.length;
+    }
     assert.ok(
-        runnerSrc.includes('phase(`Harvest C'),
-        'Harvest is still inline in runner.js; if this fails the label fragments above are stale and the ' +
-        'runner.js half of this test is passing vacuously'
+        totalPhaseLabelCalls >= 12,
+        `all twelve of runSprintCycle's phase() boundaries must now be built inside phases/*, found ${totalPhaseLabelCalls}`
     );
     // The three Review-family labels all CONTAIN a shorter fragment from the
     // map above -- 'Re-Review C' and 'Final Review C' both contain 'Review C'

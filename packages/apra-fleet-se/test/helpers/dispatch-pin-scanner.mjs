@@ -153,6 +153,21 @@ export const DISPATCH_LADDER_MODULES = [
     // real dispatch site.
     'phases/final-review.mjs',
     'phases/regression-test.mjs',
+    // apra-fleet-3swo.6.9: the LAST two phases -- Harvest and Publish PR --
+    // added in the SAME position for the SAME reason. Harvest took BOTH
+    // 'harvester' rows' ladderAnchor text ('harvesterPrompt,' and 'Continue
+    // your harvest exactly where you left off') out of runner.js while
+    // role-policies.mjs still carries both literals verbatim as data, so
+    // registering it BEFORE role-policies.mjs is what stops an anchor search
+    // resolving inside that data literal instead of the real dispatch site.
+    // Publish PR hosts no dispatch site at all (it raises the PR over REST and
+    // dispatches no agent), but it is listed so the CONSUMER census in
+    // phase3-dispatch-engine-completeness.test.mjs -- which filters this list
+    // to runner.js + phases/* -- keeps covering every module a dispatch could
+    // appear in after the slice. With these two the list covers all twelve
+    // phases, so runner.js now contributes no phase-hosted dispatch at all.
+    'phases/harvest.mjs',
+    'phases/publish-pr.mjs',
     'role-policies.mjs',
     'dispatch-role.mjs',
 ];
