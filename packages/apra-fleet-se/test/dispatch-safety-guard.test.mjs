@@ -1252,6 +1252,83 @@ test('every command() call site in sprint-report.mjs passes member_name or membe
 });
 
 // =============================================================================
+// apra-fleet-3swo.6.15: the round-resume session registry sliced out of
+// runner.js into round-session.mjs -- DEFAULT_CONTEXT_CEILING and
+// createRoundSessionRegistry.
+//
+// Its command()/agent() baseline is ZERO/ZERO: neither symbol owns a bd or
+// dispatch call site at all -- the registry is a pure in-memory Map keyed by
+// role. Same per-module baseline reasoning as newtask-text.mjs/sprint-report.mjs
+// above: a zero baseline is what turns a future raw command()/agent() landing
+// in this file into a red test rather than a silently unguarded site.
+// =============================================================================
+const ROUND_SESSION_PATH = path.join(__dirname, '../fleet-sprint/round-session.mjs');
+const EXPECTED_ROUND_SESSION_COMMAND_COUNT = 0;
+
+test('every command() call site in round-session.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(ROUND_SESSION_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_ROUND_SESSION_COMMAND_COUNT,
+        `Expected ${EXPECTED_ROUND_SESSION_COMMAND_COUNT} command() call site(s) in round-session.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_ROUND_SESSION_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'round-session.mjs must never dispatch an agent() directly -- it is a pure session-registry layer, not a role ladder.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-3swo.6.15: the dispatch-outcome classification surface sliced
+// out of runner.js into dispatch-failure.mjs -- isTerminalSprintFailure,
+// isNoMutationDispatchFailure and withDispatchWatchdog.
+//
+// Its command()/agent() baseline is ZERO/ZERO: all three symbols only
+// CLASSIFY an already-thrown error or race an already-in-flight dispatch
+// PROMISE -- none of them issues a command() or agent() call of its own (the
+// one real agent() dispatch every migrated role ladder runs through lives in
+// dispatch-role.mjs, kept deliberately distinct from this file -- see this
+// module's own header for why). Same per-module baseline reasoning as the
+// modules above: a zero baseline is what turns a future raw command()/agent()
+// landing in this file into a red test rather than a silently unguarded site.
+// =============================================================================
+const DISPATCH_FAILURE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-failure.mjs');
+const EXPECTED_DISPATCH_FAILURE_COMMAND_COUNT = 0;
+
+test('every command() call site in dispatch-failure.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(DISPATCH_FAILURE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_DISPATCH_FAILURE_COMMAND_COUNT,
+        `Expected ${EXPECTED_DISPATCH_FAILURE_COMMAND_COUNT} command() call site(s) in dispatch-failure.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_DISPATCH_FAILURE_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'dispatch-failure.mjs must never dispatch an agent() directly -- it classifies/bounds dispatch OUTCOMES, not the dispatchRole engine that performs one.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
 // apra-fleet-3swo.34 -- an apostrophe inside a comment must never let
 // extractBalancedCall()'s depth walk run past the call's real closing paren.
 //
