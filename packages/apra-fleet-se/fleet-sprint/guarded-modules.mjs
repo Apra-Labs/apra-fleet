@@ -260,6 +260,24 @@ export const GUARDED_MODULES = [
     // wiring anchored there by test/sprint-state.test.mjs) and is not part of
     // this module's surface.
     'member-provisioning.mjs',
+    // apra-fleet-3swo.6.13: the child-bead allocation and batched-claim
+    // command surface sliced out of runner.js -- computeChildFloor,
+    // createChildBeadWithAllocatedId, verifyDoerStreakClosed and
+    // claimBeadsBatched.
+    //
+    // It took exactly FIVE member_name-bearing command() call sites out of
+    // runner.js: computeChildFloor's `bd list --parent` read, createChild-
+    // BeadWithAllocatedId's TWO sites (`bd create --body-file` and the
+    // explicit-id path's `bd update --parent` link), verifyDoerStreakClosed's
+    // `bd show <ids> --json` post-D-pull read, and claimBeadsBatched's `bd
+    // update ... --claim --json` batch. Registering it with the extraction is
+    // load-bearing TWICE over, same as git-topology.mjs/member-sync.mjs
+    // above: verifyDoerStreakClosed is also one of unbracketed-push-guard.mjs's
+    // two SANCTIONED_WRAPPER_FUNCTIONS (its DoltSync.syncBefore() call is only
+    // sanctioned because that function's OWN declaration -- and therefore its
+    // body range -- is found by scanning this file), so this module must be
+    // scanned for that sanction to mean anything.
+    'beads-children.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left

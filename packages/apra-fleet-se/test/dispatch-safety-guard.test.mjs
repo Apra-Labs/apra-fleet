@@ -404,7 +404,19 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // member-provisioning.mjs is registered in GUARDED_MODULES, so the aggregate
 // checkModules(guardedModulePaths()) test below scans it, and it gets its own
 // explicit baseline count below.
-const EXPECTED_COMMAND_COUNT = 9;
+// 9 -> 4 (apra-fleet-3swo.6.13): computeChildFloor, createChildBeadWithAllocatedId,
+// verifyDoerStreakClosed and claimBeadsBatched -- the child-bead allocation and
+// batched-claim command surface -- moved out of runner.js into
+// ./beads-children.mjs. createChildBeadWithAllocatedId owns TWO command() sites
+// (`bd create --body-file` and the explicit-id path's `bd update --parent`
+// link) and computeChildFloor/verifyDoerStreakClosed/claimBeadsBatched own ONE
+// each, all verified compliant -- FIVE sites total, exactly 9 - 4. The only
+// command() sites left in runner.js are runSprintCycle's own four -- the
+// composition-root residue this chain's final bead asserts. Not left
+// unguarded: beads-children.mjs is registered in GUARDED_MODULES, so the
+// aggregate checkModules(guardedModulePaths()) test below scans it, and it
+// gets its own explicit baseline count below.
+const EXPECTED_COMMAND_COUNT = 4;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -1114,6 +1126,48 @@ test('every command() call site in member-provisioning.mjs passes member_name or
         sites.filter((s) => s.fnName === 'agent').length,
         0,
         'member-provisioning.mjs must never dispatch an agent() directly -- it is a provisioning-helper layer, not a role ladder.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-3swo.6.13: the child-bead allocation and batched-claim command
+// surface sliced out of runner.js -- computeChildFloor,
+// createChildBeadWithAllocatedId, verifyDoerStreakClosed and
+// claimBeadsBatched.
+//
+// Its baseline is FIVE: createChildBeadWithAllocatedId owns TWO
+// (`bd create --body-file` and the explicit-id path's `bd update --parent`
+// link) and computeChildFloor/verifyDoerStreakClosed/claimBeadsBatched own ONE
+// each, all verified compliant.
+//
+// Its agent() baseline is ZERO, same per-module baseline reasoning as the
+// other extracted helper modules above -- a raw `agent(` appearing in this
+// file would mean a role ladder had been re-inlined into a bd command-surface
+// helper, which is exactly what a zero baseline turns red.
+// =============================================================================
+const BEADS_CHILDREN_PATH = path.join(__dirname, '../fleet-sprint/beads-children.mjs');
+const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 5;
+
+test('every command() call site in beads-children.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(BEADS_CHILDREN_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_BEADS_CHILDREN_COMMAND_COUNT,
+        `Expected ${EXPECTED_BEADS_CHILDREN_COMMAND_COUNT} command() call site(s) in beads-children.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_BEADS_CHILDREN_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'beads-children.mjs must never dispatch an agent() directly -- it is a bd command-surface layer, not a role ladder.'
     );
     assert.deepStrictEqual(
         violations,
