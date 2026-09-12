@@ -22,14 +22,19 @@ import { guardedModulePaths, guardedModuleBasenames } from '../fleet-sprint/guar
 //     mechanics for a GitHub credential failure.
 // This suite's own job is the FOUR non-GitHub provider texts named in the
 // bead, plus the "genuinely unrecognized string" retry-then-fail case, plus
-// the source-literal guard that runner.js carries no VCS stderr regex list.
+// the source-literal guard that no guarded fleet-sprint module carries a VCS
+// stderr regex list (apra-fleet-3swo.41 widened this from a runner.js-only
+// scan to a guarded-modules.mjs-derived census -- see that describe block's
+// own header comment for why runner.js alone stopped being enough once
+// classifyGitFailure moved to git-topology.mjs).
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RUNNER_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/runner.js'), 'utf8');
 // apra-fleet-3swo.6.3: classifyGitFailure moved out of runner.js into
 // fleet-sprint/git-topology.mjs, so the delegation assertion below reads its
-// source from there. The RUNNER_SRC pattern-table assertion above deliberately
-// still reads runner.js -- that one is about what runner.js must NOT contain.
+// source from there. The pattern-table census (further down) does NOT read a
+// single hard-coded module source like this one -- it iterates the
+// guarded-modules.mjs-derived CENSUS_PATHS set instead, precisely so it is
+// not narrowed to whichever one file happens to be read here.
 const GIT_TOPOLOGY_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/git-topology.mjs'), 'utf8');
 
 const OK = { ok: true, output: '', error: null };
