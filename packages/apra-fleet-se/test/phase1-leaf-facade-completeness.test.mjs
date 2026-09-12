@@ -688,6 +688,53 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
         assert.equal(caughtErr.cause.stderr.length, 2_000_000, 'cause must retain the full, untruncated original stderr');
     });
 
+    // apra-fleet-3swo.54: adversarial case apra-fleet-80q3.2's description
+    // originally asked for -- a non-ETIMEDOUT-CODED error whose own MESSAGE
+    // happens to be the literal raw spawnSync-ETIMEDOUT text. Node's real
+    // shapes (verified by standalone repro against execFileSync/stdio pipe)
+    // never actually produce this combination: a timeout always sets
+    // code='ETIMEDOUT'/status=null/message='spawnSync <file> ETIMEDOUT',
+    // while a non-zero exit always sets code=undefined/status=N/message=
+    // 'Command failed: ...', so the two never mix in practice. But nothing
+    // in the shared handler (test/helpers/nested-suite-spawn.mjs) currently
+    // PINS that the branch is chosen by error.code rather than by sniffing
+    // error.message for "ETIMEDOUT" -- a mutation that widened the ETIMEDOUT
+    // branch's condition to also match /ETIMEDOUT/ on the message would pass
+    // every other case here and silently re-create the exact apra-fleet-80q3
+    // misdiagnosis (an inner child failure reported as the gate's own budget
+    // expiring). This case makes that mutation observable by constructing
+    // the adversarial combination directly, bypassing what Node itself would
+    // ever produce.
+    test('case (b3): classification is by error.code, not error.message -- a numeric-status error whose message is raw ETIMEDOUT text still reports as an inner child failure', () => {
+        const adversarialError = new Error('spawnSync node ETIMEDOUT');
+        adversarialError.status = 1;
+        adversarialError.stdout = 'inner child stdout\n';
+        adversarialError.stderr = 'inner child stderr\n';
+        // code is deliberately left undefined -- the real distinguishing
+        // signal -- while the message text alone would read as a timeout.
+
+        let caughtErr;
+        try {
+            handleNestedSuiteSpawnResult('adversarial-suite', adversarialError, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)');
+            assert.fail('should have thrown an error');
+        } catch (e) {
+            caughtErr = e;
+        }
+
+        assert.ok(caughtErr.message.includes('adversarial-suite'), `message must name the outer suite label; got: ${caughtErr.message}`);
+        assert.ok(caughtErr.message.includes('exit status: 1'), `message must carry the child exit status; got: ${caughtErr.message}`);
+        const wrapperPrefix = caughtErr.message.split('child stdout (tail):')[0];
+        assert.ok(
+            wrapperPrefix.includes('did NOT expire'),
+            `wrapper prefix must classify this as an inner child failure despite the adversarial message text; got: ${wrapperPrefix}`,
+        );
+        assert.ok(
+            !wrapperPrefix.includes('timed out') && !wrapperPrefix.includes('exceeded its'),
+            `wrapper prefix must never claim a timeout for a non-ETIMEDOUT-coded error, even when its message text says ETIMEDOUT; got: ${wrapperPrefix}`,
+        );
+        assert.equal(caughtErr.cause, adversarialError, 'original spawn error must be reachable as .cause');
+    });
+
     test('case (c): null error (status 0) yields pass (no throw)', () => {
         // Should not throw or return; just complete normally
         const result = handleNestedSuiteSpawnResult('my-suite', null, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)');
