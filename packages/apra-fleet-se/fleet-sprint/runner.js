@@ -33,7 +33,7 @@ import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResol
 // hard-aborting the run at its readiness gate.
 import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER } from './vcs-module.mjs';
+import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, PR_DESCRIPTION_MAX_LENGTH } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
@@ -2946,6 +2946,12 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
     const repoRef = providerRef ? providerRef.ref : null;
 
     let authHealAttempted = false;
+    // apra-fleet PR-body length fix: buildCreatePrCommand deterministically
+    // truncates `body` to PR_DESCRIPTION_MAX_LENGTH and reports it back via
+    // `descriptionTruncated` (see vcs-module.mjs -- that module stays pure/
+    // I/O-free, so the warning is logged here). Guarded so a retry of the
+    // SAME (already-truncated) body after an auth self-heal never re-logs it.
+    let truncationWarned = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
         const built = buildCreatePrCommand({
@@ -2953,6 +2959,12 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
             ...(repoRef ? { repoRef } : { repo }),
             base, head, title, body, token, os, shell,
         });
+
+        if (built.descriptionTruncated && !truncationWarned) {
+            truncationWarned = true;
+            const { originalLength, maxLength } = built.descriptionTruncated;
+            log(`${logPrefix}: WARNING: PR description for member '${member}' was ${originalLength} chars, exceeding the ${maxLength}-char limit; truncated to the first ${maxLength} chars before raising the PR.`);
+        }
 
         const res = await command(built.command, {
             member_name: member,
@@ -5557,6 +5569,13 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
     lines.push(
         'Return a PASS/FAIL verdict per your agent contract, grounded in the evidence above -- ' +
         'never rubber-stamp PASS regardless of open goal-priority beads or deploy/integration failures.'
+    );
+    lines.push(
+        `Keep \`notes\` concise: it is embedded verbatim into the pull request description this ` +
+        `sprint raises, which has a hard cap of ${PR_DESCRIPTION_MAX_LENGTH} characters -- a pull ` +
+        `request whose description exceeds that many characters can be rejected outright by the ` +
+        `hosting provider. A too-long \`notes\` value is truncated before the pull request is raised, ` +
+        `so anything past the limit is silently lost; stay well within it so your findings actually reach the reviewer.`
     );
     lines.push(
         'Return any actionable findings as `newTasks` (title, description, priority each) so they ' +
