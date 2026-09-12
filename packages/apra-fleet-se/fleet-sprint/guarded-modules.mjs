@@ -245,6 +245,21 @@ export const GUARDED_MODULES = [
     // file must be scanned for that sanction to mean anything, and a future
     // bare primitive added here outside that wrapper must still go red.
     'member-sync.mjs',
+    // apra-fleet-3swo.6.12: the member-provisioning helpers sliced out of
+    // runner.js -- createMemberSessionGuard (the pre-resume stop_prompt
+    // guard), createUnattendedAutoProvisioner, createDeployPermissionsProvisioner
+    // and stageCommandBodyMemberSide.
+    //
+    // It took exactly TWO member_name-bearing command() call sites out of
+    // runner.js: createDeployPermissionsProvisioner's `node -e ...` read of
+    // deploy.md's Permissions section, and stageCommandBodyMemberSide's
+    // `node -e ...` member-side temp-file write. Both are shell-agnostic
+    // (base64-encoded argv, no `$`-expansion/backticks/template literals),
+    // which is exactly the invariant shell-command-guard.mjs enforces here.
+    // resolveSettleShell stayed in runner.js (module-private composition-root
+    // wiring anchored there by test/sprint-state.test.mjs) and is not part of
+    // this module's surface.
+    'member-provisioning.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left
