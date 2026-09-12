@@ -1391,9 +1391,13 @@ function excerptChildOutput(text) {
  * produced it and no statement that the outer budget did not expire -- the
  * same "the budget fix did not hold" misdiagnosis apra-fleet-80q3 fixed for
  * phase1. The non-timeout branch now names the outer suite label, states
- * explicitly that the outer budget did NOT expire, and quotes the child's
- * exit status plus a length-capped tail of its stdout/stderr, keeping the
- * original error reachable as `.cause` so no information is lost.
+ * explicitly that the outer budget (plus its source, the same backend-aware
+ * string the ETIMEDOUT branch already carries) did NOT expire, and quotes
+ * the child's exit status plus a length-capped tail of its stdout/stderr,
+ * keeping the original error reachable as `.cause` so no information is
+ * lost. Naming the source here matters as much as it does for the timeout
+ * branch: it is exactly the distinction that caused the apra-fleet-hhjh vs
+ * apra-fleet-80q3 misdiagnosis in the first place.
  *
  * @param {string} suiteLabel - name of the nested suite (e.g., 'golden-transcript')
  * @param {Error|null} spawnError - error from execFileSync (or null on success)
@@ -1417,8 +1421,9 @@ function handleNestedSuiteSpawnResult(suiteLabel, spawnError, budgetMs, budgetSo
     // keeping the original error reachable as `cause`.
     const status = spawnError.status === undefined || spawnError.status === null ? 'unknown' : spawnError.status;
     throw new Error(
-        `nested suite '${suiteLabel}' failed, but its outer budget of ${budgetMs}ms did NOT expire -- the failure is ` +
-        `inside the nested child itself, not this gate's own timeout. child exit status: ${status}. ` +
+        `nested suite '${suiteLabel}' failed, but its outer budget of ${budgetMs}ms (from ${budgetSource}) did NOT ` +
+        `expire -- the failure is inside the nested child itself, not this gate's own timeout. child exit status: ` +
+        `${status}. ` +
         `child stdout (tail):\n${excerptChildOutput(spawnError.stdout)}\n` +
         `child stderr (tail):\n${excerptChildOutput(spawnError.stderr)}`,
         { cause: spawnError },
@@ -1536,6 +1541,10 @@ describe('(6b) the extracted handleNestedSuiteSpawnResult helper converts spawn 
 
         assert.ok(caughtErr.message.includes('my-suite'), `message must name the outer suite label; got: ${caughtErr.message}`);
         assert.ok(caughtErr.message.includes('900000'), `message must include the outer budget in ms; got: ${caughtErr.message}`);
+        assert.ok(
+            caughtErr.message.includes('the mock-bd default'),
+            `message must include the outer budget's source string (the same backend-aware source the ETIMEDOUT branch carries), so a reader can tell which backend the child ran under; got: ${caughtErr.message}`,
+        );
         assert.ok(caughtErr.message.includes('exit status: 1'), `message must include the child exit status; got: ${caughtErr.message}`);
         assert.ok(caughtErr.message.includes('TAP output line 1'), `message must include a tail excerpt of child stdout; got: ${caughtErr.message}`);
         assert.ok(caughtErr.message.includes('stderr line 1'), `message must include a tail excerpt of child stderr; got: ${caughtErr.message}`);
