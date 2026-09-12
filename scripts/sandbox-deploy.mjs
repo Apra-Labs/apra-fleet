@@ -53,6 +53,11 @@ const RESERVED_PORTS = new Set([PRODUCTION_FLEET_PORT, PRODUCTION_SUPERVISOR_POR
 // failure is PROVEN to be a lost port race -- never as a blind retry.
 const MAX_PORT_BIND_ATTEMPTS = 3;
 const PORT_CONFLICT_RE = /EADDRINUSE|address already in use/i;
+// A process we just killed can hold its listener for a moment after its pid
+// is gone (Windows especially) -- both teardown's port-free wait and
+// lostPortRace's port-probe fallback poll for this same grace window instead
+// of trusting a single immediate probe (apra-fleet-3swo.48).
+const PORT_RELEASE_GRACE_MS = 5000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (msg) => console.error(`[sandbox-deploy] ${msg}`);
@@ -174,12 +179,29 @@ function portConflictError(role, port, message) {
 
 /** True when a child that never came up lost the allocate-then-bind race:
  *  either its log says so, or -- with our own pid already dead -- the port is
- *  still bound, which can only be a foreign holder. Never a bare guess. */
-async function lostPortRace(logPath, port) {
+ *  STILL bound after a grace window, which can only be a foreign holder.
+ *  Never a bare guess.
+ *
+ *  The port-probe fallback is only reached when the log shows no EADDRINUSE,
+ *  which also covers a child that DID bind the port and only failed for a
+ *  reason unrelated to ports (crashed after listening, never wrote
+ *  server.json, answered /health with the wrong pid). By the time this runs,
+ *  the caller has already stopPid()'d that child, but its listener can
+ *  briefly outlive its pid (Windows especially -- the same reason teardown's
+ *  own port-free wait polls instead of probing once). A single immediate
+ *  probe cannot tell that apart from a genuine foreign winner, so this polls
+ *  for the SAME grace window teardown uses: the port is ours (not a lost
+ *  race) if it frees up anywhere within that window, since a real foreign
+ *  winner keeps holding it for the whole window. */
+export async function lostPortRace(logPath, port) {
   try {
     if (PORT_CONFLICT_RE.test(fs.readFileSync(logPath, 'utf8'))) return true;
   } catch { /* no log to read: fall through to the port probe */ }
-  return !(await isPortFree(port));
+  for (const deadline = Date.now() + PORT_RELEASE_GRACE_MS; ;) {
+    if (await isPortFree(port)) return false;
+    if (Date.now() >= deadline) return true;
+    await sleep(250);
+  }
 }
 
 function osAssignedPort() {
@@ -516,7 +538,7 @@ export async function teardown(sprintId, { home = os.homedir(), foreignPorts = [
       continue;
     }
     let free = false;
-    for (const deadline = Date.now() + 5000; Date.now() < deadline && !(free = await isPortFree(port)); await sleep(250));
+    for (const deadline = Date.now() + PORT_RELEASE_GRACE_MS; Date.now() < deadline && !(free = await isPortFree(port)); await sleep(250));
     if (!free) problems.push(`${label} port ${port} is still bound`);
   }
   if (problems.length) {
