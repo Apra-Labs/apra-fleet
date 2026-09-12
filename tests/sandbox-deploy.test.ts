@@ -116,10 +116,12 @@ describe('values file: flat KEY=value, round-trips without any shell', () => {
 });
 
 describe('port allocation', () => {
-  it('returns two distinct ports and never a reserved production/test port', async () => {
-    const seq = [7523, 8787, 18700, 40001, 40001, 18701, 40002];
+  it('returns two non-adjacent ports and never a reserved production/test port', async () => {
+    // 40002 is rejected for being adjacent to 40001: the observed sandbox
+    // collision handed back a consecutive pair.
+    const seq = [7523, 8787, 18700, 40001, 40001, 40002, 18701, 40010];
     const ports = await allocatePorts(async () => seq.shift()!);
-    expect(ports).toEqual({ fleetPort: 40001, supervisorPort: 40002 });
+    expect(ports).toEqual({ fleetPort: 40001, supervisorPort: 40010 });
   });
 });
 
