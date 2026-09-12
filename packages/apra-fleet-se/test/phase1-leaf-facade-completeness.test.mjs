@@ -663,10 +663,42 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
         assert.ok(caughtErr.message.includes('exit status: 1'), `message must include the child exit status; got: ${caughtErr.message}`);
         assert.ok(caughtErr.message.includes('TAP output line 1'), `message must include a tail excerpt of child stdout; got: ${caughtErr.message}`);
         assert.ok(caughtErr.message.includes('stderr line 1'), `message must include a tail excerpt of child stderr; got: ${caughtErr.message}`);
-        // The two failure modes must never share text: case (a)'s message
-        // never says "did NOT expire", and this message never claims a
-        // timeout.
-        assert.ok(!caughtErr.message.includes('timed out'), `non-timeout message must not claim a timeout; got: ${caughtErr.message}`);
+        // apra-fleet-3swo.50: the two failure modes must never share text in
+        // the WRAPPER PREFIX -- the portion of the message the wrapper itself
+        // authors, before the quoted child stdout/stderr excerpt. The excerpt
+        // is arbitrary child output and CAN legitimately contain the
+        // substring "timed out" (e.g. an inner per-test timeout, as
+        // apra-fleet-80q3's real case did), so asserting the absence of
+        // "timed out" over the WHOLE message (including the excerpt) is a
+        // false requirement on child output content, not a real guarantee
+        // about the wrapper. Pin the distinguishing contract on the prefix,
+        // where the wrapper itself actually enforces it.
+        const wrapperPrefix = caughtErr.message.split('child stdout (tail):')[0];
+        assert.ok(
+            wrapperPrefix.includes('did NOT expire'),
+            `wrapper prefix must explicitly state the outer budget did not expire; got: ${wrapperPrefix}`,
+        );
+        assert.ok(
+            !wrapperPrefix.includes('timed out'),
+            `wrapper prefix (excluding the quoted child excerpt) must never claim a timeout; got: ${wrapperPrefix}`,
+        );
+        // Cross-check against the ETIMEDOUT branch: its wrapper prefix never
+        // claims the outer budget did NOT expire -- the two wrapper prefixes
+        // are mutually exclusive on this marker.
+        const crossCheckTimeoutError = new Error('timeout signal');
+        crossCheckTimeoutError.code = 'ETIMEDOUT';
+        crossCheckTimeoutError.signal = 'SIGTERM';
+        let crossCheckTimeoutErr;
+        try {
+            handleNestedSuiteSpawnResult('my-suite', crossCheckTimeoutError, 900_000);
+            assert.fail('should have thrown an error');
+        } catch (e) {
+            crossCheckTimeoutErr = e;
+        }
+        assert.ok(
+            !crossCheckTimeoutErr.message.includes('did NOT expire'),
+            `ETIMEDOUT wrapper prefix must never claim the outer budget did NOT expire; got: ${crossCheckTimeoutErr.message}`,
+        );
         // The original spawn error must still be reachable, unmodified, as
         // `cause` -- no information is lost, only bounded in the message text.
         assert.equal(caughtErr.cause, nonZeroError, 'original spawn error must be reachable as .cause');
