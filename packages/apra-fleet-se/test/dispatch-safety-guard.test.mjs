@@ -363,7 +363,20 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // left unguarded: both new modules are registered in GUARDED_MODULES, so the
 // aggregate checkModules(guardedModulePaths()) test below scans them, and each
 // gets its own explicit baseline count below.
-const EXPECTED_COMMAND_COUNT = 13;
+// 13 -> 12 (apra-fleet-3swo.6.3): the git-topology layer -- checkMemberTopology,
+// classifyGitFailure, runGitStep, resolveGitProviderForClassification and
+// commandResultToSoftGit -- moved out of runner.js into ./git-topology.mjs.
+// Only ONE of those five owns a command() site: runGitStep's single
+// `command(cmd, { member_name: member, silent: true, failSoft: true, label })`
+// dispatch, verified compliant. So this is -1, which is exactly 13 - 12; no
+// site was added, removed or collapsed in the move. The sync BRACKETS that
+// call it (syncMemberBefore/syncMemberAfter/syncMemberAfterOrdered/
+// resyncReacquiredMember) stayed in runner.js and were never counted here
+// themselves -- they have always issued their git commands THROUGH
+// runGitStep's one site. Not left unguarded: git-topology.mjs is registered in
+// GUARDED_MODULES, so the aggregate checkModules(guardedModulePaths()) test
+// below scans it, and it gets its own explicit baseline count below.
+const EXPECTED_COMMAND_COUNT = 12;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -926,6 +939,52 @@ test('every command() call site in phases/publish-pr.mjs passes member_name or m
         sites.filter((s) => s.fnName === 'agent').length,
         0,
         'phases/publish-pr.mjs must never dispatch an agent() directly -- it raises the PR over REST (raiseVcsPrForMember), not by dispatching a role.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-3swo.6.3: the git-topology layer sliced out of runner.js. Its
+// baseline is ONE, and that one site matters more than any other in this file:
+// runGitStep's single command() dispatch is the funnel EVERY bracketed git
+// command in fleet-sprint passes through -- runner.js's own
+// syncMemberBefore/syncMemberAfter/syncMemberAfterOrdered brackets,
+// conflict-ladder.mjs's detectAndAbortRebaseConflict (which is handed
+// runGitStep by injection), and abort.mjs's three finalize-path git calls.
+// A member_name regression at that one site would therefore mis-target every
+// git command the orchestrator issues on a member's behalf at once, which is
+// precisely why it must stay counted after leaving runner.js's scanned
+// surface. The other four symbols that moved with it issue nothing:
+// checkMemberTopology and commandResultToSoftGit are inject-driven/pure, and
+// classifyGitFailure/resolveGitProviderForClassification only classify and
+// look up. A SECOND command() site appearing here means a git command started
+// bypassing the retry/self-heal primitive, and has to move this number.
+//
+// Its agent() baseline is zero for the same reason as the phase modules above:
+// it dispatches no role at all -- it is a command primitive, not a ladder.
+// =============================================================================
+const GIT_TOPOLOGY_PATH = path.join(__dirname, '../fleet-sprint/git-topology.mjs');
+const EXPECTED_GIT_TOPOLOGY_COMMAND_COUNT = 1;
+
+test('every command() call site in git-topology.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(GIT_TOPOLOGY_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_GIT_TOPOLOGY_COMMAND_COUNT,
+        `Expected ${EXPECTED_GIT_TOPOLOGY_COMMAND_COUNT} command() call site(s) in git-topology.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_GIT_TOPOLOGY_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'git-topology.mjs must never dispatch an agent() -- it is the git command primitive layer, not a role ladder.'
     );
     assert.deepStrictEqual(
         violations,

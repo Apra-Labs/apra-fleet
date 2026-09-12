@@ -25,6 +25,11 @@ import { GitSyncError } from '../fleet-sprint/errors.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/runner.js'), 'utf8');
+// apra-fleet-3swo.6.3: classifyGitFailure moved out of runner.js into
+// fleet-sprint/git-topology.mjs, so the delegation assertion below reads its
+// source from there. The RUNNER_SRC pattern-table assertion above deliberately
+// still reads runner.js -- that one is about what runner.js must NOT contain.
+const GIT_TOPOLOGY_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/git-topology.mjs'), 'utf8');
 
 const OK = { ok: true, output: '', error: null };
 const fail = (error) => ({ ok: false, output: '', error });
@@ -324,7 +329,13 @@ describe('source assertion: runner.js carries no VCS stderr regex list (apra-fle
     });
 
     test('classifyGitFailure delegates to VCSModule (no local regex parsing of VCS stderr)', () => {
-        const fnSrc = RUNNER_SRC.slice(RUNNER_SRC.indexOf('export function classifyGitFailure'));
+        // Anchor-existence is asserted FIRST: indexOf() returning -1 makes
+        // slice(-1) yield the file's last character instead of throwing, which
+        // would fail this assertion on a one-character body while the negative
+        // assertion below passed VACUOUSLY.
+        const declIdx = GIT_TOPOLOGY_SRC.indexOf('export function classifyGitFailure');
+        assert.notEqual(declIdx, -1, 'classifyGitFailure must be declared in fleet-sprint/git-topology.mjs (re-point this slice if it moves again)');
+        const fnSrc = GIT_TOPOLOGY_SRC.slice(declIdx);
         const fnBody = fnSrc.slice(0, fnSrc.indexOf('\n}') + 2);
         assert.ok(/toGitVerdict\(\s*classifyFailure\(/.test(fnBody), `classifyGitFailure must delegate to classifyFailure/toGitVerdict, got: ${fnBody}`);
         assert.ok(!/\/(?:[^/\n]|\\\/)+\/[a-z]*\s*\.test\(/.test(fnBody), 'classifyGitFailure must not itself run a regex .test() over the stderr');
