@@ -21,6 +21,16 @@ const REGRESSION_PHASE_PATH = path.join(__dirname, '..', 'fleet-sprint', 'phases
 const regressionPhaseSource = fs.readFileSync(REGRESSION_PHASE_PATH, 'utf8');
 const FINAL_REVIEW_PHASE_PATH = path.join(__dirname, '..', 'fleet-sprint', 'phases', 'final-review.mjs');
 const finalReviewPhaseSource = fs.readFileSync(FINAL_REVIEW_PHASE_PATH, 'utf8');
+// apra-fleet-3swo.6.14 moved buildAnalysisText (verbatim) out of runner.js
+// into fleet-sprint/sprint-report.mjs, alongside the other PR-body/cost-report
+// text builders. Same re-anchoring rule as the two phase-source consts above:
+// scanning runner.js alone for buildAnalysisText's body would have gone
+// quietly vacuous the moment it left. The move was verbatim (diffed against
+// the pre-move region), so the two literal patterns the test below matches
+// against are byte-identical to what runnerSource used to contain -- only
+// their file moved.
+const SPRINT_REPORT_PATH = path.join(__dirname, '..', 'fleet-sprint', 'sprint-report.mjs');
+const sprintReportSource = fs.readFileSync(SPRINT_REPORT_PATH, 'utf8');
 
 // apra-fleet-3swo.5.7: the phase's soft-fail behaviour is now the
 // 'regression-test-runner' policy row executed by the dispatchRole engine, so
@@ -159,13 +169,16 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
     });
 
     test('buildAnalysisText renders the regression result as informational, never as a gate', () => {
+        // apra-fleet-3swo.6.14: buildAnalysisText's body (and both literal
+        // patterns below) moved verbatim to sprint-report.mjs -- re-anchored
+        // here for the same reason the phase-body assertions above are.
         assert.match(
-            runnerSource,
+            sprintReportSource,
             /regressionResult = null,/,
             'buildAnalysisText must accept a regressionResult parameter defaulting to null (the not-run case)',
         );
         assert.match(
-            runnerSource,
+            sprintReportSource,
             /Informational only -- this pass ran after the final verdict and did not gate it/,
             'the analysis doc must state plainly that the regression pass did not gate the sprint',
         );

@@ -278,6 +278,22 @@ export const GUARDED_MODULES = [
     // body range -- is found by scanning this file), so this module must be
     // scanned for that sanction to mean anything.
     'beads-children.mjs',
+    // apra-fleet-3swo.6.14: the PR-body/cost-report text surface
+    // (sprint-report.mjs: sanitizePrText, buildAnalysisText, buildCostAnalysis,
+    // computeBranchSlug) and the verdict/newTask text surface
+    // (newtask-text.mjs: extractContestedBeadIds, SAFE_TEXT_RE,
+    // normalizeTierToken, trackRejectedNewTaskForResurfacing,
+    // clearResubmittedNewTask, reconcilePendingRejectedNewTasks,
+    // buildRejectedNewTaskResurfaceLines), both sliced out of runner.js.
+    //
+    // Neither took a member_name-bearing command() or agent() call site out of
+    // runner.js -- every one of these eleven symbols is pure text
+    // formatting/validation with no bd/git/dispatch surface of its own -- so
+    // both get a ZERO baseline in dispatch-safety-guard.test.mjs. The zero is
+    // not a formality: it is what turns a future raw command()/agent() landing
+    // in either file into a red test instead of a silently unguarded site.
+    'sprint-report.mjs',
+    'newtask-text.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left
