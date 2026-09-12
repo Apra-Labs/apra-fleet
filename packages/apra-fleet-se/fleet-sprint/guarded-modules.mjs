@@ -294,6 +294,23 @@ export const GUARDED_MODULES = [
     // in either file into a red test instead of a silently unguarded site.
     'sprint-report.mjs',
     'newtask-text.mjs',
+    // apra-fleet-3swo.6.15: the round-resume session registry
+    // (round-session.mjs: DEFAULT_CONTEXT_CEILING, createRoundSessionRegistry)
+    // and the dispatch-outcome classification surface (dispatch-failure.mjs:
+    // isTerminalSprintFailure, isNoMutationDispatchFailure,
+    // withDispatchWatchdog), both sliced out of runner.js.
+    //
+    // Neither took a member_name-bearing command() or agent() call site out of
+    // runner.js -- round-session.mjs is a pure in-memory session map with no
+    // bd/git/dispatch surface, and dispatch-failure.mjs only CLASSIFIES an
+    // already-thrown error or races an already-in-flight dispatch PROMISE
+    // (dispatch-role.mjs owns the one real agent() call site that promise
+    // comes from) -- so both get a ZERO baseline in
+    // dispatch-safety-guard.test.mjs. The zero is not a formality: it is what
+    // turns a future raw command()/agent() landing in either file into a red
+    // test instead of a silently unguarded site.
+    'round-session.mjs',
+    'dispatch-failure.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left

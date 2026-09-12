@@ -279,6 +279,19 @@ import {
 import {
     sanitizePrText, buildAnalysisText, buildCostAnalysis, computeBranchSlug,
 } from './sprint-report.mjs';
+// The per-role, per-cycle round-resume session registry: DEFAULT_CONTEXT_CEILING
+// and createRoundSessionRegistry. Extracted out of runner.js
+// (apra-fleet-3swo.6.15); imported only to be re-exported below, unchanged, so
+// no importer of runner.js is edited by the move.
+import { DEFAULT_CONTEXT_CEILING, createRoundSessionRegistry } from './round-session.mjs';
+// The dispatch-outcome classification surface: isTerminalSprintFailure,
+// isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
+// runner.js (apra-fleet-3swo.6.15); imported only to be re-exported below,
+// unchanged, so no importer of runner.js is edited by the move. Kept distinct
+// from dispatch-role.mjs -- see that module's header vs. this one's for why.
+import {
+    isTerminalSprintFailure, isNoMutationDispatchFailure, withDispatchWatchdog,
+} from './dispatch-failure.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -425,6 +438,14 @@ export {
 // module-private before the move and is imported (not re-exported) purely for
 // this file's own Harvest-phase call site.
 export { sanitizePrText, buildCostAnalysis, computeBranchSlug };
+// Re-exported so importers of the round-resume session registry from
+// runner.js keep working; round-session.mjs is the single source of truth for
+// their implementation (apra-fleet-3swo.6.15).
+export { DEFAULT_CONTEXT_CEILING, createRoundSessionRegistry };
+// Re-exported so importers of the dispatch-outcome classification surface
+// from runner.js keep working; dispatch-failure.mjs is the single source of
+// truth for their implementation (apra-fleet-3swo.6.15).
+export { isTerminalSprintFailure, isNoMutationDispatchFailure, withDispatchWatchdog };
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
@@ -672,93 +693,10 @@ export async function resolveSettleShell({ args, member, log = () => {}, sprintS
 // Develop/Review loop prompt builders + pure helpers
 // ---------------------------------------------------------------------------
 
-// Ceiling, in estimated tokens, above which a resumed session is treated as
-// near its context window (see createRoundSessionRegistry).
-export const DEFAULT_CONTEXT_CEILING = 150000;
-
-/**
- * Per-role, per-cycle session registry driving "round resume": within ONE
- * sprint cycle's approval loop a role (planner, reviewer, ...) resumes its OWN
- * prior-round session by explicit session id, so a re-plan / re-review keeps
- * the context it already built. The session id comes from agent()'s
- * onSessionId callback (packages/apra-fleet-workflow).
- *
- * Guards, all enforced here so the call sites stay tiny:
- *   - NEVER resume across cycles (fresh eyes): an entry is keyed to the cycle
- *     it was recorded in; asking for another cycle yields a fresh session.
- *   - A failed/timed-out round resumes nothing: its call site invokes
- *     clear(role), so a broken partial context is never carried forward.
- *   - An entry whose recorded usage was at/above `ceilingFraction` of
- *     `contextCeiling` yields a fresh session, since resuming a session near
- *     its window limit starts the next round out of room. This only bites when
- *     the provider actually reported usage: with no usage number the entry is
- *     never flagged near-ceiling and resume proceeds.
- *   - Resume support is detected by CAPABILITY, not provider name: a provider
- *     that cannot resume returns no session id, record() stores nothing, and
- *     resumeArgFor() yields `false`. There is deliberately no
- *     `provider === 'claude'`-style name test anywhere.
- *
- * @param {{ log?: (msg: string) => void, contextCeiling?: number, ceilingFraction?: number }} [opts]
- */
-export function createRoundSessionRegistry(opts = {}) {
-    const log = typeof opts.log === 'function' ? opts.log : () => {};
-    const contextCeiling = typeof opts.contextCeiling === 'number' && opts.contextCeiling > 0
-        ? opts.contextCeiling
-        : DEFAULT_CONTEXT_CEILING;
-    const ceilingFraction = typeof opts.ceilingFraction === 'number' && opts.ceilingFraction > 0
-        ? opts.ceilingFraction
-        : 0.9;
-    // role -> { cycle: number, sessionId: string, nearCeiling: boolean }
-    const byRole = new Map();
-
-    /**
-     * Record the session id a dispatch of `role` returned during `cycle`.
-     * A no-op for a missing/empty id (e.g. a provider that does not support
-     * resume) so the next round stays fresh.
-     */
-    function record(role, cycle, sessionId, meta = {}) {
-        if (!role || typeof sessionId !== 'string' || sessionId === '') {
-            return;
-        }
-        const totalTokens = meta && meta.usage && typeof meta.usage.total_tokens === 'number'
-            ? meta.usage.total_tokens
-            : null;
-        const nearCeiling = totalTokens !== null && totalTokens >= contextCeiling * ceilingFraction;
-        byRole.set(role, { cycle, sessionId, nearCeiling });
-        if (nearCeiling) {
-            log(`[round-resume] ${role} session recorded near the context ceiling ` +
-                `(~${totalTokens} tokens >= ${Math.round(contextCeiling * ceilingFraction)}); ` +
-                `the next round in this cycle will start a FRESH session.`);
-        }
-    }
-
-    /**
-     * The `resume` argument the NEXT dispatch of `role` in `cycle` should carry:
-     * the stored session id (a string) to resume that same session, or `false`
-     * to start fresh. Fresh whenever there is no prior round, the prior round
-     * was in a different cycle, the prior round ended near the context ceiling,
-     * or no session id was ever captured (provider without resume support).
-     */
-    function resumeArgFor(role, cycle) {
-        const entry = byRole.get(role);
-        if (!entry) return false;                 // no prior round -> fresh (R1)
-        if (entry.cycle !== cycle) return false;  // never resume across cycles
-        if (entry.nearCeiling) return false;      // near context ceiling -> fresh
-        if (!entry.sessionId) return false;       // no captured id -> fresh
-        return entry.sessionId;                   // resume THAT session explicitly
-    }
-
-    /**
-     * Drop any stored session for `role` so its next round starts fresh. Called
-     * by a dispatch site when the just-run round failed/timed out -- resuming a
-     * failed session would carry a broken/partial context forward.
-     */
-    function clear(role) {
-        byRole.delete(role);
-    }
-
-    return { record, resumeArgFor, clear };
-}
+// DEFAULT_CONTEXT_CEILING and createRoundSessionRegistry live in
+// round-session.mjs (apra-fleet-3swo.6.15) -- the round-resume session
+// registry driving "round resume" across a cycle's approval loop; both are
+// re-exported from this file above.
 
 /**
  * Builds the self-contained reviewer dispatch prompt. The reviewer is
@@ -793,121 +731,12 @@ export function createRoundSessionRegistry(opts = {}) {
 // (apra-fleet-3swo.4.7) alongside the reopen/replan transitions that consume
 // the same verdict contract; it is re-exported from this file above.
 
-// Deliberately BROADER than isTypedAbortError(): every terminal WorkflowError
-// except a cooperative cancellation. The two predicates answer two different
-// questions in main()'s catch and must not be collapsed:
-//   - isTerminalSprintFailure() gates the terminal run-state record, which
-//     exists so the supervisor watchdog can classify a run whose PID is gone as
-//     FINISHED-with-a-reason rather than CRASHED. EVERY terminal typed failure
-//     needs that, not just the aborts -- e.g. a Planner AgentDispatchError from
-//     a dead interactive session must surface a reason, not look like a crash.
-//   - isTypedAbortError() gates finalizeAbort()'s branch push + [ABORTED] PR,
-//     which is only worth doing where there is a genuine sprint abort whose
-//     partial work a human should look at.
-// An untyped throw (a plain Error/TypeError -- i.e. a real bug) is deliberately
-// NOT terminal here: it keeps flowing to the CLI's top-level catch with no
-// record, so the watchdog still reports it as CRASHED.
-export function isTerminalSprintFailure(err) {
-    if (!err || err instanceof CancelledError) return false;
-    return err instanceof WorkflowError || isTypedAbortError(err);
-}
-
-// AgentDispatchError reasons that mean the agent PROVABLY RAN before the
-// dispatch failed, so its (possibly partial) code/beads work still has to be
-// published and its teardown must run normally:
-//   - 'max_turns_exhausted': the resumable partial-work case -- the agent hit
-//     its turn ceiling after doing real work;
-//   - 'watchdog_timeout': withDispatchWatchdog() fired locally on an
-//     already-in-flight dispatch. The prompt was DELIVERED and the member is
-//     alive-but-silent, so the turn may have run to completion (a stalled
-//     planner can have created the whole DAG) with only the RESULT lost. The
-//     watchdog abandons the dispatch promise, not the member's work.
-const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout']);
-
-// True when a thrown dispatch error means the dispatch delivered no usable
-// result and therefore produced no code/beads mutation to publish: a failed
-// agent dispatch (AgentDispatchError, minus the AGENT_RAN_DISPATCH_REASONS
-// above), a dispatch-channel transport failure (FleetTransportError), or a
-// PRE-dispatch typed sprint abort. The orchestrator's post-dispatch sync
-// teardown is then wasted work and is skipped (see withGitSync).
-//
-// Deliberately EXCLUDED:
-//   - AgentOutputError: the LLM RESPONDED and only its output was
-//     empty/unparseable/schema-invalid. A schema-invalid response routinely
-//     follows real committed work (the agent did the job, then botched the
-//     report), so its teardown must run. This is the status quo -- the class
-//     was never named here and, post-apra-fleet-9ta.1, isTypedAbortError() is
-//     false for it -- pinned explicitly so a future edit cannot silently
-//     re-sweep it in;
-//   - every POST-dispatch typed abort. The predicate used to fold in the whole
-//     of isTypedAbortError(), but only errors thrown from INSIDE withGitSync's
-//     `dispatchFn` can ever reach it, and the curated abort set is dominated by
-//     aborts the runner raises AFTER a dispatch already returned and mutated
-//     beads (SprintPlanRejectedError, ReviewerContractViolationError,
-//     StalledSprintError) or by divergences the SYNC brackets themselves throw
-//     (GitDivergedError/DoltDivergedError), none of which are reachable here.
-//     BudgetExceededError is the one genuinely pre-dispatch member: agent()/
-//     command() throw it from inside the dispatch closure BEFORE any dispatch
-//     is issued (packages/apra-fleet-workflow/src/workflow/errors.mjs), so it
-//     alone provably mutated nothing.
-export function isNoMutationDispatchFailure(err) {
-    if (!err) return false;
-    if (err instanceof AgentOutputError) return false;
-    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason)) {
-        return false;
-    }
-    return err instanceof AgentDispatchError || err instanceof FleetTransportError || err instanceof BudgetExceededError;
-}
-
-// ---------------------------------------------------------------------------
-// Client-side dispatch watchdog
-// ---------------------------------------------------------------------------
-//
-// A member process can stay alive while producing no further output after a
-// prompt is delivered -- a state no liveness check detects. `timeout_s` is
-// threaded to execute_prompt on every dispatch, but server-side enforcement
-// cannot be the only guard against an alive-but-silent orchestrator, so this
-// adds a client-side backstop that depends on nothing the server does.
-//
-// withDispatchWatchdog() races an already-in-flight dispatch promise against a
-// local timer of `timeoutS` plus this grace period, the grace existing so the
-// server's own timeout gets first refusal at producing a clean error. If the
-// dispatch has not settled by then, the race rejects with a typed
-// AgentDispatchError (reason 'watchdog_timeout') rather than leaving the caller
-// awaiting silently, and that typed error follows the same abort routing as
-// every other typed dispatch failure here. Promise.race() attaches its own
-// handler to the abandoned dispatch promise, so a late settlement after the
-// watchdog fired is dropped rather than becoming an unhandled rejection.
-const DISPATCH_WATCHDOG_GRACE_S = 30;
-
-/**
- * @param {Promise<any>} dispatchPromise - an ALREADY-STARTED dispatch (e.g. an agent() call).
- * @param {{ timeoutS: number, member?: string, label?: string, log?: (msg: string) => void }} opts
- * @returns {Promise<any>}
- */
-export function withDispatchWatchdog(dispatchPromise, opts = {}) {
-    const { timeoutS, member = 'unknown', label = 'dispatch', log = () => {} } = opts;
-    const budgetMs = (timeoutS + DISPATCH_WATCHDOG_GRACE_S) * 1000;
-    let timer;
-    const watchdogPromise = new Promise((_resolve, reject) => {
-        timer = setTimeout(() => {
-            const message = `[dispatch-watchdog] ${label} to member '${member}' produced no result within ${timeoutS}s (+${DISPATCH_WATCHDOG_GRACE_S}s grace) -- treating this attempt as a stalled/dead session and aborting it (no code path may leave this orchestrator alive-but-silent past its configured dispatch_timeout_s).`;
-            log(message);
-            reject(new AgentDispatchError(
-                `[Workflow Error] ${label} timed out (watchdog): no response from '${member}' within ${timeoutS}s (+${DISPATCH_WATCHDOG_GRACE_S}s grace).`,
-                { details: { reason: 'watchdog_timeout', member, timeoutS, graceS: DISPATCH_WATCHDOG_GRACE_S } }
-            ));
-        }, budgetMs);
-        // The timer is deliberately NOT unref'd. A never-settling dispatch can
-        // leave this timer as the only work on the event loop; an unref'd timer
-        // would then let the loop drain before it fires, so the abort would
-        // never happen and the process would hang -- exactly what this watchdog
-        // exists to prevent. Keeping it ref'd holds the loop open until the
-        // abort fires; a dispatch that settles first is released by the
-        // clearTimeout() below, so a fast dispatch never delays process exit.
-    });
-    return Promise.race([dispatchPromise, watchdogPromise]).finally(() => clearTimeout(timer));
-}
+// isTerminalSprintFailure, isNoMutationDispatchFailure and
+// withDispatchWatchdog -- the dispatch-outcome classification surface -- live
+// in dispatch-failure.mjs (apra-fleet-3swo.6.15), kept distinct from
+// dispatch-role.mjs (the engine that PERFORMS a dispatch) because these three
+// classify or bound the OUTCOME of one instead. All three are re-exported
+// from this file above.
 
 async function runSprintCycle(context) {
     const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget, setPauseGuard } = context;
