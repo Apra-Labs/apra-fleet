@@ -26,6 +26,9 @@ import {
 import { PLANNING_LADDERS, PLANNING_ENGINE_DISPATCHES } from './helpers/planning-ladders.mjs';
 import { EXECUTION_INLINE_LADDERS, EXECUTION_ENGINE_DISPATCHES } from './helpers/execution-ladders.mjs';
 import { bdMode } from './helpers/bd-replay.mjs';
+// apra-fleet-3swo.53: shared with phase1-leaf-facade-completeness.test.mjs
+// -- see that module's header for why this was extracted.
+import { handleNestedSuiteSpawnResult } from './helpers/nested-suite-spawn.mjs';
 import {
     createRecordingCtx,
     ROLE_CALL_OPTS,
@@ -1408,77 +1411,13 @@ function nestedChildEnv(sandboxDir) {
 }
 
 // -----------------------------------------------------------------------------
-// apra-fleet-3swo.49: bound how much of a failing child's stdout/stderr gets
-// quoted into the wrapped non-timeout error message below, so a
-// multi-megabyte nested suite failure cannot flood the outer test report.
-// Ported from phase1-leaf-facade-completeness.test.mjs's identical constant.
+// apra-fleet-3swo.53: this gate's own name for the shared
+// handleNestedSuiteSpawnResult helper imported above (the excerpt cap,
+// excerptChildOutput, and the handler itself now live in
+// helpers/nested-suite-spawn.mjs, shared with phase1-leaf-facade-
+// completeness.test.mjs -- see that module's header for why).
 // -----------------------------------------------------------------------------
-const MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS = 4000;
-
-/**
- * Returns a length-capped tail excerpt of a (possibly huge, possibly
- * undefined) child stdout/stderr string, annotated when truncated.
- */
-function excerptChildOutput(text) {
-    if (!text) return '(empty)';
-    if (text.length <= MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS) return text;
-    return (
-        `...[truncated, showing last ${MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS} of ${text.length} chars]...\n` +
-        text.slice(-MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS)
-    );
-}
-
-/**
- * Pure helper: turns a spawnSync error (or lack thereof) into either a pass
- * (returns void) or throws with a descriptive message. Extracted for testing
- * (see section (6b) below), mirroring phase1-leaf-facade-completeness.test.mjs's
- * handleNestedSuiteSpawnResult (apra-fleet-80q3.1).
- *
- * apra-fleet-3swo.49: this file's three nested suites (dispatch-behaviour-pins,
- * golden-transcript, mock-sprint) share one outer budget, so before this fix an
- * inner child failure here was reported as whatever the inner suite printed
- * (a bare `throw err;`), with no indication of which outer nested suite
- * produced it and no statement that the outer budget did not expire -- the
- * same "the budget fix did not hold" misdiagnosis apra-fleet-80q3 fixed for
- * phase1. The non-timeout branch now names the outer suite label, states
- * explicitly that the outer budget (plus its source, the same backend-aware
- * string the ETIMEDOUT branch already carries) did NOT expire, and quotes
- * the child's exit status plus a length-capped tail of its stdout/stderr,
- * keeping the original error reachable as `.cause` so no information is
- * lost. Naming the source here matters as much as it does for the timeout
- * branch: it is exactly the distinction that caused the apra-fleet-hhjh vs
- * apra-fleet-80q3 misdiagnosis in the first place.
- *
- * @param {string} suiteLabel - name of the nested suite (e.g., 'golden-transcript')
- * @param {Error|null} spawnError - error from execFileSync (or null on success)
- * @param {number} budgetMs - timeout budget in milliseconds
- * @param {string} budgetSource - human-readable description of where budgetMs came from
- * @throws {Error} if spawnError is truthy (wrapped ETIMEDOUT, or wrapped inner failure with cause)
- */
-function handleNestedSuiteSpawnResult(suiteLabel, spawnError, budgetMs, budgetSource) {
-    if (!spawnError) {
-        // Success case: no error, nothing to throw
-        return;
-    }
-    if (spawnError.code === 'ETIMEDOUT') {
-        throw new Error(
-            `nested suite '${suiteLabel}' exceeded its ${budgetMs}ms budget, from ${budgetSource}. ` +
-            'Raise PHASE3_NESTED_SUITE_TIMEOUT_MS if this run is genuinely this slow here.'
-        );
-    }
-    // Non-timeout failure: the failure is INSIDE the nested child, not the
-    // outer budget expiring. Wrap it so that fact is stated explicitly,
-    // keeping the original error reachable as `cause`.
-    const status = spawnError.status === undefined || spawnError.status === null ? 'unknown' : spawnError.status;
-    throw new Error(
-        `nested suite '${suiteLabel}' failed, but its outer budget of ${budgetMs}ms (from ${budgetSource}) did NOT ` +
-        `expire -- the failure is inside the nested child itself, not this gate's own timeout. child exit status: ` +
-        `${status}. ` +
-        `child stdout (tail):\n${excerptChildOutput(spawnError.stdout)}\n` +
-        `child stderr (tail):\n${excerptChildOutput(spawnError.stderr)}`,
-        { cause: spawnError },
-    );
-}
+const PHASE3_ENV_VAR_NAME = 'PHASE3_NESTED_SUITE_TIMEOUT_MS';
 
 /** Runs a nested `node --test` child and returns its stdout, or throws describing the timeout. */
 function runNestedSuite(suiteLabel, args, extraOpts = {}) {
@@ -1518,7 +1457,7 @@ function runNestedSuite(suiteLabel, args, extraOpts = {}) {
         });
         fs.rmSync(sandbox, { recursive: true, force: true });
     }
-    handleNestedSuiteSpawnResult(suiteLabel, spawnError, NESTED_SUITE_TIMEOUT_MS, NESTED_SUITE_TIMEOUT_BUDGET.source);
+    handleNestedSuiteSpawnResult(suiteLabel, spawnError, NESTED_SUITE_TIMEOUT_MS, NESTED_SUITE_TIMEOUT_BUDGET.source, PHASE3_ENV_VAR_NAME);
 }
 
 /**
@@ -1564,7 +1503,7 @@ describe('(6b) the extracted handleNestedSuiteSpawnResult helper converts spawn 
         timeoutError.status = null;
 
         assert.throws(
-            () => handleNestedSuiteSpawnResult('my-golden-suite', timeoutError, 900_000, 'the mock-bd default'),
+            () => handleNestedSuiteSpawnResult('my-golden-suite', timeoutError, 900_000, 'the mock-bd default', PHASE3_ENV_VAR_NAME),
             (err) => {
                 const msg = err.message;
                 assert.ok(msg.includes('my-golden-suite'), `message must include suite label; got: ${msg}`);
@@ -1624,7 +1563,7 @@ describe('(6b) the extracted handleNestedSuiteSpawnResult helper converts spawn 
         crossCheckTimeoutError.signal = 'SIGTERM';
         let crossCheckTimeoutErr;
         try {
-            handleNestedSuiteSpawnResult('my-suite', crossCheckTimeoutError, 900_000, 'the mock-bd default');
+            handleNestedSuiteSpawnResult('my-suite', crossCheckTimeoutError, 900_000, 'the mock-bd default', PHASE3_ENV_VAR_NAME);
             assert.fail('should have thrown an error');
         } catch (e) {
             crossCheckTimeoutErr = e;
@@ -1674,9 +1613,11 @@ describe('(6b) the extracted handleNestedSuiteSpawnResult helper converts spawn 
     test('the handler is the same function runNestedSuite uses (single definition, import-proven)', () => {
         // Proof of single-definition identity: runNestedSuite calls
         // handleNestedSuiteSpawnResult directly (no re-export or indirect
-        // import) in its post-finally step, and this test file calls the
-        // same function from this scope. If handleNestedSuiteSpawnResult
-        // were copied/duplicated for testing only, a mutation here would not
+        // import) in its post-finally step, and this test file imports the
+        // SAME function from the shared helpers/nested-suite-spawn.mjs
+        // module (apra-fleet-3swo.53) that phase1-leaf-facade-completeness
+        // .test.mjs also imports. If handleNestedSuiteSpawnResult were
+        // copied/duplicated for testing only, a mutation here would not
         // propagate to the real calls, and the acceptance criterion would be
         // violated.
         const testErrorOk = new Error('test');
@@ -1685,15 +1626,16 @@ describe('(6b) the extracted handleNestedSuiteSpawnResult helper converts spawn 
 
         let directCallThrew = false;
         try {
-            handleNestedSuiteSpawnResult('test', testErrorOk, 900_000, 'the mock-bd default');
+            handleNestedSuiteSpawnResult('test', testErrorOk, 900_000, 'the mock-bd default', PHASE3_ENV_VAR_NAME);
         } catch (e) {
             directCallThrew = true;
         }
         assert.ok(directCallThrew, 'direct call must throw on ETIMEDOUT');
 
-        // The function is defined at module scope, before describe() blocks,
-        // so this assertion would fail if it were only defined inside a test.
-        assert.equal(typeof handleNestedSuiteSpawnResult, 'function', 'handleNestedSuiteSpawnResult must be defined at module scope for runNestedSuite to use');
+        // The function is imported at module scope (import statements are
+        // hoisted above every describe() block), so this assertion would
+        // fail if the import were missing or shadowed.
+        assert.equal(typeof handleNestedSuiteSpawnResult, 'function', 'handleNestedSuiteSpawnResult must be imported at module scope for runNestedSuite to use');
     });
 });
 
