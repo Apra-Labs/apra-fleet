@@ -47,6 +47,17 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const PRODUCTION_FLEET_PORT = 7523;
 const PRODUCTION_SUPERVISOR_PORT = 8787;
 const RESERVED_PORTS = new Set([PRODUCTION_FLEET_PORT, PRODUCTION_SUPERVISOR_PORT, 18700, 18701]);
+// An OS-assigned port is released before the spawned child binds it, so under a
+// concurrent test suite another process can win it (TOCTOU). `up` recovers by
+// re-allocating and re-launching, but only this many times and only when the
+// failure is PROVEN to be a lost port race -- never as a blind retry.
+const MAX_PORT_BIND_ATTEMPTS = 3;
+const PORT_CONFLICT_RE = /EADDRINUSE|address already in use/i;
+// A process we just killed can hold its listener for a moment after its pid
+// is gone (Windows especially) -- both teardown's port-free wait and
+// lostPortRace's port-probe fallback poll for this same grace window instead
+// of trusting a single immediate probe (apra-fleet-3swo.48).
+const PORT_RELEASE_GRACE_MS = 5000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (msg) => console.error(`[sandbox-deploy] ${msg}`);
@@ -158,6 +169,41 @@ export function isPortFree(port) {
   });
 }
 
+/** Tag an error as "this port was taken between allocation and bind" so `up`
+ *  can re-allocate and re-launch instead of giving up. */
+function portConflictError(role, port, message) {
+  const err = new SandboxDeployError(message);
+  err.portConflict = { role, port };
+  return err;
+}
+
+/** True when a child that never came up lost the allocate-then-bind race:
+ *  either its log says so, or -- with our own pid already dead -- the port is
+ *  STILL bound after a grace window, which can only be a foreign holder.
+ *  Never a bare guess.
+ *
+ *  The port-probe fallback is only reached when the log shows no EADDRINUSE,
+ *  which also covers a child that DID bind the port and only failed for a
+ *  reason unrelated to ports (crashed after listening, never wrote
+ *  server.json, answered /health with the wrong pid). By the time this runs,
+ *  the caller has already stopPid()'d that child, but its listener can
+ *  briefly outlive its pid (Windows especially -- the same reason teardown's
+ *  own port-free wait polls instead of probing once). A single immediate
+ *  probe cannot tell that apart from a genuine foreign winner, so this polls
+ *  for the SAME grace window teardown uses: the port is ours (not a lost
+ *  race) if it frees up anywhere within that window, since a real foreign
+ *  winner keeps holding it for the whole window. */
+export async function lostPortRace(logPath, port) {
+  try {
+    if (PORT_CONFLICT_RE.test(fs.readFileSync(logPath, 'utf8'))) return true;
+  } catch { /* no log to read: fall through to the port probe */ }
+  for (const deadline = Date.now() + PORT_RELEASE_GRACE_MS; ;) {
+    if (await isPortFree(port)) return false;
+    if (Date.now() >= deadline) return true;
+    await sleep(250);
+  }
+}
+
 function osAssignedPort() {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
@@ -169,12 +215,17 @@ function osAssignedPort() {
   });
 }
 
-/** Two distinct OS-assigned free ports, never a reserved production/test port. */
-export async function allocatePorts(pick = osAssignedPort) {
+/** Two OS-assigned free ports: never a reserved production/test port, never a
+ *  port a previous `up` attempt already lost, and never ADJACENT to each other
+ *  -- the observed collision handed back a consecutive pair, so one process
+ *  sweeping upward from its own port lands on ours. */
+export async function allocatePorts(pick = osAssignedPort, exclude = []) {
+  const banned = new Set([...RESERVED_PORTS, ...exclude.map(Number)]);
   const chosen = [];
   for (let attempt = 0; attempt < 20 && chosen.length < 2; attempt += 1) {
     const port = await pick();
-    if (RESERVED_PORTS.has(port) || chosen.includes(port)) continue;
+    if (!Number.isInteger(port) || banned.has(port)) continue;
+    if (chosen.some((p) => Math.abs(p - port) <= 1)) continue;
     chosen.push(port);
   }
   if (chosen.length < 2) throw new SandboxDeployError('could not allocate two free ports');
@@ -261,14 +312,14 @@ export async function checkProductionUnchanged(values, home = os.homedir()) {
 // Subcommands
 // ---------------------------------------------------------------------------
 
-export async function init(sprintId, { home = os.homedir(), pickPort } = {}) {
+export async function init(sprintId, { home = os.homedir(), pickPort, excludePorts = [] } = {}) {
   const existing = readValues(sprintId, home);
   if (existing) {
     log(`values file for this sprint already exists (${valuesFilePath(sprintId, home)}) -- tearing the stale sandbox down first`);
     await teardown(sprintId, { home });
   }
   const root = sandboxRootPath(sprintId, home);
-  const { fleetPort, supervisorPort } = await allocatePorts(pickPort);
+  const { fleetPort, supervisorPort } = await allocatePorts(pickPort, excludePorts);
   fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(path.join(root, 'mcp'), { recursive: true });
   fs.mkdirSync(path.join(root, 'se'), { recursive: true });
@@ -319,7 +370,9 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
 
   // 1. Fleet MCP server. Spawned directly (what `apra-fleet start` does
   //    internally for a non-default instance) so the pid is known here.
-  if (!(await isPortFree(fleetPort))) throw new SandboxDeployError(`fleet port ${fleetPort} is no longer free -- re-run 'init'`);
+  if (!(await isPortFree(fleetPort))) {
+    throw portConflictError('fleet', fleetPort, `fleet port ${fleetPort} is no longer free -- re-run 'init'`);
+  }
   const mcpPid = spawnDetached([distIndex, '--transport', 'http'], env, path.join(root, 'fleet-server.log'));
   values.MCP_PID = String(mcpPid);
   writeValues(sprintId, values, home);
@@ -332,7 +385,10 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
   }
   if (!info || !info.pid) {
     await stopPid(mcpPid);
-    throw new SandboxDeployError(`sandbox fleet server did not write ${serverJsonPath} -- see ${path.join(root, 'fleet-server.log')}`);
+    const fleetLog = path.join(root, 'fleet-server.log');
+    const msg = `sandbox fleet server did not write ${serverJsonPath} -- see ${fleetLog}`;
+    if (await lostPortRace(fleetLog, fleetPort)) throw portConflictError('fleet', fleetPort, msg);
+    throw new SandboxDeployError(msg);
   }
   if (String(info.pid) !== String(mcpPid)) {
     await stopPid(mcpPid);
@@ -342,7 +398,7 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
     // EADDRINUSE silent-rebind (src/services/http-transport.ts): kill what we
     // started rather than proceed against the wrong port.
     await stopPid(mcpPid);
-    throw new SandboxDeployError(`sandbox fleet server bound ${info.port}, not ${fleetPort} (port was taken between allocation and bind) -- torn down; re-run 'init'`);
+    throw portConflictError('fleet', fleetPort, `sandbox fleet server bound ${info.port}, not ${fleetPort} (port was taken between allocation and bind) -- torn down; re-run 'init'`);
   }
   const health = await getJson(`http://127.0.0.1:${fleetPort}/health`, 5000);
   if (!health || String(health.pid) !== String(mcpPid)) {
@@ -358,7 +414,7 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
   //    above is what makes it a sandbox supervisor.
   if (!(await isPortFree(supervisorPort))) {
     await stopPid(mcpPid);
-    throw new SandboxDeployError(`supervisor port ${supervisorPort} is no longer free -- torn down; re-run 'init'`);
+    throw portConflictError('supervisor', supervisorPort, `supervisor port ${supervisorPort} is no longer free -- torn down; re-run 'init'`);
   }
   const serve = path.join(repoRoot, 'packages', 'apra-fleet-se', 'bin', 'serve.mjs');
   const supPid = spawnDetached([serve, '--port', String(supervisorPort)], env, path.join(root, 'supervisor.log'));
@@ -374,7 +430,10 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
   if (!supHealth) {
     await stopPid(supPid);
     await stopPid(mcpPid);
-    throw new SandboxDeployError(`sandbox supervisor did not answer /api/health with pid ${supPid} on ${supervisorPort} (EADDRINUSE, or crashed) -- torn down; see ${path.join(root, 'supervisor.log')}`);
+    const supLog = path.join(root, 'supervisor.log');
+    const msg = `sandbox supervisor did not answer /api/health with pid ${supPid} on ${supervisorPort} (EADDRINUSE, or crashed) -- torn down; see ${supLog}`;
+    if (await lostPortRace(supLog, supervisorPort)) throw portConflictError('supervisor', supervisorPort, msg);
+    throw new SandboxDeployError(msg);
   }
   log(`supervisor up: pid=${supPid} port=${supervisorPort}`);
   return values;
@@ -435,7 +494,10 @@ async function stopOwned({ label, pid, port, healthPath, expectedPid }) {
   return `${label}: pid ${pid} is still alive after SIGTERM/SIGKILL`;
 }
 
-export async function teardown(sprintId, { home = os.homedir() } = {}) {
+/** `foreignPorts`: ports PROVEN to be held by another process (a lost
+ *  allocate-then-bind race). Their listener is not ours to wait on, so it is
+ *  not a teardown failure -- every pid check still applies unchanged. */
+export async function teardown(sprintId, { home = os.homedir(), foreignPorts = [] } = {}) {
   const file = valuesFilePath(sprintId, home);
   const values = readValues(sprintId, home);
   if (!values) {
@@ -471,8 +533,12 @@ export async function teardown(sprintId, { home = os.homedir() } = {}) {
   //    (Windows especially), so poll briefly instead of a single probe.
   for (const [label, port] of [['fleet', fleetPort], ['supervisor', supervisorPort]]) {
     if (!Number.isInteger(port) || port <= 0) continue;
+    if (foreignPorts.map(Number).includes(port)) {
+      log(`${label} port ${port} is held by the process that won it, not by us -- not waiting for it`);
+      continue;
+    }
     let free = false;
-    for (const deadline = Date.now() + 5000; Date.now() < deadline && !(free = await isPortFree(port)); await sleep(250));
+    for (const deadline = Date.now() + PORT_RELEASE_GRACE_MS; Date.now() < deadline && !(free = await isPortFree(port)); await sleep(250));
     if (!free) problems.push(`${label} port ${port} is still bound`);
   }
   if (problems.length) {
@@ -491,15 +557,41 @@ export async function teardown(sprintId, { home = os.homedir() } = {}) {
 }
 
 export async function up(sprintId, opts = {}) {
-  await init(sprintId, opts);
-  try {
-    await start(sprintId, opts);
-    await verify(sprintId, opts);
-    await smoke(sprintId, opts);
-  } catch (err) {
-    log(`FAILED (${err.message}) -- tearing down what was started`);
-    try { await teardown(sprintId, opts); } catch (tdErr) { log(tdErr.message); }
-    throw err;
+  // Recovery for the allocate-then-bind window ONLY: a failure is retried iff
+  // start() proved the port was taken by someone else (err.portConflict), each
+  // retry re-allocates ports that exclude every port already lost, and the
+  // whole thing is bounded by MAX_PORT_BIND_ATTEMPTS. Any other failure -- and
+  // any teardown that did not fully succeed -- propagates immediately, so a
+  // half-up sandbox can never be reported as success.
+  const lostPorts = [];
+  const triedPairs = [];
+  for (let attempt = 1; ; attempt += 1) {
+    const allocated = await init(sprintId, { ...opts, excludePorts: lostPorts });
+    triedPairs.push(`${allocated.APRA_FLEET_PORT}/${allocated.SUPERVISOR_PORT}`);
+    try {
+      await start(sprintId, opts);
+      await verify(sprintId, opts);
+      await smoke(sprintId, opts);
+      break;
+    } catch (err) {
+      log(`FAILED (${err.message}) -- tearing down what was started`);
+      const conflict = err && err.portConflict;
+      let tornDown = true;
+      try {
+        // A port we lost is still bound by its winner; that is not our leak.
+        await teardown(sprintId, { ...opts, foreignPorts: conflict ? [conflict.port] : [] });
+      } catch (tdErr) { tornDown = false; log(tdErr.message); }
+      if (!conflict || !tornDown) throw err;
+      lostPorts.push(conflict.port);
+      if (attempt >= MAX_PORT_BIND_ATTEMPTS) {
+        throw new SandboxDeployError(
+          `sandbox could not bind its ports in ${MAX_PORT_BIND_ATTEMPTS} attempts `
+          + `(tried fleet/supervisor ${triedPairs.join(', ')}; lost ${conflict.role} port ${conflict.port} last) `
+          + `-- torn down; last failure: ${err.message}`,
+        );
+      }
+      log(`${conflict.role} port ${conflict.port} was taken between allocation and bind -- re-allocating (attempt ${attempt + 1} of ${MAX_PORT_BIND_ATTEMPTS})`);
+    }
   }
   const values = readValues(sprintId, opts.home);
   log('sandbox is UP and stays up for the test phase. Locate it later with:');

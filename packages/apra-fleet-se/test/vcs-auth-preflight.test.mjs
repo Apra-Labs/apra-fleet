@@ -14,6 +14,10 @@ import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-spri
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER_PATH = path.join(__dirname, '..', 'fleet-sprint', 'runner.js');
 const runnerSource = fs.readFileSync(RUNNER_PATH, 'utf8');
+// withGitSync moved out of runSprintCycle into git-sync.mjs (apra-fleet-3swo.4.1);
+// the source pin below reads it from there, not from runner.js.
+const GIT_SYNC_PATH = path.join(__dirname, '..', 'fleet-sprint', 'git-sync.mjs');
+const gitSyncSource = fs.readFileSync(GIT_SYNC_PATH, 'utf8');
 
 // =============================================================================
 // apra-fleet-glv.2: regression coverage for apra-fleet-glv's proactive VCS-
@@ -568,8 +572,10 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
 
 // =============================================================================
 // apra-fleet-417.4, criterion 3: the `needsVcsAuth` DEFAULT is pinned to
-// exactly `pushCode || pushBeads` at withGitSync's own signature (a source
-// assertion, since withGitSync cannot be imported), and its OR semantics are
+// exactly `pushCode || pushBeads` at withGitSync's own signature (still a
+// source assertion: withGitSync is exported from git-sync.mjs since
+// apra-fleet-3swo.4.1, but a DEFAULT-parameter expression is not observable
+// through the function object), and its OR semantics are
 // unit-mirrored across the full truth table -- including the one combination
 // no CURRENT runner.js call site exercises: an explicit `needsVcsAuth: true`
 // override with BOTH pushCode:false and pushBeads:false. withGitSync's own
@@ -590,8 +596,8 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
 describe('withGitSync needsVcsAuth default: pinned to the source, OR semantics unit-mirrored', () => {
     test("withGitSync's signature computes needsVcsAuth as exactly `pushCode || pushBeads` by default", () => {
         assert.match(
-            runnerSource,
-            /async function withGitSync\(member, pushCode, dispatchFn, \{ pushBeads = false, needsVcsAuth = pushCode \|\| pushBeads,/,
+            gitSyncSource,
+            /async function withGitSync\(ctx, member, pushCode, dispatchFn, \{ pushBeads = false, needsVcsAuth = pushCode \|\| pushBeads,/,
             "withGitSync's needsVcsAuth default must stay exactly `pushCode || pushBeads` (apra-fleet-647.1.1.2) -- reverting to a plain `pushCode` check (or any other expression) silently drops the preflight for every pushBeads-only bracket (planner, integ-test-runner, regression-test-runner).",
         );
     });

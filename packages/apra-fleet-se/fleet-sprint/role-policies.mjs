@@ -1,0 +1,1100 @@
+// =============================================================================
+// ROLE DISPATCH POLICY TABLE -- the per-role dispatch policy of every sprint
+// role, expressed as DATA instead of as thirteen hand-written ladders inside
+// runner.js.
+//
+// WHAT THIS IS FOR: runner.js currently spells out one bespoke dispatch ladder
+// per role (planner, plan-reviewer, doer, reviewer, ...), and every ladder
+// re-implements the same axes -- how the dispatch is wrapped in a git-sync
+// bracket, its turn budget and timeouts, whether a client-side watchdog is
+// armed, how retries and degrades work, where its knowledge block comes from,
+// and what runs before/after it. This module records those axes, per role, as
+// plain frozen data so a single engine can execute them.
+//
+// WHO CONSUMES IT (apra-fleet-3swo.5.3): fleet-sprint/dispatch-role.mjs's
+// dispatchRole(ctx, roleName, opts) EXECUTES a row -- the agent() dispatch, its
+// git-sync bracket, its watchdog, its resume, its retry ladder and its degrade
+// are all read out of the row rather than written out per role. A row is only
+// live once `migrated: true` says so; until then runner.js still runs that
+// role's hand-written ladder and the row is a description of it. The table and
+// the engine landed as separate changes, and each role's migration is its own
+// commit, so every step stays independently revertible.
+//
+// HOW IT IS KEPT HONEST: test/role-policies-table.test.mjs re-derives every
+// value below from REAL SOURCE, on whichever side of the migration the role
+// currently sits.
+//   - NOT migrated: scanned out of runner.js's real dispatch sites with the
+//     same structural scanner the two behaviour-pin files use
+//     (test/planning-role-dispatch-pins.test.mjs and
+//     test/execution-role-dispatch-pins.test.mjs).
+//   - MIGRATED: re-derived by RUNNING dispatch-role.mjs against a recording
+//     ctx and observing what it actually does, because once a ladder is
+//     data-driven its behaviour stops being a property of any source region
+//     (a regex over the engine's generic loop would answer identically for
+//     every role). See that file's section (7) for the full reasoning.
+// Either way the table describes REAL behaviour -- a row that drifts fails
+// that test, and a row that disagrees with a pin fails the pin too.
+//
+// SYMBOLIC VALUES: budgets and turn bases are recorded by the NAME of the
+// runner constant that supplies them ('DISPATCH_TIMEOUT_S',
+// 'BASE_DOER_MAX_TURNS', ...), not by a hard number, because those constants
+// are derived per run (DISPATCH_TIMEOUT_S comes from the validated CLI args).
+// Members and model tiers are recorded as a resolution KIND plus its argument
+// ('role'/'pool-head'/'runtime', 'fixed'/'per-bead'/'inherited') rather than
+// as the runner's expression text, so the engine can resolve them itself.
+//
+// DELIBERATELY OUT OF SCOPE: per-dispatch `label` strings and prompt building.
+// A label is presentation, not policy, and the prompts each role sends are
+// already owned by prompts.mjs; the pin files pin neither. Watchdog labels ARE
+// here, because arming a watchdog is a policy decision and the label is part
+// of its kill-path identity.
+// =============================================================================
+
+/** Recursively freezes plain objects and arrays. */
+function freezeDeep(value) {
+    if (Array.isArray(value)) {
+        value.forEach(freezeDeep);
+        return Object.freeze(value);
+    }
+    if (value && typeof value === 'object') {
+        for (const key of Object.keys(value)) freezeDeep(value[key]);
+        return Object.freeze(value);
+    }
+    return value;
+}
+
+// -----------------------------------------------------------------------------
+// Field vocabularies. Each is a closed set: a policy value outside these lists
+// is a variance that could not be expressed as data, and must be added here
+// (with its meaning) rather than special-cased at the call site.
+// -----------------------------------------------------------------------------
+
+/** The nine policy axes every role entry must carry. */
+export const POLICY_FIELDS = Object.freeze([
+    'bracket',
+    'timeouts',
+    'maxTurns',
+    'watchdog',
+    'retry',
+    'degrade',
+    'kbInjection',
+    'preDispatch',
+    'postResult',
+]);
+
+/** How a dispatch's member is resolved. */
+export const MEMBER_KINDS = Object.freeze(['role', 'pool-head', 'runtime']);
+
+/** How a dispatch's model tier is resolved. */
+export const MODEL_KINDS = Object.freeze(['fixed', 'per-bead', 'inherited']);
+
+/**
+ * Where a dispatch's KNOWLEDGE BANK block comes from.
+ *   'wrapper'        -- injected by the shared dispatch wrapper for any role
+ *                       outside KB_SELF_INJECTING_ROLES;
+ *   'prompt-builder' -- the role's own prompt builder places it (doer,
+ *                       reviewer, and the reviewer-persona final review);
+ *   'none'           -- the dispatch carries no role persona at all, so it
+ *                       receives no block (streak assignment).
+ */
+export const KB_INJECTION_KINDS = Object.freeze(['wrapper', 'prompt-builder', 'none']);
+
+/**
+ * The error CLASSES a ladder can tell apart when it degrades. The engine
+ * (fleet-sprint/dispatch-role.mjs classifyLadderError) resolves a thrown
+ * error to exactly one of these, and `degrade.classes` records which of them
+ * a given role actually fabricates a value for.
+ *
+ *   'schema'   -- AgentOutputError: agent()'s own bounded schema-repair loop
+ *                 was exhausted, so no schema-valid output ever arrived.
+ *   'dispatch' -- AgentDispatchError/FleetTransportError (plus any class a
+ *                 policy names in `extraDispatchErrors`): the dispatch
+ *                 channel itself failed.
+ *   'infra'    -- an AgentDispatchError with no result envelope at all
+ *                 (empty_response / inactivity / orphan-recovery timeout).
+ *                 Recognised ONLY by a policy that sets
+ *                 `classifiesInfraFailures`, because for every other role an
+ *                 infra failure is just a dispatch failure; for the integ
+ *                 runner it is the difference between "no evidence" and "the
+ *                 tests failed".
+ *   'sync'     -- the git/beads sync AROUND the dispatch failed. Recognised
+ *                 ONLY by a policy that sets `classifiesSyncFailures`.
+ *   'unknown'  -- anything else, recognised ONLY by a policy that sets
+ *                 `classifiesUnrecognisedErrors` (the regression catch-all).
+ */
+export const ERROR_CLASSES = Object.freeze(['schema', 'dispatch', 'infra', 'sync', 'unknown']);
+
+/**
+ * Steps the engine runs on the DEGRADE path -- i.e. once per attempt that
+ * failed and fabricated (or declined to fabricate) a value, never after a
+ * successful one. Kept separate from POST_RESULT_STEPS precisely because the
+ * distinction is load-bearing: the per-round reviewer must drop its round
+ * session when a round FAILS, and must NOT drop it when the round succeeds.
+ *
+ *   'clear-round-session' -- do not let a failed round's session be resumed
+ */
+export const DEGRADE_STEPS = Object.freeze(['clear-round-session']);
+
+/** How a failed ladder degrades once its attempts are spent. */
+export const DEGRADE_KINDS = Object.freeze([
+    'fatal',                  // rethrow; the sprint cannot continue (planner)
+    'synthesized-verdict',    // fabricate a non-approving verdict
+    'synthesized-report',     // fabricate a non-success report (deployer)
+    'inconclusive',           // record "no verdict", never a false failure (integ)
+    'fallback-value',         // substitute a deterministic value (streak assignment)
+    'defer-to-next-cycle',    // leave the work for the next cycle (scoped replan)
+    'non-approval',           // treat as "not approved" and continue
+    'per-bead-attribution',   // attribute per bead, then isolate the streak (doer)
+    'catch-all',              // swallow everything; the phase is informational
+    'proceed-without-report', // continue with no validated report (harvester)
+]);
+
+/**
+ * Steps the engine runs BEFORE a dispatch. Region-anchored evidence for each
+ * lives in test/role-policies-table.test.mjs.
+ *   'claim-beads-batched'      -- claim the streak's beads once per turn
+ *   'kill-stale-session'       -- kill a still-alive session before resuming it
+ *   'sprint-self-id-in-prompt' -- state the sprint's OWN reservation id so the
+ *                                 deploy gate cannot self-block
+ *   'verify-streak-closed'     -- check whether the work is already done, which
+ *                                 can short-circuit the dispatch entirely
+ */
+export const PRE_DISPATCH_STEPS = Object.freeze([
+    'claim-beads-batched',
+    'kill-stale-session',
+    'sprint-self-id-in-prompt',
+    'verify-streak-closed',
+]);
+
+/**
+ * The subset of PRE_DISPATCH_STEPS that must run INSIDE the dispatch's
+ * git-sync bracket rather than before it. This is a property of the STEP, not
+ * of the role that records it, which is why it lives here rather than as a
+ * per-row field: claiming beads is only meaningful once the bracket's D-pull
+ * has brought in which beads other sprints already hold, so a claim made
+ * before the bracket opens is a claim made against stale remote state. Every
+ * other step is cheaper and safer outside.
+ */
+export const PRE_DISPATCH_STEPS_IN_BRACKET = Object.freeze(['claim-beads-batched']);
+
+/**
+ * Steps the engine runs AFTER the dispatch's result (or its failure) is in
+ * hand.
+ *   'invalidate-beads-cache'   -- the dispatch mutated beads on its own clone
+ *   'verify-streak-closed'     -- confirm which beads really closed
+ *   'kb-apply'                 -- apply the report's KB work
+ *   'reviewer-contract-guard'  -- reject a self-contradictory reviewer verdict
+ *   'clear-round-session'      -- do not let a failed round's session be resumed
+ *   'select-streaks-validate'  -- validate the returned grouping before trusting it
+ */
+export const POST_RESULT_STEPS = Object.freeze([
+    'invalidate-beads-cache',
+    'verify-streak-closed',
+    'kb-apply',
+    'reviewer-contract-guard',
+    'clear-round-session',
+    'select-streaks-validate',
+]);
+
+/** Kinds of secondary dispatch a ladder can make. */
+export const SECONDARY_KINDS = Object.freeze(['max-turns-resume', 'semantic-repair-re-ask']);
+
+// -----------------------------------------------------------------------------
+// Small constructors. They exist so every row is written the same way and so a
+// defaulted field is defaulted in ONE place -- not to hide data: every value
+// they produce is a plain frozen object.
+// -----------------------------------------------------------------------------
+
+const roleMember = (role) => ({ kind: 'role', role });
+const poolHeadMember = (role, binding) => ({ kind: 'pool-head', role, binding });
+const runtimeMember = (binding) => ({ kind: 'runtime', binding });
+
+const fixedTier = (key) => ({ kind: 'fixed', key });
+const perBeadTier = (binding) => ({ kind: 'per-bead', binding });
+/** The resume of an already-priced dispatch passes no tier of its own. */
+const INHERITED_TIER = { kind: 'inherited' };
+
+/** A turn budget of `base` (a runner constant), optionally doubled. */
+const turns = (base, multiplier, value) => ({
+    kind: 'constant', base, multiplier, value: value * multiplier,
+});
+/** A turn budget only known at run time (the doer's escalating resume ladder). */
+const runtimeTurns = (binding) => ({ kind: 'runtime', binding, base: null, multiplier: null, value: null });
+
+/** A dispatch wrapped in the git-sync bracket, with its two push flags. */
+const bracketed = (pushCode, pushBeads) => ({ wrapped: true, pushCode, pushBeads });
+/** Streak assignment is pure compute: no repo access, so no bracket at all. */
+const NO_BRACKET = { wrapped: false, pushCode: null, pushBeads: null };
+
+const budgets = (timeoutS, maxTotalS) => ({ timeoutS, maxTotalS });
+/** A dispatch that passes neither timeout, i.e. takes the transport defaults. */
+const NO_BUDGETS = { timeoutS: null, maxTotalS: null };
+
+const NO_WATCHDOG = { armed: false, timeoutS: null, member: null, label: null };
+/**
+ * An armed client-side watchdog. `member: 'dispatch'` records the pinned
+ * invariant that a watchdog always names the same member its dispatch routes
+ * to, so its kill path targets the right session. `label` is a segment list:
+ * a plain string is literal text, an object is a runner expression
+ * interpolated into it.
+ */
+const watchdog = (label) => ({ armed: true, timeoutS: 'DISPATCH_TIMEOUT_S', member: 'dispatch', label });
+
+const SAME_SESSION_RESUME = { kind: 'same-session' };
+const WORKLIST_RESUME = { kind: 'worklist' };
+const roundSessionResume = (role) => ({ kind: 'round-session', role });
+
+const retry = (over) => ({
+    /** Dispatch attempts in the ladder, excluding any resume. */
+    attempts: 1,
+    /** Explicit backoff ladder in ms, when the role has one. */
+    backoffMs: null,
+    /** One bounded LLM-auth self-heal inside the ladder. */
+    authSelfHeal: false,
+    /** A healed attempt short-circuits the generic retry (final review only). */
+    authSelfHealShortCircuits: false,
+    /** Auth/workspace-trust failures end the ladder instead of burning attempts. */
+    abortOnNonRetryable: false,
+    /**
+     * An auth/trust failure the self-heal could NOT fix PROPAGATES rather than
+     * degrading. For a ladder whose own failure legitimately fails the whole
+     * sprint (the final review), fabricating a verdict when the dispatch
+     * channel itself is walled off would report a judgement nobody made.
+     */
+    rethrowsUnhealedNonRetryable: false,
+    /** A dispatch that already ran is never re-dispatched for a sync failure. */
+    skipRedispatchOnPostDispatchSyncFailure: false,
+    /** A provably no-mutation failure lets the next attempt skip its pre-sync. */
+    skipPreDispatchSyncOnNoMutation: false,
+    /** A generic retry resumes onto the branch's remote tip (doer). */
+    resumeOntoRemoteTipOnRetry: false,
+    /** Turn exhaustion resumes the SAME session rather than restarting. */
+    maxTurnsResume: false,
+    /** How many such resumes are allowed. */
+    resumeAttempts: 0,
+    /** How the turn budget grows per resume. */
+    turnEscalation: null,
+    /**
+     * A spent escalating resume ladder ENDS the ladder rather than falling
+     * through to another full attempt. A streak that could not finish at
+     * four times its base turn budget has proved it is too large for one
+     * streak; re-dispatching it at the base budget only reproduces that.
+     */
+    abortAfterSpentResumeLadder: false,
+    /** Extra resumes granted for an infrastructure (no-envelope) failure. */
+    infraResumeAttempts: 0,
+    /** Bounded re-asks that feed the validation failure back to the model. */
+    semanticRepairReAsks: 0,
+    /**
+     * A SCHEMA-VALID result the caller's own validator rejects is spent as a
+     * failed attempt (retried inside the same budget) rather than returned.
+     * Distinct from `semanticRepairReAsks`, which re-ASKS the same session
+     * once with the validation failure instead of re-running the attempt:
+     * the reviewer's self-contradictory-verdict guard needs a whole fresh
+     * review, not a nudge, and it throws rather than degrading once the
+     * budget is spent.
+     */
+    retryOnInvalidResult: false,
+    ...over,
+});
+
+/**
+ * The two failure notes EVERY fabricating ladder carries, phrased from the
+ * role's own display `subject` and the shape of what it failed to return
+ * (`artifact`: a review role returns a 'verdict', a test-runner/deploy role
+ * returns a 'report'). `over` supplies the classes only one role recognises
+ * (the regression catch-all's 'sync' and 'unknown') and the rare deliberate
+ * rewording -- the final review's dispatch note says "after repair attempts"
+ * because its ladder really does exhaust a bounded self-heal first.
+ *
+ * This is where the six copies of these sentences collapsed to one
+ * (apra-fleet-3swo.5.4): every remaining difference between two roles' notes
+ * is now visibly an ARGUMENT, so a reader can see at a glance that only the
+ * regression phase says anything the others do not.
+ */
+const degradeNotes = (subject, artifact, over = {}) => ({
+    schema: `${subject} failed to return a schema-valid ${artifact} after repair attempts: {message}`,
+    dispatch: `${subject} dispatch failed: {message}`,
+    ...over,
+});
+
+const degrade = (over) => ({
+    kind: 'fatal',
+    /** The value fabricated by the degrade path, if any. */
+    synthesized: null,
+    /**
+     * The ERROR_CLASSES this ladder fabricates `synthesized` for. A class the
+     * ladder recognises but does not list here degrades to `null` and lets
+     * the caller apply its own deterministic fallback. Empty means the
+     * ladder fabricates nothing at all.
+     */
+    classes: [],
+    /**
+     * The field of `synthesized` that carries the ladder's answer, and which
+     * `neverSynthesizes` therefore constrains ('verdict' for every review
+     * role, 'deployed' for the deployer). null when the ladder fabricates
+     * nothing.
+     */
+    verdictField: null,
+    /**
+     * The field of `synthesized` the human-readable failure text goes in.
+     * 'notes' for the verdict-shaped roles, 'summary' for the report-shaped
+     * test-runner roles.
+     */
+    notesField: 'notes',
+    /**
+     * apra-fleet-3swo.5.4: the failure TEXT a degrade writes into
+     * `notesField`, as one template per ERROR_CLASS in `classes`.
+     *
+     * WHY IT IS DATA AND NOT A CALLER CALLBACK: before this, every runner.js
+     * dispatch site handed the engine its own `synthesizedNotes` map of
+     * per-class note builders -- six near-identical copies of the same two
+     * sentences, which is the per-role fallback duplication the policy table
+     * exists to remove. Rendering is now ONE implementation in
+     * dispatch-role.mjs (renderDegradeNote) driven by these templates, so
+     * changing what a degraded verdict says is a table edit, and a class a
+     * ladder fabricates for but has no template for is a loud table/engine
+     * mismatch rather than a silently empty note.
+     *
+     * PLACEHOLDERS: `{message}` (the terminal error's message, falling back
+     * to String(err) when a non-Error was thrown) and `{name}` (its
+     * constructor name -- the regression phase's sync note names the class
+     * because "which sync layer failed" is what the operator acts on).
+     * Nothing else is interpolated: a note that needed runner state would be
+     * a variance the table could not express, and belongs in this comment as
+     * a reason to widen the vocabulary rather than as an escape hatch.
+     */
+    noteTemplates: {},
+    /** A field stamped on every synthesized value so it is recognisable. */
+    marker: null,
+    /** How many distinct degrade paths produce that value. */
+    paths: 0,
+    /** Values no degrade path may ever fabricate, in `verdictField`. */
+    neverSynthesizes: [],
+    /**
+     * Error CLASS NAMES (any name on the thrown error's prototype chain) that
+     * this ladder treats as a plain 'dispatch' failure on top of
+     * AgentDispatchError/FleetTransportError. The per-round reviewer lists
+     * its own read-side sync-bracket failures here; a real DIVERGENCE class
+     * is deliberately absent, so it still propagates.
+     */
+    extraDispatchErrors: [],
+    /** Tell an envelope-less INFRA dispatch failure apart from a real verdict. */
+    classifiesInfraFailures: false,
+    /** Tell a sync failure AROUND the dispatch apart from the dispatch failing. */
+    classifiesSyncFailures: false,
+    /** Give even an unrecognised error class a degrade path of its own. */
+    classifiesUnrecognisedErrors: false,
+    /** DEGRADE_STEPS the engine runs on each attempt that degrades. */
+    steps: [],
+    /** An unrecognised error class still propagates. */
+    rethrowsUnrecognisedErrors: true,
+    /**
+     * Error classes that are RUN-level control signals rather than a failure
+     * of this role, and so keep propagating even through a degrade that
+     * swallows everything else.
+     */
+    rethrowsRunControlSignals: [],
+    /** The degrade ends the sprint. */
+    abortsSprint: false,
+    ...over,
+});
+
+/**
+ * Builds a role entry. Every entry carries all nine POLICY_FIELDS plus the
+ * identity fields the dispatch needs (member, agentType, model, schema,
+ * resumeArg) and an optional `secondary` dispatch.
+ */
+function policy(role, spec) {
+    if (typeof spec.ladderAnchor !== 'string' || spec.ladderAnchor.length === 0) {
+        throw new TypeError(`role-policies: policy('${role}', ...) requires a non-empty string spec.ladderAnchor.`);
+    }
+    return {
+        role,
+        /** 'main' for a role's primary dispatch. */
+        kind: 'main',
+        /** The ladder this dispatch belongs to; a role's own name by default. */
+        ladder: role,
+        /**
+         * True once this role's dispatch has moved off its inline runner.js
+         * agent() ladder onto the dispatchRole(ctx, roleName, opts) engine
+         * (apra-fleet-3swo.5.3/.5.6). NOT one of the nine POLICY_FIELDS axes
+         * (deliberately -- it is migration bookkeeping, not a dispatch
+         * policy), so it is not asserted by the "every role carries all nine
+         * policy fields" shape test. fleet-sprint/inline-ladder-guard.mjs
+         * reads this field to know which roles must no longer have a
+         * surviving inline ladder; false for every role until its migration
+         * bead lands.
+         */
+        migrated: spec.migrated ?? false,
+        /**
+         * apra-fleet-3swo.24: a literal source substring, UNIQUE ACROSS EVERY
+         * DISPATCH this table describes, that occurs inside this dispatch's
+         * own real `agent(...)` call text in runner.js. NOT one of the nine
+         * POLICY_FIELDS axes (same reasoning as `migrated` above -- it is
+         * call-site identity, not dispatch policy).
+         *
+         * UNIQUENESS ACROSS THE TABLE, NOT EXCLUSIVITY TO ONE CALL SITE: a
+         * dispatch's own anchor can legitimately appear at MORE than one real
+         * agent() call site of its OWN ladder. integ-test-runner's and
+         * regression-test-runner's main anchors ('featurePrompt,' /
+         * 'regressionPrompt,') each match two sites, because each role's own
+         * resume prompt re-embeds its main prompt variable verbatim
+         * (inline-ladder-guard.test.mjs's apra-fleet-3swo.35 block records and
+         * pins this). What matters is that no anchor is ever shared BETWEEN
+         * two different dispatches (see this file's (d) anchor-uniqueness
+         * test block).
+         *
+         * WHY THIS EXISTS: a role's `member` resolution expression
+         * (memberExprFor()) is NOT role-unique -- roleMember('planner') is
+         * shared by planner, scoped-replan-planner and streak-assignment, and
+         * roleMember('plan-reviewer') by plan-reviewer and
+         * scoped-replan-plan-reviewer. agentType and schema do not
+         * disambiguate either (see inline-ladder-guard.mjs's header).
+         * fleet-sprint/inline-ladder-guard.mjs therefore requires a call
+         * site's text to include BOTH this role's member expression AND its
+         * ladderAnchor before reporting a surviving inline ladder -- the
+         * member expression alone would flag every sibling ladder that
+         * happens to route through the same member.
+         */
+        ladderAnchor: spec.ladderAnchor,
+        member: spec.member,
+        agentType: spec.agentType ?? null,
+        model: spec.model,
+        schema: spec.schema ?? null,
+        resumeArg: spec.resumeArg ?? null,
+        bracket: spec.bracket,
+        timeouts: spec.timeouts,
+        maxTurns: spec.maxTurns ?? null,
+        watchdog: spec.watchdog ?? NO_WATCHDOG,
+        retry: spec.retry,
+        degrade: spec.degrade,
+        kbInjection: spec.kbInjection,
+        preDispatch: spec.preDispatch ?? [],
+        postResult: spec.postResult ?? [],
+        secondary: null,
+    };
+}
+
+/**
+ * Builds a ladder's SECONDARY dispatch from its main one: the shape mirrors
+ * the runner's own "spread the shared options, then override inline", so a
+ * field not named in `over` is inherited verbatim.
+ *
+ * `over.ladderAnchor` is REQUIRED (not merely inherited): a secondary
+ * dispatch is always a DIFFERENT real `agent(...)` call site in runner.js
+ * than its main dispatch, so silently inheriting the main dispatch's anchor
+ * would make the two indistinguishable -- exactly the collision this bead
+ * (apra-fleet-3swo.24) exists to remove.
+ */
+function secondary(main, role, kind, over) {
+    if (typeof over.ladderAnchor !== 'string' || over.ladderAnchor.length === 0) {
+        throw new TypeError(
+            `role-policies: secondary(..., '${role}', '${kind}', over) must override ladderAnchor with a ` +
+            'non-empty string -- inheriting the main dispatch\'s anchor would make the two indistinguishable.'
+        );
+    }
+    return {
+        ...main,
+        role,
+        kind,
+        ladder: main.ladder,
+        secondary: null,
+        ...over,
+    };
+}
+
+// -----------------------------------------------------------------------------
+// The table.
+// -----------------------------------------------------------------------------
+
+const planner = policy('planner', {
+    // apra-fleet-3swo.5.3: migrated -- the planner ladder no longer exists
+    // inline in runner.js; dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: 'plannerPrompt,',
+    member: roleMember('planner'),
+    agentType: 'planner',
+    model: fixedTier('planner'),
+    schema: null,
+    resumeArg: roundSessionResume('planner'),
+    bracket: bracketed(false, true),
+    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    maxTurns: turns('PLANNER_MAX_TURNS', 1, 500),
+    watchdog: watchdog(['Plan (interactive)']),
+    kbInjection: 'wrapper',
+    retry: retry({
+        attempts: 5,
+        backoffMs: [0, 5000, 15000, 30000, 60000],
+        authSelfHeal: true,
+        abortOnNonRetryable: true,
+        skipRedispatchOnPostDispatchSyncFailure: true,
+        skipPreDispatchSyncOnNoMutation: true,
+        maxTurnsResume: true,
+        resumeAttempts: 1,
+        turnEscalation: 'double',
+    }),
+    // The planner is the ONLY role whose exhausted ladder is fatal: there is
+    // no sprint without a plan, so it rethrows rather than synthesizing one.
+    degrade: degrade({ kind: 'fatal', abortsSprint: true }),
+    preDispatch: [],
+    postResult: ['invalidate-beads-cache'],
+});
+planner.secondary = secondary(planner, 'planner', 'max-turns-resume', {
+    ladderAnchor: 'Continue your planning pass exactly where you left off',
+    maxTurns: turns('PLANNER_MAX_TURNS', 2, 500),
+    watchdog: watchdog(['Plan (resume, max_turns=', { expr: 'PLANNER_MAX_TURNS * 2' }, ')']),
+    resumeArg: SAME_SESSION_RESUME,
+    preDispatch: ['kill-stale-session'],
+});
+
+const planReviewer = policy('plan-reviewer', {
+    // apra-fleet-3swo.5.3: migrated -- dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: 'priorRoundVerdicts: priorPlanRoundVerdicts',
+    member: roleMember('plan-reviewer'),
+    agentType: 'plan-reviewer',
+    model: fixedTier('plan-reviewer'),
+    schema: 'planReviewerVerdict',
+    resumeArg: null,
+    bracket: bracketed(false, null),
+    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    maxTurns: turns('PLAN_REVIEWER_MAX_TURNS', 1, 500),
+    kbInjection: 'wrapper',
+    retry: retry({
+        attempts: 2,
+        authSelfHeal: true,
+        maxTurnsResume: true,
+        resumeAttempts: 1,
+        turnEscalation: 'double',
+    }),
+    degrade: degrade({
+        kind: 'synthesized-verdict',
+        // `taskAssignments: []` is part of the SHAPE this ladder fabricates
+        // (the runner reads it back off the verdict), so it belongs in the
+        // policy's own template rather than being hard-wired into the engine
+        // -- the reviewer and deployer degrades fabricate different shapes.
+        synthesized: { verdict: 'CHANGES_NEEDED', taskAssignments: [] },
+        classes: ['schema', 'dispatch'],
+        noteTemplates: degradeNotes('Plan reviewer', 'verdict'),
+        verdictField: 'verdict',
+        marker: 'dispatchFailed',
+        paths: 2,
+        neverSynthesizes: ['APPROVED'],
+    }),
+});
+planReviewer.secondary = secondary(planReviewer, 'plan-reviewer', 'max-turns-resume', {
+    ladderAnchor: 'Continue your plan review exactly where you left off',
+    maxTurns: turns('PLAN_REVIEWER_MAX_TURNS', 2, 500),
+    resumeArg: SAME_SESSION_RESUME,
+    preDispatch: ['kill-stale-session'],
+});
+
+const scopedReplanPlanner = policy('scoped-replan-planner', {
+    // apra-fleet-3swo.5.3: migrated -- dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: "label: 'Scoped Replan Plan (interactive)'",
+    member: roleMember('planner'),
+    agentType: 'planner',
+    model: fixedTier('planner'),
+    schema: null,
+    bracket: bracketed(false, true),
+    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    maxTurns: turns('SCOPED_REPLAN_PLANNER_MAX_TURNS', 1, 500),
+    watchdog: watchdog(['Scoped Replan Plan (interactive)']),
+    kbInjection: 'wrapper',
+    // A single bounded attempt: no retry ladder and no resume of its own.
+    retry: retry({ attempts: 1, authSelfHeal: true }),
+    degrade: degrade({ kind: 'defer-to-next-cycle', rethrowsUnrecognisedErrors: false }),
+    postResult: ['invalidate-beads-cache'],
+});
+
+const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
+    // apra-fleet-3swo.5.3: migrated -- dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: "label: 'Scoped Replan Review'",
+    member: roleMember('plan-reviewer'),
+    agentType: 'plan-reviewer',
+    model: fixedTier('plan-reviewer'),
+    schema: 'planReviewerVerdict',
+    bracket: bracketed(false, null),
+    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    maxTurns: turns('SCOPED_REPLAN_REVIEWER_MAX_TURNS', 1, 500),
+    kbInjection: 'wrapper',
+    retry: retry({ attempts: 1, authSelfHeal: true }),
+    degrade: degrade({ kind: 'non-approval', rethrowsUnrecognisedErrors: false }),
+});
+
+const streakAssignment = policy('streak-assignment', {
+    // apra-fleet-3swo.5.3: migrated -- dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: "label: 'Streak Assignment',",
+    // Borrows the planner MEMBER for model-tier routing only, and carries no
+    // agentType: it has no persona of its own, and activating the planner
+    // persona on this narrow grouping task makes the model go exploring.
+    member: roleMember('planner'),
+    agentType: null,
+    model: fixedTier('streakAssignment'),
+    schema: 'streakAssignment',
+    // The one dispatch outside any git-sync bracket: pure compute, no repo access.
+    bracket: NO_BRACKET,
+    timeouts: NO_BUDGETS,
+    maxTurns: null,
+    kbInjection: 'none',
+    retry: retry({ attempts: 1, authSelfHeal: true, semanticRepairReAsks: 1 }),
+    degrade: degrade({
+        kind: 'fallback-value',
+        synthesized: { grouping: 'one-bead-per-streak' },
+    }),
+    postResult: ['select-streaks-validate'],
+});
+streakAssignment.secondary = secondary(streakAssignment, 'streak-assignment', 'semantic-repair-re-ask', {
+    ladderAnchor: "label: 'Streak Assignment (semantic repair)'",
+});
+
+const doer = policy('doer', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: 'doerPrompt,',
+    member: runtimeMember('doerMember'),
+    agentType: 'doer',
+    // The ONE role dispatched at a per-bead declared tier rather than a fixed one.
+    model: perBeadTier('doerModel'),
+    schema: 'doerReport',
+    resumeArg: WORKLIST_RESUME,
+    bracket: bracketed(true, true),
+    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    maxTurns: turns('BASE_DOER_MAX_TURNS', 1, 500),
+    kbInjection: 'prompt-builder',
+    retry: retry({
+        attempts: 2,
+        authSelfHeal: true,
+        abortOnNonRetryable: true,
+        skipRedispatchOnPostDispatchSyncFailure: true,
+        resumeOntoRemoteTipOnRetry: true,
+        maxTurnsResume: true,
+        resumeAttempts: 2,
+        turnEscalation: 'double',
+        abortAfterSpentResumeLadder: true,
+    }),
+    degrade: degrade({
+        kind: 'per-bead-attribution',
+        // Fabricates NOTHING (degrade.classes is empty): a failed streak's
+        // real outcome is decided by reading which of its beads actually
+        // closed, which is the caller's per-bead attribution pass. The streak
+        // error is re-thrown AFTER that attribution so the parallel runner
+        // isolates this streak; it never ends the sprint.
+        rethrowsUnrecognisedErrors: false,
+    }),
+    preDispatch: ['claim-beads-batched'],
+    postResult: ['verify-streak-closed', 'kb-apply'],
+});
+const doerResume = secondary(doer, 'doer-resume', 'max-turns-resume', {
+    ladderAnchor: 'Continue exactly where you left off from this same session',
+    // No tier: the streak was already priced on the dispatch this continues.
+    model: INHERITED_TIER,
+    // The escalating ladder computes the budget per resume attempt.
+    maxTurns: runtimeTurns('maxTurns'),
+    resumeArg: SAME_SESSION_RESUME,
+    // A turn-exhausted streak whose beads are ALL closed already is a success
+    // and gets no resume dispatch at all, so the check runs BEFORE the kill.
+    preDispatch: ['verify-streak-closed', 'kill-stale-session'],
+});
+doer.secondary = doerResume;
+
+const reviewer = policy('reviewer', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: 'acceptanceCriteriaJson,',
+    member: poolHeadMember('reviewer', 'reviewerPool[0]'),
+    agentType: 'reviewer',
+    model: fixedTier('reviewer'),
+    schema: 'reviewerVerdict',
+    resumeArg: roundSessionResume('reviewer'),
+    bracket: bracketed(false, null),
+    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    maxTurns: turns('BASE_REVIEWER_MAX_TURNS', 1, 500),
+    kbInjection: 'prompt-builder',
+    retry: retry({
+        attempts: 2,
+        authSelfHeal: true,
+        maxTurnsResume: true,
+        resumeAttempts: 1,
+        turnEscalation: 'double',
+        // The SAME two-attempt budget covers both ways a round can fail: an
+        // infrastructure failure, and a schema-valid verdict the contract
+        // guard rejects. A self-contradictory verdict cannot be nudged into
+        // shape -- only a fresh review can fix it -- so the whole attempt is
+        // spent again rather than re-asked (contrast streak assignment's
+        // semanticRepairReAsks). Once the budget is gone the caller gets a
+        // ReviewerContractViolationError, never a fabricated verdict.
+        retryOnInvalidResult: true,
+    }),
+    degrade: degrade({
+        kind: 'synthesized-verdict',
+        // The verdicts fabricated here stand for INFRASTRUCTURE failures, not
+        // the reviewer contradicting itself, so they are marked dispatchFailed
+        // -- which is also what stops the contract guard above from mistaking
+        // one for a self-contradictory verdict.
+        synthesized: { verdict: 'CHANGES_NEEDED', reopenIds: [], newTasks: [] },
+        classes: ['schema', 'dispatch'],
+        noteTemplates: degradeNotes('Reviewer', 'verdict'),
+        verdictField: 'verdict',
+        marker: 'dispatchFailed',
+        paths: 2,
+        neverSynthesizes: ['APPROVED'],
+        // The review's own read-side sync bracket can fail for the same
+        // transient infrastructure reasons as the dispatch, so it degrades
+        // identically. A REAL divergence (GitDivergedError / DoltDivergedError
+        // -- deliberately NOT listed) still propagates: that is a branch
+        // integrity problem, not a blip.
+        extraDispatchErrors: ['GitSyncError', 'DoltSyncError'],
+        // On FAILURE only. A failed round's session must not be resumed by the
+        // next round; a SUCCESSFUL round's must, which is exactly why this is
+        // a degrade step rather than a postResult one.
+        steps: ['clear-round-session'],
+    }),
+    postResult: ['reviewer-contract-guard', 'kb-apply'],
+});
+reviewer.secondary = secondary(reviewer, 'reviewer', 'max-turns-resume', {
+    ladderAnchor: 'Continue your review exactly where you left off',
+    maxTurns: turns('BASE_REVIEWER_MAX_TURNS', 2, 500),
+    resumeArg: SAME_SESSION_RESUME,
+    preDispatch: ['kill-stale-session'],
+});
+
+const finalReview = policy('final-review', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: 'buildFinalVerdictPrompt({',
+    // Final Review has no role member of its own: it is the reviewer role,
+    // dispatching the reviewer persona over the whole sprint.
+    member: roleMember('reviewer'),
+    agentType: 'reviewer',
+    model: fixedTier('reviewer'),
+    schema: 'finalVerdict',
+    bracket: bracketed(false, null),
+    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    maxTurns: turns('FINAL_REVIEW_MAX_TURNS', 1, 500),
+    kbInjection: 'prompt-builder',
+    retry: retry({
+        attempts: 2,
+        authSelfHeal: true,
+        // A healed attempt already produced a verdict; running the generic
+        // retry as well would fire a second full review and discard it.
+        authSelfHealShortCircuits: true,
+        // An auth/trust failure that could NOT be healed ends the ladder
+        // instead of burning the retry on the identical wall -- and
+        // PROPAGATES, because a sprint whose final verdict could not be
+        // obtained at all must not be handed a fabricated one.
+        abortOnNonRetryable: true,
+        rethrowsUnhealedNonRetryable: true,
+        maxTurnsResume: true,
+        resumeAttempts: 1,
+        turnEscalation: 'double',
+    }),
+    degrade: degrade({
+        kind: 'synthesized-verdict',
+        synthesized: { verdict: 'FAIL' },
+        // The one deliberate rewording in the table: this ladder's dispatch
+        // note says "after repair attempts" because its retry really does
+        // spend a bounded LLM-auth self-heal before giving up.
+        noteTemplates: degradeNotes('Final reviewer', 'verdict', {
+            dispatch: 'Final reviewer dispatch failed after repair attempts: {message}',
+        }),
+        // TWO error classes reached from TWO ladder positions -- the healed
+        // retry and the generic retry -- which is what makes four paths over
+        // two classes. A dead dispatch channel never passes a sprint.
+        classes: ['schema', 'dispatch'],
+        verdictField: 'verdict',
+        paths: 4,
+        neverSynthesizes: ['PASS'],
+    }),
+    postResult: ['kb-apply'],
+});
+finalReview.secondary = secondary(finalReview, 'final-review', 'max-turns-resume', {
+    ladderAnchor: 'Continue your final review exactly where you left off',
+    maxTurns: turns('FINAL_REVIEW_MAX_TURNS', 2, 500),
+    resumeArg: SAME_SESSION_RESUME,
+    preDispatch: ['kill-stale-session'],
+});
+
+const deployer = policy('deployer', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: 'deployerPrompt,',
+    member: roleMember('deployer'),
+    agentType: 'deployer',
+    model: fixedTier('deployer'),
+    schema: 'deployerReport',
+    bracket: bracketed(false, null),
+    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    maxTurns: turns('DEPLOYER_MAX_TURNS', 1, 500),
+    kbInjection: 'wrapper',
+    retry: retry({
+        attempts: 1,
+        authSelfHeal: true,
+        maxTurnsResume: true,
+        resumeAttempts: 1,
+        turnEscalation: 'double',
+    }),
+    degrade: degrade({
+        kind: 'synthesized-report',
+        // A REPORT, not a verdict: the answer field is `deployed` and the
+        // failure text goes in `notes`. Both are recorded here rather than
+        // assumed by the engine, which is what lets one engine fabricate the
+        // reviewer's verdict shape and the deployer's report shape alike.
+        synthesized: { deployed: false },
+        classes: ['schema', 'dispatch'],
+        noteTemplates: degradeNotes('Deployer', 'report'),
+        verdictField: 'deployed',
+        paths: 2,
+        neverSynthesizes: [true],
+    }),
+    // The deploy runbook gates on foreign reservations, so the prompt must
+    // carry the sprint's OWN reservation id or the gate self-blocks.
+    preDispatch: ['sprint-self-id-in-prompt'],
+});
+deployer.secondary = secondary(deployer, 'deployer', 'max-turns-resume', {
+    ladderAnchor: 'Continue the deploy exactly where you left off',
+    maxTurns: turns('DEPLOYER_MAX_TURNS', 2, 500),
+    resumeArg: SAME_SESSION_RESUME,
+    preDispatch: ['kill-stale-session'],
+});
+
+const integTestRunner = policy('integ-test-runner', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: 'featurePrompt,',
+    member: roleMember('integ-test-runner'),
+    agentType: 'integ-test-runner',
+    model: fixedTier('integ-test-runner'),
+    schema: 'integReport',
+    bracket: bracketed(false, true),
+    // Shorter INACTIVITY timer, longer HARD elapsed ceiling: a hung runner
+    // still dies on silence, while an active long pass is never killed.
+    timeouts: budgets('DISPATCH_TIMEOUT_S', 'INTEG_MAX_TOTAL_S'),
+    maxTurns: turns('INTEG_TEST_MAX_TURNS', 1, 500),
+    kbInjection: 'wrapper',
+    retry: retry({
+        attempts: 1,
+        authSelfHeal: true,
+        maxTurnsResume: true,
+        resumeAttempts: 1,
+        turnEscalation: 'double',
+        infraResumeAttempts: 1,
+    }),
+    // An infrastructure failure produced no test evidence, so it must never be
+    // recorded as a test FAILURE.
+    //
+    // THE ASYMMETRY IS THE VARIANCE. A schema-repair exhaustion or an ordinary
+    // dispatch failure DID reach a running test pass and legitimately record
+    // passed:false -- those two classes are in `classes` and fabricate the
+    // report below. An 'infra'-class failure did not: the member CLI died
+    // mid-turn and lost its result envelope without ever reporting pass or
+    // fail. That class is deliberately NOT in `classes`, so the engine
+    // fabricates nothing for it and instead returns an `inconclusive` record
+    // (reason + message) that the caller turns into an INCONCLUSIVE cycle
+    // entry. classifiesInfraFailures is what makes the class reachable at all;
+    // without it an envelope-less failure would fall into 'dispatch' and be
+    // recorded as a test failure that never happened.
+    degrade: degrade({
+        kind: 'inconclusive',
+        marker: 'integInfraInconclusive',
+        classifiesInfraFailures: true,
+        classes: ['schema', 'dispatch'],
+        noteTemplates: degradeNotes('Integ test runner', 'report'),
+        synthesized: { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [] },
+        verdictField: 'passed',
+        notesField: 'summary',
+        paths: 2,
+        neverSynthesizes: [true],
+    }),
+});
+integTestRunner.secondary = secondary(integTestRunner, 'integ-test-runner', 'max-turns-resume', {
+    ladderAnchor: 'Continue the integration test run exactly where you left off',
+    maxTurns: turns('INTEG_TEST_MAX_TURNS', 2, 500),
+    resumeArg: SAME_SESSION_RESUME,
+    preDispatch: ['kill-stale-session'],
+});
+
+const regressionTestRunner = policy('regression-test-runner', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: 'regressionPrompt,',
+    member: roleMember('regression-test-runner'),
+    agentType: 'regression-test-runner',
+    model: fixedTier('regression-test-runner'),
+    schema: 'regressionReport',
+    bracket: bracketed(false, true),
+    timeouts: budgets('DISPATCH_TIMEOUT_S', 'REGRESSION_TEST_MAX_TOTAL_S'),
+    maxTurns: turns('REGRESSION_TEST_MAX_TURNS', 1, 500),
+    kbInjection: 'wrapper',
+    retry: retry({
+        attempts: 1,
+        // The phase never re-dispatches, and it says so explicitly: a
+        // post-dispatch sync failure is classified into its own degrade
+        // summary (the carry-over beads it filed may be local-only) rather
+        // than re-running the pass.
+        skipRedispatchOnPostDispatchSyncFailure: true,
+        maxTurnsResume: true,
+        resumeAttempts: 1,
+        turnEscalation: 'double',
+    }),
+    // The only load-bearing catch-all in the table: this phase is
+    // informational, and a failure here must never turn a green sprint into a
+    // terminal ABORTED record that skips Harvest and Publish. Cancellation and
+    // budget exhaustion are RUN-level signals, not failures of this phase, so
+    // they still propagate.
+    degrade: degrade({
+        kind: 'catch-all',
+        // FOUR degrade classes, which is what "catch-all" means expressed as
+        // data: on top of the two every ladder distinguishes, this one also
+        // tells apart a SYNC failure around the dispatch (the phase files
+        // carry-over beads, so a D-push failure is a routine outcome worth
+        // reporting honestly rather than as "the pass failed") and an
+        // otherwise UNRECOGNISED error (a divergence class is a typed sprint
+        // abort, and letting one through here would turn a green sprint into
+        // a terminal ABORTED record that skips Harvest and Publish).
+        classes: ['schema', 'dispatch', 'sync', 'unknown'],
+        noteTemplates: degradeNotes('Regression test runner', 'report', {
+            // Said honestly rather than as a clean "the pass failed": the
+            // carry-over beads may or may not have reached the shared remote,
+            // and the operator needs to know which -- hence {name} as well as
+            // {message}, so the summary says WHICH sync layer failed.
+            sync: 'Regression pass could not be completed: git/beads sync around the dispatch failed '
+                + '({name}: {message}). Any carry-over beads filed may not have reached the shared remote.',
+            unknown: 'Regression test runner failed with an unexpected error: {message}',
+        }),
+        classifiesSyncFailures: true,
+        classifiesUnrecognisedErrors: true,
+        // A REPORT shape, like the deployer's: the answer is `passed` and the
+        // failure text goes in `summary`.
+        synthesized: { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [] },
+        verdictField: 'passed',
+        notesField: 'summary',
+        paths: 4,
+        neverSynthesizes: [true],
+        rethrowsUnrecognisedErrors: false,
+        rethrowsRunControlSignals: ['CancelledError', 'BudgetExceededError'],
+    }),
+});
+regressionTestRunner.secondary = secondary(regressionTestRunner, 'regression-test-runner', 'max-turns-resume', {
+    ladderAnchor: 'Continue the regression pass exactly where you left off',
+    maxTurns: turns('REGRESSION_TEST_MAX_TURNS', 2, 500),
+    resumeArg: SAME_SESSION_RESUME,
+    preDispatch: ['kill-stale-session'],
+});
+
+const harvester = policy('harvester', {
+    // apra-fleet-3swo.5.7: migrated -- dispatchRole executes this row.
+    migrated: true,
+    ladderAnchor: 'harvesterPrompt,',
+    member: roleMember('harvester'),
+    agentType: 'harvester',
+    model: fixedTier('harvester'),
+    schema: 'harvesterReport',
+    // Writes docs AND defers low-priority beads, so it pushes both.
+    bracket: bracketed(true, true),
+    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    maxTurns: turns('HARVESTER_MAX_TURNS', 1, 500),
+    kbInjection: 'wrapper',
+    retry: retry({
+        attempts: 1,
+        authSelfHeal: true,
+        maxTurnsResume: true,
+        resumeAttempts: 1,
+        turnEscalation: 'double',
+    }),
+    // Fabricates NOTHING: by this point the sprint's verdict is already
+    // decided, so a missing harvest report is a gap in the record rather than
+    // a result to invent. degrade.classes is empty, which is what makes that
+    // "produces no value" rather than "produces an empty one".
+    degrade: degrade({ kind: 'proceed-without-report' }),
+    postResult: ['kb-apply'],
+});
+harvester.secondary = secondary(harvester, 'harvester', 'max-turns-resume', {
+    ladderAnchor: 'Continue your harvest exactly where you left off',
+    maxTurns: turns('HARVESTER_MAX_TURNS', 2, 500),
+    resumeArg: SAME_SESSION_RESUME,
+    preDispatch: ['kill-stale-session'],
+});
+
+/**
+ * The policy table, keyed by role name.
+ *
+ * `doer-resume` is registered as a role of its own because it is the one
+ * resume dispatch that shares nothing but its member with the dispatch it
+ * continues: its model tier is inherited rather than declared, and its turn
+ * budget is a run-time value from the escalating resume ladder. It is the SAME
+ * frozen object as ROLE_POLICIES.doer.secondary; every other ladder's resume
+ * is reachable as <role>.secondary.
+ */
+export const ROLE_POLICIES = freezeDeep({
+    planner,
+    'plan-reviewer': planReviewer,
+    'scoped-replan-planner': scopedReplanPlanner,
+    'scoped-replan-plan-reviewer': scopedReplanPlanReviewer,
+    'streak-assignment': streakAssignment,
+    doer,
+    'doer-resume': doerResume,
+    reviewer,
+    'final-review': finalReview,
+    deployer,
+    'integ-test-runner': integTestRunner,
+    'regression-test-runner': regressionTestRunner,
+    harvester,
+});
+
+/** Every role name in the table, in table order. */
+export const ROLE_NAMES = Object.freeze(Object.keys(ROLE_POLICIES));
+
+/**
+ * The policy for `role`, or throws naming the roles that do exist.
+ *
+ * `table` defaults to the real frozen ROLE_POLICIES. It is a parameter only
+ * so a test can hand the engine a table with ONE field of ONE row changed and
+ * watch the behaviour change with it -- see dispatch-role.mjs's `ctx.policies`.
+ */
+export function policyFor(role, table = ROLE_POLICIES) {
+    const found = table[role];
+    if (!found) {
+        throw new Error(`role-policies: no policy for role '${role}' (known roles: ${Object.keys(table).join(', ')})`);
+    }
+    return found;
+}
+
+/**
+ * Every DISPATCH the table describes: each role's main dispatch plus its
+ * secondary, de-duplicated (doer-resume is reachable both as a role and as
+ * the doer's secondary).
+ */
+export function allDispatchPolicies() {
+    const seen = new Set();
+    const out = [];
+    for (const name of ROLE_NAMES) {
+        const entry = ROLE_POLICIES[name];
+        for (const dispatch of [entry, entry.secondary]) {
+            if (!dispatch || seen.has(dispatch)) continue;
+            seen.add(dispatch);
+            out.push(dispatch);
+        }
+    }
+    return out;
+}
+
+/** True when this role's dispatches push CODE (not just beads). */
+export function pushesCode(role) {
+    return policyFor(role).bracket.pushCode === true;
+}
+
+/**
+ * Role names this table marks `migrated: true` -- i.e. roles whose dispatch
+ * has moved off its inline runner.js agent() ladder onto the dispatchRole
+ * engine. Empty today (apra-fleet-3swo.5.8 lands this field and
+ * fleet-sprint/inline-ladder-guard.mjs, the guard that consumes it, ahead of
+ * either migration bead actually flipping a role to true).
+ */
+export function migratedRoleNames() {
+    return ROLE_NAMES.filter((name) => ROLE_POLICIES[name].migrated === true);
+}

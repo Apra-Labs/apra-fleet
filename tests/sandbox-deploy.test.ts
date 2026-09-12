@@ -16,6 +16,9 @@ import {
   isPidAlive,
   init,
   teardown,
+  up,
+  getJson,
+  lostPortRace,
   // @ts-expect-error -- plain .mjs helper, no type declarations
 } from '../scripts/sandbox-deploy.mjs';
 
@@ -75,10 +78,29 @@ async function spawnFake(reportPid: 'self' | number): Promise<Fake> {
 }
 
 const homes: string[] = [];
+// Ports this file deliberately pre-binds to simulate a squatter winning the
+// allocate-then-bind race. Released here -- not in a per-test try/finally --
+// so a test that fails mid-assertion still can't leak a bound socket into the
+// rest of the suite.
+const squatters: net.Server[] = [];
 afterEach(() => {
   for (const f of fakes.splice(0)) { try { f.child.kill('SIGKILL'); } catch { /* gone */ } }
+  for (const s of squatters.splice(0)) { try { s.close(); } catch { /* already closed */ } }
   for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
 });
+
+/** Binds and holds a real OS-assigned port (never a hard-coded literal), the
+ *  same way a foreign process that won the allocate-then-bind race would. */
+async function squat(): Promise<number> {
+  const port = await osPort();
+  const srv = net.createServer();
+  squatters.push(srv);
+  await new Promise<void>((resolve, reject) => {
+    srv.once('error', reject);
+    srv.listen(port, '127.0.0.1', () => resolve());
+  });
+  return port;
+}
 
 describe('naming: everything derives from the sprintId alone', () => {
   it('is deterministic, filesystem-safe, and collision-free for ids that sanitize alike', () => {
@@ -116,10 +138,12 @@ describe('values file: flat KEY=value, round-trips without any shell', () => {
 });
 
 describe('port allocation', () => {
-  it('returns two distinct ports and never a reserved production/test port', async () => {
-    const seq = [7523, 8787, 18700, 40001, 40001, 18701, 40002];
+  it('returns two non-adjacent ports and never a reserved production/test port', async () => {
+    // 40002 is rejected for being adjacent to 40001: the observed sandbox
+    // collision handed back a consecutive pair.
+    const seq = [7523, 8787, 18700, 40001, 40001, 40002, 18701, 40010];
     const ports = await allocatePorts(async () => seq.shift()!);
-    expect(ports).toEqual({ fleetPort: 40001, supervisorPort: 40002 });
+    expect(ports).toEqual({ fleetPort: 40001, supervisorPort: 40010 });
   });
 });
 
@@ -192,6 +216,50 @@ describe('teardown', () => {
   }, 30000); // teardown polls the still-bound port for 5s before giving up
 });
 
+// Guards apra-fleet-3swo.48: a child that DID bind its port, then failed for
+// a reason unrelated to ports (crashed after listening, no EADDRINUSE in its
+// log), must not have its briefly-still-held listener misread as a foreign
+// process that won the allocate-then-bind race.
+describe('lostPortRace: a just-killed child of our own is not misread as a lost port race', () => {
+  it('log shows EADDRINUSE: classified as a lost race immediately, regardless of port state', async () => {
+    const home = mkHome(); homes.push(home);
+    const logPath = path.join(home, 'child.log');
+    fs.writeFileSync(logPath, 'Error: listen EADDRINUSE: address already in use :::12345\n');
+    const port = await osPort(); // currently free -- the log match alone must be decisive
+    expect(await lostPortRace(logPath, port)).toBe(true);
+  });
+
+  it('no EADDRINUSE in the log, and the port frees up WITHIN the grace window: NOT a lost race -- this was our own just-killed child releasing its listener', async () => {
+    const home = mkHome(); homes.push(home);
+    const logPath = path.join(home, 'child.log');
+    fs.writeFileSync(logPath, 'fleet server crashed after listening, never wrote server.json\n');
+    const port = await osPort();
+    const srv = net.createServer();
+    squatters.push(srv);
+    await new Promise<void>((resolve, reject) => {
+      srv.once('error', reject);
+      srv.listen(port, '127.0.0.1', () => resolve());
+    });
+    // Release shortly after -- simulates a just-killed child's listener
+    // letting go well within the grace window, not a genuine foreign winner
+    // that would keep holding the port for the whole window.
+    setTimeout(() => { try { srv.close(); } catch { /* already closed */ } }, 300);
+
+    const startedAt = Date.now();
+    const result = await lostPortRace(logPath, port);
+    expect(result).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(5000); // did not wait out the full grace window
+  }, 10000);
+
+  it('no EADDRINUSE in the log, and the port stays held for the WHOLE grace window: IS a lost race (a genuine foreign winner)', async () => {
+    const home = mkHome(); homes.push(home);
+    const logPath = path.join(home, 'child.log');
+    fs.writeFileSync(logPath, 'fleet server crashed after listening, never wrote server.json\n');
+    const port = await squat(); // held for the entire test -- never released early
+    expect(await lostPortRace(logPath, port)).toBe(true);
+  }, 15000); // PORT_RELEASE_GRACE_MS (5s) plus polling slack
+});
+
 const DIST = path.join(REPO_ROOT, 'dist', 'index.js');
 describe.skipIf(!fs.existsSync(DIST))('live: up / env / teardown across separate invocations', () => {
   it('brings a real isolated pair up, locates it from the sprintId alone, and tears it down', async () => {
@@ -214,4 +282,65 @@ describe.skipIf(!fs.existsSync(DIST))('live: up / env / teardown across separate
     }
     expect(fs.existsSync(valuesFilePath(id, home))).toBe(false);
   }, 150000);
+
+  // Guards the allocate-then-bind port-race recovery in up() (5f5607ae): a
+  // pre-bound port must not leave the sandbox half-up.
+  it('recovers when one allocated port is already held by another process, and comes up fully healthy', async () => {
+    const home = mkHome(); homes.push(home);
+    const id = 'auto-sprint/port-race-recovery';
+    const squatterPort = await squat();
+    // Odd picks hand back the squatted port (forcing a conflict on whichever
+    // role gets it); even picks hand back a genuinely free OS-assigned port.
+    // Once up() excludes the squatted port after the first failed attempt,
+    // allocatePorts's own banned-set filter skips every further odd pick, so
+    // the retry naturally lands on two fresh, free ports.
+    let calls = 0;
+    const pickPort = async () => {
+      calls += 1;
+      return calls % 2 === 1 ? squatterPort : osPort();
+    };
+    try {
+      const v = await up(id, { home, pickPort });
+      expect(Number(v.APRA_FLEET_PORT)).not.toBe(squatterPort);
+      expect(Number(v.SUPERVISOR_PORT)).not.toBe(squatterPort);
+      const health = await getJson(`http://127.0.0.1:${v.APRA_FLEET_PORT}/health`);
+      expect(String(health?.pid)).toBe(v.MCP_PID);
+      const supHealth = await getJson(`http://127.0.0.1:${v.SUPERVISOR_PORT}/api/health`);
+      expect(String(supHealth?.pid)).toBe(v.SUPERVISOR_PID);
+    } finally {
+      // Tear down in-process (not via a separate CLI subprocess, unlike the
+      // sibling "live" test above): a detached child spawned by a call made
+      // directly within this still-running test process takes far longer to
+      // answer SIGTERM/SIGKILL sent from a freshly spawned, unrelated CLI
+      // process than one spawned by a short-lived CLI invocation that has
+      // already exited -- observed to exceed stopPid's 10s budget and fail
+      // the assertion below, even though the process does eventually die.
+      const r = await teardown(id, { home });
+      expect(r.removed).toBe(true);
+    }
+    expect(fs.existsSync(valuesFilePath(id, home))).toBe(false);
+  }, 150000);
+
+  it('surfaces a bounded exhaustion error, and never reports success, when recovery cannot succeed', async () => {
+    const home = mkHome(); homes.push(home);
+    const id = 'auto-sprint/port-race-exhausted';
+    // One distinct squatted port per bounded attempt (MAX_PORT_BIND_ATTEMPTS =
+    // 3) so exclusion never runs out of a still-conflicting candidate for the
+    // FLEET slot; the paired slot is always a genuinely free port so it is
+    // never itself the reason a teardown between attempts fails (start()
+    // throws on the fleet check before the second port is ever touched).
+    const conflictPool = [await squat(), await squat(), await squat()];
+    let n = 0;
+    const pickPort = async () => {
+      n += 1;
+      return n % 2 === 1 ? conflictPool[Math.floor((n - 1) / 2) % conflictPool.length] : osPort();
+    };
+    await expect(up(id, { home, pickPort })).rejects.toThrow(
+      /could not bind its ports in 3 attempts[\s\S]*lost fleet port \d+ last/,
+    );
+    // No half-up sandbox left behind: up()'s own teardown-on-exhaustion ran,
+    // so nothing survives to report as (or mistake for) success.
+    expect(readValues(id, home)).toBeNull();
+    expect(fs.existsSync(sandboxRootPath(id, home))).toBe(false);
+  }, 60000);
 });

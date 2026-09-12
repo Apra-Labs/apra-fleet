@@ -732,3 +732,63 @@ test('(647.1.1.1) finalizeAbort PR call: a non-auth failure (5xx) keeps today\'s
     check(counts().provisionVcsAuthCalls === 1, `expected NO reactive heal for a non-auth failure -- only the initial JIT mint, got ${counts().provisionVcsAuthCalls} provision_vcs_auth calls`);
     check(log.filter((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')).length === 1, `expected the create-pull-request curl dispatched exactly once (no retry for a non-auth failure), command log: ${JSON.stringify(log)}`);
 });
+
+// -----------------------------------------------------------------------
+// apra-fleet-3swo.3.6 -- finalizeAbort()'s OWN up-front member-provider
+// resolution (the classification-only lookup at its top, BEFORE the git
+// fetch/rev-list/push calls) must degrade to a logged, non-fatal message and
+// fall back to the default provider chain when it fails, rather than
+// aborting the whole abort-finalization. This is distinct from every
+// resolveProvider() call downstream (raiseVcsPrForMember's own, credential
+// provisioning, ...), which must keep succeeding normally -- so the mock
+// callTool fails member_detail on its FIRST call only (finalizeAbort's own
+// lookup), then succeeds on every later call.
+// -----------------------------------------------------------------------
+function mockAbortCallToolFirstMemberDetailFails() {
+    let memberDetailCalls = 0;
+    const callTool = async (name, toolArgs) => {
+        if (name === 'member_detail') {
+            memberDetailCalls += 1;
+            if (memberDetailCalls === 1) {
+                throw new Error('mock member registry lookup failure: member_detail unreachable');
+            }
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+        }
+        if (name === 'provision_vcs_auth') {
+            const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+            return { content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+        }
+        return { content: [{ text: `[OK] mock ${name}` }] };
+    };
+    return { callTool, memberDetailCallCount: () => memberDetailCalls };
+}
+
+test('finalizeAbort: a failed up-front member-provider resolution logs and degrades to the default chain -- does NOT throw', async () => {
+    const branch = 'auto-sprint/abort-provider-resolution-fails';
+    const { command, log } = buildMockCommand({
+        commitCount: 1,
+        prOutcome: 'created',
+        prUrl: 'https://github.com/mock-org/mock-repo/pull/202',
+    });
+    const logs = [];
+    const { callTool, memberDetailCallCount } = mockAbortCallToolFirstMemberDetailFails();
+    const error = new SprintPlanRejectedError('Plan rejected after 3 rounds', { notes: null });
+
+    const result = await finalizeAbort({
+        error,
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        log: (m) => logs.push(m),
+        callTool,
+    });
+
+    check(memberDetailCallCount() >= 2, `expected finalizeAbort's own resolution AND at least one downstream resolveProvider call, got ${memberDetailCallCount()} member_detail call(s)`);
+    check(result.reason === 'aborted-pr-created', `expected finalizeAbort to still complete and create the [ABORTED] PR despite its own provider-resolution failure, got: ${JSON.stringify(result)}`);
+    check(result.prUrl === 'https://github.com/mock-org/mock-repo/pull/202', `expected the created PR's URL to still be surfaced, got: ${JSON.stringify(result)}`);
+    check(
+        logs.some((m) => /could not resolve member/.test(m) && /falling back to the default provider chain/.test(m)),
+        `expected a logged, non-fatal degrade message naming the fallback to the default provider chain, logs: ${JSON.stringify(logs)}`
+    );
+});

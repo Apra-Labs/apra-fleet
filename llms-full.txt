@@ -305,7 +305,12 @@ Bitbucket, and Azure DevOps -- host differences (URL shape, PR REST dialect,
 auth pattern, error vocabulary) are hidden behind a per-provider descriptor
 rather than leaking into shared code; see
 `docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
-credential-assembly and PAT-lifetime details. Permission
+credential-assembly and PAT-lifetime details. A credential-requiring VCS
+command can be handed to the server for execution (`vcs_credential_exec`)
+rather than the orchestrator learning the plaintext token itself: the
+server substitutes the credential into the command, runs it on the member,
+and redacts the token from every field of the result -- the plaintext never
+transits an orchestrator-readable output. Permission
 composition verifies its own delivery: a grant is read back off the target
 member and structurally compared against what was intended before it is
 reported as applied, so a failed or partial write is surfaced as an
@@ -1254,6 +1259,33 @@ both the initial signal and the escalation, install reports a clear error
 proceeding into a copy that would fail anyway or claiming success it can't
 back up.
 
+**A launchd/systemd/Windows-service-managed server defeats a pkill-first
+approach entirely**, not just slows it down. On macOS, the LaunchAgent
+installed for the server (`~/Library/LaunchAgents/com.apra-fleet.server.plist`)
+is registered with `KeepAlive` set for a non-successful exit, so the service
+manager relaunches the server (as a new PID) the instant a `SIGTERM`/
+`SIGKILL` reaches it -- signalling the process by name after that point
+cannot win the race, since the pid it is tracking is already stale, and a
+liveness poll racing the relaunch would report the same "could not stop the
+running server" failure no matter how long the grace windows are.
+
+`install --force` avoids this by stopping the registered **service** first,
+never signalling the bare process as the first move: it snapshots the
+currently-running apra-fleet pids *before* touching anything, then (when a
+service is registered) calls the platform `ServiceManager.stop()` for a
+graceful shutdown, and only escalates to a direct kill signal if a poll
+afterward still finds a process alive **with the same pid it snapshotted
+before stopping** -- i.e. nothing relaunched and there is no supervisor race
+to lose. If a pid appears that was not in the original snapshot, that is
+conclusive evidence of a supervisor relaunch (not a process refusing to
+die), and install reports it as exactly that, with the platform's service-
+stop command, instead of retrying a signal against a name that will keep
+being relaunched forever. The server's own log corroborates this case with
+consecutive startup lines under a different PID each time a kill was
+attempted. Killing the process without first stopping its service
+registration is still not a valid workaround for any code path that has to
+solve this problem elsewhere -- it reproduces the exact race above.
+
 ### Replaying the npm-publish smoke step locally with an unrelated server running
 
 CI's "Pack + install into a clean temp prefix (fleet-sprint smoke test)" step
@@ -1748,6 +1780,33 @@ members:
 | `issues` | - (no code access) | issues, PRs, projects, comments |
 | `full` | admin + issues | Everything |
 
+### VCS provider resolution
+
+A member's VCS provider (`github` | `bitbucket` | `azure-devops` | `none`)
+determines which credential backend `provision_vcs_auth` targets and which
+PR-shaped command `fleet-sprint` builds for it. `register_member` accepts an
+explicit `vcs_provider`; when omitted, registration reads the member's git
+`origin` remote (best effort) and maps its host to a provider
+(`github.com` -> `github`, `bitbucket.org` -> `bitbucket`, `dev.azure.com` /
+`*.visualstudio.com` -> `azure-devops`). A GitHub Enterprise host has no
+fixed domain and is never auto-detected -- register those members with an
+explicit `vcs_provider`.
+
+Auto-detection commonly fails at registration time, because the ordinary
+flow is register-then-clone: the member's work folder has no git repo yet,
+so there is no `origin` to read. Registration still succeeds in that case
+(a missing VCS provider does not block onboarding), but emits a loud warning
+that the member cannot push or open a PR until one is set. There are three
+ways to resolve it after the fact: call `provision_vcs_auth` with an explicit
+`provider` (this also records `vcsProvider` as a side effect of provisioning
+credentials); call `update_member` with `vcs_provider` set, to record the
+provider directly without provisioning credentials; or rely on
+`fleet-sprint`'s dispatch-time fallback, which re-attempts the same
+remote-based detection once a git remote exists and self-heals the
+registry entry automatically. Re-registering the same folder path is
+rejected as a duplicate registration, so it is never the remedy for a wrong
+or missing auto-detect.
+
 ### Backend: GitHub App Token Minting
 
 For GitHub-hosted repos, use a **GitHub App** installed on the org.
@@ -1896,6 +1955,63 @@ credential `label` and `scope_url`, and a per-provider credential group:
 
 Secret-bearing fields accept a `{{secure.NAME}}` token, resolved from the
 credential store server-side so no secret passes through a model's context.
+
+### Structured provisioning responses
+
+`provision_vcs_auth`, `provision_auth` (the LLM-credential counterpart) and
+`member_reservation` all return a structured MCP result (an `ok`/`failed`
+discriminator, a machine-readable `reason` code, and tool-specific fields)
+rather than emoji-prefixed prose. This matters for any orchestrator-side
+consumer: `reason` values include benign-but-not-fully-successful outcomes
+(for example `provision_auth`'s `skipped_local_member`) that still report
+`ok: true`, so a consumer that only checks `ok` cannot distinguish "actually
+provisioned" from "correctly skipped." Always branch on `reason` before
+falling back to the generic `ok`/`failed` split. Any caller that stubs these
+tools in a test must stub the structured shape (`{ text, structuredContent }`),
+not the old string return -- a stub still shaped like the old prose return
+passes type-checking (both are just objects) but throws at the first
+`.structuredContent.ok` read, and if that call site is wrapped in a
+best-effort `catch`, the throw is silently swallowed and the mismatch never
+surfaces as a test failure.
+
+### Server-side credential handoff (`vcs_credential_exec`)
+
+Before this tool existed, the only way an orchestrator-side caller could run
+a credential-requiring git/VCS command was to first learn the token itself:
+dispatch the deployed git-credential-helper as a member command and parse
+`password=<token>` out of the captured stdout. Even dispatched with a
+silent flag, the plaintext token still round-trips through a command result
+the orchestrator process reads.
+
+`vcs_credential_exec` (`src/tools/vcs-credential-exec.ts`) removes that
+round-trip. The caller sends a command containing the literal placeholder
+`{{vcs_token}}` where the credential belongs (never inside the caller's own
+quotes -- the substituted value arrives already shell-escaped for the
+member's shell, the same convention `execute_command`'s `{{secure.NAME}}`
+tokens use), and the server performs the whole handoff in one call:
+
+1. Runs the member's deployed credential helper through `strategy.execCommand`
+   -- that output is consumed in-process and is never part of this tool's
+   result.
+2. Substitutes `{{vcs_token}}` with the token, shell-escaped per
+   `isPosixShell(agentOs, agentShell)` -- never assumed to be POSIX.
+3. Dispatches the substituted command.
+4. Redacts any occurrence of the token from stdout/stderr before returning,
+   the same defense `execute-command.ts`'s output redaction applies.
+
+The tool refuses any command lacking the `{{vcs_token}}` placeholder, so it
+cannot degrade into a second, unguarded `execute_command`. The plaintext
+token appears in no field of any result an orchestrator-side caller can
+read; `readMemberVcsCredentialToken` (the old prose-scraping path) is left in
+place for callers that have not migrated.
+
+Redaction must cover every exit path the substituted command can take, not
+just its successful stdout/stderr -- a dispatch failure that throws (the
+`dispatch_failed` catch branch) can still carry the token verbatim inside
+the thrown error's own message (many transport layers echo the failed
+command back into the error text). A redaction pass applied only to the
+success path leaves that throw path as an unguarded leak of exactly the
+secret the tool exists to protect.
 
 ### Security Properties
 

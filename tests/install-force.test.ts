@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { runInstall, isApraFleetRunning, killApraFleet, _setSeaOverride, _setManifestOverride, _setInstallForceTimingOverride } from '../src/cli/install.js';
+import { getServiceManager } from '../src/services/service-manager/index.js';
+import type { ServiceManager } from '../src/services/service-manager/types.js';
 
 vi.mock('node:os', () => ({
   default: {
@@ -16,6 +18,9 @@ vi.mock('node:os', () => ({
 }));
 vi.mock('node:fs');
 vi.mock('node:child_process');
+vi.mock('../src/services/service-manager/index.js', () => ({
+  getServiceManager: vi.fn(),
+}));
 
 const mockHome = '/mock/home';
 
@@ -585,5 +590,192 @@ describe('install running-server guard is scoped to the install target (apra-fle
     expect(exitSpy).not.toHaveBeenCalled();
 
     exitSpy.mockRestore();
+  });
+});
+
+// apra-fleet-3swo.29: regression coverage for the --force service-aware stop
+// fix (apra-fleet-3swo.22, commit 3216608d). killApraFleet() signals by
+// process NAME, which a launchd/systemd-supervised server just relaunches
+// under a new pid -- the fix stops the registered SERVICE first (graceful
+// exit, no relaunch) and only falls back to pkill/taskkill when nothing is
+// registered.
+//
+// One-line revert used to confirm cases (a), (b) and (d) below fail without
+// the fix (case (c) keeps passing since it is the historical fallback path):
+// in src/cli/install.ts, change
+//   guardServiceMgr = await registeredServiceManager();
+// to
+//   guardServiceMgr = null;
+// Verified manually: with that one-line change, (a) fails because `stop` is
+// never called and `pkill -x apra-fleet` is issued instead (assertion
+// `expect(stop).toHaveBeenCalledTimes(1)` fails: "Number of calls: 0"); (b)
+// fails because `start` is never called and no "Restart command:"/"Restarted
+// the registered service." text is printed; (d) fails because the relaunch
+// is never detected -- the code falls into the plain
+// "could not stop the running apra-fleet server" branch instead of the
+// RELAUNCHED branch, so `expect(errText).toContain('RELAUNCHED')` fails.
+describe('install --force service-aware stop (apra-fleet-3swo.22)', () => {
+  function makeFakeServiceManager(overrides: Partial<ServiceManager> = {}): ServiceManager {
+    return {
+      register: vi.fn().mockResolvedValue(undefined),
+      unregister: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      query: vi.fn().mockResolvedValue({ installed: false, running: false }),
+      isInstalled: vi.fn().mockResolvedValue(false),
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(true);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    // Default: no service registered -- matches the historical fallback
+    // behaviour unless a case below overrides it.
+    vi.mocked(getServiceManager).mockResolvedValue(makeFakeServiceManager());
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+  });
+
+  it('(a) service registered and running -- stop() is invoked before any pkill/taskkill, and install completes', async () => {
+    const callOrder: string[] = [];
+    let serviceStopped = false;
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') {
+        if (serviceStopped) throw Object.assign(new Error('no match'), { status: 1 });
+        return '5678\n' as any;
+      }
+      if (c === 'pkill -x apra-fleet' || c === 'pkill -9 -x apra-fleet') { callOrder.push(c); return '' as any; }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
+      return '' as any;
+    });
+    const stop = vi.fn().mockImplementation(async () => { callOrder.push('service:stop'); serviceStopped = true; });
+    vi.mocked(getServiceManager).mockResolvedValue(makeFakeServiceManager({ isInstalled: vi.fn().mockResolvedValue(true), stop }));
+
+    const logLines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args) => { logLines.push(args.join(' ')); });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none', '--force'])).resolves.toBeUndefined();
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    // No pkill/taskkill call ever happened -- the service stop alone made the
+    // process disappear, so callOrder contains only the stop call.
+    expect(callOrder).toEqual(['service:stop']);
+    expect(logLines.join('\n')).toContain('Stopped running server.');
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+  });
+
+  it('(b) service registered -- is started again after the binary copy (non-serviceStep transport)', async () => {
+    let serviceStopped = false;
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') {
+        if (serviceStopped) throw Object.assign(new Error('no match'), { status: 1 });
+        return '5678\n' as any;
+      }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
+      return '' as any;
+    });
+    const stop = vi.fn().mockImplementation(async () => { serviceStopped = true; });
+    const start = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(getServiceManager).mockResolvedValue(makeFakeServiceManager({ isInstalled: vi.fn().mockResolvedValue(true), stop, start }));
+
+    const logLines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args) => { logLines.push(args.join(' ')); });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    // stdio transport => serviceStep is false, so the immediate
+    // guardServiceMgr.start() restart branch runs right after the binary
+    // copy instead of waiting for the later register-and-start step.
+    await expect(runInstall(['--skill', 'none', '--force', '--transport', 'stdio'])).resolves.toBeUndefined();
+
+    expect(start).toHaveBeenCalledTimes(1);
+    const log = logLines.join('\n');
+    expect(log).toContain('Restart command:');
+    expect(log).toContain('Restarted the registered service.');
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+  });
+
+  it('(c) no service registered -- falls back to killApraFleet unchanged, service manager stop/start never called', async () => {
+    const killCalls: string[] = [];
+    let killed = false;
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') {
+        if (killed) throw Object.assign(new Error('no match'), { status: 1 });
+        return '5678\n' as any;
+      }
+      if (c === 'pkill -x apra-fleet') { killCalls.push(c); killed = true; return '' as any; }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
+      return '' as any;
+    });
+    const fakeMgr = makeFakeServiceManager(); // isInstalled resolves false by default
+    vi.mocked(getServiceManager).mockResolvedValue(fakeMgr);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    // stdio transport keeps serviceStep false, so the unrelated final
+    // register-and-start step (which runs unconditionally under HTTP
+    // transport, independent of --force) never fires and can't muddy this
+    // assertion about the guard path specifically.
+    await expect(runInstall(['--skill', 'none', '--force', '--transport', 'stdio'])).resolves.toBeUndefined();
+
+    expect(killCalls).toContain('pkill -x apra-fleet');
+    expect(fakeMgr.stop).not.toHaveBeenCalled();
+    expect(fakeMgr.start).not.toHaveBeenCalled();
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+  });
+
+  it('(d) launchd relaunch: pid changes after stop -- reports RELAUNCH distinctly and exits 1 without further signalling', async () => {
+    let stopped = false;
+    const pkillCalls: string[] = [];
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') return (stopped ? '9999\n' : '5678\n') as any;
+      if (c === 'pkill -x apra-fleet' || c === 'pkill -9 -x apra-fleet') { pkillCalls.push(c); return '' as any; }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
+      return '' as any;
+    });
+    const stop = vi.fn().mockImplementation(async () => { stopped = true; });
+    vi.mocked(getServiceManager).mockResolvedValue(makeFakeServiceManager({ isInstalled: vi.fn().mockResolvedValue(true), stop }));
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none', '--force'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errText).toContain('RELAUNCHED');
+    expect(errText).toContain('5678');
+    expect(errText).toContain('now 9999');
+    expect(stop).toHaveBeenCalledTimes(1);
+    // Signalling by name is deliberately skipped once a pid change proves a
+    // supervisor relaunch, not a refusal to die.
+    expect(pkillCalls).toEqual([]);
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 });

@@ -316,6 +316,33 @@ both the initial signal and the escalation, install reports a clear error
 proceeding into a copy that would fail anyway or claiming success it can't
 back up.
 
+**A launchd/systemd/Windows-service-managed server defeats a pkill-first
+approach entirely**, not just slows it down. On macOS, the LaunchAgent
+installed for the server (`~/Library/LaunchAgents/com.apra-fleet.server.plist`)
+is registered with `KeepAlive` set for a non-successful exit, so the service
+manager relaunches the server (as a new PID) the instant a `SIGTERM`/
+`SIGKILL` reaches it -- signalling the process by name after that point
+cannot win the race, since the pid it is tracking is already stale, and a
+liveness poll racing the relaunch would report the same "could not stop the
+running server" failure no matter how long the grace windows are.
+
+`install --force` avoids this by stopping the registered **service** first,
+never signalling the bare process as the first move: it snapshots the
+currently-running apra-fleet pids *before* touching anything, then (when a
+service is registered) calls the platform `ServiceManager.stop()` for a
+graceful shutdown, and only escalates to a direct kill signal if a poll
+afterward still finds a process alive **with the same pid it snapshotted
+before stopping** -- i.e. nothing relaunched and there is no supervisor race
+to lose. If a pid appears that was not in the original snapshot, that is
+conclusive evidence of a supervisor relaunch (not a process refusing to
+die), and install reports it as exactly that, with the platform's service-
+stop command, instead of retrying a signal against a name that will keep
+being relaunched forever. The server's own log corroborates this case with
+consecutive startup lines under a different PID each time a kill was
+attempted. Killing the process without first stopping its service
+registration is still not a valid workaround for any code path that has to
+solve this problem elsewhere -- it reproduces the exact race above.
+
 ### Replaying the npm-publish smoke step locally with an unrelated server running
 
 CI's "Pack + install into a clean temp prefix (fleet-sprint smoke test)" step

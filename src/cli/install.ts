@@ -6,6 +6,8 @@ import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
 import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
+import type { ServiceManager } from '../services/service-manager/types.js';
+import { LINUX_UNIT_NAME, MACOS_PLIST_LABEL, WINDOWS_TASK_NAME } from '../services/service-manager/types.js';
 import {
   BIN_DIR,
   HOOKS_DIR,
@@ -692,26 +694,45 @@ function isCommandAvailable(cmd: string): boolean {
   }
 }
 
-export function isApraFleetRunning(): boolean {
+/**
+ * PIDs of every non-installer apra-fleet process currently running, as strings.
+ *
+ * OS-global on purpose -- isApraFleetRunning() is defined in terms of this, and
+ * waitForApraFleetToStop()/uninstall.ts depend on that scope. The current
+ * process is always excluded so a self-update (the installed apra-fleet binary
+ * running `install`) never sees itself.
+ *
+ * Exposed separately from the boolean so the install --force guard can tell
+ * "the SAME process is refusing to die" from "the supervisor relaunched it
+ * under a NEW pid" -- those need different remedies and different error text
+ * (see the service-aware stop note below).
+ */
+export function apraFleetPids(): string[] {
   try {
+    const currentPid = process.pid.toString();
     if (process.platform === 'win32') {
       const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV', { encoding: 'utf-8', stdio: 'pipe' });
-      const currentPid = process.pid.toString();
       // Each CSV line: "apra-fleet.exe","<PID>","..." - exclude the current installer process
-      return out.split('\n').some(line => {
-        const match = line.match(/"apra-fleet\.exe","(\d+)"/);
-        return match !== null && match[1] !== currentPid;
-      });
+      return out.split('\n')
+        .map(line => line.match(/"apra-fleet\.exe","(\d+)"/))
+        .filter((match): match is RegExpMatchArray => match !== null)
+        .map(match => match[1])
+        .filter(pid => pid !== currentPid);
     } else {
       // -x = exact name match; installer is apra-fleet-installer-* so won't match;
       // exclude current PID to handle self-update (installed apra-fleet binary running install)
       const out = execSync('pgrep -x apra-fleet', { encoding: 'utf-8', stdio: 'pipe' });
-      const currentPid = process.pid.toString();
-      return out.split('\n').some(line => line.trim() !== '' && line.trim() !== currentPid);
+      return out.split('\n')
+        .map(line => line.trim())
+        .filter(pid => pid !== '' && pid !== currentPid);
     }
   } catch {
-    return false;
+    return [];
   }
+}
+
+export function isApraFleetRunning(): boolean {
+  return apraFleetPids().length > 0;
 }
 
 export function killApraFleet(signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
@@ -782,6 +803,76 @@ export async function waitForApraFleetToStop(): Promise<void> {
   while (isApraFleetRunning() && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
+}
+
+// --- install --force service-aware stop ---
+//
+// killApraFleet() signals the server by process NAME. When the server is
+// registered with the platform service manager that is a race the installer
+// cannot win: the macOS LaunchAgent this installer writes declares
+// KeepAlive/SuccessfulExit=false (src/services/service-manager/macos.ts), so
+// launchd relaunches the server under a NEW pid the instant a SIGKILL takes it
+// down, and the liveness poll below then reports "still running" forever. The
+// systemd unit's Restart=on-failure has the same shape. The remedy is to stop
+// the SERVICE first: ServiceManager.stop() performs a graceful shutdown that
+// exits 0, which neither supervisor restarts.
+
+/**
+ * The platform ServiceManager, but only when a service is actually registered.
+ * Any failure to determine that (no systemd, unsupported platform, adapter
+ * error) is indistinguishable from "nothing registered" for the guard's
+ * purposes, so it degrades to the historical kill path rather than throwing.
+ */
+async function registeredServiceManager(): Promise<ServiceManager | null> {
+  try {
+    const mgr = await getServiceManager();
+    return (await mgr.isInstalled()) ? mgr : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Exact command an operator can run to bring the registered service back up. */
+export function serviceRestartCommand(): string {
+  switch (process.platform) {
+    case 'win32': return `schtasks /run /tn ${WINDOWS_TASK_NAME}`;
+    case 'linux': return `systemctl --user start ${LINUX_UNIT_NAME}`;
+    case 'darwin': return `launchctl kickstart -k gui/${macosGuiUid()}/${MACOS_PLIST_LABEL}`;
+    default: return 'apra-fleet install';
+  }
+}
+
+/** Exact command an operator can run to take the registered service down. */
+export function serviceStopCommand(): string {
+  switch (process.platform) {
+    case 'win32': return `schtasks /end /tn ${WINDOWS_TASK_NAME}`;
+    case 'linux': return `systemctl --user stop ${LINUX_UNIT_NAME}`;
+    case 'darwin': return `launchctl bootout gui/${macosGuiUid()}/${MACOS_PLIST_LABEL}`;
+    default: return 'apra-fleet uninstall';
+  }
+}
+
+// Resolved in JS, never left to shell expansion: the printed command must be
+// copy-pasteable as-is (mirrors getUid() in service-manager/macos.ts).
+function macosGuiUid(): string {
+  return typeof process.getuid === 'function' ? String(process.getuid()) : '501';
+}
+
+/**
+ * Poll for the server to disappear after ServiceManager.stop(), WITHOUT
+ * signalling it -- signalling is exactly what loses the race against a
+ * supervisor relaunch. Returns the pids still observed once the window closes
+ * (empty when the service is down).
+ */
+async function waitForServiceStop(): Promise<string[]> {
+  const { pollIntervalMs, graceMs } = installForceTiming();
+  const deadline = Date.now() + graceMs;
+  let pids = apraFleetPids();
+  while (pids.length > 0 && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    pids = apraFleetPids();
+  }
+  return pids;
 }
 
 /**
@@ -1005,6 +1096,10 @@ Options:
   if (runningScope && !runningScope.relevant) {
     console.log(`\n  Note: an unrelated apra-fleet server is running -- ${runningScope.detail}.\n  It is not associated with this install (data dir ${getInstallDataDir()}, prefix ${BIN_DIR}), so it is left running.\n`);
   }
+  // Set when the --force guard below stopped a REGISTERED service, so the
+  // binary-copy step can bring it back up instead of leaving it down.
+  let guardServiceMgr: ServiceManager | null = null;
+  let guardStoppedService = false;
   if (runningScope?.relevant) {
     if (!force) {
       const killHint = process.platform === 'win32'
@@ -1022,9 +1117,49 @@ ${killHint}
 `);
       process.exit(1);
     }
-    killApraFleet();
-    await waitForApraFleetToStop();
-    if (isApraFleetRunning()) {
+    // Snapshot BEFORE anything is stopped: a pid that is present afterwards but
+    // absent here is a supervisor relaunch, not a process refusing to die.
+    const pidsBeforeStop = apraFleetPids();
+    guardServiceMgr = await registeredServiceManager();
+
+    if (guardServiceMgr) {
+      // A service is registered: stop the SERVICE, never pkill first.
+      console.log('  Registered service detected -- stopping it through the service manager.');
+      try {
+        await guardServiceMgr.stop();
+        guardStoppedService = true;
+      } catch (err) {
+        console.warn(`    Service stop failed: ${(err as Error).message}`);
+      }
+      const stillUp = await waitForServiceStop();
+      // Escalate ONLY when the very same pids are still there -- i.e. nothing
+      // relaunched the server and there is no supervisor race to lose. If a NEW
+      // pid appeared, signalling by name is futile and is deliberately skipped
+      // so the relaunch is reported instead of retried forever.
+      if (stillUp.length > 0 && stillUp.every(pid => pidsBeforeStop.includes(pid))) {
+        killApraFleet();
+        await waitForApraFleetToStop();
+      }
+    } else {
+      // No service registered: historical path, unchanged.
+      killApraFleet();
+      await waitForApraFleetToStop();
+    }
+
+    const pidsAfterStop = apraFleetPids();
+    if (pidsAfterStop.length > 0) {
+      const relaunchedPids = pidsAfterStop.filter(pid => !pidsBeforeStop.includes(pid));
+      if (relaunchedPids.length > 0) {
+        console.error(`
+Error: the apra-fleet server was RELAUNCHED by its service supervisor while
+install --force was stopping it -- the observed pid changed between polls (was
+${pidsBeforeStop.join(', ') || 'none'}, now ${pidsAfterStop.join(', ')}), so it did not merely refuse to die.
+Signalling the process by name cannot win that race. Stop the service itself,
+then re-run the install:
+    ${serviceStopCommand()}
+`);
+        process.exit(1);
+      }
       console.error(`
 Error: could not stop the running apra-fleet server (it is still running after
 SIGTERM and a SIGKILL escalation). Stop it manually before installing:
@@ -1053,6 +1188,25 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     binaryPath = process.argv[1];
   } else {
     console.log(`  [1/${totalSteps}] Dev mode -- skipping binary copy`);
+  }
+
+  // A registered service that the --force guard stopped must never be left
+  // permanently down. When serviceStep is set the final install step
+  // re-registers and starts it, so restarting here would only add a redundant
+  // bootout/bootstrap cycle mid-install; otherwise nothing else would ever
+  // bring it back, so start it now that the new binary is in place. Either way
+  // the exact restart command is printed, so a failure at any later step stays
+  // recoverable by hand.
+  if (guardStoppedService && guardServiceMgr) {
+    console.log(`  The registered service was stopped by --force. Restart command: ${serviceRestartCommand()}`);
+    if (!serviceStep) {
+      try {
+        await guardServiceMgr.start();
+        console.log('  Restarted the registered service.');
+      } catch (err) {
+        console.warn(`  [WARN] Could not restart the registered service: ${(err as Error).message}`);
+      }
+    }
   }
 
   // --- Step 2: Extract hooks ---

@@ -15,6 +15,7 @@ import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 import { runCmd, sleep, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 import { balancedCallRange } from './helpers/balanced-call-scanner.mjs';
+import { ROLE_POLICIES, allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
 
 // =============================================================================
 // apra-fleet-eft.8.7 -- Orchestrator-bracketed git sync: consolidated
@@ -102,7 +103,17 @@ function withGitSyncRanges(src) {
 // any single bracket drops that role's marker out of every range and fails
 // here.
 // =============================================================================
-const SEVEN_DISPATCH_MARKERS = {
+// apra-fleet-3swo.5.3: this census covers the dispatches that are still
+// hand-written IN runner.js. A role whose ladder has moved onto the
+// dispatchRole engine (role-policies.mjs marks it `migrated`) has no runner.js
+// call site left to find, and the engine's bracket is opened through the
+// injected `ctx.withGitSync(...)` -- deliberately invisible to a runner.js
+// text scan. Those roles' brackets are asserted BEHAVIOURALLY instead, by
+// test/planning-role-dispatch-pins.test.mjs and test/role-policies-table
+// .test.mjs, which run the real engine and observe the bracket it opens.
+// The filter is driven off the policy table rather than by deleting entries,
+// so the next migration needs no edit here and an UN-migration is caught.
+const ALL_DISPATCH_MARKERS = {
     planner: /member_name:\s*getMemberForRole\('planner'\)/g,
     'plan-reviewer': /member_name:\s*getMemberForRole\('plan-reviewer'\)/g,
     doer: /agentType:\s*'doer'/g,
@@ -111,23 +122,42 @@ const SEVEN_DISPATCH_MARKERS = {
     'integ-test-runner': /member_name:\s*getMemberForRole\('integ-test-runner'\)/g,
     harvester: /member_name:\s*getMemberForRole\('harvester'\)/g,
 };
+const SEVEN_DISPATCH_MARKERS = Object.fromEntries(
+    Object.entries(ALL_DISPATCH_MARKERS).filter(([role]) => ROLE_POLICIES[role].migrated !== true)
+);
 
 test('(a) every one of the seven dispatch types is wrapped in a withGitSync(...) bracket', () => {
-    const src = fs.readFileSync(RUNNER_PATH, 'utf8');
-    const ranges = withGitSyncRanges(src);
-    check(ranges.length >= 7, `expected at least seven withGitSync(...) call sites, found ${ranges.length}`);
-
-    const inSomeRange = (idx) => ranges.some(([s, e]) => idx > s && idx < e);
-
-    for (const [role, re] of Object.entries(SEVEN_DISPATCH_MARKERS)) {
-        re.lastIndex = 0;
-        const markerIdxs = [];
-        let m;
-        while ((m = re.exec(src)) !== null) markerIdxs.push(m.index);
-        check(markerIdxs.length > 0, `no dispatch marker found for role '${role}' -- the 3.3 table role marker was renamed?`);
-        check(
-            markerIdxs.some((idx) => inSomeRange(idx)),
-            `dispatch for role '${role}' is NOT inside any withGitSync(...) bracket -- the 3.3 sync bracket was removed or un-nested`,
+    // apra-fleet-3swo.5.7: this census has now RETIRED ITSELF exactly as its
+    // own escape hatch said it must. Every dispatch ladder has migrated onto
+    // fleet-sprint/dispatch-role.mjs, so SEVEN_DISPATCH_MARKERS is empty and a
+    // runner.js text scan for role markers inside withGitSync ranges would
+    // pass vacuously forever.
+    //
+    // The FACT it pinned -- that every role-identified dispatch is bracketed --
+    // is unchanged and moves to the policy table plus the engine: the table
+    // says which dispatches are bracketed, and the two dispatch-pin files run
+    // the real engine and observe the bracket it really opens around each one.
+    assert.equal(
+        Object.keys(SEVEN_DISPATCH_MARKERS).length,
+        0,
+        'a role has an INLINE ladder again -- restore the runner.js marker census below for it, or migrate it',
+    );
+    const bracketed = allDispatchPolicies().filter((p) => p.bracket.wrapped);
+    const unbracketed = allDispatchPolicies().filter((p) => !p.bracket.wrapped);
+    assert.equal(
+        bracketed.length + unbracketed.length,
+        allDispatchPolicies().length,
+        'every dispatch must record whether it is bracketed',
+    );
+    assert.deepEqual(
+        [...new Set(unbracketed.map((p) => p.role))],
+        ['streak-assignment'],
+        'only the pure-compute grouping call runs outside a bracket; every role-identified dispatch is bracketed',
+    );
+    for (const role of Object.keys(ALL_DISPATCH_MARKERS)) {
+        assert.ok(
+            bracketed.some((p) => p.ladder === role),
+            `dispatch for role '${role}' must still have at least one bracketed dispatch in the policy table`,
         );
     }
 });
@@ -151,8 +181,23 @@ test('(a) pushCode:true is reserved for the two code-writing roles (doer, harves
             falseCount++;
         }
     }
-    check(trueCount >= 2, `expected at least two pushCode:true (code-writing) brackets, found ${trueCount}`);
-    check(falseCount >= 5, `expected the read-only roles to pass pushCode:false, found ${falseCount}`);
+    // apra-fleet-3swo.5.7: both counts are DERIVED from the policy table's
+    // still-inline dispatches rather than being bare literals, because each
+    // execution-role migration moves a bracket off runner.js onto the engine's
+    // one generic (expression-argument) withGitSync call. The migrated ones are
+    // asserted behaviourally by the two dispatch-pin files instead.
+    const inlineBrackets = allDispatchPolicies()
+        .filter((p) => p.bracket.wrapped && ROLE_POLICIES[p.ladder].migrated !== true);
+    const expectedTrue = inlineBrackets.filter((p) => p.bracket.pushCode === true).length;
+    const expectedFalse = inlineBrackets.length - expectedTrue;
+    check(
+        trueCount === expectedTrue,
+        `expected ${expectedTrue} pushCode:true (code-writing) brackets still inline, found ${trueCount}`
+    );
+    check(
+        falseCount === expectedFalse,
+        `expected ${expectedFalse} read-only pushCode:false brackets still inline, found ${falseCount}`
+    );
 });
 
 // =============================================================================

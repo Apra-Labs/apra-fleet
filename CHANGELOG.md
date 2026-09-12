@@ -2,6 +2,90 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- runner.js module decomposition: dispatch engine fully migrated, Phase 4 residual chain mostly landed (sprint FAILED -- scope incomplete, full test gate red)
+
+Sprint goal: continue the strangler-fig decomposition of
+`fleet-sprint/runner.js` -- collapse the remaining hand-written per-role
+dispatch ladders onto the `dispatchRole(ctx, roleName, opts)` engine, and
+keep slicing `runSprintCycle`'s body into `phases/*.mjs` modules with
+move-only discipline.
+
+What shipped:
+
+- **All 13 sprint roles now dispatch through the single `dispatchRole`
+  engine** (`dispatch-role.mjs`) reading `role-policies.mjs`'s data table --
+  zero hand-written inline `agent()` ladders remain for planning or
+  execution dispatch. `inline-ladder-guard.mjs` is now a live check across
+  every role instead of the inert placeholder it was while no role had been
+  migrated.
+- **`runSprintCycle` is now composed from twelve `fleet-sprint/phases/*.mjs`
+  modules**, one per phase (Ensure Sprint Branch, Plan, Replan, Develop,
+  Review, Deploy, Integ Test, Re-Review, Final Review, Regression Test,
+  Harvest, Publish PR), in that fixed order; `runner.js` itself is now a
+  composition root plus facade, down from roughly 11,700 to about 4,000
+  lines. Six more extraction modules landed in the same residual chain:
+  `git-topology.mjs`, `member-sync.mjs`, `member-provisioning.mjs`, plus the
+  facade-completeness scaffolding that carries the chain to its final
+  composition-root gate.
+- **Fixed:** `install --force` no longer races a launchd/systemd-managed
+  server's automatic relaunch. It now stops the registered service first
+  (graceful `ServiceManager.stop()`), and only escalates to a direct kill
+  signal when the same pre-stop pid is still alive afterward -- a pid that
+  appears only after the stop is reported as a supervisor relaunch (with the
+  platform's service-stop command) instead of being signalled forever.
+- **Fixed:** the fleet-sprint VCS-auth self-heal outcome check now reads the
+  provisioning tool's structured `ok` result first, falling back to legacy
+  prose matching only when structured content is absent -- closing a false-
+  success reading that a retired prose marker could previously produce.
+- **Fixed:** `vcs_credential_exec`'s token redaction now also runs on a
+  dispatch failure's thrown-error message, not just on successful
+  stdout/stderr -- closing a leak path where a failed credentialed command
+  could otherwise echo the plaintext token back through its own error text.
+- **Fixed:** the guarded-module registration completeness check now compares
+  full relative paths instead of bare filenames, closing a collision where a
+  newly nested module (e.g. `phases/index.mjs`) could silently ride on an
+  unrelated top-level module's registration.
+- **Fixed:** a shared dispatch call-site source scanner now skips comments
+  before extracting object-literal text, closing a hazard where an
+  apostrophe inside a comment could swallow the rest of the scanned file.
+- Two new bugs were found, filed, and NOT fixed in this sprint (see "Carried
+  forward" below): a real, reproducible port-allocation race in the sandbox
+  deploy helper, and a stderr-pattern-table gap left behind by the
+  `git-topology.mjs` extraction.
+
+Carried forward (filed as open backlog; blocking full epic closure):
+
+- **The Phase 4 composition-root/facade-completeness verification gate has
+  not run.** The extraction slices landed, but the test proving they were
+  move-only end to end (all importers and mock-sprint fixtures pass
+  unmodified against the facade) has not executed against the final state.
+- **Six extraction modules remain**: bead-child allocation helpers,
+  sprint-report/newTask text formatting, round-session and dispatch-failure
+  handling, and the fatal-diagnostics writer are still in `runner.js`.
+- **Phase 5 (observability/productization) has not started.**
+- **A real, reproducible port-allocation race in the sandbox deploy
+  helper** causes an intermittent full-test-suite failure under concurrency
+  (passes in isolation, fails under load) -- see
+  `docs/design-regression-sandbox-lifecycle.md`. This is why the full test
+  gate is reported red this sprint despite every individual suite passing
+  on its own.
+- A stderr-pattern-table census left incomplete by the `git-topology.mjs`
+  extraction (one delegation assertion re-pointed, one census table not
+  yet widened to the new module).
+- Three low-priority (P3) hardening items: a sync-bracket pause-guard
+  re-registration edge case, an `execute_prompt` fork-predicate
+  whitespace-only-id inconsistency, and a shell-command-guard
+  header/implementation mismatch.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $84.4598.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.7241 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 52 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- execute_prompt: session forking
 
 Sprint goal: let `execute_prompt` branch a new, independent session from an
@@ -52,6 +136,54 @@ Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.3278 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
 Pricing source: all 33 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- runner.js module decomposition: Phases T-2 landed, dispatch engine and remaining phases carried forward (sprint FAILED -- scope incomplete)
+
+Sprint goal: begin the strangler-fig decomposition of `fleet-sprint/runner.js`
+(originally ~11,700 lines) into focused modules plus a policy-driven dispatch
+engine, replacing ~13 hand-written per-role dispatch ladders with one
+`dispatchRole(ctx, roleName, opts)` engine backed by a data table. The
+originally-scoped epic estimated 5-6 sprints of work; this sprint delivered
+the branch-queue triage phase, the guard-preparation phase, the full leaf-module
+extraction phase, and the sync/beads/KB extraction phase (the largest phase),
+landing eleven new `fleet-sprint/*.mjs` modules (`vcs-auth`, `sprint-args`,
+`prompts`, `worklists`, `abort`, `branch-ensure`, `mcp-result`,
+`member-target`, `git-sync`, `coordination`, `kb`, `beads-scope`,
+`beads-transitions`) with move-only discipline, a facade-completeness test per
+extraction, and a shared `guarded-modules.mjs` list so five independent
+mechanical guards (shell-command, dolt-literal, full-db-fetch, unbracketed-push,
+inline-ladder) stay pointed at every extracted module instead of silently
+losing coverage as code moves out of `runner.js`. `runner.js` itself shrank
+from roughly 11,700 to roughly 7,800 lines. Two pause-bracket push holes (the
+Final Review findings push and the Publish-PR push) were closed by
+construction as part of the `git-sync.mjs` extraction. The dispatch-engine
+phase itself landed only its data layer (`role-policies.mjs`, with a
+structural scanner keeping every row honest against the live dispatch sites)
+and an inert readiness guard (`inline-ladder-guard.mjs`) -- no role has
+actually been migrated onto `dispatchRole` yet, and the composition-root
+phase (slicing `runSprintCycle` into `phases/*` modules) and the
+observability/productization phase are both largely carried forward, aside
+from three pieces that landed early: structured (non-prose) MCP responses for
+member reservation and LLM/VCS credential provisioning, and a new server-side
+VCS credential handoff tool that removes a plaintext-token round-trip through
+orchestrator-readable command output. A regression was caught and reopened in
+review: a consumer of the new structured provisioning responses shipped with
+a stale test double that masked the new response shape throwing at runtime
+inside a best-effort error handler. Separately, every deploy attempt this
+sprint failed at the install step; the root cause was diagnosed and traced to
+a pre-existing gap in how the installer stops a service-manager-relaunched
+server, filed as follow-up work rather than fixed in this sprint, which means
+none of the phases routed through a deploy-verified smoke test were actually
+confirmed against a running build.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $81.6134.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 48 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
 
 ## [Unreleased] -- Dolt sync budget: fewer, cheaper beads syncs per sprint
 

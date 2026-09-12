@@ -41,6 +41,47 @@ test('mock sprint: a non-"branch doesn\'t exist" fetch failure on Ensure Sprint 
     });
 });
 
+// apra-fleet-3swo (fleet-mac regression investigation): a sprint launch
+// against a branch that already exists on origin, on a member with NO local
+// branch of that name yet, must create the local branch fresh from
+// origin/<branch> and proceed -- never misread "no local ref" as "diverged".
+// This exercises the FULL Ensure Sprint Branch phase (real command() wiring,
+// the mock's own `git rev-parse --verify --quiet` local-branch-existence
+// intercept included), not just the pure decideEnsureBranchAction() unit
+// covered in ensure-branch-decision.test.mjs -- a wiring regression between
+// the probe and the decision (e.g. a dropped `localBranchExists` gate) would
+// not be caught by that unit test alone.
+test('mock sprint: branch exists on origin, no local branch yet -> creates it fresh from origin/<branch> and proceeds (no false "diverged")', async () => {
+    await withScenarioMarkers('branchfreshlocal', async () => {
+        console.log('Running mock sprint scenario (Ensure Sprint Branch: branch exists on origin, no local branch)...');
+        const scenario = await runDevelopLoopScenario('branchfreshlocal', {
+            members: ['local'],
+            taskSpecs: [{ title: 'Task: fresh-local-branch scenario' }],
+            maxCycles: 1,
+            // No gitGhFailurePattern injected: every git command (including
+            // `git fetch origin <branch>`) succeeds, matching "origin already
+            // has the branch". `memberGitState` starts as an empty Map (see
+            // runDevelopLoopScenario), so the mock's `git rev-parse --verify
+            // --quiet refs/heads/<branch>` intercept answers "no local branch
+            // yet" (exit 1, no output) exactly as a real git would for a
+            // member that has never checked this branch out before.
+        });
+        check(!scenario.error, `Expected no error when the branch exists on origin with no local branch yet, got: ${scenario.error ? scenario.error.message : 'n/a'}`);
+        const checkoutCommands = scenario.commandLog.filter((c) => c.startsWith('git checkout -B'));
+        check(checkoutCommands.length === 1, `Expected exactly one checkout, got: ${JSON.stringify(checkoutCommands)}`);
+        check(
+            checkoutCommands[0].includes(`origin/${scenario.branch}`),
+            `Expected the fresh checkout to start from origin/<branch> (not origin/main and not an abort), got: ${checkoutCommands[0]}`
+        );
+        // The bug this guards against: a "diverged" misclassification never
+        // even reaches a checkout -- it throws first. Zero merge-base calls
+        // confirms the tip-comparison path (gated on localBranchExists) was
+        // correctly skipped, not just that some checkout happened to occur.
+        const mergeBaseCommands = scenario.commandLog.filter((c) => c.startsWith('git merge-base'));
+        check(mergeBaseCommands.length === 0, `Expected no tip-comparison merge-base calls when no local branch exists, got: ${JSON.stringify(mergeBaseCommands)}`);
+    });
+});
+
 test('mock sprint: a genuine "branch doesn\'t exist yet" fetch failure still falls back to base (sanity, unchanged behavior)', async () => {
     await withScenarioMarkers('branchnotexist', async () => {
         console.log('Running mock sprint scenario (Ensure Sprint Branch: brand-new branch legitimately absent from origin)...');

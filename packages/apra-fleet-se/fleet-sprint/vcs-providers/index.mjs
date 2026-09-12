@@ -247,10 +247,10 @@ export function registerVcsProvider(impl) {
         throw new Error('ERROR: VCSModule: a provider implementation must be an object with a non-empty string `name`.');
     }
     if (impl.rules != null && typeof impl.rules !== 'object') {
-        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`rules\` table.`);
+        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`rules\` table.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
     }
     if (impl.extractProviderCode != null && typeof impl.extractProviderCode !== 'function') {
-        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`extractProviderCode\`.`);
+        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`extractProviderCode\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
     }
     // apra-fleet-5co8.1.1: the host/URL-axis hooks. All OPTIONAL (a
     // classification-only provider declares none of them), but validated up
@@ -259,14 +259,14 @@ export function registerVcsProvider(impl) {
     // or a remote-URL preflight where the error would mask the real failure.
     for (const hook of ['matchesHost', 'matchesHostForAuth', 'capabilitiesForHost', 'parseRepoRef', 'buildProvisionArgs']) {
         if (impl[hook] != null && typeof impl[hook] !== 'function') {
-            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`${hook}\`.`);
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`${hook}\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
         }
     }
     // apra-fleet-5co8.1.2: the remedy text quoted into a preflight ERROR. A
     // non-string here would land the literal 'undefined'/'[object Object]' in
     // an operator-facing error, so reject it at registration too.
     if (impl.repoRefHint != null && typeof impl.repoRefHint !== 'string') {
-        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-string \`repoRefHint\`.`);
+        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-string \`repoRefHint\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
     }
     // apra-fleet-647.1.5.1: the two auth-backend fields folded in from
     // vcs-module.mjs's former BUILDERS/DEFAULT_AUTH_MODES tables. Both are
@@ -274,7 +274,7 @@ export function registerVcsProvider(impl) {
     // them entirely -- see isAuthBackend() below), but validated up front,
     // same rationale as `rules`/`extractProviderCode` above.
     if (Object.prototype.hasOwnProperty.call(impl, 'defaultAuthMode') && impl.defaultAuthMode !== null && typeof impl.defaultAuthMode !== 'string') {
-        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-string, non-null \`defaultAuthMode\`.`);
+        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-string, non-null \`defaultAuthMode\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
     }
     // apra-fleet-lzfv.4: the create-pull-request RESPONSE mapping. OPTIONAL
     // (a classification-only provider, or one with no PR builder, declares
@@ -284,17 +284,17 @@ export function registerVcsProvider(impl) {
     if (impl.pullRequestResponse != null) {
         const prr = impl.pullRequestResponse;
         if (typeof prr !== 'object') {
-            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`pullRequestResponse\`.`);
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`pullRequestResponse\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
         }
         if (typeof prr.idField !== 'string' || !prr.idField.trim()) {
-            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with no non-empty string \`idField\`.`);
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with no non-empty string \`idField\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
         }
         if (typeof prr.map !== 'function') {
-            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with a non-function \`map\`.`);
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with a non-function \`map\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
         }
         for (const field of ['webUrlField', 'webUrlTemplate']) {
             if (prr[field] != null && typeof prr[field] !== 'string') {
-                throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with a non-string, non-null \`${field}\`.`);
+                throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`pullRequestResponse\` with a non-string, non-null \`${field}\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
             }
         }
     }
@@ -307,18 +307,18 @@ export function registerVcsProvider(impl) {
     if (impl.authRemedy != null) {
         const remedy = impl.authRemedy;
         if (typeof remedy !== 'object') {
-            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`authRemedy\`.`);
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`authRemedy\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
         }
         if (typeof remedy.serverSideReMintable !== 'boolean') {
-            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has an \`authRemedy\` with a non-boolean \`serverSideReMintable\`.`);
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has an \`authRemedy\` with a non-boolean \`serverSideReMintable\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
         }
         if (typeof remedy.hint !== 'string' || !remedy.hint.trim()) {
-            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has an \`authRemedy\` with no non-empty string \`hint\`.`);
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has an \`authRemedy\` with no non-empty string \`hint\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
         }
     }
     if (impl.builders != null) {
         if (typeof impl.builders !== 'object') {
-            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`builders\` table.`);
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`builders\` table.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
         }
         for (const [action, builder] of Object.entries(impl.builders)) {
             if (typeof builder !== 'function') {

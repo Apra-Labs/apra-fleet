@@ -286,7 +286,7 @@ export function assertVersionPin(role, schema, expectedMajor) {
         // agent; it must name the package whose vendored schema drifted (docs/generic-engine-boundary.md).
         throw new Error(
             `[contracts] Version-pin mismatch for role "${role}": this module was written against ` +
-                `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` +
+                `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` + // shell-guard-allow: "$id" here and on the next line is the JSON Schema $id property name (schema.$id), not a shell variable expansion -- this text is a thrown JS Error, never dispatched as a command string.
                 `${JSON.stringify(schema && schema.$id)}. A packages/apra-fleet-se/apra-pm package update changed this ` +
                 `role's contract -- update contracts.mjs (and re-verify every call site that consumes ` +
                 `this schema) before accepting the new vendored version.`,

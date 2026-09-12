@@ -21,14 +21,153 @@ import type { ProviderAdapter } from '../providers/index.js';
 export const provisionAuthSchema = z.object({
   ...memberIdentifier,
   api_key: z.string().optional().describe(
-    `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead. Supports {{secure.NAME}} token — value is resolved from the credential store before use.`
+    `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead. Supports {{secure.NAME}} token -- value is resolved from the credential store before use.`
   ),
 });
 
 export type ProvisionAuthInput = z.infer<typeof provisionAuthSchema>;
 
 /**
- * Real auth check via `claude -p "hello"` — makes an actual API call.
+ * Machine-readable reason code for every distinct outcome provision_llm_auth
+ * previously expressed only as prose (apra-fleet-3swo.7.2). A programmatic
+ * caller branches on `structuredContent.reason`; the human summary in `text`
+ * stays the human-facing form and only its ASCII decoration changed.
+ */
+export type ProvisionAuthReason =
+  /** Credentials deployed and verified. */
+  | 'ok'
+  /** Deployed, but the post-deploy auth verification did not confirm. ok=true. */
+  | 'deployed_unverified'
+  /** API key deployed, but one or more shell-profile writes reported errors. ok=true. */
+  | 'deployed_with_errors'
+  /** Local members use this machine's own session; nothing to provision. ok=true. */
+  | 'skipped_local_member'
+  /** No member matched member_id/member_name. */
+  | 'member_not_found'
+  /** The member is unreachable. */
+  | 'member_offline'
+  /** A {{secure.NAME}} token in api_key names no stored credential. */
+  | 'secure_credential_not_found'
+  /** A {{secure.NAME}} token resolved to a credential this member may not use. */
+  | 'secure_credential_denied'
+  /** A {{secure.NAME}} token resolved to an expired credential. */
+  | 'secure_credential_expired'
+  /** This provider exposes no OAuth credential files to copy. */
+  | 'oauth_not_supported'
+  /** The local OAuth token is expired and carries no refresh token. */
+  | 'oauth_token_expired_no_refresh'
+  /** A local credential file named by the provider does not exist. */
+  | 'oauth_credential_file_missing'
+  /** Writing a credential file onto the member failed. */
+  | 'oauth_credential_write_failed'
+  /** Merging provider settings on the member failed. */
+  | 'oauth_settings_merge_failed'
+  /** Reading/copying a local credential file threw. */
+  | 'oauth_copy_failed'
+  /** Out-of-band API-key collection was cancelled or returned no key. */
+  | 'oob_cancelled';
+
+interface ProvisionAuthFields {
+  /** True when credentials were deployed (verified or not). */
+  ok: boolean;
+  /** Machine-readable outcome code. Branch on this, never on `text`. */
+  reason: ProvisionAuthReason;
+  /**
+   * The resolved ProviderAdapter's own name (src/providers/index.ts registers
+   * claude, codex, copilot, agy, opencode and none -- there is no gemini
+   * adapter), or null when no member/provider could be resolved.
+   */
+  provider: string | null;
+  /**
+   * What was deployed, never the secret itself: the environment-variable name
+   * for the API-key flow (e.g. ANTHROPIC_API_KEY) or 'oauth' for the
+   * credential-file copy flow. Null when nothing was deployed.
+   */
+  credentialLabel: string | null;
+  /**
+   * Credential expiry as an ISO timestamp, or null meaning "no expiry tracked
+   * -> OK" (the same reading checkVcsTokenExpiry applies server-side).
+   * Populated only when the copied OAuth credential file exposes one; the
+   * ProviderAdapter interface has no expiry hook, so a provider whose
+   * credential file carries no expiry always reports null.
+   */
+  expiresAt: string | null;
+  /** True when the post-deploy auth check actually confirmed working auth. */
+  verified: boolean;
+  /** Registry id of the resolved member, or null. */
+  memberId: string | null;
+  /** Friendly name of the resolved member, or null. */
+  memberName: string | null;
+}
+
+export interface ProvisionAuthStructured extends ProvisionAuthFields {
+  [key: string]: unknown;
+}
+
+export interface ProvisionAuthResult {
+  text: string;
+  structuredContent: ProvisionAuthStructured;
+}
+
+const OK_REASONS: ProvisionAuthReason[] = ['ok', 'deployed_unverified', 'deployed_with_errors', 'skipped_local_member'];
+
+/**
+ * Resolve a provider's display name for the structured payload without ever
+ * throwing (apra-fleet-3swo.9). getProvider() throws a TypeError for any
+ * llmProvider value outside the six registered adapters, and only defaults
+ * to claude when the value is null/undefined -- so a registry entry carrying
+ * a retired or hand-edited provider string would otherwise turn the
+ * local-member skip and offline early-returns below into a thrown MCP
+ * protocol error (wrapTool has no try/catch) instead of their intended clean
+ * message. Falls back to the raw stored value, or null when there is none.
+ */
+function safeProviderName(llmProvider: Agent['llmProvider']): string | null {
+  try {
+    return getProvider(llmProvider).name;
+  } catch {
+    return llmProvider ?? null;
+  }
+}
+
+function authResult(
+  text: string,
+  fields: Partial<ProvisionAuthFields> & { reason: ProvisionAuthReason },
+): ProvisionAuthResult {
+  return {
+    text,
+    structuredContent: {
+      ok: fields.ok ?? OK_REASONS.includes(fields.reason),
+      reason: fields.reason,
+      provider: fields.provider ?? null,
+      credentialLabel: fields.credentialLabel ?? null,
+      expiresAt: fields.expiresAt ?? null,
+      verified: fields.verified ?? false,
+      memberId: fields.memberId ?? null,
+      memberName: fields.memberName ?? null,
+    },
+  };
+}
+
+/**
+ * Credential-file expiry, normalized to ISO, or null when the file exposes
+ * none. Mirrors validateCredentials()'s own (Claude-shaped) parse rather than
+ * inventing a second convention; any provider whose credential JSON has no
+ * such field simply yields null, which reads as "no expiry tracked -> OK".
+ */
+function extractCredentialExpiresAt(json: string): string | null {
+  try {
+    const parsed = JSON.parse(json);
+    const raw = parsed?.claudeAiOauth?.expiresAt;
+    if (raw === undefined || raw === null) return null;
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Real auth check via `claude -p "hello"` -- makes an actual API call.
  * This is the only reliable validation for both OAuth and API key auth,
  * since `claude auth status` doesn't actually validate API keys.
  * Claude-only: other providers use a version check for verification.
@@ -68,17 +207,23 @@ async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, envPre
 // ---------------------------------------------------------------------------
 // Flow A: Copy OAuth credentials using the provider interface
 // ---------------------------------------------------------------------------
-async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Promise<string> {
+async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Promise<ProvisionAuthResult> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
+  // Identity fields every return path below shares. `credentialLabel: 'oauth'`
+  // names the FLOW, never the secret -- no plaintext credential is ever placed
+  // in the structured payload.
+  const who = { provider: provider.name, memberId: agent.id, memberName: agent.friendlyName };
 
   const credentialFiles = provider.oauthCredentialFiles();
   if (!credentialFiles || credentialFiles.length === 0) {
-    return `❌ Provider "${provider.name}" does not support OAuth credential copy.`;
+    return authResult(`[FAIL] Provider "${provider.name}" does not support OAuth credential copy.`,
+      { ...who, reason: 'oauth_not_supported' });
   }
 
   // 1. Copy credential files
   let credStatus: ReturnType<typeof validateCredentials> | null = null;
+  let expiresAt: string | null = null;
   for (const file of credentialFiles) {
     try {
       const localPath = file.localPath.replace('~', os.homedir());
@@ -87,21 +232,26 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
         // Validate credentials before sending
         if (file.localPath.includes('.json')) {
             credStatus = validateCredentials(content);
+            expiresAt = extractCredentialExpiresAt(content) ?? expiresAt;
             if (credStatus?.status === 'expired-no-refresh') {
-              return `❌ OAuth token in ${file.localPath} is expired with no refresh token.
+              return authResult(`[FAIL] OAuth token in ${file.localPath} is expired with no refresh token.
 `
-                + `  Run /login in your ${provider.name} session, then re-run provision_llm_auth.`;
+                + `  Run /login in your ${provider.name} session, then re-run provision_llm_auth.`,
+                { ...who, reason: 'oauth_token_expired_no_refresh', expiresAt });
             }
         }
         const result = await strategy.execCommand(cmds.credentialFileWrite(content, file.remotePath), 10000);
         if (result.code !== 0 && result.stderr) {
-          return `❌ Failed to write ${file.remotePath} on "${agent.friendlyName}": ${result.stderr}`;
+          return authResult(`[FAIL] Failed to write ${file.remotePath} on "${agent.friendlyName}": ${result.stderr}`,
+            { ...who, reason: 'oauth_credential_write_failed', expiresAt });
         }
       } else {
-        return `❌ Could not find local credential file: ${localPath}`;
+        return authResult(`[FAIL] Could not find local credential file: ${localPath}`,
+          { ...who, reason: 'oauth_credential_file_missing' });
       }
     } catch (err: any) {
-      return `❌ Failed to copy ${file.localPath} to "${agent.friendlyName}": ${err.message}`;
+      return authResult(`[FAIL] Failed to copy ${file.localPath} to "${agent.friendlyName}": ${err.message}`,
+        { ...who, reason: 'oauth_copy_failed', expiresAt });
     }
   }
 
@@ -113,10 +263,12 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
     try {
       const result = await strategy.execCommand(cmds.deepMergeJson(remoteSettingsPath, mergeObj), 10000);
       if (result.code !== 0 && result.stderr) {
-        return `❌ Failed to merge settings on "${agent.friendlyName}": ${result.stderr}`;
+        return authResult(`[FAIL] Failed to merge settings on "${agent.friendlyName}": ${result.stderr}`,
+          { ...who, reason: 'oauth_settings_merge_failed', expiresAt });
       }
     } catch (err: any) {
-      return `❌ Failed to merge settings on "${agent.friendlyName}": ${err.message}`;
+      return authResult(`[FAIL] Failed to merge settings on "${agent.friendlyName}": ${err.message}`,
+        { ...who, reason: 'oauth_settings_merge_failed', expiresAt });
     }
   }
 
@@ -141,22 +293,24 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
   const suffix = statusNote ? `\n  ${statusNote}` : '';
 
   if (authWorks) {
-    return `✅ OAuth credentials for ${provider.name} deployed to "${agent.friendlyName}"
+    return authResult(`[OK] OAuth credentials for ${provider.name} deployed to "${agent.friendlyName}"
 `
-      + `  Auth: verified with a successful ${provider.name} API call.${suffix}`;
+      + `  Auth: verified with a successful ${provider.name} API call.${suffix}`,
+      { ...who, reason: 'ok', credentialLabel: 'oauth', expiresAt, verified: true });
   }
 
-  return `⚠️ ${provider.name} OAuth credentials deployed to "${agent.friendlyName}" but could not verify auth.
+  return authResult(`[WARN] ${provider.name} OAuth credentials deployed to "${agent.friendlyName}" but could not verify auth.
 `
-    + `  Credential files were written — try running a prompt to confirm.${suffix}`;
+    + `  Credential files were written -- try running a prompt to confirm.${suffix}`,
+    { ...who, reason: 'deployed_unverified', credentialLabel: 'oauth', expiresAt, verified: false });
 }
 
 
 // ---------------------------------------------------------------------------
-// Flow B — API Key Override (all providers)
+// Flow B -- API Key Override (all providers)
 // ---------------------------------------------------------------------------
 
-async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderAdapter): Promise<string> {
+async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderAdapter): Promise<ProvisionAuthResult> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
   const envVarName = provider.authEnvVarForToken(apiKey);
@@ -198,10 +352,10 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
 
   let result = '';
   if (errors.length === 0) {
-    result += `✅ API key provisioned on "${agent.friendlyName}"
+    result += `[OK] API key provisioned on "${agent.friendlyName}"
 `;
   } else {
-    result += `⚠️ API key provisioned with some issues on "${agent.friendlyName}":
+    result += `[WARN] API key provisioned with some issues on "${agent.friendlyName}":
 `;
     for (const e of errors) {
       result += `  - ${e}
@@ -214,32 +368,68 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
 `;
   result += `  Verification: ${verified ? 'Key visible in new shell' : 'Key will be available after re-login'}
 `;
-  result += `  Auth test: ${authWorks ? `${provider.name} CLI authenticated successfully` : 'Could not verify — may need to re-login'}
+  result += `  Auth test: ${authWorks ? `${provider.name} CLI authenticated successfully` : 'Could not verify -- may need to re-login'}
 `;
 
-  return result;
+  // credentialLabel is the env var the key was deployed under (e.g.
+  // ANTHROPIC_API_KEY) -- a name, never the key itself. An API key carries no
+  // expiry the server can observe, so expiresAt stays null ("no expiry
+  // tracked -> OK").
+  return authResult(result, {
+    provider: provider.name,
+    memberId: agent.id,
+    memberName: agent.friendlyName,
+    reason: errors.length === 0 ? 'ok' : 'deployed_with_errors',
+    credentialLabel: envVarName,
+    expiresAt: null,
+    verified: authWorks,
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
-export async function provisionAuth(input: ProvisionAuthInput): Promise<string> {
+export async function provisionAuth(input: ProvisionAuthInput): Promise<ProvisionAuthResult> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
-  if (typeof agentOrError === 'string') return agentOrError;
+  if (typeof agentOrError === 'string') {
+    return authResult(agentOrError, {
+      reason: 'member_not_found',
+      memberId: input.member_id ?? null,
+      memberName: input.member_name ?? null,
+    });
+  }
   const agent = agentOrError as Agent;
+  const who = { memberId: agent.id, memberName: agent.friendlyName };
 
   if (agent.agentType === 'local') {
-    return `⏭️ Skipping "${agent.friendlyName}" — local members use this machine's credentials directly.`;
+    return authResult(`[SKIP] Skipping "${agent.friendlyName}" -- local members use this machine's credentials directly.`,
+      { ...who, reason: 'skipped_local_member', provider: safeProviderName(agent.llmProvider) });
   }
 
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
   if (!conn.ok) {
-    return `❌ Member "${agent.friendlyName}" is offline: ${conn.error}`;
+    return authResult(`[FAIL] Member "${agent.friendlyName}" is offline: ${conn.error}`,
+      { ...who, reason: 'member_offline', provider: safeProviderName(agent.llmProvider) });
   }
 
+  // getProvider() defaults to claude ONLY when llmProvider is null/undefined;
+  // every registered adapter (claude, codex, copilot, agy, opencode, none)
+  // reports its own `name` into the structured payload below, so nothing here
+  // assumes Claude-specific credential fields.
   const provider = getProvider(agent.llmProvider);
+
+  // Every success path logs and invalidates the preflight cache; the
+  // `ok` discriminator replaces the old "does the text start with the failure
+  // emoji" test, which was the only signal before apra-fleet-3swo.7.2.
+  const onSuccess = (result: ProvisionAuthResult): ProvisionAuthResult => {
+    if (result.structuredContent.ok) {
+      logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+      invalidatePreflightCache(agent.id);
+    }
+    return result;
+  };
 
   // Flow B: API key is provided directly
   if (input.api_key) {
@@ -250,38 +440,34 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
     let resolvedKey = input.api_key;
     for (const name of tokenNames) {
       const entry = credentialResolve(name, agent.friendlyName);
-      if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first.`;
-      if ('denied' in entry) return `❌ ${entry.denied}`;
-      if ('expired' in entry) return `❌ ${entry.expired}`;
+      const secureFailure = { ...who, provider: provider.name };
+      if (!entry) {
+        return authResult(`[FAIL] Credential "${name}" not found. Run credential_store_set first.`,
+          { ...secureFailure, reason: 'secure_credential_not_found' });
+      }
+      if ('denied' in entry) {
+        return authResult(`[FAIL] ${entry.denied}`, { ...secureFailure, reason: 'secure_credential_denied' });
+      }
+      if ('expired' in entry) {
+        return authResult(`[FAIL] ${entry.expired}`, { ...secureFailure, reason: 'secure_credential_expired' });
+      }
       resolvedKey = resolvedKey.replaceAll(`{{secure.${name}}}`, entry.plaintext);
     }
-    const result = await provisionApiKey(agent, resolvedKey, provider);
-    if (!result.startsWith('❌')) {
-      logLine('provision_llm_auth', `provider=${provider.name}`, agent);
-      invalidatePreflightCache(agent.id);
-    }
-    return result;
+    return onSuccess(await provisionApiKey(agent, resolvedKey, provider));
   }
 
   // Flow A: OAuth credentials copy
   if (provider.oauthCredentialFiles()?.length) {
-    const result = await provisionOAuthCopy(agent, provider);
-    if (!result.startsWith('❌')) {
-      logLine('provision_llm_auth', `provider=${provider.name}`, agent);
-      invalidatePreflightCache(agent.id);
-    }
-    return result;
+    return onSuccess(await provisionOAuthCopy(agent, provider));
   }
 
   // Fallback: OOB key collection for non-OAuth or non-copyable providers
   const oob = await collectOobApiKey(agent.friendlyName, 'provision_llm_auth', {
     prompt: `Enter API key for ${provider.name} on ${agent.friendlyName}`,
   });
-  if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
-  const result = await provisionApiKey(agent, decryptPassword(oob.password!), provider);
-  if (!result.startsWith('❌')) {
-    logLine('provision_llm_auth', `provider=${provider.name}`, agent);
-    invalidatePreflightCache(agent.id);
+  if ('fallback' in oob) {
+    return authResult(oob.fallback ?? 'Error: OOB operation cancelled.',
+      { ...who, provider: provider.name, reason: 'oob_cancelled' });
   }
-  return result;
+  return onSuccess(await provisionApiKey(agent, decryptPassword(oob.password!), provider));
 }

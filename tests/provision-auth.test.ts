@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 import { encryptPassword } from '../src/utils/crypto.js';
@@ -59,12 +59,27 @@ describe('provisionAuth', () => {
     restoreRegistry();
   });
 
+  it('still skips a local member with an unrecognised llmProvider instead of throwing', async () => {
+    const member = makeTestLocalAgent({
+      friendlyName: 'local-unknown-provider',
+      llmProvider: 'gemini' as any,
+    });
+    addAgent(member);
+
+    const { text: result, structuredContent } = await provisionAuth({ member_id: member.id });
+    expect(structuredContent.reason).toBe('skipped_local_member');
+    expect(structuredContent.ok).toBe(true);
+    expect(structuredContent.provider).toBe('gemini');
+    expect(result).toContain('Skipping');
+    expect(mockTestConnection).not.toHaveBeenCalled();
+  });
+
   it('rejects offline agents before attempting either flow', async () => {
     const member = makeTestAgent({ friendlyName: 'down-box' });
     addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'Connection refused' });
 
-    const result = await provisionAuth({ member_id: member.id });
+    const { text: result } = await provisionAuth({ member_id: member.id });
     expect(result).toContain('offline');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
@@ -75,7 +90,7 @@ describe('provisionAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ member_id: member.id, api_key: 'sk-ant-api03-TESTKEY' });
+    const { text: result } = await provisionAuth({ member_id: member.id, api_key: 'sk-ant-api03-TESTKEY' });
     expect(result).toContain('API key provisioned');
 
     const cmds = mockExecCommand.mock.calls.map(c => c[0]);
@@ -92,7 +107,7 @@ describe('provisionAuth', () => {
     // All commands succeed — including the `claude -p "hello"` verification
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ member_id: member.id });
+    const { text: result } = await provisionAuth({ member_id: member.id });
     expect(result).toContain('OAuth credentials for claude deployed');
 
     // Should write credentials file, not set env vars
@@ -106,7 +121,7 @@ describe('provisionAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExistsSync.mockReturnValue(false);
 
-    const result = await provisionAuth({ member_id: member.id });
+    const { text: result } = await provisionAuth({ member_id: member.id });
     expect(result).toContain('Could not find local credential file');
   });
 
@@ -119,7 +134,7 @@ describe('provisionAuth', () => {
       claudeAiOauth: { accessToken: 'sk-ant-oat01-test', expiresAt: '2020-01-01T00:00:00Z' },
     }));
 
-    const result = await provisionAuth({ member_id: member.id });
+    const { text: result } = await provisionAuth({ member_id: member.id });
     expect(result).toContain('expired');
     expect(result).toContain('/login');
     expect(mockExecCommand).not.toHaveBeenCalled();
@@ -139,7 +154,7 @@ describe('provisionAuth', () => {
     }));
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ member_id: member.id });
+    const { text: result } = await provisionAuth({ member_id: member.id });
     expect(result).toContain('OAuth credentials for claude deployed');
     expect(result).toContain('auto-refresh');
   });
@@ -153,7 +168,7 @@ describe('provisionAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ member_id: member.id, api_key: '{{secure.MY_API_KEY}}' });
+    const { text: result } = await provisionAuth({ member_id: member.id, api_key: '{{secure.MY_API_KEY}}' });
     expect(result).toContain('API key provisioned');
     credentialDelete('MY_API_KEY');
   });
@@ -163,8 +178,8 @@ describe('provisionAuth', () => {
     addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
 
-    const result = await provisionAuth({ member_id: member.id, api_key: '{{secure.NONEXISTENT_KEY}}' });
-    expect(result).toContain('❌');
+    const { text: result } = await provisionAuth({ member_id: member.id, api_key: '{{secure.NONEXISTENT_KEY}}' });
+    expect(result).toContain('[FAIL]');
     expect(result).toContain('NONEXISTENT_KEY');
     expect(result).toContain('not found');
   });
@@ -176,7 +191,7 @@ describe('provisionAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ member_id: member.id });
+    const { text: result } = await provisionAuth({ member_id: member.id });
     expect(result).toContain('API key provisioned');
     expect(mockCollectOobApiKey).toHaveBeenCalledWith(
       'codex-member', 'provision_llm_auth',
@@ -198,7 +213,7 @@ describe('provisionAuth', () => {
     }));
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ member_id: member.id });
+    const { text: result } = await provisionAuth({ member_id: member.id });
     expect(result).toContain('OAuth credentials for claude deployed');
     expect(result).toMatch(/expires in ~\d+ minute/);
   });

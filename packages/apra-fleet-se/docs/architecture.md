@@ -448,6 +448,18 @@ VCSModule replaces that with a provider-agnostic seam:
   provider's real auth-failure text (not just the generic OpenSSH/git text
   that happens to port across hosts), because the cost of a miss is a false
   sprint-fatal abort on what is usually a routine, recoverable token expiry.
+- **Reading whether the self-heal callback itself succeeded must prefer the
+  structured result over any prose fallback.** `provision_vcs_auth` (like
+  the other provisioning tools) returns a structured `ok`/`reason` result
+  (see `docs/design-git-auth.md`), but MCP tool text can still carry
+  legacy-formatted prose for older callers. The outcome check for this
+  self-heal reads `structuredContent.ok` first, falling back to a `[FAIL]`
+  prose-prefix match only when structured content is absent -- a check that
+  keys on prose alone (e.g. a "does the text look like success" heuristic
+  built around a specific emoji or marker string) silently misreads a
+  well-formed structured failure as success the moment that marker text
+  changes or is retired, letting the sprint proceed to retry a push against
+  a credential that never actually got fixed.
 
 ## Orchestrator-bracketed git sync (`synced` mode)
 
@@ -1244,3 +1256,131 @@ it exited 0 -- a child that spawned zero subtests, or crashed before running
 anything, would still report a clean marker file and a zero exit code,
 silently passing a vacuous check. Parse the child's own TAP summary line
 (`# tests`, `# pass`) and assert it clears a known floor.
+
+## Module decomposition: `runner.js` as a strangler-fig facade
+
+`runner.js` began as a single ~11,700-line file and is being decomposed
+incrementally into focused `fleet-sprint/*.mjs` modules (plus a
+`fleet-sprint/phases/*.mjs` directory, one file per sprint-cycle phase) while
+staying a drop-in facade for its importers and mock-sprint test fixtures. The
+approach is a strangler-fig extraction, not a rewrite:
+
+- **Move-only discipline.** An extraction commit relocates code verbatim
+  (plus import/export wiring); it does not change behavior. Any actual
+  behavior change ships as a separate, explicitly flagged commit, so a
+  facade regression and a genuine behavior regression are never entangled
+  in the same diff and either can be reverted independently.
+- **Facade re-exports.** Every symbol a module absorbs from `runner.js` is
+  re-exported from `runner.js` under its original name, so existing
+  importers and mock-sprint fixtures need no changes. Each extraction has a
+  paired "facade completeness" test asserting the re-export surface is
+  intact and the extracted module is behaviorally pure (no hidden
+  dependency on `runner.js`-local state).
+- **Extracted modules, by concern:** `vcs-auth.mjs` (VCS credential
+  resolution, self-heal, preflight), `sprint-args.mjs` (`validateArgs` and
+  option validation), `prompts.mjs` (the per-role prompt builders),
+  `worklists.mjs` (tier policy, effort-budget packing, streak worklists),
+  `abort.mjs` / `branch-ensure.mjs` (abort predicates, branch selection,
+  `newTask` validation), `mcp-result.mjs` (shared MCP result-text helpers),
+  `member-target.mjs` (the unified member-resolution registry), `member-
+  sync.mjs` / `git-topology.mjs` (per-member git ensure/resync and git-
+  failure classification), `member-provisioning.mjs` (credential/deploy-
+  permission provisioning for a member), `git-sync.mjs` (the `withGitSync`
+  dispatch bracket and the pause-bracket counter it owns), `coordination.mjs`
+  (dolt-push-mutex clients, the child-id allocator, the reservation-ledger
+  client), `kb.mjs` (knowledge-bank priming/query/capture, including logging
+  a rejected `kb_query` result instead of failing silently), `beads-
+  scope.mjs` (the scope-snapshot BFS and its invalidation contract --
+  `phase()` invalidates the shared snapshot at every phase boundary, not
+  just at planning time), and `beads-transitions.mjs` (verdict-application
+  transitions, including the Re-Review site that previously applied a
+  verdict with no scope-ceiling guard). A handful of concerns (bead-child
+  allocation helpers, sprint-report/newTask text formatting, round-session
+  and dispatch-failure handling, and the fatal-diagnostics writer) remain
+  in `runner.js` pending their own extraction; they are ordinary
+  strangler-fig backlog, not a design gap.
+- **`phases/*.mjs`: one file per sprint-cycle phase.** `runSprintCycle`'s
+  body -- Ensure Sprint Branch, Plan, Replan, Develop, Review, Deploy, Integ
+  Test, Re-Review, Final Review, Regression Test, Harvest, Publish PR -- is
+  now twelve calls into `fleet-sprint/phases/*.mjs`, one module per phase,
+  in that fixed order. `runner.js` itself is a composition root: it wires
+  the phase modules together and re-exports the facade surface, and a
+  dedicated completeness test enumerates every `fleet-sprint/*.mjs` and
+  `phases/*.mjs` file against a discovered permitted set rather than a
+  literal list, so a phase slice that lands without registering its output
+  module fails that gate rather than silently escaping coverage.
+- **`role-policies.mjs` + `dispatch-role.mjs`: dispatch policy as data,
+  consumed by one engine.** Each sprint role (planner, plan-reviewer,
+  scoped-replan-planner, scoped-replan-plan-reviewer, streak-assignment,
+  doer, doer-resume, reviewer, final-review, deployer, integ-test-runner,
+  regression-test-runner, harvester -- 13 roles) is recorded in
+  `role-policies.mjs` as a frozen data table describing the axes every
+  hand-written ladder used to repeat -- git-sync bracket usage, turn budgets
+  and timeouts, watchdog arming, retry/degrade behavior, knowledge-injection
+  source, and pre/post-dispatch hooks -- keyed by symbolic references to the
+  constants that supply concrete values (turn budgets are runtime-derived,
+  so the table names the constant, not a number). `dispatch-role.mjs`
+  implements the single `dispatchRole(ctx, roleName, opts)` engine that
+  reads this table; every one of `runner.js`'s dispatch call sites routes
+  through it, so there is exactly one place a dispatch is constructed, not
+  a per-role hand-rolled ladder. `migratedRoleNames()` returns the roles
+  whose ladder has actually been migrated onto the engine -- do not infer a
+  migration from the policy table's existence alone, since the table can
+  (and did, mid-refactor) describe a role before its call site is switched
+  over. One deliberate asymmetry survives: `doer-resume` shares its policy
+  entry with `doer` (`ROLE_POLICIES['doer-resume'] ===
+  ROLE_POLICIES.doer.secondary`) but is dispatched from the same call site
+  as `doer` rather than its own, so the engine has 12 call sites against 13
+  named roles -- a documented gap, not a miscount.
+- **`inline-ladder-guard.mjs`** closes the gap a `dispatchRole` migration
+  could otherwise leave open: once a role is marked `migrated: true` in
+  `role-policies.mjs`, this guard scans for a surviving *inline* `agent()`
+  call site still routing to that role's member, catching a migration that
+  adds the new call but forgets to delete the old one (which would
+  double-dispatch, or silently race on whichever path executes first). The
+  guard's early-return-on-empty-list behavior means it asserts nothing
+  until at least one role is marked migrated -- with all 13 roles migrated,
+  it is now a live check on every one of them, not an inert placeholder.
+
+### The shared guarded-module list
+
+Several independent mechanical guards enforce invariants across
+`fleet-sprint/*` source (a shell-command-construction guard, a dolt-literal
+guard, a full-db-fetch guard, an unbracketed-push guard, the inline-ladder
+guard above). Each originally hard-coded its own single target file
+(`runner.js`). That wiring has a silent failure mode under decomposition:
+the moment a guarded construct moves out of `runner.js` into a newly
+extracted module, every guard pointed only at `runner.js` stops covering it
+while continuing to report a green baseline -- a false sense of safety, not
+an absence of risk.
+
+`guarded-modules.mjs` fixes this by being the single place a newly
+extracted module is registered; every guard consumes that shared list
+rather than keeping a private path array. Registering an extraction's
+output module here is part of the extraction commit itself, not a
+follow-up task -- an extraction that lands without this registration is
+incomplete even if every other test passes. A small, deliberate exemption
+list exists for modules that legitimately emit the exact constructs a guard
+flags (the per-shell command builders, which ARE the OS-branched surface
+other code is required to route through instead of hand-rolling shell
+syntax; `dolt-sync.mjs`, which legitimately owns the `bd dolt pull`/`bd dolt
+push` command strings). Per-guard violation counts (how many raw `command()`
+calls a given module is allowed) are derived from `guarded-modules.mjs` and
+compared by **basename**, not from a separate hard-coded literal, because
+each guard's own violation reporting labels a scanned file by
+`path.basename(p)` -- a baseline that compared full paths would not match
+what the guard actually reports.
+
+Basename comparison is deliberately NOT used, however, for the separate
+"is every `fleet-sprint/*.mjs`/`phases/*.mjs` file accounted for at all"
+completeness sweep (`guarded-modules-coverage.test.mjs`'s `isAccountedFor()`)
+-- that check compares **full relative paths**. A basename-only version of
+this specific check has a real collision hazard: once nested directories
+like `phases/` exist, a nested file can share a bare filename with an
+unrelated top-level registered module (`phases/index.mjs` vs.
+`vcs-providers/index.mjs`, `phases/errors.mjs` vs. `errors.mjs`) and would
+be silently reported as "already covered" by that unrelated module's
+registration, even though it was never registered itself. Both comparisons
+are correct for what each one is checking -- the distinction is per-guard
+reporting fidelity (basename) versus registration completeness (full path)
+-- so do not "fix" one by making it consistent with the other.
