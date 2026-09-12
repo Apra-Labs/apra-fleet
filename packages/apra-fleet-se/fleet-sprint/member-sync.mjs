@@ -24,15 +24,12 @@
 // extraction had to run AFTER that one -- the other order would have forced a
 // temporary back-import from runner.js into the new module.
 //
-// WHY resolveSettleShell MOVED WITH THEM: syncMemberAfterOrdered calls it to
-// resolve the member's registered shell before building the dolt-settle
-// callback. It was module-private in runner.js and has six other call sites
-// there, all of them settle-shell resolutions for a dolt bracket, so it is
-// exported here and IMPORTED BACK by runner.js. Keeping it in runner.js would
-// have made member-sync.mjs <-> runner.js a circular import pair for the sake
-// of one call; moving it keeps every import in this module pointing at a leaf.
-// It is exported ONLY for those callers and is NOT re-exported by runner.js's
-// facade -- it was never part of that facade before the move.
+// WHY resolveSettleShell did NOT move with them: syncMemberAfterOrdered calls
+// it to resolve the member's registered shell before building the dolt-settle
+// callback, but it stays DEFINED IN runner.js and is imported back from there
+// (see the import below for the anchoring test and the call-site split). It was
+// module-private before this extraction and is now merely exported so this
+// module can reach it; it is not otherwise part of runner.js's moved surface.
 //
 // GUARD REGISTRATION: this module is registered in ./guarded-modules.mjs as
 // part of this extraction (see that file's STANDING RULE). It carries
