@@ -1285,15 +1285,65 @@ const NESTED_TEST_CONCURRENCY = resolveNestedTestConcurrency();
 // If the mock-sprint-*.test.mjs file count changes later, the shipped budget
 // moves with it (the count is read live), but the four factors above are
 // fixed literals a reader can multiply by whatever count they observe to
-// recompute the number in force at that time.
+// recompute the number in force at that time -- SUBJECT TO the ceiling
+// described immediately below (apra-fleet-3swo.51), which the shipped
+// REAL_BD_NESTED_SUITE_TIMEOUT_MS is actually clamped to whenever the raw
+// product exceeds it, as it does at the 65-file count in force here.
 // -----------------------------------------------------------------------------
 const ASSUMED_REAL_BD_PER_FILE_MS = 1_100_000;
 const ASSUMED_MOCK_SPRINT_FILE_COUNT = fs
     .readdirSync(path.join(SE_DIR, 'test'))
     .filter((name) => name.startsWith('mock-sprint-') && name.endsWith('.test.mjs')).length;
 const REAL_BD_HEADROOM_FACTOR = 2;
-const REAL_BD_NESTED_SUITE_TIMEOUT_MS = Math.ceil(
-    ((ASSUMED_REAL_BD_PER_FILE_MS * ASSUMED_MOCK_SPRINT_FILE_COUNT) / NESTED_TEST_CONCURRENCY) * REAL_BD_HEADROOM_FACTOR,
+
+// -----------------------------------------------------------------------------
+// apra-fleet-3swo.51: BUDGET CEILING -- the raw derivation above scales
+// linearly with ASSUMED_MOCK_SPRINT_FILE_COUNT, and at the 65 files discovered
+// when apra-fleet-hhjh.1 wrote it that already yields ~19.86h (71,500,000ms),
+// larger than the entire real-bd suite's own wall time (cumFileTime 21917s
+// over 242 files at concurrency 8 implies roughly 45-90 minutes wall --
+// apra-fleet-eft.17). A budget that large can never bind: it keeps the
+// gate's assertions correct but discards all hang detection on the real-bd
+// path, and a genuine hang there would sit for ~20h with no per-lane timeout
+// in scripts/run-integ-suites.mjs to stop it.
+//
+// Decision (apra-fleet-3swo.51), weighing the three options that bead named:
+// capping the derived budget was chosen over (a) sampling a subset of
+// mock-sprint files on the real-bd path -- rejected because "which subset"
+// is itself an ongoing judgment call with no natural stopping point, and a
+// subset-specific regression could pass undetected -- and over (b) forcing
+// every nested child onto mock/replay regardless of the outer backend --
+// rejected because it would silently retire the exact problem apra-fleet-
+// hhjh.1 was written to solve, discarding its now-reviewed derivation
+// machinery rather than building on it, and would leave the real-bd path
+// with ZERO coverage of this nested run rather than bounded coverage. A
+// stated ceiling keeps the full mock-sprint set running under whatever
+// backend the outer process was given -- satisfying apra-fleet-hhjh.1's
+// "never skip the nested run" requirement -- while bounding the wait to
+// something an operator will actually sit through.
+//
+// REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS (4 hours) is chosen against the
+// same observation apra-fleet-hhjh.1's review left open: a defensible
+// estimate of the nested run's real cost, correcting for the contention
+// double-count in the derivation above, is closer to 1-3h (the
+// 923-1272s/780-1421s per-file figures are wall times already inflated by
+// the OUTER suite's concurrency-8 contention, and multiplying by file count
+// then dividing by the nested concurrency of 2 double-counts that
+// contention). 4h sits comfortably above that 1-3h estimate -- generous
+// enough that a passing run should not trip it on ordinary run-to-run
+// variance -- while still being roughly 5x smaller than the raw 19.86h
+// derivation, so a genuine hang is caught in hours, not the better part of a
+// day. The uncapped derivation is left in place and still governs whenever
+// it resolves BELOW the ceiling (e.g. if the mock-sprint file count or the
+// per-file estimate ever drops), so the ceiling only bites when the raw
+// arithmetic would otherwise be non-binding.
+// -----------------------------------------------------------------------------
+const REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS = 4 * 60 * 60 * 1000; // 14_400_000ms
+const REAL_BD_NESTED_SUITE_TIMEOUT_MS = Math.min(
+    Math.ceil(
+        ((ASSUMED_REAL_BD_PER_FILE_MS * ASSUMED_MOCK_SPRINT_FILE_COUNT) / NESTED_TEST_CONCURRENCY) * REAL_BD_HEADROOM_FACTOR,
+    ),
+    REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS,
 );
 
 /**
