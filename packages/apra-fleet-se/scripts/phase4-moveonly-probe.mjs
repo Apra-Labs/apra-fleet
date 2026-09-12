@@ -117,6 +117,14 @@ const FACADE_BREAK_PATTERNS = [
   /does not provide an export named/i,
   /ERR_REQUIRE_ESM/,
   /SyntaxError: The requested module/,
+  // A facade break has TWO distinct signatures depending on which side fails
+  // to link, and an early version of this list carried only the first:
+  //   consumer side -- "does not provide an export named 'X'"
+  //   facade side   -- "Export 'X' is not defined in module", raised when
+  //                    runner.js re-exports a name it no longer has.
+  // The end-to-end falsification in the gate test produces the second one, and
+  // is the reason it is here.
+  /Export '[^']*' is not defined in module/,
 ];
 
 /**
