@@ -754,6 +754,18 @@ export async function resolveSettleShell({ args, member, log = () => {}, sprintS
 // classify or bound the OUTCOME of one instead. All three are re-exported
 // from this file above.
 
+// WHY THIS FUNCTION IS STILL LARGE, AND WHY ITS PRELUDE WAS NOT SLICED
+// (apra-fleet-3swo.6.17). Everything from this header down to the first
+// `await run*Phase(...)` call -- the closure prelude -- is DELIBERATELY kept
+// here as composition-root wiring, rather than extracted into a per-cycle
+// context module. The decision, the measurements behind it, the two rejected
+// options, and the concrete conditions that would REOPEN the question are
+// recorded in docs/run-sprint-cycle-prelude-decision.md. That note also
+// retires the epic's old "~700-line runner.js" aspiration: even extracting
+// every named inner closure below leaves this file far above it, so size is
+// now reported as an observation and the real gates are the two mechanical
+// ones (no phase body lives here; the facade re-exports everything). Read
+// that note before proposing an extraction of anything in the prelude.
 async function runSprintCycle(context) {
     const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget, setPauseGuard } = context;
 
