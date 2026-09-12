@@ -376,7 +376,22 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // runGitStep's one site. Not left unguarded: git-topology.mjs is registered in
 // GUARDED_MODULES, so the aggregate checkModules(guardedModulePaths()) test
 // below scans it, and it gets its own explicit baseline count below.
-const EXPECTED_COMMAND_COUNT = 12;
+// 12 -> 11 (apra-fleet-3swo.6.10): the sync BRACKETS the note directly above
+// says stayed behind -- syncMemberBefore, syncMemberAfter,
+// syncMemberAfterOrdered and resyncReacquiredMember -- have now followed the
+// layer they sit on top of out of runner.js, into ./member-sync.mjs. Exactly
+// ONE of the four owns a command() site of its own: syncMemberAfter's
+// `command('git status --porcelain', { member_name: member, silent: true,
+// failSoft: true, label })` -- the mechanical clean-tree re-check that decides
+// whether a Tier 2 conflict-resolution dispatch actually resolved anything,
+// verified compliant. The other three issue every git command through
+// git-topology.mjs's runGitStep (already counted there) or, for
+// resyncReacquiredMember, through injected runners. So this is -1, which is
+// exactly 12 - 11; no site was added, removed or collapsed in the move. Not
+// left unguarded: member-sync.mjs is registered in GUARDED_MODULES, so the
+// aggregate checkModules(guardedModulePaths()) test below scans it, and it
+// gets its own explicit baseline count below.
+const EXPECTED_COMMAND_COUNT = 11;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -985,6 +1000,59 @@ test('every command() call site in git-topology.mjs passes member_name or member
         sites.filter((s) => s.fnName === 'agent').length,
         0,
         'git-topology.mjs must never dispatch an agent() -- it is the git command primitive layer, not a role ladder.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-3swo.6.10: the per-member sync BRACKETS sliced out of runner.js --
+// syncMemberBefore (G-pull), syncMemberAfter (G-push), syncMemberAfterOrdered
+// (the ordered G-push-then-D-push post-dispatch step) and the resume path's
+// resyncReacquiredMember.
+//
+// Its baseline is ONE, and it is the one site in this package that bypasses
+// runGitStep on purpose: syncMemberAfter's `git status --porcelain` read is
+// the mechanical clean-tree re-check that decides whether a Tier 2
+// conflict-resolution AGENT dispatch really resolved the conflict. It must be
+// issued against the member whose tree was just rewritten, so a member_name
+// regression there would let the ladder read some OTHER member's tree and
+// declare a conflict resolved that is still unmerged -- the single-writer
+// invariant failing silently rather than loudly. The other three brackets own
+// no site of their own (they funnel through git-topology.mjs's runGitStep, or,
+// for resyncReacquiredMember, through injected runners), so a SECOND site
+// appearing here means a bracket started issuing raw git outside the retry/
+// self-heal primitive, and has to move this number.
+//
+// Its agent() baseline is ZERO, and that zero is not a formality either: the
+// Tier 2 conflict-resolution dispatch this module gates is a REAL agent
+// dispatch, but it is issued by conflict-ladder.mjs's
+// dispatchConflictResolutionAgent() from the injected `agent` it is handed --
+// it is not an agent() call site here. A raw agent( appearing in this file is
+// therefore a ladder being re-inlined into a sync bracket, which is exactly
+// what a zero baseline turns red.
+// =============================================================================
+const MEMBER_SYNC_PATH = path.join(__dirname, '../fleet-sprint/member-sync.mjs');
+const EXPECTED_MEMBER_SYNC_COMMAND_COUNT = 1;
+
+test('every command() call site in member-sync.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(MEMBER_SYNC_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_MEMBER_SYNC_COMMAND_COUNT,
+        `Expected ${EXPECTED_MEMBER_SYNC_COMMAND_COUNT} command() call site(s) in member-sync.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_MEMBER_SYNC_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'member-sync.mjs must never dispatch an agent() directly -- its one agent escalation (Tier 2 conflict resolution) runs through conflict-ladder.mjs on an injected agent, not a call site here.'
     );
     assert.deepStrictEqual(
         violations,

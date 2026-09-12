@@ -222,6 +222,29 @@ export const GUARDED_MODULES = [
     // with the extraction is what keeps dispatch-safety-guard covering it
     // instead of silently losing it the moment it left runner.js.
     'git-topology.mjs',
+    // apra-fleet-3swo.6.10: the per-member git sync BRACKETS that sit on top of
+    // git-topology.mjs -- syncMemberBefore (G-pull), syncMemberAfter (G-push
+    // plus its bounded pull-rebase retry and Tier 2 conflict dispatch),
+    // syncMemberAfterOrdered (the ordered G-push-then-D-push post-dispatch
+    // step) and resyncReacquiredMember (the resume path's re-reconciliation).
+    //
+    // It took exactly ONE member_name-bearing command() call site out of
+    // runner.js -- syncMemberAfter's `command('git status --porcelain', {
+    // member_name: member, ... })` clean-state read, the mechanical re-check
+    // that decides whether a Tier 2 conflict-resolution dispatch really
+    // resolved anything. The other three brackets issue every git command
+    // through git-topology.mjs's runGitStep, and resyncReacquiredMember runs
+    // entirely on injected runners, so none of them adds a site here.
+    //
+    // Registering it with the extraction is load-bearing TWICE over, and the
+    // second reason is the subtle one: unbracketed-push-guard.mjs resolves its
+    // sanctioned-wrapper ranges (syncMemberAfterOrdered, verifyDoerStreakClosed)
+    // BY NAME WITHIN EACH SCANNED FILE. syncMemberAfterOrdered's bare
+    // syncMemberAfter() and DoltSync.syncAfter() calls are sanctioned only
+    // because the wrapper declaring them travelled here with them -- so this
+    // file must be scanned for that sanction to mean anything, and a future
+    // bare primitive added here outside that wrapper must still go red.
+    'member-sync.mjs',
     // apra-fleet-3swo.25: the remaining fleet-sprint modules that scan clean
     // (zero violations) across all five guards. Registered together so the
     // completeness test (guarded-modules-coverage.test.mjs) has nothing left

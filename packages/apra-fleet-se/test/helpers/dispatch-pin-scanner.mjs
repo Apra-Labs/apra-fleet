@@ -470,6 +470,16 @@ export function objectLiteralFor(src, name) {
     let depth = 0;
     for (let i = openBraceIdx; i < src.length; i++) {
         const ch = src[i];
+        if (ch === '/' && src[i + 1] === '/') {
+            const nl = src.indexOf('\n', i);
+            i = nl === -1 ? src.length : nl;
+            continue;
+        }
+        if (ch === '/' && src[i + 1] === '*') {
+            const end = src.indexOf('*/', i + 2);
+            i = end === -1 ? src.length : end + 1;
+            continue;
+        }
         if (ch === '"' || ch === "'" || ch === '`') {
             i = skipStringLiteral(src, i, ch);
             continue;
