@@ -206,6 +206,13 @@ export class WindowsGitBashCommands extends LinuxCommands {
     ].join('; ');
   }
 
+  override gitCredentialHelperRemoveLegacyFile(): string {
+    // The Git-Bash helper is a `.bat` (see gitCredentialHelperWrite above), so
+    // the legacy unlabeled file carries that suffix too. File only --
+    // deliberately no `git config --unset-all`.
+    return `rm -f "$HOME/.fleet-git-credential.bat"`;
+  }
+
   override gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const credFileName = label ? `.fleet-git-credential-${escapeDoubleQuoted(label)}` : '.fleet-git-credential';
     const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapeDoubleQuoted(host)}`;
