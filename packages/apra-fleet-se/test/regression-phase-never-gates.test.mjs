@@ -75,9 +75,15 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
     // phases/final-review.mjs, so the runner.js-side landmark for "the final
     // verdict exists by here" is now the Final Review CALL SITE -- and it is a
     // STRONGER landmark than the old one, because it is the destructuring that
-    // BINDS finalVerdictResult. Nothing below it can read that binding without
-    // it having run first; moving the regression phase above this line is a
-    // reference error, not merely a reordered comment.
+    // BINDS finalVerdictResult, not merely a comment sitting near it.
+    // apra-fleet-3swo.38: moving the regression phase above this line is NOT a
+    // reference error -- phases/regression-test.mjs never names
+    // finalVerdictResult in its code (see the comment-stripped assertion
+    // below), so there is no binding for a hoist to trip a ReferenceError on.
+    // The ordering guarantee is enforced entirely by THIS test's assertions
+    // below plus the A/B mock sprint in
+    // mock-sprint-regression-failure-never-gates.test.mjs; the Final Review
+    // destructuring only documents the intended order for a reader.
     const finalVerdictIdx = runnerSource.indexOf('const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount } = await runFinalReviewPhase({');
     // apra-fleet-3swo.6.9: Harvest moved into phases/harvest.mjs, taking its
     // phase(`Harvest C...`) literal with it, so the old runner.js anchor no
