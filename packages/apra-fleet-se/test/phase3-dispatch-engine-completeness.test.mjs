@@ -1758,23 +1758,75 @@ describe('(6c) resolveNestedSuiteTimeoutBudget is backend-aware, precedence-corr
     test('unset APRA_FLEET_BD_MOCK resolves to the mock-calibrated default, unchanged from its pre-change shipped value', () => {
         withEnv({ APRA_FLEET_BD_MOCK: undefined, PHASE3_NESTED_SUITE_TIMEOUT_MS: undefined }, () => {
             const budget = resolveNestedSuiteTimeoutBudget();
+            assert.equal(budget.ms, DEFAULT_NESTED_SUITE_TIMEOUT_MS, 'mock-bd default must equal DEFAULT_NESTED_SUITE_TIMEOUT_MS');
             assert.equal(budget.ms, PRE_CHANGE_MOCK_BUDGET_MS, 'mock-bd default must equal the pre-change shipped 900000ms value, unaffected by this fix');
             assert.ok(budget.source.includes('mock-bd default'), `source must name the mock-bd default; got: ${budget.source}`);
+            assert.ok(budget.source.includes('backend=replay'), `source must name the backend as replay; got: ${budget.source}`);
         });
     });
 
     for (const spelling of REAL_BD_SPELLINGS) {
-        test(`APRA_FLEET_BD_MOCK=${spelling} resolves to a larger, real-bd budget than the mock default`, () => {
+        test(`APRA_FLEET_BD_MOCK=${spelling} resolves to exactly REAL_BD_NESTED_SUITE_TIMEOUT_MS, larger than the mock default`, () => {
             withEnv({ APRA_FLEET_BD_MOCK: spelling, PHASE3_NESTED_SUITE_TIMEOUT_MS: undefined }, () => {
                 const budget = resolveNestedSuiteTimeoutBudget();
+                assert.equal(
+                    budget.ms,
+                    REAL_BD_NESTED_SUITE_TIMEOUT_MS,
+                    `real-bd budget for APRA_FLEET_BD_MOCK=${spelling} must equal the derived/capped REAL_BD_NESTED_SUITE_TIMEOUT_MS; got ${budget.ms}`,
+                );
                 assert.ok(
                     budget.ms > PRE_CHANGE_MOCK_BUDGET_MS,
                     `real-bd budget for APRA_FLEET_BD_MOCK=${spelling} must exceed the mock default (${PRE_CHANGE_MOCK_BUDGET_MS}); got ${budget.ms}`,
                 );
                 assert.ok(budget.source.includes('real-bd default'), `source must name the real-bd default; got: ${budget.source}`);
+                assert.ok(budget.source.includes('backend=real'), `source must name the backend as real; got: ${budget.source}`);
             });
         });
     }
+
+    // apra-fleet-3swo.52: bdMode() treats 'record' as its own mode, distinct
+    // from 'real' (test/helpers/bd-replay.mjs: raw === 'record' returns
+    // 'record' before the REAL_VALUES.has(raw) check), but
+    // resolveNestedSuiteTimeoutBudget's `mode === 'replay' ? mock : real-bd`
+    // branch treats every non-replay mode identically, so 'record' must also
+    // resolve to the real-bd budget -- untested by the REAL_BD_SPELLINGS loop
+    // above, which only covers the five spellings that map to 'real'.
+    test("APRA_FLEET_BD_MOCK=record resolves to the same real-bd budget as the 'real' spellings, naming backend=record", () => {
+        withEnv({ APRA_FLEET_BD_MOCK: 'record', PHASE3_NESTED_SUITE_TIMEOUT_MS: undefined }, () => {
+            const budget = resolveNestedSuiteTimeoutBudget();
+            assert.equal(
+                budget.ms,
+                REAL_BD_NESTED_SUITE_TIMEOUT_MS,
+                `record-mode budget must equal the same derived/capped REAL_BD_NESTED_SUITE_TIMEOUT_MS as the real spellings; got ${budget.ms}`,
+            );
+            assert.ok(budget.source.includes('real-bd default'), `source must name the real-bd default; got: ${budget.source}`);
+            assert.ok(budget.source.includes('backend=record'), `source must name the backend as record, not real; got: ${budget.source}`);
+        });
+    });
+
+    // apra-fleet-3swo.52: pin the shipped REAL_BD_NESTED_SUITE_TIMEOUT_MS to
+    // its documented arithmetic (apra-fleet-hhjh.1's four named constants,
+    // apra-fleet-3swo.51's ceiling) so the derivation cannot silently drift
+    // out of sync with the comment block above that explains it.
+    test('REAL_BD_NESTED_SUITE_TIMEOUT_MS equals its documented arithmetic (four factors, capped)', () => {
+        const rawDerived = Math.ceil(
+            ((ASSUMED_REAL_BD_PER_FILE_MS * ASSUMED_MOCK_SPRINT_FILE_COUNT) / NESTED_TEST_CONCURRENCY) * REAL_BD_HEADROOM_FACTOR,
+        );
+        assert.equal(
+            REAL_BD_NESTED_SUITE_TIMEOUT_MS,
+            Math.min(rawDerived, REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS),
+            'the shipped budget must equal ASSUMED_REAL_BD_PER_FILE_MS x ASSUMED_MOCK_SPRINT_FILE_COUNT / NESTED_TEST_CONCURRENCY x REAL_BD_HEADROOM_FACTOR, capped at REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS',
+        );
+        // At the file count discovered when this was written the raw
+        // derivation exceeds the ceiling, so the shipped value is the
+        // ceiling itself. This is reported (not hard-asserted, since a
+        // future mock-sprint file count drop making the ceiling non-binding
+        // is a legitimate state change, not a regression) so a reader can
+        // see which side of the min is actually in force right now.
+        if (REAL_BD_NESTED_SUITE_TIMEOUT_MS === REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS) {
+            assert.ok(rawDerived >= REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS, `the ceiling is only expected to bind when the raw derivation (${rawDerived}ms) meets or exceeds it (${REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS}ms)`);
+        }
+    });
 
     test('an explicit PHASE3_NESTED_SUITE_TIMEOUT_MS wins over the mock-bd default', () => {
         withEnv({ APRA_FLEET_BD_MOCK: undefined, PHASE3_NESTED_SUITE_TIMEOUT_MS: '12345' }, () => {
