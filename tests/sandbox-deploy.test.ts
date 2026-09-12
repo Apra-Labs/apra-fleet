@@ -18,6 +18,7 @@ import {
   teardown,
   up,
   getJson,
+  lostPortRace,
   // @ts-expect-error -- plain .mjs helper, no type declarations
 } from '../scripts/sandbox-deploy.mjs';
 
@@ -213,6 +214,50 @@ describe('teardown', () => {
     expect(fs.existsSync(v.SANDBOX_ROOT)).toBe(true);
     expect(fs.existsSync(valuesFilePath('s', home))).toBe(true);
   }, 30000); // teardown polls the still-bound port for 5s before giving up
+});
+
+// Guards apra-fleet-3swo.48: a child that DID bind its port, then failed for
+// a reason unrelated to ports (crashed after listening, no EADDRINUSE in its
+// log), must not have its briefly-still-held listener misread as a foreign
+// process that won the allocate-then-bind race.
+describe('lostPortRace: a just-killed child of our own is not misread as a lost port race', () => {
+  it('log shows EADDRINUSE: classified as a lost race immediately, regardless of port state', async () => {
+    const home = mkHome(); homes.push(home);
+    const logPath = path.join(home, 'child.log');
+    fs.writeFileSync(logPath, 'Error: listen EADDRINUSE: address already in use :::12345\n');
+    const port = await osPort(); // currently free -- the log match alone must be decisive
+    expect(await lostPortRace(logPath, port)).toBe(true);
+  });
+
+  it('no EADDRINUSE in the log, and the port frees up WITHIN the grace window: NOT a lost race -- this was our own just-killed child releasing its listener', async () => {
+    const home = mkHome(); homes.push(home);
+    const logPath = path.join(home, 'child.log');
+    fs.writeFileSync(logPath, 'fleet server crashed after listening, never wrote server.json\n');
+    const port = await osPort();
+    const srv = net.createServer();
+    squatters.push(srv);
+    await new Promise<void>((resolve, reject) => {
+      srv.once('error', reject);
+      srv.listen(port, '127.0.0.1', () => resolve());
+    });
+    // Release shortly after -- simulates a just-killed child's listener
+    // letting go well within the grace window, not a genuine foreign winner
+    // that would keep holding the port for the whole window.
+    setTimeout(() => { try { srv.close(); } catch { /* already closed */ } }, 300);
+
+    const startedAt = Date.now();
+    const result = await lostPortRace(logPath, port);
+    expect(result).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(5000); // did not wait out the full grace window
+  }, 10000);
+
+  it('no EADDRINUSE in the log, and the port stays held for the WHOLE grace window: IS a lost race (a genuine foreign winner)', async () => {
+    const home = mkHome(); homes.push(home);
+    const logPath = path.join(home, 'child.log');
+    fs.writeFileSync(logPath, 'fleet server crashed after listening, never wrote server.json\n');
+    const port = await squat(); // held for the entire test -- never released early
+    expect(await lostPortRace(logPath, port)).toBe(true);
+  }, 15000); // PORT_RELEASE_GRACE_MS (5s) plus polling slack
 });
 
 const DIST = path.join(REPO_ROOT, 'dist', 'index.js');
