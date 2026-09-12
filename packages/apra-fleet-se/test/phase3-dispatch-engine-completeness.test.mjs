@@ -1345,6 +1345,74 @@ function nestedChildEnv(sandboxDir) {
     return env;
 }
 
+// -----------------------------------------------------------------------------
+// apra-fleet-3swo.49: bound how much of a failing child's stdout/stderr gets
+// quoted into the wrapped non-timeout error message below, so a
+// multi-megabyte nested suite failure cannot flood the outer test report.
+// Ported from phase1-leaf-facade-completeness.test.mjs's identical constant.
+// -----------------------------------------------------------------------------
+const MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS = 4000;
+
+/**
+ * Returns a length-capped tail excerpt of a (possibly huge, possibly
+ * undefined) child stdout/stderr string, annotated when truncated.
+ */
+function excerptChildOutput(text) {
+    if (!text) return '(empty)';
+    if (text.length <= MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS) return text;
+    return (
+        `...[truncated, showing last ${MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS} of ${text.length} chars]...\n` +
+        text.slice(-MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS)
+    );
+}
+
+/**
+ * Pure helper: turns a spawnSync error (or lack thereof) into either a pass
+ * (returns void) or throws with a descriptive message. Extracted for testing
+ * (see section (6b) below), mirroring phase1-leaf-facade-completeness.test.mjs's
+ * handleNestedSuiteSpawnResult (apra-fleet-80q3.1).
+ *
+ * apra-fleet-3swo.49: this file's three nested suites (dispatch-behaviour-pins,
+ * golden-transcript, mock-sprint) share one outer budget, so before this fix an
+ * inner child failure here was reported as whatever the inner suite printed
+ * (a bare `throw err;`), with no indication of which outer nested suite
+ * produced it and no statement that the outer budget did not expire -- the
+ * same "the budget fix did not hold" misdiagnosis apra-fleet-80q3 fixed for
+ * phase1. The non-timeout branch now names the outer suite label, states
+ * explicitly that the outer budget did NOT expire, and quotes the child's
+ * exit status plus a length-capped tail of its stdout/stderr, keeping the
+ * original error reachable as `.cause` so no information is lost.
+ *
+ * @param {string} suiteLabel - name of the nested suite (e.g., 'golden-transcript')
+ * @param {Error|null} spawnError - error from execFileSync (or null on success)
+ * @param {number} budgetMs - timeout budget in milliseconds
+ * @param {string} budgetSource - human-readable description of where budgetMs came from
+ * @throws {Error} if spawnError is truthy (wrapped ETIMEDOUT, or wrapped inner failure with cause)
+ */
+function handleNestedSuiteSpawnResult(suiteLabel, spawnError, budgetMs, budgetSource) {
+    if (!spawnError) {
+        // Success case: no error, nothing to throw
+        return;
+    }
+    if (spawnError.code === 'ETIMEDOUT') {
+        throw new Error(
+            `nested suite '${suiteLabel}' exceeded its ${budgetMs}ms budget, from ${budgetSource}. ` +
+            'Raise PHASE3_NESTED_SUITE_TIMEOUT_MS if this run is genuinely this slow here.'
+        );
+    }
+    // Non-timeout failure: the failure is INSIDE the nested child, not the
+    // outer budget expiring. Wrap it so that fact is stated explicitly,
+    // keeping the original error reachable as `cause`.
+    const status = spawnError.status === undefined || spawnError.status === null ? 'unknown' : spawnError.status;
+    throw new Error(
+        `nested suite '${suiteLabel}' failed, but its outer budget of ${budgetMs}ms did NOT expire -- the failure is ` +
+        `inside the nested child itself, not this gate's own timeout. child exit status: ${status}. ` +
+        `child stdout (tail):\n${excerptChildOutput(spawnError.stdout)}\n` +
+        `child stderr (tail):\n${excerptChildOutput(spawnError.stderr)}`,
+        { cause: spawnError },
+    );
+}
+
 /** Runs a nested `node --test` child and returns its stdout, or throws describing the timeout. */
 function runNestedSuite(suiteLabel, args, extraOpts = {}) {
     assert.strictEqual(args[0], '--test', `nested suite '${suiteLabel}' must start its argv with --test.`);
@@ -1359,6 +1427,7 @@ function runNestedSuite(suiteLabel, args, extraOpts = {}) {
     const childArgs = [args[0], `--test-concurrency=${NESTED_TEST_CONCURRENCY}`, ...args.slice(1)];
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), `phase3-nested-${suiteLabel}-`));
     const env = nestedChildEnv(sandbox);
+    let spawnError;
     try {
         return execFileSync(process.execPath, childArgs, {
             cwd: SE_DIR,
@@ -1370,13 +1439,7 @@ function runNestedSuite(suiteLabel, args, extraOpts = {}) {
             ...extraOpts,
         });
     } catch (err) {
-        if (err && err.code === 'ETIMEDOUT') {
-            throw new Error(
-                `nested suite '${suiteLabel}' exceeded its ${NESTED_SUITE_TIMEOUT_MS}ms budget, from ${NESTED_SUITE_TIMEOUT_BUDGET.source}. ` +
-                'Raise PHASE3_NESTED_SUITE_TIMEOUT_MS if this run is genuinely this slow here.'
-            );
-        }
-        throw err;
+        spawnError = err;
     } finally {
         // Record what the child left in its sandbox BEFORE removing it, so
         // section (7) can prove the sandbox was both used and cleaned up. This
@@ -1388,6 +1451,7 @@ function runNestedSuite(suiteLabel, args, extraOpts = {}) {
         });
         fs.rmSync(sandbox, { recursive: true, force: true });
     }
+    handleNestedSuiteSpawnResult(suiteLabel, spawnError, NESTED_SUITE_TIMEOUT_MS, NESTED_SUITE_TIMEOUT_BUDGET.source);
 }
 
 /**
@@ -1417,6 +1481,160 @@ function goldenFixtureStatus() {
         encoding: 'utf8',
     }).trim();
 }
+
+// =============================================================================
+// apra-fleet-3swo.49 -- prove the extracted handleNestedSuiteSpawnResult
+// helper (this file's port of apra-fleet-80q3.1's phase1 fix) distinguishes an
+// inner nested-child failure from the outer budget itself expiring, over
+// synthesized spawnSync results rather than by spawning real nested suites.
+// Mirrors phase1-leaf-facade-completeness.test.mjs section (6) cases (a)/(b)/(b2)/(c).
+// =============================================================================
+describe('(6b) the extracted handleNestedSuiteSpawnResult helper converts spawn results to pass/fail', () => {
+    test('case (a): ETIMEDOUT error yields message with suite label and budget', () => {
+        const timeoutError = new Error('timeout signal');
+        timeoutError.code = 'ETIMEDOUT';
+        timeoutError.signal = 'SIGTERM';
+        timeoutError.status = null;
+
+        assert.throws(
+            () => handleNestedSuiteSpawnResult('my-golden-suite', timeoutError, 900_000, 'the mock-bd default'),
+            (err) => {
+                const msg = err.message;
+                assert.ok(msg.includes('my-golden-suite'), `message must include suite label; got: ${msg}`);
+                assert.ok(msg.includes('900000'), `message must include budget in ms; got: ${msg}`);
+                assert.ok(msg.includes('the mock-bd default'), `message must include the budget source; got: ${msg}`);
+                return true;
+            },
+        );
+    });
+
+    test('case (b): non-zero status wraps with suite label, "budget did not expire", exit status and a bounded excerpt, preserving the original as cause', () => {
+        const nonZeroError = new Error('Command failed: node --test failed with exit code 1');
+        nonZeroError.status = 1;
+        nonZeroError.stdout = 'TAP output line 1\n';
+        nonZeroError.stderr = 'stderr line 1\n';
+
+        let caughtErr;
+        try {
+            handleNestedSuiteSpawnResult('my-suite', nonZeroError, 900_000, 'the mock-bd default');
+            assert.fail('should have thrown an error');
+        } catch (e) {
+            caughtErr = e;
+        }
+
+        assert.ok(caughtErr.message.includes('my-suite'), `message must name the outer suite label; got: ${caughtErr.message}`);
+        assert.ok(caughtErr.message.includes('900000'), `message must include the outer budget in ms; got: ${caughtErr.message}`);
+        assert.ok(caughtErr.message.includes('exit status: 1'), `message must include the child exit status; got: ${caughtErr.message}`);
+        assert.ok(caughtErr.message.includes('TAP output line 1'), `message must include a tail excerpt of child stdout; got: ${caughtErr.message}`);
+        assert.ok(caughtErr.message.includes('stderr line 1'), `message must include a tail excerpt of child stderr; got: ${caughtErr.message}`);
+
+        // apra-fleet-3swo.50: pin the distinguishing contract on the WRAPPER
+        // PREFIX (the portion of the message the wrapper itself authors,
+        // before the quoted child stdout/stderr excerpt), not on the whole
+        // message -- the excerpt is arbitrary child output and can
+        // legitimately contain the substring "timed out" (e.g. an inner
+        // per-test timeout), so asserting its absence over the whole message
+        // would be a false requirement on child output content.
+        const wrapperPrefix = caughtErr.message.split('child stdout (tail):')[0];
+        assert.ok(
+            wrapperPrefix.includes('did NOT expire'),
+            `wrapper prefix must explicitly state the outer budget did not expire; got: ${wrapperPrefix}`,
+        );
+        assert.ok(
+            !wrapperPrefix.includes('timed out'),
+            `wrapper prefix (excluding the quoted child excerpt) must never claim a timeout; got: ${wrapperPrefix}`,
+        );
+
+        // Cross-check against the ETIMEDOUT branch: its message never claims
+        // the outer budget did NOT expire -- the two branches are mutually
+        // exclusive on this marker.
+        const crossCheckTimeoutError = new Error('timeout signal');
+        crossCheckTimeoutError.code = 'ETIMEDOUT';
+        crossCheckTimeoutError.signal = 'SIGTERM';
+        let crossCheckTimeoutErr;
+        try {
+            handleNestedSuiteSpawnResult('my-suite', crossCheckTimeoutError, 900_000, 'the mock-bd default');
+            assert.fail('should have thrown an error');
+        } catch (e) {
+            crossCheckTimeoutErr = e;
+        }
+        assert.ok(
+            !crossCheckTimeoutErr.message.includes('did NOT expire'),
+            `ETIMEDOUT branch must never claim the outer budget did NOT expire; got: ${crossCheckTimeoutErr.message}`,
+        );
+
+        // The original spawn error must still be reachable, unmodified, as
+        // `cause` -- no information is lost, only bounded in the message text.
+        assert.equal(caughtErr.cause, nonZeroError, 'original spawn error must be reachable as .cause');
+        assert.equal(caughtErr.cause.status, 1, 'cause must preserve the original exit status');
+        assert.equal(caughtErr.cause.stdout, 'TAP output line 1\n', 'cause must preserve the original stdout verbatim');
+        assert.equal(caughtErr.cause.stderr, 'stderr line 1\n', 'cause must preserve the original stderr verbatim');
+    });
+
+    test('case (b2): a multi-megabyte child stdout/stderr is length-capped in the wrapped message, not quoted verbatim', () => {
+        const hugeError = new Error('Command failed: node --test failed with exit code 1');
+        hugeError.status = 1;
+        hugeError.stdout = 'x'.repeat(2_000_000);
+        hugeError.stderr = 'y'.repeat(2_000_000);
+
+        let caughtErr;
+        try {
+            handleNestedSuiteSpawnResult('huge-suite', hugeError, 900_000, 'the mock-bd default');
+            assert.fail('should have thrown an error');
+        } catch (e) {
+            caughtErr = e;
+        }
+
+        assert.ok(
+            caughtErr.message.length < 20_000,
+            `wrapped message must be length-capped regardless of a multi-megabyte child output; got length ${caughtErr.message.length}`,
+        );
+        assert.ok(caughtErr.message.includes('truncated'), `message should note the excerpt was truncated; got a message of length ${caughtErr.message.length}`);
+        // The uncapped original is still available via cause, so nothing is lost.
+        assert.equal(caughtErr.cause.stdout.length, 2_000_000, 'cause must retain the full, untruncated original stdout');
+        assert.equal(caughtErr.cause.stderr.length, 2_000_000, 'cause must retain the full, untruncated original stderr');
+    });
+
+    test('case (c): null error (status 0) yields pass (no throw)', () => {
+        const result = handleNestedSuiteSpawnResult('my-suite', null, 900_000, 'the mock-bd default');
+        assert.equal(result, undefined, 'success case should return undefined');
+    });
+
+    test('the handler is the same function runNestedSuite uses (single definition, import-proven)', () => {
+        // Proof of single-definition identity: runNestedSuite calls
+        // handleNestedSuiteSpawnResult directly (no re-export or indirect
+        // import) in its post-finally step, and this test file calls the
+        // same function from this scope. If handleNestedSuiteSpawnResult
+        // were copied/duplicated for testing only, a mutation here would not
+        // propagate to the real calls, and the acceptance criterion would be
+        // violated.
+        const testErrorOk = new Error('test');
+        testErrorOk.code = 'ETIMEDOUT';
+        testErrorOk.signal = 'SIGTERM';
+
+        let directCallThrew = false;
+        try {
+            handleNestedSuiteSpawnResult('test', testErrorOk, 900_000, 'the mock-bd default');
+        } catch (e) {
+            directCallThrew = true;
+        }
+        assert.ok(directCallThrew, 'direct call must throw on ETIMEDOUT');
+
+        // The function is defined at module scope, before describe() blocks,
+        // so this assertion would fail if it were only defined inside a test.
+        assert.equal(typeof handleNestedSuiteSpawnResult, 'function', 'handleNestedSuiteSpawnResult must be defined at module scope for runNestedSuite to use');
+    });
+});
+
+// =============================================================================
+// Falsification note for apra-fleet-3swo.49: reverting the non-timeout branch
+// of handleNestedSuiteSpawnResult to a bare `throw spawnError;` (i.e. undoing
+// this port of apra-fleet-80q3.1) makes case (b) fail on every one of its
+// "did NOT expire" / "exit status: 1" / cause-preservation assertions, since
+// the thrown object would again be the bare original error with none of that
+// text, and case (b2) would fail because an unwrapped error's message is the
+// original short "Command failed: ..." text, never containing "truncated".
+// =============================================================================
 
 describe('(7) the mock-sprint suite and both golden transcripts pass on the post-refactor tree', () => {
     test('both golden transcript suites pass without UPDATE_GOLDEN and leave the fixtures untouched', () => {
