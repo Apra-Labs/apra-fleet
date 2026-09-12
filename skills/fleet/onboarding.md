@@ -1,6 +1,11 @@
 # Member Onboarding
 
-After `register_member`, run these 8 steps before dispatching any work.
+**This is the remote path.** For a worker on this machine, use `fast-local.md`
+instead - four steps, no credentials. Most of the sequence below exists to move
+credentials onto another machine, and a local member needs none of it.
+
+After `register_member` on a remote member, run these 8 steps before dispatching
+any work.
 
 ## Step 1: Setup SSH Key Auth (remote members only)
 

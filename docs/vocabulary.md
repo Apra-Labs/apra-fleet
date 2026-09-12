@@ -1,4 +1,4 @@
-<!-- llm-context: Defines the terminology used throughout apra-fleet — member, fleet, PM, doer, reviewer, provider, session, etc. Consult this first when you encounter an unfamiliar fleet-specific term to avoid misinterpreting user requests. -->
+<!-- llm-context: Defines the terminology used throughout apra-fleet - member, fleet, PM, doer, reviewer, provider, session, etc. Consult this first when you encounter an unfamiliar fleet-specific term to avoid misinterpreting user requests. -->
 <!-- keywords: vocabulary, terminology, member, fleet, PM, doer, reviewer, provider, session, agent, orchestrator -->
 <!-- see-also: architecture.md (how these concepts relate), ../README.md (practical usage) -->
 
@@ -10,15 +10,15 @@
 1. A fleet member (registered machine/folder that does work)
 2. A background Claude process the PM spawns to coordinate
 
-"The agent is running" — which one? This causes real confusion in logs, conversation, and status updates.
+"The agent is running" - which one? This causes real confusion in logs, conversation, and status updates.
 
 ## Approach: Names Over Nouns
 
 Most of the time, use the **specific name** and drop the category word entirely:
 
-- "Sent to dev2" — not "sent to member dev2"
-- "review1 passed PR #13" — not "reviewer member passed"
-- "dev1 is on main" — not "the dev1 member is on main"
+- "Sent to dev2" - not "sent to member dev2"
+- "review1 passed PR #13" - not "reviewer member passed"
+- "dev1 is on main" - not "the dev1 member is on main"
 
 Names are unambiguous. Category nouns are noise when the name is present.
 
@@ -32,15 +32,38 @@ For generic references ("list all ___", "register a new ___"), use:
 | **subagent** | A background Claude process spawned by the PM. Ephemeral. |
 | **session** | A conversation thread on a member. Context persists within it. |
 | **fleet** | The collection of all registered members. |
-| **PM** | The Project Manager — the master Claude instance that orchestrates everything. |
+| **PM** | The Project Manager - the master Claude instance that orchestrates everything. |
 | **provider** (or **LLM backend**) | The LLM CLI a member uses: `claude`, `gemini`, `codex`, or `copilot`. Each member has exactly one provider, set at registration and changeable via `update_member`. |
+
+## Output Contract: What The User Never Sees
+
+The rules above keep *internal* language consistent. This section governs what
+reaches the user, who asked for the fleet's benefits without its terminology.
+
+**Never write to the user:** member, dispatch, provision, onboard, register,
+decommission, orchestrator, MCP, any tool name (`execute_prompt`,
+`compose_permissions`, `register_member`), any member UUID, any provider CLI flag.
+
+| Instead of | Say |
+|---|---|
+| "Dispatching to member dev2 via execute_prompt" | "Asked dev2 to take the parser" |
+| "Registering a local member and composing permissions" | "Setting up dev2" |
+| "Provisioning LLM auth on the remote member" | "Signing that machine in" |
+| "3 members idle, 1 busy" | "dev1 is still on the migration; the rest are done" |
+| "Removing auto-tagged members" | "Cleaned up the workers" |
+
+"Worker" is the one category noun that may reach the user, and only when no name
+fits. Prefer the name, per rule 1 below.
+
+Questions are fine - jargon in questions is not. Phrase a question in terms of
+money, time, or risk, never infrastructure. See `../skills/fleet/autonomy.md`.
 
 ## Rules
 
 1. **Prefer the name**: "dev2 rebased" not "the dev2 member rebased"
-2. **"Subagent" is always "subagent"** — never just "agent" when referring to a background Claude process
-3. **"Agent" is banned in PM conversation** — too ambiguous. Use the name or "member/worker" for fleet members, "subagent" for Claude processes.
-4. **API keeps `agent_id`** — backwards compat in code. User-facing language evolves separately.
+2. **"Subagent" is always "subagent"** - never just "agent" when referring to a background Claude process
+3. **"Agent" is banned in PM conversation** - too ambiguous. Use the name or "member/worker" for fleet members, "subagent" for Claude processes.
+4. **API keeps `agent_id`** - backwards compat in code. User-facing language evolves separately.
 5. **Provider is a property of a member**, not a conversation topic. Say "dev2 uses Gemini" not "dev2 is a Gemini agent". The member identity (the name) is what matters; the provider is just how it executes prompts.
 
 ## Example Fleet
@@ -56,4 +79,4 @@ PM (orchestrator)
 
 PM spawns **subagents** to interact with **members**. A subagent is ephemeral (dies after task). A member is persistent (registered, has sessions, has state).
 
-Members with different **providers** are interchangeable from the PM's perspective — same tools, same dispatch pattern, different CLI underneath.
+Members with different **providers** are interchangeable from the PM's perspective - same tools, same dispatch pattern, different CLI underneath.

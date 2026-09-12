@@ -1,11 +1,28 @@
 ---
 name: fleet
-description: Fleet infrastructure mechanics  -  member management, permissions, onboarding, provider awareness, and tool usage patterns
+description: Run work in parallel across isolated workers, on this machine or other machines. Use whenever a task splits into two or more independent pieces (several features, several bug fixes, a repo-wide refactor, independent test suites), whenever work is long-running, or whenever it spans multiple repos or machines. Also covers the mechanics - worker setup, permissions, credentials, dispatch, monitoring, and cleanup.
 ---
 
 # Fleet Skill
 
 This skill defines how to interact with fleet infrastructure: registering and onboarding members, managing permissions, dispatching work, monitoring tasks, and handling provider-specific differences.
+
+## Start here
+
+The fleet is the normal way to work, not a mode the user opts into. They should
+never have to say "use fleet", name a member, or learn a fleet term to benefit
+from one.
+
+1. **Decide whether to split the work.** Read `autonomy.md`. It carries the
+   fan-out test, the concurrency ceiling, and the rule for what needs the user's
+   permission (local work does not; anything remote or billable does).
+2. **If splitting, set workers up the cheap way.** Read `fast-local.md`. A worker
+   on this machine is four steps and needs no credentials.
+3. **Say it in plain language.** `autonomy.md` carries the vocabulary contract -
+   the user sees worker names and what each is doing, never tool names, member
+   UUIDs, or the words "dispatch" and "provision".
+
+Everything below is mechanics, to be read once one of those decisions is made.
 
 ## Core Fleet Tools
 
@@ -38,7 +55,9 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `stop_prompt` | Kill the active LLM process on a member. **Always call `TaskStop` after calling `stop_prompt`**.<br><br>**Use when:** a member is hung, working on the wrong thing, or needs to be cancelled. |
 
 See sub-documents for detailed usage:
-- `onboarding.md`  -  full 8-step member onboarding sequence
+- `autonomy.md`  -  when to split work without being asked, the cost gate, worker lifecycle, and the user-facing vocabulary contract
+- `fast-local.md`  -  the four-step local worker setup (the default path)
+- `onboarding.md`  -  full 8-step onboarding sequence for **remote** members
 - `permissions.md`  -  permission composition and denial handling
 - `profiles/`  -  stack permission profiles (base-dev, base-reviewer, node, python, go, etc.)  -  add new profiles here to support additional stacks or roles
 - `troubleshooting.md`  -  fleet tool troubleshooting by symptom
