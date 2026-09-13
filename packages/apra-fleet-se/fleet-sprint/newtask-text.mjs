@@ -4,10 +4,11 @@
 // resolve unchanged.
 //
 // This module owns:
-//   - extractContestedBeadIds: scans a plan-reviewer verdict's free-text
-//     `notes` for literal occurrences of in-scope bead ids, so a
-//     CHANGES_NEEDED verdict can be told apart from a plan-wide one that
-//     merely names specific offenders.
+//   - extractContestedBeadIds: reads the beads a plan-reviewer verdict calls
+//     out from its structured `findings` array, so a CHANGES_NEEDED verdict
+//     confined to specific beads can be told apart from a plan-wide one. Falls
+//     back to the deprecated free-text `notes` scan only for a verdict that
+//     carries no `findings` key at all.
 //   - SAFE_TEXT_RE: the newTask-title shell-injection allowlist (still
 //     exported, unchanged shape -- see its own header comment below for why).
 //   - normalizeTierToken: bead-metadata model-value tier normalization by
@@ -18,37 +19,85 @@
 //     planner prompt (see prompts.mjs's buildPlannerPrompt, which imports
 //     buildRejectedNewTaskResurfaceLines back from runner.js's facade).
 //
-// CROSS-FEATURE HANDOFF: extractContestedBeadIds is scheduled for RETIREMENT
-// by a later Phase 5 bead that replaces plan-reviewer prose scraping with a
-// structured findings field, and by the Phase 5 bead after that which deletes
-// the retired prose-scraper helpers and updates the facade symbol pins. Both
-// are blocked behind Phase 4's facade-completeness gate, so they run strictly
-// after this extraction. This move relocates it verbatim -- no retirement,
-// rewrite or deprecation here.
+// CROSS-FEATURE HANDOFF, now PARTLY LANDED: the Phase 5 bead that replaces
+// plan-reviewer prose scraping with a structured findings field has run --
+// extractContestedBeadIds reads `findings` first and keeps the notes scan only
+// as a deprecated, absent-`findings` fallback (see its own comment for the
+// removal release). What remains outstanding is the LATER Phase 5 bead that
+// deletes the retired prose-scraper fallback outright and updates the facade
+// symbol pins; until it runs, the fallback and the facade enumeration entry
+// both stay exactly where they are.
 
 /**
  * Determines whether a plan-reviewer verdict is CONFINED to specific beads
- * rather than spanning the whole plan. plan-reviewer.md carries no structured
- * per-bead findings field -- `notes` is free text that names the offending
- * bead ids -- so this scans `notes` for literal occurrences of each id already
- * known to be in scope via `taskAssignments`, which plan-reviewer.md requires
- * to be populated on every round including CHANGES_NEEDED.
+ * rather than spanning the whole plan.
  *
- * An id matches only at a non-identifier-character boundary (or the string
- * start/end), so a shorter id cannot false-positive inside a longer one that
- * merely extends it.
+ * PRIMARY CHANNEL (structured): the plan-reviewer contract carries an optional
+ * per-bead `findings` array of `{ id, kind, detail }`. When it is PRESENT the
+ * contested set is read from it directly -- no text scanning at all. Per the
+ * contract, an EMPTY findings array is the explicit "the objection is
+ * plan-wide and names no individual bead" signal, so an empty array yields an
+ * empty contested set, which the caller already treats as whole-plan
+ * contested. `findings` ids are still intersected with `taskAssignments`, so
+ * this function keeps returning a SUBSET of the in-scope task ids in
+ * taskAssignments order -- exactly what the notes scan returned.
  *
- * @param {{ notes?: string, taskAssignments?: Array<{ id?: string }> }} verdict
- * @returns {string[]} the subset of taskAssignments ids that notes calls out by name
+ * FALLBACK CHANNEL (deprecated prose scan): a verdict produced against the
+ * previous contract has NO `findings` key at all. For that case only, `notes`
+ * is scanned for literal occurrences of each id already known to be in scope
+ * via `taskAssignments`. Absence of the key -- not its emptiness -- is what
+ * selects the fallback, which is why the two cases cannot be conflated.
+ *
+ * @param {{ notes?: string, findings?: Array<{ id?: string }>, taskAssignments?: Array<{ id?: string }> }} verdict
+ * @returns {string[]} the subset of taskAssignments ids the verdict calls out
  */
 export function extractContestedBeadIds(verdict) {
-    if (!verdict || typeof verdict.notes !== 'string' || !Array.isArray(verdict.taskAssignments)) {
+    if (!verdict || !Array.isArray(verdict.taskAssignments)) {
         return [];
     }
-    const notes = verdict.notes;
     const allIds = verdict.taskAssignments
         .map((a) => a && a.id)
         .filter((id) => typeof id === 'string' && id.length > 0);
+
+    if (Array.isArray(verdict.findings)) {
+        const namedIds = new Set(
+            verdict.findings
+                .map((f) => f && f.id)
+                .filter((id) => typeof id === 'string' && id.length > 0)
+        );
+        return allIds.filter((id) => namedIds.has(id));
+    }
+
+    return contestedBeadIdsFromNotesProse(verdict.notes, allIds);
+}
+
+// DEPRECATED prose-scraping fallback for extractContestedBeadIds.
+//
+// This is the pre-`findings` channel: before the plan-reviewer contract grew a
+// structured per-bead findings array, `notes` was free text that named the
+// offending bead ids, so the only way to tell a confined CHANGES_NEEDED from a
+// plan-wide one was to scan that text. It survives for exactly one release so
+// a verdict produced against the previous contract still routes correctly.
+//
+// An id matches only at a non-identifier-character boundary (or the string
+// start/end), so a shorter id cannot false-positive inside a longer one that
+// merely extends it. That boundary rule is preserved verbatim -- a verdict
+// routed through this fallback must produce the same contested set it did
+// before the structured field existed.
+//
+// Do not add a new caller: read `verdict.findings`.
+//
+// @deprecated since the structured plan-reviewer findings field; removal
+// release: v0.5.0
+/**
+ * @param {unknown} notes the verdict's free-text notes field
+ * @param {string[]} allIds the in-scope task ids, in taskAssignments order
+ * @returns {string[]} the subset of allIds that notes calls out by name
+ */
+function contestedBeadIdsFromNotesProse(notes, allIds) {
+    if (typeof notes !== 'string') {
+        return [];
+    }
     return allIds.filter((id) => {
         const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const boundary = '(?:^|[^A-Za-z0-9_-])';
