@@ -147,6 +147,13 @@ Return your verdict:
 - `verdict`: `"APPROVED"` or `"CHANGES_NEEDED"` (exact strings -- the machine-readable
   enum in the output schema uses the underscore form, never "CHANGES NEEDED" with a space)
 - `notes`: specific, actionable findings referencing beads IDs
+- `findings`: array with one entry per bead that must change -- `{ id, kind, detail }`.
+  `id` is the bead, written exactly as it appears in `taskAssignments`. `kind` is a closed
+  vocabulary naming the criterion that failed, one of `coverage`, `missing_test_task`,
+  `acceptance_criteria`, `task_size`, `dependency_wiring`, `scope_creep`, `duplicate_work`,
+  `feasibility`, `ready_work`, `model_metadata`, `lane_cohesion`, `other` -- in the order of
+  the numbered criteria in Step 2, with `other` reserved for a failure none of them
+  describes. `detail` is the human explanation for that bead.
 - `taskAssignments`: array with one entry per open task -- `{ id, bucket, model }`
 
 **APPROVED** means all eleven criteria in Step 2 pass.
@@ -155,6 +162,14 @@ Return your verdict:
 and what is wrong. Do not return CHANGES_NEEDED for minor style preferences.
 
 Always populate `taskAssignments` even on CHANGES_NEEDED -- cost estimation uses it regardless.
+
+Always populate `findings` on every CHANGES_NEEDED verdict, for the same reason: it is the
+machine-readable channel a caller routes on, so an objection that exists only in `notes` is
+an objection the caller cannot act on. One entry per bead you are objecting to. If the
+objection is genuinely plan-wide and names no individual bead, return `findings: []` and
+explain it in `notes` -- the empty array is the explicit "plan-wide" signal, not an
+oversight. On APPROVED, omit `findings` or return `[]`. `notes` remains the narration
+channel and must stay readable on its own; `findings` does not replace it.
 
 ## Output schema
 
@@ -166,9 +181,14 @@ placeholder):
 {
   "verdict": "CHANGES_NEEDED",
   "notes": "BD-14 missing [test] task; BD-22 has no model tier metadata set",
+  "findings": [
+    { "id": "BD-14", "kind": "missing_test_task", "detail": "Feature has an [impl] task but no [test] task covering it." },
+    { "id": "BD-22", "kind": "model_metadata", "detail": "No model key in beads metadata; classified as standard under the Step 3 fallback." }
+  ],
   "taskAssignments": [
     { "id": "BD-10", "bucket": "M", "model": "standard" },
-    { "id": "BD-14", "bucket": "S", "model": "cheap" }
+    { "id": "BD-14", "bucket": "S", "model": "cheap" },
+    { "id": "BD-22", "bucket": "S", "model": "standard" }
   ]
 }
 ```
