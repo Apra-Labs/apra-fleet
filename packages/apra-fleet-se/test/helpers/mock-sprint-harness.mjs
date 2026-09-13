@@ -399,11 +399,16 @@ export const describeBdResult = (label, res) => {
 /**
  * `bd init` for a scenario's scratch clone, with its exit status actually
  * checked. Returns the init result so later failures can still quote it.
+ *
+ * `runCmdFn` (apra-fleet-38o8.2) is the injection seam this guard's own test
+ * suite uses to simulate a failing/malformed `bd init` or `bd create` without
+ * requiring a contended real-bd run: it defaults to the real `runCmd` above,
+ * so every production call site (setup()/setupMinimal()) is unaffected.
  */
-export async function initScenarioClone(label, tempDir) {
+export async function initScenarioClone(label, tempDir, runCmdFn = runCmd) {
     let initRes;
     try {
-        initRes = await runCmd('bd init', tempDir);
+        initRes = await runCmdFn('bd init', tempDir);
     } catch (err) {
         // Real mode serves `bd init` from the shared template copy in
         // bd-replay.mjs rather than spawning bd, so this path can also throw a
@@ -439,9 +444,12 @@ const isBeadId = (value) => value.length > 0 && !/\s/.test(value);
  * Issue one `bd create ... --silent` and return the created id, or throw with
  * the full evidence chain (the clone's `bd init` result plus this create's own
  * exit code / stdout / stderr).
+ *
+ * `runCmdFn` (apra-fleet-38o8.2): same injection seam as initScenarioClone()
+ * above, defaulting to the real `runCmd`.
  */
-export async function createBeadOrThrow(label, tempDir, createCmd, initRes) {
-    const res = await runCmd(createCmd, tempDir);
+export async function createBeadOrThrow(label, tempDir, createCmd, initRes, runCmdFn = runCmd) {
+    const res = await runCmdFn(createCmd, tempDir);
     const id = (res.stdout ?? '').trim();
     if (!res.err && isBeadId(id)) return id;
     throw new Error(
@@ -452,12 +460,19 @@ export async function createBeadOrThrow(label, tempDir, createCmd, initRes) {
     );
 }
 
-export async function setup(tempDirSuffix) {
+/**
+ * `runCmdFn` (apra-fleet-38o8.2): optional injection seam threaded through to
+ * initScenarioClone()/createBeadOrThrow() below, defaulting to the real
+ * `runCmd`. Every production call site omits it and is unaffected; the
+ * guard's own test suite uses it to simulate a failing `bd init`/`bd create`
+ * without a contended real-bd run.
+ */
+export async function setup(tempDirSuffix, runCmdFn = runCmd) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
 
     const label = `setup(${tempDirSuffix})`;
-    const initRes = await initScenarioClone(label, tempDir);
+    const initRes = await initScenarioClone(label, tempDir, runCmdFn);
 
     // `--silent` returns the created id directly on stdout, from the exact
     // write just performed -- unlike a separate `bd list --json` + title
@@ -467,14 +482,14 @@ export async function setup(tempDirSuffix) {
     // Dolt state hits this every time, even though sequential `bd create`
     // calls each fully complete -- exec()'s callback only fires on process
     // exit -- before the next command starts).
-    const epicId = await createBeadOrThrow(label, tempDir, 'bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember, listMembers, and ensuring they integrate securely using fetch across the MCP JSON-RPC boundary." --silent', initRes);
-    const task1Id = await createBeadOrThrow(label, tempDir, 'bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool." --silent', initRes);
-    const task2Id = await createBeadOrThrow(label, tempDir, 'bd create "Task: Implement listMembers in client.js" -d "Implement a listMembers() function in the ApraFleet API class. It should call the list_members tool and return the parsed JSON array of active fleet members." --silent', initRes);
+    const epicId = await createBeadOrThrow(label, tempDir, 'bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember, listMembers, and ensuring they integrate securely using fetch across the MCP JSON-RPC boundary." --silent', initRes, runCmdFn);
+    const task1Id = await createBeadOrThrow(label, tempDir, 'bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool." --silent', initRes, runCmdFn);
+    const task2Id = await createBeadOrThrow(label, tempDir, 'bd create "Task: Implement listMembers in client.js" -d "Implement a listMembers() function in the ApraFleet API class. It should call the list_members tool and return the parsed JSON array of active fleet members." --silent', initRes, runCmdFn);
 
-    await runCmd(`bd update ${task1Id} --parent ${epicId}`, tempDir);
-    await runCmd(`bd update ${task2Id} --parent ${epicId}`, tempDir);
+    await runCmdFn(`bd update ${task1Id} --parent ${epicId}`, tempDir);
+    await runCmdFn(`bd update ${task2Id} --parent ${epicId}`, tempDir);
 
-    const finalList = JSON.parse((await runCmd('bd list --json', tempDir)).stdout || '[]');
+    const finalList = JSON.parse((await runCmdFn('bd list --json', tempDir)).stdout || '[]');
     const epicBead = finalList.find((b) => b.id === epicId);
     const task1 = finalList.find((b) => b.id === task1Id);
     const task2 = finalList.find((b) => b.id === task2Id);
@@ -499,17 +514,20 @@ export async function setup(tempDirSuffix) {
  * creation order so scenario code can address them by id without re-parsing
  * `bd list` output itself.
  */
-export async function setupMinimal(tempDirSuffix, taskSpecs) {
+/**
+ * `runCmdFn` (apra-fleet-38o8.2): same injection seam as setup() above.
+ */
+export async function setupMinimal(tempDirSuffix, taskSpecs, runCmdFn = runCmd) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
 
     const label = `setupMinimal(${tempDirSuffix})`;
-    const initRes = await initScenarioClone(label, tempDir);
+    const initRes = await initScenarioClone(label, tempDir, runCmdFn);
     // `--silent` returns the created id directly, from the write just
     // performed -- avoids a separate `bd list --json` + title match, which
     // reads back through bd's embedded Dolt store and can lag behind a
     // just-completed write on a cold/fresh environment (see setup() above).
-    const epicId = await createBeadOrThrow(label, tempDir, `bd create -t epic "Epic: ${tempDirSuffix}" -d "Scenario epic for apra-fleet-unw.16 mock test." --silent`, initRes);
+    const epicId = await createBeadOrThrow(label, tempDir, `bd create -t epic "Epic: ${tempDirSuffix}" -d "Scenario epic for apra-fleet-unw.16 mock test." --silent`, initRes, runCmdFn);
     const epicBead = { id: epicId };
 
     const tasks = [];
@@ -520,8 +538,8 @@ export async function setupMinimal(tempDirSuffix, taskSpecs) {
         const priorityFlag = spec.priority ? ` -p ${spec.priority}` : '';
         // Same guard as the epic above (it used to have none here, so a failed
         // task create silently produced `bd update  --parent <epic>`).
-        const id = await createBeadOrThrow(label, tempDir, `bd create "${spec.title}" -d "${spec.description || 'Scenario task.'}"${priorityFlag} --silent`, initRes);
-        await runCmd(`bd update ${id} --parent ${epicBead.id}`, tempDir);
+        const id = await createBeadOrThrow(label, tempDir, `bd create "${spec.title}" -d "${spec.description || 'Scenario task.'}"${priorityFlag} --silent`, initRes, runCmdFn);
+        await runCmdFn(`bd update ${id} --parent ${epicBead.id}`, tempDir);
         tasks.push({ id, title: spec.title });
     }
 
