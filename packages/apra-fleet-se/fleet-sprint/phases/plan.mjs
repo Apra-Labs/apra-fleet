@@ -289,6 +289,11 @@ export async function runPlanPhase({
     // Plan-cap exhaustion (every round CHANGES_NEEDED, never an APPROVED)
     // does not necessarily condemn the whole plan: one bead's unresolved
     // finding can pin the verdict while the rest of the task set is clean.
+    // The contested set now comes from the verdict's STRUCTURED `findings`
+    // array (extractContestedBeadIds reads it directly; the free-text `notes`
+    // scan survives only as a deprecated fallback for a verdict carrying no
+    // findings key). The routing policy below is unchanged by that swap -- it
+    // is the input channel that moved, not the decision.
     // When the last verdict's findings name specific beads, defer just
     // those (status=deferred plus the finding attached as a note) and
     // proceed to Develop with the remaining approved set. Abort only when
