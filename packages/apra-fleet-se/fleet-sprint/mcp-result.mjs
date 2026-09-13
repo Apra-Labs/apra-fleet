@@ -12,7 +12,29 @@
 // runner.js call sites log with a `|| '(no detail)'` fallback that appears
 // verbatim in golden transcripts -- do not change this without checking those
 // fixtures.
+//
+// content[0] is NOT reliably the tool result: src/services/tool-registry.ts
+// wrapTool() may prepend a user-audience onboarding/welcome-back display
+// banner ahead of the real result (and append a nudge suffix banner after
+// it). resultText skips any content entry that is such a banner --
+// identified by annotations.audience containing 'user', or by its text
+// containing an <apra-fleet-display> open tag as a belt-and-braces fallback
+// -- and returns the first entry that is not one.
 // =============================================================================
+
+/**
+ * True when a content entry is a user-audience display banner (onboarding
+ * preamble or nudge suffix) rather than actual tool output.
+ * @param {any} entry
+ * @returns {boolean}
+ */
+function isDisplayBanner(entry) {
+    if (!entry) return false;
+    if (entry.annotations && Array.isArray(entry.annotations.audience) && entry.annotations.audience.includes('user')) {
+        return true;
+    }
+    return typeof entry.text === 'string' && /<apra-fleet-display[^>]*>/i.test(entry.text);
+}
 
 /**
  * Best-effort human-readable text out of an MCP tool result's content array.
@@ -22,8 +44,12 @@
  */
 export function resultText(result) {
     if (typeof result === 'string') return result;
-    if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
-        return result.content[0].text;
+    if (result && Array.isArray(result.content)) {
+        for (const entry of result.content) {
+            if (entry && typeof entry.text === 'string' && !isDisplayBanner(entry)) {
+                return entry.text;
+            }
+        }
     }
     return '';
 }
