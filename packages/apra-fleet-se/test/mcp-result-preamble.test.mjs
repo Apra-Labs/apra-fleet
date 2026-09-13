@@ -24,7 +24,7 @@ import { resultText } from '../fleet-sprint/mcp-result.mjs';
 
 const banner = {
     type: 'text',
-    text: '\nWELCOME BANNER\n',
+    text: '<apra-fleet-display>\nWELCOME BANNER\n</apra-fleet-display>',
     annotations: { audience: ['user'], priority: 1 },
 };
 
@@ -35,7 +35,7 @@ const realResult = {
 
 const nudge = {
     type: 'text',
-    text: '\nWELCOME BANNER\n',
+    text: '<apra-fleet-display>\nWELCOME BANNER\n</apra-fleet-display>',
     annotations: { audience: ['user'], priority: 0.8 },
 };
 
@@ -83,5 +83,9 @@ describe('resultText vs. the onboarding banner (apra-fleet-3swo.61)', () => {
             text: '<apra-fleet-display>\nno annotations here\n</apra-fleet-display>',
         };
         assert.strictEqual(resultText({ content: [taggedOnlyBanner, realResult] }), 'REAL TOOL OUTPUT');
+    });
+
+    test('8. [banner, nudge] (all-banner, preamble + trailing nudge) returns the empty string', () => {
+        assert.strictEqual(resultText({ content: [banner, nudge] }), '');
     });
 });
