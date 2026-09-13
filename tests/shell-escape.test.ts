@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   escapeShellArg,
+  escapeShellArgInner,
+  escapePowerShellArg,
+  escapePowerShellArgInner,
   escapeDoubleQuoted,
   escapeWindowsArg,
   escapeGrepPattern,
@@ -18,6 +21,60 @@ describe('escapeShellArg', () => {
   it('neutralizes command injection attempts', () => {
     expect(escapeShellArg('$(whoami)')).toBe("'$(whoami)'");
     expect(escapeShellArg('`rm -rf /`')).toBe("'`rm -rf /`'");
+  });
+});
+
+describe('escapePowerShellArg', () => {
+  it('wraps in single quotes and doubles embedded single quotes', () => {
+    expect(escapePowerShellArg('hello')).toBe("'hello'");
+    expect(escapePowerShellArg("it's")).toBe("'it''s'");
+    expect(escapePowerShellArg("a'b'c")).toBe("'a''b''c'");
+  });
+});
+
+// apra-fleet-3swo.7.16 criterion 2 (anti-drift invariant): escapeShellArg and
+// escapePowerShellArg must be DEFINED IN TERMS OF their respective *Inner
+// helpers, not merely happen to agree with them today. Asserting the
+// invariant here -- rather than trusting a read of the source -- is what
+// stops a future edit to one of the four functions from silently
+// desynchronizing the wrapping form from the interior-only form that
+// vcs-credential-exec.ts's inline placeholder mode relies on.
+describe('escapeShellArgInner / escapePowerShellArgInner anti-drift invariant', () => {
+  const samples = [
+    'hello',
+    "it's",
+    "a'b'c",
+    '',
+    "'",
+    "''",
+    "'''",
+    'say "hi"',
+    '$(whoami)',
+    '`rm -rf /`',
+    "a'b\"c$d`e!f",
+    "multi\nline'value",
+  ];
+
+  it('escapeShellArg(s) === "\'" + escapeShellArgInner(s) + "\'" for every sample', () => {
+    for (const s of samples) {
+      expect(escapeShellArg(s)).toBe("'" + escapeShellArgInner(s) + "'");
+    }
+  });
+
+  it('escapePowerShellArg(s) === "\'" + escapePowerShellArgInner(s) + "\'" for every sample', () => {
+    for (const s of samples) {
+      expect(escapePowerShellArg(s)).toBe("'" + escapePowerShellArgInner(s) + "'");
+    }
+  });
+
+  it('escapeShellArgInner escapes a single quote as \'\\\'\' with no surrounding quotes', () => {
+    expect(escapeShellArgInner("it's")).toBe("it'\\''s");
+    expect(escapeShellArgInner("'")).toBe("'\\''");
+  });
+
+  it('escapePowerShellArgInner escapes a single quote by doubling it, with no surrounding quotes', () => {
+    expect(escapePowerShellArgInner("it's")).toBe("it''s");
+    expect(escapePowerShellArgInner("'")).toBe("''");
   });
 });
 
