@@ -260,7 +260,7 @@ export function redactNetworkCommandForLog(command) {
 // that reaches PR creation needs a working `callTool`, not just the small
 // subset that opted in for self-heal/preflight coverage (apra-fleet-eft.75.3).
 // This default answers 'provision_vcs_auth' with the same shape the real
-// production tool returns on success (a leading check-mark line plus an
+// production tool returns on success (a leading '[OK]' line plus an
 // 'expiresAt:' metadata line, AND the structuredContent half the orchestrator
 // actually reads the expiry from -- see src/tools/provision-vcs-auth.ts and
 // vcs-auth.mjs's provisionVcsAuthForMember(), which reads
