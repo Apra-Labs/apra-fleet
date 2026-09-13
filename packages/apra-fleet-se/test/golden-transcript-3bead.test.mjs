@@ -172,18 +172,24 @@ function assertCmdOk(res, description) {
     return res;
 }
 
-async function setup(tempDirSuffix) {
+// apra-fleet-wclh.2: `runCmdFn` is an injection seam (defaulting to the real
+// `runCmd` above) so this guard's own test suite below can drive setup()
+// with a simulated failing/malformed `bd` response and pin the exact
+// dereference apra-fleet-wclh.1 fixed, without requiring a contended real-bd
+// run to exercise the failure path. Every production call site omits it and
+// is unaffected.
+async function setup(tempDirSuffix, runCmdFn = runCmd) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-golden-3bead-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
 
-    assertCmdOk(await runCmd('bd init', tempDir), '`bd init`');
+    assertCmdOk(await runCmdFn('bd init', tempDir), '`bd init`');
 
     assertCmdOk(
-        await runCmd('bd create -t epic "Epic: Fleet Member Management APIs (3-bead)" -d "Three independent, sibling tasks -- no dependency between them -- so all three are ready in the same Develop cycle and dispatch as concurrent doer streaks."', tempDir),
+        await runCmdFn('bd create -t epic "Epic: Fleet Member Management APIs (3-bead)" -d "Three independent, sibling tasks -- no dependency between them -- so all three are ready in the same Develop cycle and dispatch as concurrent doer streaks."', tempDir),
         '`bd create -t epic ...` (epic creation)'
     );
 
-    const epicListRes = assertCmdOk(await runCmd('bd list --json', tempDir), '`bd list --json` (epic lookup)');
+    const epicListRes = assertCmdOk(await runCmdFn('bd list --json', tempDir), '`bd list --json` (epic lookup)');
     const epicList = JSON.parse(epicListRes.stdout || '[]');
     const epicBead = epicList.find((b) => b.title.startsWith('Epic:'));
     if (!epicBead) {
@@ -197,12 +203,12 @@ async function setup(tempDirSuffix) {
     const taskIds = [];
     for (const title of TASK_TITLES) {
         const createRes = assertCmdOk(
-            await runCmd(`bd create "${title}" -d "Independent sibling task." --silent`, tempDir),
+            await runCmdFn(`bd create "${title}" -d "Independent sibling task." --silent`, tempDir),
             `\`bd create "${title}"\``
         );
         const id = createRes.stdout.trim();
         assertCmdOk(
-            await runCmd(`bd update ${id} --parent ${epicBead.id}`, tempDir),
+            await runCmdFn(`bd update ${id} --parent ${epicBead.id}`, tempDir),
             `\`bd update ${id} --parent ${epicBead.id}\``
         );
         taskIds.push(id);
@@ -213,6 +219,140 @@ async function setup(tempDirSuffix) {
 
     return { tempDir, epicBead, taskIds };
 }
+
+// apra-fleet-wclh.2: regression pin for apra-fleet-wclh.1's fix, unit-level
+// (no real-bd sprint run required -- see criterion 3). Drives setup() and
+// assertCmdOk() directly with an injected fake `runCmdFn` reproducing the
+// exact input shape that used to crash: a `bd list --json` that fails (or
+// returns a list with no epic bead), which pre-fix flowed straight into
+// `epicBead.id` and threw a bare `TypeError: Cannot read properties of
+// undefined (reading 'id')`. Every case below asserts on the SPECIFIC
+// diagnostic text the fix now produces, not merely that some error was
+// thrown -- a test that only checks "it threw" would still pass against a
+// reverted fix (the bare TypeError also throws), so that would not meet
+// criterion 2's "pin the specific handled shape" requirement.
+function fakeCmdResult(err, stdout = '', stderr = '') {
+    return { err, stdout, stderr };
+}
+
+function makeFailingErr(code, message) {
+    return Object.assign(new Error(message), { code });
+}
+
+// setup() unconditionally fs.mkdir(tempDir)s before issuing any bd call, so
+// even a case that throws mid-setup leaves an empty tempDir behind. Swept up
+// by suffix after each such test so this guard's own suite leaves nothing
+// outside its sandbox (acceptance criterion 5).
+async function cleanupGoldenTempDirs(suffix) {
+    const tmp = os.tmpdir();
+    const prefix = `apra-fleet-golden-3bead-${suffix}-`;
+    let entries;
+    try {
+        entries = await fs.readdir(tmp);
+    } catch {
+        return;
+    }
+    await Promise.all(
+        entries
+            .filter((name) => name.startsWith(prefix))
+            .map((name) => fs.rm(path.join(tmp, name), { recursive: true, force: true })),
+    );
+}
+
+test('assertCmdOk: a failed bd call throws naming the description, exit code, and stdout/stderr', () => {
+    assert.throws(
+        () => assertCmdOk(fakeCmdResult(makeFailingErr(1, 'Command failed: bd list --json'), '', 'unknown flag: --FORCE-REPRO-FAILURE'), '`bd list --json` (epic lookup)'),
+        (err) => {
+            assert.match(err.message, /`bd list --json` \(epic lookup\) failed unexpectedly/);
+            assert.match(err.message, /exit: 1/);
+            assert.match(err.message, /unknown flag: --FORCE-REPRO-FAILURE/);
+            return true;
+        },
+    );
+});
+
+test('assertCmdOk: a successful bd call returns the result unchanged', () => {
+    const ok = fakeCmdResult(null, 'apra-fleet-abcd\n', '');
+    assert.strictEqual(assertCmdOk(ok, 'label'), ok);
+});
+
+test('golden 3-bead setup(): a failing `bd list --json` (the exact wclh input shape) throws the assertCmdOk diagnostic, never the bare undefined-id TypeError', async () => {
+    const seenCmds = [];
+    const fakeRunCmd = async (cmd, cwd) => {
+        seenCmds.push(cmd);
+        if (cmd === 'bd init') return fakeCmdResult(null, '', '');
+        if (cmd.startsWith('bd create -t epic')) return fakeCmdResult(null, '', '');
+        if (cmd === 'bd list --json') {
+            // Byte-for-byte the forced repro apra-fleet-wclh.1's own close
+            // notes captured: a nonzero exit with an "unknown flag" stderr.
+            return fakeCmdResult(makeFailingErr(1, 'Command failed: bd list --json'), '', 'unknown flag: --FORCE-REPRO-FAILURE');
+        }
+        throw new Error(`unexpected command reached after the epic lookup failed: ${JSON.stringify(cmd)}`);
+    };
+    try {
+        await assert.rejects(
+            () => setup('wclh2g-listfail', fakeRunCmd),
+            (err) => {
+                assert.match(err.message, /`bd list --json` \(epic lookup\) failed unexpectedly/);
+                assert.doesNotMatch(err.message, /Cannot read properties of undefined/);
+                return true;
+            },
+        );
+        assert.deepStrictEqual(seenCmds, ['bd init', 'bd create -t epic "Epic: Fleet Member Management APIs (3-bead)" -d "Three independent, sibling tasks -- no dependency between them -- so all three are ready in the same Develop cycle and dispatch as concurrent doer streaks."', 'bd list --json'], 'setup() must stop at the failed epic lookup and never reach a task create/update');
+    } finally {
+        await cleanupGoldenTempDirs('wclh2g-listfail');
+    }
+});
+
+test('golden 3-bead setup(): `bd list --json` succeeding with no epic bead in it throws the epic-not-found diagnostic, never the bare undefined-id TypeError', async () => {
+    const fakeRunCmd = async (cmd) => {
+        if (cmd === 'bd init') return fakeCmdResult(null, '', '');
+        if (cmd.startsWith('bd create -t epic')) return fakeCmdResult(null, '', '');
+        // Succeeds, but the epic never made it into the list -- the second
+        // half of the pre-fix hazard (an empty/mismatched list is not itself
+        // a `runCmd` error, so assertCmdOk alone cannot catch it).
+        if (cmd === 'bd list --json') return fakeCmdResult(null, '[]', '');
+        throw new Error(`unexpected command: ${JSON.stringify(cmd)}`);
+    };
+    try {
+        await assert.rejects(
+            () => setup('wclh2g-noepic', fakeRunCmd),
+            (err) => {
+                assert.match(err.message, /did not return the just-created epic bead/);
+                assert.doesNotMatch(err.message, /Cannot read properties of undefined/);
+                return true;
+            },
+        );
+    } finally {
+        await cleanupGoldenTempDirs('wclh2g-noepic');
+    }
+});
+
+test('golden 3-bead setup(): the full happy path (init + epic + 3 tasks + parent links) still succeeds end to end', async () => {
+    const epicId = 'apra-fleet-epic1';
+    const taskIds = ['apra-fleet-t1', 'apra-fleet-t2', 'apra-fleet-t3'];
+    let taskIndex = 0;
+    const fakeRunCmd = async (cmd) => {
+        if (cmd === 'bd init') return fakeCmdResult(null, '', '');
+        if (cmd.startsWith('bd create -t epic')) return fakeCmdResult(null, '', '');
+        if (cmd === 'bd list --json') return fakeCmdResult(null, JSON.stringify([{ id: epicId, title: 'Epic: Fleet Member Management APIs (3-bead)' }]), '');
+        if (cmd.startsWith('bd create "Task:')) {
+            const id = taskIds[taskIndex];
+            taskIndex += 1;
+            return fakeCmdResult(null, `${id}\n`, '');
+        }
+        if (cmd.startsWith(`bd update `)) return fakeCmdResult(null, '', '');
+        throw new Error(`unexpected command: ${JSON.stringify(cmd)}`);
+    };
+    let result;
+    try {
+        result = await setup('wclh2g-happy', fakeRunCmd);
+        assert.strictEqual(result.epicBead.id, epicId);
+        assert.deepStrictEqual(result.taskIds, taskIds);
+    } finally {
+        if (result) await fs.rm(result.tempDir, { recursive: true, force: true });
+    }
+});
 
 async function teardown(tempDir) {
     if (!tempDir) return;
