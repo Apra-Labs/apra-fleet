@@ -20,6 +20,7 @@ import {
     discoverIntersection,
     probeFile,
     classifyFailure,
+    corroborateAnchorDesync,
     runTestFile,
 } from '../scripts/phase4-moveonly-probe.mjs';
 
@@ -47,21 +48,36 @@ import {
 //   INTACT         the old revision still passes. This is positive proof that
 //                  Phase 4 did not force the edit -- whatever else the commit
 //                  range did to this file was independent of the facade.
-//   ANCHOR_DESYNC  the old revision fails, the failure names runner.js or a
-//                  Phase-4 destination module, and no module resolution or
-//                  export lookup failed. That is a test anchored on runner.js
-//                  raw source text, line position or symbol census, which a
-//                  move legitimately shifts.
 //   FACADE_BREAK   the old revision fails with a module-resolution or
 //                  missing-export error. The facade is incomplete. GATE FAILS.
-//   UNEXPLAINED    the old revision fails for neither reason. Not admissible;
-//                  GATE FAILS, so an unrelated regression cannot hide behind
-//                  the anchor class.
+//   ANCHOR_DESYNC  the old revision fails without a module-resolution error,
+//                  and the file's CURRENT committed revision (as it stands on
+//                  disk right now) PASSES against HEAD. Whatever tripped the
+//                  old assertion -- raw source text, line position, phase
+//                  sequence, a role's watchdog census, or similar -- was
+//                  superseded by a later, real edit to this same file, and
+//                  that supersession is proved by re-running the file, not by
+//                  reading its failure message.
+//   UNEXPLAINED    the old revision fails without a module-resolution error,
+//                  and the CURRENT committed revision ALSO fails against
+//                  HEAD. The failure survives past whatever legitimately
+//                  changed -- a live regression. Not admissible; GATE FAILS,
+//                  so an unrelated regression cannot hide behind the anchor
+//                  class.
 //
 // This subsumes the whole four-class scheme and needs no commit archaeology:
 // INTACT is strictly stronger evidence than a provenance argument, because it
 // is a command anyone can re-run, and ANCHOR_DESYNC must be positively
-// corroborated rather than falling out as a default.
+// corroborated by a SECOND experiment (does the file's current revision
+// pass?), never by matching words in the old revision's failure text. An
+// earlier version of this gate decided ANCHOR_DESYNC vs UNEXPLAINED by
+// checking whether the failure text happened to mention "runner.js" --
+// apra-fleet-3swo.55 found that this let three files through as ANCHOR_DESYNC
+// purely because their assertions quoted runner.js, while a fourth file
+// failing for the exact same reason (a later, legitimate behaviour change)
+// was rejected as UNEXPLAINED only because its assertion named
+// role-policies.mjs instead. Whether a real, later behaviour change is
+// tolerated must not depend on incidental assertion wording.
 //
 // WHAT THIS GATE DELIBERATELY DOES NOT RE-RUN. phase1-leaf-facade-completeness
 // .test.mjs already spawns the full mock-sprint suite and both golden
@@ -227,12 +243,58 @@ describe('(3) falsification -- the gate is not vacuous', () => {
         );
     });
 
-    test('classifyFailure refuses to admit an uncorroborated failure as an anchor desync', () => {
+    test('classifyFailure no longer decides ANCHOR_DESYNC by matching words in the failure text', () => {
+        // Before apra-fleet-3swo.55, this classifier admitted ANY failure that
+        // merely mentioned "runner.js" as ANCHOR_DESYNC -- which is exactly the
+        // bug: whether a later, legitimate behaviour change is tolerated must
+        // not depend on incidental assertion wording. classifyFailure now only
+        // ever returns FACADE_BREAK or UNEXPLAINED; the ANCHOR_DESYNC decision
+        // is made by corroborateAnchorDesync() (below), which re-runs the
+        // file's CURRENT revision instead of reading its failure text.
         assert.equal(classifyFailure('AssertionError: expected 2 to equal 3').klass, 'UNEXPLAINED');
         assert.equal(
             classifyFailure("AssertionError: expected to find the marker in runner.js").klass,
-            'ANCHOR_DESYNC',
+            'UNEXPLAINED',
         );
+    });
+
+    test('corroborateAnchorDesync decides ANCHOR_DESYNC vs UNEXPLAINED by re-running the CURRENT revision, not by reading the OLD failure text', { timeout: PROBE_BUDGET_MS }, () => {
+        const passingAbs = path.join(SE_DIR, 'test', '.phase4-corroborate-passing.test.mjs');
+        const failingAbs = path.join(SE_DIR, 'test', '.phase4-corroborate-failing.test.mjs');
+        const passingRel = path.relative(REPO_ROOT, passingAbs);
+        const failingRel = path.relative(REPO_ROOT, failingAbs);
+        fs.writeFileSync(passingAbs, "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('passes', () => assert.equal(1, 1));\n");
+        fs.writeFileSync(failingAbs, "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fails, and mentions nothing about runner.js or a Phase-4 module', () => assert.equal(1, 2));\n");
+        try {
+            assert.equal(
+                corroborateAnchorDesync(passingRel, PROBE_BUDGET_MS).klass,
+                'ANCHOR_DESYNC',
+                'a CURRENT revision that passes against HEAD must be admitted as an anchor desync regardless of wording',
+            );
+            assert.equal(
+                corroborateAnchorDesync(failingRel, PROBE_BUDGET_MS).klass,
+                'UNEXPLAINED',
+                'a CURRENT revision that ALSO fails must stay UNEXPLAINED -- a live regression cannot hide behind the anchor class',
+            );
+        } finally {
+            fs.rmSync(passingAbs, { force: true });
+            fs.rmSync(failingAbs, { force: true });
+        }
+    });
+
+    test('regression pin: planning-role-dispatch-pins.test.mjs (the exact file apra-fleet-3swo.55 was filed about) classifies ANCHOR_DESYNC, not UNEXPLAINED', { timeout: PROBE_BUDGET_MS }, () => {
+        // apra-fleet-3swo.55: at HEAD 99088ec7, the watchdog-arming commit
+        // 99e0ece0 made this file's pre-Phase-4 revision fail for the same
+        // reason as three OTHER files that were admitted as ANCHOR_DESYNC
+        // (role-policies-table.test.mjs, execution-role-dispatch-pins.test.mjs,
+        // vcs-auth-preflight.test.mjs) -- but this one was rejected as
+        // UNEXPLAINED, purely because its assertion named role-policies.mjs
+        // instead of runner.js. This pin proves the fix: the same file, probed
+        // the same way, is now admitted because its CURRENT revision passes.
+        const base = discoverBase();
+        const repoRelPath = path.relative(REPO_ROOT, path.join(SE_DIR, 'test/planning-role-dispatch-pins.test.mjs'));
+        const result = probeFile(base, repoRelPath, PROBE_BUDGET_MS);
+        assert.equal(result.klass, 'ANCHOR_DESYNC', `expected ANCHOR_DESYNC, got ${result.klass}: ${result.detail}`);
     });
 
     test('the probe strips NODE_TEST_CONTEXT, or every classification would be a vacuous INTACT', () => {

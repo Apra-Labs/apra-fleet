@@ -11,14 +11,28 @@
 //                                 assertions still hold against the new facade)
 //   - old revision FAILS with a module-resolution / missing-export error
 //                              -> FACADE_BREAK (the gate's failure condition)
-//   - old revision FAILS otherwise
-//                              -> ANCHOR_DESYNC (test anchored on runner.js raw
-//                                 source text, line position, phase sequence or
-//                                 symbol census; allowed, and the current revision
-//                                 of the file must pass)
+//   - old revision FAILS otherwise, and the file's CURRENT committed revision
+//     (the one actually on disk at HEAD) PASSES against HEAD
+//                              -> ANCHOR_DESYNC (the old assertion -- anchored
+//                                 on runner.js raw source text, line position,
+//                                 phase sequence, watchdog census or similar --
+//                                 was superseded by a later, real edit to this
+//                                 same file; allowed)
+//   - old revision FAILS otherwise, and the CURRENT committed revision ALSO
+//     FAILS against HEAD
+//                              -> UNEXPLAINED (the failure survives past
+//                                 whatever legitimately changed; a live
+//                                 regression, not an anchor desync)
 //
-// The only judgement left is FACADE_BREAK vs ANCHOR_DESYNC, and that is decided
-// by the error the probe emits, not by a human reading a diff hunk.
+// The ANCHOR_DESYNC/UNEXPLAINED split is decided by re-running the file's own
+// CURRENT revision as an experiment, never by matching words in the OLD
+// revision's failure text (apra-fleet-3swo.55: a wording-based corroboration
+// check let three files through as ANCHOR_DESYNC purely because their
+// assertion messages happened to mention "runner.js", while a fourth file
+// failing for the exact same reason -- a later, legitimate behaviour change
+// -- was rejected as UNEXPLAINED only because its message named
+// role-policies.mjs instead. Whether a real, later behaviour change is
+// tolerated must not depend on incidental assertion wording).
 //
 // Usage: node scripts/phase4-moveonly-probe.mjs [--base <sha>] [--json]
 // Run from packages/apra-fleet-se. Exits non-zero if any file is FACADE_BREAK.
@@ -128,22 +142,39 @@ const FACADE_BREAK_PATTERNS = [
 ];
 
 /**
- * ANCHOR_DESYNC is not a catch-all default. To be admitted, the failure must
- * positively name runner.js (or a Phase-4 destination module) -- i.e. the test
- * failed BECAUSE it reads runner.js as raw source text, line position, phase
- * sequence or symbol census, which is exactly what a move legitimately shifts.
- * A failure that mentions neither is UNEXPLAINED and fails the gate, so an
- * unrelated real regression cannot hide behind the anchor class.
+ * Text-only triage: does this failure look like the facade could not be
+ * linked at all? That is the one class classifyFailure can safely decide from
+ * wording alone, because a module-resolution or missing-export error is a
+ * link-time fact, not a matter of interpretation. Everything else is left as
+ * UNEXPLAINED here -- probeFile decides ANCHOR_DESYNC vs UNEXPLAINED by
+ * experiment (re-running the file's CURRENT revision), not by matching more
+ * words in the OLD revision's failure text. See this file's header for why:
+ * a wording-based corroboration check here previously let an ANCHOR_DESYNC
+ * classification depend on whether the assertion happened to say "runner.js"
+ * (apra-fleet-3swo.55).
  */
-const ANCHOR_CORROBORATION = /runner\.js|fleet-sprint\/phases\/|sprint-state\.mjs/;
-
 export function classifyFailure(output) {
   const hit = FACADE_BREAK_PATTERNS.find((re) => re.test(output));
   if (hit) return { klass: 'FACADE_BREAK', reason: String(hit) };
-  if (ANCHOR_CORROBORATION.test(output)) {
-    return { klass: 'ANCHOR_DESYNC', reason: 'assertion names runner.js / a Phase-4 destination module as its anchor; no module-resolution or missing-export error' };
-  }
-  return { klass: 'UNEXPLAINED', reason: 'failed without a module-resolution error AND without naming runner.js or a Phase-4 destination -- not admissible as an anchor desync' };
+  return { klass: 'UNEXPLAINED', reason: 'failed without a module-resolution or missing-export error; not yet corroborated as an anchor desync' };
+}
+
+/**
+ * The behavioural corroboration step for a non-facade-break failure: run the
+ * file's CURRENT committed revision (the one actually on disk right now,
+ * already reviewed and merged) against HEAD. If it passes, whatever tripped
+ * the OLD revision was superseded by a later, real edit to this same file --
+ * an anchor desync, regardless of what the OLD failure's assertion text says.
+ * If the CURRENT revision ALSO fails, the failure survives past whatever
+ * legitimately changed and is a live regression that must not hide behind
+ * the anchor-desync class.
+ */
+export function corroborateAnchorDesync(repoRelPath, timeoutMs = 300000) {
+  const absPath = path.join(REPO, repoRelPath);
+  const { ok } = runTestFile(absPath, timeoutMs);
+  return ok
+    ? { klass: 'ANCHOR_DESYNC', reason: 'the CURRENT committed revision of this file passes against HEAD; the OLD revision\'s failure was superseded by a later, legitimate edit to this same file' }
+    : { klass: 'UNEXPLAINED', reason: 'the CURRENT committed revision of this file ALSO fails against HEAD; this is a live regression, not an anchor desync' };
 }
 
 export function runTestFile(absPath, timeoutMs = 300000) {
@@ -167,7 +198,7 @@ export function runTestFile(absPath, timeoutMs = 300000) {
   return { ok, output };
 }
 
-export function probeFile(base, repoRelPath) {
+export function probeFile(base, repoRelPath, timeoutMs = 300000) {
   if (!existsAtBase(base, repoRelPath)) {
     return { file: repoRelPath, klass: 'NEW', detail: 'absent at BASE; added during Phase 4' };
   }
@@ -178,9 +209,15 @@ export function probeFile(base, repoRelPath) {
   const probe = path.join(dir, `.phase4probe-${path.basename(repoRelPath)}`);
   try {
     writeFileSync(probe, old);
-    const { ok, output } = runTestFile(probe);
+    const { ok, output } = runTestFile(probe, timeoutMs);
     if (ok) return { file: repoRelPath, klass: 'INTACT', detail: 'pre-Phase-4 revision passes against the HEAD tree' };
-    const { klass, reason } = classifyFailure(output);
+    const facade = classifyFailure(output);
+    if (facade.klass === 'FACADE_BREAK') {
+      return { file: repoRelPath, klass: facade.klass, detail: facade.reason, output: output.slice(-4000) };
+    }
+    // Not a facade break: decide ANCHOR_DESYNC vs UNEXPLAINED by experiment,
+    // not by matching more words in `output`.
+    const { klass, reason } = corroborateAnchorDesync(repoRelPath, timeoutMs);
     return { file: repoRelPath, klass, detail: reason, output: output.slice(-4000) };
   } finally {
     rmSync(probe, { force: true });
