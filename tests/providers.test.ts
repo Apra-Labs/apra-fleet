@@ -5,7 +5,7 @@ import { CopilotProvider } from '../src/providers/copilot.js';
 import { AgyProvider } from '../src/providers/agy.js';
 import { getProvider } from '../src/providers/index.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, isMaxTurnsResponse } from '../src/providers/provider.js';
-import { isMaxTurnsSignal } from '../src/providers/claude.js';
+import { isMaxTurnsSignal, parseClaudeResetTime } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
 
 // --- Helpers -----------------------------------------------------------------
@@ -393,6 +393,126 @@ describe('ClaudeProvider', () => {
     const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
     const mcpServers = settings.mcpServers as Record<string, unknown>;
     expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+  });
+});
+
+// --- apra-fleet-hzeb.7: parseClaudeResetTime pinning suite --------------------
+//
+// hzeb.1.4.1 re-implemented parseClaudeResetTime and wired resumeAtSource
+// parsed/guessed into ClaudeProvider.detectUsageLimit, but this surface had
+// zero test coverage -- the discarded commits from an earlier attempt were
+// lost when the branch was force-rolled-back. `now` is always injected so the
+// suite is deterministic across the DST calendar.
+describe('parseClaudeResetTime', () => {
+  it('resolves the next occurrence of a wall-clock reset time (08:20 America/New_York) when now is earlier the same day', () => {
+    const now = new Date('2024-01-15T07:00:00Z'); // 02:00 EST -- before 08:20
+    const result = parseClaudeResetTime('resets 8:20am (America/New_York)', now);
+    expect(result?.toISOString()).toBe('2024-01-15T13:20:00.000Z');
+  });
+
+  it('advances to the next calendar day when the wall-clock time has already passed today', () => {
+    const now = new Date('2024-06-01T10:00:00Z'); // 06:00 EDT -- before 20:00
+    const result = parseClaudeResetTime('resets at 8pm (America/New_York)', now);
+    expect(result?.toISOString()).toBe('2024-06-02T00:00:00.000Z');
+  });
+
+  // DST spring-forward boundary: 2024-03-10 02:00 EST -> 03:00 EDT. `now` sits
+  // before the transition; the requested 3:00am wall clock lands AFTER it, so
+  // the correct offset is EDT (-4), not the EST (-5) offset in effect at `now`
+  // -- this is exactly the case claudeZonedWallClockToUtc's double-offset
+  // re-check exists to catch.
+  it('resolves a reset time across the DST spring-forward boundary using the post-transition offset', () => {
+    const now = new Date('2024-03-10T05:00:00Z'); // 00:00 EST, before the 2am->3am jump
+    const result = parseClaudeResetTime('resets 3:00am (America/New_York)', now);
+    expect(result?.toISOString()).toBe('2024-03-10T07:00:00.000Z'); // 3:00am EDT
+  });
+
+  // DST fall-back boundary: 2024-11-03 02:00 EDT -> 01:00 EST. `now` sits
+  // before the transition (still EDT); the requested 3:00am wall clock lands
+  // AFTER it, so the correct offset is EST (-5), not the EDT (-4) offset in
+  // effect at `now`.
+  it('resolves a reset time across the DST fall-back boundary using the post-transition offset', () => {
+    const now = new Date('2024-11-03T05:00:00Z'); // 01:00 EDT, before the 2am->1am fallback
+    const result = parseClaudeResetTime('resets 3:00am (America/New_York)', now);
+    expect(result?.toISOString()).toBe('2024-11-03T08:00:00.000Z'); // 3:00am EST
+  });
+
+  it('parses a relative "resets in N minutes" message', () => {
+    const now = new Date('2024-01-15T07:00:00Z');
+    const result = parseClaudeResetTime('resets in 45 minutes', now);
+    expect(result?.toISOString()).toBe('2024-01-15T07:45:00.000Z');
+  });
+
+  it('parses a relative "resets in N hours" message', () => {
+    const now = new Date('2024-01-15T07:00:00Z');
+    const result = parseClaudeResetTime('resets in 2 hours', now);
+    expect(result?.toISOString()).toBe('2024-01-15T09:00:00.000Z');
+  });
+
+  it('returns null for an unparseable message with no recognizable reset shape', () => {
+    const result = parseClaudeResetTime('Something went wrong, please try again later.', new Date());
+    expect(result).toBeNull();
+  });
+
+  it('returns null for an unrecognized IANA time zone rather than throwing', () => {
+    const result = parseClaudeResetTime('resets 8:20am (Not/AZone)', new Date());
+    expect(result).toBeNull();
+  });
+
+  it('returns null for empty text', () => {
+    expect(parseClaudeResetTime('', new Date())).toBeNull();
+  });
+});
+
+// --- apra-fleet-hzeb.7: ClaudeProvider.detectUsageLimit pinning suite ---------
+describe('ClaudeProvider.detectUsageLimit', () => {
+  const p = new ClaudeProvider();
+
+  it('returns a "parsed" usage-limit signal for a 429 session-limit fixture with a readable reset time', () => {
+    const payload = JSON.stringify({
+      type: 'result',
+      is_error: true,
+      api_error_status: 429,
+      result: "You've hit your session limit — resets 8:20am (America/New_York)",
+      session_id: 'sid-429-parsed',
+    });
+    const parsed = p.parseResponse(makeResult(payload, 1));
+    const signal = p.detectUsageLimit(makeResult(payload, 1), parsed);
+    expect(signal).not.toBeNull();
+    expect(signal?.type).toBe('usage_limit');
+    expect(signal?.resumeAtSource).toBe('parsed');
+    expect(signal?.message).toContain('hit your session limit');
+  });
+
+  it('returns a "guessed" usage-limit signal for a bare 429 with no limit message or reset time', () => {
+    const payload = JSON.stringify({
+      type: 'result',
+      is_error: true,
+      api_error_status: 429,
+      result: 'Rate limited',
+      session_id: 'sid-429-guessed',
+    });
+    const parsed = p.parseResponse(makeResult(payload, 1));
+    const signal = p.detectUsageLimit(makeResult(payload, 1), parsed);
+    expect(signal).not.toBeNull();
+    expect(signal?.resumeAtSource).toBe('guessed');
+  });
+
+  // apra-fleet-hzeb.1.2 classifier-ordering pin: 529 (transient overload) must
+  // NEVER be classified as a usage limit, even though it is also a >=500-ish
+  // upstream error code -- it is retryable after a short backoff, not a
+  // quota/usage limit requiring a wall-clock wait.
+  it('returns null for a 529 overloaded response (529-exclusion regression pin)', () => {
+    const payload = JSON.stringify({
+      type: 'result',
+      is_error: true,
+      api_error_status: 529,
+      result: 'Overloaded',
+      session_id: 'sid-529',
+    });
+    const parsed = p.parseResponse(makeResult(payload, 1));
+    const signal = p.detectUsageLimit(makeResult(payload, 1), parsed);
+    expect(signal).toBeNull();
   });
 });
 
