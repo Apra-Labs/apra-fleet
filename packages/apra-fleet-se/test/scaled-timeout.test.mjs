@@ -128,3 +128,19 @@ test('unit: forcing a simulated retry (plannerCalls>1) still fails the strict si
         }
     }
 });
+
+// apra-fleet-d6fq.3, criterion 3: pin the derived-vs-flat direction for the
+// EXACT base (180000ms) the three real-bd carry-over files
+// (mock-sprint-publish-push-failure, mock-sprint-kb-remote-scope,
+// mock-sprint-member-vcs-provider-threading) now derive their timeout from
+// via scaledTimeout(180000) (apra-fleet-d6fq.2). If d6fq.2 were reverted --
+// i.e. those files went back to a bare, flat `timeout: 180000` -- the
+// effective budget would shrink from 540000ms back down to 180000ms. This
+// test pins that direction with the concrete production value so a revert
+// is caught as an observable budget regression here, not only inferred by
+// inspection.
+test('unit: scaledTimeout(180000) under the suite concurrency (8) is strictly larger than the flat 180000 apra-fleet-d6fq.2 replaced', () => {
+    const derived = scaledTimeout(180000, { concurrency: 8 });
+    assert.ok(derived > 180000, `expected the concurrency-derived budget to exceed the flat 180000 base apra-fleet-d6fq.2 replaced, got ${derived}`);
+    assert.equal(derived, 540000, 'expected exactly 180000 * DEFAULT_MULTIPLIER(3) under concurrency=8');
+});
