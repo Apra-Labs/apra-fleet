@@ -614,3 +614,48 @@ describe('check 5: vcs_credential_exec never returns the plaintext credential', 
     expect(structuredContent.ok).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Check 6 -- the vcs_credential_exec tool-level description (what an agent
+//            reads when choosing a tool and how to call it) names BOTH
+//            placeholders, not just {{vcs_token}} (apra-fleet-3swo.64). The
+//            zod `command` field description in vcs-credential-exec.ts
+//            already covers both -- this pins the SEPARATE tool-level string
+//            registered via server.tool(...) in tool-registry.ts, which is
+//            what silently fell behind when {{vcs_token_inline}} was added.
+// ---------------------------------------------------------------------------
+describe('check 6: vcs_credential_exec tool description names both token placeholders', () => {
+  const registrySrc = readFileSync(path.join(repoRoot, 'src/services/tool-registry.ts'), 'utf8');
+
+  /** The single-line server.tool('vcs_credential_exec', '<description>', ...) call text. */
+  function vcsCredentialExecRegistration(): string {
+    const marker = "server.tool('vcs_credential_exec',";
+    const startIdx = registrySrc.indexOf(marker);
+    expect(startIdx, 'vcs_credential_exec registration not found in tool-registry.ts').not.toBe(-1);
+    const endIdx = registrySrc.indexOf('\n', startIdx);
+    return registrySrc.slice(startIdx, endIdx === -1 ? undefined : endIdx);
+  }
+
+  it('mentions the bare placeholder {{vcs_token}}', () => {
+    expect(vcsCredentialExecRegistration()).toContain('{{vcs_token}}');
+  });
+
+  it('mentions the inline placeholder {{vcs_token_inline}}, so the two descriptions cannot drift apart again', () => {
+    expect(vcsCredentialExecRegistration()).toContain('{{vcs_token_inline}}');
+  });
+
+  it('the apra-fleet-client wrapper doc comment for vcsCredentialExec also names both placeholders', () => {
+    const apiMjsSrc = readFileSync(
+      path.join(repoRoot, 'packages/apra-fleet-client/src/client/api.mjs'), 'utf8',
+    );
+    const marker = 'async vcsCredentialExec(options)';
+    const methodIdx = apiMjsSrc.indexOf(marker);
+    expect(methodIdx, 'vcsCredentialExec method not found in apra-fleet-client api.mjs').not.toBe(-1);
+    // The doc comment sits directly above the method; back up to the nearest
+    // preceding JSDoc opener.
+    const commentStart = apiMjsSrc.lastIndexOf('/**', methodIdx);
+    const docComment = apiMjsSrc.slice(commentStart, methodIdx);
+    expect(docComment).toContain('{{vcs_token}}');
+    expect(docComment).toContain('{{vcs_token_inline}}');
+  });
+});
