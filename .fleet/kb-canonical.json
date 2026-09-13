@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "28632b5e0f1f099fd03af1302a6966d4d8353587",
+    "commit": "54a666da5ac12798f0fc9ca0f61b27d962c3b42d",
     "branch": "feat/runner-refactor-standalone",
-    "entry_count": 179
+    "entry_count": 183
   },
   "entries": [
     {
@@ -814,6 +814,29 @@
       "updated_at": "2026-09-08T09:28:31.785Z"
     },
     {
+      "id": "38065918-834d-4116-9dd1-153006cb7f05",
+      "type": "knowledge",
+      "title": "All fleet-sprint ladders are migrated, so both dispatch-pin tables' inline halves are empty and no anchor search runs",
+      "summary": "PLANNING_LADDERS/EXECUTION_LADDERS contain zero mode:'inline' entries, so planning-role-dispatch-pins.test.mjs pins nothing textually and renaming a ladderAnchor at a real dispatch site does not fail it. The role-policies.mjs ladderAnchor-shadowing hazard is latent, not live.",
+      "symbols": [
+        "PLANNING_LADDERS",
+        "EXECUTION_LADDERS",
+        "DISPATCH_LADDER_MODULES",
+        "findInlineLadderViolations",
+        "ladderAnchor"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/planning-ladders.mjs",
+        "packages/apra-fleet-se/test/helpers/execution-ladders.mjs",
+        "packages/apra-fleet-se/test/helpers/dispatch-pin-scanner.mjs",
+        "packages/apra-fleet-se/test/planning-role-dispatch-pins.test.mjs",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T09:36:49.944Z"
+    },
+    {
       "id": "381be098-5009-48fa-8ed3-10f9e289714a",
       "type": "knowledge",
       "title": "The dispatchRole engine must spell agent( and ctx.withGitSync( literally or the guards lose it",
@@ -1017,6 +1040,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.055Z"
+    },
+    {
+      "id": "4be75813-8429-47c9-a531-327763ef530f",
+      "type": "learning",
+      "title": "Measured runtime of the apra-fleet root npm test, both suites, September 2026",
+      "summary": "npm test runs vitest then the apra-fleet-se suite unconditionally; measured 300.6s and 135.9s respectively, correcting an older KB estimate of 8-12 minutes for vitest alone.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "package.json",
+        "packages/apra-fleet-se/package.json",
+        "tests/undici-pack-install.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T08:53:10.719Z"
     },
     {
       "id": "4e315af5-d8ab-460e-850a-36d1d38ce19a",
@@ -1317,6 +1355,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.210Z"
+    },
+    {
+      "id": "64bedb7a-8a2d-46ba-9586-6254a88f6dcd",
+      "type": "knowledge",
+      "title": "dispatchReview has exactly two consumers, Review and Re-Review, not three",
+      "summary": "Final Review does not receive dispatchReview -- it only cites it in a boilerplate comment that six other phase modules also carry, so a grep for the identifier across phases/ badly overcounts its real consumers.",
+      "symbols": [
+        "dispatchReview",
+        "runReviewPhase",
+        "runReReviewPhase",
+        "runFinalReviewPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/re-review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T09:36:49.949Z"
     },
     {
       "id": "6737011f-a42a-4342-b7ac-9a0c987d7b8d",
@@ -1914,6 +1972,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.376Z"
+    },
+    {
+      "id": "938673e1-6edb-4265-9876-6170efb33898",
+      "type": "runbook",
+      "title": "Falsify a fleet-sprint or root-repo test without ever mutating the tracked tree",
+      "summary": "Copy the module directory to /tmp and revert the single file there, or reconstruct a pure function in a standalone script -- mutating tracked source in place risks a torn read under the concurrent suites and can leave the file corrupted.",
+      "symbols": [
+        "allocatePorts",
+        "resultText",
+        "noWatchdog",
+        "requireReason",
+        "resolveWatchdogTimeout"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/mcp-result.mjs",
+        "scripts/sandbox-deploy.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T09:18:41.424Z"
     },
     {
       "id": "949f2ef9-dd96-467b-8e46-c2d71180ceed",
