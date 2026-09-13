@@ -122,7 +122,35 @@ export function findInlineLadderViolations(src, fileLabel, migratedRoles, rolePo
         for (const dispatch of [entry, entry.secondary]) {
             if (!dispatch) continue;
             const expr = memberExprFor(dispatch.member);
-            if (!expr) continue;
+            if (!expr) {
+                // apra-fleet-3swo.66: a dispatch that HAS a member but whose
+                // kind memberExprFor() does not recognise (or whose
+                // pool-head/runtime binding is missing) must fail loudly, the
+                // same way an empty ladderAnchor does just below -- silently
+                // `continue`-ing here means this role is scanned for zero
+                // call sites and checkModules() reports zero violations for
+                // it, indistinguishable from a genuinely clean tree. That is
+                // the exact false-negative this guard exists to prevent. A
+                // dispatch with NO member at all is not this hazard (there is
+                // nothing routing-related to fail to resolve), so it still
+                // falls through to a plain `continue`.
+                if (dispatch.member) {
+                    const kind = dispatch.member.kind;
+                    const recognisedKind = kind === 'role' || kind === 'pool-head' || kind === 'runtime';
+                    throw new Error(
+                        recognisedKind
+                            ? `inline-ladder-guard: role '${role}' has a '${kind}' member with no binding recorded -- ` +
+                              'memberExprFor() cannot build a search expression for it, so this guard cannot verify ' +
+                              `the old inline ladder for '${role}' was removed and would silently report zero ` +
+                              'violations for it.'
+                            : `inline-ladder-guard: role '${role}' has a member with an unrecognised kind ` +
+                              `(${JSON.stringify(kind)}) -- memberExprFor() has no case for it, so this guard cannot ` +
+                              `verify the old inline ladder for '${role}' was removed and would silently report zero ` +
+                              `violations for it. Add a memberExprFor() case for kind ${JSON.stringify(kind)}.`
+                    );
+                }
+                continue;
+            }
             if (typeof dispatch.ladderAnchor !== 'string' || dispatch.ladderAnchor.length === 0) {
                 throw new Error(
                     `inline-ladder-guard: role '${role}' has no non-empty ladderAnchor -- every dispatch role-policies.mjs ` +

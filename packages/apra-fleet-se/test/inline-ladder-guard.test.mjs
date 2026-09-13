@@ -483,6 +483,81 @@ describe('inline-ladder guard: findInlineLadderViolations() unit behaviour', () 
         );
     });
 
+    // apra-fleet-3swo.66: memberExprFor() returns null for any member.kind
+    // other than 'role'/'pool-head'/'runtime' (or a 'pool-head'/'runtime'
+    // member with no binding recorded), and findInlineLadderViolations() used
+    // to just `continue` past that -- scanning the role for zero call sites
+    // and reporting zero violations, indistinguishable from a genuinely clean
+    // tree. A synthetic policy table (never the real, frozen ROLE_POLICIES)
+    // is the only way to exercise a "fourth member kind" today, since no real
+    // policy row has one (see the 'baseline against the real tree' describe
+    // block above).
+    test('(g) [apra-fleet-3swo.66] a member with an unrecognised kind throws instead of silently reporting zero violations', () => {
+        const fixtureRolePolicies = {
+            'weird-role': {
+                member: { kind: 'some-future-kind', role: 'weird-role' },
+                ladderAnchor: 'WEIRD_ROLE_ANCHOR',
+            },
+        };
+        // Even a source file that plainly still contains an inline agent()
+        // ladder for this role must not be silently cleared -- the guard
+        // cannot tell either way once memberExprFor() cannot resolve the
+        // member, so it must fail loudly rather than default to "no
+        // violations".
+        const src = [
+            'export async function dispatchWeird(agent) {',
+            "    await agent('prompt text', {",
+            '        member_name: someUnresolvedExpression,',
+            '        // WEIRD_ROLE_ANCHOR',
+            '    });',
+            '}',
+            '',
+        ].join('\n');
+        assert.throws(
+            () => findInlineLadderViolations(src, 'weird.mjs', ['weird-role'], fixtureRolePolicies),
+            /unrecognised kind.*"some-future-kind"/,
+            'expected a loud failure naming the role and the unrecognised kind, not a silent empty result'
+        );
+    });
+
+    test('(g) [apra-fleet-3swo.66] a pool-head/runtime member with no binding recorded also throws, not silently reports zero', () => {
+        const fixtureRolePolicies = {
+            'unbound-role': {
+                member: { kind: 'runtime' }, // no `binding` recorded
+                ladderAnchor: 'UNBOUND_ROLE_ANCHOR',
+            },
+        };
+        const src = [
+            'export async function dispatchUnbound(agent) {',
+            "    await agent('prompt text', {",
+            '        member_name: someUnresolvedExpression,',
+            '        // UNBOUND_ROLE_ANCHOR',
+            '    });',
+            '}',
+            '',
+        ].join('\n');
+        assert.throws(
+            () => findInlineLadderViolations(src, 'unbound.mjs', ['unbound-role'], fixtureRolePolicies),
+            /'runtime' member with no binding recorded/,
+            'expected a loud failure naming the role and its unresolved binding, not a silent empty result'
+        );
+    });
+
+    test('(g) [apra-fleet-3swo.66] a dispatch with NO member at all is left alone (nothing routing-related to resolve)', () => {
+        // Distinguishes "member present but unresolvable" (throws, above)
+        // from "no member recorded" (not this guard's hazard -- there is no
+        // routing expression to have silently failed to search for).
+        const fixtureRolePolicies = {
+            'no-member-role': {
+                ladderAnchor: 'NO_MEMBER_ROLE_ANCHOR',
+            },
+        };
+        assert.deepStrictEqual(
+            findInlineLadderViolations('export const nothing = 1;\n', 'no-member.mjs', ['no-member-role'], fixtureRolePolicies),
+            []
+        );
+    });
+
     test('(f) baseline: the real ROLE_POLICIES table on the real guarded-module list still yields zero violations', () => {
         // Same baseline as 'inline-ladder guard: baseline against the real
         // tree' above, restated here under its (f) label for this bead's
