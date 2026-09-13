@@ -344,11 +344,120 @@ export const runCmd = (cmd, cwd) => bdRunCmd(cmd, cwd);
 
 export const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 
+// ---------------------------------------------------------------------------
+// shared scenario-clone bootstrap (apra-fleet-38o8)
+// ---------------------------------------------------------------------------
+// Diagnosis behind these three helpers: the recurring real-bd-lane failure
+// "[advanced-mock-runner-test] setupMinimal(<scenario>): bd create --silent
+// did not return an epic id" was never a `bd create` defect, and it is not a
+// transient. It is the DOWNSTREAM symptom of the preceding `bd init` having
+// FAILED -- a non-zero exit that both setup() and setupMinimal() issued and
+// then discarded, carrying on to create beads in a directory that has no
+// beads database at all.
+//
+// Captured against the real bd CLI (bd version 1.1.0, 8e4e59d39), the two
+// halves of that chain:
+//
+//   $ bd init                      # into a dir an earlier init already claimed
+//     exit=1  stdout=""  stderr="Error:\n  Found existing Dolt database:
+//              <dir>/.beads/embeddeddolt/<db>\n\nThis workspace is already
+//              initialized. ... Aborting."
+//   $ bd create -t epic "Epic: x" -d "probe" --silent   # in that same dir
+//     exit=1  stdout="" (0 bytes)  stderr="Error: no beads database found
+//              Hint: run 'bd where' ... or 'bd init' to create a new database"
+//
+// which rules out every competing explanation for the empty id:
+//   - the id is NOT misrouted to stderr or prefixed: stderr carries no id at
+//     all, and stdout is 0 bytes, not "prefix + id";
+//   - it is NOT a transient Dolt lock/timeout: exit=1 is immediate and
+//     deterministic, and the failing file's reported wall clock was ~1s;
+//   - `--silent` IS honoured by this bd (`bd create --help`: "--silent
+//     Output only the issue ID (for scripting)"), and a healthy clone answers
+//     with exactly "<id>\n" -- 13 bytes for a 12-char id;
+//   - the create genuinely failed, for the stated reason: no database.
+//
+// So the remedy is to fail AT the real failure (`bd init`) with `bd init`'s
+// own evidence, never to retry a create that cannot succeed -- a retry loop
+// here would just spend N attempts re-deriving "no beads database found" and
+// would risk masking a genuine create failure, which is exactly what the bug
+// asks not to happen. Both setup() and setupMinimal() (and every bead either
+// of them creates, not just the epic) now route through the same helpers, so
+// the two guards can no longer diverge.
+
+// Every bd result the harness reports on, rendered uniformly: exit code +
+// error message + verbatim stdout/stderr. Strictly richer than the ad-hoc
+// describe() this replaces, which omitted the exit code.
+export const describeBdResult = (label, res) => {
+    if (!res) return `${label}: (not run)`;
+    const exitCode = res.err ? (typeof res.err.code === 'number' ? res.err.code : 'unknown') : 0;
+    return (
+        `${label}: exit=${exitCode} err=${res.err ? JSON.stringify(res.err.message) : 'null'} ` +
+        `stdout=${JSON.stringify(res.stdout)} stderr=${JSON.stringify(res.stderr)}`
+    );
+};
+
+/**
+ * `bd init` for a scenario's scratch clone, with its exit status actually
+ * checked. Returns the init result so later failures can still quote it.
+ */
+export async function initScenarioClone(label, tempDir) {
+    let initRes;
+    try {
+        initRes = await runCmd('bd init', tempDir);
+    } catch (err) {
+        // Real mode serves `bd init` from the shared template copy in
+        // bd-replay.mjs rather than spawning bd, so this path can also throw a
+        // raw fs error (a template that vanished mid-copy). Label it instead of
+        // letting an opaque ENOENT surface with no scenario attached.
+        throw new Error(
+            `[advanced-mock-runner-test] ${label}: 'bd init' threw before producing a result ` +
+                `(real mode serves it from the shared bd-init template -- see test/helpers/bd-replay.mjs). ` +
+                `tempDir=${tempDir}\n  ${err && err.stack ? err.stack : String(err)}`,
+        );
+    }
+    if (initRes.err) {
+        throw new Error(
+            `[advanced-mock-runner-test] ${label}: 'bd init' FAILED, so this clone has no beads database. ` +
+                `Every later bd command in this scenario would fail downstream -- classically as an empty ` +
+                `'bd create --silent' id ("Error: no beads database found"), which is the SYMPTOM, not the cause. ` +
+                `tempDir=${tempDir}\n  ${describeBdResult('bd init', initRes)}`,
+        );
+    }
+    return initRes;
+}
+
+// `bd create --silent` prints exactly the new bead's id and nothing else, so a
+// well-formed answer is a single whitespace-free token. Empty is the reported
+// failure; multi-token output means bd printed prose (an error, a warning, a
+// hint) where an id belongs, which would otherwise be fed into the next
+// command as if it were an id. Verified against all 351 recorded `--silent`
+// creates under test/fixtures/bd-recordings: every successful one is a single
+// token, so this cannot false-reject a real id.
+const isBeadId = (value) => value.length > 0 && !/\s/.test(value);
+
+/**
+ * Issue one `bd create ... --silent` and return the created id, or throw with
+ * the full evidence chain (the clone's `bd init` result plus this create's own
+ * exit code / stdout / stderr).
+ */
+export async function createBeadOrThrow(label, tempDir, createCmd, initRes) {
+    const res = await runCmd(createCmd, tempDir);
+    const id = (res.stdout ?? '').trim();
+    if (!res.err && isBeadId(id)) return id;
+    throw new Error(
+        `[advanced-mock-runner-test] ${label}: ${JSON.stringify(createCmd)} did not return a bead id ` +
+            `(parsed ${JSON.stringify(id)}). tempDir=${tempDir}\n` +
+            `  ${describeBdResult('bd init', initRes)}\n` +
+            `  ${describeBdResult('bd create', res)}`,
+    );
+}
+
 export async function setup(tempDirSuffix) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
 
-    const initRes = await runCmd('bd init', tempDir);
+    const label = `setup(${tempDirSuffix})`;
+    const initRes = await initScenarioClone(label, tempDir);
 
     // `--silent` returns the created id directly on stdout, from the exact
     // write just performed -- unlike a separate `bd list --json` + title
@@ -358,23 +467,9 @@ export async function setup(tempDirSuffix) {
     // Dolt state hits this every time, even though sequential `bd create`
     // calls each fully complete -- exec()'s callback only fires on process
     // exit -- before the next command starts).
-    const epicRes = await runCmd('bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember, listMembers, and ensuring they integrate securely using fetch across the MCP JSON-RPC boundary." --silent', tempDir);
-    const task1Res = await runCmd('bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool." --silent', tempDir);
-    const task2Res = await runCmd('bd create "Task: Implement listMembers in client.js" -d "Implement a listMembers() function in the ApraFleet API class. It should call the list_members tool and return the parsed JSON array of active fleet members." --silent', tempDir);
-    const epicId = epicRes.stdout.trim();
-    const task1Id = task1Res.stdout.trim();
-    const task2Id = task2Res.stdout.trim();
-
-    if (!epicId || !task1Id || !task2Id) {
-        const describe = (label, res) => `${label}: err=${res.err ? JSON.stringify(res.err.message) : 'null'} stdout=${JSON.stringify(res.stdout)} stderr=${JSON.stringify(res.stderr)}`;
-        throw new Error(
-            `[advanced-mock-runner-test] setup(${tempDirSuffix}): bd create --silent did not return an id for one or more beads. tempDir=${tempDir}\n` +
-                `  ${describe('bd init', initRes)}\n` +
-                `  ${describe('epic create', epicRes)}\n` +
-                `  ${describe('task1 create', task1Res)}\n` +
-                `  ${describe('task2 create', task2Res)}`,
-        );
-    }
+    const epicId = await createBeadOrThrow(label, tempDir, 'bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember, listMembers, and ensuring they integrate securely using fetch across the MCP JSON-RPC boundary." --silent', initRes);
+    const task1Id = await createBeadOrThrow(label, tempDir, 'bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool." --silent', initRes);
+    const task2Id = await createBeadOrThrow(label, tempDir, 'bd create "Task: Implement listMembers in client.js" -d "Implement a listMembers() function in the ApraFleet API class. It should call the list_members tool and return the parsed JSON array of active fleet members." --silent', initRes);
 
     await runCmd(`bd update ${task1Id} --parent ${epicId}`, tempDir);
     await runCmd(`bd update ${task2Id} --parent ${epicId}`, tempDir);
@@ -408,20 +503,13 @@ export async function setupMinimal(tempDirSuffix, taskSpecs) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
 
-    const initRes = await runCmd('bd init', tempDir);
+    const label = `setupMinimal(${tempDirSuffix})`;
+    const initRes = await initScenarioClone(label, tempDir);
     // `--silent` returns the created id directly, from the write just
     // performed -- avoids a separate `bd list --json` + title match, which
     // reads back through bd's embedded Dolt store and can lag behind a
     // just-completed write on a cold/fresh environment (see setup() above).
-    const epicRes = await runCmd(`bd create -t epic "Epic: ${tempDirSuffix}" -d "Scenario epic for apra-fleet-unw.16 mock test." --silent`, tempDir);
-    const epicId = epicRes.stdout.trim();
-    if (!epicId) {
-        throw new Error(
-            `[advanced-mock-runner-test] setupMinimal(${tempDirSuffix}): bd create --silent did not return an epic id. tempDir=${tempDir}\n` +
-                `  bd init: err=${initRes.err ? JSON.stringify(initRes.err.message) : 'null'} stdout=${JSON.stringify(initRes.stdout)} stderr=${JSON.stringify(initRes.stderr)}\n` +
-                `  epic create: err=${epicRes.err ? JSON.stringify(epicRes.err.message) : 'null'} stdout=${JSON.stringify(epicRes.stdout)} stderr=${JSON.stringify(epicRes.stderr)}`,
-        );
-    }
+    const epicId = await createBeadOrThrow(label, tempDir, `bd create -t epic "Epic: ${tempDirSuffix}" -d "Scenario epic for apra-fleet-unw.16 mock test." --silent`, initRes);
     const epicBead = { id: epicId };
 
     const tasks = [];
@@ -430,8 +518,9 @@ export async function setupMinimal(tempDirSuffix, taskSpecs) {
         // create a task below the sprint's goal priority, for the A5
         // goal-priority exit-condition scenarios below.
         const priorityFlag = spec.priority ? ` -p ${spec.priority}` : '';
-        const createRes = await runCmd(`bd create "${spec.title}" -d "${spec.description || 'Scenario task.'}"${priorityFlag} --silent`, tempDir);
-        const id = createRes.stdout.trim();
+        // Same guard as the epic above (it used to have none here, so a failed
+        // task create silently produced `bd update  --parent <epic>`).
+        const id = await createBeadOrThrow(label, tempDir, `bd create "${spec.title}" -d "${spec.description || 'Scenario task.'}"${priorityFlag} --silent`, initRes);
         await runCmd(`bd update ${id} --parent ${epicBead.id}`, tempDir);
         tasks.push({ id, title: spec.title });
     }
