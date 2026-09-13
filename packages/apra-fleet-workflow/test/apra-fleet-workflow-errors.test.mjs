@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { FleetWorkflow, WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError } from '../src/workflow/index.mjs';
+import { FleetWorkflow, WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, AgentDispatchError } from '../src/workflow/index.mjs';
 
 // Unit tests for the client/workflow-side typed-error normalization layer
 // (apra-fleet-unw.3, findings F4/F10). Every failure path of agent()/command()
@@ -337,6 +337,64 @@ describe('apra-fleet-unw2.12: command() must not double-emit activity:end for ty
         for (const [id, count] of byId) {
             assert.strictEqual(count, 1, `activity id ${id} emitted activity:end ${count} times, expected 1`);
         }
+    });
+});
+
+// apra-fleet-hzeb.2: execute_prompt relays a provider usage-limit signal as
+// structuredContent {isError: true, reason: 'usage_limit', usageLimit, sessionId}
+// (src/tools/execute-prompt.ts). The workflow layer is a PURE pass-through here
+// -- no pause/resume policy decisions live in this package -- so it must forward
+// usageLimit and sessionId onto AgentDispatchError.details unchanged, alongside
+// the existing `reason`, so the fleet-sprint pause/resume controller
+// (packages/apra-fleet-se/fleet-sprint/usage-limit-controller.mjs) can read
+// err.details.usageLimit.resumeAt / err.details.sessionId directly instead of
+// re-parsing the failure text.
+describe('agent(): usage_limit relay pass-through onto AgentDispatchError.details (apra-fleet-hzeb.2)', () => {
+    test('a usage_limit structured result exposes details.usageLimit.resumeAt and details.sessionId', async () => {
+        const usageLimit = {
+            type: 'usage_limit',
+            resumeAt: '2024-01-15T13:20:00.000Z',
+            resumeAtSource: 'parsed',
+            message: "You've hit your session limit",
+        };
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executePromptImpl: async () => ({
+                content: [{ text: `[FAIL] execute_prompt on "${KNOWN_MEMBER}" hit a provider usage limit (resumes ~${usageLimit.resumeAt}, ${usageLimit.resumeAtSource}): ${usageLimit.message}` }],
+                structuredContent: { isError: true, reason: 'usage_limit', usageLimit, sessionId: 'sess-ul-1' },
+            }),
+        }));
+
+        await assert.rejects(
+            () => wf.agent('do the thing', { member_name: KNOWN_MEMBER }),
+            (err) => {
+                assert.ok(err instanceof AgentDispatchError);
+                assert.strictEqual(err.details.reason, 'usage_limit');
+                assert.deepStrictEqual(err.details.usageLimit, usageLimit);
+                assert.strictEqual(err.details.usageLimit.resumeAt, usageLimit.resumeAt);
+                assert.strictEqual(err.details.sessionId, 'sess-ul-1');
+                return true;
+            }
+        );
+    });
+
+    test('a non-usage_limit dispatch failure carries neither usageLimit nor sessionId (no fabrication)', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executePromptImpl: async () => ({
+                content: [{ text: 'dispatch exploded' }],
+                structuredContent: { isError: true, reason: 'dispatch_failed' },
+            }),
+        }));
+
+        await assert.rejects(
+            () => wf.agent('do the thing', { member_name: KNOWN_MEMBER }),
+            (err) => {
+                assert.ok(err instanceof AgentDispatchError);
+                assert.strictEqual(err.details.reason, 'dispatch_failed');
+                assert.strictEqual(err.details.usageLimit, undefined);
+                assert.strictEqual(err.details.sessionId, undefined);
+                return true;
+            }
+        );
     });
 });
 
