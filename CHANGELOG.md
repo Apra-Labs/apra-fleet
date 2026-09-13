@@ -48,6 +48,40 @@ What shipped:
 - **Fixed:** a shared dispatch call-site source scanner now skips comments
   before extracting object-literal text, closing a hazard where an
   apostrophe inside a comment could swallow the rest of the scanned file.
+- **Every role's dispatch watchdog is now explicit and reasoned**
+  (`role-policies.mjs`): the policy normalizer no longer silently defaults a
+  role's watchdog to disarmed, and all 13 roles now declare `watchdog()` or
+  `noWatchdog()` with a stated rationale. `deployer`, `integ-test-runner` and
+  `regression-test-runner` are newly ARMED (a deliberate behaviour change) as
+  long, unattended, single-dispatch phases with no other client-side
+  kill-path -- operators now see those three phases aborted by the
+  client-side watchdog if they hang, instead of running unbounded.
+- **Pre-sprint validation refusals are now typed**
+  (`PreSprintValidationError`, a `WorkflowError` subclass) with a frozen
+  reason vocabulary (`TARGET_NOT_VISIBLE`, `NOTHING_TO_DO`,
+  `CYCLE_REPAIR_FAILED`, `DEADLOCKED`). This flips
+  `isTerminalSprintFailure()` from false to true for these refusals, so the
+  supervisor watchdog now reports them as FINISHED (with the refusal reason)
+  instead of CRASHED. The human-readable refusal messages are unchanged byte
+  for byte.
+- **Fixed:** `execute_prompt`'s `fork` argument now normalises once before
+  both its mutual-exclusivity check and its fork-id resolution, so
+  `fork: ''` or a whitespace-only fork id can no longer disagree with
+  itself. Previously the two checks trimmed differently, so a
+  whitespace-only id could be silently misrouted into a best-effort fork
+  that returned a plain fresh session with no error -- exactly the
+  wrong-context dispatch the explicit-fork gate exists to forbid. It now
+  takes the explicit-fork-id branch and gets the same terminal
+  `session_not_found` rejection as any other unknown id.
+- **New `vcs_credential_exec` tool**: a server-side VCS credential handoff
+  that runs a credentialed command without ever handing the plaintext token
+  to the caller. `member_reservation`, `provision_llm_auth` and
+  `provision_vcs_auth` all now also return a `structuredContent` half
+  alongside their prose summary; the fleet-sprint orchestrator reads
+  `structuredContent.expiresAt` and `structuredContent.{ok,outcome}`
+  directly for its provisioning and reservation control flow instead of
+  scraping the human-readable text, falling back to the legacy prose/marker
+  path only when a result carries no `structuredContent` at all.
 - Two new bugs were found, filed, and NOT fixed in this sprint (see "Carried
   forward" below): a real, reproducible port-allocation race in the sandbox
   deploy helper, and a stderr-pattern-table gap left behind by the
@@ -62,7 +96,12 @@ Carried forward (filed as open backlog; blocking full epic closure):
 - **Six extraction modules remain**: bead-child allocation helpers,
   sprint-report/newTask text formatting, round-session and dispatch-failure
   handling, and the fatal-diagnostics writer are still in `runner.js`.
-- **Phase 5 (observability/productization) has not started.**
+- **Phase 5 (observability/productization) is now underway, not
+  unstarted.** The plan-reviewer's structured per-bead findings field now
+  feeds contested-bead routing directly instead of being re-derived from
+  prose, and every role's dispatch watchdog arming decision is now explicit
+  and audited (see "What shipped" above). The remaining Phase 5 beads are
+  still outstanding.
 - **A real, reproducible port-allocation race in the sandbox deploy
   helper** causes an intermittent full-test-suite failure under concurrency
   (passes in isolation, fails under load) -- see
@@ -72,10 +111,11 @@ Carried forward (filed as open backlog; blocking full epic closure):
 - A stderr-pattern-table census left incomplete by the `git-topology.mjs`
   extraction (one delegation assertion re-pointed, one census table not
   yet widened to the new module).
-- Three low-priority (P3) hardening items: a sync-bracket pause-guard
-  re-registration edge case, an `execute_prompt` fork-predicate
-  whitespace-only-id inconsistency, and a shell-command-guard
-  header/implementation mismatch.
+- Two low-priority (P3) hardening items: a sync-bracket pause-guard
+  re-registration edge case, and a shell-command-guard
+  header/implementation mismatch. (A third item, an `execute_prompt`
+  fork-predicate whitespace-only-id inconsistency, was fixed this sprint --
+  see "What shipped" above.)
 
 ```
 Budget ceiling: not set (no --budget flag) -- unlimited for this run.
