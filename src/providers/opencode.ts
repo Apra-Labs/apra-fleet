@@ -1,5 +1,5 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
-import { joinForOS, resolveHomeDir } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -95,8 +95,17 @@ export class OpenCodeProvider implements ProviderAdapter {
     if (/command not found|is not recognized as an internal or external command/i.test(output)) return 'unknown';
     if (/connection refused|ECONNREFUSED/i.test(output)) return 'server';
     if (/timeout|ETIMEDOUT/i.test(output)) return 'server';
-    if (/rate limit|\b429\b/i.test(output)) return 'overloaded';
+    // apra-fleet-hzeb.1: widened to the shared overloaded/quota set (previously
+    // lacked 529, quota/usage/credit-limit, resource_exhausted) so opencode
+    // quota exhaustion classifies consistently with the other adapters.
+    if (/\b429\b|\b529\b|overloaded|rate limit|quota exceeded|resource_exhausted|credit limit|usage limit/i.test(output)) return 'overloaded';
     return 'unknown';
+  }
+
+  // apra-fleet-hzeb.1: OpenCode has no distinct usage-limit event surface, so key off
+  // the raw output using the shared quota detector (guessed resume window).
+  detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
+    return defaultUsageLimitSignal(result.stderr || result.stdout || parsed.result);
   }
 
   headlessInvocation(promptLiteral: string): string {

@@ -1,5 +1,5 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
-import { joinForOS, resolveHomeDir } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -260,6 +260,12 @@ export class AgyProvider implements ProviderAdapter {
       raw,
       usage: undefined,
     };
+  }
+
+  // apra-fleet-hzeb.1: AGY has no distinct usage-limit event surface, so key off
+  // the raw output using the shared quota detector (guessed resume window).
+  detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
+    return defaultUsageLimitSignal(result.stderr || result.stdout || parsed.result);
   }
 
   supportsResume(): boolean {

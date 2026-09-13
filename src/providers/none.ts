@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import type { MemberShell } from '../os/os-commands.js';
@@ -59,6 +59,14 @@ export class NoneProvider implements ProviderAdapter {
 
   parseResponse(_result: SSHExecResult): ParsedResponse {
     throw new Error(NO_LLM_ERROR);
+  }
+
+  // No-LLM members never run a prompt, so there is no usage/quota limit concept.
+  // Unlike the throwing methods above, detectUsageLimit is reachable from call
+  // sites that iterate all members regardless of provider, so it returns null
+  // rather than throwing.
+  detectUsageLimit(_result: SSHExecResult, _parsed: ParsedResponse): UsageLimitSignal | null {
+    return null;
   }
 
   supportsResume(): boolean {

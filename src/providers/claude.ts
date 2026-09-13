@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
-import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -33,6 +33,137 @@ export function isMaxTurnsSignal(obj: any): boolean {
     obj.type === 'max_turns_reached' ||
     obj.stop_reason === 'max_turns'
   );
+}
+
+// apra-fleet-hzeb.1: the Claude result event's `api_error_status` carries the
+// upstream HTTP status (e.g. 429) when the CLI terminated on an API error. The
+// parser previously dropped it; capture it (coercing a numeric string) so
+// detectUsageLimit can distinguish a 429 usage limit. Returns undefined when
+// absent or non-numeric.
+export function extractApiErrorStatus(obj: any): number | undefined {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const raw = obj.api_error_status;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim() !== '' && Number.isFinite(Number(raw))) return Number(raw);
+  return undefined;
+}
+
+// apra-fleet-hzeb.1: Claude's own usage-limit message shape, e.g.
+// "You've hit your session limit", "hit your weekly limit", "hit your opus limit".
+const CLAUDE_LIMIT_MESSAGE_RE = /hit your (session|weekly|opus|\w+) limit/i;
+
+// apra-fleet-hzeb.1.2: Claude's usage-limit message sometimes exposes the actual
+// reset time verbatim, e.g. "resets 8:20am (America/New_York)" or "resets at 8pm
+// (America/New_York)". This wall-clock-plus-IANA-zone shape is the primary parse.
+const CLAUDE_RESET_AT_RE = /resets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(\s*([A-Za-z][A-Za-z0-9_+\-/]*)\s*\)/i;
+// Best-effort relative shape, e.g. "resets in 45 minutes" / "resets in 2 hours".
+const CLAUDE_RESET_IN_RE = /resets\s+in\s+(\d+)\s*(minute|hour)s?/i;
+
+// apra-fleet-hzeb.1.2: the wall-clock fields of `instant` as observed in
+// `timeZone`, via Intl (no external dependency). `hourCycle: 'h23'` yields
+// 00-23; a few engines still emit '24' for midnight, so normalize it.
+function claudeZoneParts(instant: Date, timeZone: string): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const map: Record<string, string> = {};
+  for (const p of dtf.formatToParts(instant)) map[p.type] = p.value;
+  let hour = Number(map.hour);
+  if (hour === 24) hour = 0;
+  return {
+    year: Number(map.year),
+    month: Number(map.month),
+    day: Number(map.day),
+    hour,
+    minute: Number(map.minute),
+    second: Number(map.second),
+  };
+}
+
+// Offset (ms) between the wall clock in `timeZone` and UTC at `instant`
+// (positive = zone ahead of UTC).
+function claudeZoneOffsetMs(instant: Date, timeZone: string): number {
+  const p = claudeZoneParts(instant, timeZone);
+  const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  return asUtc - instant.getTime();
+}
+
+// UTC epoch ms for a wall-clock time (`y`-`mo`-`d` `h`:`min`, mo 1-based) as it
+// occurs in `timeZone`. The double-offset re-check handles DST boundaries where
+// the offset that applies at the naive guess differs from the offset that
+// actually applies at the resolved instant (spring-forward / fall-back).
+function claudeZonedWallClockToUtc(y: number, mo: number, d: number, h: number, min: number, timeZone: string): number {
+  const utcGuess = Date.UTC(y, mo - 1, d, h, min, 0);
+  const offset1 = claudeZoneOffsetMs(new Date(utcGuess), timeZone);
+  let ts = utcGuess - offset1;
+  const offset2 = claudeZoneOffsetMs(new Date(ts), timeZone);
+  if (offset2 !== offset1) ts = utcGuess - offset2;
+  return ts;
+}
+
+/**
+ * apra-fleet-hzeb.1.2: parse a Claude usage-limit reset time from its verbatim
+ * message into a concrete instant, so the usage-limit signal can schedule a
+ * precise resume instead of guessing now+1h. Pure and deterministic: `now` is
+ * injected. Returns null when no reset time is readable -- the caller then falls
+ * back to the guessed window (never to a null signal; a 429 is still a usage
+ * limit even when its reset time is unreadable).
+ *
+ * Supported shapes (case-insensitive, best-effort):
+ *   - "resets 8:20am (America/New_York)" -> the NEXT 08:20 wall-clock in that
+ *     zone that is >= `now` (DST-correct via Intl offset projection).
+ *   - "resets at 8pm (America/New_York)" -> same, with an optional "at" and no
+ *     explicit minutes.
+ *   - "resets in 45 minutes" / "resets in 2 hours" -> `now` + the stated delta.
+ */
+export function parseClaudeResetTime(text: string, now: Date): Date | null {
+  if (!text) return null;
+
+  const inM = CLAUDE_RESET_IN_RE.exec(text);
+  if (inM) {
+    const n = Number(inM[1]);
+    if (Number.isFinite(n) && n >= 0) {
+      const unitMs = /hour/i.test(inM[2]) ? 60 * 60 * 1000 : 60 * 1000;
+      return new Date(now.getTime() + n * unitMs);
+    }
+  }
+
+  const atM = CLAUDE_RESET_AT_RE.exec(text);
+  if (atM) {
+    let hour = Number(atM[1]);
+    const minute = atM[2] ? Number(atM[2]) : 0;
+    const ampm = atM[3].toLowerCase();
+    const timeZone = atM[4].trim();
+    if (hour < 1 || hour > 12 || minute > 59) return null;
+    // 12-hour -> 24-hour: 12am -> 0, 12pm -> 12, otherwise +12 for pm.
+    if (ampm === 'am') hour = hour === 12 ? 0 : hour;
+    else hour = hour === 12 ? 12 : hour + 12;
+
+    // Reject an unknown IANA zone (Intl throws on construction) -> guessed.
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone });
+    } catch {
+      return null;
+    }
+
+    const today = claudeZoneParts(now, timeZone);
+    let ts = claudeZonedWallClockToUtc(today.year, today.month, today.day, hour, minute, timeZone);
+    if (ts < now.getTime()) {
+      // Already passed today in that zone; advance to the next calendar day
+      // (Date.UTC normalizes day overflow before we re-project through the zone).
+      ts = claudeZonedWallClockToUtc(today.year, today.month, today.day + 1, hour, minute, timeZone);
+    }
+    return new Date(ts);
+  }
+
+  return null;
 }
 
 export class ClaudeProvider implements ProviderAdapter {
@@ -179,6 +310,7 @@ export class ClaudeProvider implements ProviderAdapter {
         usage: extractUsage(obj.usage),
         subtype: obj.subtype,
         terminalReason: obj.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
+        apiErrorStatus: extractApiErrorStatus(obj),
       };
     };
 
@@ -205,6 +337,7 @@ export class ClaudeProvider implements ProviderAdapter {
           usage: extractUsage(parsed.usage),
           subtype: parsed.subtype,
           terminalReason: parsed.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
+          apiErrorStatus: extractApiErrorStatus(parsed),
         };
       }
     } catch { /* not valid JSON - try line-by-line JSONL below */ }
@@ -235,6 +368,36 @@ export class ClaudeProvider implements ProviderAdapter {
       usage: undefined,
       terminalReason: maxTurnsSeen ? 'max_turns' : undefined,
     };
+  }
+
+  // apra-fleet-hzeb.1 / hzeb.1.2: Claude signals a usage limit via a 429
+  // api_error_status OR a terminal_reason of 'api_error' -- independent of process
+  // exit code (exit 1 with is_error, OR exit 0 carrying the message as the result
+  // text). A 429 is definitively a usage/quota limit on its own; the broader
+  // 'api_error' terminal reason can mean other things, so there we additionally
+  // require Claude's own "hit your <...> limit" message to avoid misclassifying an
+  // unrelated API error. When the message exposes a real reset time we parse it
+  // into a concrete `resumeAt` (source 'parsed'); otherwise we fall back to the
+  // guessed window (source 'guessed') -- NEVER to null, since a 429 is still a
+  // usage limit even when its reset time is unreadable.
+  detectUsageLimit(_result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
+    const is429 = parsed.apiErrorStatus === 429;
+    const isApiErrorTerminal = parsed.terminalReason === 'api_error';
+    if (!is429 && !isApiErrorTerminal) return null;
+    const text = parsed.result ?? '';
+    if (!is429 && !CLAUDE_LIMIT_MESSAGE_RE.test(text)) return null;
+
+    const now = new Date();
+    const parsedReset = parseClaudeResetTime(text, now);
+    if (parsedReset) {
+      return {
+        type: 'usage_limit',
+        resumeAt: parsedReset.toISOString(),
+        resumeAtSource: 'parsed',
+        message: text,
+      };
+    }
+    return guessedUsageLimitSignal(text, now.getTime());
   }
 
   supportsResume(): boolean {

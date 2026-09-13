@@ -1,6 +1,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { FleetWorkflow, CancelledError } from '../src/workflow/index.mjs';
+import { WorkflowEngine } from '../src/workflow/engine.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const fixture = (name) => path.join(__dirname, 'fixtures', name);
 
 // (apra-fleet-p2to.1.1) Unit tests for the cooperative pause/resume gate on
 // FleetWorkflow: requestPause()/requestResume()/setPauseGuard(), the activity-
@@ -242,16 +248,123 @@ describe('apra-fleet-p2to.1.1: workflow engine pause/resume primitive', () => {
         assert.doesNotThrow(() => wf.setPauseGuard(null));
     });
 
-    test('setPauseGuard is exposed on the workflow script context; requestPause/Resume stay instance-only', () => {
+    test('setPauseGuard/requestPause/requestResume are exposed on the workflow script context; requestStop stays instance-only', () => {
         const wf = new FleetWorkflow(createImmediateFleetApi());
         const ctx = wf._bindPrimitives();
         assert.strictEqual(typeof ctx.setPauseGuard, 'function');
-        // The orchestrator-driven controls are deliberately NOT in the script
-        // context (they mirror requestStop()'s instance-only surface).
-        assert.strictEqual(ctx.requestPause, undefined);
-        assert.strictEqual(ctx.requestResume, undefined);
+        // (apra-fleet-hzeb.3) requestPause/requestResume are now script-facing
+        // too -- a script may initiate a pause for a condition it detects
+        // (e.g. a provider usage limit) -- and are the SAME bound functions as
+        // the instance methods, not a separate implementation.
+        assert.strictEqual(typeof ctx.requestPause, 'function');
+        assert.strictEqual(typeof ctx.requestResume, 'function');
         assert.strictEqual(typeof wf.requestPause, 'function');
         assert.strictEqual(typeof wf.requestResume, 'function');
+        // requestStop() remains operator/instance-only -- never part of the
+        // script context.
+        assert.strictEqual(ctx.requestStop, undefined);
+    });
+});
+
+// (apra-fleet-hzeb.3) Script-initiated pause: requestPause()/requestResume()
+// are exposed on the script context (both the legacy createContext() and the
+// per-run runWithContext() used by WorkflowEngine.executeFile()), and a
+// script-initiated pause carries the same 'pause:requested'/'paused'/
+// 'resumed' lifecycle as an operator-initiated one, plus the optional
+// resumeAt/source metadata a script can attach.
+describe('apra-fleet-hzeb.3: script-initiated pause via the script context', () => {
+    test('createContext() (legacy, non-executeFile callers) exposes requestPause/requestResume as functions', () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        const ctx = wf.createContext();
+        assert.strictEqual(typeof ctx.requestPause, 'function');
+        assert.strictEqual(typeof ctx.requestResume, 'function');
+    });
+
+    test('a script run via WorkflowEngine.executeFile() sees requestPause/requestResume as functions on its context and can pause/resume itself', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        const engine = new WorkflowEngine(wf);
+        const events = [];
+        wf.on('pause:requested', (p) => events.push(['pause:requested', p]));
+        wf.on('paused', (p) => events.push(['paused', p]));
+        wf.on('resumed', (p) => events.push(['resumed', p]));
+
+        const result = await engine.executeFile(fixture('test-pause-context.mjs'));
+
+        assert.strictEqual(result.sawRequestPause, true);
+        assert.strictEqual(result.sawRequestResume, true);
+        assert.strictEqual(result.result, 'echo: hello');
+
+        const requested = events.find((e) => e[0] === 'pause:requested');
+        assert.ok(requested, "'pause:requested' fired for the executeFile() run");
+        assert.strictEqual(requested[1].resumeAt, '2099-01-01T00:00:00.000Z');
+        assert.strictEqual(requested[1].source, 'usage_limit');
+        assert.ok(events.some((e) => e[0] === 'paused'));
+        assert.ok(events.some((e) => e[0] === 'resumed'));
+    });
+
+    test('a script calling ctx.requestPause(reason, {resumeAt}) while idle engages the pause with resumeAt on the payload; ctx.requestResume() releases it', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        const events = [];
+        wf.on('pause:requested', (p) => events.push(['pause:requested', p]));
+        wf.on('paused', (p) => events.push(['paused', p]));
+        wf.on('resumed', (p) => events.push(['resumed', p]));
+
+        let ctx;
+        const done = wf.runWithContext({}, async (c) => {
+            ctx = c;
+            assert.strictEqual(typeof ctx.requestPause, 'function');
+            assert.strictEqual(typeof ctx.requestResume, 'function');
+
+            ctx.requestPause('usage limit hit', { resumeAt: '2099-01-01T00:00:00.000Z', source: 'usage_limit' });
+            // Deferred pause engages immediately while idle (zero in-flight).
+            assert.strictEqual(wf._paused, true);
+
+            // The next agent() call blocks at the gate while paused.
+            let settled = false;
+            const blocked = wf.agent('hello', { member_name: 'fleet-dev' }).then((r) => { settled = true; return r; });
+            await nextTick();
+            assert.strictEqual(settled, false, 'agent() blocks at the gate while paused');
+
+            await ctx.requestResume('limit reset');
+            const result = await blocked;
+            assert.strictEqual(settled, true);
+            return result;
+        });
+
+        const result = await done;
+        assert.strictEqual(result, 'echo: hello');
+
+        const requested = events.find((e) => e[0] === 'pause:requested');
+        assert.ok(requested, "'pause:requested' fired");
+        assert.strictEqual(requested[1].resumeAt, '2099-01-01T00:00:00.000Z');
+        assert.strictEqual(requested[1].source, 'usage_limit');
+        assert.ok(events.some((e) => e[0] === 'paused'), "'paused' fired");
+        assert.ok(events.some((e) => e[0] === 'resumed'), "'resumed' fired");
+    });
+
+    test('a script-initiated pause while setPauseGuard(() => false) stays deferred (\'pausing\'), then engages once the guard opens', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        let guardOpen = false;
+        wf.setPauseGuard(() => guardOpen);
+
+        let pausedFired = false;
+        wf.on('paused', () => { pausedFired = true; });
+
+        await wf.runWithContext({}, async (ctx) => {
+            ctx.requestPause('deferred by guard');
+            // Guard is closed -- pause is requested but must not engage yet.
+            assert.strictEqual(wf._pauseRequested, true);
+            assert.strictEqual(wf._paused, false);
+            assert.strictEqual(pausedFired, false);
+
+            // Opening the guard lets the deferred pause engage.
+            guardOpen = true;
+            wf.setPauseGuard(() => guardOpen);
+            assert.strictEqual(wf._paused, true);
+            assert.strictEqual(pausedFired, true);
+
+            await ctx.requestResume();
+        });
     });
 });
 
