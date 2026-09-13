@@ -160,9 +160,11 @@ export const GUARDED_MODULES = [
     // dispatchReview at all (runner.js:2834; see apra-fleet-3swo.65). A grep
     // for `dispatchReview` across phases/ overcounts: the identifier also
     // appears inside a shared boilerplate comment ("No duplicate log() dump
-    // -- see dispatchReview() for why") that phases/integ-test.mjs,
-    // phases/deploy.mjs and phases/regression-test.mjs carry verbatim, none
-    // of which actually receive the helper. Registering both as part of the
+    // -- see dispatchReview() for why") that SEVEN files carry verbatim --
+    // phases/harvest.mjs, phases/plan.mjs, phases/develop.mjs,
+    // phases/integ-test.mjs, phases/final-review.mjs, phases/deploy.mjs and
+    // phases/regression-test.mjs -- none of which actually receive the
+    // helper. Registering both as part of the extraction is what keeps the
     // guarded command census and the phase 3 dispatch census whole instead of
     // quietly shrinking runner.js's scanned surface.
     'phases/integ-test.mjs',
