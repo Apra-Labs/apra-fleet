@@ -237,9 +237,14 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} command - The credential-requiring command to run on the member. MUST
- *   contain the literal placeholder {{vcs_token}} where the credential belongs, referenced
- *   BARE -- the server substitutes it with the value ALREADY escaped for that member's shell,
- *   so wrapping it in your own quotes double-escapes it and surfaces as a false 401.
+ *   contain at least one of two placeholders where the credential belongs (both may appear in
+ *   the same command): {{vcs_token}}, referenced BARE (never inside your own quotes) -- the
+ *   server substitutes it with the value ALREADY escaped AND quoted for that member's shell, so
+ *   wrapping it in your own quotes double-escapes it and surfaces as a false 401; or
+ *   {{vcs_token_inline}}, referenced INSIDE your own single quotes -- the server substitutes it
+ *   with the value escaped for the interior of a single-quoted string, with no quotes of its
+ *   own, for interpolating the token into a larger already-quoted value (e.g. an Authorization
+ *   header) where a bare, self-quoting substitution cannot compose.
  * @property {string} [label] - Credential label provision_vcs_auth deployed the helper under
  *   (it defaults to the provider name there, e.g. "github" or "azure-devops"). Omit for the
  *   unlabelled helper.
@@ -642,9 +647,12 @@ export class ApraFleet {
      *
      * This is the server-side replacement for reading a token back out of the
      * deployed git-credential-helper: the server reads the credential
-     * in-process, substitutes {{vcs_token}} with it already escaped for the
-     * member's shell, dispatches the command, and redacts the value from the
-     * returned stdout/stderr. The plaintext appears in no field of the result.
+     * in-process, substitutes whichever placeholder(s) the command contains
+     * -- {{vcs_token}} (bare, already quoted for the member's shell) and/or
+     * {{vcs_token_inline}} (for use inside the caller's own single quotes,
+     * escaped for that interior with no quotes of its own) -- dispatches the
+     * command, and redacts the value from the returned stdout/stderr. The
+     * plaintext appears in no field of the result.
      *
      * @param {VcsCredentialExecOptions} options
      * @returns {Promise<{ content: Array<{type: string, text: string}>,

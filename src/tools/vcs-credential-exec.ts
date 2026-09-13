@@ -3,7 +3,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
+import { escapeShellArg, escapePowerShellArg, escapeShellArgInner, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 
@@ -18,16 +18,20 @@ import type { Agent } from '../types.js';
  * still round-trips through a command result the orchestrator reads.
  *
  * NOW: the caller sends the command it already builds (VCSModule's
- * buildCreatePrCommand and friends) with the literal placeholder
- * `{{vcs_token}}` where the token belongs, and the SERVER performs the whole
- * handoff inside this one call:
+ * buildCreatePrCommand and friends) with a literal placeholder where the
+ * token belongs -- `{{vcs_token}}` for a bare reference or
+ * `{{vcs_token_inline}}` for one sitting inside the caller's own single
+ * quotes (apra-fleet-3swo.7.16; see VCS_TOKEN_INLINE_PLACEHOLDER below) --
+ * and the SERVER performs the whole handoff inside this one call:
  *
  *   1. runs the member's deployed credential helper through
  *      strategy.execCommand -- that output is consumed in-process and is
  *      NEVER part of this tool's result;
- *   2. substitutes `{{vcs_token}}` with the token, shell-escaped for the
- *      member's OWN shell (the same isPosixShell branch execute_command uses
- *      for {{secure.NAME}});
+ *   2. substitutes whichever placeholder(s) are present with the token,
+ *      escaped for the member's OWN shell (the same isPosixShell branch
+ *      execute_command uses for {{secure.NAME}}) -- `{{vcs_token}}` gets the
+ *      fully-quoted form, `{{vcs_token_inline}}` gets the bare interior
+ *      escaping with no quotes of its own;
  *   3. dispatches the substituted command;
  *   4. redacts any occurrence of the token from stdout/stderr before
  *      returning, the same defence execute-command.ts's redactOutput applies.
@@ -38,20 +42,41 @@ import type { Agent } from '../types.js';
  */
 
 /**
- * The one placeholder this tool substitutes. Callers must reference it BARE:
- * the substituted value arrives ALREADY shell-escaped for the member's shell
- * (quotes included), exactly like execute_command's {{secure.NAME}} tokens --
+ * Reference this one BARE (never inside your own quotes): the substituted
+ * value arrives ALREADY shell-escaped for the member's shell (quotes
+ * included), exactly like execute_command's {{secure.NAME}} tokens --
  * wrapping it in the caller's own quotes double-escapes it and surfaces as a
  * false 401 / invalid-token error.
  */
 export const VCS_TOKEN_PLACEHOLDER = '{{vcs_token}}';
 
+/**
+ * Reference this one INSIDE your own single quotes (e.g.
+ * `'Authorization: Bearer {{vcs_token_inline}}'`): the substituted value is
+ * escaped for the INTERIOR of a single-quoted string in the member's shell
+ * dialect and carries no quotes of its own, for callers (like VCSModule's
+ * provider command builders) that must interpolate the token into a larger
+ * already-quoted value rather than reference it as a free-standing word.
+ * Using `{{vcs_token}}` in that position double-escapes it the same way
+ * wrapping it in extra quotes would; use this placeholder there instead.
+ *
+ * Whether a given occurrence really sits inside the caller's open quotes is
+ * not reliably decidable from the command string alone, so this tool does
+ * not attempt to validate placement -- a heuristic here would produce false
+ * refusals. The contract is documented, not enforced (apra-fleet-3swo.7.16).
+ */
+export const VCS_TOKEN_INLINE_PLACEHOLDER = '{{vcs_token_inline}}';
+
 export const vcsCredentialExecSchema = z.object({
   ...memberIdentifier,
   command: z.string().min(1).describe(
-    'The credential-requiring command to run on the member. MUST contain the placeholder '
-    + '{{vcs_token}} exactly where the credential belongs, referenced BARE (never inside your own '
-    + 'quotes) -- the server substitutes it with the value already escaped for the member\'s shell. '
+    'The credential-requiring command to run on the member. MUST contain at least one of two '
+    + 'placeholders where the credential belongs: {{vcs_token}}, referenced BARE (never inside your '
+    + 'own quotes) -- the server substitutes it with the value already escaped AND quoted for the '
+    + 'member\'s shell; or {{vcs_token_inline}}, referenced INSIDE your own single quotes -- the '
+    + 'server substitutes it with the value escaped for the interior of a single-quoted string, with '
+    + 'no quotes of its own (use this one when the token must be interpolated into a larger quoted '
+    + 'value, e.g. an Authorization header). Both may appear in the same command. '
     + 'The plaintext credential never leaves the server and never appears in this tool\'s result.'
   ),
   label: z.string().regex(/^[a-zA-Z0-9._-]{1,64}$/).optional().describe(
@@ -70,7 +95,7 @@ export type VcsCredentialExecReason =
   | 'ok'
   /** No member matched member_id/member_name. */
   | 'member_not_found'
-  /** `command` did not contain the {{vcs_token}} placeholder. */
+  /** `command` contained neither {{vcs_token}} nor {{vcs_token_inline}}. */
   | 'placeholder_missing'
   /** This member's OS/shell has no credential-read implementation. */
   | 'unsupported_member_os'
@@ -156,11 +181,13 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   const agent = agentOrError as Agent;
   const who = { memberId: agent.id, memberName: agent.friendlyName, credentialLabel: input.label ?? null };
 
-  // Refusing a command with no placeholder is what keeps this tool a
+  // Refusing a command with neither placeholder is what keeps this tool a
   // credential handoff rather than a second, unguarded execute_command.
-  if (!input.command.includes(VCS_TOKEN_PLACEHOLDER)) {
+  const hasBare = input.command.includes(VCS_TOKEN_PLACEHOLDER);
+  const hasInline = input.command.includes(VCS_TOKEN_INLINE_PLACEHOLDER);
+  if (!hasBare && !hasInline) {
     return execResult(
-      `[FAIL] command must contain the ${VCS_TOKEN_PLACEHOLDER} placeholder -- use execute_command for a command that needs no credential.`,
+      `[FAIL] command must contain ${VCS_TOKEN_PLACEHOLDER} or ${VCS_TOKEN_INLINE_PLACEHOLDER} -- use execute_command for a command that needs no credential.`,
       { ...who, reason: 'placeholder_missing' },
     );
   }
@@ -212,11 +239,16 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   // STEP 2 -- substitute, escaped for the member's OWN shell. A Windows
   // member registered with shell=gitbash runs bash, so it needs POSIX
   // escaping even though its OS is windows; isPosixShell owns that decision
-  // for every consumer.
-  const escaped = isPosixShell(agentOs, agentShell)
-    ? escapeShellArg(token)
-    : escapePowerShellArg(token);
-  const finalCommand = input.command.replaceAll(VCS_TOKEN_PLACEHOLDER, escaped);
+  // for every consumer. The bare placeholder gets the fully-quoted form; the
+  // inline placeholder gets the SAME dialect's interior-only escaping, with
+  // no wrapping quotes of its own, so it composes inside the caller's
+  // already-open single quotes instead of double-escaping.
+  const posix = isPosixShell(agentOs, agentShell);
+  const escaped = posix ? escapeShellArg(token) : escapePowerShellArg(token);
+  const escapedInline = posix ? escapeShellArgInner(token) : escapePowerShellArgInner(token);
+  const finalCommand = input.command
+    .replaceAll(VCS_TOKEN_PLACEHOLDER, escaped)
+    .replaceAll(VCS_TOKEN_INLINE_PLACEHOLDER, escapedInline);
 
   // STEP 3 -- dispatch. Only the log-safe form (placeholder still in place) is
   // ever logged; `finalCommand` is never written anywhere.
