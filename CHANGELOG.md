@@ -13,14 +13,15 @@ golden transcript.
 
 What shipped:
 
-- **`runner.js` decomposition is complete.** The file went from roughly
-  11,850 lines to about 3,100, with 44 new `fleet-sprint/*.mjs` modules
-  (including all twelve `phases/*.mjs` files and every module the epic
-  named: `vcs-auth`, `git-sync`, `coordination`, `kb`, `beads-scope`,
-  `beads-transitions`, `member-target`, `role-policies`, `sprint-args`,
-  `worklists`, `prompts`, `sprint-state`). No files were deleted; `runner.js`
-  is now a composition root plus a facade that re-exports every symbol its
-  importers and mock-sprint test fixtures rely on.
+- **`runner.js` decomposition is complete.** The file went from 11,849 lines
+  on `main` to 3,118 lines (189,158 bytes) at this branch's tip, with 44 new
+  `fleet-sprint/*.mjs` modules (including all twelve `phases/*.mjs` files and
+  every module the epic named: `vcs-auth`, `git-sync`, `coordination`, `kb`,
+  `beads-scope`, `beads-transitions`, `member-target`, `role-policies`,
+  `sprint-args`, `worklists`, `prompts`, `sprint-state`). No files were
+  deleted; `runner.js` is now a composition root plus a facade that
+  re-exports every symbol its importers and mock-sprint test fixtures rely
+  on.
 - **All 13 sprint roles now dispatch through the single `dispatchRole`
   engine**, reading `role-policies.mjs`'s data table -- zero hand-written
   inline `agent()` dispatch ladders remain. `inline-ladder-guard.mjs` is now
