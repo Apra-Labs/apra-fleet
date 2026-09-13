@@ -26,7 +26,12 @@ What shipped:
   lines. Six more extraction modules landed in the same residual chain:
   `git-topology.mjs`, `member-sync.mjs`, `member-provisioning.mjs`, plus the
   facade-completeness scaffolding that carries the chain to its final
-  composition-root gate.
+  composition-root gate. That gate (`scripts/phase4-moveonly-probe.mjs`) now
+  runs end to end and passes. A further six extraction modules landed after
+  this entry was first drafted -- `beads-children.mjs`, `sprint-report.mjs`,
+  `newtask-text.mjs`, `round-session.mjs`, `dispatch-failure.mjs`, and
+  `fatal-diagnostics.mjs` -- closing out the extraction slate that was still
+  tracked as remaining.
 - **Fixed:** `install --force` no longer races a launchd/systemd-managed
   server's automatic relaunch. It now stops the registered service first
   (graceful `ServiceManager.stop()`), and only escalates to a direct kill
@@ -37,6 +42,14 @@ What shipped:
   provisioning tool's structured `ok` result first, falling back to legacy
   prose matching only when structured content is absent -- closing a false-
   success reading that a retired prose marker could previously produce.
+- **Fixed:** `resultText()`, the shared MCP result-text helper every
+  fleet-sprint dispatch caller reads, now skips a user-audience onboarding
+  or welcome-back display banner that `tool-registry.ts`'s `wrapTool()` may
+  prepend ahead of the real tool result (or append a nudge banner after it),
+  instead of always reading `content[0]`. This closes a window where a
+  caller could read the banner text back as if it were the tool's own
+  output on a first-run or welcome-back dispatch; empty/missing-content and
+  all-banner cases still return `''`, unchanged.
 - **Fixed:** `vcs_credential_exec`'s token redaction now also runs on a
   dispatch failure's thrown-error message, not just on successful
   stdout/stderr -- closing a leak path where a failed credentialed command
@@ -55,7 +68,12 @@ What shipped:
   `regression-test-runner` are newly ARMED (a deliberate behaviour change) as
   long, unattended, single-dispatch phases with no other client-side
   kill-path -- operators now see those three phases aborted by the
-  client-side watchdog if they hang, instead of running unbounded.
+  client-side watchdog if they hang, instead of running unbounded. Each
+  armed role's watchdog resolves against its own row's hard elapsed ceiling
+  (`maxTotalS`, e.g. `INTEG_MAX_TOTAL_S`/`REGRESSION_TEST_MAX_TOTAL_S`), not
+  a shared inactivity budget, so operators see a long phase bounded by its
+  own intended ceiling rather than aborted early against an unrelated
+  shorter budget.
 - **Pre-sprint validation refusals are now typed**
   (`PreSprintValidationError`, a `WorkflowError` subclass) with a frozen
   reason vocabulary (`TARGET_NOT_VISIBLE`, `NOTHING_TO_DO`,
@@ -75,47 +93,58 @@ What shipped:
   `session_not_found` rejection as any other unknown id.
 - **New `vcs_credential_exec` tool**: a server-side VCS credential handoff
   that runs a credentialed command without ever handing the plaintext token
-  to the caller. `member_reservation`, `provision_llm_auth` and
+  to the caller. It now supports two placeholders: the original
+  `{{vcs_token}}` (an already-quoted substitution) and a new
+  `{{vcs_token_inline}}`, which substitutes the same token under
+  interior-only escaping for a caller that must interpolate it inside a
+  value it already quotes itself (e.g. a provider's own
+  `Authorization: Bearer <token>` header string); a command may use either
+  or both. `member_reservation`, `provision_llm_auth` and
   `provision_vcs_auth` all now also return a `structuredContent` half
   alongside their prose summary; the fleet-sprint orchestrator reads
   `structuredContent.expiresAt` and `structuredContent.{ok,outcome}`
   directly for its provisioning and reservation control flow instead of
   scraping the human-readable text, falling back to the legacy prose/marker
   path only when a result carries no `structuredContent` at all.
-- Two new bugs were found, filed, and NOT fixed in this sprint (see "Carried
-  forward" below): a real, reproducible port-allocation race in the sandbox
-  deploy helper, and a stderr-pattern-table gap left behind by the
+- **Fixed:** `provision_vcs_auth`'s deploy metadata
+  (`structuredContent.metadata` and the rendered text) is now filtered
+  through a single allowlisted-keys enforcement point instead of being
+  forwarded verbatim from a VCS provider's `deploy()` result -- a
+  defense-in-depth guard, since today's three built-in providers already
+  mask token values themselves, but an unrecognised key from a future or
+  edited provider is now dropped rather than silently published.
+- Two bugs found and filed earlier in this sprint were fixed before this
+  entry closed out: a real, reproducible port-allocation race in the
+  sandbox deploy helper (plus a follow-up that widens port re-allocation to
+  also skip candidates adjacent to a lost port, not just the lost port
+  itself), and a stderr-pattern-table census gap left behind by the
   `git-topology.mjs` extraction.
 
-Carried forward (filed as open backlog; blocking full epic closure):
+Carried forward (filed as open backlog):
 
-- **The Phase 4 composition-root/facade-completeness verification gate has
-  not run.** The extraction slices landed, but the test proving they were
-  move-only end to end (all importers and mock-sprint fixtures pass
-  unmodified against the facade) has not executed against the final state.
-- **Six extraction modules remain**: bead-child allocation helpers,
-  sprint-report/newTask text formatting, round-session and dispatch-failure
-  handling, and the fatal-diagnostics writer are still in `runner.js`.
 - **Phase 5 (observability/productization) is now underway, not
   unstarted.** The plan-reviewer's structured per-bead findings field now
   feeds contested-bead routing directly instead of being re-derived from
   prose, and every role's dispatch watchdog arming decision is now explicit
-  and audited (see "What shipped" above). The remaining Phase 5 beads are
-  still outstanding.
-- **A real, reproducible port-allocation race in the sandbox deploy
-  helper** causes an intermittent full-test-suite failure under concurrency
-  (passes in isolation, fails under load) -- see
-  `docs/design-regression-sandbox-lifecycle.md`. This is why the full test
-  gate is reported red this sprint despite every individual suite passing
-  on its own.
-- A stderr-pattern-table census left incomplete by the `git-topology.mjs`
-  extraction (one delegation assertion re-pointed, one census table not
-  yet widened to the new module).
-- Two low-priority (P3) hardening items: a sync-bracket pause-guard
-  re-registration edge case, and a shell-command-guard
-  header/implementation mismatch. (A third item, an `execute_prompt`
-  fork-predicate whitespace-only-id inconsistency, was fixed this sprint --
-  see "What shipped" above.)
+  and audited (see "What shipped" above). Still outstanding: routing the
+  VCS-credential-handoff callers onto `{{vcs_token_inline}}`, deleting the
+  now-retired prose-scraper/credential-read helpers it replaces, and adding
+  an explicit assertion for the `{{vcs_token_inline}}` escaping anti-drift
+  invariant.
+
+Everything else this section previously tracked as open backlog -- the
+Phase 4 facade-completeness gate, the six extraction modules once still in
+`runner.js`, the sandbox-deploy port-allocation race, the stderr-pattern-
+table census gap, and two low-priority (P3) hardening items (a sync-bracket
+pause-guard re-registration edge case and a shell-command-guard
+header/implementation mismatch, alongside the already-noted `execute_prompt`
+fork-predicate fix) -- was resolved before this entry closed out; see "What
+shipped" above for each. No other gap was found walking the full commit
+range for this entry beyond what is listed above; the remaining commits in
+range are internal test-harness/dev-tooling changes (e.g. the nested-suite
+timeout-budget test governance in `test/phase1-*`/`test/phase3-*`, KB
+snapshot regeneration, and decision-record docs with no behaviour change)
+with no operator-visible effect, and are deliberately not itemised here.
 
 ```
 Budget ceiling: not set (no --budget flag) -- unlimited for this run.
