@@ -130,8 +130,10 @@ export const GUARDED_MODULES = [
     // review.mjs took ONE member_name-bearing command() call site out of
     // runner.js (the `bd show <ids> --json` acceptance-criteria read) and NO
     // dispatchRole site -- the reviewer ladder runs through runner.js's
-    // dispatchReview() helper, which the Re-Review and Final Review phases
-    // share, so it stayed there. deploy.mjs took no command() site but ONE
+    // dispatchReview() helper, which the Review and Re-Review phases share
+    // (runner.js:2494 and :2762; Final Review does not receive it -- see the
+    // apra-fleet-3swo.65 correction below), so it stayed there. deploy.mjs
+    // took no command() site but ONE
     // dispatchRole site (the deployer ladder). Registering both as part of the
     // extraction is what keeps the guarded command census and the phase 3
     // dispatch census whole instead of quietly shrinking runner.js's scanned
@@ -153,8 +155,14 @@ export const GUARDED_MODULES = [
     // applyGuardedReopens (beads-transitions.mjs) and
     // createChildBeadWithAllocatedId/computeChildFloor, whose command() sites
     // live in the modules that own them, and the reviewer ladder runs through
-    // runner.js's shared dispatchReview() helper, which Final Review still
-    // calls. Registering both as part of the extraction is what keeps the
+    // runner.js's shared dispatchReview() helper, which the Review phase
+    // (runner.js:2494) also calls -- NOT Final Review, which passes no
+    // dispatchReview at all (runner.js:2834; see apra-fleet-3swo.65). A grep
+    // for `dispatchReview` across phases/ overcounts: the identifier also
+    // appears inside a shared boilerplate comment ("No duplicate log() dump
+    // -- see dispatchReview() for why") that phases/integ-test.mjs,
+    // phases/deploy.mjs and phases/regression-test.mjs carry verbatim, none
+    // of which actually receive the helper. Registering both as part of the
     // guarded command census and the phase 3 dispatch census whole instead of
     // quietly shrinking runner.js's scanned surface.
     'phases/integ-test.mjs',
