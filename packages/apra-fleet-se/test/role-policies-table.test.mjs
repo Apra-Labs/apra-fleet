@@ -465,6 +465,48 @@ function assertEveryRoleHasWatchdogRationale(policies) {
     }
 }
 
+/**
+ * THE table-level gate for apra-fleet-3swo.7.12's Final Review reopen: an
+ * armed watchdog is a pure wall-clock race with no activity signal, so its
+ * resolved `timeoutS` must never be a budget SHORTER than its own row's hard
+ * elapsed ceiling (`timeouts.maxTotalS`) -- racing the shorter INACTIVITY
+ * budget (`timeouts.timeoutS`) instead would abort an actively-progressing
+ * dispatch early, exactly the regression that reopened this bead for
+ * integ-test-runner and regression-test-runner.
+ *
+ * Enforced as an EQUALITY, not a numeric "shorter than" comparison: at the
+ * table level every budget is still a SYMBOLIC NAME (e.g. 'INTEG_MAX_TOTAL_S'),
+ * not a resolved number, so the checkable invariant is that
+ * `watchdog.timeoutS` names EXACTLY `timeouts.maxTotalS` (falling back to
+ * `timeouts.timeoutS` only when `maxTotalS` is null) -- which is precisely
+ * what resolveWatchdogTimeout() in role-policies.mjs computes, so this test
+ * is pinning that resolution actually ran, not re-deriving a numeric bound.
+ *
+ * Iterates every dispatch the same way allDispatchPolicies() does (main +
+ * secondary, de-duplicated), but takes `policies` as a parameter -- driven
+ * from the table's own keys, never a hardcoded role list -- so the
+ * falsification test below can run it against a spliced table.
+ * @param {object} policies a ROLE_POLICIES-shaped table
+ */
+function assertNoArmedWatchdogShorterThanMaxTotalS(policies) {
+    const seen = new Set();
+    for (const name of Object.keys(policies)) {
+        const entry = policies[name];
+        for (const dispatch of [entry, entry.secondary]) {
+            if (!dispatch || seen.has(dispatch)) continue;
+            seen.add(dispatch);
+            if (!dispatch.watchdog.armed) continue;
+            const expected = dispatch.timeouts.maxTotalS ?? dispatch.timeouts.timeoutS;
+            assert.strictEqual(
+                dispatch.watchdog.timeoutS,
+                expected,
+                `${dispatch.role}:${dispatch.kind}: armed watchdog budget '${dispatch.watchdog.timeoutS}' must ` +
+                `resolve to this row's own hard elapsed ceiling ('${expected}'), never a shorter/unrelated budget.`
+            );
+        }
+    }
+}
+
 /** Rebuilds a watchdog label's source expression from its segment list. */
 function labelExpr(segments) {
     if (segments.every((s) => typeof s === 'string')) return `'${segments.join('')}'`;
@@ -1291,6 +1333,78 @@ describe('role policy table: every named variance is expressed as data', () => {
             'the normalizer must not re-introduce a `spec.watchdog ?? NO_WATCHDOG` fallback: a defaulted watchdog is ' +
             'indistinguishable from a declared one at run time, which is exactly what this bead removed.'
         );
+    });
+
+    test('the armed watchdog constructor carries no hard-coded budget name', () => {
+        // Criterion 1 of the Final Review reopen: `watchdog(label, reason)`'s
+        // OWN object literal must not itself name a specific budget -- the
+        // resolution has to come from each row's own timeouts, via
+        // resolveWatchdogTimeout(), not a constant baked into the constructor.
+        // Scoped to the constructor's own declaration region (not the whole
+        // file) so a `budgets('DISPATCH_TIMEOUT_S', ...)` call elsewhere in
+        // the table -- which legitimately names it -- does not false-fail
+        // this.
+        const ctorMatch = /const watchdog = \(label, reason\) => \(\{[\s\S]*?\}\);/.exec(ROLE_POLICIES_SRC);
+        assert.ok(ctorMatch, 'sanity: could not locate the watchdog(label, reason) constructor source to scan.');
+        assert.ok(
+            !ctorMatch[0].includes('DISPATCH_TIMEOUT_S'),
+            'the armed watchdog constructor must not hard-code a budget name -- it must carry the timeoutS:null ' +
+            "sentinel and let resolveWatchdogTimeout() resolve each row's own timeouts.maxTotalS/timeoutS instead."
+        );
+    });
+
+    test('no armed watchdog budget is shorter than its own row\'s hard elapsed ceiling', () => {
+        // Criterion 4 of the Final Review reopen, driven from the frozen
+        // table itself (Object.keys(ROLE_POLICIES) via
+        // assertNoArmedWatchdogShorterThanMaxTotalS), not a hardcoded role
+        // list -- so a future role gaining a long ceiling is covered
+        // automatically. Covers the four armed SECONDARY dispatches too
+        // (planner, deployer, integ-test-runner, regression-test-runner),
+        // not just the 13 main rows: allDispatchPolicies()-style enumeration
+        // walks both.
+        assertNoArmedWatchdogShorterThanMaxTotalS(ROLE_POLICIES);
+    });
+
+    test('the maxTotalS-ceiling gate bites: a hard-coded shorter budget fails loudly', () => {
+        // FALSIFICATION, per the Final Review reopen's criterion 5. Splices
+        // integ-test-runner's watchdog back to the exact shape the real
+        // defect shipped -- timeoutS hard-coded to the shared inactivity
+        // budget instead of resolved from timeouts.maxTotalS -- and confirms
+        // the table-level gate above catches it. The frozen table itself is
+        // never mutated (splicePolicy returns a copy).
+        assert.throws(
+            () => assertNoArmedWatchdogShorterThanMaxTotalS(
+                splicePolicy('integ-test-runner', {
+                    watchdog: { ...ROLE_POLICIES['integ-test-runner'].watchdog, timeoutS: 'DISPATCH_TIMEOUT_S' },
+                })
+            ),
+            (err) => err instanceof assert.AssertionError && /integ-test-runner:main/.test(err.message),
+            'A row whose armed watchdog is hard-coded to a budget shorter than its own maxTotalS must fail this gate.'
+        );
+        assert.throws(
+            () => assertNoArmedWatchdogShorterThanMaxTotalS(
+                splicePolicy('regression-test-runner', {
+                    watchdog: { ...ROLE_POLICIES['regression-test-runner'].watchdog, timeoutS: 'DISPATCH_TIMEOUT_S' },
+                })
+            ),
+            (err) => err instanceof assert.AssertionError && /regression-test-runner:main/.test(err.message),
+            'Same defect, same gate, for regression-test-runner.'
+        );
+        // deployer's two budgets are EQUAL (budgets('DISPATCH_TIMEOUT_S',
+        // 'DISPATCH_TIMEOUT_S')), so hard-coding its watchdog to
+        // 'DISPATCH_TIMEOUT_S' is NOT shorter than its own maxTotalS and must
+        // NOT trip the gate -- proving this check does not just fail on any
+        // splice, only on a genuinely-too-short budget.
+        assertNoArmedWatchdogShorterThanMaxTotalS(
+            splicePolicy('deployer', {
+                watchdog: { ...ROLE_POLICIES.deployer.watchdog, timeoutS: 'DISPATCH_TIMEOUT_S' },
+            })
+        );
+        // The gate is not vacuous in the other direction either: the real,
+        // unspliced table must pass it (already proven by the test above,
+        // repeated here so this falsification test alone still demonstrates
+        // both directions if run in isolation).
+        assertNoArmedWatchdogShorterThanMaxTotalS(ROLE_POLICIES);
     });
 
     test('every ROLE_POLICIES entry declares its watchdog in SOURCE, not by normalizer default', () => {

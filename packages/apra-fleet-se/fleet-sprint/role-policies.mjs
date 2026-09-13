@@ -262,11 +262,44 @@ const noWatchdog = (reason) => ({
  * a plain string is literal text, an object is a runner expression
  * interpolated into it. `reason` is the recorded WHY this dispatch is judged
  * to need the extra client-side kill-path.
+ *
+ * `timeoutS: null` here is a SENTINEL, not a real budget name -- deliberately
+ * NOT a hard-coded 'DISPATCH_TIMEOUT_S' literal (apra-fleet-3swo.7.12 Final
+ * Review reopen). withDispatchWatchdog is a pure wall-clock race with no
+ * activity signal, so racing it against the INACTIVITY budget
+ * (timeouts.timeoutS) kills an actively-progressing dispatch early on any row
+ * whose HARD elapsed ceiling (timeouts.maxTotalS) is deliberately longer --
+ * exactly integ-test-runner and regression-test-runner. `null` here means
+ * "resolve from this same row's own timeouts", and resolveWatchdogTimeout()
+ * below does that resolution in BOTH policy() and secondary() before this
+ * object is ever read by dispatch-role.mjs.
  */
 const watchdog = (label, reason) => ({
-    armed: true, timeoutS: 'DISPATCH_TIMEOUT_S', member: 'dispatch', label,
+    armed: true, timeoutS: null, member: 'dispatch', label,
     reason: requireReason(reason, 'watchdog'),
 });
+
+/**
+ * Resolves an armed watchdog's `timeoutS` sentinel against that SAME row's
+ * own `timeouts`, so the client-side kill-path uses the row's HARD elapsed
+ * ceiling (`timeouts.maxTotalS`) rather than its inactivity budget
+ * (`timeouts.timeoutS`) whenever the two differ (apra-fleet-3swo.7.12 Final
+ * Review reopen). When `maxTotalS` is null (NO_BUDGETS) or equal to
+ * `timeoutS`, falling back to `timeoutS` yields the identical value either
+ * way. A disarmed watchdog's `timeoutS` is already null and is returned
+ * unchanged -- there is nothing to resolve.
+ *
+ * Called from BOTH `policy()` and `secondary()`, not just one: four of the
+ * armed secondaries (planner, deployer, integ-test-runner,
+ * regression-test-runner) build their OWN `watchdog(...)` directly inside
+ * `over` rather than inheriting the main row's already-resolved one, so a
+ * fix applied only inside `policy()` would leave all four secondaries
+ * hard-coded to the wrong budget.
+ */
+function resolveWatchdogTimeout(watchdogSpec, timeoutsSpec) {
+    if (!watchdogSpec.armed) return watchdogSpec;
+    return { ...watchdogSpec, timeoutS: timeoutsSpec.maxTotalS ?? timeoutsSpec.timeoutS };
+}
 
 const SAME_SESSION_RESUME = { kind: 'same-session' };
 const WORKLIST_RESUME = { kind: 'worklist' };
@@ -499,8 +532,11 @@ function policy(role, spec) {
         // into this required group, alongside bracket/timeouts/retry/degrade/
         // kbInjection/member/model. An entry that omits it gets `undefined`
         // here rather than a silently-supplied NO_WATCHDOG, so every read of
-        // `.armed` on a row that forgot to declare one throws immediately.
-        watchdog: spec.watchdog,
+        // `.armed` on a row that forgot to declare one throws immediately
+        // (resolveWatchdogTimeout's own `.armed` read below throws first).
+        // When armed, resolves the sentinel `timeoutS: null` against THIS
+        // row's own `timeouts` (Final Review reopen, apra-fleet-3swo.7.12).
+        watchdog: resolveWatchdogTimeout(spec.watchdog, spec.timeouts),
         retry: spec.retry,
         degrade: spec.degrade,
         kbInjection: spec.kbInjection,
@@ -528,7 +564,7 @@ function secondary(main, role, kind, over) {
             'non-empty string -- inheriting the main dispatch\'s anchor would make the two indistinguishable.'
         );
     }
-    return {
+    const merged = {
         ...main,
         role,
         kind,
@@ -536,6 +572,17 @@ function secondary(main, role, kind, over) {
         secondary: null,
         ...over,
     };
+    // Re-resolve here too (apra-fleet-3swo.7.12 Final Review reopen): `over`
+    // never overrides `timeouts` (every secondary inherits its main row's
+    // budgets unchanged), but FOUR secondaries (planner, deployer,
+    // integ-test-runner, regression-test-runner) DO override `watchdog` with
+    // a fresh `watchdog(...)` call carrying the unresolved `timeoutS: null`
+    // sentinel -- `main.watchdog` being already-resolved does not help those,
+    // since the spread replaces it outright. Idempotent when `over` carried
+    // no watchdog of its own: `merged.watchdog` is then `main.watchdog`,
+    // already resolved against the identical `merged.timeouts`.
+    merged.watchdog = resolveWatchdogTimeout(merged.watchdog, merged.timeouts);
+    return merged;
 }
 
 // -----------------------------------------------------------------------------
