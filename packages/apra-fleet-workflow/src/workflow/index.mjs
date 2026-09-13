@@ -1282,7 +1282,14 @@ export class FleetWorkflow extends EventEmitter {
                     // result.usage is null and cost is null -- the viewer then
                     // tallies it as an unknown-cost activity rather than fiction.
                     this.emit('activity:end', { ...activityMeta, error: text, duration, usage: result.usage, cost, success: false });
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id } });
+                    // apra-fleet-hzeb.2: pure pass-through, no policy decisions here --
+                    // when execute_prompt relayed a provider usage-limit signal
+                    // (reason: 'usage_limit'), forward its usageLimit block and the
+                    // in-flight sessionId onto AgentDispatchError.details unchanged, so
+                    // the fleet-sprint pause/resume policy can read
+                    // err.details.usageLimit.resumeAt / err.details.sessionId directly
+                    // instead of re-parsing the failure text.
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}) } });
                 }
 
                 // apra-fleet-eft.78.3: surface the resumable session id

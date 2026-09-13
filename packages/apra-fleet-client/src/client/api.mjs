@@ -40,6 +40,43 @@
  */
 
 /**
+ * apra-fleet-hzeb.2: a provider-agnostic "this dispatch cannot make progress until
+ * `resumeAt`" signal, mirroring src/providers/provider.ts's UsageLimitSignal exactly.
+ * @typedef {Object} UsageLimitSignal
+ * @property {'usage_limit'} type
+ * @property {string} resumeAt - ISO-8601 UTC instant at which work may resume. Never null:
+ *   when the provider CLI exposes a real reset time it is parsed (resumeAtSource: 'parsed');
+ *   otherwise it falls back to a guessed window (resumeAtSource: 'guessed').
+ * @property {'parsed'|'guessed'} resumeAtSource
+ * @property {string} message - The raw provider message/output that identified this as a
+ *   usage/quota limit (for logging).
+ */
+
+/**
+ * Result-side shape of execute_prompt's `structuredContent` -- the single place callers
+ * should read the outcome of a dispatch rather than re-parsing the display text. This is
+ * NOT exhaustive of every `reason` value (see src/tools/execute-prompt.ts's
+ * ExecutePromptStructured for the full union); it documents the fields most callers key off.
+ * @typedef {Object} ExecutePromptStructured
+ * @property {boolean} [isError] - true on any failure path; absent/false on success.
+ * @property {string} [reason] - Machine-readable failure/status classification, e.g.
+ *   'busy' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'overloaded' |
+ *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | ...
+ * @property {UsageLimitSignal} [usageLimit] - Present when `reason === 'usage_limit'`
+ *   (apra-fleet-hzeb.2): the provider's detectUsageLimit() signal verbatim -- a 429/quota
+ *   exhaustion that a fresh session cannot cure, so execute_prompt returns this INSTEAD of
+ *   retrying via the stale-session or server-overloaded (529, reason: 'overloaded') retry
+ *   paths. Read `usageLimit.resumeAt`/`resumeAtSource` to schedule a resume rather than
+ *   re-parsing the failure text; `packages/apra-fleet-workflow` forwards this unchanged onto
+ *   `AgentDispatchError.details.usageLimit`.
+ * @property {string} [response] - The LLM's actual reply text on success.
+ * @property {string} [sessionId] - The session id this dispatch landed on, when known --
+ *   present on success AND on a 'usage_limit'/'max_turns_exhausted' failure so the SAME
+ *   session can be resumed later instead of losing context to a fresh one.
+ * @property {{input_tokens:number, output_tokens:number, total_tokens:number}} [usage]
+ */
+
+/**
  * @typedef {Object} ExecuteCommandOptions
  * @property {string} command - The shell command to execute
  * @property {boolean} [long_running] - Run as background task. Supported on linux and windows
@@ -371,6 +408,9 @@ export class ApraFleet {
     /**
      * Run an AI prompt on a member.
      * @param {ExecutePromptOptions} options
+     * @returns {Promise<{content?: {type: string, text: string}[], structuredContent?: ExecutePromptStructured}>}
+     *   the raw callTool() result -- see the {@link ExecutePromptStructured} typedef above
+     *   for the structuredContent shape (reason, usageLimit, sessionId, usage, ...).
      */
     async executePrompt(options) {
         const { timeoutMs, signal, ...payload } = options;
