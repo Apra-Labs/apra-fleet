@@ -263,7 +263,11 @@ export function redactNetworkCommandForLog(command) {
 // production tool returns on success (a leading check-mark line plus an
 // 'expiresAt:' metadata line, AND the structuredContent half the orchestrator
 // actually reads the expiry from -- see src/tools/provision-vcs-auth.ts and
-// vcs-auth.mjs's provisionExpiresAt()) and, for any other tool
+// vcs-auth.mjs's provisionVcsAuthForMember(), which reads
+// `structuredContent.expiresAt` inline (deliberately not extracted into its
+// own named helper, since test/vcs-auth-extraction-facade.test.mjs pins
+// vcs-auth.mjs's top-level declarations symbol-for-symbol and would fail on
+// an added name)) and, for any other tool
 // name, a generic success -- so it never masks a genuinely-unexpected tool
 // call as a failure. A scenario that needs to observe a provisioning
 // failure, or assert on the exact provision_vcs_auth call args, still passes
