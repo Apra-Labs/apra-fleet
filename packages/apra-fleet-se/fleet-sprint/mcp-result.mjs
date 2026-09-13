@@ -66,7 +66,7 @@ export function resultText(result) {
 export function toolErrorText(res) {
     if (res && Array.isArray(res.content)) {
         for (const entry of res.content) {
-            if (entry && typeof entry.text === 'string' && !isDisplayBanner(entry)) {
+            if (entry && typeof entry.text === 'string' && entry.text && !isDisplayBanner(entry)) {
                 return entry.text;
             }
         }

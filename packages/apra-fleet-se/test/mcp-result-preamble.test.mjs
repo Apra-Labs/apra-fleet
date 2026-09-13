@@ -129,6 +129,33 @@ describe('toolErrorText vs. the onboarding banner (apra-fleet-3swo.63)', () => {
         assert.strictEqual(toolErrorText({ isError: true }), 'no error text returned');
     });
 
+    test('7. an entry whose text is the empty string is skipped, keeping the no-error-text sentinel (apra-fleet-3swo.70)', () => {
+        // apra-fleet-3swo.63's rework read `typeof first.text === 'string'`
+        // without also requiring it to be non-empty, so {content:[{text:''}]}
+        // returned '' instead of the sentinel -- a regression from the
+        // pre-3swo.63 `(first && ... && first.text) || 'no error text
+        // returned'` fallback, which kb.mjs's four log call sites rely on for
+        // a non-blank log line.
+        assert.strictEqual(toolErrorText({ content: [{ type: 'text', text: '' }] }), 'no error text returned');
+    });
+
+    test('7a. an audience:[\'user\'] entry is skipped even with no apra-fleet-display tag in its text', () => {
+        const audienceOnlyBanner = {
+            type: 'text',
+            text: 'no display tag here',
+            annotations: { audience: ['user'] },
+        };
+        assert.strictEqual(toolErrorText({ content: [audienceOnlyBanner, realResult] }), 'REAL TOOL OUTPUT');
+    });
+
+    test('7b. an <apra-fleet-display> tagged entry is skipped even with no annotations', () => {
+        const taggedOnlyBanner = {
+            type: 'text',
+            text: '<apra-fleet-display>\nno annotations here\n</apra-fleet-display>',
+        };
+        assert.strictEqual(toolErrorText({ content: [taggedOnlyBanner, realResult] }), 'REAL TOOL OUTPUT');
+    });
+
     test('8. [banner, nudge] (all-banner, preamble + trailing nudge) falls back to the no-error-text sentinel', () => {
         assert.strictEqual(toolErrorText({ content: [banner, nudge] }), 'no error text returned');
     });
