@@ -4,12 +4,24 @@
  */
 
 /**
+ * The interior transform escapeShellArg wraps in single quotes, factored out
+ * so a value that must sit INSIDE an already-open single-quoted string (e.g.
+ * vcs-credential-exec.ts's inline token placeholder) can reuse the exact same
+ * escaping without also picking up the wrapping quotes. escapeShellArg is
+ * defined in terms of this function rather than repeating the replace, so the
+ * two can never drift apart (apra-fleet-3swo.7.16).
+ */
+export function escapeShellArgInner(s: string): string {
+  return s.replace(/'/g, "'\\''");
+}
+
+/**
  * Escape a string for safe use inside single-quoted Unix shell arguments.
  * Handles embedded single quotes by ending the quote, adding an escaped quote, and reopening.
  * e.g. "it's" → 'it'\''s'
  */
 export function escapeShellArg(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
+  return "'" + escapeShellArgInner(s) + "'";
 }
 
 /**
@@ -36,13 +48,23 @@ export function escapeWindowsArg(s: string): string {
 }
 
 /**
+ * The interior transform escapePowerShellArg wraps in single quotes, factored
+ * out for the same reason as escapeShellArgInner above: a value that must sit
+ * INSIDE an already-open PowerShell single-quoted string reuses this directly
+ * instead of re-implementing the doubling rule (apra-fleet-3swo.7.16).
+ */
+export function escapePowerShellArgInner(s: string): string {
+  return s.replace(/'/g, "''");
+}
+
+/**
  * Escape a string for safe use as a PowerShell single-quoted string literal.
  * Single-quoted strings in PowerShell are fully literal — no variable expansion.
  * Internal single quotes are escaped by doubling them: ' → ''
  * Returns the value wrapped in single quotes.
  */
 export function escapePowerShellArg(s: string): string {
-  return "'" + s.replace(/'/g, "''") + "'";
+  return "'" + escapePowerShellArgInner(s) + "'";
 }
 
 /**
