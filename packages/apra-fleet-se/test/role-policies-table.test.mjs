@@ -375,6 +375,96 @@ function resumeArgExpr(resumeArg) {
     return `roundSessions.resumeArgFor('${resumeArg.role}', cycle)`;
 }
 
+// ---------------------------------------------------------------------------
+// Watchdog rationale gate (apra-fleet-3swo.7.12)
+// ---------------------------------------------------------------------------
+//
+// The enumeration gate lives in a NAMED function so the falsification below
+// can drive the very same code the passing test runs, against a spliced table.
+// A falsification that re-implements the predicate inside its own
+// assert.throws callback proves nothing: it stays green even with the gate
+// deleted.
+
+/** role-policies.mjs source with comments stripped -- the only view that can
+ *  tell an explicitly DECLARED watchdog from a normalizer-supplied default. */
+const ROLE_POLICIES_SRC = stripComments(
+    fs.readFileSync(path.join(FLEET_SPRINT_DIR, 'role-policies.mjs'), 'utf8')
+);
+
+/** Explicit `watchdog: watchdog(...)` / `watchdog: noWatchdog(...)` declaration
+ *  counts, read from source rather than from the loaded table. */
+const WATCHDOG_CTOR_SITES = Object.freeze({
+    watchdog: (ROLE_POLICIES_SRC.match(/watchdog:\s*watchdog\(/g) || []).length,
+    noWatchdog: (ROLE_POLICIES_SRC.match(/watchdog:\s*noWatchdog\(/g) || []).length,
+});
+
+/** One declaration's source text: from `start` to the next entry/secondary. */
+function policySourceRegionFrom(start) {
+    const ends = [
+        ROLE_POLICIES_SRC.indexOf("policy('", start + 1),
+        ROLE_POLICIES_SRC.indexOf('secondary(', start + 1),
+    ].filter((i) => i > -1);
+    return ROLE_POLICIES_SRC.slice(start, ends.length > 0 ? Math.min(...ends) : ROLE_POLICIES_SRC.length);
+}
+
+/**
+ * Locates the source declaration that states a role's watchdog.
+ *
+ * A role is declared either as its own `policy('<role>', { ... })` entry or as
+ * a `secondary(<base>, '<role>', ...)` row. A secondary may state its own
+ * watchdog (the planner's resume does) or INHERIT its base row's -- which is
+ * legitimate explicitness, because the base states it at a real declaration
+ * site, and is a different thing entirely from the normalizer silently
+ * supplying one.
+ *
+ * @param {string} role
+ * @returns {{ region: string, declaredBy: string }}
+ */
+function watchdogDeclarationSourceFor(role) {
+    const escaped = role.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const direct = ROLE_POLICIES_SRC.indexOf(`policy('${role}',`);
+    if (direct > -1) return { region: policySourceRegionFrom(direct), declaredBy: role };
+
+    const asSecondary = new RegExp(`secondary\\((\\w+), '${escaped}',`).exec(ROLE_POLICIES_SRC);
+    assert.ok(
+        asSecondary,
+        `${role}: no policy('${role}', ...) or secondary(..., '${role}', ...) declaration found in role-policies.mjs source.`
+    );
+    const region = policySourceRegionFrom(asSecondary.index);
+    if (/watchdog:\s*(watchdog|noWatchdog)\(/.test(region)) return { region, declaredBy: role };
+
+    // Inheriting is only acceptable if the base row itself states one.
+    const baseConst = asSecondary[1];
+    const baseDecl = new RegExp(`const ${baseConst} = policy\\('([\\w-]+)',`).exec(ROLE_POLICIES_SRC);
+    assert.ok(baseDecl, `${role}: its secondary base '${baseConst}' is not a policy('<role>', ...) entry.`);
+    const baseStart = ROLE_POLICIES_SRC.indexOf(`policy('${baseDecl[1]}',`);
+    return { region: policySourceRegionFrom(baseStart), declaredBy: baseDecl[1] };
+}
+
+/**
+ * THE gate: every role name has a machine-readable, non-placeholder rationale
+ * bound to its watchdog.armed value. Throws (AssertionError, or TypeError if
+ * the entry has no watchdog object at all) on the first offender.
+ * @param {object} policies a ROLE_POLICIES-shaped table
+ */
+function assertEveryRoleHasWatchdogRationale(policies) {
+    for (const name of ROLE_NAMES) {
+        const row = policies[name];
+        assert.ok(row, `${name}: no policy row at all.`);
+        assert.ok(
+            row.watchdog && typeof row.watchdog === 'object',
+            `${name}: watchdog must be declared explicitly -- there is no silent default any more.`
+        );
+        const reason = row.watchdog.reason;
+        assert.strictEqual(typeof reason, 'string', `${name}: watchdog.reason must be a string a test can read.`);
+        assert.ok(
+            reason.trim().length >= 20,
+            `${name}: watchdog.reason must be a real justification, not a placeholder ("${reason}").`
+        );
+    }
+}
+
 /** Rebuilds a watchdog label's source expression from its segment list. */
 function labelExpr(segments) {
     if (segments.every((s) => typeof s === 'string')) return `'${segments.join('')}'`;
@@ -1133,31 +1223,109 @@ describe('role policy table: every named variance is expressed as data', () => {
         // hardcoded, so a role added later cannot silently ship with no
         // recorded justification for its armed/disarmed value.
         assert.ok(ROLE_NAMES.length > 0, 'sanity: ROLE_NAMES must not be empty for this gate to mean anything.');
-        for (const name of ROLE_NAMES) {
-            const reason = policyFor(name).watchdog.reason;
-            assert.strictEqual(typeof reason, 'string', `${name}: watchdog.reason must be a string a test can read.`);
-            assert.ok(
-                reason.trim().length >= 20,
-                `${name}: watchdog.reason must be a real justification, not a placeholder ("${reason}").`
-            );
-        }
+        assertEveryRoleHasWatchdogRationale(ROLE_POLICIES);
     });
 
     test('the watchdog rationale gate bites: an entry missing a reason fails loudly', () => {
-        // Falsification, per apra-fleet-3swo.7.12's acceptance criteria: build a
-        // table with ONE role's watchdog object stripped of its `reason` (as if
-        // its declaration had omitted it) and prove the two gates above catch
-        // it -- the enumeration assertion this test mirrors, run against a
-        // deliberately-broken row.
-        const broken = { ...ROLE_POLICIES.harvester, watchdog: { ...ROLE_POLICIES.harvester.watchdog, reason: undefined } };
+        // Falsification, per apra-fleet-3swo.7.12's acceptance criteria.
+        //
+        // This drives the REAL gates, never a re-implementation of them:
+        //   (a) assertEveryRoleHasWatchdogRationale -- the exact function the
+        //       enumeration test above calls -- run against a spliced table
+        //       (splicePolicy, the same mutation seam the phase-3 pins use);
+        //   (b) the PRODUCTION constructors in role-policies.mjs, reached
+        //       through the real declaration site of a real role.
+        // Deleting either gate makes this test fail, which is what a
+        // falsification has to guarantee. The frozen table is never mutated:
+        // splicePolicy returns a copy.
+
+        // (a1) reason stripped, as if the declaration had omitted it.
         assert.throws(
-            () => {
-                if (typeof broken.watchdog.reason !== 'string' || broken.watchdog.reason.trim().length < 20) {
-                    throw new TypeError('role-policies: harvester is missing a watchdog rationale.');
-                }
-            },
-            TypeError,
+            () => assertEveryRoleHasWatchdogRationale(
+                splicePolicy('harvester', { watchdog: { ...ROLE_POLICIES.harvester.watchdog, reason: undefined } })
+            ),
+            (err) => err instanceof assert.AssertionError && /harvester: watchdog\.reason/.test(err.message),
             'A role entry with no watchdog.reason must fail the enumeration gate rather than pass silently.'
+        );
+
+        // (a2) a placeholder rationale -- present, a string, and worthless.
+        assert.throws(
+            () => assertEveryRoleHasWatchdogRationale(
+                splicePolicy('harvester', { watchdog: { ...ROLE_POLICIES.harvester.watchdog, reason: 'TODO' } })
+            ),
+            (err) => err instanceof assert.AssertionError && /not a placeholder/.test(err.message),
+            'A stub rationale must not satisfy the gate.'
+        );
+
+        // (a3) the whole watchdog declaration deleted. With the normalizer's
+        // old `spec.watchdog ?? NO_WATCHDOG` fallback gone, the entry carries
+        // watchdog === undefined, and the gate must fail LOUDLY rather than
+        // read a silently-defaulted disarmed value.
+        assert.throws(
+            () => assertEveryRoleHasWatchdogRationale(splicePolicy('harvester', { watchdog: undefined })),
+            (err) => /harvester: watchdog/.test(err.message),
+            'A role entry with no watchdog declaration at all must fail loudly, not default to disarmed.'
+        );
+
+        // (a4) the gate is not vacuous in the other direction: the real,
+        // unspliced table must pass it.
+        assertEveryRoleHasWatchdogRationale(ROLE_POLICIES);
+
+        // (b) the production constructors themselves. WATCHDOG_CTOR_SITES is
+        // read from role-policies.mjs source, so this drives the requireReason
+        // guard at its real declaration sites rather than a test-local copy.
+        for (const ctor of ['watchdog', 'noWatchdog']) {
+            assert.ok(
+                WATCHDOG_CTOR_SITES[ctor] > 0,
+                `sanity: role-policies.mjs must declare at least one ${ctor}(...) watchdog for this gate to mean anything.`
+            );
+        }
+        assert.match(
+            ROLE_POLICIES_SRC,
+            /function requireReason\(reason, ctorName\) \{\s*if \(typeof reason !== 'string' \|\| reason\.trim\(\)\.length === 0\) \{\s*throw new TypeError\(/,
+            'role-policies.mjs must keep the requireReason guard that makes an empty rationale throw at MODULE LOAD -- ' +
+            'without it, a watchdog()/noWatchdog() call with no reason ships silently.'
+        );
+        assert.ok(
+            !/spec\.watchdog\s*\?\?/.test(ROLE_POLICIES_SRC),
+            'the normalizer must not re-introduce a `spec.watchdog ?? NO_WATCHDOG` fallback: a defaulted watchdog is ' +
+            'indistinguishable from a declared one at run time, which is exactly what this bead removed.'
+        );
+    });
+
+    test('every ROLE_POLICIES entry declares its watchdog in SOURCE, not by normalizer default', () => {
+        // Criterion 1 is explicitly a SOURCE-LEVEL claim: enumerating the
+        // LOADED table cannot tell a declared watchdog from a defaulted one --
+        // both read identically -- and that is exactly what misled two earlier
+        // planning passes. So this reads role-policies.mjs source and requires
+        // each role's own policy('<role>', { ... }) literal to state a
+        // watchdog() or noWatchdog() call of its own. The role list is
+        // DISCOVERED from ROLE_NAMES; nothing here is hardcoded.
+        for (const name of ROLE_NAMES) {
+            const { region, declaredBy } = watchdogDeclarationSourceFor(name);
+            assert.match(
+                region,
+                /watchdog:\s*(watchdog|noWatchdog)\(/,
+                `${name}: no watchdog() / noWatchdog() call is stated at its declaration site ` +
+                `(resolved to '${declaredBy}'). The normalizer no longer supplies one, so it must be stated in source.`
+            );
+        }
+
+        // Secondary (resume) rows legitimately INHERIT their main row's
+        // explicit declaration, so there are more dispatch rows than
+        // declarations -- but never fewer declarations than roles.
+        const declared = WATCHDOG_CTOR_SITES.watchdog + WATCHDOG_CTOR_SITES.noWatchdog;
+        assert.ok(
+            declared >= ROLE_NAMES.length,
+            `role-policies.mjs declares ${declared} watchdog(...)/noWatchdog(...) call(s) for ${ROLE_NAMES.length} role(s) -- ` +
+            'at least one explicit declaration per role is required.'
+        );
+        // Every armed row is traceable to an armed declaration in source: more
+        // armed rows than armed declarations would mean a row became armed
+        // through something other than a stated watchdog(...) call.
+        assert.ok(
+            allDispatchPolicies().filter((p) => p.watchdog.armed).length >= WATCHDOG_CTOR_SITES.watchdog,
+            'every armed watchdog(...) declaration in source must show up as an armed row in the loaded table.'
         );
     });
 
