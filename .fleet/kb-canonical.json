@@ -1,11 +1,25 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "6774b5958e71c0498e89c370c60414696fca913d",
+    "commit": "28632b5e0f1f099fd03af1302a6966d4d8353587",
     "branch": "feat/runner-refactor-standalone",
-    "entry_count": 158
+    "entry_count": 179
   },
   "entries": [
+    {
+      "id": "013831a0-3d7d-4ea9-99ad-bbe6b0311f8a",
+      "type": "knowledge",
+      "title": "test:record with no file argument silently skips every test/slow fixture",
+      "summary": "node scripts/run-tests.mjs record defaults its node --test target to test/*.test.mjs, so regenerating a bd recording for a test/slow scenario requires naming the file explicitly or the command succeeds while changing nothing.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs",
+        "packages/apra-fleet-se/test/fixtures/bd-recordings/apra-fleet-mock-sprint-plannerstalledsession.jsonl"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T02:49:30.237Z"
+    },
     {
       "id": "02a64b6a-8534-4f28-9583-f238ae86a92a",
       "type": "knowledge",
@@ -35,6 +49,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-12T00:23:27.430Z"
+    },
+    {
+      "id": "0681ecb4-2921-40d9-ae15-e626433ad01a",
+      "type": "knowledge",
+      "title": "The only real-timer watchdog test lives in test/slow and is not run by npm test, so a withDispatchWatchdog change can regress unnoticed",
+      "summary": "dispatch-watchdog.test.mjs uses node:test mock timers and cannot catch an unref'd-timer regression; the test that can, test/slow/dispatch-watchdog-timer-ref.test.mjs, is excluded from the default suite by the package.json glob.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/test/slow/dispatch-watchdog-timer-ref.test.mjs",
+        "packages/apra-fleet-se/test/dispatch-watchdog.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-failure.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T10:19:14.663Z"
     },
     {
       "id": "07003cb6-580b-41de-be4a-8827d7dcf240",
@@ -79,6 +108,47 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-09T23:26:48.877Z"
+    },
+    {
+      "id": "08302d15-a3f6-466e-9ef1-df210a077a1f",
+      "type": "knowledge",
+      "title": "The shared dispatch-role harness stubs out the watchdog, so timeout tests must re-wire the real one",
+      "summary": "createRecordingCtx's withDispatchWatchdog only records timeoutS/member/label and returns the dispatch promise unchanged, so any test asserting real watchdog timing through dispatchRole must overwrite ctx.withDispatchWatchdog with the implementation from dispatch-failure.mjs.",
+      "symbols": [
+        "createRecordingCtx",
+        "withDispatchWatchdog",
+        "dispatchRole",
+        "DISPATCH_WATCHDOG_GRACE_S"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-failure.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/test/watchdog-armed-roles-runtime.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T04:11:11.180Z"
+    },
+    {
+      "id": "08bf486a-ad04-434c-b24d-5f9dd5531c98",
+      "type": "knowledge",
+      "title": "Editing an agents/schemas/*.json contract forces two generated-artifact updates",
+      "summary": "A role-contract schema change is never a single-file edit: the schema is inlined into auto-sprint.js by a build-time generator with a drift guard, and it is embedded verbatim in the happy-path golden transcript's dispatch prompt.",
+      "symbols": [
+        "PLAN_REVIEW_SCHEMA",
+        "FALLBACK_planReviewerVerdict",
+        "resolveOutputSchema",
+        "assertVersionPin"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/apra-pm/scripts/gen-auto-sprint-schemas.mjs",
+        "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs",
+        "packages/apra-fleet-se/test/golden-transcript.test.mjs",
+        "packages/apra-fleet-se/test/phase4-move-only-completeness.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T02:49:30.225Z"
     },
     {
       "id": "0c2b91da-5ed6-45f4-95cd-498c823ade80",
@@ -168,6 +238,25 @@
       "updated_at": "2026-09-07T16:36:38.734Z"
     },
     {
+      "id": "0ff119bf-2311-403c-bdee-5b63e5574901",
+      "type": "knowledge",
+      "title": "plan-reviewer findings: empty array means plan-wide, absent means pre-contract",
+      "summary": "The new optional findings field distinguishes an empty array (explicit plan-wide objection) from an absent field (verdict predates the contract), which is what lets the contested-bead consumer migrate off prose scanning without changing behaviour.",
+      "symbols": [
+        "FALLBACK_planReviewerVerdict",
+        "extractContestedBeadIds",
+        "planReviewerVerdict"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/apra-pm/agents/schemas/plan-reviewer-output.json",
+        "packages/apra-fleet-se/apra-pm/agents/plan-reviewer.md",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs",
+        "packages/apra-fleet-se/fleet-sprint/newtask-text.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T02:49:30.230Z"
+    },
+    {
       "id": "107afe50-ec60-4e99-b6b7-09c549658518",
       "type": "knowledge",
       "title": "A missing-anchor freshness regression surfaces first as kb_list dropping entries, not as a stale-flag assertion",
@@ -204,6 +293,19 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-08T06:00:15.649Z"
+    },
+    {
+      "id": "12ea79ef-e4e4-4760-ac99-47674cfaef08",
+      "type": "knowledge",
+      "title": "bd-replay drift is one-directional, so a regenerated fixture may legitimately shrink",
+      "summary": "Replay only errors when an issued command has no remaining recorded response; recorded entries that are never consumed are silently ignored, so a refreshed recording with fewer entries than the one it replaces is not evidence of lost coverage.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs",
+        "packages/apra-fleet-se/test/fixtures/bd-recordings/apra-fleet-mock-sprint-plannerstalledsession.jsonl"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T02:49:30.242Z"
     },
     {
       "id": "130bc73b-fade-4d3a-8254-2ad3b2e1bfef",
@@ -415,6 +517,26 @@
       "updated_at": "2026-09-09T08:37:56.046Z"
     },
     {
+      "id": "1d7d7119-e8e5-4a2a-acdd-e9cf17c6d0d0",
+      "type": "knowledge",
+      "title": "A source-level watchdog explicitness check must resolve secondary-declared roles to their base row",
+      "summary": "ROLE_NAMES includes doer-resume, which is declared via secondary(doer, 'doer-resume', ...) and has no policy('doer-resume', ...) literal, so a per-role source scan for an explicit watchdog declaration fails unless it follows the secondary back to its base.",
+      "symbols": [
+        "ROLE_POLICIES",
+        "ROLE_NAMES",
+        "secondary",
+        "policy",
+        "requireReason",
+        "noWatchdog"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/role-policies-table.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T04:11:11.185Z"
+    },
+    {
       "id": "202cd324-f6d9-42d0-b0a2-a4aa8e1741ef",
       "type": "knowledge",
       "title": "Local members use host OAuth; provision_llm_auth skips them",
@@ -607,6 +729,21 @@
       "updated_at": "2026-09-07T16:36:38.955Z"
     },
     {
+      "id": "3081d3dd-59db-4e2b-a35c-ac436dd8c730",
+      "type": "learning",
+      "title": "Root npm test is now about 7 minutes end to end, not 8-12, and backgrounding it works fine",
+      "summary": "Measured on this branch: vitest 312.7s (321 files, 4537 tests) then the apra-fleet-se node --test suite 99.0s (3418 tests), around 7 minutes total, contradicting the older 8-12 minute vitest-alone estimate.",
+      "symbols": [],
+      "source_files": [
+        "package.json",
+        "scripts/run-all-tests.mjs",
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T09:09:53.333Z"
+    },
+    {
       "id": "321d9d10-a56e-4427-81c1-8eb3922b59ec",
       "type": "knowledge",
       "title": "sandbox-lock.mjs has no read-only ownership query, so ordering around release is load-bearing",
@@ -734,6 +871,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-09T08:48:45.599Z"
+    },
+    {
+      "id": "42b3553b-f8bb-4d90-8d8c-9ebbd17bb37d",
+      "type": "knowledge",
+      "title": "The mock-sprint harness's default member_detail carries no os field, so every mock sprint exercises the uncached OS degrade",
+      "summary": "defaultMockCallTool answers member_detail with only vcsProvider, so resolveMemberTarget always throws internally, degrades to { os: 'linux', shell: '' } and never caches -- meaning member_detail is re-dispatched on every settle-shell resolution in mock sprints.",
+      "symbols": [
+        "defaultMockCallTool",
+        "resolveMemberTarget",
+        "memberOsCache"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-target.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-sprint-state-client-hoist.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T00:11:33.056Z"
     },
     {
       "id": "42eb6187-b287-415c-b4cb-e7fc1bb05440",
@@ -864,6 +1019,25 @@
       "updated_at": "2026-09-07T16:36:39.055Z"
     },
     {
+      "id": "4e315af5-d8ab-460e-850a-36d1d38ce19a",
+      "type": "knowledge",
+      "title": "runner.js's re-export of fatal-diagnostics.mjs is load-bearing for abort.mjs, not just compatibility sugar",
+      "summary": "abort.mjs imports findDoltDivergedCause back out of the runner.js facade, so deleting the facade re-export as dead code would break isTypedAbortError and the BEADS_SYNC_CONFLICT terminal state.",
+      "symbols": [
+        "findDoltDivergedCause",
+        "isTypedAbortError",
+        "resolveTerminalReason",
+        "captureDoltConflictDump"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/fatal-diagnostics.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T10:34:12.355Z"
+    },
+    {
       "id": "4eeda6e1-c08b-4cad-b035-50c2fcd143cc",
       "type": "knowledge",
       "title": "Four resolveRepoPath helpers exist in src/tools, but only prime and stats ever had the null-to-cwd shape",
@@ -883,6 +1057,20 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.786Z"
+    },
+    {
+      "id": "54e80881-774c-4085-9d81-34c704d85710",
+      "type": "knowledge",
+      "title": "The phase4 gate now decides anchor-desync by experiment, superseding the wording rule",
+      "summary": "classifyFailure only decides FACADE_BREAK; corroborateAnchorDesync re-runs the file's current committed revision to split ANCHOR_DESYNC from UNEXPLAINED, so assertion wording no longer decides and the gate is PASS again.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/scripts/phase4-moveonly-probe.mjs",
+        "packages/apra-fleet-se/test/phase4-move-only-completeness.test.mjs",
+        "packages/apra-fleet-se/test/planning-role-dispatch-pins.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T04:11:11.171Z"
     },
     {
       "id": "57543450-dc32-4980-a311-14ff9a65d466",
@@ -951,6 +1139,20 @@
       "updated_at": "2026-09-11T23:22:47.052Z"
     },
     {
+      "id": "5b0c0a37-6e58-4854-b1f4-b672ca0a6080",
+      "type": "knowledge",
+      "title": "A crossing sync-bracket close can never be the last open bracket, so the pause-guard poke is unreachable there",
+      "summary": "withOpenSyncBracket's CROSSING-close branch is entered only while another bracket sharing the key is still open, so openSyncBracketCount is always >= 1 after the decrement and the count===0 pause-guard poke cannot fire on that path.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/test/sync-bracket-mutual-exclusion.test.mjs",
+        "packages/apra-fleet-se/test/runner-clean-state-pause-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T09:09:53.330Z"
+    },
+    {
       "id": "5ba01ca7-8c09-4e2c-ae3d-26d914e87acf",
       "type": "learning",
       "title": "guarded-modules.mjs's GUARDED_MODULES baseline is hard-asserted to ['runner.js'] by four tests",
@@ -1017,6 +1219,25 @@
       "updated_at": "2026-09-07T16:36:39.162Z"
     },
     {
+      "id": "5e37f970-fc03-4975-8f86-140caebea16c",
+      "type": "knowledge",
+      "title": "vcs-auth.mjs's facade pin fails on ADDED top-level symbols, not just removed ones",
+      "summary": "vcs-auth-extraction-facade.test.mjs asserts its two MOVED_*_SYMBOLS lists and vcs-auth.mjs's top-level declarations agree symbol-for-symbol, so introducing a new top-level helper turns the gate red exactly like deleting one does.",
+      "symbols": [
+        "provisionExpiresAt",
+        "MOVED_PUBLIC_SYMBOLS",
+        "MOVED_PRIVATE_SYMBOLS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/vcs-auth-extraction-facade.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/test/coordination-extraction.test.mjs",
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T02:49:30.233Z"
+    },
+    {
       "id": "6028ae10-305b-44a9-a730-c7c9e08cb862",
       "type": "runbook",
       "title": "Check a fleet-sprint extraction facade against the pre-move commit export surface",
@@ -1068,6 +1289,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.186Z"
+    },
+    {
+      "id": "62d45b15-a702-4e8c-9eca-89d9fd9733db",
+      "type": "learning",
+      "title": "A verbatim extraction out of runner.js breaks textual test anchors in unrelated test files, and the re-anchor has two halves",
+      "summary": "Tests that assert against a raw fs.readFileSync of runner.js desync on a move-only extraction even though the code is byte-identical; re-pointing the assertion is only half the fix, the now-dead source read and its comments must go too.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/vcs-nongithub-auth-selfheal.test.mjs",
+        "packages/apra-fleet-se/test/regression-phase-never-gates.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/sprint-report.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T09:30:19.647Z"
     },
     {
       "id": "6388f0cf-f6f4-4e2e-99d6-48b0f8711853",
@@ -1234,6 +1470,20 @@
       "updated_at": "2026-09-10T00:05:18.085Z"
     },
     {
+      "id": "7123b4e6-1436-4160-b7a4-a23fb6aa76cf",
+      "type": "learning",
+      "title": "The phase4 move-only gate is red from the watchdog commit, not from any contract change",
+      "summary": "phase4-move-only-completeness.test.mjs reports planning-role-dispatch-pins.test.mjs as UNEXPLAINED; bisection shows commit 99e0ece0 introduced it, and the pre-sprint baseline plus the intervening structured-response commit both pass.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase4-move-only-completeness.test.mjs",
+        "packages/apra-fleet-se/test/planning-role-dispatch-pins.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T02:49:30.221Z"
+    },
+    {
       "id": "7386a70c-cb1f-4a28-8efa-694468916516",
       "type": "knowledge",
       "title": "renderDegradeNote throws on a missing template, so degrade.classes and degrade.noteTemplates must move together",
@@ -1320,6 +1570,43 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-10T20:18:25.878Z"
+    },
+    {
+      "id": "78572a21-3fba-4d32-ac45-cd0523c600d8",
+      "type": "knowledge",
+      "title": "abort.mjs still classifies pre-sprint refusals by message prefix, which is why their wording is load-bearing",
+      "summary": "isTypedAbortError's last branch matches err.message.startsWith('Pre-sprint validation failed:'), so the four refusal messages in runSprintCycle are a behavioural contract even now that they are raised as a typed PreSprintValidationError.",
+      "symbols": [
+        "isTypedAbortError",
+        "PreSprintValidationError",
+        "PRE_SPRINT_REFUSAL_REASONS",
+        "runSprintCycle"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
+        "packages/apra-fleet-se/fleet-sprint/errors.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/typed-abort-classification.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T03:42:32.906Z"
+    },
+    {
+      "id": "7a74717a-1f52-45ff-82f9-ad7e31490a3e",
+      "type": "knowledge",
+      "title": "A raw spawnSync ETIMEDOUT message can only come from the outer spawn's own timeout",
+      "summary": "Verified Node shapes: an execFileSync timeout sets code ETIMEDOUT with a null status and the message 'spawnSync <file> ETIMEDOUT', while a non-zero exit leaves code undefined and produces 'Command failed: ...', so the raw ETIMEDOUT text never arrives via the non-timeout path.",
+      "symbols": [
+        "handleNestedSuiteSpawnResult",
+        "runNestedSuite",
+        "excerptChildOutput"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T00:11:33.059Z"
     },
     {
       "id": "7bb754ec-5d81-4841-b1d2-f029556908b2",
@@ -1519,6 +1806,25 @@
       "updated_at": "2026-09-09T10:34:50.036Z"
     },
     {
+      "id": "882a88e4-cfcf-4389-ae8d-e86bfaec1b38",
+      "type": "learning",
+      "title": "provisionOutcome's prose fallback in vcs-auth.mjs is live and deliberately pinned",
+      "summary": "An earlier KB entry calling that fallback dead code and constant-true is wrong: the [FAIL] prose regex still fires even though wrapTool never sets isError, and two tests pin the behaviour.",
+      "symbols": [
+        "provisionOutcome",
+        "reservationOutcome",
+        "wrapTool"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/coordination.mjs",
+        "packages/apra-fleet-se/test/vcs-auth-self-heal.test.mjs",
+        "src/services/tool-registry.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T03:42:32.909Z"
+    },
+    {
       "id": "8997f326-d6e7-485f-ad84-782650030314",
       "type": "knowledge",
       "title": "Local vs remote member dispatch paths",
@@ -1680,6 +1986,20 @@
       "updated_at": "2026-09-10T11:06:51.973Z"
     },
     {
+      "id": "99a90316-6d9d-495d-b0f6-e2377a21bd63",
+      "type": "knowledge",
+      "title": "Measured root npm test split: vitest about 325s over 327 files, then the se suite about 94s",
+      "summary": "A full root npm test on this tree measured vitest at 324.75s (321 passed, 6 skipped, 327 files) and the apra-fleet-se workspace suite at 94s (3427 pass, 0 fail), with the npm-pack packaging test at 28s -- not the 8-12 minutes an older entry records.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "package.json",
+        "packages/apra-fleet-se/package.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T12:00:55.999Z"
+    },
+    {
       "id": "9accad02-cd4e-407b-9440-ddc016066fbe",
       "type": "learning",
       "title": "A nested extraPaths fixture cannot pin the guard-baseline basename bug -- only a nested GUARDED_MODULES entry can",
@@ -1769,6 +2089,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-11T22:34:51.500Z"
+    },
+    {
+      "id": "a13cd800-ae05-462b-973c-ef2a9ce41435",
+      "type": "knowledge",
+      "title": "sandbox-deploy allocatePorts rejects adjacent port pairs, so fixed test fixtures must not use consecutive ports",
+      "summary": "allocatePorts() now rejects any candidate within abs-diff 1 of an already-chosen port (Math.abs(p - port) <= 1, which also subsumes the old exact-duplicate check), because the observed sandbox collision handed back a consecutive fleet/supervisor pair.",
+      "symbols": [
+        "allocatePorts",
+        "osAssignedPort",
+        "MAX_PORT_BIND_ATTEMPTS"
+      ],
+      "source_files": [
+        "scripts/sandbox-deploy.mjs",
+        "tests/sandbox-deploy.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T08:05:24.710Z"
     },
     {
       "id": "a2eec90a-dd1b-4606-af90-685179e6e471",
@@ -1876,6 +2213,19 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-10T11:32:28.120Z"
+    },
+    {
+      "id": "a8b20071-c096-4ad4-8ce5-7defb5db33be",
+      "type": "knowledge",
+      "title": "guarded-modules-coverage's isAccountedFor() must compare full relative paths, not basenames, to avoid a nested-module collision",
+      "summary": "Per-guard violation-count baselines correctly compare by basename (guards report violations via path.basename), but the separate 'is every module registered at all' completeness sweep must compare full relative paths, because a nested file (e.g. phases/index.mjs) can share a bare filename with an unrelated top-level registered module (vcs-providers/index.mjs) and would otherwise be silently treated as already covered.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-12T08:05:24.714Z"
     },
     {
       "id": "a9487fa3-a5e3-4086-a1d7-29c1e770ced7",
