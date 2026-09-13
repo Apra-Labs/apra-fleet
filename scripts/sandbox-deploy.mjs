@@ -216,15 +216,35 @@ function osAssignedPort() {
 }
 
 /** Two OS-assigned free ports: never a reserved production/test port, never a
- *  port a previous `up` attempt already lost, and never ADJACENT to each other
- *  -- the observed collision handed back a consecutive pair, so one process
- *  sweeping upward from its own port lands on ours. */
+ *  port a previous `up` attempt already lost (nor ADJACENT to one), and never
+ *  adjacent to each other. Both adjacency rules exist for the same reason --
+ *  the observed collision handed back a consecutive pair, so one process
+ *  sweeping upward from its own port lands on the next one. The intra-pair
+ *  rule guards the two ports THIS call returns against each other; the
+ *  exclude-adjacency rule guards a RETRY (`up`'s lostPorts -> excludePorts)
+ *  against the single most likely next target of whatever process just swept
+ *  into a port this sandbox already lost -- an exact-match-only exclude would
+ *  happily hand back lostPort +/- 1, which is exactly the hazard the
+ *  intra-pair rule was added to prevent, just on the retry path instead of
+ *  within one call. This widened rule deliberately does NOT extend to
+ *  RESERVED_PORTS: those are static production/test ports, not a live race
+ *  signal from a sweeping foreign process, and 18700/18701 are already an
+ *  intentionally-adjacent reserved pair -- banning a 4-port neighborhood
+ *  around each of them would cost candidate ports for no evidenced benefit.
+ *  Widening the filter means a single `pick()` attempt can reject more
+ *  candidates than before, but the 20-attempt cap and the
+ *  'could not allocate two free ports' failure mode are unchanged; see
+ *  tests/sandbox-deploy.test.ts's port-race recovery/exhaustion cases, which
+ *  exercise the retry path through `up` and pin that this filter does not
+ *  turn a previously-succeeding scenario into an allocation failure. */
 export async function allocatePorts(pick = osAssignedPort, exclude = []) {
-  const banned = new Set([...RESERVED_PORTS, ...exclude.map(Number)]);
+  const excludeNums = exclude.map(Number);
+  const banned = new Set([...RESERVED_PORTS, ...excludeNums]);
   const chosen = [];
   for (let attempt = 0; attempt < 20 && chosen.length < 2; attempt += 1) {
     const port = await pick();
     if (!Number.isInteger(port) || banned.has(port)) continue;
+    if (excludeNums.some((e) => Math.abs(e - port) <= 1)) continue;
     if (chosen.some((p) => Math.abs(p - port) <= 1)) continue;
     chosen.push(port);
   }
