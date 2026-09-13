@@ -80,6 +80,51 @@ Optional (defaults applied inside `validateArgs()`):
 
 An unknown key throws `[Arg Contract] Unknown arg(s): <keys>. Known args: <allowlist>.` immediately -- this is the fastest way to discover whether a given engine feature (e.g. `assignee`, `doer_worklist_mode`) is wired to a CLI flag yet: if `bin/cli.mjs` never sets it, it stays at its default forever for CLI-launched sprints.
 
+### Dormant argument audit (apra-fleet-3swo.7.13)
+
+Three `KNOWN_ARG_KEYS` -- `assignee`, `doer_worklist_mode`, `resume_model_switch`
+-- are validated and fully wired to a real consumer, but have no CLI flag and
+no caller in this repo (`bin/cli.mjs`'s `buildRunnerArgs()` does not set any of
+them, and no workflow under `packages/apra-fleet-se/apra-pm` does either --
+both verified by a repo-wide search). Each was audited and PRODUCTIZED, not
+pruned: all three are load-bearing, tested engine capabilities reachable
+through `WorkflowEngine.executeFile()` -- the same invocation path
+`bin/cli.mjs` and the supervisor use -- for any caller that sets them
+programmatically (a future CLI flag, the supervisor's own `POST /api/sprints`
+body, or a direct engine invocation), not dead code left over from an
+abandoned feature.
+
+- **`assignee`** -- narrows the shared `bd list` query to `--assignee <id>`
+  (`fleet-sprint/beads-scope.mjs`) and drives the develop-phase claiming
+  branch's batched `bd update <ids...> --claim --json`
+  (`fleet-sprint/phases/develop.mjs`), which can narrow a streak down to only
+  the beads it actually won. Exercised directly against the real
+  `beadsScopeConfig()`/`claimBeadsBatched()` functions by
+  `test/beads-scope-extraction.test.mjs` ("`--assignee` narrows a filtered
+  read, and scope still filters the result") and
+  `test/claim-beads-batched.test.mjs`. Intended use: a deployment running more
+  than one sprint against the same beads project, so two sprints never select
+  the same bead -- a scenario this repo's single-sprint CLI does not exercise
+  today, hence no flag.
+- **`doer_worklist_mode: 'batch'`** -- one dispatch carries a doer's whole
+  ordered worklist instead of one dispatch per streak. Exercised end-to-end
+  through the real `WorkflowEngine.executeFile()` path by
+  `test/mock-sprint-worklist-batch.test.mjs`.
+- **`resume_model_switch`** -- lets a resumed-sequence worklist carry mixed
+  model tiers when the doer pool's provider supports changing model on a
+  resumed session (`fleet-sprint/worklists.mjs`'s `resolveWorklistTierPolicy`).
+  Exercised end-to-end through the real `WorkflowEngine.executeFile()` path by
+  `test/mock-sprint-worklist-resume.test.mjs`, and unit-tested against the real
+  `resolveWorklistTierPolicy()` by `test/worklist-assignment.test.mjs`.
+
+None of the three needed a CLI flag added to satisfy "productize": the bar is
+documentation + a real test against the real consumer + a real invocation
+path, and `WorkflowEngine.executeFile()` (not `bin/cli.mjs` specifically) is
+that path for a programmatic caller. A future CLI flag remains a legitimate,
+separately-scoped follow-up if a real operator need for `--assignee`/
+`--doer-worklist-mode`/`--resume-model-switch` shows up; nothing about this
+audit blocks it.
+
 ## 3. `--issue` scope resolution (`bdListScoped()`, `fleet-sprint/runner.js`)
 
 This is the algorithm that turns the sprint's target issue id(s) into the

@@ -270,6 +270,13 @@ export function beadBlocksDependencyIds(bead) {
  * (ii) RESUMED SEQUENCE may carry mixed tiers only when the provider can
  * change model on a resumed session, signalled by `resumeModelSwitch`, whose
  * default of false is the safe fallback to tier-homogeneous grouping.
+ *
+ * PRODUCTIZE-OR-PRUNE AUDIT (apra-fleet-3swo.7.13): `doer_worklist_mode`
+ * 'batch' and `resume_model_switch` (the two sprint-args.mjs keys this
+ * function consumes) have no CLI flag and no caller in this repo, but both
+ * were audited and PRODUCTIZED -- see sprint-args.mjs's KNOWN_ARG_KEYS
+ * comments and docs/fleet-sprint-cli-contract.md's "Dormant argument audit"
+ * for the caller-search evidence and the tests that exercise each end-to-end.
  * @param {{ mode: 'resume'|'batch', resumeModelSwitch?: boolean }} opts
  * @returns {{ tierHomogeneous: boolean }}
  */
