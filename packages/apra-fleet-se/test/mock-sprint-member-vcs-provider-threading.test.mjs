@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -58,7 +59,17 @@ const G_PUSH_PATTERN = /^git push origin /;
 // reaches azure-devops.mjs's own TF401019 rule (apra-fleet-417.6/417.7).
 const TF401019_BARE = "remote: TF401019: The Git repository with name or identifier 'core' does not exist, or you do not have permission to perform this operation.";
 
-test('mock sprint: a member whose provider resolves to azure-devops (via args.callTool) classifies a bare G-push TF401019 failure as auth, not unknown, end to end through withGitSync', { timeout: 180000 }, async () => {
+// apra-fleet-d6fq.2: base=180000 is the pre-existing standalone-calibrated
+// budget, not a guess -- apra-fleet-5ey2's real-bd carry-over reports (reproduced
+// three separate passes: 2026-08-23/24/27) show this file only exceeds
+// 180000ms under the default 8-way concurrent suite (file elapsed 215-218s
+// each time), and that same bead explicitly records "standalone reruns of
+// this failure family pass while the full concurrent suite times out,
+// consistent with a harness concurrency issue rather than N separate test
+// bugs." scaledTimeout() keeps this budget unscaled at concurrency<=1 and
+// multiplies it (3x = 540000ms) under the real 8-way suite, which
+// apra-fleet-d6fq.1 makes non-inert.
+test('mock sprint: a member whose provider resolves to azure-devops (via args.callTool) classifies a bare G-push TF401019 failure as auth, not unknown, end to end through withGitSync', { timeout: scaledTimeout(180000) }, async () => {
     await withScenarioMarkers('417.9 resolveMemberVcsProvider threading', async () => {
         const vcsAuthCalls = [];
         const base = defaultMockCallTool();
