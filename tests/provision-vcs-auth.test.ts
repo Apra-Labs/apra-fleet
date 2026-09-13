@@ -7,6 +7,7 @@ import { addAgent, getAgent } from '../src/services/registry.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 import { encryptPassword } from '../src/utils/crypto.js';
 import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
+import { githubProvider } from '../src/services/vcs/github.js';
 import type { SSHExecResult } from '../src/types.js';
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 
@@ -576,5 +577,76 @@ describe('provisionVcsAuth', () => {
     });
     expect(result).toContain('[FAIL]');
     expect(result).toContain('permission denied');
+  });
+
+  // --- provider deploy() metadata allowlist filter (apra-fleet-3swo.59 / .62) ---
+  //
+  // provision-vcs-auth.ts's providers table (src/tools/provision-vcs-auth.ts:45)
+  // is a non-exported module-level const, and the input schema's `provider`
+  // field is a closed z.enum of the three real provider names -- confirmed
+  // this pass, so a synthetic fourth provider cannot be registered without
+  // widening the production contract to suit the test (a criteria defect).
+  // Instead this uses injection strategy (a) from the bead: vi.spyOn the
+  // REAL githubProvider.deploy() to return metadata containing an
+  // UNRECOGNISED key carrying a raw secret literal, simulating a future or
+  // edited provider that starts returning a field
+  // PROVIDER_METADATA_KEY_ALLOWLIST does not know about. The provider name
+  // ('github') and the schema are untouched.
+  describe('a provider putting a raw secret in deploy metadata', () => {
+    const RAW_SECRET = 'raw-secret-value';
+    const MASKED_TOKEN = 'toke****';
+    const EXPIRES_AT = '2027-01-01T00:00:00Z';
+    let deploySpy: ReturnType<typeof vi.spyOn> | undefined;
+
+    afterEach(() => {
+      deploySpy?.mockRestore();
+      deploySpy = undefined;
+    });
+
+    async function deployWithLeakedMetadata(friendlyName: string) {
+      const member = makeTestAgent({ friendlyName });
+      addAgent(member);
+      mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+      mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+      deploySpy = vi.spyOn(githubProvider, 'deploy').mockResolvedValue({
+        success: true,
+        message: 'stubbed deploy for metadata-filter test',
+        metadata: {
+          // Recognised keys, so criteria 3 and 4 can prove the filter is
+          // selective rather than a blanket delete of metadata.
+          token: MASKED_TOKEN,
+          mode: 'pat',
+          expiresAt: EXPIRES_AT,
+          // The unrecognised key: not on PROVIDER_METADATA_KEY_ALLOWLIST, so
+          // it must be dropped before reaching either caller-visible channel.
+          leaked_secret_dump: RAW_SECRET,
+        },
+      });
+      return provisionVcsAuth({
+        member_id: member.id, provider: 'github',
+        github_mode: 'pat', token: 'ghp_placeholder',
+      });
+    }
+
+    it('1. cannot reach structuredContent', async () => {
+      const { structuredContent } = await deployWithLeakedMetadata('meta-filter-json');
+      expect(JSON.stringify(structuredContent)).not.toContain(RAW_SECRET);
+    });
+
+    it('2. cannot reach the rendered text (a separate channel from structuredContent)', async () => {
+      const { text } = await deployWithLeakedMetadata('meta-filter-text');
+      expect(text).not.toContain(RAW_SECRET);
+    });
+
+    it('3. a recognised key (the already-masked token) still passes through -- the filter is selective, not a blanket delete', async () => {
+      const { structuredContent, text } = await deployWithLeakedMetadata('meta-filter-selective');
+      expect(structuredContent.metadata).toMatchObject({ token: MASKED_TOKEN });
+      expect(text).toContain(MASKED_TOKEN);
+    });
+
+    it('4. expiresAt still reaches structuredContent.expiresAt when the provider supplies it', async () => {
+      const { structuredContent } = await deployWithLeakedMetadata('meta-filter-expiry');
+      expect(structuredContent.expiresAt).toBe(EXPIRES_AT);
+    });
   });
 });
