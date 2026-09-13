@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // =============================================================================
 // apra-fleet-eft.85.3 -- unit coverage for eft.85.1's scaledTimeout() helper
@@ -130,17 +135,49 @@ test('unit: forcing a simulated retry (plannerCalls>1) still fails the strict si
 });
 
 // apra-fleet-d6fq.3, criterion 3: pin the derived-vs-flat direction for the
-// EXACT base (180000ms) the three real-bd carry-over files
+// base (180000ms) the three real-bd carry-over files
 // (mock-sprint-publish-push-failure, mock-sprint-kb-remote-scope,
 // mock-sprint-member-vcs-provider-threading) now derive their timeout from
 // via scaledTimeout(180000) (apra-fleet-d6fq.2). If d6fq.2 were reverted --
 // i.e. those files went back to a bare, flat `timeout: 180000` -- the
-// effective budget would shrink from 540000ms back down to 180000ms. This
-// test pins that direction with the concrete production value so a revert
-// is caught as an observable budget regression here, not only inferred by
-// inspection.
+// effective budget would shrink back down to the flat 180000ms. This test
+// pins only the DIRECTION of that change (deliberately not the exact
+// constant, which already duplicates the arithmetic pinned above and would
+// need editing on any DEFAULT_MULTIPLIER change) -- the source-level guard
+// below is what actually catches a revert of the three subject files
+// themselves.
 test('unit: scaledTimeout(180000) under the suite concurrency (8) is strictly larger than the flat 180000 apra-fleet-d6fq.2 replaced', () => {
     const derived = scaledTimeout(180000, { concurrency: 8 });
     assert.ok(derived > 180000, `expected the concurrency-derived budget to exceed the flat 180000 base apra-fleet-d6fq.2 replaced, got ${derived}`);
-    assert.equal(derived, 540000, 'expected exactly 180000 * DEFAULT_MULTIPLIER(3) under concurrency=8');
 });
+
+// apra-fleet-d6fq.3, criterion 3 (Defect 2 fix): the unit tests above only
+// exercise scaledTimeout()'s own arithmetic -- they never look at the three
+// subject files, so they stay green even if apra-fleet-d6fq.2 were reverted
+// (restoring a bare `timeout: 180000` in those files). This source-level
+// guard reads each subject file's actual text and asserts every `timeout:`
+// test option it declares is derived via scaledTimeout(180000), not a bare
+// numeric literal -- so a revert of the three files is caught here as a red
+// test, not only inferable from scaledTimeout()'s own unit coverage.
+const BUDGETED_SUBJECT_FILES = [
+    'mock-sprint-publish-push-failure.test.mjs',
+    'mock-sprint-kb-remote-scope.test.mjs',
+    'mock-sprint-member-vcs-provider-threading.test.mjs',
+];
+
+for (const fileName of BUDGETED_SUBJECT_FILES) {
+    test(`source guard: ${fileName} derives every subtest timeout via scaledTimeout(180000), never a bare literal`, () => {
+        const source = fs.readFileSync(path.join(__dirname, fileName), 'utf8');
+        const timeoutOptionPattern = /timeout:\s*([^,}]+)/g;
+        const matches = [...source.matchAll(timeoutOptionPattern)];
+        assert.ok(matches.length > 0, `expected at least one { timeout: ... } test option in ${fileName}`);
+        for (const match of matches) {
+            const expression = match[1].trim();
+            assert.match(
+                expression,
+                /^scaledTimeout\(180000\)$/,
+                `expected every subtest timeout in ${fileName} to be derived via scaledTimeout(180000); found "${expression}" -- if this is a bare 180000 literal, apra-fleet-d6fq.2's fix has regressed`
+            );
+        }
+    });
+}
