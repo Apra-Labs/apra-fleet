@@ -837,11 +837,32 @@ test('golden transcript (3-bead): streak-assignment prompt + reviewer bead-id li
 // this also exercises the fix under the file's genuine parallel-streak
 // shape.
 //
-// MUTATION CHECK: reverting apra-fleet-66u.4's `for (const id of verifyIds)
-// { await runCmd(...) }` loop in build3BeadFleetApi()'s integ-test-runner
-// handler above (restoring the old canned {featuresClosed, passed:true}-
-// only response) makes this test's `caught` assertion fail: it throws a
-// StalledSprintError instead of completing.
+// MUTATION CHECK (apra-fleet-w7ee.2, PERFORMED against real bd on THIS
+// file -- previously an unverified claim inherited from the single-bead
+// file, where apra-fleet-w7ee.1 had run the mutation; the 3-bead handler
+// itself had never been mutated, so this guard was unproven rather than
+// known-falsifiable). Deleting exactly apra-fleet-66u.4's three-line
+// `for (const id of verifyIds) { await runCmd(`bd close ${id}`, tempDir); }`
+// loop from build3BeadFleetApi()'s integ-test-runner handler above (leaving
+// the canned {featuresClosed, passed:true} response, and leaving the doer
+// handler's own closes intact), then running
+// `node scripts/run-tests.mjs real test/golden-transcript-3bead.test.mjs`,
+// was OBSERVED to take the file from pass=9 fail=0 to pass=6 fail=3 in
+// 137.7s: this test's named assertion #1 failed with
+//   "Expected no false-stall abort on the mock golden 3-bead sprint's
+//    same-cycle Integ Test closure of the childful epic, got: Sprint
+//    stalled: 2 consecutive cycle(s) made no new high-water-mark progress
+//    (closed beads + verify-routed beads) ... Closed-count history:
+//    [3, 3, 3] (high-water mark on progress score: 4) ... 1 bead(s) were
+//    routed to verify this sprint but never closed -- the verifier may be
+//    failing"
+// (the [3,3,3]/high-water-4 shape is the 3-bead analogue of the
+// single-bead file's [1,1,1]/high-water-2 signature: three closed tasks
+// plus the one verify-routed epic that the mutated verifier never closes).
+// The snapshot and determinism-proof subtests aborted with the same
+// StalledSprintError. The file was then restored byte-for-byte from a
+// pre-mutation copy; no committed golden fixture was regenerated. So this
+// guard is falsifiable on the 3-bead path, not vacuous.
 // =============================================================================
 test('golden transcript (3-bead): Integ Test closing the childful epic in the same cycle it becomes verify-eligible credits progress and avoids a false stall (apra-fleet-66u.5)', async () => {
     let caught = null;
