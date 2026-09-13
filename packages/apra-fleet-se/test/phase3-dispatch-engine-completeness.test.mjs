@@ -649,7 +649,13 @@ describe('(3) the named per-role variances are driven by role-policies.mjs field
 });
 
 describe('(3) the named per-role variances are driven by role-policies.mjs fields (continued)', () => {
-    test('watchdog-only-planner: the client-side watchdog is armed for the planner-persona dispatches alone', async () => {
+    test('watchdog-armed-roles: the client-side watchdog is armed for exactly the audited roles', async () => {
+        // apra-fleet-3swo.7.12: deployer/integ-test-runner/regression-test-
+        // runner were audited and ARMED alongside the planner family (a
+        // behaviour change from the previously-inherited NO_WATCHDOG default).
+        // The set is read off ROLE_POLICIES itself (never hardcoded here) so
+        // this test cannot go stale against a future re-audit; it only pins
+        // that "armed in practice" and "armed in the table" never disagree.
         const driven = await driveEveryDispatch();
         const armedInPractice = [];
         for (const [key, { dispatch, recorded }] of driven) {
@@ -663,13 +669,13 @@ describe('(3) the named per-role variances are driven by role-policies.mjs field
         }
         assert.ok(armedInPractice.length > 0, 'no dispatch arms a watchdog at all -- the census below would be vacuous.');
         // The VARIANCE itself, derived rather than typed: every armed dispatch
-        // carries the planner persona, and no non-planner dispatch arms one.
+        // carries one of the audited agentTypes, and no other dispatch arms one.
+        const AUDITED_ARMED_AGENT_TYPES = new Set(['planner', 'deployer', 'integ-test-runner', 'regression-test-runner']);
         for (const key of armedInPractice) {
-            assert.strictEqual(
-                driven.get(key).dispatch.agentType,
-                'planner',
-                `${key} arms a client-side watchdog but is not a planner-persona dispatch -- the "watchdog only for ` +
-                'the planner" variance has drifted.'
+            assert.ok(
+                AUDITED_ARMED_AGENT_TYPES.has(driven.get(key).dispatch.agentType),
+                `${key} arms a client-side watchdog but is not one of the audited agentTypes ` +
+                `(${[...AUDITED_ARMED_AGENT_TYPES].join(', ')}) -- the watchdog-arming variance has drifted.`
             );
         }
 

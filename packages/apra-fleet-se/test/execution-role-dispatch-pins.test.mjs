@@ -212,13 +212,23 @@ describe('execution-role dispatch ladders: per-dispatch pins', () => {
             );
 
             // --- watchdog arming ------------------------------------------------
-            // No execution-side dispatch arms a client-side watchdog today; they
-            // rely on the server-side timeout_s/max_total_s pair above.
-            assert.strictEqual(
-                innermostEnclosingCall(WATCHDOG_SITES, site.index),
-                null,
-                `${pin.name} is NOT raced against withDispatchWatchdog today -- only the planner-side dispatches are.`
-            );
+            // apra-fleet-3swo.7.12: deployer/integ-test-runner/regression-test-
+            // runner are now armed, but only once MIGRATED onto the engine (see
+            // the engine-served block below) -- EXECUTION_INLINE_LADDERS is
+            // empty today (every execution role has migrated), so this branch
+            // is dormant, kept only so a role that is ever reverted to an inline
+            // ladder is still proved by source scan rather than silently
+            // skipped.
+            const watchdogSite = innermostEnclosingCall(WATCHDOG_SITES, site.index);
+            if (!pin.watchdog) {
+                assert.strictEqual(
+                    watchdogSite,
+                    null,
+                    `${pin.name} is NOT raced against withDispatchWatchdog today.`
+                );
+            } else {
+                assert.ok(watchdogSite, `${pin.name} must be raced against withDispatchWatchdog(...).`);
+            }
 
             // --- KB knowledge injection -----------------------------------------
             const agentType = merged.get('agentType') ?? null;
@@ -1245,11 +1255,33 @@ describe('execution-role dispatch ladders: per-dispatch pins (engine-served)', (
             assert.strictEqual(dispatch.bracket.options.pushBeads, pin.pushBeads, `${pin.name}: pushBeads flag.`);
 
             // --- watchdog arming ------------------------------------------------
-            assert.strictEqual(
-                dispatch.watchdog,
-                null,
-                `${pin.name} is NOT raced against a client-side watchdog -- only the planner-side dispatches are.`
-            );
+            // apra-fleet-3swo.7.12: deployer/integ-test-runner/regression-test-
+            // runner were audited and ARMED (a behaviour change from the
+            // previously-inherited NO_WATCHDOG default); every other execution
+            // role stays disarmed. Driven by the pin's own watchdog/
+            // watchdogLabel fields rather than a hardcoded expectation, so this
+            // pin table is the single place that decision is recorded.
+            if (!pin.watchdog) {
+                assert.strictEqual(
+                    dispatch.watchdog,
+                    null,
+                    `${pin.name} is NOT raced against a client-side watchdog.`
+                );
+            } else {
+                assert.ok(dispatch.watchdog, `${pin.name} must be raced against a client-side watchdog.`);
+                assert.strictEqual(
+                    dispatch.watchdog.timeoutS,
+                    ctx.budgets.DISPATCH_TIMEOUT_S,
+                    `${pin.name}'s watchdog must fire on the same DISPATCH_TIMEOUT_S budget the server-side timeout uses.`
+                );
+                assert.strictEqual(
+                    dispatch.watchdog.member,
+                    member,
+                    `${pin.name}'s watchdog must name the dispatched member so its kill path targets the right session.`
+                );
+                assert.strictEqual(dispatch.watchdog.label, pin.watchdogLabel, `${pin.name}: watchdog label.`);
+                assert.ok(dispatch.watchdog.hasLog, `${pin.name}'s watchdog must be given the sprint log so its kill path is visible.`);
+            }
 
             // --- KB knowledge injection -----------------------------------------
             assert.strictEqual(o.agentType ?? null, pin.agentType, `${pin.name} must pass agentType=${pin.agentType}.`);

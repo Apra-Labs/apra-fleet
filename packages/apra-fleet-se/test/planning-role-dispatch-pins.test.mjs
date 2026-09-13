@@ -337,7 +337,7 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
         assert.ok(!KB_SELF_INJECTING_ROLES.has('plan-reviewer'), 'plan-reviewer must receive its knowledge block from the agent() wrapper.');
     });
 
-    test('only the planner and the scoped-replan planner arm a dispatch watchdog', () => {
+    test('only the planner family and the audited long-unattended-phase roles arm a dispatch watchdog', () => {
         // The remaining INLINE ladders' watchdogs are still proved textually.
         // The count is DERIVED from the inline pin table rather than written
         // as a literal, because each dispatchRole migration commit moves one
@@ -371,9 +371,12 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
             );
         }
 
-        // The WHOLE planning side, inline and engine-served together: the
-        // watchdog-armed set must stay exactly the three planner-persona
-        // dispatches, whichever side of the migration each currently sits on.
+        // ENGINE_LADDER.dispatches is ENGINE_DISPATCHES, i.e. BOTH sides
+        // (planning + execution) of the migration -- see planning-ladders.mjs.
+        // apra-fleet-3swo.7.12 armed three execution-side, long-unattended
+        // phase roles (deployer, integ-test-runner, regression-test-runner)
+        // alongside the pre-existing planner-persona set; this is that
+        // system-wide census, not a planning-only one.
         const armed = [...INLINE_LADDERS, ...ENGINE_LADDER.dispatches].filter((pin) => pin.watchdog).map((pin) => pin.name);
         assert.deepStrictEqual(
             armed.sort(),
@@ -381,8 +384,15 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
                 'planner (interactive)',
                 'planner (resume after max_turns exhaustion)',
                 'scoped replan planner',
-            ],
-            'The watchdog-armed dispatches must remain exactly the interactive planner, its resume, and the scoped replan planner.'
+                'deployer (once)',
+                'deployer (resume after max_turns exhaustion)',
+                'integ test runner (once)',
+                'integ test runner (resume after max_turns exhaustion)',
+                'regression test runner (once)',
+                'regression test runner (resume after max_turns exhaustion)',
+            ].sort(),
+            'The watchdog-armed dispatches must remain exactly the planner family plus the three audited ' +
+            'long-unattended-phase roles.'
         );
     });
 

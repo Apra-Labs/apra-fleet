@@ -1084,12 +1084,28 @@ describe('role policy table: every named variance is expressed as data', () => {
         );
     });
 
-    test('a watchdog is armed only for the planner-side dispatches', () => {
+    test('a watchdog is armed only for the planner-side and long-unattended-phase dispatches', () => {
+        // apra-fleet-3swo.7.12: deployer, integ-test-runner and
+        // regression-test-runner were audited and ARMED this pass (a deliberate
+        // behaviour change from the previously-inherited NO_WATCHDOG default) --
+        // each is a long, unattended, single dispatch with no parallel
+        // counterpart, gating later phases with no other client-side ceiling.
+        // Every other role was audited and left disarmed with a recorded reason
+        // (see the enumeration test below); this list is the machine-checked
+        // record of the outcome, not just the planner-only set that predates
+        // that audit.
         const armed = allDispatchPolicies().filter((p) => p.watchdog.armed);
         assert.deepStrictEqual(
             armed.map((p) => `${p.role}:${p.kind}`).sort(),
-            ['planner:main', 'planner:max-turns-resume', 'scoped-replan-planner:main'].sort(),
-            'Only the interactive planner, its resume, and the scoped replan planner arm a client-side watchdog.'
+            [
+                'planner:main', 'planner:max-turns-resume',
+                'scoped-replan-planner:main',
+                'deployer:main', 'deployer:max-turns-resume',
+                'integ-test-runner:main', 'integ-test-runner:max-turns-resume',
+                'regression-test-runner:main', 'regression-test-runner:max-turns-resume',
+            ].sort(),
+            'Only the interactive planner family plus the three audited long-unattended-phase roles arm a '
+            + 'client-side watchdog.'
         );
         // Only the still-inline armed dispatches have a runner.js
         // withDispatchWatchdog(...) site of their own; a migrated one is armed
@@ -1100,9 +1116,49 @@ describe('role policy table: every named variance is expressed as data', () => {
             WATCHDOG_SITES.length,
             'The table must arm exactly as many watchdogs as runner.js still does inline.'
         );
+        // The "every armed dispatch targets the planner member" invariant this
+        // test used to check no longer holds now that deployer/integ-test-
+        // runner/regression-test-runner are armed under their OWN role members
+        // (scoped-replan-planner already borrowed the planner member before
+        // this pass); `p.watchdog.member === 'dispatch'` -- the real
+        // kill-target invariant -- is asserted per-row above and in the
+        // migrated-roles behavioural section instead.
         for (const p of armed) {
-            assert.strictEqual(p.member.role, 'planner', 'Every watchdog-armed dispatch targets the planner member.');
+            assert.strictEqual(p.watchdog.member, 'dispatch', `${p.role}:${p.kind}: watchdog.member must be 'dispatch'.`);
         }
+    });
+
+    test('every role name carries a machine-enumerable, non-empty watchdog rationale', () => {
+        // apra-fleet-3swo.7.12: the count is DISCOVERED from ROLE_NAMES, never
+        // hardcoded, so a role added later cannot silently ship with no
+        // recorded justification for its armed/disarmed value.
+        assert.ok(ROLE_NAMES.length > 0, 'sanity: ROLE_NAMES must not be empty for this gate to mean anything.');
+        for (const name of ROLE_NAMES) {
+            const reason = policyFor(name).watchdog.reason;
+            assert.strictEqual(typeof reason, 'string', `${name}: watchdog.reason must be a string a test can read.`);
+            assert.ok(
+                reason.trim().length >= 20,
+                `${name}: watchdog.reason must be a real justification, not a placeholder ("${reason}").`
+            );
+        }
+    });
+
+    test('the watchdog rationale gate bites: an entry missing a reason fails loudly', () => {
+        // Falsification, per apra-fleet-3swo.7.12's acceptance criteria: build a
+        // table with ONE role's watchdog object stripped of its `reason` (as if
+        // its declaration had omitted it) and prove the two gates above catch
+        // it -- the enumeration assertion this test mirrors, run against a
+        // deliberately-broken row.
+        const broken = { ...ROLE_POLICIES.harvester, watchdog: { ...ROLE_POLICIES.harvester.watchdog, reason: undefined } };
+        assert.throws(
+            () => {
+                if (typeof broken.watchdog.reason !== 'string' || broken.watchdog.reason.trim().length < 20) {
+                    throw new TypeError('role-policies: harvester is missing a watchdog rationale.');
+                }
+            },
+            TypeError,
+            'A role entry with no watchdog.reason must fail the enumeration gate rather than pass silently.'
+        );
     });
 
     test('the integ runner degrades to INCONCLUSIVE, never to a test failure', () => {

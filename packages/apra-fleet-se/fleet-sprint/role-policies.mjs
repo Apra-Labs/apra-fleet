@@ -230,15 +230,43 @@ const budgets = (timeoutS, maxTotalS) => ({ timeoutS, maxTotalS });
 /** A dispatch that passes neither timeout, i.e. takes the transport defaults. */
 const NO_BUDGETS = { timeoutS: null, maxTotalS: null };
 
-const NO_WATCHDOG = { armed: false, timeoutS: null, member: null, label: null };
+/**
+ * Requires a non-empty rationale string. Both watchdog constructors below
+ * route through this so a row can never carry an armed/disarmed value with no
+ * recorded WHY (apra-fleet-3swo.7.12): the justification lives INSIDE the
+ * watchdog object itself (the SHAPE CONSTRAINT that keeps POLICY_FIELDS at
+ * nine axes), and role-policies-table.test.mjs enumerates ROLE_NAMES to prove
+ * every one of them carries one.
+ */
+function requireReason(reason, ctorName) {
+    if (typeof reason !== 'string' || reason.trim().length === 0) {
+        throw new TypeError(`role-policies: ${ctorName}(...) requires a non-empty string 'reason' argument.`);
+    }
+    return reason;
+}
+
+/**
+ * A disarmed client-side watchdog, with the reason THIS dispatch runs without
+ * one. There is no silent default any more (the normalizer's old
+ * `spec.watchdog ?? NO_WATCHDOG` fallback is gone) -- every one of the 13
+ * ROLE_POLICIES entries calls this or `watchdog(...)` explicitly.
+ */
+const noWatchdog = (reason) => ({
+    armed: false, timeoutS: null, member: null, label: null,
+    reason: requireReason(reason, 'noWatchdog'),
+});
 /**
  * An armed client-side watchdog. `member: 'dispatch'` records the pinned
  * invariant that a watchdog always names the same member its dispatch routes
  * to, so its kill path targets the right session. `label` is a segment list:
  * a plain string is literal text, an object is a runner expression
- * interpolated into it.
+ * interpolated into it. `reason` is the recorded WHY this dispatch is judged
+ * to need the extra client-side kill-path.
  */
-const watchdog = (label) => ({ armed: true, timeoutS: 'DISPATCH_TIMEOUT_S', member: 'dispatch', label });
+const watchdog = (label, reason) => ({
+    armed: true, timeoutS: 'DISPATCH_TIMEOUT_S', member: 'dispatch', label,
+    reason: requireReason(reason, 'watchdog'),
+});
 
 const SAME_SESSION_RESUME = { kind: 'same-session' };
 const WORKLIST_RESUME = { kind: 'worklist' };
@@ -466,7 +494,13 @@ function policy(role, spec) {
         bracket: spec.bracket,
         timeouts: spec.timeouts,
         maxTurns: spec.maxTurns ?? null,
-        watchdog: spec.watchdog ?? NO_WATCHDOG,
+        // REQUIRED, not defaulted (apra-fleet-3swo.7.12): watchdog moved out of
+        // the optional-with-default group below (maxTurns, resumeArg, ...) and
+        // into this required group, alongside bracket/timeouts/retry/degrade/
+        // kbInjection/member/model. An entry that omits it gets `undefined`
+        // here rather than a silently-supplied NO_WATCHDOG, so every read of
+        // `.armed` on a row that forgot to declare one throws immediately.
+        watchdog: spec.watchdog,
         retry: spec.retry,
         degrade: spec.degrade,
         kbInjection: spec.kbInjection,
@@ -521,7 +555,12 @@ const planner = policy('planner', {
     bracket: bracketed(false, true),
     timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('PLANNER_MAX_TURNS', 1, 500),
-    watchdog: watchdog(['Plan (interactive)']),
+    watchdog: watchdog(
+        ['Plan (interactive)'],
+        'The interactive planner is the single dispatch every sprint cycle blocks on before any other role can run; '
+        + 'a member that goes alive-but-silent mid-session leaves no other client-side signal (execute_prompt\'s '
+        + 'server-side timeout_s is not the only guard against that), so a watchdog backstops it here.'
+    ),
     kbInjection: 'wrapper',
     retry: retry({
         attempts: 5,
@@ -543,7 +582,11 @@ const planner = policy('planner', {
 planner.secondary = secondary(planner, 'planner', 'max-turns-resume', {
     ladderAnchor: 'Continue your planning pass exactly where you left off',
     maxTurns: turns('PLANNER_MAX_TURNS', 2, 500),
-    watchdog: watchdog(['Plan (resume, max_turns=', { expr: 'PLANNER_MAX_TURNS * 2' }, ')']),
+    watchdog: watchdog(
+        ['Plan (resume, max_turns=', { expr: 'PLANNER_MAX_TURNS * 2' }, ')'],
+        'Same interactive session, continued: the resumed dispatch carries the identical single-point-of-failure '
+        + 'risk as the main planner dispatch, so it is armed identically.'
+    ),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],
 });
@@ -560,6 +603,12 @@ const planReviewer = policy('plan-reviewer', {
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('PLAN_REVIEWER_MAX_TURNS', 1, 500),
+    watchdog: noWatchdog(
+        'A single bounded review pass over an already-produced plan; left disarmed as inherited from the '
+        + 'pre-engine ladder (never independently chosen), not one of the roles this pass singled out as an '
+        + 'obvious arming candidate. A hang here blocks one plan-review round, not the whole sprint the way an '
+        + 'idle planner does; revisit if plan-reviewer hangs are ever observed in practice.'
+    ),
     kbInjection: 'wrapper',
     retry: retry({
         attempts: 2,
@@ -601,7 +650,11 @@ const scopedReplanPlanner = policy('scoped-replan-planner', {
     bracket: bracketed(false, true),
     timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('SCOPED_REPLAN_PLANNER_MAX_TURNS', 1, 500),
-    watchdog: watchdog(['Scoped Replan Plan (interactive)']),
+    watchdog: watchdog(
+        ['Scoped Replan Plan (interactive)'],
+        'Same interactive-planner risk profile as the main planner dispatch (single dispatch the scoped-replan '
+        + 'cycle blocks on, alive-but-silent has no other client-side signal), so it is armed identically.'
+    ),
     kbInjection: 'wrapper',
     // A single bounded attempt: no retry ladder and no resume of its own.
     retry: retry({ attempts: 1, authSelfHeal: true }),
@@ -620,6 +673,11 @@ const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('SCOPED_REPLAN_REVIEWER_MAX_TURNS', 1, 500),
+    watchdog: noWatchdog(
+        'Same reasoning as plan-reviewer: a single bounded review pass with no code/bead mutation of its own, '
+        + 'left disarmed as inherited from the pre-engine ladder. Its own single-attempt ladder degrades to a '
+        + 'safe non-approval rather than needing a second, independent kill-path.'
+    ),
     kbInjection: 'wrapper',
     retry: retry({ attempts: 1, authSelfHeal: true }),
     degrade: degrade({ kind: 'non-approval', rethrowsUnrecognisedErrors: false }),
@@ -640,6 +698,12 @@ const streakAssignment = policy('streak-assignment', {
     bracket: NO_BRACKET,
     timeouts: NO_BUDGETS,
     maxTurns: null,
+    watchdog: noWatchdog(
+        'The one dispatch with no bracket and no repo state (bracket: NO_BRACKET) -- a stuck session holds no '
+        + 'in-flight code/beads mutation open -- and its own semantic-repair re-ask plus fallback-value degrade '
+        + '(one-bead-per-streak) already give a deterministic, safe answer if the dispatch never returns. '
+        + 'Left disarmed: inherited, and lower-risk than the bracketed roles for that reason.'
+    ),
     kbInjection: 'none',
     retry: retry({ attempts: 1, authSelfHeal: true, semanticRepairReAsks: 1 }),
     degrade: degrade({
@@ -665,6 +729,15 @@ const doer = policy('doer', {
     bracket: bracketed(true, true),
     timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('BASE_DOER_MAX_TURNS', 1, 500),
+    watchdog: noWatchdog(
+        'Doer streaks dispatch and run in PARALLEL across streaks -- the parallel runner isolates each one, and '
+        + 'the per-bead-attribution degrade already reads back which of the streak\'s beads actually closed rather '
+        + 'than trusting the ladder\'s own outcome -- so a frozen-but-alive doer session blocks only its own '
+        + 'streak, not the sprint, and a later cycle\'s reclaimStaleInProgress recovers any bead the hang left '
+        + 'stuck. This is a reasoned choice, not merely historical: arming would race a client-side kill against a '
+        + 'session that may still be committing real code/beads mid-turn, which is exactly the risk '
+        + 'resumeOntoRemoteTipOnRetry and abortAfterSpentResumeLadder already handle conservatively.'
+    ),
     kbInjection: 'prompt-builder',
     retry: retry({
         attempts: 2,
@@ -714,6 +787,13 @@ const reviewer = policy('reviewer', {
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('BASE_REVIEWER_MAX_TURNS', 1, 500),
+    watchdog: noWatchdog(
+        'One review round at a time, gated behind the same server-side timeout_s as every dispatch, and its own '
+        + 'degrade path already treats an unresponsive or self-contradictory round conservatively as '
+        + 'CHANGES_NEEDED. Left disarmed as inherited from the pre-engine ladder; unlike the planner it is not a '
+        + 'single point of failure the whole sprint idles on before anything else can even start. Historical '
+        + 'rather than freshly re-derived against an observed incident -- revisit if reviewer hangs recur.'
+    ),
     kbInjection: 'prompt-builder',
     retry: retry({
         attempts: 2,
@@ -776,6 +856,11 @@ const finalReview = policy('final-review', {
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('FINAL_REVIEW_MAX_TURNS', 1, 500),
+    watchdog: noWatchdog(
+        'Runs exactly once, after every other role finished, with its own bounded auth self-heal and a 4-path '
+        + 'degrade that already synthesizes a FAIL verdict on repair/dispatch exhaustion -- the conservative '
+        + 'answer for a final gate. Left disarmed as inherited; not re-derived against a specific observed hang.'
+    ),
     kbInjection: 'prompt-builder',
     retry: retry({
         attempts: 2,
@@ -830,6 +915,19 @@ const deployer = policy('deployer', {
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('DEPLOYER_MAX_TURNS', 1, 500),
+    // ARMED (apra-fleet-3swo.7.12, a behaviour change from previously-inherited
+    // NO_WATCHDOG): named explicitly as an obvious arming candidate. One long,
+    // unattended deploy dispatch gates the whole sprint's Integration Test /
+    // Regression Test / Final Review phases behind it with no other in-flight
+    // work to fall back on; a frozen-but-alive deploy session would otherwise
+    // hang the sprint indefinitely with no client-side ceiling. Armed
+    // identically in shape to the planner (same DISPATCH_TIMEOUT_S budget,
+    // same member:'dispatch' kill target).
+    watchdog: watchdog(
+        ['Deploy'],
+        'Long, unattended, single dispatch gating every later phase with no parallel counterpart; a '
+        + 'frozen-but-alive session here would otherwise hang the sprint with no client-side ceiling.'
+    ),
     kbInjection: 'wrapper',
     retry: retry({
         attempts: 1,
@@ -858,6 +956,10 @@ const deployer = policy('deployer', {
 deployer.secondary = secondary(deployer, 'deployer', 'max-turns-resume', {
     ladderAnchor: 'Continue the deploy exactly where you left off',
     maxTurns: turns('DEPLOYER_MAX_TURNS', 2, 500),
+    watchdog: watchdog(
+        ['Deploy (resume, max_turns=', { expr: 'DEPLOYER_MAX_TURNS * 2' }, ')'],
+        'Same unattended-single-dispatch risk as the main deploy dispatch, so the resume is armed identically.'
+    ),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],
 });
@@ -875,6 +977,20 @@ const integTestRunner = policy('integ-test-runner', {
     // still dies on silence, while an active long pass is never killed.
     timeouts: budgets('DISPATCH_TIMEOUT_S', 'INTEG_MAX_TOTAL_S'),
     maxTurns: turns('INTEG_TEST_MAX_TURNS', 1, 500),
+    // ARMED (apra-fleet-3swo.7.12, a behaviour change from previously-inherited
+    // NO_WATCHDOG): named explicitly as an obvious arming candidate. Dispatched
+    // alone with a deliberately long maxTotalS (INTEG_MAX_TOTAL_S) so a real
+    // test pass can run to completion, and with no parallel work alongside it
+    // the way doer streaks have; an alive-but-silent session has no other
+    // client-side signal and would otherwise hang the cycle for the whole long
+    // budget. The existing 'inconclusive' degrade (classifiesInfraFailures)
+    // already has a safe fabricated report ready for the watchdog's
+    // AgentDispatchError to land in.
+    watchdog: watchdog(
+        ['Integration Test'],
+        'Long, unattended, single dispatch with no parallel counterpart; a frozen-but-alive session would '
+        + 'otherwise hang the whole integ-test cycle for the full long maxTotalS budget with no way to abort early.'
+    ),
     kbInjection: 'wrapper',
     retry: retry({
         attempts: 1,
@@ -914,6 +1030,10 @@ const integTestRunner = policy('integ-test-runner', {
 integTestRunner.secondary = secondary(integTestRunner, 'integ-test-runner', 'max-turns-resume', {
     ladderAnchor: 'Continue the integration test run exactly where you left off',
     maxTurns: turns('INTEG_TEST_MAX_TURNS', 2, 500),
+    watchdog: watchdog(
+        ['Integration Test (resume, max_turns=', { expr: 'INTEG_TEST_MAX_TURNS * 2' }, ')'],
+        'Same unattended-single-dispatch risk as the main integ-test dispatch, so the resume is armed identically.'
+    ),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],
 });
@@ -929,6 +1049,17 @@ const regressionTestRunner = policy('regression-test-runner', {
     bracket: bracketed(false, true),
     timeouts: budgets('DISPATCH_TIMEOUT_S', 'REGRESSION_TEST_MAX_TOTAL_S'),
     maxTurns: turns('REGRESSION_TEST_MAX_TURNS', 1, 500),
+    // ARMED (apra-fleet-3swo.7.12, a behaviour change from previously-inherited
+    // NO_WATCHDOG): named explicitly as an obvious arming candidate, for the
+    // same reason as integ-test-runner -- one long, unattended dispatch with no
+    // parallel counterpart and a catch-all degrade already built to absorb a
+    // fabricated failing report. A frozen-but-alive session here would
+    // otherwise hang the whole regression phase.
+    watchdog: watchdog(
+        ['Regression Test'],
+        'Long, unattended, single dispatch with no parallel counterpart; a frozen-but-alive session would '
+        + 'otherwise hang the whole regression phase for the full long maxTotalS budget with no way to abort early.'
+    ),
     kbInjection: 'wrapper',
     retry: retry({
         attempts: 1,
@@ -982,6 +1113,10 @@ const regressionTestRunner = policy('regression-test-runner', {
 regressionTestRunner.secondary = secondary(regressionTestRunner, 'regression-test-runner', 'max-turns-resume', {
     ladderAnchor: 'Continue the regression pass exactly where you left off',
     maxTurns: turns('REGRESSION_TEST_MAX_TURNS', 2, 500),
+    watchdog: watchdog(
+        ['Regression Test (resume, max_turns=', { expr: 'REGRESSION_TEST_MAX_TURNS * 2' }, ')'],
+        'Same unattended-single-dispatch risk as the main regression dispatch, so the resume is armed identically.'
+    ),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],
 });
@@ -998,6 +1133,12 @@ const harvester = policy('harvester', {
     bracket: bracketed(true, true),
     timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('HARVESTER_MAX_TURNS', 1, 500),
+    watchdog: noWatchdog(
+        'Runs after the sprint\'s pass/fail verdict is already decided; a hang here degrades to '
+        + '\'proceed-without-report\', a genuine no-op on the sprint\'s outcome since nothing downstream reads its '
+        + 'report before the run exits. Left disarmed: historical, and the low stakes of its own degrade path made '
+        + 'a second kill-path a low priority here relative to the three roles this pass armed.'
+    ),
     kbInjection: 'wrapper',
     retry: retry({
         attempts: 1,
