@@ -350,7 +350,36 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         throw new Error(`provision_vcs_auth failed for member '${member}': ${provisionText || '(no detail)'}`);
     }
 
-    return { expiresAt: parseExpiresAtFromProvisionText(provisionText), repo: derivedRepo };
+    // (apra-fleet-3swo.7.5) Credential expiry comes from the STRUCTURED half of
+    // the provision result -- `structuredContent.expiresAt`, an ISO timestamp or
+    // null (ProvisionVcsAuthFields in src/tools/provision-vcs-auth.ts) -- and is
+    // no longer regex-scraped out of the prose summary by
+    // parseExpiresAtFromProvisionText(), which is retained unused and deprecated
+    // (see its own comment) pending the facade-pin removal task.
+    //
+    // Deliberately inlined rather than factored into a named helper: this
+    // module's top-level declarations are pinned symbol-for-symbol by the facade
+    // enumeration in test/vcs-auth-extraction-facade.test.mjs, so ADDING a
+    // top-level name here turns that gate red exactly as removing one would --
+    // and editing that enumeration belongs to the facade-pin task, not this one.
+    //
+    // The null semantics are preserved EXACTLY, because both the preflight
+    // freshness cache and the server's own checkVcsTokenExpiry read null as "no
+    // expiry tracked -> OK": an absent, non-string or unparseable value becomes
+    // null, never a NaN Date. That last case is load-bearing -- a truthy NaN
+    // Date would make every expiring-soon comparison false and silently disable
+    // the preflight refresh, the same trap the retired scraper's Number.isNaN
+    // guard existed to avoid.
+    const rawExpiresAt = provisionRes && provisionRes.structuredContent
+        ? provisionRes.structuredContent.expiresAt
+        : null;
+    const provisionedExpiry = typeof rawExpiresAt === 'string' && rawExpiresAt.trim() !== ''
+        ? new Date(rawExpiresAt)
+        : null;
+    return {
+        expiresAt: provisionedExpiry && !Number.isNaN(provisionedExpiry.getTime()) ? provisionedExpiry : null,
+        repo: derivedRepo,
+    };
 }
 
 // Narrowly-scoped, PR-capable provisioning. This is the ONLY call path in
@@ -771,12 +800,26 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     }
 }
 
-// provision_vcs_auth returns plain human-readable text with no structured
-// response shape, so there is no field to read directly. The GitHub App path
-// renders its metadata as one '  <key>: <value>' line per entry, so this
-// extracts the `expiresAt` line. PAT-mode credentials carry no expiry line,
-// and null here means "no expiry tracked -> OK", the same reading applied
-// server-side by checkVcsTokenExpiry.
+// DEPRECATED -- RETAINED, UNUSED, SCHEDULED FOR REMOVAL IN RELEASE v0.5.0.
+//
+// This was the prose scraper: provision_vcs_auth used to return plain
+// human-readable text with no structured response shape, so there was no
+// field to read directly, and the GitHub App path's '  <key>: <value>'
+// metadata rendering was regex-scraped for its `expiresAt` line.
+// provision_vcs_auth now returns a machine-readable
+// `structuredContent.expiresAt` (ProvisionVcsAuthFields in
+// src/tools/provision-vcs-auth.ts), so provisionVcsAuthForMember() reads that
+// field directly and this function has ZERO production call sites.
+//
+// It is deliberately NOT deleted here: the name is hard-pinned by the facade
+// enumerations (MOVED_PRIVATE_SYMBOLS in
+// test/vcs-auth-extraction-facade.test.mjs, which asserts the enumeration and
+// this module's top-level declarations agree symbol-for-symbol), so removing
+// the declaration is a facade-contract change that must land together with
+// those pin updates. That removal is tracked as its own task in this lane.
+// Do not add a new call site: read structuredContent.expiresAt.
+//
+// @deprecated since the structured provision response; removal release: v0.5.0
 /**
  * @param {string} text
  * @returns {Date|null}

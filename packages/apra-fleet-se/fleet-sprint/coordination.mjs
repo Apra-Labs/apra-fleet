@@ -374,6 +374,47 @@ export function createMcpChildIdAllocatorClient(opts = {}) {
  * @param {{ callTool: (name: string, args: object) => Promise<any>, members?: string[], sprintId?: string, log?: Function }} opts
  * @returns {{ reserveAll: () => Promise<void>, releaseAll: () => Promise<void> }}
  */
+// (apra-fleet-3swo.7.5) Classify a `member_reservation` result from its
+// STRUCTURED half, not from its prose.
+//
+// The tool used to be readable only as text, and callFor() below discriminated
+// a rejection by the leading '[-]' marker src/tools/member-reservation.ts
+// prefixes onto its failure summaries. That coupled a load-bearing control-flow
+// decision -- "did this sprint actually get the member?", which reReserveForResume
+// turns into a hard resume failure -- to a human-facing wording detail, exactly
+// the class of dependency that silently inverted once the provisioning tools
+// retired their own status prefixes.
+//
+// member_reservation now returns `structuredContent.{ ok, outcome }`
+// (MemberReservationFields / MemberReservationOutcome in
+// src/tools/member-reservation.ts, mirrored by MemberReservationStructured in
+// packages/apra-fleet-client/src/client/api.mjs), where `ok` already folds in
+// the server's own authoritative list of failing outcomes
+// (already_reserved_by_other, invalid_input, member_not_found, failed). Read
+// THAT when present.
+//
+// The legacy prose/isError heuristic is kept ONLY for a result that carries no
+// structuredContent at all -- a test double that mocks the bare string or
+// `{ content }` shape. This mirrors provisionOutcome() in vcs-auth.mjs
+// field-for-field so the two coordination surfaces cannot drift on what
+// "the server said no" means. `outcome` is null on that fallback path,
+// because there is no structured discriminator to report.
+/**
+ * @param {unknown} result an MCP tool result from member_reservation
+ * @param {string} text the same result rendered as text, for the fallback only
+ * @returns {{ ok: boolean, outcome: string|null }}
+ */
+function reservationOutcome(result, text) {
+    const structured = result && result.structuredContent;
+    if (structured && typeof structured.ok === 'boolean') {
+        return { ok: structured.ok, outcome: typeof structured.outcome === 'string' ? structured.outcome : null };
+    }
+    return {
+        ok: !((result && result.isError) || String(text == null ? '' : text).startsWith('[-]')),
+        outcome: null,
+    };
+}
+
 export function createMemberReservationClient(opts = {}) {
     const { callTool, members = [], sprintId, log = () => {} } = opts;
     const active = typeof callTool === 'function' && typeof sprintId === 'string' && sprintId.length > 0 && members.length > 0;
@@ -388,8 +429,9 @@ export function createMemberReservationClient(opts = {}) {
         try {
             const result = await callTool('member_reservation', { member_name: member, action, sprint_id: sprintId });
             const text = resultText(result);
-            if ((result && result.isError) || text.startsWith('[-]')) {
-                log(`[member-reservation] ${action} rejected for member '${member}': ${text || '(no detail)'}`);
+            const { ok, outcome } = reservationOutcome(result, text);
+            if (!ok) {
+                log(`[member-reservation] ${action} rejected for member '${member}'${outcome ? ` (${outcome})` : ''}: ${text || '(no detail)'}`);
                 return { ok: false, text };
             }
             return { ok: true, text };

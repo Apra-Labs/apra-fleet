@@ -80,6 +80,28 @@ const remoteCommand = async (cmd) => {
 
 const farFutureExpiry = () => new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1h out
 
+// apra-fleet-3swo.7.5: the preflight's freshness cache now reads the credential
+// expiry from the STRUCTURED half of a provision_vcs_auth result
+// (structuredContent.expiresAt -- an ISO string, or null meaning "no expiry
+// tracked -> OK"), never by regex-scraping the prose summary. Every double in
+// this file therefore returns the { content, structuredContent } shape the real
+// tool emits (src/tools/provision-vcs-auth.ts's ProvisionVcsAuthFields). The
+// prose keeps its historical 'expiresAt:' metadata line so a double still LOOKS
+// like a real response, but it is deliberately no longer what the cache reads --
+// if it ever were again, the expiring-soon case below would be the test that
+// caught it, since it is the only one whose cached expiry actually matters.
+const provisionedWithExpiry = (expiresAt) => ({
+    content: [{ text: `Provisioned VCS credential.\n  expiresAt: ${expiresAt}` }],
+    structuredContent: { ok: true, reason: 'ok', expiresAt },
+});
+
+// PAT-mode counterpart: a credential type that never expires reports
+// expiresAt: null, which the cache must read as "known-good, never refresh".
+const provisionedNoExpiry = (text = 'Provisioned VCS credential (PAT mode, no expiry).') => ({
+    content: [{ text }],
+    structuredContent: { ok: true, reason: 'ok', expiresAt: null },
+});
+
 // apra-fleet-647.1.2.1: provisionVcsAuthForMember now resolves the member's
 // provider via VCSModule.resolveProvider(), which itself calls
 // fleetApi.memberDetail() (the 'member_detail' MCP tool) BEFORE ever calling
@@ -97,7 +119,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name, args) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push({ name, args });
-            return { content: [{ text: `Provisioned VCS credential.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const logs = [];
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand, log: (m) => logs.push(m) });
@@ -122,7 +144,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push(name);
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand });
 
@@ -138,7 +160,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name, args) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push(args.member_name);
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand });
 
@@ -160,7 +182,7 @@ describe('createVcsAuthPreflightCallback', () => {
             // Each mint expires 12 minutes out from "now" -- comfortably
             // outside the 10-minute preflight window until the clock below
             // advances far enough to eat into that margin.
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${new Date(nowMs + 12 * 60 * 1000).toISOString()}` }] };
+            return provisionedWithExpiry(new Date(nowMs + 12 * 60 * 1000).toISOString());
         };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand, now });
 
@@ -182,7 +204,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push(1);
-            return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] };
+            return provisionedNoExpiry();
         };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand });
 
@@ -220,7 +242,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name, args) => {
             if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'bitbucket' }) }] };
             calls.push({ name, args });
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const bitbucketCommand = async (cmd) => {
             if (cmd === 'git remote get-url origin') {
@@ -263,7 +285,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name, args) => {
             if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: undefined }) }] };
             calls.push({ name, args });
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const logs = [];
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: unclaimedRemoteCommand, log: (m) => logs.push(m) });
@@ -286,7 +308,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const preflightCallTool = async (name, args) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             preflightCalls.push({ name, args });
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool: preflightCallTool, command: remoteCommand });
         await ensureVcsAuthFresh('fleet-mac');
@@ -305,7 +327,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const healCallTool = async (name, args) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             healCalls.push({ name, args });
-            return { content: [{ text: 'Provisioned.' }] };
+            return provisionedNoExpiry('Provisioned.');
         };
         const onAuthFailure = createVcsAuthSelfHealCallback({ callTool: healCallTool, command: pushCommand });
 
@@ -347,7 +369,7 @@ describe('runSprintCycle: the real withGitSync pushCode-gated preflight wiring',
                 if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
                 if (name === 'provision_vcs_auth') {
                     vcsCalls.push(args);
-                    return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+                    return provisionedWithExpiry(farFutureExpiry());
                 }
                 return { content: [{ text: 'ok' }] };
             };
@@ -451,7 +473,7 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
                 if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
                 if (name === 'provision_vcs_auth') {
                     vcsCalls.push(args);
-                    return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+                    return provisionedWithExpiry(farFutureExpiry());
                 }
                 return { content: [{ text: 'ok' }] };
             };
@@ -535,7 +557,7 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
                         throw new Error('provision_vcs_auth: fleet server unreachable (injected)');
                     }
                     vcsCalls.push(args);
-                    return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+                    return provisionedWithExpiry(farFutureExpiry());
                 }
                 return { content: [{ text: 'ok' }] };
             };
