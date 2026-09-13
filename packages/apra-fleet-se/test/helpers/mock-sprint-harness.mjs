@@ -267,7 +267,7 @@ export function redactNetworkCommandForLog(command) {
 // `structuredContent.expiresAt` inline (deliberately not extracted into its
 // own named helper, since test/vcs-auth-extraction-facade.test.mjs pins
 // vcs-auth.mjs's top-level declarations symbol-for-symbol and would fail on
-// an added name)) and, for any other tool
+// an added name) and, for any other tool
 // name, a generic success -- so it never masks a genuinely-unexpected tool
 // call as a failure. A scenario that needs to observe a provisioning
 // failure, or assert on the exact provision_vcs_auth call args, still passes
@@ -281,7 +281,7 @@ export function redactNetworkCommandForLog(command) {
 // mutex -- BOTH of those, unlike provision_vcs_auth/member_reservation/
 // stop_prompt, are read through parseCoordinationToolResult(), which
 // JSON.parse()s the tool's text and THROWS on anything that isn't valid JSON
-// (see runner.js). The old generic `✅ mock <name>` text is plain prose, not
+// (see runner.js). The old generic `[OK] mock <name>` text is plain prose, not
 // JSON, so any scenario that reaches one of these two tools (e.g. a reviewer
 // newTasks response gets id-allocated via `bd create`) would fail every
 // allocate/acquire call with "returned a non-JSON response" -- a real
@@ -313,7 +313,7 @@ export function defaultMockCallTool() {
             // halves are kept, exactly as the real tool emits them
             // (src/tools/provision-vcs-auth.ts).
             return {
-                content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }],
+                content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }],
                 structuredContent: { ok: true, reason: 'ok', expiresAt },
             };
         }
@@ -331,7 +331,7 @@ export function defaultMockCallTool() {
             }
             return { content: [{ text: JSON.stringify({ released: true }) }] };
         }
-        return { content: [{ text: `✅ mock ${name}` }] };
+        return { content: [{ text: `[OK] mock ${name}` }] };
     };
 }
 

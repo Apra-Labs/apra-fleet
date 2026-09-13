@@ -273,7 +273,7 @@ function mockCmdResult(code, stdout, stderr = '') {
 // THROWS on anything that isn't valid JSON (see mock-sprint-harness.mjs's
 // defaultMockCallTool doc comment for the identical fix there) -- so
 // dolt_push_mutex/child_id_allocator must answer with valid, minimal JSON
-// too, not the plain '✅ mock <name>' prose generic callers elsewhere use.
+// too, not the plain '[OK] mock <name>' prose generic callers elsewhere use.
 function spyCallTool(name, toolArgs) {
     // apra-fleet-647.1.2.1: provisionVcsAuthForMember resolves the member's
     // provider via VCSModule.resolveProvider() (a 'member_detail' call)
@@ -283,7 +283,7 @@ function spyCallTool(name, toolArgs) {
     }
     if (name === 'provision_vcs_auth') {
         const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-        return Promise.resolve({ content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] });
+        return Promise.resolve({ content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] });
     }
     if (name === 'dolt_push_mutex') {
         const action = toolArgs && toolArgs.action;
@@ -299,7 +299,7 @@ function spyCallTool(name, toolArgs) {
         }
         return Promise.resolve({ content: [{ text: JSON.stringify({ confirmed: true, released: true }) }] });
     }
-    return Promise.resolve({ content: [{ text: `✅ mock ${name}` }] });
+    return Promise.resolve({ content: [{ text: `[OK] mock ${name}` }] });
 }
 
 // apra-fleet-eft.6.7: `allBeadsJson`/`readyJson` let a caller substitute the

@@ -51,7 +51,7 @@ test('Publish-PR path: a 401 on the first PR-create call triggers exactly one se
             if (name === 'provision_vcs_auth') {
                 provisionCalls.push(args);
                 const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-                return { content: [{ text: `check-mark Mock ${args.provider} credentials deployed on "${args.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+                return { content: [{ text: `[OK] Mock ${args.provider} credentials deployed on "${args.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
             }
             if (name === 'child_id_allocator') {
                 return { content: [{ text: JSON.stringify(args && args.action === 'allocate' ? { childId: null, token: null } : { confirmed: true, released: true }) }] };
@@ -116,7 +116,7 @@ test('Publish-PR path: a persistent non-auth 500 never triggers a self-heal re-p
             if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
             if (name === 'provision_vcs_auth') {
                 provisionCalls.push(args);
-                return { content: [{ text: `check-mark Mock ${args.provider} credentials deployed on "${args.member_name}"\n` }] };
+                return { content: [{ text: `[OK] Mock ${args.provider} credentials deployed on "${args.member_name}"\n` }] };
             }
             if (name === 'child_id_allocator') {
                 return { content: [{ text: JSON.stringify(args && args.action === 'allocate' ? { childId: null, token: null } : { confirmed: true, released: true }) }] };
@@ -189,7 +189,7 @@ function makeFinalizeAbortMocks({ curlResponses, commitCount = 2 }) {
         if (name === 'provision_vcs_auth') {
             provisionCalls.push(args);
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-            return { content: [{ text: `check-mark Mock ${args.provider} credentials deployed\n  expiresAt: ${expiresAt}\n` }] };
+            return { content: [{ text: `[OK] Mock ${args.provider} credentials deployed\n  expiresAt: ${expiresAt}\n` }] };
         }
         return { content: [{ text: `mock ${name}` }] };
     };
@@ -347,7 +347,7 @@ test('createVcsAuthPreflightCallback logs the "[Sync] preflight:" line and never
         if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-            return { content: [{ text: `check-mark Mock github credentials deployed\n  expiresAt: ${expiresAt}\n` }] };
+            return { content: [{ text: `[OK] Mock github credentials deployed\n  expiresAt: ${expiresAt}\n` }] };
         }
         return { content: [{ text: 'ok' }] };
     };
