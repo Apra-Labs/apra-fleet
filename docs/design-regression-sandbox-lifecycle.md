@@ -132,7 +132,7 @@ verify after the fact that none of the killed pids was the foreign
 sprint's own child. Anyone tightening this preflight step should add that
 exclusion explicitly rather than relying on it being caught by luck.
 
-## Known gap: OS-assigned port allocation has a release-then-rebind window
+## Resolved: OS-assigned port allocation's release-then-rebind window
 
 The sandbox deploy helper's port picker binds an ephemeral port (port 0),
 reads back the OS-assigned number, then **closes** that probe socket before
@@ -141,13 +141,31 @@ close and the later bind, nothing holds the port -- under concurrent load
 (many processes probing and binding ports at once, as a large parallel test
 run does) a different process can claim the same number in that window,
 and the server that was supposed to get it fails to bind with `EADDRINUSE`
-or an equivalent "did not come up" symptom. This reproduces as a genuine
+or an equivalent "did not come up" symptom. This reproduced as a genuine
 intermittent failure of a live up/teardown test under full-suite
 concurrency while passing cleanly in isolation -- that pass-alone/fail-
 under-load signature is the diagnostic tell for this class of bug, not a
-flaky test to retry away. Closing this class of gap requires either
-holding the probe socket open and passing the live handle/fd through to
-the child (no window at all), or making the up-path retry allocation on a
-detected bind failure with a fresh port. A bare process-level retry without
-picking a new port does not help, since the same number can lose the race
-again.
+flaky test to retry away.
+
+`scripts/sandbox-deploy.mjs` closes it without holding the probe socket
+open, on a tag-then-retry design:
+
+- A conflict is tagged as a **proven** port race, not assumed from a single
+  failed probe. `lostPortRace()` polls for up to a grace window
+  (`PORT_RELEASE_GRACE_MS`) before concluding a foreign process actually
+  holds the port -- a single probe can itself be racy this early in the
+  window, so one miss does not yet mean "someone else has it."
+- Only a proven conflict (`portConflictError` / `lostPortRace`) triggers a
+  retry; any other bind failure surfaces immediately rather than being
+  treated as retryable.
+- Retries are bounded by `MAX_PORT_BIND_ATTEMPTS`, and each retry
+  re-allocates rather than rebinding the same number (a bare process-level
+  retry without picking a new port does not help, since the same number can
+  lose the race again).
+- Re-allocation excludes both the lost port itself and ports adjacent to it
+  (`excludePorts` plus an adjacency filter) -- adjacency matters because the
+  allocator can otherwise hand back a neighbor of a port that is mid-release
+  by the same losing process, recreating the same race one port over.
+- The retry path refuses to proceed if teardown of the previous attempt did
+  not fully succeed, rather than layering a new bind attempt on top of a
+  partially-torn-down previous one.

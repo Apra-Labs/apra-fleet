@@ -1984,11 +1984,22 @@ silent flag, the plaintext token still round-trips through a command result
 the orchestrator process reads.
 
 `vcs_credential_exec` (`src/tools/vcs-credential-exec.ts`) removes that
-round-trip. The caller sends a command containing the literal placeholder
-`{{vcs_token}}` where the credential belongs (never inside the caller's own
-quotes -- the substituted value arrives already shell-escaped for the
-member's shell, the same convention `execute_command`'s `{{secure.NAME}}`
-tokens use), and the server performs the whole handoff in one call:
+round-trip. The caller sends a command containing one of two literal
+placeholders where the credential belongs, and the server performs the
+whole handoff in one call:
+
+- `{{vcs_token}}` -- a **bare** reference, never inside the caller's own
+  quotes. The substituted value arrives already shell-escaped and fully
+  quoted for the member's shell, the same convention `execute_command`'s
+  `{{secure.NAME}}` tokens use.
+- `{{vcs_token_inline}}` -- for a placement **inside the caller's own single
+  quotes** (e.g. `'Authorization: Bearer {{vcs_token_inline}}'`). The
+  substituted value here is the bare interior escaping only, not the fully
+  quoted form -- using `{{vcs_token}}` in that position would double-escape
+  the token and produce a broken command. Callers pick whichever placeholder
+  matches the syntactic position the token needs to land in.
+
+The handoff itself:
 
 1. Runs the member's deployed credential helper through `strategy.execCommand`
    -- that output is consumed in-process and is never part of this tool's
@@ -1999,7 +2010,7 @@ tokens use), and the server performs the whole handoff in one call:
 4. Redacts any occurrence of the token from stdout/stderr before returning,
    the same defense `execute-command.ts`'s output redaction applies.
 
-The tool refuses any command lacking the `{{vcs_token}}` placeholder, so it
+The tool refuses any command containing **neither** placeholder, so it
 cannot degrade into a second, unguarded `execute_command`. The plaintext
 token appears in no field of any result an orchestrator-side caller can
 read; `readMemberVcsCredentialToken` (the old prose-scraping path) is left in

@@ -496,6 +496,26 @@ than a single mechanism:
 A member with no genuine content conflict never leaves Tier 0; Tier 2 is a
 rare, explicitly-logged escalation, not the common path.
 
+### Crossing-bracket mutual exclusion
+
+`git-sync.mjs`'s `withOpenSyncBracket` detects a **crossing close** -- one
+sync bracket closing while a second, overlapping bracket for the same
+member is still open, which would otherwise let the two brackets' pull/push
+pairs interleave unpredictably. On a crossing close it raises
+`ConcurrentSyncBracketError`. That error is raised *after* the pause-guard
+re-registration for the bracket, with the bracketed body's own original
+error still attached as `cause`, so a caller inspecting the failure sees
+both facts -- the sync-safety violation and whatever the body itself was
+doing when it happened -- rather than the mutual-exclusion error silently
+replacing the real one. The pause-guard poke on this path is currently
+inert (the crossing-close condition itself already guarantees
+`openSyncBracketCount >= 1`, so the poke never actually changes anything
+there); it is kept anyway as hardening against a future refactor of the
+counter's invariants, not because it does anything today. Do not read the
+poke's presence there as evidence it is load-bearing -- check
+`openSyncBracketCount`'s invariant before removing it, not the other way
+round.
+
 ## Dolt sync discipline (`synced` mode)
 
 Because fleet-sprint's beads state lives in a Dolt-backed clone per member,
@@ -1259,11 +1279,13 @@ silently passing a vacuous check. Parse the child's own TAP summary line
 
 ## Module decomposition: `runner.js` as a strangler-fig facade
 
-`runner.js` began as a single ~11,700-line file and is being decomposed
-incrementally into focused `fleet-sprint/*.mjs` modules (plus a
-`fleet-sprint/phases/*.mjs` directory, one file per sprint-cycle phase) while
-staying a drop-in facade for its importers and mock-sprint test fixtures. The
-approach is a strangler-fig extraction, not a rewrite:
+`runner.js` began as a single ~11,850-line file and has been decomposed
+into focused `fleet-sprint/*.mjs` modules (plus a `fleet-sprint/phases/*.mjs`
+directory, one file per sprint-cycle phase) while staying a drop-in facade
+for its importers and mock-sprint test fixtures. `runner.js` itself is now
+under 3,200 lines: a composition root that wires the phase modules together
+and re-exports the full facade surface, not a place new logic gets added.
+The approach was a strangler-fig extraction, not a rewrite:
 
 - **Move-only discipline.** An extraction commit relocates code verbatim
   (plus import/export wiring); it does not change behavior. Any actual
@@ -1292,13 +1314,18 @@ approach is a strangler-fig extraction, not a rewrite:
   a rejected `kb_query` result instead of failing silently), `beads-
   scope.mjs` (the scope-snapshot BFS and its invalidation contract --
   `phase()` invalidates the shared snapshot at every phase boundary, not
-  just at planning time), and `beads-transitions.mjs` (verdict-application
+  just at planning time), `beads-transitions.mjs` (verdict-application
   transitions, including the Re-Review site that previously applied a
-  verdict with no scope-ceiling guard). A handful of concerns (bead-child
-  allocation helpers, sprint-report/newTask text formatting, round-session
-  and dispatch-failure handling, and the fatal-diagnostics writer) remain
-  in `runner.js` pending their own extraction; they are ordinary
-  strangler-fig backlog, not a design gap.
+  verdict with no scope-ceiling guard), `beads-children.mjs` (bead-child
+  allocation helpers split out of `beads-scope.mjs`), `sprint-report.mjs` /
+  `newtask-text.mjs` (sprint-summary and newTask text formatting, including
+  the structured-findings-to-newTask-text translation described below),
+  `round-session.mjs` / `dispatch-failure.mjs` (per-round session bookkeeping
+  and dispatch-failure classification), and `fatal-diagnostics.mjs` (the
+  sprint-fatal diagnostics writer). The extraction slate that this epic
+  scoped is complete: every module the epic named has landed, `runner.js`
+  holds no unextracted concern pending its own module, and further module
+  splits are ordinary maintenance, not epic backlog.
 - **`phases/*.mjs`: one file per sprint-cycle phase.** `runSprintCycle`'s
   body -- Ensure Sprint Branch, Plan, Replan, Develop, Review, Deploy, Integ
   Test, Re-Review, Final Review, Regression Test, Harvest, Publish PR -- is
@@ -1341,6 +1368,49 @@ approach is a strangler-fig extraction, not a rewrite:
   guard's early-return-on-empty-list behavior means it asserts nothing
   until at least one role is marked migrated -- with all 13 roles migrated,
   it is now a live check on every one of them, not an inert placeholder.
+- **Every role's dispatch watchdog is explicit, not defaulted.** The
+  `role-policies.mjs` normalizer no longer silently defaults a role's
+  watchdog to disarmed: all 13 roles declare either `watchdog()` (armed,
+  with a stated rationale) or `noWatchdog()` (deliberately unarmed, also
+  with a stated rationale). `deployer`, `integ-test-runner` and
+  `regression-test-runner` are armed as long, unattended, single-dispatch
+  phases with no other client-side kill path. `resolveWatchdogTimeout` is
+  applied in both a role's primary `policy()` and its `secondary()` (used by
+  roles that build their own `watchdog()`, such as the four secondaries that
+  would otherwise have the already-resolved value overwritten by a naive
+  spread); every `budgets()` row keeps `maxTotalS >= timeoutS`, so an armed
+  watchdog's hard elapsed ceiling can never end up shorter than its own
+  per-turn timeout.
+- **Pre-sprint validation refusals are typed.** `PreSprintValidationError`
+  (a `WorkflowError` subclass, `errors.mjs`) replaces an untyped `Error`
+  distinguishable only by prose with a `reason` discriminator drawn from a
+  frozen vocabulary (`TARGET_NOT_VISIBLE`, `NOTHING_TO_DO`,
+  `CYCLE_REPAIR_FAILED`, `DEADLOCKED`), plus reason-specific structured
+  fields (e.g. `invisibleTargets`, `cyclePairs`, `deadlockedIds`). The
+  human-readable message is unchanged from the prose each refusal already
+  emitted -- this adds a type and discriminator without restyling
+  operator-facing text -- and the error is never caught inside the
+  pre-sprint block, so it still fails the run before any dispatch occurs.
+  Constructing one with a `reason` outside the frozen vocabulary throws a
+  `TypeError` at construction, rather than shipping a refusal that only
+  looks typed.
+- **The plan-reviewer contract carries a structured, per-bead `findings`
+  array** (`apra-pm/agents/schemas/plan-reviewer-output.json`) alongside the
+  free-text `notes` field. Each entry is `{ id, kind, detail }`, where `kind`
+  is a closed vocabulary mirroring the plan-reviewer's numbered quality
+  criteria (`coverage`, `missing_test_task`, `acceptance_criteria`,
+  `task_size`, `dependency_wiring`, `scope_creep`, `duplicate_work`,
+  `feasibility`, `ready_work`, `model_metadata`, `lane_cohesion`, `other`).
+  `findings` is populated on every `CHANGES_NEEDED` verdict; an **empty**
+  array on `CHANGES_NEEDED` is the explicit "the objection is plan-wide,
+  names no individual bead" signal, distinct from a verdict that predates
+  the field entirely (no `findings` key at all), which callers still fall
+  back to reading `notes` for. This replaced `extractContestedBeadIds`'s
+  prose-scraping of `notes` to find contested bead ids -- contested-bead
+  routing now reads `findings` directly instead of pattern-matching
+  free text, and `newtask-text.mjs` carries the translation from a
+  `findings` array back into newTask text for the one channel that still
+  needs prose (task creation for a human/downstream reader).
 
 ### The shared guarded-module list
 
