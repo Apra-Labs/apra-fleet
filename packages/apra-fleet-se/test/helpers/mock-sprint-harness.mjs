@@ -261,8 +261,9 @@ export function redactNetworkCommandForLog(command) {
 // subset that opted in for self-heal/preflight coverage (apra-fleet-eft.75.3).
 // This default answers 'provision_vcs_auth' with the same shape the real
 // production tool returns on success (a leading check-mark line plus an
-// 'expiresAt:' metadata line, see src/tools/provision-vcs-auth.ts and
-// runner.js's parseExpiresAtFromProvisionText()) and, for any other tool
+// 'expiresAt:' metadata line, AND the structuredContent half the orchestrator
+// actually reads the expiry from -- see src/tools/provision-vcs-auth.ts and
+// vcs-auth.mjs's provisionExpiresAt()) and, for any other tool
 // name, a generic success -- so it never masks a genuinely-unexpected tool
 // call as a failure. A scenario that needs to observe a provisioning
 // failure, or assert on the exact provision_vcs_auth call args, still passes
@@ -300,7 +301,17 @@ export function defaultMockCallTool() {
         }
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-            return { content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+            // apra-fleet-3swo.7.5: the orchestrator reads the credential expiry
+            // from structuredContent.expiresAt now, not from the prose's
+            // 'expiresAt:' metadata line, so this default must carry the
+            // STRUCTURED half too or every mock-sprint scenario's preflight
+            // cache would silently start seeing "no expiry tracked". Both
+            // halves are kept, exactly as the real tool emits them
+            // (src/tools/provision-vcs-auth.ts).
+            return {
+                content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }],
+                structuredContent: { ok: true, reason: 'ok', expiresAt },
+            };
         }
         if (name === 'child_id_allocator') {
             const action = toolArgs && toolArgs.action;
