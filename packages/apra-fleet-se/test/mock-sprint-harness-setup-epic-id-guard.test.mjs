@@ -248,15 +248,40 @@ describe('setup() / setupMinimal(): end-to-end coverage of the shared fix', () =
 
 // Falsifiability (acceptance criterion 3): this whole suite depends on
 // apra-fleet-38o8.1's fix actually being in place. Documented here (not
-// re-executed on every run, since it requires mutating source under test):
-// reverting initScenarioClone()/createBeadOrThrow()/setup()/setupMinimal() to
-// their pre-38o8.1 shape (init's exit status unchecked, no runCmdFn
-// parameter) was verified this pass to make the two "bd init is caught
-// before any bd create is attempted" tests above FAIL -- with the reverted
-// code, setupMinimal()/setup() proceed past the failed 'bd init' straight
-// into the epic create, whose injected response in those tests is a
-// synthetic success ({err:null, stdout:'', stderr:''}), which itself then
-// fails createBeadOrThrow's own empty-stdout check and throws the bare
-// "did not return a bead id" message the fix exists to prevent -- i.e. the
-// exact pre-fix symptom text these tests assert must NOT appear. Restored
-// afterward; this file is otherwise unchanged by that falsification pass.
+// re-executed on every run, since it requires mutating source under test).
+//
+// The non-vacuous half of each "bd init is caught before any bd create is
+// attempted" test is `assert.match(err.message, /'bd init' FAILED/)`: this
+// is the assertion that must fail under ANY revert of the fix, because only
+// the fixed initScenarioClone() ever produces that text. The paired
+// `assert.doesNotMatch(err.message, /did not return a bead id/)` is NOT
+// independently load-bearing here -- it is reached only if assert.match
+// already passed, so a revert that makes assert.match fail short-circuits
+// before doesNotMatch runs at all (per node:assert's callback-form
+// assert.rejects, the callback throws on its first failing assertion and
+// stops). doesNotMatch would only add coverage against a revert that kept
+// the "'bd init' FAILED" wording but reintroduced the old symptom text
+// alongside it, which is not what either revert below does.
+//
+// Verified this pass, restored afterward (this file is otherwise unchanged
+// by either falsification):
+//
+// 1) Logic-only revert -- comment out just initScenarioClone()'s
+//    `if (initRes.err) { throw ... }` block, keeping the runCmdFn seam so
+//    the module still imports. setupMinimal()/setup() then proceed past the
+//    failed 'bd init' straight into the epic create, whose injected
+//    response in these tests is a synthetic success
+//    ({err:null, stdout:'', stderr:''}); createBeadOrThrow()'s own
+//    empty-stdout check then throws its OWN message, which reads (observed
+//    verbatim): `[advanced-mock-runner-test] setupMinimal(38o8g-initfail):
+//    "bd create -t epic ... --silent" did not return a bead id (parsed "").
+//    ...`. assert.match(/'bd init' FAILED/) fails as expected
+//    ("AssertionError [ERR_ASSERTION]: The input did not match the regular
+//    expression /'bd init' FAILED/"); doesNotMatch is never reached.
+//
+// 2) Full revert (git checkout of a pre-38o8.1 mock-sprint-harness.mjs) does
+//    NOT exercise either assertion at all: that file predates the
+//    createBeadOrThrow/initScenarioClone exports this test file imports, so
+//    the whole suite fails at import time
+//    (SyntaxError: no export named 'createBeadOrThrow'), not inside these
+//    two tests. It is not usable evidence for this guard's non-vacuousness.
