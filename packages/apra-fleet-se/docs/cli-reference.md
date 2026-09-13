@@ -70,7 +70,9 @@ several keys `bin/cli.mjs` never sets, so they stay at their defaults for
 every CLI-launched sprint: the legacy singular `target_issue`, `assignee`,
 `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`,
 `azdevops_pat_secret_name`, and the engine-injected `callTool`. See
-`docs/fleet-sprint-cli-contract.md` for that contract.
+`docs/fleet-sprint-cli-contract.md` for that contract, and its "Dormant
+argument audit" section specifically for the productize-or-prune decision on
+`assignee`, `doer_worklist_mode` and `resume_model_switch` (apra-fleet-3swo.7.13).
 
 ### Environment variables
 

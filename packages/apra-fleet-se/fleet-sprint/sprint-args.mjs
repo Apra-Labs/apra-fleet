@@ -52,9 +52,33 @@ const KNOWN_ARG_KEYS = new Set([
     // gate can tell this sprint's OWN reservation from a foreign one.
     'run_id',
     // The assignee identity this sprint claims beads as and filters ready work
-    // by (`bd update --claim` / `bd ready --assignee`). Nothing sets this
-    // today; the claiming layer stays dormant and bead selection uses the
-    // unassigned `bd list --ready`.
+    // by (`bd update --claim` / `bd ready --assignee`). No CLI flag sets this
+    // today (bin/cli.mjs's buildRunnerArgs() does not accept it, and no
+    // apra-pm workflow under packages/apra-fleet-se/apra-pm sets it either --
+    // both verified by repo-wide search, apra-fleet-3swo.7.13); bead selection
+    // falls back to the unassigned `bd list --ready`.
+    //
+    // PRODUCTIZE-OR-PRUNE DECISION (apra-fleet-3swo.7.13): PRODUCTIZED, not
+    // pruned. This is NOT dead code -- it is a fully wired, load-bearing
+    // engine capability with no CLI surfacing yet: fleet-sprint/beads-
+    // scope.mjs actively rewrites its shared `bd list` query to
+    // `--assignee <id>` when this is set (so two sprints working the same
+    // beads project never select the same bead), and the doer's develop-phase
+    // claiming branch (fleet-sprint/phases/develop.mjs) batches a real
+    // `bd update <ids...> --claim --json` and narrows the streak to whatever
+    // it actually won. Both are exercised directly against the real functions
+    // by test/beads-scope-extraction.test.mjs ("--assignee narrows a filtered
+    // read...") and test/claim-beads-batched.test.mjs -- this is the "at
+    // least one test exercising it" bar, against the real
+    // beadsScopeConfig()/claimBeadsBatched() functions the engine itself
+    // calls, not a re-derivation of their logic. Documented in
+    // docs/cli-reference.md and docs/fleet-sprint-cli-contract.md. Left
+    // without a CLI flag deliberately: it exists for a multi-sprint-on-one-
+    // project deployment (the supervisor's own future coordination surface,
+    // or a direct WorkflowEngine.executeFile() caller), which is a real
+    // invocation path today even with no `--assignee` flag on `fleet-sprint`
+    // itself -- see docs/fleet-sprint-cli-contract.md's "Dormant argument
+    // audit" section for the full record.
     'assignee',
     // Multi-streak worklist dispatch mode when a develop round has more ready
     // streaks than doers. 'resume' (default): per-streak dispatches that resume
@@ -63,6 +87,14 @@ const KNOWN_ARG_KEYS = new Set([
     // overhead-dominated scenarios): one dispatch carries a doer's whole
     // ordered worklist, which REQUIRES a tier-homogeneous worklist.
     // No CLI flag sets this today; only test/programmatic callers pass it.
+    //
+    // PRODUCTIZE-OR-PRUNE DECISION (apra-fleet-3swo.7.13): PRODUCTIZED. Fully
+    // wired (validated here, consumed by fleet-sprint/worklists.mjs's
+    // resolveWorklistTierPolicy and the develop-phase worklist packer) and
+    // exercised end-to-end through the real WorkflowEngine.executeFile()
+    // invocation path by test/mock-sprint-worklist-batch.test.mjs. Documented
+    // in docs/cli-reference.md and docs/fleet-sprint-cli-contract.md. See
+    // docs/fleet-sprint-cli-contract.md's "Dormant argument audit" section.
     'doer_worklist_mode',
     // Capability opt-in: the doer pool's provider supports changing model on a
     // RESUMED session. Only then may a resumed-sequence worklist carry mixed
@@ -70,6 +102,14 @@ const KNOWN_ARG_KEYS = new Set([
     // to tier-homogeneous grouping. See resolveWorklistTierPolicy() for the
     // capability-check seam.
     // No CLI flag sets this today; only test/programmatic callers pass it.
+    //
+    // PRODUCTIZE-OR-PRUNE DECISION (apra-fleet-3swo.7.13): PRODUCTIZED. Fully
+    // wired and exercised end-to-end through the real
+    // WorkflowEngine.executeFile() invocation path by
+    // test/mock-sprint-worklist-resume.test.mjs and unit-tested against the
+    // real resolveWorklistTierPolicy() by test/worklist-assignment.test.mjs.
+    // Documented in docs/cli-reference.md and docs/fleet-sprint-cli-contract.md.
+    // See docs/fleet-sprint-cli-contract.md's "Dormant argument audit" section.
     'resume_model_switch',
     // Per-doer effort-point budget for worklist packing (planner.md effort
     // formula units). Default DEFAULT_EFFORT_THRESHOLD.
