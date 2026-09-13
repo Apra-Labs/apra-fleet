@@ -329,7 +329,21 @@ describe.skipIf(!fs.existsSync(DIST))('live: up / env / teardown across separate
     // FLEET slot; the paired slot is always a genuinely free port so it is
     // never itself the reason a teardown between attempts fails (start()
     // throws on the fleet check before the second port is ever touched).
-    const conflictPool = [await squat(), await squat(), await squat()];
+    //
+    // The pool ports must also be pairwise non-adjacent (apra-fleet-3swo.60):
+    // allocatePorts now also excludes any candidate within 1 of a port `up`
+    // already lost, so on a system whose ephemeral-port allocator hands back
+    // sequential values for rapid successive binds (observed: three squat()
+    // calls back to back returned N, N+1, N+2), the SECOND pool port would
+    // get skipped merely for being adjacent to the FIRST pool port once it is
+    // excluded -- even though it is itself an independently live squatter,
+    // not sweeping-process noise -- silently converting this bounded-
+    // exhaustion case into a spurious success on attempt 3.
+    const conflictPool: number[] = [];
+    while (conflictPool.length < 3) {
+      const port = await squat();
+      if (!conflictPool.some((p) => Math.abs(p - port) <= 1)) conflictPool.push(port);
+    }
     let n = 0;
     const pickPort = async () => {
       n += 1;
