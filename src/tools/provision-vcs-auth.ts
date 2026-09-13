@@ -48,6 +48,44 @@ const providers: Record<string, VcsProviderService> = {
   'azure-devops': azureDevOpsProvider,
 };
 
+/**
+ * Every key a built-in provider's deploy() metadata may legitimately carry,
+ * measured against src/services/vcs/{github,bitbucket,azure-devops}.ts:
+ * github ('mode', 'access', 'repos', 'token', 'expiresAt', 'permissions',
+ * 'ghCliAuth'), bitbucket ('workspace', 'email'), azure-devops ('org',
+ * 'expiresAt'). An allowlist (rather than a value-pattern redactor) was
+ * chosen because this set is small and stable and an allowlist fails closed
+ * on a key it has never seen, where a redactor only catches patterns it
+ * recognises (apra-fleet-3swo.59). `token` is included because every
+ * provider that emits it already masks it to 4 chars + asterisks before
+ * returning -- this allowlist governs which KEYS may pass through, not
+ * whether a given value is itself safe to display.
+ */
+const PROVIDER_METADATA_KEY_ALLOWLIST: ReadonlySet<string> = new Set([
+  'mode', 'access', 'repos', 'token', 'expiresAt', 'permissions', 'ghCliAuth',
+  'workspace', 'email', 'org',
+]);
+
+/**
+ * The single enforcement point for provider deploy() metadata reaching a
+ * caller-visible channel (apra-fleet-3swo.59). Both structuredContent.metadata
+ * and the rendered text call this -- there is deliberately no second,
+ * independently-maintained copy of the key list. A key not on
+ * PROVIDER_METADATA_KEY_ALLOWLIST is dropped outright (never passed through
+ * as-is and never replaced with a redaction placeholder), so a future
+ * fourth provider or an edited existing provider cannot silently publish a
+ * new metadata key -- including a raw secret -- through this path just by
+ * adding it to the object it returns.
+ */
+function filterProviderMetadata(metadata: Record<string, string> | null | undefined): Record<string, string> | null {
+  if (!metadata) return null;
+  const filtered: Record<string, string> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (PROVIDER_METADATA_KEY_ALLOWLIST.has(key)) filtered[key] = value;
+  }
+  return filtered;
+}
+
 export const provisionVcsAuthSchema = z.object({
   ...memberIdentifier,
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider to configure'),
@@ -146,10 +184,15 @@ interface ProvisionVcsAuthFields {
   /** True when testConnectivity() reported it did not perform the check. */
   verificationSkipped: boolean;
   /**
-   * The provider's own deploy metadata, verbatim. Providers mask the token
-   * here to its first four characters plus asterisks (see
-   * src/services/vcs/github.ts) -- this payload therefore never carries the
-   * plaintext token, and that mask is deliberately left unchanged.
+   * The provider's own deploy metadata, filtered through
+   * filterProviderMetadata()'s PROVIDER_METADATA_KEY_ALLOWLIST before it
+   * reaches this field (the same filter also gates the rendered `text`).
+   * Providers additionally mask the token value itself to its first four
+   * characters plus asterisks (see src/services/vcs/github.ts), so this
+   * payload never carries the plaintext token -- but the guarantee that no
+   * OTHER unexpected key (e.g. a future provider's raw secret) reaches this
+   * field now comes from that enforced allowlist, not from provider
+   * convention alone.
    */
   metadata: Record<string, string> | null;
   /** Near-expiry warning text when one applies, else null. */
@@ -358,8 +401,9 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   touchAgent(agent.id);
   logLine('provision_vcs_auth', `provider=${input.provider}`, agent);
 
-  const meta = deployResult.metadata
-    ? Object.entries(deployResult.metadata).map(([k, v]) => `  ${k}: ${v}`).join('\n')
+  const filteredMetadata = filterProviderMetadata(deployResult.metadata);
+  const meta = filteredMetadata
+    ? Object.entries(filteredMetadata).map(([k, v]) => `  ${k}: ${v}`).join('\n')
     : '';
 
   // Check if the just-deployed token is already near expiry. `agent` was
@@ -405,7 +449,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
       expiresAt: deployResult.metadata?.expiresAt ?? null,
       verified: !connectivity.skipped && connectivity.success === true,
       verificationSkipped: connectivity.skipped === true,
-      metadata: deployResult.metadata ?? null,
+      metadata: filteredMetadata,
       expiryWarning: expiryWarning ?? null,
     },
   );

@@ -307,8 +307,9 @@
  * @property {boolean} verified - True only when testConnectivity() actually ran AND succeeded.
  * @property {boolean} verificationSkipped - True when the connectivity check was not performed.
  * @property {Record<string, string>|null} metadata - The provider's own deploy metadata,
- *   verbatim. Providers mask the token here to its first four characters plus asterisks, so
- *   this never carries the plaintext token.
+ *   filtered through a server-side key allowlist before it reaches this field (an unrecognised
+ *   key is dropped, never passed through). Providers additionally mask the token value here to
+ *   its first four characters plus asterisks, so this never carries the plaintext token.
  * @property {string|null} expiryWarning - Near-expiry warning text when one applies, else null.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
  * @property {string|null} memberName - Friendly name of the resolved member, or null.
