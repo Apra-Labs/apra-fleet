@@ -141,22 +141,70 @@ const TASK_TITLES = [
     'Task: Mmm add ensureMember idempotency check',
 ];
 
+// apra-fleet-wclh.1: setup() drives several sequential `bd` calls whose
+// results feed straight into the NEXT call (e.g. `bd list --json`'s output
+// decides `epicBead`, then `epicBead.id` is used to parent every task). Under
+// real bd (APRA_FLEET_BD_MOCK=0) any one of those calls can fail for a
+// reason that has nothing to do with this scenario's logic (a transient
+// spawn/resource failure, an unexpected bd exit) -- `runCmd()` never rejects,
+// it resolves `{ err, stdout, stderr }` and leaves the caller to notice.
+// Before this fix, setup() never checked `err` on any of its calls, so a
+// failed `bd list --json` silently produced `stdout: ''` -> `epicList: []` ->
+// `epicBead: undefined`, and the very next line's `epicBead.id` threw a bare
+// `TypeError: Cannot read properties of undefined (reading 'id')` with a
+// stack trace pointing at the dereference, not the actual failed command --
+// exactly the crash apra-fleet-wclh reported (reproduced by forcing `bd
+// list --json` to fail: identical message, identical ~4-5s elapsed, all
+// scenario-running subtests failing the same way). Guarding every call here
+// turns that opaque TypeError into a diagnostic naming the actual failed `bd`
+// command, its exit/stderr, and -- for the epic lookup specifically -- what
+// `bd list --json` actually returned.
+function assertCmdOk(res, description) {
+    if (res.err) {
+        throw new Error(
+            `golden-transcript-3bead.test.mjs setup(): ${description} failed unexpectedly.\n` +
+            `exit: ${typeof res.err.code === 'number' ? res.err.code : '(spawn failure -- process never ran)'}\n` +
+            `stdout: ${res.stdout || '(empty)'}\n` +
+            `stderr: ${res.stderr || '(empty)'}\n` +
+            `${res.err.message || ''}`
+        );
+    }
+    return res;
+}
+
 async function setup(tempDirSuffix) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-golden-3bead-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
 
-    await runCmd('bd init', tempDir);
+    assertCmdOk(await runCmd('bd init', tempDir), '`bd init`');
 
-    await runCmd('bd create -t epic "Epic: Fleet Member Management APIs (3-bead)" -d "Three independent, sibling tasks -- no dependency between them -- so all three are ready in the same Develop cycle and dispatch as concurrent doer streaks."', tempDir);
+    assertCmdOk(
+        await runCmd('bd create -t epic "Epic: Fleet Member Management APIs (3-bead)" -d "Three independent, sibling tasks -- no dependency between them -- so all three are ready in the same Develop cycle and dispatch as concurrent doer streaks."', tempDir),
+        '`bd create -t epic ...` (epic creation)'
+    );
 
-    const epicList = JSON.parse((await runCmd('bd list --json', tempDir)).stdout || '[]');
+    const epicListRes = assertCmdOk(await runCmd('bd list --json', tempDir), '`bd list --json` (epic lookup)');
+    const epicList = JSON.parse(epicListRes.stdout || '[]');
     const epicBead = epicList.find((b) => b.title.startsWith('Epic:'));
+    if (!epicBead) {
+        throw new Error(
+            'golden-transcript-3bead.test.mjs setup(): `bd list --json` did not return the just-created epic bead ' +
+            `(expected a title starting with 'Epic:'). Got ${epicList.length} bead(s): ` +
+            `${JSON.stringify(epicList.map((b) => b.title))}.`
+        );
+    }
 
     const taskIds = [];
     for (const title of TASK_TITLES) {
-        const createRes = await runCmd(`bd create "${title}" -d "Independent sibling task." --silent`, tempDir);
+        const createRes = assertCmdOk(
+            await runCmd(`bd create "${title}" -d "Independent sibling task." --silent`, tempDir),
+            `\`bd create "${title}"\``
+        );
         const id = createRes.stdout.trim();
-        await runCmd(`bd update ${id} --parent ${epicBead.id}`, tempDir);
+        assertCmdOk(
+            await runCmd(`bd update ${id} --parent ${epicBead.id}`, tempDir),
+            `\`bd update ${id} --parent ${epicBead.id}\``
+        );
         taskIds.push(id);
     }
 
