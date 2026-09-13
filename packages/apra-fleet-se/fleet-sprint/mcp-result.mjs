@@ -56,10 +56,20 @@ export function resultText(result) {
 
 /**
  * Best-effort human-readable text out of an MCP error result, for logging.
+ * Skips any display banner the same way resultText() does (apra-fleet-3swo.63):
+ * content[0] is not reliably the tool's error text -- wrapTool() may prepend a
+ * user-audience onboarding/welcome-back banner ahead of it -- so an unfiltered
+ * `res.content[0]` read can log the banner text as if it were the error.
  * @param {any} res
  * @returns {string}
  */
 export function toolErrorText(res) {
-    const first = res && Array.isArray(res.content) ? res.content[0] : null;
-    return (first && typeof first.text === 'string' && first.text) || 'no error text returned';
+    if (res && Array.isArray(res.content)) {
+        for (const entry of res.content) {
+            if (entry && typeof entry.text === 'string' && !isDisplayBanner(entry)) {
+                return entry.text;
+            }
+        }
+    }
+    return 'no error text returned';
 }

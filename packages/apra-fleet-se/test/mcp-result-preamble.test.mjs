@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resultText } from '../fleet-sprint/mcp-result.mjs';
+import { resultText, toolErrorText } from '../fleet-sprint/mcp-result.mjs';
 
 // =============================================================================
 // apra-fleet-3swo.61 -- resultText vs. the onboarding banner.
@@ -87,5 +87,49 @@ describe('resultText vs. the onboarding banner (apra-fleet-3swo.61)', () => {
 
     test('8. [banner, nudge] (all-banner, preamble + trailing nudge) returns the empty string', () => {
         assert.strictEqual(resultText({ content: [banner, nudge] }), '');
+    });
+});
+
+// =============================================================================
+// apra-fleet-3swo.63 -- toolErrorText vs. the onboarding banner. Mirrors the
+// resultText suite above: toolErrorText() used to read res.content[0]
+// unconditionally, so a first-run/welcome-back dispatch's onboarding banner
+// (content[0]) would be logged as if it were the tool's error text instead of
+// the real error at content[1]. Fixed to skip display banners the same way
+// resultText() does, keeping its own 'no error text returned' fallback for
+// the empty/all-banner case (distinct from resultText()'s '' fallback).
+// =============================================================================
+describe('toolErrorText vs. the onboarding banner (apra-fleet-3swo.63)', () => {
+    test('1. [banner, realResult] returns the real error text, skipping the banner', () => {
+        assert.equal(toolErrorText({ content: [banner, realResult] }), 'REAL TOOL OUTPUT');
+    });
+
+    test('2. [banner, realResult, nudge] returns the real error text, skipping both banners', () => {
+        assert.equal(toolErrorText({ content: [banner, realResult, nudge] }), 'REAL TOOL OUTPUT');
+    });
+
+    test('3. [realResult, nudge] (no-banner steady state) returns the real error text', () => {
+        assert.equal(toolErrorText({ content: [realResult, nudge] }), 'REAL TOOL OUTPUT');
+    });
+
+    test('4. [banner] alone (all-banner) falls back to the no-error-text sentinel, not the banner text', () => {
+        assert.strictEqual(toolErrorText({ content: [banner] }), 'no error text returned');
+    });
+
+    test('5. empty/missing/null/undefined content all fall back to the no-error-text sentinel', () => {
+        assert.strictEqual(toolErrorText({ content: [] }), 'no error text returned');
+        assert.strictEqual(toolErrorText({}), 'no error text returned');
+        assert.strictEqual(toolErrorText(null), 'no error text returned');
+        assert.strictEqual(toolErrorText(undefined), 'no error text returned');
+    });
+
+    test('6. a contentless isError envelope ({isError:true}, no content array) does not throw', () => {
+        // apra-fleet-eft/kb.mjs: a degenerate MCP error result of exactly
+        // {isError:true} must still produce a usable log line, not throw.
+        assert.strictEqual(toolErrorText({ isError: true }), 'no error text returned');
+    });
+
+    test('8. [banner, nudge] (all-banner, preamble + trailing nudge) falls back to the no-error-text sentinel', () => {
+        assert.strictEqual(toolErrorText({ content: [banner, nudge] }), 'no error text returned');
     });
 });
