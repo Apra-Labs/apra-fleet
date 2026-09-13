@@ -39,8 +39,11 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // reports show this file's two subtests only exceed 180000ms under the
 // default 8-way concurrent suite (file elapsed 426-431s, both subtests
 // timing out at the ceiling), and apra-fleet-5ey2 records the same failure
-// family passing when its file is rerun standalone (no contention). So the
-// existing 180000 constant already IS the right standalone budget; only the
+// family passing when its file is rerun standalone (no contention). Directly
+// confirmed: `node scripts/run-tests.mjs real test/mock-sprint-publish-push-
+// failure.test.mjs` standalone -- pass=2 fail=0, subtest durations 36329.5ms
+// and 35644.9ms, both comfortably under the 180000ms base. So the existing
+// 180000 constant already IS the right standalone budget; only the
 // concurrent case was under-provisioned. scaledTimeout() keeps it unscaled
 // at concurrency<=1 and multiplies it (3x = 540000ms) under the real
 // 8-way suite, which is what apra-fleet-d6fq.1 makes non-inert.

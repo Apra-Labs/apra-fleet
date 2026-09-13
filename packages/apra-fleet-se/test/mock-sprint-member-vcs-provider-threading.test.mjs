@@ -66,7 +66,10 @@ const TF401019_BARE = "remote: TF401019: The Git repository with name or identif
 // each time), and that same bead explicitly records "standalone reruns of
 // this failure family pass while the full concurrent suite times out,
 // consistent with a harness concurrency issue rather than N separate test
-// bugs." scaledTimeout() keeps this budget unscaled at concurrency<=1 and
+// bugs." Directly confirmed: `node scripts/run-tests.mjs real
+// test/mock-sprint-member-vcs-provider-threading.test.mjs` standalone --
+// pass=1 fail=0, duration 30792.3ms, comfortably under the 180000ms base.
+// scaledTimeout() keeps this budget unscaled at concurrency<=1 and
 // multiplies it (3x = 540000ms) under the real 8-way suite, which
 // apra-fleet-d6fq.1 makes non-inert.
 test('mock sprint: a member whose provider resolves to azure-devops (via args.callTool) classifies a bare G-push TF401019 failure as auth, not unknown, end to end through withGitSync', { timeout: scaledTimeout(180000) }, async () => {

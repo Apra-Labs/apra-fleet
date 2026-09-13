@@ -26,9 +26,12 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 // this file only exceeds 180000ms under the default 8-way concurrent suite
 // (file elapsed 223s while running alongside up to 7 sibling files), and the
 // same failure family is recorded elsewhere (apra-fleet-5ey2) as passing
-// when its file is rerun standalone with no contention. scaledTimeout() keeps
-// this budget unscaled at concurrency<=1 and multiplies it (3x = 540000ms)
-// under the real 8-way suite, which apra-fleet-d6fq.1 makes non-inert.
+// when its file is rerun standalone with no contention. Directly confirmed:
+// `node scripts/run-tests.mjs real test/mock-sprint-kb-remote-scope.test.mjs`
+// standalone -- pass=1 fail=0, duration 36222.8ms, comfortably under the
+// 180000ms base. scaledTimeout() keeps this budget unscaled at
+// concurrency<=1 and multiplies it (3x = 540000ms) under the real 8-way
+// suite, which apra-fleet-d6fq.1 makes non-inert.
 test('mock sprint: a kb_* call made during a dispatch carries the member repo URL member_detail reported', { timeout: scaledTimeout(180000) }, async () => {
     await withScenarioMarkers('kb remote scope threading', async () => {
         const REMOTE_URL = 'https://github.com/acme/widget.git';
