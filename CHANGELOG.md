@@ -2,6 +2,80 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- runner.js structural refactor complete: monolith to modules, dispatch engine fully migrated
+
+Sprint goal: finish the strangler-fig decomposition of
+`fleet-sprint/runner.js` -- extract every module the epic named, collapse
+all hand-written per-role dispatch ladders onto the `dispatchRole(ctx,
+roleName, opts)` engine, and slice `runSprintCycle`'s body into
+`phases/*.mjs` with move-only discipline, verified byte-identical against a
+golden transcript.
+
+What shipped:
+
+- **`runner.js` decomposition is complete.** The file went from roughly
+  11,850 lines to about 3,100, with 44 new `fleet-sprint/*.mjs` modules
+  (including all twelve `phases/*.mjs` files and every module the epic
+  named: `vcs-auth`, `git-sync`, `coordination`, `kb`, `beads-scope`,
+  `beads-transitions`, `member-target`, `role-policies`, `sprint-args`,
+  `worklists`, `prompts`, `sprint-state`). No files were deleted; `runner.js`
+  is now a composition root plus a facade that re-exports every symbol its
+  importers and mock-sprint test fixtures rely on.
+- **All 13 sprint roles now dispatch through the single `dispatchRole`
+  engine**, reading `role-policies.mjs`'s data table -- zero hand-written
+  inline `agent()` dispatch ladders remain. `inline-ladder-guard.mjs` is now
+  a live check across every role.
+- **Move-only discipline held for the entire slice**: across the full
+  twelve-phase extraction and the thirteen-role dispatch-engine migration,
+  the golden mock-sprint transcript fixture changed on exactly two lines,
+  and only because the plan-reviewer schema intentionally grew a new field.
+- **Every role's dispatch watchdog is now explicit and reasoned**
+  (`role-policies.mjs`): all 13 roles declare `watchdog()` or `noWatchdog()`
+  with a stated rationale, and each armed watchdog resolves against its own
+  row's hard elapsed ceiling rather than a shared inactivity budget.
+- **Pre-sprint validation refusals are now typed** (`PreSprintValidationError`)
+  with a frozen reason vocabulary, replacing an untyped `Error`
+  distinguishable only by prose.
+- **The plan-reviewer contract carries a structured, per-bead `findings`
+  array** alongside free-text `notes`, and contested-bead routing now reads
+  it directly instead of prose-scraping `notes`.
+- **`vcs_credential_exec` gained an inside-caller-quotes substitution mode**
+  (`{{vcs_token_inline}}`) alongside the existing bare `{{vcs_token}}`
+  placeholder, so a caller needing the token inside its own quoted string no
+  longer has to choose between double-escaping and a broken command; token
+  redaction now also covers a dispatch failure's thrown-error message, not
+  just successful stdout/stderr.
+- **Fixed:** `install --force` no longer races a service-manager-managed
+  server's automatic relaunch -- it stops the registered service first and
+  only escalates to a direct kill when the same pre-stop pid is still alive
+  afterward.
+- **Fixed:** the sandbox deploy helper's OS-assigned-port allocation race
+  (bind failure when a concurrent process claims a just-released port
+  number) is resolved: conflicts are tagged only when proven (a grace-window
+  poll, not a single probe), retries are bounded, and re-allocation excludes
+  both the lost port and its adjacent neighbors.
+- **Fixed:** a crossing sync-bracket close now preserves the bracketed
+  body's own error as `cause` on the mutual-exclusion error it raises,
+  instead of discarding it.
+- **Fixed:** `resultText()` now skips a user-audience onboarding/welcome-back
+  display banner instead of reading it back as if it were the tool's own
+  output.
+
+Carried forward (correctly left open, low priority): the Phase 5
+credential-helper retirement work that routes remaining callers off the
+legacy prose-scraping credential-read path and deletes it -- the new
+server-side credential handoff is live, but the old path still has callers
+pending migration.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $30.6928.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1322 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 27 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- runner.js module decomposition: dispatch engine fully migrated, Phase 4 residual chain mostly landed (sprint FAILED -- scope incomplete, full test gate red)
 
 Sprint goal: continue the strangler-fig decomposition of
