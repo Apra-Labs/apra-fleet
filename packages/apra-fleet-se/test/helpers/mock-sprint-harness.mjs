@@ -290,7 +290,158 @@ export function redactNetworkCommandForLog(command) {
 // null-childId fallback paths take over exactly as they did when callTool was
 // unwired (id derivation still falls back to `bd create --parent` locally;
 // the mutex is effectively a no-op grant).
-export function defaultMockCallTool() {
+//
+// apra-fleet-3swo.7.18: `vcs_credential_exec` (src/tools/vcs-credential-
+// exec.ts) is server-side-only -- grep across packages/apra-fleet-se/test,
+// /src and /fleet-sprint turns up zero hits -- so before this bead every mock
+// sprint that reaches it (once apra-fleet-3swo.7.6 lands and starts
+// dispatching it for the create-PR call) fell through to the generic
+// `[OK] mock <name>` branch below with NO structuredContent, and every
+// PR-raising scenario that depends on it would report a dispatch failure.
+// Rather than hand-write a second, parallel canned PR response here,
+// mockVcsCredentialExec() SUBSTITUTES the caller's placeholder(s) with the
+// same two hard-coded mock tokens the credential-helper-read intercepts in
+// buildMockFleetApi's executeCommand already answer with (the
+// `$HOME/.fleet-git-credential-github`/`-azure-devops` branches around
+// :932-936 -- MOCK_VCS_CREDENTIAL_TOKENS below is the single source of truth
+// both sides read from) and then DISPATCHES the substituted command through
+// that SAME executeCommand path. That is what lets the curl-interception,
+// commandLog/commandLogDetailed recording and prCurlResponseQueue/
+// gitGhFailurePattern/prExistsState simulation already built for the
+// create-PR curl call keep working completely unchanged for a
+// vcs_credential_exec-routed dispatch too, instead of forcing an edit to
+// every one of the roughly fifty harness-default scenarios that reach that
+// call. `executeCommand`, when supplied, must be the SAME mock fleet api's
+// executeCommand a scenario's engine.executeFile() call is about to use --
+// see the two defaultMockCallTool() call sites below, both of which now
+// thread `buildMockFleetApi(...).executeCommand` through. Called with no
+// argument (the pre-existing zero-arg signature every other caller in this
+// file relies on), `executeCommand` is simply undefined and a
+// vcs_credential_exec call throws loudly instead of silently no-op'ing, since
+// nothing in this file's production code dispatches that tool yet (this bead
+// is deliberately additive and inert).
+
+// Mirrors the two credential-helper-read intercepts in executeCommand above
+// (around :932-936) label-for-label -- kept as one map so the two can never
+// drift apart. An unrecognised label intentionally has NO entry here: the
+// real tool fails hard on a missing/unreadable credential helper rather than
+// substituting an empty token, and this mock must fail the same way (that is
+// exactly the label-mismatch bug those two exact-match executeCommand
+// branches exist to catch).
+const MOCK_VCS_CREDENTIAL_TOKENS = {
+    github: 'mock-vcs-module-token',
+    'azure-devops': 'mock-azure-devops-pat',
+};
+
+// Minimal reimplementation of src/utils/shell-escape.ts's
+// escapeShellArgInner/escapeShellArg for this mock only. Not imported from
+// src directly: this file runs under plain `node --test`, not a TS/vitest
+// loader (see the mock-sprint harness's own kb note on how a missing export
+// degrades very differently under vitest's SSR transform vs. Node ESM's
+// link-time failure), and the mock only ever substitutes the two fixed,
+// plain-ASCII tokens in MOCK_VCS_CREDENTIAL_TOKENS above, so there is no
+// byte-identical-escaping requirement to keep this in lockstep with the
+// production escaper the way vcs-credential-exec.ts itself must be.
+function mockEscapeShellArgInner(s) {
+    return s.replace(/'/g, "'\\''");
+}
+function mockEscapeShellArg(s) {
+    return `'${mockEscapeShellArgInner(s)}'`;
+}
+
+const VCS_CREDENTIAL_EXEC_REDACTION = '[REDACTED:vcs_token]';
+
+/** Replace every occurrence of `secret` in `output`, and report how many. */
+function redactVcsCredentialToken(output, secret) {
+    if (!secret) return { text: output, count: 0 };
+    const parts = output.split(secret);
+    return { text: parts.join(VCS_CREDENTIAL_EXEC_REDACTION), count: parts.length - 1 };
+}
+
+/**
+ * Builds a vcs_credential_exec result with EXACTLY the nine
+ * structuredContent fields execResult() emits in
+ * src/tools/vcs-credential-exec.ts (ok, reason, exitCode, stdout, stderr,
+ * tokenRedactions, credentialLabel, memberId, memberName) -- field for
+ * field, so a scenario asserting on this mock's shape is asserting on the
+ * real tool's contract.
+ */
+function vcsCredentialExecResult(text, fields) {
+    return {
+        content: [{ text }],
+        structuredContent: {
+            ok: fields.ok ?? fields.reason === 'ok',
+            reason: fields.reason,
+            exitCode: fields.exitCode ?? null,
+            stdout: fields.stdout ?? '',
+            stderr: fields.stderr ?? '',
+            tokenRedactions: fields.tokenRedactions ?? 0,
+            credentialLabel: fields.credentialLabel ?? null,
+            memberId: fields.memberId ?? null,
+            memberName: fields.memberName ?? null,
+        },
+    };
+}
+
+const VCS_TOKEN_PLACEHOLDER = '{{vcs_token}}';
+const VCS_TOKEN_INLINE_PLACEHOLDER = '{{vcs_token_inline}}';
+
+async function mockVcsCredentialExec(toolArgs, executeCommand) {
+    const label = toolArgs && toolArgs.label;
+    const memberId = (toolArgs && toolArgs.member_id) ?? null;
+    const memberName = (toolArgs && toolArgs.member_name) ?? null;
+    const who = { credentialLabel: label ?? null, memberId, memberName };
+    const command = (toolArgs && toolArgs.command) || '';
+
+    const hasBare = command.includes(VCS_TOKEN_PLACEHOLDER);
+    const hasInline = command.includes(VCS_TOKEN_INLINE_PLACEHOLDER);
+    if (!hasBare && !hasInline) {
+        return vcsCredentialExecResult(
+            `[FAIL] command must contain ${VCS_TOKEN_PLACEHOLDER} or ${VCS_TOKEN_INLINE_PLACEHOLDER} -- use execute_command for a command that needs no credential.`,
+            { ...who, reason: 'placeholder_missing' },
+        );
+    }
+
+    const token = MOCK_VCS_CREDENTIAL_TOKENS[label];
+    if (!token) {
+        return vcsCredentialExecResult(
+            `[FAIL] Cannot read a VCS credential for label "${label}" (no mock credential-helper file registered for this label in the mock-sprint harness).`,
+            { ...who, reason: 'credential_read_failed' },
+        );
+    }
+
+    if (!executeCommand) {
+        throw new Error(
+            'mock-sprint-harness: vcs_credential_exec was called but no `executeCommand` was threaded into ' +
+                'defaultMockCallTool({ executeCommand }) -- wire it from the same buildMockFleetApi(...).executeCommand ' +
+                "the scenario's engine.executeFile() call uses (see the two call sites below).",
+        );
+    }
+
+    const finalCommand = command
+        .replaceAll(VCS_TOKEN_PLACEHOLDER, mockEscapeShellArg(token))
+        .replaceAll(VCS_TOKEN_INLINE_PLACEHOLDER, mockEscapeShellArgInner(token));
+
+    const res = await executeCommand({ command: finalCommand, member_id: toolArgs && toolArgs.member_id, member_name: memberName });
+    const structured = res.structuredContent || {};
+    const exitCode = typeof structured.exitCode === 'number' ? structured.exitCode : null;
+    const outRedacted = redactVcsCredentialToken(structured.stdout ?? '', token);
+    const errRedacted = redactVcsCredentialToken(structured.stderr ?? '', token);
+
+    return vcsCredentialExecResult(
+        `[OK] Ran credential-requiring command on "${memberName ?? memberId ?? '(unknown)'}" (exit ${exitCode}).`,
+        {
+            ...who,
+            reason: 'ok',
+            exitCode,
+            stdout: outRedacted.text,
+            stderr: errRedacted.text,
+            tokenRedactions: outRedacted.count + errRedacted.count,
+        },
+    );
+}
+
+export function defaultMockCallTool({ executeCommand } = {}) {
     return async (name, toolArgs) => {
         // apra-fleet-647.1.2.1: provisionVcsAuthForMember now resolves the
         // member's provider via VCSModule.resolveProvider() -- a
@@ -330,6 +481,9 @@ export function defaultMockCallTool() {
                 return { content: [{ text: JSON.stringify({ granted: true, token: `mock-dolt-mutex-${Date.now()}` }) }] };
             }
             return { content: [{ text: JSON.stringify({ released: true }) }] };
+        }
+        if (name === 'vcs_credential_exec') {
+            return mockVcsCredentialExec(toolArgs, executeCommand);
         }
         return { content: [{ text: `[OK] mock ${name}` }] };
     };
@@ -1543,7 +1697,12 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
             base_branch: 'main',
             goal: 'P1/P2',
             max_cycles: 5,
-            callTool: defaultMockCallTool(),
+            // apra-fleet-3swo.7.18: thread this scenario's own executeCommand
+            // through so a vcs_credential_exec call (once apra-fleet-3swo.7.6
+            // lands) delegates its create-PR dispatch to the SAME curl
+            // interception this mock fleet api already provides -- see the
+            // header comment above defaultMockCallTool().
+            callTool: defaultMockCallTool({ executeCommand: mockFleetApi.executeCommand }),
         }, true);
 
         // bd list hides closed issues by default -- pass --all so the final
@@ -1805,7 +1964,10 @@ export async function runDevelopLoopScenario(tag, {
                 goal,
                 max_cycles: maxCycles,
                 ...(dispatchTimeoutS !== undefined ? { dispatch_timeout_s: dispatchTimeoutS } : {}),
-                callTool: callTool !== undefined ? callTool : defaultMockCallTool(),
+                // apra-fleet-3swo.7.18: same executeCommand-threading as
+                // runOnce() above, for the default (no per-scenario callTool
+                // override) case.
+                callTool: callTool !== undefined ? callTool : defaultMockCallTool({ executeCommand: mockFleetApi.executeCommand }),
                 ...(doerWorklistMode !== undefined ? { doer_worklist_mode: doerWorklistMode } : {}),
                 ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
