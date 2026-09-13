@@ -513,6 +513,19 @@ describe('inline-ladder guard: findInlineLadderViolations() unit behaviour', () 
             '}',
             '',
         ].join('\n');
+        // falsified (apra-fleet-3swo.69): (a) deleting the entire
+        // `if (dispatch.member) { ... throw ... }` block at
+        // inline-ladder-guard.mjs (leaving only the trailing `continue`) made
+        // this case fail with "Missing expected exception" -- no throw fired
+        // at all, confirming the assertion actually depends on the throw
+        // existing. (b) restoring that, then inverting the `recognisedKind`
+        // test at inline-ladder-guard.mjs:139 (`kind === 'role' || ...` ->
+        // negated) made this case fail too, but differently: the throw still
+        // fired, just with the OTHER message ("'some-future-kind' member with
+        // no binding recorded" instead of "unrecognised kind"), confirming
+        // this case and the one below are discriminated only by message text.
+        // Both mutations restored byte-for-byte before the next was applied;
+        // git diff confirmed no stray change survived.
         assert.throws(
             () => findInlineLadderViolations(src, 'weird.mjs', ['weird-role'], fixtureRolePolicies),
             /unrecognised kind.*"some-future-kind"/,
@@ -536,6 +549,17 @@ describe('inline-ladder guard: findInlineLadderViolations() unit behaviour', () 
             '}',
             '',
         ].join('\n');
+        // falsified (apra-fleet-3swo.69): same two mutations as the case
+        // above, same result pattern. (a) deleting the throw block entirely
+        // made this case fail with "Missing expected exception". (b)
+        // inverting the `recognisedKind` test at inline-ladder-guard.mjs:139
+        // made it fail too, this time via the swapped message ("unrecognised
+        // kind (\"runtime\")" instead of "'runtime' member with no binding
+        // recorded") -- confirming this case and the one above are two
+        // distinct real assertions, not one vacuously covering the other,
+        // even though both are driven by the same `if (dispatch.member)`
+        // branch. Both mutations restored byte-for-byte before the next was
+        // applied; git diff confirmed no stray change survived.
         assert.throws(
             () => findInlineLadderViolations(src, 'unbound.mjs', ['unbound-role'], fixtureRolePolicies),
             /'runtime' member with no binding recorded/,
@@ -547,6 +571,28 @@ describe('inline-ladder guard: findInlineLadderViolations() unit behaviour', () 
         // Distinguishes "member present but unresolvable" (throws, above)
         // from "no member recorded" (not this guard's hazard -- there is no
         // routing expression to have silently failed to search for).
+        //
+        // finding, not falsified (apra-fleet-3swo.69): unlike the two cases
+        // above, no mutation confined to the hazard logic at
+        // inline-ladder-guard.mjs:125-151 (or its guarding early-returns)
+        // makes THIS case fail, and that was verified, not assumed. Tried
+        // three, each restored byte-for-byte before the next: (1) deleting
+        // the throw block entirely -- still passed; (2) making the throw
+        // unconditional by dropping the `if (dispatch.member)` guard -- still
+        // passed; (3) removing the `agentSites.length === 0` early return at
+        // line 106 -- still passed. The reason is structural, not a gap in
+        // the mutations tried: this fixture's src ('export const nothing =
+        // 1;\n') contains no agent()/command() call site at all, so (with
+        // mutation 3 undone) findInlineLadderViolations() returns [] before
+        // the per-role loop is ever entered; and even with that early return
+        // removed too, this policy row has no `member` key at all, so the
+        // loop still falls through to a plain `continue` regardless of any
+        // mutation to the member-resolution branch, and violations stays []
+        // by construction. Making this case genuinely falsifiable would
+        // require giving its fixture a real agent() call site, which this
+        // bead's criteria forbid changing (fixtures are frozen scope here) --
+        // reported as a criteria defect on apra-fleet-3swo.69 rather than
+        // worked around.
         const fixtureRolePolicies = {
             'no-member-role': {
                 ladderAnchor: 'NO_MEMBER_ROLE_ANCHOR',
