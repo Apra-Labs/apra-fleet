@@ -9,6 +9,7 @@ import {
     validateIssueId,
     validateBranchName,
 } from '../fleet-sprint/runner.js';
+import { defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 
 // Unit + mock-level tests for apra-fleet-unw.14: the CLI->runner argument
 // contract (validateArgs/validateIssueId/validateBranchName), and proof
@@ -274,32 +275,42 @@ function mockCmdResult(code, stdout, stderr = '') {
 // defaultMockCallTool doc comment for the identical fix there) -- so
 // dolt_push_mutex/child_id_allocator must answer with valid, minimal JSON
 // too, not the plain '[OK] mock <name>' prose generic callers elsewhere use.
-function spyCallTool(name, toolArgs) {
-    // apra-fleet-647.1.2.1: provisionVcsAuthForMember resolves the member's
-    // provider via VCSModule.resolveProvider() (a 'member_detail' call)
-    // BEFORE every provision_vcs_auth call.
-    if (name === 'member_detail') {
-        return Promise.resolve({ content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] });
-    }
-    if (name === 'provision_vcs_auth') {
-        const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-        return Promise.resolve({ content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] });
-    }
-    if (name === 'dolt_push_mutex') {
-        const action = toolArgs && toolArgs.action;
-        if (action === 'acquire') {
-            return Promise.resolve({ content: [{ text: JSON.stringify({ granted: true, token: `mock-dolt-mutex-${Date.now()}` }) }] });
+// apra-fleet-3swo.7.19: `executeCommand` (the spy's OWN executeCommand,
+// already in the `({ content, structuredContent }) => Promise` shape
+// defaultMockCallTool()'s vcs_credential_exec branch expects -- no adapter
+// needed, unlike the finalizeAbort-level test files that pass a `{ ok,
+// output, error }`-shaped legacy `command`) lets the fallback below delegate
+// to the SAME shared simulator (reusing its placeholder substitution and
+// redaction) instead of re-implementing it here.
+function spyCallTool(executeCommand) {
+    const base = defaultMockCallTool({ executeCommand });
+    return function (name, toolArgs) {
+        // apra-fleet-647.1.2.1: provisionVcsAuthForMember resolves the member's
+        // provider via VCSModule.resolveProvider() (a 'member_detail' call)
+        // BEFORE every provision_vcs_auth call.
+        if (name === 'member_detail') {
+            return Promise.resolve({ content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] });
         }
-        return Promise.resolve({ content: [{ text: JSON.stringify({ released: true }) }] });
-    }
-    if (name === 'child_id_allocator') {
-        const action = toolArgs && toolArgs.action;
-        if (action === 'allocate') {
-            return Promise.resolve({ content: [{ text: JSON.stringify({ childId: null, token: null }) }] });
+        if (name === 'provision_vcs_auth') {
+            const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+            return Promise.resolve({ content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] });
         }
-        return Promise.resolve({ content: [{ text: JSON.stringify({ confirmed: true, released: true }) }] });
-    }
-    return Promise.resolve({ content: [{ text: `[OK] mock ${name}` }] });
+        if (name === 'dolt_push_mutex') {
+            const action = toolArgs && toolArgs.action;
+            if (action === 'acquire') {
+                return Promise.resolve({ content: [{ text: JSON.stringify({ granted: true, token: `mock-dolt-mutex-${Date.now()}` }) }] });
+            }
+            return Promise.resolve({ content: [{ text: JSON.stringify({ released: true }) }] });
+        }
+        if (name === 'child_id_allocator') {
+            const action = toolArgs && toolArgs.action;
+            if (action === 'allocate') {
+                return Promise.resolve({ content: [{ text: JSON.stringify({ childId: null, token: null }) }] });
+            }
+            return Promise.resolve({ content: [{ text: JSON.stringify({ confirmed: true, released: true }) }] });
+        }
+        return Promise.resolve(base(name, toolArgs));
+    };
 }
 
 // apra-fleet-eft.6.7: `allBeadsJson`/`readyJson` let a caller substitute the
@@ -476,7 +487,7 @@ describe('runner.js mock-level execution', () => {
             // degrades to skipping PR creation entirely (apra-fleet-tfx.8.1)
             // -- this test exercises the PR-raise path itself, so it needs a
             // working callTool.
-            callTool: spyCallTool,
+            callTool: spyCallTool(spy.executeCommand),
         }, true);
 
         assert.strictEqual(result.status, 'success');

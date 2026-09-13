@@ -11,6 +11,8 @@ import {
     teardown,
     buildMockFleetApi,
     withScenarioMarkers,
+    defaultMockCallTool,
+    legacyCommandExecuteCommandAdapter,
 } from './helpers/mock-sprint-harness.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -115,8 +117,14 @@ function buildMockCommand({ commitCount, pushShouldFail = false, prOutcome = 'cr
 // create-pull-request command -- so every scenario below that expects the PR
 // to actually be raised (as opposed to the callTool-absent graceful
 // degradation path, apra-fleet-tfx.8.1) must supply a working `callTool`.
-// Mirrors mock-sprint-harness.mjs's defaultMockCallTool() exactly.
-function mockAbortCallTool() {
+// apra-fleet-3swo.7.19: delegates vcs_credential_exec to the SHARED
+// defaultMockCallTool() simulator (reusing its placeholder substitution and
+// redaction) instead of re-implementing it here. `command` is this scenario's
+// own hand-rolled { ok, output, error } mock (buildMockCommand() /
+// makeQueuedAbortCommandMock() above) -- legacyCommandExecuteCommandAdapter
+// bridges it into the executeCommand shape the shared simulator expects.
+function mockAbortCallTool(command) {
+    const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     return async (name, toolArgs) => {
         // apra-fleet-647.1.2.1: provisionVcsAuthForMember resolves the
         // member's provider via VCSModule.resolveProvider() (a
@@ -128,7 +136,7 @@ function mockAbortCallTool() {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
         }
-        return { content: [{ text: `[OK] mock ${name}` }] };
+        return base(name, toolArgs);
     };
 }
 
@@ -157,7 +165,7 @@ test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR cr
         member: 'local',
         command,
         log: (m) => logs.push(m),
-        callTool: mockAbortCallTool(),
+        callTool: mockAbortCallTool(command),
     });
 
     check(result.commitCount === 2, `Expected commitCount 2, got: ${JSON.stringify(result)}`);
@@ -211,7 +219,7 @@ test('finalizeAbort: 0 commits beyond base -> no create-pull-request call, zero-
         member: 'local',
         command,
         log: (m) => logs.push(m),
-        callTool: mockAbortCallTool(),
+        callTool: mockAbortCallTool(command),
     });
 
     check(result.commitCount === 0, `Expected commitCount 0, got: ${JSON.stringify(result)}`);
@@ -344,7 +352,7 @@ test('finalizeAbort: gh pr create "already exists" is swallowed, existing PR URL
             member: 'local',
             command,
             log: (m) => logs.push(m),
-            callTool: mockAbortCallTool(),
+            callTool: mockAbortCallTool(command),
         });
     } catch (err) {
         thrown = err;
@@ -438,7 +446,7 @@ test('(5d5.1) an auth-classified git fetch failure heals once via onAuthFailure 
         member: 'local',
         command,
         onAuthFailure,
-        callTool: mockAbortCallTool(),
+        callTool: mockAbortCallTool(command),
     });
 
     check(result.reason === 'aborted-pr-created', `expected the abort to still complete successfully after self-heal, got: ${JSON.stringify(result)}`);
@@ -470,7 +478,7 @@ test('(5d5.1) an auth-classified git push failure heals once via onAuthFailure a
         member: 'local',
         command,
         onAuthFailure,
-        callTool: mockAbortCallTool(),
+        callTool: mockAbortCallTool(command),
     });
 
     check(result.reason === 'aborted-pr-created', `expected the abort to still complete successfully after self-heal, got: ${JSON.stringify(result)}`);
@@ -564,7 +572,7 @@ test('(5d5.1) the happy path (git ops succeed first try) is unaffected -- no sel
         member: 'local',
         command,
         onAuthFailure,
-        callTool: mockAbortCallTool(),
+        callTool: mockAbortCallTool(command),
     });
 
     check(result.reason === 'aborted-pr-created', `expected a normal successful abort, got: ${JSON.stringify(result)}`);
@@ -622,8 +630,12 @@ function buildMockCommandForPrRetry({ commitCount = 1, pullsQueue, credQueue } =
     return { command, log };
 }
 
-function mockAbortCallToolCounting() {
+// apra-fleet-3swo.7.19: `command` threads into legacyCommandExecuteCommandAdapter
+// so vcs_credential_exec delegates to the shared simulator -- see
+// mockAbortCallTool above for the full rationale.
+function mockAbortCallToolCounting(command) {
     let provisionVcsAuthCalls = 0;
+    const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     const callTool = async (name, toolArgs) => {
         if (name === 'member_detail') {
             return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
@@ -633,7 +645,7 @@ function mockAbortCallToolCounting() {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
         }
-        return { content: [{ text: `[OK] mock ${name}` }] };
+        return base(name, toolArgs);
     };
     return { callTool, counts: () => ({ provisionVcsAuthCalls }) };
 }
@@ -650,7 +662,7 @@ test('(647.1.1.1) finalizeAbort PR call: a 401 heals once via provision_vcs_auth
         commitCount: 1,
         pullsQueue: [PR_401_BODY, PR_SUCCESS_BODY(prUrl)],
     });
-    const { callTool, counts } = mockAbortCallToolCounting();
+    const { callTool, counts } = mockAbortCallToolCounting(command);
     const logs = [];
 
     const result = await finalizeAbort({
@@ -677,7 +689,7 @@ test('(647.1.1.1) finalizeAbort PR call: a 403 that still fails after the retry 
         commitCount: 1,
         pullsQueue: [PR_403_BODY], // repeats -- both attempts fail identically
     });
-    const { callTool, counts } = mockAbortCallToolCounting();
+    const { callTool, counts } = mockAbortCallToolCounting(command);
     const logs = [];
 
     let thrown = null;
@@ -711,7 +723,7 @@ test('(647.1.1.1) finalizeAbort PR call: a non-auth failure (5xx) keeps today\'s
         commitCount: 1,
         pullsQueue: [PR_500_BODY],
     });
-    const { callTool, counts } = mockAbortCallToolCounting();
+    const { callTool, counts } = mockAbortCallToolCounting(command);
 
     let thrown = null;
     try {
@@ -744,8 +756,12 @@ test('(647.1.1.1) finalizeAbort PR call: a non-auth failure (5xx) keeps today\'s
 // callTool fails member_detail on its FIRST call only (finalizeAbort's own
 // lookup), then succeeds on every later call.
 // -----------------------------------------------------------------------
-function mockAbortCallToolFirstMemberDetailFails() {
+// apra-fleet-3swo.7.19: `command` threads into legacyCommandExecuteCommandAdapter
+// so vcs_credential_exec delegates to the shared simulator -- see
+// mockAbortCallTool above.
+function mockAbortCallToolFirstMemberDetailFails(command) {
     let memberDetailCalls = 0;
+    const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     const callTool = async (name, toolArgs) => {
         if (name === 'member_detail') {
             memberDetailCalls += 1;
@@ -758,7 +774,7 @@ function mockAbortCallToolFirstMemberDetailFails() {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
         }
-        return { content: [{ text: `[OK] mock ${name}` }] };
+        return base(name, toolArgs);
     };
     return { callTool, memberDetailCallCount: () => memberDetailCalls };
 }
@@ -771,7 +787,7 @@ test('finalizeAbort: a failed up-front member-provider resolution logs and degra
         prUrl: 'https://github.com/mock-org/mock-repo/pull/202',
     });
     const logs = [];
-    const { callTool, memberDetailCallCount } = mockAbortCallToolFirstMemberDetailFails();
+    const { callTool, memberDetailCallCount } = mockAbortCallToolFirstMemberDetailFails(command);
     const error = new SprintPlanRejectedError('Plan rejected after 3 rounds', { notes: null });
 
     const result = await finalizeAbort({

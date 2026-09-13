@@ -13,6 +13,7 @@ import {
     defaultMockCallTool,
     mockCmdResult,
     withScenarioMarkers,
+    legacyCommandExecuteCommandAdapter,
 } from './helpers/mock-sprint-harness.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -140,7 +141,13 @@ function buildMockWindowsCommand({ commitCount, pushShouldFail = false, prOutcom
     return { command, log };
 }
 
-function mockWindowsAbortCallTool() {
+// apra-fleet-3swo.7.19: `command` threads into legacyCommandExecuteCommandAdapter
+// so vcs_credential_exec delegates to the SHARED defaultMockCallTool()
+// simulator (reusing its placeholder substitution and redaction) instead of
+// re-implementing it here -- mirrors mock-sprint-abort-pr.test.mjs's
+// mockAbortCallTool().
+function mockWindowsAbortCallTool(command) {
+    const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     return async (name, toolArgs) => {
         if (name === 'member_detail') {
             // Both resolveMemberOs() (runner.js) and VCSModule.resolveProvider()
@@ -153,7 +160,7 @@ function mockWindowsAbortCallTool() {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
         }
-        return { content: [{ text: `[OK] mock ${name}` }] };
+        return base(name, toolArgs);
     };
 }
 
@@ -172,7 +179,7 @@ test('finalizeAbort (Windows member): builds a valid PowerShell credential-read 
         member: 'windows-member',
         command,
         log: (m) => logs.push(m),
-        callTool: mockWindowsAbortCallTool(),
+        callTool: mockWindowsAbortCallTool(command),
     });
 
     check(result.reason === 'aborted-pr-created', `Expected the [ABORTED] PR to be created for a Windows member, got: ${JSON.stringify(result)}`);
@@ -202,7 +209,7 @@ test('finalizeAbort (Windows member): a failing credential read still throws the
             baseBranch: 'main',
             member: 'windows-member-cred-fail',
             command,
-            callTool: mockWindowsAbortCallTool(),
+            callTool: mockWindowsAbortCallTool(command),
         });
     } catch (e) {
         thrown = e;
@@ -258,7 +265,9 @@ function buildMockGitbashCommand({ commitCount, prUrl, token = 'mock-gitbash-vcs
     return { command, log };
 }
 
-function mockGitbashAbortCallTool() {
+// apra-fleet-3swo.7.19: see mockWindowsAbortCallTool above.
+function mockGitbashAbortCallTool(command) {
+    const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     return async (name, toolArgs) => {
         if (name === 'member_detail') {
             return { content: [{ text: JSON.stringify({ os: 'windows', shell: 'gitbash', vcsProvider: 'github' }) }] };
@@ -267,7 +276,7 @@ function mockGitbashAbortCallTool() {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
         }
-        return { content: [{ text: `mock ${name}` }] };
+        return base(name, toolArgs);
     };
 }
 
@@ -287,7 +296,7 @@ test('finalizeAbort (Windows gitbash member): PR curl uses POSIX quoting, not Po
         baseBranch: 'main',
         member: 'gitbash-member',
         command,
-        callTool: mockGitbashAbortCallTool(),
+        callTool: mockGitbashAbortCallTool(command),
     });
 
     check(result.reason === 'aborted-pr-created', `Expected the [ABORTED] PR to be created for a gitbash member, got: ${JSON.stringify(result)}`);
@@ -346,8 +355,12 @@ function wrapExecuteCommandForWindowsVcs(baseApi, commandLog, { credQueue, pulls
     };
 }
 
-function mockWindowsMemberDetailCallTool() {
-    const base = defaultMockCallTool();
+// apra-fleet-3swo.7.19: threads the SAME (wrapped) executeCommand this
+// scenario's own mockFleetApi uses, so the shared simulator's
+// vcs_credential_exec branch can delegate its substituted command through
+// that same curl-interception/commandLog machinery.
+function mockWindowsMemberDetailCallTool(executeCommand) {
+    const base = defaultMockCallTool({ executeCommand });
     return async (name, toolArgs) => {
         if (name === 'member_detail') {
             return { content: [{ text: JSON.stringify({ os: 'windows', vcsProvider: 'github' }) }] };
@@ -391,7 +404,7 @@ async function runWindowsPublishPrScenario(tag, { pullsQueue } = {}) {
                 base_branch: 'main',
                 goal: 'P1/P2',
                 max_cycles: 1,
-                callTool: mockWindowsMemberDetailCallTool(),
+                callTool: mockWindowsMemberDetailCallTool(mockFleetApi.executeCommand),
             }, true);
         } catch (err) {
             error = err;

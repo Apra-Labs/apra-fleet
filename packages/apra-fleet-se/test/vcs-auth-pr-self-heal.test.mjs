@@ -2,7 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { finalizeAbort, createVcsAuthPreflightCallback } from '../fleet-sprint/runner.js';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import {
+    runDevelopLoopScenario,
+    withScenarioMarkers,
+    defaultMockCallTool,
+    legacyCommandExecuteCommandAdapter,
+} from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -46,27 +51,34 @@ function assertNoRawTokenInLogs(logs, token = RAW_PR_TOKEN) {
 test('Publish-PR path: a 401 on the first PR-create call triggers exactly one self-heal provision_vcs_auth + one retry, then succeeds', async () => {
     await withScenarioMarkers('pr401selfheal', async () => {
         const provisionCalls = [];
-        const callTool = async (name, args) => {
-            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
-            if (name === 'provision_vcs_auth') {
-                provisionCalls.push(args);
-                const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-                return { content: [{ text: `[OK] Mock ${args.provider} credentials deployed on "${args.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
-            }
-            if (name === 'child_id_allocator') {
-                return { content: [{ text: JSON.stringify(args && args.action === 'allocate' ? { childId: null, token: null } : { confirmed: true, released: true }) }] };
-            }
-            if (name === 'dolt_push_mutex') {
-                return { content: [{ text: JSON.stringify(args && args.action === 'acquire' ? { granted: true, token: 'mock-mutex' } : { released: true }) }] };
-            }
-            return { content: [{ text: `mock ${name}` }] };
+        // apra-fleet-3swo.7.19: a factory (not a plain callTool) so the
+        // fallback below can delegate vcs_credential_exec to the SAME shared
+        // simulator this scenario's own mockFleetApi uses -- see
+        // runDevelopLoopScenario's callToolFactory doc comment.
+        const callToolFactory = (executeCommand) => {
+            const base = defaultMockCallTool({ executeCommand });
+            return async (name, args) => {
+                if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+                if (name === 'provision_vcs_auth') {
+                    provisionCalls.push(args);
+                    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+                    return { content: [{ text: `[OK] Mock ${args.provider} credentials deployed on "${args.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+                }
+                if (name === 'child_id_allocator') {
+                    return { content: [{ text: JSON.stringify(args && args.action === 'allocate' ? { childId: null, token: null } : { confirmed: true, released: true }) }] };
+                }
+                if (name === 'dolt_push_mutex') {
+                    return { content: [{ text: JSON.stringify(args && args.action === 'acquire' ? { granted: true, token: 'mock-mutex' } : { released: true }) }] };
+                }
+                return base(name, args);
+            };
         };
 
         const run = await runDevelopLoopScenario('pr401selfheal', {
             members: ['local'],
             taskSpecs: [{ title: 'Task: 647.1.1.3 Publish-PR 401 self-heal fixture' }],
             maxCycles: 1,
-            callTool,
+            callToolFactory,
             prCurlResponseQueue: [
                 { status: 401, body: { message: 'Bad credentials' } },
                 { status: 201, body: { number: 202, html_url: 'https://github.com/mock-org/mock-repo/pull/202' } },
@@ -112,26 +124,31 @@ test('Publish-PR path: a 401 on the first PR-create call triggers exactly one se
 test('Publish-PR path: a persistent non-auth 500 never triggers a self-heal re-provision', async () => {
     await withScenarioMarkers('pr500noheal', async () => {
         const provisionCalls = [];
-        const callTool = async (name, args) => {
-            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
-            if (name === 'provision_vcs_auth') {
-                provisionCalls.push(args);
-                return { content: [{ text: `[OK] Mock ${args.provider} credentials deployed on "${args.member_name}"\n` }] };
-            }
-            if (name === 'child_id_allocator') {
-                return { content: [{ text: JSON.stringify(args && args.action === 'allocate' ? { childId: null, token: null } : { confirmed: true, released: true }) }] };
-            }
-            if (name === 'dolt_push_mutex') {
-                return { content: [{ text: JSON.stringify(args && args.action === 'acquire' ? { granted: true, token: 'mock-mutex' } : { released: true }) }] };
-            }
-            return { content: [{ text: `mock ${name}` }] };
+        // apra-fleet-3swo.7.19: see the sibling scenario above for why this
+        // is a callToolFactory rather than a plain callTool.
+        const callToolFactory = (executeCommand) => {
+            const base = defaultMockCallTool({ executeCommand });
+            return async (name, args) => {
+                if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+                if (name === 'provision_vcs_auth') {
+                    provisionCalls.push(args);
+                    return { content: [{ text: `[OK] Mock ${args.provider} credentials deployed on "${args.member_name}"\n` }] };
+                }
+                if (name === 'child_id_allocator') {
+                    return { content: [{ text: JSON.stringify(args && args.action === 'allocate' ? { childId: null, token: null } : { confirmed: true, released: true }) }] };
+                }
+                if (name === 'dolt_push_mutex') {
+                    return { content: [{ text: JSON.stringify(args && args.action === 'acquire' ? { granted: true, token: 'mock-mutex' } : { released: true }) }] };
+                }
+                return base(name, args);
+            };
         };
 
         const run = await runDevelopLoopScenario('pr500noheal', {
             members: ['local'],
             taskSpecs: [{ title: 'Task: 647.1.1.3 Publish-PR non-auth 500 fixture' }],
             maxCycles: 1,
-            callTool,
+            callToolFactory,
             prCurlResponseQueue: [{ status: 500, body: { message: 'Internal Server Error' } }],
         });
 
@@ -184,6 +201,10 @@ function makeFinalizeAbortMocks({ curlResponses, commitCount = 2 }) {
         return { ok: true, output: '', error: null };
     };
     const provisionCalls = [];
+    // apra-fleet-3swo.7.19: delegates vcs_credential_exec to the SHARED
+    // defaultMockCallTool() simulator instead of re-implementing it here --
+    // mirrors mock-sprint-abort-pr.test.mjs's mockAbortCallTool().
+    const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     const callTool = async (name, args) => {
         if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
         if (name === 'provision_vcs_auth') {
@@ -191,7 +212,7 @@ function makeFinalizeAbortMocks({ curlResponses, commitCount = 2 }) {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `[OK] Mock ${args.provider} credentials deployed\n  expiresAt: ${expiresAt}\n` }] };
         }
-        return { content: [{ text: `mock ${name}` }] };
+        return base(name, args);
     };
     return { command, callTool, commandLog, provisionCalls };
 }

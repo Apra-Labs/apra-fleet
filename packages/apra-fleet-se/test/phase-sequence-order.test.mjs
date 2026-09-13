@@ -115,7 +115,13 @@ async function recordPhaseSequence(tag) {
             base_branch: 'main',
             goal: 'P1/P2',
             max_cycles: 5,
-            callTool: defaultMockCallTool(),
+            // apra-fleet-3swo.7.19: thread the SAME mockFleetApi.executeCommand
+            // this scenario's engine.executeFile() call uses, so the shared
+            // simulator's vcs_credential_exec branch can delegate its
+            // substituted command through the same curl-interception/
+            // commandLog machinery instead of throwing "no executeCommand
+            // was threaded" once a PR-raising call reaches it.
+            callTool: defaultMockCallTool({ executeCommand: mockFleetApi.executeCommand }),
         }, true);
 
         return phaseLog;

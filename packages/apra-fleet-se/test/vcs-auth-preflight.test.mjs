@@ -9,7 +9,7 @@ import {
     createVcsAuthSelfHealCallback,
     syncMemberAfter,
 } from '../fleet-sprint/runner.js';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER_PATH = path.join(__dirname, '..', 'fleet-sprint', 'runner.js');
@@ -365,13 +365,20 @@ describe('runSprintCycle: the real withGitSync pushCode-gated preflight wiring',
     test('a doer dispatch with no prior credential mints exactly once before its turn starts; read-only role dispatches never trigger a preflight call', async () => {
         await withScenarioMarkers('glv.2 preflight end-to-end', async () => {
             const vcsCalls = [];
-            const callTool = async (name, args) => {
-                if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
-                if (name === 'provision_vcs_auth') {
-                    vcsCalls.push(args);
-                    return provisionedWithExpiry(farFutureExpiry());
-                }
-                return { content: [{ text: 'ok' }] };
+            // apra-fleet-3swo.7.19: a factory (not a plain callTool) so the
+            // fallback below can delegate vcs_credential_exec to the SAME
+            // shared simulator this scenario's own mockFleetApi uses -- see
+            // runDevelopLoopScenario's callToolFactory doc comment.
+            const callToolFactory = (executeCommand) => {
+                const base = defaultMockCallTool({ executeCommand });
+                return async (name, args) => {
+                    if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+                    if (name === 'provision_vcs_auth') {
+                        vcsCalls.push(args);
+                        return provisionedWithExpiry(farFutureExpiry());
+                    }
+                    return base(name, args);
+                };
             };
 
             const result = await runDevelopLoopScenario('glv2preflight', {
@@ -382,7 +389,7 @@ describe('runSprintCycle: the real withGitSync pushCode-gated preflight wiring',
                     'integ-test-runner': ['member-reviewer'],
                 },
                 taskSpecs: [{ title: 'Task: exercise the VCS-auth preflight' }],
-                callTool,
+                callToolFactory,
                 reviewerHandler: async () => ({
                     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
                 }),
@@ -469,13 +476,18 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
     test('(criteria 1 & 2, MUTATION CHECK target) a pushBeads:true READ-SIDE bracket (planner, integ-test-runner, regression-test-runner) emits the preflight log line AND calls provision_vcs_auth for its OWN member; a pure read-only bracket (reviewer, plan-reviewer, deployer) sharing one member emits NEITHER, for any of the three roles routed onto it', async () => {
         await withScenarioMarkers('417.4 pushBeads-only preflight', async () => {
             const vcsCalls = [];
-            const callTool = async (name, args) => {
-                if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
-                if (name === 'provision_vcs_auth') {
-                    vcsCalls.push(args);
-                    return provisionedWithExpiry(farFutureExpiry());
-                }
-                return { content: [{ text: 'ok' }] };
+            // apra-fleet-3swo.7.19: see the sibling scenario above for why
+            // this is a callToolFactory rather than a plain callTool.
+            const callToolFactory = (executeCommand) => {
+                const base = defaultMockCallTool({ executeCommand });
+                return async (name, args) => {
+                    if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+                    if (name === 'provision_vcs_auth') {
+                        vcsCalls.push(args);
+                        return provisionedWithExpiry(farFutureExpiry());
+                    }
+                    return base(name, args);
+                };
             };
 
             const result = await runDevelopLoopScenario('417_4pushbeads', {
@@ -491,7 +503,7 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
                 withRunbooks: true,
                 withRegressionPlaybook: true,
                 taskSpecs: [{ title: 'Task: exercise the pushBeads-only preflight gating' }],
-                callTool,
+                callToolFactory,
                 reviewerHandler: async () => ({
                     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
                 }),
@@ -550,16 +562,21 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
     test('(criterion 4) a preflight FAILURE at a pushBeads:true read-side bracket is logged and swallowed -- the dispatch still runs and the sprint still completes', async () => {
         await withScenarioMarkers('417.4 preflight failure swallowed', async () => {
             const vcsCalls = [];
-            const callTool = async (name, args) => {
-                if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
-                if (name === 'provision_vcs_auth') {
-                    if (args.member_name === ROLE_MEMBERS.planner) {
-                        throw new Error('provision_vcs_auth: fleet server unreachable (injected)');
+            // apra-fleet-3swo.7.19: see the sibling scenarios above for why
+            // this is a callToolFactory rather than a plain callTool.
+            const callToolFactory = (executeCommand) => {
+                const base = defaultMockCallTool({ executeCommand });
+                return async (name, args) => {
+                    if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+                    if (name === 'provision_vcs_auth') {
+                        if (args.member_name === ROLE_MEMBERS.planner) {
+                            throw new Error('provision_vcs_auth: fleet server unreachable (injected)');
+                        }
+                        vcsCalls.push(args);
+                        return provisionedWithExpiry(farFutureExpiry());
                     }
-                    vcsCalls.push(args);
-                    return provisionedWithExpiry(farFutureExpiry());
-                }
-                return { content: [{ text: 'ok' }] };
+                    return base(name, args);
+                };
             };
 
             const result = await runDevelopLoopScenario('417_4preflightfail', {
@@ -571,7 +588,7 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
                     deployer: [ROLE_MEMBERS.deployer],
                 },
                 taskSpecs: [{ title: 'Task: exercise a swallowed preflight failure' }],
-                callTool,
+                callToolFactory,
                 reviewerHandler: async () => ({
                     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
                 }),

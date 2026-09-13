@@ -5,6 +5,7 @@ import { finalizeAbort } from '../fleet-sprint/runner.js';
 import { capabilities as vcsCapabilities } from '../fleet-sprint/vcs-module.mjs';
 import { AzureDevOpsVCS } from '../fleet-sprint/vcs-providers/azure-devops.mjs';
 import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
+import { defaultMockCallTool, legacyCommandExecuteCommandAdapter } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -72,7 +73,13 @@ function buildMockCommand({ originUrl, credentialFiles, prResponder }) {
     return { command, log };
 }
 
-function mockCallTool(vcsProvider, { availableSecrets = [] } = {}) {
+// apra-fleet-3swo.7.19: `command` threads into legacyCommandExecuteCommandAdapter
+// so vcs_credential_exec delegates to the SHARED defaultMockCallTool()
+// simulator (reusing its placeholder substitution and redaction) instead of
+// re-implementing it here -- mirrors mock-sprint-abort-pr.test.mjs's
+// mockAbortCallTool().
+function mockCallTool(vcsProvider, { availableSecrets = [] } = {}, command) {
+    const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     return async (name, toolArgs) => {
         if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider }) }] };
         if (name === 'credential_store_list') {
@@ -82,7 +89,7 @@ function mockCallTool(vcsProvider, { availableSecrets = [] } = {}) {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
         }
-        return { content: [{ text: `mock ${name}` }] };
+        return base(name, toolArgs);
     };
 }
 
@@ -117,7 +124,7 @@ test('finalizeAbort (Azure DevOps): a canned 201 body maps to a PR URL construct
         member: 'local',
         command,
         log: (m) => logs.push(m),
-        callTool: mockCallTool('azure-devops', { availableSecrets: ['azdevops_pat'] }),
+        callTool: mockCallTool('azure-devops', { availableSecrets: ['azdevops_pat'] }, command),
     });
 
     check(result.reason === 'aborted-pr-created', `Expected reason 'aborted-pr-created', got: ${JSON.stringify(result)}`);
@@ -171,7 +178,7 @@ test('finalizeAbort (Azure DevOps): a canned 409 body carrying TF401179 is treat
             member: 'local',
             command,
             log: (m) => logs.push(m),
-            callTool: mockCallTool('azure-devops', { availableSecrets: ['azdevops_pat'] }),
+            callTool: mockCallTool('azure-devops', { availableSecrets: ['azdevops_pat'] }, command),
         });
     } catch (e) {
         thrown = e;
@@ -210,7 +217,7 @@ test('finalizeAbort (GitHub): a canned 201 body still reports its unchanged html
         member: 'local',
         command,
         log: (m) => logs.push(m),
-        callTool: mockCallTool('github'),
+        callTool: mockCallTool('github', {}, command),
     });
 
     check(result.reason === 'aborted-pr-created', `Expected reason 'aborted-pr-created', got: ${JSON.stringify(result)}`);
@@ -259,7 +266,7 @@ test('finalizeAbort (Azure DevOps): the PR-raise reads the azure-devops-labelled
         member: 'local',
         command,
         log: (m) => logs.push(m),
-        callTool: mockCallTool('azure-devops', { availableSecrets: ['azdevops_pat'] }),
+        callTool: mockCallTool('azure-devops', { availableSecrets: ['azdevops_pat'] }, command),
     });
 
     check(result.reason === 'aborted-pr-created', `Expected reason 'aborted-pr-created', got: ${JSON.stringify(result)} (logs: ${JSON.stringify(logs)})`);
@@ -298,7 +305,7 @@ test('finalizeAbort (GitHub control): a GitHub member still reads the github-lab
         member: 'local',
         command,
         log: () => {},
-        callTool: mockCallTool('github'),
+        callTool: mockCallTool('github', {}, command),
     });
 
     check(result.prUrl === ghUrl, `Expected the GitHub html_url, got: ${JSON.stringify(result)}`);

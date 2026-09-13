@@ -222,7 +222,13 @@ describe('apra-fleet-p2to.4.1: clean-state pause guard wiring (mock-sprint integ
                 base_branch: 'main',
                 goal: 'P1/P2',
                 max_cycles: 3,
-                callTool: defaultMockCallTool(),
+                // apra-fleet-3swo.7.19: thread the SAME mockFleetApi.executeCommand
+                // this scenario's engine.executeFile() call uses, so the shared
+                // simulator's vcs_credential_exec branch can delegate its
+                // substituted command through the same curl-interception/
+                // commandLog machinery instead of throwing "no executeCommand
+                // was threaded" once a PR-raising call reaches it.
+                callTool: defaultMockCallTool({ executeCommand: mockFleetApi.executeCommand }),
             }, true);
 
             assert.equal(pausedDuringDispatch, false, 'the pause must not engage while still mid-dispatch inside the open withGitSync bracket');

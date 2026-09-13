@@ -489,6 +489,38 @@ export function defaultMockCallTool({ executeCommand } = {}) {
     };
 }
 
+// apra-fleet-3swo.7.19: several standalone finalizeAbort()-level test files
+// (mock-sprint-abort-pr.test.mjs, mock-sprint-azure-devops-vcs-publish.
+// test.mjs, and similar) predate buildMockFleetApi() entirely -- they drive
+// finalizeAbort() directly against a hand-rolled `command(cmd, opts) =>
+// Promise<{ ok, output, error } | string>` mock, never an executeCommand from
+// this file. Adapts that legacy shape into the `executeCommand({ command,
+// member_id, member_name }) => Promise<{ structuredContent: { exitCode,
+// stdout, stderr } }>` shape defaultMockCallTool()'s vcs_credential_exec
+// branch expects, so those files can delegate to the SAME shared simulator
+// (reusing its placeholder substitution and redaction) instead of
+// re-implementing it locally. Always dispatches with `failSoft: true` (every
+// production vcs_credential_exec-eligible call site already does, and this
+// mirrors it), so `command` never throws here.
+export function legacyCommandExecuteCommandAdapter(command) {
+    return async ({ command: cmd, member_id, member_name }) => {
+        const res = await command(cmd, {
+            member_id,
+            member_name,
+            silent: true,
+            failSoft: true,
+            label: 'vcs_credential_exec dispatch (legacy command mock)',
+        });
+        return {
+            structuredContent: {
+                exitCode: res && res.ok ? 0 : 1,
+                stdout: (res && res.output) || '',
+                stderr: res && !res.ok ? (res.error || '') : '',
+            },
+        };
+    };
+}
+
 // Same (cmd, cwd) => Promise<{ err, stdout, stderr }> signature as always,
 // but `bd ...` commands are now routed through the record/replay layer in
 // ./bd-replay.mjs (APRA_FLEET_BD_MOCK: replay recorded real-bd responses by
@@ -1856,6 +1888,16 @@ export async function runDevelopLoopScenario(tag, {
     // createMemberSessionGuard()'s `stop_prompt` call end-to-end, rather than
     // only unit-testing the guard helper in isolation.
     callTool,
+    // apra-fleet-3swo.7.19: optional `(executeCommand) => callTool` factory,
+    // for a scenario whose own callTool needs to delegate vcs_credential_exec
+    // to the SAME shared simulator (defaultMockCallTool's executeCommand
+    // branch) this function's own internal `mockFleetApi` uses -- that
+    // instance does not exist yet at the point a caller builds a plain
+    // `callTool` value (it is constructed below, inside this function), so a
+    // caller that needs it supplies this factory instead and receives
+    // `mockFleetApi.executeCommand` once it exists. Takes priority over a
+    // plain `callTool` when both are supplied.
+    callToolFactory,
     // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
     // args (validateArgs: doer_worklist_mode 'resume'|'batch',
     // resume_model_switch boolean, worklist_effort_budget positive number) --
@@ -1967,7 +2009,9 @@ export async function runDevelopLoopScenario(tag, {
                 // apra-fleet-3swo.7.18: same executeCommand-threading as
                 // runOnce() above, for the default (no per-scenario callTool
                 // override) case.
-                callTool: callTool !== undefined ? callTool : defaultMockCallTool({ executeCommand: mockFleetApi.executeCommand }),
+                callTool: callToolFactory
+                    ? callToolFactory(mockFleetApi.executeCommand)
+                    : (callTool !== undefined ? callTool : defaultMockCallTool({ executeCommand: mockFleetApi.executeCommand })),
                 ...(doerWorklistMode !== undefined ? { doer_worklist_mode: doerWorklistMode } : {}),
                 ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
