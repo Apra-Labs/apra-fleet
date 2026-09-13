@@ -120,7 +120,14 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
     let timer;
     const watchdogPromise = new Promise((_resolve, reject) => {
         timer = setTimeout(() => {
-            const message = `[dispatch-watchdog] ${label} to member '${member}' produced no result within ${timeoutS}s (+${DISPATCH_WATCHDOG_GRACE_S}s grace) -- treating this attempt as a stalled/dead session and aborting it (no code path may leave this orchestrator alive-but-silent past its configured dispatch_timeout_s).`;
+            // "its configured watchdog budget", not a named field: this
+            // budget is role-policies.mjs's resolved elapsed-ceiling value
+            // (timeouts.maxTotalS when set and longer, else timeouts.timeoutS
+            // -- see resolveWatchdogTimeout, apra-fleet-3swo.7.12 Final Review
+            // reopen), so naming dispatch_timeout_s specifically here would be
+            // wrong for a role like integ-test-runner whose watchdog resolves
+            // to a different, longer budget.
+            const message = `[dispatch-watchdog] ${label} to member '${member}' produced no result within ${timeoutS}s (+${DISPATCH_WATCHDOG_GRACE_S}s grace) -- treating this attempt as a stalled/dead session and aborting it (no code path may leave this orchestrator alive-but-silent past its configured watchdog budget).`;
             log(message);
             reject(new AgentDispatchError(
                 `[Workflow Error] ${label} timed out (watchdog): no response from '${member}' within ${timeoutS}s (+${DISPATCH_WATCHDOG_GRACE_S}s grace).`,

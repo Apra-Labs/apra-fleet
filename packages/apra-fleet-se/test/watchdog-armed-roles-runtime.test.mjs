@@ -4,7 +4,21 @@ import { AgentDispatchError } from '@apralabs/apra-fleet-workflow';
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
 import { withDispatchWatchdog } from '../fleet-sprint/dispatch-failure.mjs';
 import { ROLE_POLICIES, ROLE_NAMES, policyFor } from '../fleet-sprint/role-policies.mjs';
-import { createRecordingCtx, ROLE_CALL_OPTS, BINDINGS, DISPATCH_TIMEOUT_S } from './helpers/dispatch-role-harness.mjs';
+import {
+    createRecordingCtx, ROLE_CALL_OPTS, BINDINGS,
+    DISPATCH_TIMEOUT_S, INTEG_MAX_TOTAL_S, REGRESSION_TEST_MAX_TOTAL_S,
+} from './helpers/dispatch-role-harness.mjs';
+
+/**
+ * Maps a policy row's resolved `watchdog.timeoutS` SYMBOLIC NAME to the
+ * harness's numeric stand-in for it, so each role's expectation below is
+ * driven by what the table itself names, not a value this file re-guesses
+ * (apra-fleet-3swo.7.12 Final Review reopen: integ-test-runner and
+ * regression-test-runner resolve to their own HARD elapsed ceiling --
+ * INTEG_MAX_TOTAL_S / REGRESSION_TEST_MAX_TOTAL_S -- not the shared
+ * DISPATCH_TIMEOUT_S inactivity budget every role used to be pinned to here).
+ */
+const BUDGET_BY_NAME = { DISPATCH_TIMEOUT_S, INTEG_MAX_TOTAL_S, REGRESSION_TEST_MAX_TOTAL_S };
 
 // =============================================================================
 // apra-fleet-3swo.7.12 criterion 5: a role that this pass changed from
@@ -57,8 +71,10 @@ async function until(pred, label, maxTurns = 1000) {
 /**
  * Drives one role's main dispatch against a never-settling agent promise, with
  * the REAL watchdog in place, and returns everything observable about the race.
+ * `expectedTimeoutS` is THIS role's own resolved budget (not necessarily
+ * DISPATCH_TIMEOUT_S) -- see BUDGET_BY_NAME above.
  */
-async function raceRoleToWatchdogTimeout(role) {
+async function raceRoleToWatchdogTimeout(role, expectedTimeoutS) {
     let underlyingSettled = false;
     const neverSettles = () => new Promise(() => {}).finally(() => { underlyingSettled = true; });
 
@@ -82,7 +98,7 @@ async function raceRoleToWatchdogTimeout(role) {
     // would race the engine's own pre-dispatch awaits.
     await until(() => watchdogCalls.length > 0, `${role}: engine never reached the watchdog race`);
 
-    const budgetMs = (DISPATCH_TIMEOUT_S + GRACE_S) * 1000;
+    const budgetMs = (expectedTimeoutS + GRACE_S) * 1000;
     mock.timers.tick(budgetMs - 1);
     await drainTurns();
     const firedEarly = rec.logs.some((l) => l.includes('[dispatch-watchdog]'));
@@ -107,18 +123,43 @@ test('the newly-armed roles were actually armed (sanity: this file would be vacu
 });
 
 for (const role of NEWLY_ARMED_ROLES) {
+    // The role's OWN resolved ceiling (apra-fleet-3swo.7.12 Final Review
+    // reopen) -- deliberately derived INDEPENDENTLY from this row's own
+    // `timeouts` (maxTotalS when set, else timeoutS), never read off
+    // `watchdog.timeoutS` itself: reading the value being tested back out of
+    // the same object under test would make this assertion self-fulfilling
+    // and unable to catch a broken resolution (falsified: reading
+    // `watchdog.timeoutS` here passed even with resolveWatchdogTimeout()
+    // reverted to the hard-coded pre-fix constructor, because it just
+    // compared the defective value to itself). Still discovered from the
+    // table, never hardcoded, so a later re-audit that changes a role's
+    // ceiling does not leave this file asserting a stale expectation.
+    const rowTimeouts = policyFor(role).timeouts;
+    const expectedTimeoutName = rowTimeouts.maxTotalS ?? rowTimeouts.timeoutS;
+    const expectedTimeoutS = BUDGET_BY_NAME[expectedTimeoutName];
+
     test(`${role}: a frozen-but-alive dispatch is aborted by the watchdog with reason watchdog_timeout`, async () => {
+        assert.ok(
+            typeof expectedTimeoutS === 'number',
+            `${role}: watchdog.timeoutS names '${expectedTimeoutName}', which BUDGET_BY_NAME does not cover -- ` +
+            'add it there rather than silently asserting NaN.'
+        );
         mock.timers.enable({ apis: ['setTimeout'] });
         try {
             const { thrown, outcome, rec, watchdogCalls, firedEarly, underlyingSettled } =
-                await raceRoleToWatchdogTimeout(role);
+                await raceRoleToWatchdogTimeout(role, expectedTimeoutS);
 
-            // 1. The race really happened, through this role's own row.
+            // 1. The race really happened, through this role's own row, using
+            //    ITS OWN resolved ceiling -- not necessarily DISPATCH_TIMEOUT_S
+            //    (integ-test-runner/regression-test-runner resolve to their
+            //    longer HARD elapsed ceiling; deployer's two budgets are equal
+            //    so it still resolves to DISPATCH_TIMEOUT_S).
             assert.strictEqual(watchdogCalls.length, 1, `${role}: expected exactly one watchdog race.`);
             assert.strictEqual(
                 watchdogCalls[0].timeoutS,
-                DISPATCH_TIMEOUT_S,
-                `${role}: the watchdog must use the role's own configured dispatch budget.`
+                expectedTimeoutS,
+                `${role}: the watchdog must use the role's own resolved elapsed-ceiling budget (${expectedTimeoutName}), ` +
+                'not the shared inactivity budget.'
             );
             assert.strictEqual(
                 watchdogCalls[0].member,
@@ -132,7 +173,7 @@ for (const role of NEWLY_ARMED_ROLES) {
             assert.strictEqual(
                 firedEarly,
                 false,
-                `${role}: the watchdog fired before (${DISPATCH_TIMEOUT_S}s + ${GRACE_S}s grace) elapsed.`
+                `${role}: the watchdog fired before (${expectedTimeoutS}s + ${GRACE_S}s grace) elapsed.`
             );
 
             // 3. It fired, with the same typed failure the planner's does.
@@ -140,7 +181,7 @@ for (const role of NEWLY_ARMED_ROLES) {
             assert.strictEqual(watchdogLogs.length, 1, `${role}: expected one [dispatch-watchdog] log line.`);
             assert.match(
                 watchdogLogs[0],
-                new RegExp(`produced no result within ${DISPATCH_TIMEOUT_S}s \\(\\+${GRACE_S}s grace\\)`),
+                new RegExp(`produced no result within ${expectedTimeoutS}s \\(\\+${GRACE_S}s grace\\)`),
                 `${role}: the log must state both the budget and the grace it was given.`
             );
 
@@ -158,7 +199,7 @@ for (const role of NEWLY_ARMED_ROLES) {
                 assert.ok(thrown instanceof AgentDispatchError, `${role}: watchdog failures stay typed.`);
                 assert.strictEqual(thrown.details?.reason, 'watchdog_timeout');
                 assert.strictEqual(thrown.details?.graceS, GRACE_S);
-                assert.strictEqual(thrown.details?.timeoutS, DISPATCH_TIMEOUT_S);
+                assert.strictEqual(thrown.details?.timeoutS, expectedTimeoutS);
             } else {
                 assert.strictEqual(
                     policyFor(role).degrade.abortsSprint,

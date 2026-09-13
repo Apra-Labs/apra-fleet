@@ -1269,10 +1269,21 @@ describe('execution-role dispatch ladders: per-dispatch pins (engine-served)', (
                 );
             } else {
                 assert.ok(dispatch.watchdog, `${pin.name} must be raced against a client-side watchdog.`);
+                // apra-fleet-3swo.7.12 Final Review reopen: the watchdog must
+                // race THIS pin's own resolved elapsed ceiling
+                // (maxTotalS when set, else timeoutS) -- NOT unconditionally
+                // the shared DISPATCH_TIMEOUT_S inactivity budget, which for
+                // integ-test-runner/regression-test-runner is deliberately
+                // shorter than their own maxTotalS. Derived from the pin's
+                // OWN timeoutS/maxTotalS fields (independent ground truth,
+                // not read back off dispatch.watchdog.timeoutS itself), so
+                // this still catches a resolution that regresses to the old
+                // hard-coded budget.
                 assert.strictEqual(
                     dispatch.watchdog.timeoutS,
-                    ctx.budgets.DISPATCH_TIMEOUT_S,
-                    `${pin.name}'s watchdog must fire on the same DISPATCH_TIMEOUT_S budget the server-side timeout uses.`
+                    ctx.budgets[pin.maxTotalS ?? pin.timeoutS],
+                    `${pin.name}'s watchdog must fire on this dispatch's own resolved elapsed-ceiling budget ` +
+                    `(${pin.maxTotalS ?? pin.timeoutS}), not necessarily DISPATCH_TIMEOUT_S.`
                 );
                 assert.strictEqual(
                     dispatch.watchdog.member,
