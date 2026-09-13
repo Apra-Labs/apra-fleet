@@ -19,6 +19,7 @@ import {
   up,
   getJson,
   lostPortRace,
+  SandboxDeployError,
   // @ts-expect-error -- plain .mjs helper, no type declarations
 } from '../scripts/sandbox-deploy.mjs';
 
@@ -144,6 +145,49 @@ describe('port allocation', () => {
     const seq = [7523, 8787, 18700, 40001, 40001, 40002, 18701, 40010];
     const ports = await allocatePorts(async () => seq.shift()!);
     expect(ports).toEqual({ fleetPort: 40001, supervisorPort: 40010 });
+  });
+
+  // apra-fleet-3swo.60/.63: a retry after a bind race excludes not just the
+  // exact lost port but its immediate neighbours too (a sweeping foreign
+  // process is the most likely next occupant of lostPort +/- 1).
+  describe('exclude-adjacency (a lost port also bans its immediate neighbours)', () => {
+    it('1. refuses the upper neighbour of an excluded port, returning a pair drawn from later, non-adjacent picks', async () => {
+      const seq = [30001, 40001, 40010];
+      const ports = await allocatePorts(async () => seq.shift()!, [30000]);
+      expect(ports.fleetPort).toBe(40001);
+      expect(ports.supervisorPort).toBe(40010);
+    });
+
+    it('2. refuses the lower neighbour too (covers an implementation that only checks one side)', async () => {
+      const seq = [29999, 40001, 40010];
+      const ports = await allocatePorts(async () => seq.shift()!, [30000]);
+      expect(ports.fleetPort).toBe(40001);
+      expect(ports.supervisorPort).toBe(40010);
+    });
+
+    it('3. the exact-match ban still holds', async () => {
+      const seq = [30000, 40001, 40010];
+      const ports = await allocatePorts(async () => seq.shift()!, [30000]);
+      expect(ports.fleetPort).toBe(40001);
+      expect(ports.supervisorPort).toBe(40010);
+    });
+
+    it('4. the intra-pair rule still holds: a consecutive pair offered with no exclude never comes back adjacent', async () => {
+      const seq = [40001, 40002, 40010];
+      const ports = await allocatePorts(async () => seq.shift()!);
+      expect(Math.abs(ports.fleetPort - ports.supervisorPort)).toBeGreaterThan(1);
+      expect(ports).toEqual({ fleetPort: 40001, supervisorPort: 40010 });
+    });
+
+    it('6. the 20-attempt cap and its failure mode are unchanged: exhausting every attempt on excluded/adjacent picks still rejects with the same message', async () => {
+      // Every pick offered is either the excluded port itself or its upper
+      // neighbour -- both must be refused on every one of the 20 attempts,
+      // so chosen.length never reaches 2 and the cap's own error fires,
+      // asserted on the exact message so a silent change of failure mode
+      // (e.g. a different error class, or a hang) is caught.
+      await expect(allocatePorts(async () => 30001, [30000])).rejects.toThrow(SandboxDeployError);
+      await expect(allocatePorts(async () => 30001, [30000])).rejects.toThrow('could not allocate two free ports');
+    });
   });
 });
 
@@ -315,6 +359,54 @@ describe.skipIf(!fs.existsSync(DIST))('live: up / env / teardown across separate
       // process than one spawned by a short-lived CLI invocation that has
       // already exited -- observed to exceed stopPid's 10s budget and fail
       // the assertion below, even though the process does eventually die.
+      const r = await teardown(id, { home });
+      expect(r.removed).toBe(true);
+    }
+    expect(fs.existsSync(valuesFilePath(id, home))).toBe(false);
+  }, 150000);
+
+  // apra-fleet-3swo.60/.63: the exclude-adjacency rule must also hold across
+  // a REAL up() retry, not just within one allocatePorts() call. Modeled on
+  // the "recovers when one allocated port..." case above: attempt 1 forces a
+  // conflict on the fleet slot by handing back a squatted port; once up()
+  // re-allocates with that port excluded, the retry's first pick offers
+  // squatterPort + 1 -- its immediate upper neighbour -- which must be
+  // refused rather than bound. Every other slot is filled by a pre-checked
+  // free port (not adjacent to the squatted port, its neighbour, or each
+  // other) so the retry can still succeed and the assertion is about WHICH
+  // port got bound, not whether the sandbox came up at all.
+  it('a retry after a bind race never re-uses a port adjacent to the lost one', async () => {
+    const home = mkHome(); homes.push(home);
+    const id = 'auto-sprint/port-race-adjacent-retry';
+    const squatterPort = await squat();
+    const adjacentPort = squatterPort + 1;
+
+    async function freePortNotNear(...avoid: number[]): Promise<number> {
+      for (;;) {
+        const candidate = await osPort();
+        if (!avoid.some((p) => Math.abs(p - candidate) <= 1)) return candidate;
+      }
+    }
+    const attempt1SupervisorPort = await freePortNotNear(squatterPort);
+    const attempt2FleetPort = await freePortNotNear(squatterPort, adjacentPort);
+    const attempt2SupervisorPort = await freePortNotNear(squatterPort, adjacentPort, attempt2FleetPort);
+
+    let calls = 0;
+    const pickPort = async () => {
+      calls += 1;
+      if (calls === 1) return squatterPort; // attempt 1 fleet slot -> forces the conflict
+      if (calls === 2) return attempt1SupervisorPort; // attempt 1 supervisor slot -> free, never bound
+      if (calls === 3) return adjacentPort; // attempt 2's first pick -- must be refused
+      if (calls === 4) return attempt2FleetPort;
+      return attempt2SupervisorPort;
+    };
+    try {
+      const v = await up(id, { home, pickPort });
+      expect(Number(v.APRA_FLEET_PORT)).not.toBe(adjacentPort);
+      expect(Number(v.SUPERVISOR_PORT)).not.toBe(adjacentPort);
+      expect(Number(v.APRA_FLEET_PORT)).not.toBe(squatterPort);
+      expect(Number(v.SUPERVISOR_PORT)).not.toBe(squatterPort);
+    } finally {
       const r = await teardown(id, { home });
       expect(r.removed).toBe(true);
     }
