@@ -127,10 +127,8 @@ Carried forward (filed as open backlog):
   feeds contested-bead routing directly instead of being re-derived from
   prose, and every role's dispatch watchdog arming decision is now explicit
   and audited (see "What shipped" above). Still outstanding: routing the
-  VCS-credential-handoff callers onto `{{vcs_token_inline}}`, deleting the
-  now-retired prose-scraper/credential-read helpers it replaces, and adding
-  an explicit assertion for the `{{vcs_token_inline}}` escaping anti-drift
-  invariant.
+  VCS-credential-handoff callers onto `{{vcs_token_inline}}`, and deleting the
+  now-retired prose-scraper/credential-read helpers it replaces.
 
 Everything else this section previously tracked as open backlog -- the
 Phase 4 facade-completeness gate, the six extraction modules once still in
