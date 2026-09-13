@@ -5,7 +5,7 @@ import {
     ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, DoltSyncError, PlanReviewDispatchFailedError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, DoltSyncError, PlanReviewDispatchFailedError, PreSprintValidationError, PRE_SPRINT_REFUSAL_REASONS, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
 // runner.js call site uses the purpose-based entry points on DoltSync
 // (apra-fleet-417.2.2); the named primitives are imported here only to be
@@ -1974,15 +1974,23 @@ async function runSprintCycle(context) {
                 const knownIds = new Set(allBeadsForVisibilityCheck.map((b) => b.id));
                 const invisibleTargets = targetIssues.filter((id) => !knownIds.has(id));
                 if (invisibleTargets.length > 0) {
-                    throw new Error(
+                    throw new PreSprintValidationError(
                         `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
                         `are not visible to the orchestrator member ('${orchestratorMember}')'s bd clone at all: ` +
                         `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
                         `means they were created/updated on a different clone that was never synced to the shared Dolt remote ` +
-                        `(dolt-push it there first) or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`
+                        `(dolt-push it there first) or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`,
+                        {
+                            reason: PRE_SPRINT_REFUSAL_REASONS.TARGET_NOT_VISIBLE,
+                            scope: sprintFilter,
+                            invisibleTargets,
+                        }
                     );
                 }
-                throw new Error(`Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`);
+                throw new PreSprintValidationError(
+                    `Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`,
+                    { reason: PRE_SPRINT_REFUSAL_REASONS.NOTHING_TO_DO, scope: sprintFilter }
+                );
             }
 
             // A specific deadlock shape: a `parent-child` edge one way plus a
@@ -2024,7 +2032,15 @@ async function runSprintCycle(context) {
                         log(`Pre-sprint auto-repair: removed the 'blocks' edge between ${pair.blockedIssue} and ${pair.blockedBy} (parent-child + blocks cycle) -- auto-removed via bd dep remove.`);
                     }
                 } catch (repairErr) {
-                    throw new Error(`${cycleMessage}\n\n(Auto-repair attempt itself failed: ${repairErr.message})`);
+                    throw new PreSprintValidationError(
+                        `${cycleMessage}\n\n(Auto-repair attempt itself failed: ${repairErr.message})`,
+                        {
+                            reason: PRE_SPRINT_REFUSAL_REASONS.CYCLE_REPAIR_FAILED,
+                            scope: sprintFilter,
+                            cyclePairs,
+                            cause: repairErr,
+                        }
+                    );
                 }
 
                 initialBeads = await readyLeafBeads();
@@ -2042,9 +2058,14 @@ async function runSprintCycle(context) {
                         ? `  - ${b.id} [${b.status}] -- blocked by: ${blockers.join(', ')}`
                         : `  - ${b.id} [${b.status}] -- unblocked but status excludes it from --ready`;
                 });
-                throw new Error(
+                throw new PreSprintValidationError(
                     `Pre-sprint validation failed: No ready beads found for scope '${sprintFilter}', and ${notDoneBeads.length} ` +
-                    `not-done bead(s) remain deadlocked:\n${diagnostics.join('\n')}`
+                    `not-done bead(s) remain deadlocked:\n${diagnostics.join('\n')}`,
+                    {
+                        reason: PRE_SPRINT_REFUSAL_REASONS.DEADLOCKED,
+                        scope: sprintFilter,
+                        deadlockedIds: notDoneBeads.map((b) => b.id),
+                    }
                 );
             }
         }

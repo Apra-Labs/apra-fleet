@@ -697,3 +697,99 @@ export class ConcurrentSyncBracketError extends WorkflowError {
         this.stillOpenLabels = stillOpenLabels;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pre-sprint validation refusals
+// ---------------------------------------------------------------------------
+//
+// Every refusal raised by runSprintCycle's pre-sprint validation block, as a
+// closed machine-readable vocabulary. Before this existed the block threw bare
+// `Error`s whose only discriminator was their prose, so a caller could not
+// tell "there is genuinely no ready work" (an operator-facing, often benign
+// outcome) from "this orchestrator's bd clone cannot see the target beads at
+// all" (a sync fault) or "the scope is deadlocked" (a graph fault) without
+// substring-matching a human-readable sentence.
+//
+//   TARGET_NOT_VISIBLE   One or more target issue ids are not present in the
+//                        orchestrator member's own bd clone AT ALL. NOT the
+//                        same as those beads being closed: they are invisible
+//                        here, usually because they were created/mutated on a
+//                        different clone that was never dolt-pushed to the
+//                        shared remote. A SYNC fault, fixable by syncing.
+//   NOTHING_TO_DO        The scope resolves to zero open/in-progress/blocked/
+//                        deferred beads -- every target issue is genuinely
+//                        done. Benign: there is no work, not a fault.
+//   CYCLE_REPAIR_FAILED  The scope is deadlocked by parent-child + blocks
+//                        cycle(s), the precise offending edges were computed,
+//                        and the mechanical auto-repair (`bd dep remove`)
+//                        ITSELF failed. Distinct from DEADLOCKED: the fix is
+//                        known and was attempted, but could not be applied.
+//   DEADLOCKED           Not-done beads remain in scope but none are ready,
+//                        and the repairable cycle shape does not explain it.
+//                        Needs a human to break the dependency deadlock.
+//
+// NOT in this vocabulary, deliberately: the VERIFY-ONLY sprint path. An empty
+// ready set with implementation-complete beads routed to verify PROCEEDS, so
+// it is not a refusal and must never raise. Nor is the stale-in-progress
+// reclaim a refusal -- it runs BEFORE any of these are raised, precisely
+// because an empty `--ready` set can be an artifact of an interrupted run
+// rather than an absence of work.
+export const PRE_SPRINT_REFUSAL_REASONS = Object.freeze({
+    TARGET_NOT_VISIBLE: 'TARGET_NOT_VISIBLE',
+    NOTHING_TO_DO: 'NOTHING_TO_DO',
+    CYCLE_REPAIR_FAILED: 'CYCLE_REPAIR_FAILED',
+    DEADLOCKED: 'DEADLOCKED',
+});
+
+/**
+ * Thrown when runSprintCycle's pre-sprint validation refuses to start a
+ * sprint. Adds a machine-readable `reason` discriminator (one of
+ * PRE_SPRINT_REFUSAL_REASONS) to what was previously an untyped `Error`
+ * distinguishable only by its prose.
+ *
+ * The human-readable message is deliberately UNCHANGED from the prose each
+ * refusal already emitted -- this adds a type and a discriminator, it does not
+ * restyle the operator-facing text.
+ *
+ * Like the other sprint-fatal errors here it is never caught inside the
+ * pre-sprint block, so it unwinds runWithContext()'s promise and fails the run
+ * before any dispatch occurs.
+ *
+ * @property {string} reason - one of PRE_SPRINT_REFUSAL_REASONS
+ * @property {string|null} scope - the sprint filter the refusal was raised for
+ * @property {string[]} [invisibleTargets] - TARGET_NOT_VISIBLE: the ids missing
+ *   from the orchestrator member's clone
+ * @property {Array<{blockedIssue: string, blockedBy: string}>} [cyclePairs] -
+ *   CYCLE_REPAIR_FAILED: the parent-child + blocks edge pairs whose removal
+ *   was attempted
+ * @property {string[]} [deadlockedIds] - DEADLOCKED: the not-done bead ids that
+ *   remain in scope with none ready
+ */
+export class PreSprintValidationError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ reason: string, scope?: string|null, invisibleTargets?: string[], cyclePairs?: Array<{blockedIssue: string, blockedBy: string}>, deadlockedIds?: string[], details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { reason, scope = null, invisibleTargets, cyclePairs, deadlockedIds, details, cause } = opts;
+        if (!Object.prototype.hasOwnProperty.call(PRE_SPRINT_REFUSAL_REASONS, String(reason))) {
+            // A refusal with no recognized discriminator is the exact failure
+            // this type exists to prevent, so it fails loudly at construction
+            // rather than shipping an untyped refusal wearing a typed name.
+            throw new TypeError(
+                `PreSprintValidationError requires a reason from PRE_SPRINT_REFUSAL_REASONS ` +
+                `(${Object.keys(PRE_SPRINT_REFUSAL_REASONS).join(', ')}); got ${JSON.stringify(reason)}`
+            );
+        }
+        super(message, {
+            code: 'PRE_SPRINT_VALIDATION',
+            details: { reason, scope, invisibleTargets, cyclePairs, deadlockedIds, ...details },
+            cause,
+        });
+        this.reason = reason;
+        this.scope = scope;
+        if (invisibleTargets) this.invisibleTargets = invisibleTargets;
+        if (cyclePairs) this.cyclePairs = cyclePairs;
+        if (deadlockedIds) this.deadlockedIds = deadlockedIds;
+    }
+}
