@@ -6,6 +6,16 @@
 // union C), take that file's PRE-Phase-4 revision and run it, unmodified,
 // against the CURRENT HEAD tree.
 //
+//   - file is a bin/ entrypoint -> BIN_ENTRYPOINT_SKIP (a self-executing CLI
+//                                 launcher would run its own main() for real
+//                                 when the probe copies it and runs
+//                                 `node --test` on the copy -- process.argv[1]
+//                                 resolves to the probe copy, so any
+//                                 `isMainModule()`-style guard treats it as a
+//                                 direct launch. Excluded from the dynamic
+//                                 probe; covered instead by the static
+//                                 import-binding check in section (2) of
+//                                 phase4-move-only-completeness.test.mjs)
 //   - file absent at BASE      -> NEW (added by Phase 4; cannot have been broken by it)
 //   - old revision PASSES      -> INTACT (Phase 4 did not force the edit; the old
 //                                 assertions still hold against the new facade)
@@ -198,7 +208,45 @@ export function runTestFile(absPath, timeoutMs = 300000) {
   return { ok, output };
 }
 
+/**
+ * Matches a repo-relative path under any package's bin/ directory, e.g.
+ * `packages/apra-fleet-se/bin/cli.mjs` or `packages/apra-fleet-se/bin/serve.mjs`.
+ * These are launcher scripts that self-execute their main() at module-eval
+ * time when loaded directly (an `isMainModule()`-style guard comparing
+ * `import.meta.url` to `process.argv[1]`) -- see BIN_ENTRYPOINT_SKIP below for
+ * why that makes them unsafe to probe dynamically.
+ */
+const BIN_ENTRYPOINT_RE = /(^|\/)bin\/[^/]+\.m?js$/;
+
 export function probeFile(base, repoRelPath, timeoutMs = 300000) {
+  // Bin entrypoints are launcher scripts, not test files: copying one to a
+  // sibling probe file and running `node --test` on it loads the SAME
+  // self-invocation code path a direct CLI launch does (process.argv[1]
+  // resolves to the probe copy's own module URL), so its main() runs for
+  // real and can exit non-zero on ordinary CLI-usage grounds (e.g. missing
+  // required flags) that have nothing to do with the Phase-4 facade.
+  // apra-fleet-hzeb.4.2 patched cli.mjs's own isMainModule() to gate on
+  // NODE_TEST_CONTEXT so it specifically survives this probe, but that fix
+  // is per-file and opt-in -- bin/serve.mjs has the identical self-invoke
+  // shape (isMainModule() at bin/serve.mjs:417-425) with no such guard, and
+  // any future bin/ entrypoint that starts importing runner.js would trip
+  // the same false-positive UNEXPLAINED/FACADE_BREAK the instant it entered
+  // the Phase-4 diff intersection, even though nothing about the extraction
+  // itself was broken. Rather than depend on every bin/ entrypoint
+  // separately opting in to a probe-awareness guard, exclude the class from
+  // the DYNAMIC probe entirely: bin/ entrypoints still get their move-only
+  // proof from section (2) of phase4-move-only-completeness.test.mjs, a
+  // static check (every named binding a set-A importer takes from runner.js
+  // exists on its export surface) that covers all of discoverSetA() -- bin/
+  // included -- without executing anything, so a real facade break in a
+  // bin/ entrypoint is still caught, just not by running its old revision.
+  if (BIN_ENTRYPOINT_RE.test(repoRelPath)) {
+    return {
+      file: repoRelPath,
+      klass: 'BIN_ENTRYPOINT_SKIP',
+      detail: 'bin/ entrypoints self-execute at module scope when probed under `node --test`; excluded from the dynamic probe, covered instead by the static import-binding check in section (2)',
+    };
+  }
   if (!existsAtBase(base, repoRelPath)) {
     return { file: repoRelPath, klass: 'NEW', detail: 'absent at BASE; added during Phase 4' };
   }
