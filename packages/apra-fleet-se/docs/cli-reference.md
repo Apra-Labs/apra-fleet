@@ -51,6 +51,8 @@ allowed.
 | `--viewer-port <port>` | | no | integer 1-65535 | `8080` | Port for the local dashboard viewer HTTP server. |
 | `--budget <usd>` | | no | non-negative finite number | unset (unlimited) | USD ceiling for this run's total *estimated* spend. When set, `agent()` dispatches abort the run with a budget-exceeded error once tracked spend reaches the ceiling. Omitted means unlimited -- identical to not having this flag at all. See the budget-tracking caveats in `docs/architecture.md`. |
 | `--dispatch-timeout-s <s>` | | no | integer >= 60 | `9000` (applied by the runner) | Per-dispatch time budget in seconds, used as both the inactivity timeout and the hard elapsed-time ceiling on every agent dispatch. The integ-test dispatch ceiling is 2x this value and the regression-test ceiling is 3x. Omitting the flag leaves it unset at the CLI; `runner.js` then applies its own `9000` default. |
+| `--usage-limit-max-wait-s <s>` | | no | integer >= 60 | runner default (`USAGE_LIMIT_BUDGET_DEFAULTS.USAGE_LIMIT_MAX_WAIT_S`) | Total wall-clock seconds a single dispatch may stay paused across all usage-limit reprobes before the controller gives up with a typed `UsageLimitWaitExhaustedError` (routed through `finalizeAbort()`/an `[ABORTED]` PR). Omitting the flag leaves it unset at the CLI; the runner uses `role-policies.mjs`'s default. See `docs/architecture.md` "A provider usage/rate limit pauses the run". |
+| `--usage-limit-max-reprobes <n>` | | no | integer >= 1 | runner default (`USAGE_LIMIT_BUDGET_DEFAULTS.USAGE_LIMIT_MAX_REPROBES`) | Maximum usage-limit reprobe attempts before the controller gives up, independent of elapsed wait. Omitting the flag leaves it unset at the CLI; the runner uses `role-policies.mjs`'s default. |
 | `--sync` | | no | boolean flag | off | Selects `synced` topology mode (orchestrator-bracketed git + Dolt sync brackets) instead of the default shared-workspace/`legacy` mode. See `docs/architecture.md` "Multi-member topology". |
 | `--service-url <url>` | | no | string | -- | Base HTTP URL of the supervisor that launched this sprint. Forwarded as `serviceUrl`, which switches the dolt-push mutex and the child-id allocator over to their HTTP clients. Set by the supervisor's spawner; not normally passed by hand. |
 | `--run-id <id>` | | no | string | `--branch`'s value | Identifier used for this run's state/viewer keying. Defaults to the branch name when omitted. |
@@ -89,7 +91,8 @@ argument audit" section specifically for the productize-or-prune decision on
 - `0` -- `--help`, or a sprint that finished successfully.
 - `1` -- any precondition or validation failure (missing required flags,
   malformed issue id/branch/role-map, out-of-range `--max-cycles`/
-  `--viewer-port`/`--dispatch-timeout-s`/`--budget`, unreachable fleet
+  `--viewer-port`/`--dispatch-timeout-s`/`--usage-limit-max-wait-s`/
+  `--usage-limit-max-reprobes`/`--budget`, unreachable fleet
   server, member validation failure, missing target issue, topology
   mismatch, viewer `listen` failure), and any sprint failure.
 - `130` -- SIGINT received while a sprint was in flight.

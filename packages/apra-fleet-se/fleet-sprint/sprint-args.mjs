@@ -36,6 +36,16 @@ const KNOWN_ARG_KEYS = new Set([
     // Per-dispatch time budget (timeout_s == max_total_s at every dispatch
     // site; integ ceiling = 2x), bounding the cost of a hung dispatch.
     'dispatch_timeout_s',
+    // apra-fleet-hzeb.4.2: usage-limit pause/resume budgets. The one
+    // CLI-overridable pair for the usage-limit controller (fleet-sprint/
+    // usage-limit-controller.mjs); both default from
+    // role-policies.mjs's USAGE_LIMIT_BUDGET_DEFAULTS when omitted.
+    // `usage_limit_max_wait_s` bounds total wall-clock a single dispatch may
+    // stay paused across all reprobes before giving up
+    // (UsageLimitWaitExhaustedError); `usage_limit_max_reprobes` bounds the
+    // reprobe count independently of elapsed wait.
+    'usage_limit_max_wait_s',
+    'usage_limit_max_reprobes',
     // The always-on supervisor's base HTTP URL (e.g. http://127.0.0.1:8787).
     // Set by bin/cli.mjs from the FLEET_SE_SERVICE_URL env var the supervisor's
     // spawner injects into each detached child; absent for supervisor-less
@@ -347,6 +357,30 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid worklist_effort_budget "${args.worklist_effort_budget}": must be a positive finite number (effort points).`);
     }
 
+    // --- usage_limit_max_wait_s (optional) ---------------------------------
+    // Total wall-clock seconds a single dispatch may stay paused across all
+    // usage-limit reprobes before the controller gives up
+    // (UsageLimitWaitExhaustedError -> typed sprint abort). Omitted, the
+    // controller uses role-policies.mjs's USAGE_LIMIT_BUDGET_DEFAULTS. Floor
+    // 60: a usage-limit window shorter than the minimum single wait is not a
+    // meaningful budget.
+    if (args.usage_limit_max_wait_s !== undefined
+        && (typeof args.usage_limit_max_wait_s !== 'number'
+            || !Number.isInteger(args.usage_limit_max_wait_s)
+            || args.usage_limit_max_wait_s < 60)) {
+        throw new Error(`[Arg Contract] Invalid usage_limit_max_wait_s "${args.usage_limit_max_wait_s}": must be an integer >= 60 (seconds).`);
+    }
+
+    // --- usage_limit_max_reprobes (optional) -------------------------------
+    // Maximum reprobe attempts before the controller gives up, independent of
+    // elapsed wait. Omitted, the controller uses USAGE_LIMIT_BUDGET_DEFAULTS.
+    if (args.usage_limit_max_reprobes !== undefined
+        && (typeof args.usage_limit_max_reprobes !== 'number'
+            || !Number.isInteger(args.usage_limit_max_reprobes)
+            || args.usage_limit_max_reprobes < 1)) {
+        throw new Error(`[Arg Contract] Invalid usage_limit_max_reprobes "${args.usage_limit_max_reprobes}": must be an integer >= 1.`);
+    }
+
     // --- azdevops_pat_secret_name (optional) --------------------------------
     // Override for the default Azure DevOps PAT secret name. When provided, this
     // credential store entry name is used instead of the documented default
@@ -374,5 +408,7 @@ export function validateArgs(args) {
         doerWorklistMode,
         resumeModelSwitch,
         worklistEffortBudget: args.worklist_effort_budget,
+        usageLimitMaxWaitS: args.usage_limit_max_wait_s,
+        usageLimitMaxReprobes: args.usage_limit_max_reprobes,
     };
 }

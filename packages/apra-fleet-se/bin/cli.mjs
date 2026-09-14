@@ -159,6 +159,10 @@ export function buildOptionsSpec() {
         // Stabilization Issue 32: per-dispatch time budget in seconds
         // (timeout_s == max_total_s at every dispatch; integ ceiling 2x).
         'dispatch-timeout-s': { type: 'string' },
+        // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets.
+        // Both optional; omitted, the runner uses USAGE_LIMIT_BUDGET_DEFAULTS.
+        'usage-limit-max-wait-s': { type: 'string' },
+        'usage-limit-max-reprobes': { type: 'string' },
         // apra-fleet-eft.8.5: explicitly opt a multi-member run into synced
         // topology mode (orchestrator-bracketed git sync -- same-origin +
         // dolt-probe precondition, differing HEADs allowed). Omitted => legacy
@@ -199,6 +203,11 @@ Options:
                                 the inactivity timeout and the hard ceiling on every agent dispatch
                                 (the integration-test dispatch ceiling is 2x). Lower it for small
                                 sprints so a hung dispatch costs minutes, not an hour. Minimum 60.
+      --usage-limit-max-wait-s <s>   Total wall-clock seconds a dispatch may stay paused across all
+                                usage-limit reprobes before giving up (typed sprint abort). Optional;
+                                omitted uses the runner default. Minimum 60.
+      --usage-limit-max-reprobes <n> Max usage-limit reprobe attempts before giving up, independent
+                                of elapsed wait. Optional; omitted uses the runner default. Minimum 1.
       --sync                   Use synced topology mode (orchestrator-bracketed git sync):
                                 members may sit on differing HEADs but must share the same
                                 origin URL and pass a 'bd dolt pull' probe. Omitted (default)
@@ -303,7 +312,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, serviceUrl, runId }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -316,6 +325,11 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     if (roleMap !== undefined) args.roleMap = roleMap;
     if (budget !== undefined) args.budget = budget;
     if (dispatchTimeoutS !== undefined) args.dispatch_timeout_s = dispatchTimeoutS;
+    // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets,
+    // forwarded to runner.js's validateArgs() when supplied (omitted keeps the
+    // runner's USAGE_LIMIT_BUDGET_DEFAULTS).
+    if (usageLimitMaxWaitS !== undefined) args.usage_limit_max_wait_s = usageLimitMaxWaitS;
+    if (usageLimitMaxReprobes !== undefined) args.usage_limit_max_reprobes = usageLimitMaxReprobes;
     // apra-fleet-f34.1: forwarded straight through to runner.js's validateArgs()
     // (args.serviceUrl), which is what actually switches it onto the
     // HTTP-backed dolt-mutex/id-allocator clients (fleet-sprint/runner.js
@@ -521,6 +535,9 @@ async function main() {
     // (unchanged pre-existing behavior in that case).
     const effectiveRunId = values['run-id'] || branchName;
     const dispatchTimeoutS = values['dispatch-timeout-s'] !== undefined ? Number(values['dispatch-timeout-s']) : undefined;
+    // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets.
+    const usageLimitMaxWaitS = values['usage-limit-max-wait-s'] !== undefined ? Number(values['usage-limit-max-wait-s']) : undefined;
+    const usageLimitMaxReprobes = values['usage-limit-max-reprobes'] !== undefined ? Number(values['usage-limit-max-reprobes']) : undefined;
 
     // --- A7 defense-in-depth: reject shell-unsafe issue ids / branch names
     // BEFORE any bd/fleet dispatch happens. runner.js re-validates these
@@ -558,6 +575,18 @@ async function main() {
     // own budget check (non-negative finite number; see N10, apra-fleet-unw2.8).
     if (dispatchTimeoutS !== undefined && (!Number.isInteger(dispatchTimeoutS) || dispatchTimeoutS < 60)) {
         console.error(`Error: --dispatch-timeout-s must be an integer >= 60 (seconds), got "${values['dispatch-timeout-s']}".`);
+        process.exit(1);
+    }
+
+    // apra-fleet-hzeb.4.2: same strict-parsing posture as --dispatch-timeout-s
+    // above; mirrors (does not replace) runner.js validateArgs's own checks.
+    if (usageLimitMaxWaitS !== undefined && (!Number.isInteger(usageLimitMaxWaitS) || usageLimitMaxWaitS < 60)) {
+        console.error(`Error: --usage-limit-max-wait-s must be an integer >= 60 (seconds), got "${values['usage-limit-max-wait-s']}".`);
+        process.exit(1);
+    }
+
+    if (usageLimitMaxReprobes !== undefined && (!Number.isInteger(usageLimitMaxReprobes) || usageLimitMaxReprobes < 1)) {
+        console.error(`Error: --usage-limit-max-reprobes must be an integer >= 1, got "${values['usage-limit-max-reprobes']}".`);
         process.exit(1);
     }
 
@@ -896,6 +925,8 @@ async function main() {
                 roleMap,
                 budget,
                 dispatchTimeoutS,
+                usageLimitMaxWaitS,
+                usageLimitMaxReprobes,
                 serviceUrl,
                 runId: effectiveRunId,
             }),
