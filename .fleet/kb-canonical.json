@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "54a666da5ac12798f0fc9ca0f61b27d962c3b42d",
+    "commit": "8907b286b1580f7a83a2fe8a2e809f5a1e5bd9ef",
     "branch": "feat/runner-refactor-standalone",
-    "entry_count": 183
+    "entry_count": 200
   },
   "entries": [
     {
@@ -151,6 +151,20 @@
       "updated_at": "2026-09-13T02:49:30.225Z"
     },
     {
+      "id": "0908c5d3-654b-4720-903f-8c5e309f2beb",
+      "type": "knowledge",
+      "title": "Replacing a content[0] text reader with resultText also closes a false-success in provisionOutcome",
+      "summary": "provisionOutcome's non-structured fallback tests the extracted text for a leading [FAIL]; an unfiltered content[0] read returns the display banner instead, so a failed provision classified as success.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/mcp-result.mjs",
+        "src/services/tool-registry.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-14T04:43:59.568Z"
+    },
+    {
       "id": "0c2b91da-5ed6-45f4-95cd-498c823ade80",
       "type": "knowledge",
       "title": "ConcurrentSyncBracketError is thrown from a finally block, so it masks the dispatch error it races",
@@ -168,6 +182,19 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-09T10:02:55.473Z"
+    },
+    {
+      "id": "0c2d907a-bee5-4324-b61e-6ee0e2bc4b74",
+      "type": "knowledge",
+      "title": "dispatchRole has 12 call sites for 13 role-policy-table entries by design",
+      "summary": "doer-resume shares role-policies.mjs's policy object with doer via ROLE_POLICIES['doer-resume'] === ROLE_POLICIES.doer.secondary, and is dispatched from doer's own call site rather than a distinct one, so an inventory of dispatchRole call sites will correctly find 12, not 13, against 13 named roles.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-14T04:43:59.556Z"
     },
     {
       "id": "0c864109-fb10-49de-8ecb-867a2c1b0c04",
@@ -370,6 +397,46 @@
       "updated_at": "2026-09-07T16:36:38.806Z"
     },
     {
+      "id": "1732a09c-2b8e-4696-89ff-49a8a0bbbdec",
+      "type": "learning",
+      "title": "A bd replay fixture can encode a FAILED bd init and still make its scenario pass",
+      "summary": "apra-fleet-mock-sprint-liar.jsonl was recorded from a run whose `bd init` exited non-zero with truncated stdout; replay served that failure back forever and no test noticed until the harness started checking init's exit status.",
+      "symbols": [
+        "recordBd",
+        "replayBd",
+        "loadReplaySession"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/fixtures/bd-recordings/apra-fleet-mock-sprint-liar.jsonl",
+        "packages/apra-fleet-se/test/fixtures/bd-recordings/README.md",
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs",
+        "packages/apra-fleet-se/test/bd-recordings-fidelity.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T15:16:44.294Z"
+    },
+    {
+      "id": "1a2d6411-0756-4bdf-aba6-a03f9b825105",
+      "type": "knowledge",
+      "title": "The 3-bead golden guard's false-stall signature is [3,3,3]/high-water-4, not the single-bead [1,1,1]/high-water-2",
+      "summary": "Mutating away the 66u.4 close loop in build3BeadFleetApi() does fire a real StalledSprintError, but with a different arithmetic shape than the single-bead file, so pattern-matching on [1,1,1] will miss the 3-bead regression.",
+      "symbols": [
+        "build3BeadFleetApi",
+        "buildTranscriptFleetApi",
+        "progressScore",
+        "StalledSprintError",
+        "extractVerifyIds"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/golden-transcript-3bead.test.mjs",
+        "packages/apra-fleet-se/test/golden-transcript.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/66u-stall-progress-credit.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T21:26:06.505Z"
+    },
+    {
       "id": "1ab104ae-424d-4f5c-bddb-5779bdbc041a",
       "type": "knowledge",
       "title": "Phase 2 commit taxonomy: git-sync.mjs's extraction is not a move-only commit",
@@ -387,6 +454,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-09T10:34:50.029Z"
+    },
+    {
+      "id": "1b0bc230-878a-433b-8685-b0ebf3bca4ec",
+      "type": "knowledge",
+      "title": "Driving all 22 dispatches generically requires resolving a dispatch's owner by object identity, secondary-first",
+      "summary": "doer-resume is both a table key and the identical frozen object at ROLE_POLICIES.doer.secondary, so a main-first identity lookup tries to drive it by name and fails; scanning for a secondary owner first is what makes a whole-table census possible without a hand-written role map.",
+      "symbols": [
+        "allDispatchPolicies",
+        "ROLE_POLICIES",
+        "driveEngineDispatch",
+        "createRecordingCtx",
+        "dispatchRole"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-14T04:43:59.559Z"
     },
     {
       "id": "1b1fce3f-039a-40fb-8020-406275e25441",
@@ -551,6 +639,24 @@
       "updated_at": "2026-09-07T16:36:38.854Z"
     },
     {
+      "id": "20de02b8-1dd8-4bb0-9ee3-223babb6866c",
+      "type": "knowledge",
+      "title": "The wiring test must strip APRA_FLEET_TEST_CONCURRENCY from the child env or it self-masks",
+      "summary": "Because the wiring test runs inside npm test, the var is already in its own env; without an explicit delete the nested child inherits it and a regressed test script passes green.",
+      "symbols": [
+        "deriveProbeCommand",
+        "TEST_CONCURRENCY"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/run-tests-script-wiring.test.mjs",
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/test/helpers/run-tests-wiring-probe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-14T04:43:59.562Z"
+    },
+    {
       "id": "21547d39-10a6-4133-b497-d0f82aee5e2a",
       "type": "knowledge",
       "title": "A throw from a mocked execute_command is degraded, not propagated, under failSoft",
@@ -682,6 +788,24 @@
       "updated_at": "2026-09-09T07:09:47.617Z"
     },
     {
+      "id": "290fef53-2b36-4221-acdc-810bdd130e57",
+      "type": "knowledge",
+      "title": "The mock vcs_credential_exec reports a failed dispatch as ok, unlike the real tool",
+      "summary": "The harness simulator does not wrap its delegate executeCommand call, so the two failure shapes that mock fleet api can produce -- an isError spawn failure and a thrown unmocked-network guard -- do not map to the real tool's dispatch_failed reason.",
+      "symbols": [
+        "mockVcsCredentialExec",
+        "execResult",
+        "redactNetworkCommandForLog",
+        "isSpawnFailure"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs",
+        "src/tools/vcs-credential-exec.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-14T01:54:53.596Z"
+    },
+    {
       "id": "29441ce7-a2fd-41aa-b437-1a758ea23b6c",
       "type": "knowledge",
       "title": "kb_session_prime must pass an explicit repo_path to getKbProviders verbatim, never through resolveRepoPath",
@@ -729,6 +853,43 @@
       "updated_at": "2026-09-07T16:36:38.955Z"
     },
     {
+      "id": "2edbaf54-1456-45ca-af9d-e2de26c1f8a1",
+      "type": "knowledge",
+      "title": "Retiring the orchestrator-side credential read breaks 5 test files, two of them positionally",
+      "summary": "Routing raiseVcsPrForMember's create-PR dispatch through vcs_credential_exec removes one commandLog entry, which breaks two files that INDEX the log tail by offset in addition to the three that filter it by content.",
+      "symbols": [
+        "raiseVcsPrForMember",
+        "readMemberVcsCredentialToken",
+        "EXPECTED_VCS_AUTH_COMMAND_COUNT"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/mock-sprint-happy-path.test.mjs",
+        "packages/apra-fleet-se/test/runner-arg-contract.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-windows-vcs-credential.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-azure-devops-vcs-publish.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-14T01:54:53.592Z"
+    },
+    {
+      "id": "30794ee4-53bd-4bc3-9535-3374266e52a5",
+      "type": "learning",
+      "title": "A nested `node --test` child silently no-ops unless NODE_TEST_CONTEXT is stripped from its env",
+      "summary": "Spawning `node --test` (directly or via scripts/run-tests.mjs) from inside a test that is itself already running under node:test inherits NODE_TEST_CONTEXT=child-v8 by default, which makes node's test runner treat the nested invocation as recursive and skip running any files -- it exits 0 with zero tests and no output, which looks like success unless the caller checks for expected side effects.",
+      "symbols": [
+        "scaledTimeout"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/run-tests-script-wiring.test.mjs",
+        "packages/apra-fleet-se/test/helpers/run-tests-wiring-probe.mjs",
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/test/helpers/timestamped-reporter.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T18:31:00.781Z"
+    },
+    {
       "id": "3081d3dd-59db-4e2b-a35c-ac436dd8c730",
       "type": "learning",
       "title": "Root npm test is now about 7 minutes end to end, not 8-12, and backgrounding it works fine",
@@ -742,6 +903,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-12T09:09:53.333Z"
+    },
+    {
+      "id": "308d2d53-3dcf-49e6-932a-cd4b815b38d0",
+      "type": "knowledge",
+      "title": "Routing the PR-raise through vcs_credential_exec drops it out of the workflow journal and activity log",
+      "summary": "raiseVcsPrForMember's create-PR dispatch moved from the workflow engine's command() path to a raw callTool, so it no longer emits activity events, is no longer journaled/replayable, and loses its dispatch label.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-client/src/client/api.mjs",
+        "packages/apra-fleet-se/bin/cli.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-14T02:28:18.396Z"
     },
     {
       "id": "321d9d10-a56e-4427-81c1-8eb3922b59ec",
@@ -934,6 +1110,24 @@
       "updated_at": "2026-09-10T03:59:54.826Z"
     },
     {
+      "id": "43d113e1-8f5c-487d-a7b6-d3285edbfc49",
+      "type": "knowledge",
+      "title": "The APRA_FLEET_TEST_CONCURRENCY regression site is package.json, not run-tests.mjs",
+      "summary": "scripts/run-tests.mjs has always exported the concurrency var; the inert-scaledTimeout bug was package.json's test script bypassing run-tests.mjs, so a guard that spawns run-tests.mjs directly cannot catch it.",
+      "symbols": [
+        "scaledTimeout",
+        "TEST_CONCURRENCY"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/test/run-tests-script-wiring.test.mjs",
+        "packages/apra-fleet-se/test/helpers/scaled-timeout.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T18:52:53.990Z"
+    },
+    {
       "id": "44cfb13c-397c-4b93-88b3-5731cb417c65",
       "type": "knowledge",
       "title": "beads-scope wrapCommand only invalidates on a command that RETURNS, not one that throws",
@@ -1057,6 +1251,20 @@
       "updated_at": "2026-09-13T08:53:10.719Z"
     },
     {
+      "id": "4de91f61-e735-4906-a39c-c2ec4c27c986",
+      "type": "knowledge",
+      "title": "inline-ladder-guard no longer skips an unresolvable member kind silently -- it throws, so the two older KB entries saying otherwise are stale",
+      "summary": "After apra-fleet-3swo.66, memberExprFor() resolves pool-head and runtime bindings and findInlineLadderViolations() throws for any dispatch with a member it cannot resolve, so entries describing a silent skip no longer describe the tree.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/inline-ladder-guard.mjs",
+        "packages/apra-fleet-se/test/inline-ladder-guard.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-14T04:43:59.552Z"
+    },
+    {
       "id": "4e315af5-d8ab-460e-850a-36d1d38ce19a",
       "type": "knowledge",
       "title": "runner.js's re-export of fatal-diagnostics.mjs is load-bearing for abort.mjs, not just compatibility sugar",
@@ -1074,6 +1282,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-12T10:34:12.355Z"
+    },
+    {
+      "id": "4e541f7b-5c6d-4e06-b6a1-f0c51b334288",
+      "type": "knowledge",
+      "title": "The harness vcs_credential_exec simulator records into commandLog but never into the workflow activityLog",
+      "summary": "A command dispatched through defaultMockCallTool's vcs_credential_exec branch reaches mockFleetApi.executeCommand directly, so it appears in commandLog/commandLogDetailed but emits no activity:start event and is invisible to activityLog-based assertions.",
+      "symbols": [
+        "mockVcsCredentialExec",
+        "defaultMockCallTool",
+        "buildMockFleetApi"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/full-db-fetch-tripwire.test.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-14T01:54:53.599Z"
     },
     {
       "id": "4eeda6e1-c08b-4cad-b035-50c2fcd143cc",
@@ -1095,6 +1322,20 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.786Z"
+    },
+    {
+      "id": "50e0fad1-a4ed-4aaf-82cc-486b8cfc5a05",
+      "type": "knowledge",
+      "title": "The inline vcs_token escaper omits the CRT-argv layer that fleet-sprint's PowerShell shQuote applies",
+      "summary": "escapePowerShellArgInner only doubles single quotes, while fleet-sprint's shQuote also backslash-escapes embedded double quotes for the native CRT parser, so the two halves of a PowerShell create-PR command are escaped by different rules.",
+      "symbols": [],
+      "source_files": [
+        "src/utils/shell-escape.ts",
+        "src/tools/vcs-credential-exec.ts",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/shell-helpers.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-14T04:43:59.565Z"
     },
     {
       "id": "54e80881-774c-4085-9d81-34c704d85710",
@@ -1355,6 +1596,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.210Z"
+    },
+    {
+      "id": "6422eca7-fa17-437a-9265-79e9c33ad445",
+      "type": "knowledge",
+      "title": "Only scripts/run-tests.mjs makes scaledTimeout() non-inert in the apra-fleet-se suite",
+      "summary": "scaledTimeout() scales only when APRA_FLEET_TEST_CONCURRENCY is set, and scripts/run-tests.mjs is the single writer -- any raw node --test invocation silently runs every scaled budget unscaled.",
+      "symbols": [
+        "scaledTimeout",
+        "TEST_CONCURRENCY",
+        "APRA_FLEET_TEST_CONCURRENCY"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/test/helpers/scaled-timeout.mjs",
+        "packages/apra-fleet-se/package.json",
+        "scripts/run-all-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T16:46:19.387Z"
     },
     {
       "id": "64bedb7a-8a2d-46ba-9586-6254a88f6dcd",
@@ -1630,6 +1890,25 @@
       "updated_at": "2026-09-10T20:18:25.878Z"
     },
     {
+      "id": "75cbd929-e560-423f-b90b-220e01148861",
+      "type": "knowledge",
+      "title": "vitest resolves a missing named export to undefined, but node --test hard-fails the whole module",
+      "summary": "Under Vite's SSR transform a missing named import becomes undefined and the module body still runs, so only tests that call it fail; plain Node ESM raises a link-time SyntaxError and nothing in the file runs.",
+      "symbols": [
+        "escapeShellArgInner",
+        "escapePowerShellArgInner",
+        "escapeShellArg"
+      ],
+      "source_files": [
+        "tests/vcs-credential-exec-inline-token.test.ts",
+        "src/utils/shell-escape.ts",
+        "vitest.config.ts",
+        "packages/apra-fleet-se/package.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-13T22:51:23.901Z"
+    },
+    {
       "id": "78572a21-3fba-4d32-ac45-cd0523c600d8",
       "type": "knowledge",
       "title": "abort.mjs still classifies pre-sprint refusals by message prefix, which is why their wording is load-bearing",
@@ -1716,6 +1995,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-10T11:06:51.965Z"
+    },
+    {
+      "id": "7ddc6269-e9b1-4386-bde1-d19d94c8d17e",
+      "type": "knowledge",
+      "title": "apra-fleet-3swo.7 Phase 5 consumer migration end state is fully landed and pinned",
+      "summary": "readMemberVcsCredentialToken and parseExpiresAtFromProvisionText are completely deleted from fleet-sprint/ (not merely deprecated); buildCredentialReadCommand is deliberately kept dead-in-production/live-in-tests with no deprecation marker; member-provisioning.mjs and coordination.mjs have zero prose-branching (includes/match/toLowerCase) control flow.",
+      "symbols": [
+        "buildCredentialReadCommand",
+        "readMemberVcsCredentialToken",
+        "parseExpiresAtFromProvisionText"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase5-consumer-migration-end-state.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs",
+        "packages/apra-fleet-se/fleet-sprint/coordination.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-14T03:29:05.408Z"
     },
     {
       "id": "7ef53a40-ea43-4ac1-97e7-00c301f91f09",
