@@ -171,8 +171,8 @@ describe('provisionVcsAuth', () => {
   // apra-fleet-5co8.5.1: tool-registry hands the MCP payload to
   // provisionVcsAuth() with an `as any` cast, so the zod refine on
   // pat_expires_at is not the only line of defence -- buildCredentials must
-  // also refuse an unparseable expiry rather than let it become a 55-minute
-  // auto-revoke of the PAT just deployed.
+  // also refuse an unparseable expiry rather than let it silently reach
+  // vcsTokenExpiresAt and permanently silence checkVcsTokenExpiry's warning.
   it('azure-devops: rejects an unparseable pat_expires_at before deploying', async () => {
     const member = makeTestAgent({ friendlyName: 'az-bad-expiry' });
     addAgent(member);
@@ -291,6 +291,162 @@ describe('provisionVcsAuth', () => {
     const updated = getAgent(member.id)!;
     expect(updated.vcsProvider).toBe('bitbucket');
     expect(updated.vcsTokenExpiresAt).toBeUndefined();
+  });
+
+  // Regression for the credential-cleanup label/scopeUrl bug: the exact
+  // label/scopeUrl actually used to deploy must be persisted on the agent
+  // record so a later cleanup timer (credential-cleanup.ts) revokes the SAME
+  // credential entry, not an unlabeled/default-host guess.
+  it('github: persists the deploy label and scopeUrl (default) on the agent record', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-label-default' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_testtoken123',
+    });
+
+    const updated = getAgent(member.id)!;
+    expect(updated.vcsCredentialLabel).toBe('github');
+    expect(updated.vcsCredentialScopeUrl).toBe('https://github.com');
+  });
+
+  it('github: persists a custom label and scope_url exactly as supplied', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-label-custom' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_testtoken123',
+      label: 'work-github', scope_url: 'https://github.com/my-org',
+    });
+
+    const updated = getAgent(member.id)!;
+    expect(updated.vcsCredentialLabel).toBe('work-github');
+    expect(updated.vcsCredentialScopeUrl).toBe('https://github.com/my-org');
+  });
+
+  // Regression: the agent record only tracks ONE active (label, scopeUrl)
+  // pair for cleanup purposes. Deploying credential B under a DIFFERENT
+  // label than the previously-deployed credential A cancels A's cleanup
+  // timer (re-provisioning always does) -- without an explicit revoke here,
+  // A's git-config registration and on-disk token file would be silently
+  // orphaned forever (never scheduled for cleanup again, never revoked).
+  // Assert the superseded credential (label-a) is actually revoked as part
+  // of deploying the new one.
+  it('github: revokes a superseded credential (different label) when a new one is provisioned', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-supersede' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_token_a', label: 'label-a',
+    });
+    mockExecCommand.mockClear();
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_token_b', label: 'label-b',
+    });
+
+    const execCmds = mockExecCommand.mock.calls.map(c => String(c[0]));
+    expect(execCmds.some(cmd => cmd.includes('fleet-git-credential-label-a'))).toBe(true);
+
+    const updated = getAgent(member.id)!;
+    expect(updated.vcsCredentialLabel).toBe('label-b');
+  });
+
+  // Same-label re-provision is a plain refresh (gitCredentialHelperWrite's
+  // --replace-all overwrites the existing entry in place) -- it must NOT
+  // trigger a superseded-credential revoke against itself.
+  it('github: same-label re-provision does not revoke its own just-deployed credential', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-refresh' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_token_v1', label: 'stable-label',
+    });
+    mockExecCommand.mockClear();
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_token_v2', label: 'stable-label',
+    });
+
+    const execCmds = mockExecCommand.mock.calls.map(c => String(c[0]));
+    // No `rm -f`/`Remove-Item` style revoke command targeting stable-label's
+    // own file should appear -- only the legacy-migration remove (unlabeled)
+    // and the fresh write.
+    expect(execCmds.filter(cmd => cmd.includes('fleet-git-credential-stable-label') && (cmd.includes('rm -f') || cmd.includes('Remove-Item'))).length).toBe(0);
+  });
+
+  // --- legacy-migration step must never drop a live credential registration ---
+  //
+  // Regression for the live 2026-09-11 fleet-lin-dev1 failure. The
+  // legacy-migration step that runs BEFORE every deploy used to call
+  // gitCredentialHelperRemove(host) with no label, which emits
+  // `git config --global --unset-all credential.https://<host>.helper`. That
+  // key is HOST-scoped, not label-scoped, so it dropped the registration of
+  // whatever credential was currently live -- and because it ran before the
+  // deploy, any failure in between left the member with a fresh credential
+  // FILE on disk but no git-config registration ("could not read Username"
+  // while the token was still valid). Scoping that call to the label would NOT
+  // have helped: every variant unsets the same host-scoped key. The step now
+  // removes only the legacy unlabeled FILE and touches no git config.
+
+  it('github: the pre-deploy legacy migration never unsets the git-config credential helper key', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-legacy-migration' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_first_ever', label: 'only-label',
+    });
+
+    const execCmds = mockExecCommand.mock.calls.map(c => String(c[0]));
+    expect(execCmds.some(cmd => cmd.includes('--unset-all'))).toBe(false);
+    // ...but the legacy UNLABELED credential file is still cleaned up, so a
+    // pre-label install does not keep an orphaned, still-valid token on disk.
+    expect(
+      execCmds.some(cmd =>
+        /\.fleet-git-credential(\.bat)?"/.test(cmd) && (cmd.includes('rm -f') || cmd.includes('Remove-Item'))),
+    ).toBe(true);
+  });
+
+  it('github: a live credential registration survives a same-label refresh (no --unset-all)', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-registration-survives' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_v1', label: 'live-label',
+    });
+    mockExecCommand.mockClear();
+
+    await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: 'ghp_v2', label: 'live-label',
+    });
+
+    const execCmds = mockExecCommand.mock.calls.map(c => String(c[0]));
+    // A plain refresh fires no supersession revoke, so NOTHING in this deploy
+    // may unset the host-scoped helper key: the re-registration is done
+    // in-place by gitCredentialHelperWrite's own --replace-all + --add.
+    expect(execCmds.some(cmd => cmd.includes('--unset-all'))).toBe(false);
+    expect(execCmds.some(cmd => cmd.includes('--replace-all') && cmd.includes('--add'))).toBe(true);
   });
 
   // --- {{secure.NAME}} token resolution ---

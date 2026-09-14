@@ -269,6 +269,13 @@ export class LinuxCommands implements OsCommands {
     return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > "${credFile}" && chmod 600 "${credFile}" && chmod +x "${credFile}" && git config --global --replace-all "credential.${credUrl}.helper" "" && git config --global --add "credential.${credUrl}.helper" "${credFile}"`;
   }
 
+  gitCredentialHelperRemoveLegacyFile(): string {
+    // File only -- deliberately no `git config --unset-all`. $HOME (not `~`)
+    // for the same reason gitCredentialHelperWrite uses it: `~` is not
+    // tilde-expanded inside double quotes.
+    return `rm -f "$HOME/.fleet-git-credential"`;
+  }
+
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
     const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';

@@ -71,11 +71,12 @@ export const provisionVcsAuthSchema = z.object({
   // whose PAT is merely nearing expiry, not gone. This field only ever flows
   // into deploy metadata to warn/cleanup, never to delete a stored secret.
   // A malformed value here is NOT harmless: it is truthy, so it reaches
-  // vcsTokenExpiresAt verbatim, makes every checkVcsTokenExpiry comparison
-  // NaN (silencing the warning entirely) and makes scheduleCredentialCleanup
-  // fall back to its 55-minute DEFAULT_TTL_MS -- i.e. it would auto-revoke the
-  // PAT that was just deployed. Rejected at the schema boundary so no caller
-  // can construct that state.
+  // vcsTokenExpiresAt verbatim and makes every checkVcsTokenExpiry comparison
+  // NaN, silencing the day-scale expiry warning entirely (scheduleCredentialCleanup
+  // itself now treats an unparseable expiresAt the same as an absent one --
+  // it skips scheduling rather than falling back to any default TTL -- so
+  // the risk here is the silenced warning, not an auto-revoke). Rejected at
+  // the schema boundary so no caller can construct that state.
   pat_expires_at: z.string().refine((v) => !Number.isNaN(Date.parse(v)), {
     message: 'pat_expires_at must be a parseable date/time (ISO 8601, e.g. 2027-08-20T00:00:00Z)',
   }).optional().describe('ISO 8601 date/time the Azure DevOps PAT expires, as chosen when creating the token. Propagated to the member registry so provisioning can warn when the PAT is nearing expiry.'),
@@ -143,10 +144,56 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
     return result.stdout;
   };
 
-  // Legacy migration: remove old single-file credential helpers
+  // Legacy migration: remove the pre-label, single-file credential helper
+  // (`.fleet-git-credential`, no label suffix) left by installs predating
+  // labeled credentials.
+  //
+  // This used to call gitCredentialHelperRemove(host) with NO label, which
+  // additionally ran `git config --global --unset-all
+  // credential.https://<host>.helper`. That was actively destructive, and
+  // scoping the call to `label` would NOT have fixed it: the credential-helper
+  // config key is HOST/SCOPE-scoped, not label-scoped (the same fact PR #473
+  // turned on), so every variant of that call unsets the registration for
+  // whatever credential is currently live on that host. Because this ran
+  // unconditionally BEFORE the deploy, any failure in between -- a dropped
+  // connection, a GitHub App mint error, a racing second provision for the
+  // same member -- left the member with its credential FILE present and fresh
+  // but NO git-config registration, which is exactly the state observed
+  // repeatedly on fleet-lin-dev1 on 2026-09-11 (git and `bd dolt push` both
+  // failing with "could not read Username" while the token on disk was still
+  // valid for the better part of an hour).
+  //
+  // Dropping the config half costs nothing: gitCredentialHelperWrite's own
+  // `git config --global --replace-all "credential.<url>.helper" ""` already
+  // clears every existing value of that key before re-adding the new one, on
+  // all three OS command implementations. So the unset was pure redundancy
+  // with a destructive failure mode. The FILE removal is kept (rather than
+  // dropping the step wholesale) so a pre-label install does not keep an
+  // orphaned, still-valid token on disk -- the security wart PR #473 called
+  // out.
   try {
-    await exec(cmds.gitCredentialHelperRemove(host));
+    await exec(cmds.gitCredentialHelperRemoveLegacyFile());
   } catch { /* best-effort */ }
+
+  // The agent record only tracks ONE active (label, scopeUrl) pair for
+  // cleanup purposes, and cancelCredentialCleanup() above just discarded
+  // whatever timer belonged to it. If this deploy is SUPERSEDING a different
+  // previously-provisioned credential (a different label and/or scopeUrl,
+  // or even a different provider), that superseded credential's timer is now
+  // gone forever and nothing else will ever revoke it -- explicitly revoke it
+  // here so its git-config registration and on-disk file don't stay orphaned
+  // indefinitely. A same-label/same-scopeUrl re-provision (a plain refresh)
+  // skips this: gitCredentialHelperWrite's --replace-all below overwrites the
+  // existing entry in place, so there is nothing to revoke first.
+  if (agent.vcsProvider && agent.vcsCredentialLabel !== undefined &&
+      (agent.vcsCredentialLabel !== label || agent.vcsCredentialScopeUrl !== scopeUrl)) {
+    const supersededService = providers[agent.vcsProvider];
+    if (supersededService) {
+      try {
+        await supersededService.revoke(agent, cmds, exec, agent.vcsCredentialLabel, agent.vcsCredentialScopeUrl);
+      } catch { /* best-effort */ }
+    }
+  }
 
   let deployResult;
   try {
@@ -157,10 +204,15 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
 
   if (!deployResult.success) return `❌ ${deployResult.message}`;
 
-  // Persist VCS provider and token expiry in the agent registry
+  // Persist VCS provider, token expiry, and the exact label/scopeUrl this
+  // deploy used, so a later cleanup timer (credential-cleanup.ts) revokes the
+  // SAME credential-helper file/config-key pair, not an unlabeled/default-host
+  // guess that could clobber a different, still-valid credential.
   updateAgent(agent.id, {
     vcsProvider: input.provider,
     vcsTokenExpiresAt: deployResult.metadata?.expiresAt,
+    vcsCredentialLabel: label,
+    vcsCredentialScopeUrl: scopeUrl,
   });
 
   // Schedule auto-cleanup when token expires

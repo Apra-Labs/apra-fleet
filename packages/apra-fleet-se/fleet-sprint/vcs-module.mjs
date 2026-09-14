@@ -72,9 +72,44 @@ function buildVcsCommand(action, params) {
     return builder(params);
 }
 
-/** Build a "raise a PR" command for the given provider. */
+/**
+ * Deterministic hard cap on a PR description's length (apra-fleet PR-body
+ * length fix): Azure DevOps rejects/fails to raise a pull request whose
+ * description is too long, and the LLM role that drafts a PR description is
+ * only ever prompted to respect a limit -- it can and does ignore that
+ * guidance. This constant is the single source of truth for the cap, shared
+ * by every provider's create-pull-request path (buildCreatePrCommand below)
+ * rather than a magic number duplicated per provider.
+ * @type {number}
+ */
+export const PR_DESCRIPTION_MAX_LENGTH = 3500;
+
+/**
+ * Build a "raise a PR" command for the given provider.
+ *
+ * Enforces PR_DESCRIPTION_MAX_LENGTH on `params.body` DETERMINISTICALLY,
+ * regardless of provider (GitHub, Azure DevOps, ...) and regardless of
+ * whether the LLM that drafted the description obeyed the prompt guidance to
+ * stay under the limit. A body over the limit is truncated to exactly its
+ * first PR_DESCRIPTION_MAX_LENGTH characters before it reaches the provider's
+ * own command builder, so a PR can always be raised.
+ *
+ * This module stays pure (no I/O, no logging of its own -- see the header
+ * doc): a truncation is reported back to the caller as the returned
+ * `descriptionTruncated` field ({ originalLength, maxLength }, or `null` when
+ * no truncation occurred) so the caller (runner.js's raiseVcsPrForMember) can
+ * log/emit the warning through its own logging convention.
+ */
 export function buildCreatePrCommand(params) {
-    return buildVcsCommand('create-pull-request', params);
+    const { body } = params || {};
+    let effectiveBody = body;
+    let descriptionTruncated = null;
+    if (typeof body === 'string' && body.length > PR_DESCRIPTION_MAX_LENGTH) {
+        descriptionTruncated = { originalLength: body.length, maxLength: PR_DESCRIPTION_MAX_LENGTH };
+        effectiveBody = body.slice(0, PR_DESCRIPTION_MAX_LENGTH);
+    }
+    const built = buildVcsCommand('create-pull-request', { ...params, body: effectiveBody });
+    return descriptionTruncated ? { ...built, descriptionTruncated } : { ...built, descriptionTruncated: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -495,6 +530,7 @@ export const VCSModule = {
     isAuthBackend,
     VCS_NO_REGISTERED_PROVIDER,
     DEFAULT_VCS_PROVIDER,
+    PR_DESCRIPTION_MAX_LENGTH,
 };
 
 export {

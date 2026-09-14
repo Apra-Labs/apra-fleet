@@ -483,10 +483,11 @@ describe('Azure DevOps provider', () => {
 });
 
 // apra-fleet-5co8.5.1: an unparseable pat_expires_at is NOT a harmless typo.
-// It is truthy, so it would reach vcsTokenExpiresAt verbatim, make every
-// checkVcsTokenExpiry comparison NaN (no warning at all) and make
-// scheduleCredentialCleanup fall back to DEFAULT_TTL_MS -- a 55-minute
-// auto-revoke of the PAT that was just deployed. Rejected at the boundary.
+// It is truthy, so it would reach vcsTokenExpiresAt verbatim and make every
+// checkVcsTokenExpiry comparison NaN -- permanently silencing the day-scale
+// expiry warning (scheduleCredentialCleanup treats a NaN expiresAt the same
+// as an absent one and skips auto-revoke scheduling, so the risk here is the
+// silenced warning, not an auto-revoke). Rejected at the boundary.
 // apra-fleet-5co8.3.1: the credential-assembly and missing-credential
 // descriptors are a VERBATIM move of the provider switch / out-of-band
 // if-blocks that still live in src/tools/provision-vcs-auth.ts (the call-site

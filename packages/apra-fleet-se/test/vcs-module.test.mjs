@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { VCSModule, buildCreatePrCommand, buildCommentCommand, resolveProvider } from '../fleet-sprint/vcs-module.mjs';
+import { VCSModule, buildCreatePrCommand, buildCommentCommand, resolveProvider, PR_DESCRIPTION_MAX_LENGTH } from '../fleet-sprint/vcs-module.mjs';
 import { nativeDashDPayload } from './helpers/windows-argv.mjs';
 
 // apra-fleet-tfx.7: orchestrator-side VCSModule -- provider-dispatched
@@ -182,6 +182,99 @@ describe('VCSModule.buildCreatePrCommand', () => {
         const a = buildCreatePrCommand(params);
         const b = buildCreatePrCommand(params);
         assert.deepStrictEqual(a, b);
+    });
+
+    // Azure DevOps rejects/fails to raise a pull request whose description is
+    // too long, and the LLM role that drafts a PR description is only ever
+    // PROMPTED to respect a limit -- it can and does ignore that guidance. So
+    // buildCreatePrCommand() itself deterministically caps `body` at
+    // PR_DESCRIPTION_MAX_LENGTH, regardless of provider, and reports the
+    // truncation back via `descriptionTruncated` so the caller (runner.js's
+    // raiseVcsPrForMember) can log a warning.
+    describe('PR description length cap (PR_DESCRIPTION_MAX_LENGTH)', () => {
+        test('a description under the cap passes through unchanged with descriptionTruncated: null', () => {
+            const body = 'A'.repeat(PR_DESCRIPTION_MAX_LENGTH - 1);
+            const result = buildCreatePrCommand({
+                provider: 'github',
+                repo: 'Apra-Labs/apra-fleet',
+                base: 'main',
+                head: 'feature-x',
+                title: 'short body',
+                body,
+                token: 'ghs_tok',
+            });
+            assert.strictEqual(result.descriptionTruncated, null);
+            const payload = JSON.parse(result.command.match(/-d '(.*?)' -w/)[1]);
+            assert.strictEqual(payload.body, body);
+        });
+
+        test('a description exactly at the cap passes through unchanged', () => {
+            const body = 'B'.repeat(PR_DESCRIPTION_MAX_LENGTH);
+            const result = buildCreatePrCommand({
+                provider: 'github',
+                repo: 'Apra-Labs/apra-fleet',
+                base: 'main',
+                head: 'feature-x',
+                title: 'exact-cap body',
+                body,
+                token: 'ghs_tok',
+            });
+            assert.strictEqual(result.descriptionTruncated, null);
+        });
+
+        test('GitHub: a description over the cap is truncated to exactly PR_DESCRIPTION_MAX_LENGTH chars and reported', () => {
+            const longBody = 'C'.repeat(PR_DESCRIPTION_MAX_LENGTH + 250);
+            const result = buildCreatePrCommand({
+                provider: 'github',
+                repo: 'Apra-Labs/apra-fleet',
+                base: 'main',
+                head: 'feature-x',
+                title: 'long body',
+                body: longBody,
+                token: 'ghs_tok',
+            });
+            assert.deepStrictEqual(result.descriptionTruncated, {
+                originalLength: longBody.length,
+                maxLength: PR_DESCRIPTION_MAX_LENGTH,
+            });
+            const payload = JSON.parse(result.command.match(/-d '(.*?)' -w/)[1]);
+            assert.strictEqual(payload.body.length, PR_DESCRIPTION_MAX_LENGTH);
+            assert.strictEqual(payload.body, longBody.slice(0, PR_DESCRIPTION_MAX_LENGTH));
+        });
+
+        test('Azure DevOps: a description over the cap is truncated to exactly PR_DESCRIPTION_MAX_LENGTH chars and reported', () => {
+            const longBody = 'D'.repeat(PR_DESCRIPTION_MAX_LENGTH + 500);
+            const result = buildCreatePrCommand({
+                provider: 'azure-devops',
+                org: 'my-org',
+                project: 'my-project',
+                repo: 'my-repo',
+                base: 'main',
+                head: 'feature-x',
+                title: 'long body',
+                body: longBody,
+                token: 'pat-token',
+            });
+            assert.deepStrictEqual(result.descriptionTruncated, {
+                originalLength: longBody.length,
+                maxLength: PR_DESCRIPTION_MAX_LENGTH,
+            });
+            const payload = JSON.parse(result.command.match(/-d '(.*?)' -w/)[1]);
+            assert.strictEqual(payload.description.length, PR_DESCRIPTION_MAX_LENGTH);
+            assert.strictEqual(payload.description, longBody.slice(0, PR_DESCRIPTION_MAX_LENGTH));
+        });
+
+        test('a missing/non-string body is left alone (no truncation attempted)', () => {
+            const result = buildCreatePrCommand({
+                provider: 'github',
+                repo: 'Apra-Labs/apra-fleet',
+                base: 'main',
+                head: 'feature-x',
+                title: 'no body',
+                token: 'ghs_tok',
+            });
+            assert.strictEqual(result.descriptionTruncated, null);
+        });
     });
 });
 

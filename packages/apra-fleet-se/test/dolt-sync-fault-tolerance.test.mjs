@@ -190,6 +190,112 @@ test('apra-fleet-spp.4 negative: reconcile-then-still-diverged re-push still sur
 });
 
 // -----------------------------------------------------------------------------
+// AUTH-SHAPED BUT PROVABLY NOT AUTH -- the live 2026-09-11 fleet-lin-dev1 run.
+//
+// spp.3/spp.4 (above) made an auth-shaped post-reconcile re-push a credential
+// terminal. That is right when nothing has re-provisioned the credentials, but
+// production threads an `onAuthFailure` self-heal into every step, and there
+// the same branch produced a pathology: the first push was rejected
+// non-fast-forward (which PROVES the remote authenticated this clone -- a
+// remote cannot compare refs and reject a push it never let in), the reconcile
+// pull succeeded, and the re-push then reported git's credential-prompt text
+// from Dolt's chunk-upload phase. runDoltStep re-provisioned, retried, and got
+// the identical failure -- and the engine reported "failed on VCS CREDENTIALS,
+// not a data divergence" and looped provision_vcs_auth (51 repeated failures
+// across one run's logs, each logging "provision_vcs_auth succeeded" and then
+// failing identically). The real cause was a local Dolt clone behind the
+// remote, cleared by a plain pull-then-push.
+//
+// The classifier is NOT the thing to loosen -- each message classifies
+// correctly in isolation, and widening the auth patterns would regress
+// apra-fleet-spp. The signal is the SEQUENCE, so doltPushGuarded judges it.
+// -----------------------------------------------------------------------------
+
+// Verbatim stderr from the live 2026-09-11 fleet-lin-dev1 D-push failures
+// (epic apra-fleet-hzeb, branch fleet-sprint/hzeb-usage-limit-pause).
+const LIVE_2026_09_11_CHUNK_UPLOAD_STDERR =
+    'Error: push to origin/main: Error 1105: unknown push error; addTableFiles, '
+    + "updateManifestAddFiles: fatal: could not read Username for "
+    + "'https://github.com/Apra-Labs/apra-fleet.git': No such device or address\n"
+    + 'hint: dolt does not support interactive credential prompts\n'
+    + 'hint: configure git credentials (credential helper, token) for HTTPS remotes';
+
+// Verbatim non-fast-forward rejection from that same run's FIRST push.
+const LIVE_2026_09_11_DIVERGENCE_STDERR =
+    'Error: push to origin/main: Error 1105: To git+https://github.com/Apra-Labs/apra-fleet.git\n'
+    + ' ! [rejected]            main -> main (non-fast-forward)\n'
+    + "error: failed to push some refs to 'git+https://github.com/Apra-Labs/apra-fleet.git'\n"
+    + 'hint: Updates were rejected because the tip of your current branch is behind\n'
+    + "hint: its remote counterpart. Integrate the remote changes (e.g. 'dolt pull ...') before pushing again.";
+
+test('the live 2026-09-11 chunk-upload stderr still classifies as auth in isolation (the classifier is not the bug)', () => {
+    assert.equal(classifyDoltFailure(LIVE_2026_09_11_CHUNK_UPLOAD_STDERR), 'auth');
+    assert.equal(classifyDoltFailure(LIVE_2026_09_11_DIVERGENCE_STDERR), 'diverged');
+});
+
+test('diverged push then a self-healed auth-shaped re-push reconciles instead of looping on credentials', async () => {
+    clearDegradedSyncRecords();
+    let healCalls = 0;
+    const { command } = makeCommandMock({
+        // 1: first push rejected non-fast-forward -> reconcile ladder.
+        // 2: re-push reports the chunk-upload credential text -> self-heal.
+        // 3: retry with FRESH credentials fails identically -> provably not auth.
+        // 4: the second bounded reconcile's re-push finally lands.
+        'bd dolt push': [
+            fail(LIVE_2026_09_11_DIVERGENCE_STDERR),
+            fail(LIVE_2026_09_11_CHUNK_UPLOAD_STDERR),
+            fail(LIVE_2026_09_11_CHUNK_UPLOAD_STDERR),
+            OK,
+        ],
+        'bd dolt pull': [OK],
+    });
+
+    const outcome = await doltPushAfter('fleet-lin-dev1', {
+        command,
+        checkSyncRemoteConfigured: remoteConfigured,
+        sleep: async () => {},
+        onAuthFailure: async () => { healCalls += 1; },
+    });
+
+    assert.equal(outcome.ok, true, 'the pull+push reconcile must recover the push');
+    assert.equal(outcome.pushed, true);
+    assert.equal(outcome.reconciled, true);
+    // The whole point: credentials are re-provisioned AT MOST ONCE, by
+    // runDoltStep's own bounded one-shot self-heal. The second reconcile cycle
+    // runs with self-heal disabled, so this can never become the observed loop.
+    assert.equal(healCalls, 1, 'provision_vcs_auth must not be called repeatedly');
+    clearDegradedSyncRecords();
+});
+
+test('a self-healed auth-shaped re-push that stays broken is a divergence terminal, never a credentials one', async () => {
+    clearDegradedSyncRecords();
+    let healCalls = 0;
+    const { command } = makeCommandMock({
+        // Never recovers: the last queue entry repeats for every later call.
+        'bd dolt push': [fail(LIVE_2026_09_11_DIVERGENCE_STDERR), fail(LIVE_2026_09_11_CHUNK_UPLOAD_STDERR)],
+        'bd dolt pull': [OK],
+    });
+
+    await assert.rejects(
+        () => doltPushAfter('fleet-lin-dev1', {
+            command,
+            checkSyncRemoteConfigured: remoteConfigured,
+            sleep: async () => {},
+            onAuthFailure: async () => { healCalls += 1; },
+        }),
+        (err) => {
+            assert.ok(err instanceof DoltDivergedError, 'must be the divergence terminal, not a credentials one');
+            assert.match(err.message, /TWO bounded reconcile pulls/);
+            assert.doesNotMatch(err.message, /failed on VCS CREDENTIALS/);
+            assert.equal(err.details.operation, 'push');
+            return true;
+        },
+    );
+    assert.equal(healCalls, 1, 'the terminal path must not keep re-provisioning credentials');
+    clearDegradedSyncRecords();
+});
+
+// -----------------------------------------------------------------------------
 // AC1/AC2: structured outcome, and an unresolvable conflict degrades instead of
 // aborting.
 // -----------------------------------------------------------------------------

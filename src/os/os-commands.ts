@@ -82,6 +82,14 @@ export interface OsCommands {
   gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string;
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string;
 
+  /** Delete ONLY the pre-label, single-file credential helper
+   *  (`.fleet-git-credential`, no label suffix) left behind by installs that
+   *  predate labeled credentials. Touches NO git config: the credential-helper
+   *  config key is host/scope-scoped rather than label-scoped, so unsetting it
+   *  here would clobber whatever credential is CURRENTLY registered for that
+   *  host -- see provision-vcs-auth.ts's legacy-migration call site. */
+  gitCredentialHelperRemoveLegacyFile(): string;
+
   /** Log the `gh` CLI itself into GitHub with `token` (persists to gh's own config,
    *  e.g. ~/.config/gh/hosts.yml), independent of the git credential helper above --
    *  `gh` never reads that file. No-ops (does not throw) when `gh` is not installed;

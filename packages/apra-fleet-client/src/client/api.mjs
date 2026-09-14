@@ -227,7 +227,8 @@
  *   chosen when creating the token. Propagated to the member registry so provisioning can
  *   warn when the PAT is nearing expiry. Must be parseable by Date.parse -- the server
  *   REJECTS an unparseable value rather than storing it, because a NaN expiry silences the
- *   warning and makes the credential-cleanup timer fall back to its 55-minute default.
+ *   warning entirely (the credential-cleanup timer skips auto-revoke scheduling when no
+ *   real expiry is known, rather than falling back to any default TTL).
  */
 
 /**
