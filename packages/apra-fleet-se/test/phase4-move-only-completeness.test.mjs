@@ -292,7 +292,14 @@ describe('(3) falsification -- the gate is not vacuous', () => {
         // instead of runner.js. This pin proves the fix: the same file, probed
         // the same way, is now admitted because its CURRENT revision passes.
         const base = discoverBase();
-        const repoRelPath = path.relative(REPO_ROOT, path.join(SE_DIR, 'test/planning-role-dispatch-pins.test.mjs'));
+        // Normalized to forward slashes (same idiom as the probe's own
+        // PKG_REL): this path is handed to probeFile -> existsAtBase, which
+        // spells it into a `git cat-file -e <base>:<path>` pathspec. git
+        // pathspecs are always '/'-separated, so on Windows a raw
+        // path.relative() result ('packages\...') misses at BASE and the file
+        // is misclassified NEW instead of ANCHOR_DESYNC.
+        const repoRelPath = path.relative(REPO_ROOT, path.join(SE_DIR, 'test/planning-role-dispatch-pins.test.mjs'))
+            .split(path.sep).join('/');
         const result = probeFile(base, repoRelPath, PROBE_BUDGET_MS);
         assert.equal(result.klass, 'ANCHOR_DESYNC', `expected ANCHOR_DESYNC, got ${result.klass}: ${result.detail}`);
     });
