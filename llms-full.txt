@@ -1286,6 +1286,14 @@ attempted. Killing the process without first stopping its service
 registration is still not a valid workaround for any code path that has to
 solve this problem elsewhere -- it reproduces the exact race above.
 
+If the guard stopped a registered service to win the copy, install restarts
+that service again once the new binary is in place -- the stop above exists
+only to release the file lock for the overwrite, not to leave the operator's
+previously-running server down. This restart is conditional on the service
+having actually been stopped by this guard; a plain `apra-fleet install`
+run that never touched a running service does not attempt to start one that
+was never asked to stop.
+
 ### Replaying the npm-publish smoke step locally with an unrelated server running
 
 CI's "Pack + install into a clean temp prefix (fleet-sprint smoke test)" step
@@ -2013,8 +2021,24 @@ The handoff itself:
 The tool refuses any command containing **neither** placeholder, so it
 cannot degrade into a second, unguarded `execute_command`. The plaintext
 token appears in no field of any result an orchestrator-side caller can
-read; `readMemberVcsCredentialToken` (the old prose-scraping path) is left in
-place for callers that have not migrated.
+read. `readMemberVcsCredentialToken` (the old prose-scraping path that
+dispatched the credential helper as a plain member command and parsed the
+token out of its stdout) has been retired from production entirely -- every
+caller now routes through `vcs_credential_exec`. `buildCredentialReadCommand`
+(the per-shell command string builder `readMemberVcsCredentialToken` used to
+call) is kept: it is still `vcs_credential_exec`'s own in-process building
+block for constructing the credential-read step of the handoff, so it stays
+exported and tested even though nothing outside this tool calls it as a
+standalone helper anymore.
+
+An OS/shell combination with no credential-read implementation is a hard
+failure, not a soft warning: the tool reports `reason: "unsupported_member_os"`
+and refuses to run rather than falling through to a credential-less dispatch
+that would silently fail downstream for a less diagnosable reason. Dialect
+selection for the substituted command routes through the same
+`isPosixShell(agentOs, agentShell)` helper the rest of the codebase uses, so
+a Windows member on Git Bash correctly gets POSIX-style escaping rather than
+being assumed cmd/PowerShell just because its OS is Windows.
 
 Redaction must cover every exit path the substituted command can take, not
 just its successful stdout/stderr -- a dispatch failure that throws (the

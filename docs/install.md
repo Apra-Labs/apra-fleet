@@ -343,6 +343,14 @@ attempted. Killing the process without first stopping its service
 registration is still not a valid workaround for any code path that has to
 solve this problem elsewhere -- it reproduces the exact race above.
 
+If the guard stopped a registered service to win the copy, install restarts
+that service again once the new binary is in place -- the stop above exists
+only to release the file lock for the overwrite, not to leave the operator's
+previously-running server down. This restart is conditional on the service
+having actually been stopped by this guard; a plain `apra-fleet install`
+run that never touched a running service does not attempt to start one that
+was never asked to stop.
+
 ### Replaying the npm-publish smoke step locally with an unrelated server running
 
 CI's "Pack + install into a clean temp prefix (fleet-sprint smoke test)" step
