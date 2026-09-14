@@ -2,6 +2,76 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- runner.js structural refactor epic closed out: independent end-to-end verification, security tracing, final hardening
+
+Sprint goal: close epic apra-fleet-3swo (the runner.js strangler-fig
+decomposition, dispatch-engine consolidation, and productization work) with
+an independent, from-scratch verification pass against the whole
+`main..branch` diff -- not a re-statement of an earlier sprint's own PASS
+claim -- plus land the last round of hardening findings before closure.
+
+What shipped:
+
+- **Epic apra-fleet-3swo closed, all 70 children closed.** Independent
+  verification (re-derived from source, not read off the diff) confirmed the
+  central claims: `runner.js` 11,849 -> 3,118 lines with 44 new
+  `fleet-sprint/*.mjs` modules covering every module the epic named and all
+  twelve `phases/*.mjs` files, zero files deleted. All 13 sprint roles route
+  through the single `dispatchRole(ctx, roleName, opts)` engine;
+  `inline-ladder-guard.checkModules({})` live-scanned 57 files with 0
+  violations -- the load-bearing proof that no role dispatches twice.
+- **Security/failure-path tracing** across the sprint's new surfaces: the
+  `vcs_credential_exec` server-side credential handoff (the token never
+  enters any returned field, including a thrown dispatch error's message; an
+  OS/shell with no credential-read implementation hard-fails with
+  `unsupported_member_os` rather than degrading to a credential-less
+  dispatch), the structured `provision_auth`/`provision_vcs_auth` responses
+  (traced end-to-end through `wrapTool`'s `structuredContent` passthrough
+  into the outcome check that branches on it), `install --force`'s
+  stop-registered-service-then-escalate kill path, and the sandbox-deploy
+  port-allocation-race retry ladder (bounded retries, gated on a proven
+  conflict only).
+- **The legacy `readMemberVcsCredentialToken` prose-scraping credential-read
+  path is fully retired from production** -- every caller now routes through
+  `vcs_credential_exec`. `buildCredentialReadCommand` (its per-shell command
+  string builder) is kept as `vcs_credential_exec`'s own in-process building
+  block and stays exported and tested.
+- **Test suite, run independently rather than trusted from the sprint's own
+  claim**: root `npx vitest run` -- 322 files / 4581 tests passing, 0
+  failures. `packages/apra-fleet-se npm test` -- 3104 tests, 0 failures,
+  including the long phase4 move-only-completeness `ANCHOR_DESYNC` probe.
+  `packages/apra-fleet-se/scripts/check-generic-boundary.mjs` (this repo's
+  lint-equivalent gate for the generic engine boundary) -- 77 engine files
+  scanned, 0 apra-fleet-specific assumptions found.
+
+Filed as follow-up during this closing review (deliberately left open, not
+closed by this pass -- see "Carried forward" in the sprint analysis
+artifact):
+
+- apra-fleet-3swo.73 (P2) -- an integ-test-runner schema-repair exhaustion
+  currently produces a schema-invalid report indistinguishable from a real
+  test failure; only the `infra` degrade class maps to an inconclusive
+  record today.
+- apra-fleet-3swo.74 (P2) -- a PowerShell inline vcs-token escaping gap.
+- apra-fleet-3swo.75 / .76 / .77 (P3) -- a sprint-analysis cycle undercount,
+  stale emoji-prefix test doubles, and a `provisionFailed` fail-open edge
+  case.
+- Regression carry-over (informational only -- does not gate this sprint's
+  verdict): apra-fleet-x0mr (nested golden-transcript/mock-sprint sub-suite
+  budget overrun) and apra-fleet-wzmv (a bare `phase4-move-only-completeness`
+  failure), both newly filed from the real-bd regression suite;
+  apra-fleet-eft.17, apra-fleet-j48h, and apra-fleet-jz2m (pre-existing
+  tracking beads) updated with fresh evidence rather than duplicated.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $113.2537.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $1.5799 across 10 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 100 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- runner.js structural refactor complete: monolith to modules, dispatch engine fully migrated
 
 Sprint goal: finish the strangler-fig decomposition of
