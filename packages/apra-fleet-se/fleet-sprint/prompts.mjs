@@ -448,11 +448,16 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
         'never rubber-stamp PASS regardless of open goal-priority beads or deploy/integration failures.'
     );
     lines.push(
-        `Keep \`notes\` concise: it is embedded verbatim into the pull request description this ` +
-        `sprint raises, which has a hard cap of ${PR_DESCRIPTION_MAX_LENGTH} characters -- a pull ` +
-        `request whose description exceeds that many characters can be rejected outright by the ` +
-        `hosting provider. A too-long \`notes\` value is truncated before the pull request is raised, ` +
-        `so anything past the limit is silently lost; stay well within it so your findings actually reach the reviewer.`
+        // Single-quoted (not a template literal) on purpose: the `notes`
+        // markdown code spans below are agent-prompt PROSE, never a dispatched
+        // command string, and spelling them as escaped backticks inside a
+        // template literal is exactly the construct shell-command-guard.mjs
+        // flags. Plain concatenation keeps the emitted text byte-identical.
+        'Keep `notes` concise: it is embedded verbatim into the pull request description this ' +
+        'sprint raises, which has a hard cap of ' + PR_DESCRIPTION_MAX_LENGTH + ' characters -- a pull ' +
+        'request whose description exceeds that many characters can be rejected outright by the ' +
+        'hosting provider. A too-long `notes` value is truncated before the pull request is raised, ' +
+        'so anything past the limit is silently lost; stay well within it so your findings actually reach the reviewer.'
     );
     lines.push(
         'Return any actionable findings as `newTasks` (title, description, priority each) so they ' +
