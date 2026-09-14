@@ -572,12 +572,17 @@ const VCS_AUTH_PATH = path.join(__dirname, '../fleet-sprint/vcs-auth.mjs');
 // dispatches the create-pull-request command through the server-side
 // credential handoff (fleetApi.vcsCredentialExec / the vcs_credential_exec
 // tool) instead of command(), so the plaintext token never enters the
-// orchestrator. The other two remain and still pass member_name --
-// provisionVcsAuthForMember()'s git-remote read, and the credential-helper
-// read inside the now-deprecated, zero-call-site
-// readMemberVcsCredentialToken() (whose declaration is retired by a separate
-// facade-pin task, at which point this count drops to 1).
-const EXPECTED_VCS_AUTH_COMMAND_COUNT = 2;
+// orchestrator. The other two remained (for a time) and still passed
+// member_name -- provisionVcsAuthForMember()'s git-remote read, and the
+// credential-helper read inside the now-deprecated, zero-call-site
+// credential-read helper.
+//
+// apra-fleet-3swo.7.15 (the facade-pin removal task this comment
+// anticipated) deleted that now-deprecated, zero-call-site credential-read
+// helper entirely, taking its command() call site with it. Only
+// provisionVcsAuthForMember()'s git-remote read remains, so the count drops
+// to 1 as predicted above.
+const EXPECTED_VCS_AUTH_COMMAND_COUNT = 1;
 
 test('every command() call site in vcs-auth.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(VCS_AUTH_PATH);

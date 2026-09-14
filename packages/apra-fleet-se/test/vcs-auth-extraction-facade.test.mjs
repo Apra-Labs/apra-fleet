@@ -63,7 +63,6 @@ const MOVED_PUBLIC_SYMBOLS = [
 const MOVED_PRIVATE_SYMBOLS = [
     'listCredentialStoreNames',
     'buildProvisionArgsForProvider',
-    'selfHealResultText',
     // apra-fleet-3swo.13: added after the move-only extraction, so it is not
     // one of the ORIGINALLY-moved symbols above -- but it is module-private
     // to vcs-auth.mjs (never exported by runner.js) exactly like its
@@ -87,12 +86,10 @@ const MOVED_PRIVATE_SYMBOLS = [
     // of this list pins.
     'DEFAULT_VCS_CREDENTIAL_LABEL',
     'PR_SKIPPED_NO_MCP_CLIENT',
-    'readMemberVcsCredentialToken',
     'parseVcsCurlOutput',
     'PR_AUTH_404_TEXT_RE',
     'isPrAuthFailure',
     'raiseVcsPrForMember',
-    'parseExpiresAtFromProvisionText',
     'VCS_AUTH_EXPIRY_PREFLIGHT_MS',
 ];
 
@@ -139,7 +136,7 @@ describe('(1) the runner.js facade re-exports every symbol the vcs-auth extracti
         });
     }
 
-    test('every moved symbol is accounted for: the two lists cover all 24 top-level declarations in vcs-auth.mjs', () => {
+    test('every moved symbol is accounted for: the two lists cover all 21 top-level declarations in vcs-auth.mjs', () => {
         const declared = [...VCS_AUTH_SRC.matchAll(/^(?:export )?(?:async )?(?:function|const) ([A-Za-z_][A-Za-z0-9_]*)/gm)]
             .map((m) => m[1]);
         const enumerated = new Set([...MOVED_PUBLIC_SYMBOLS, ...MOVED_PRIVATE_SYMBOLS]);

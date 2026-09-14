@@ -13,6 +13,7 @@ import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resolveMemberTarget } from './member-target.mjs';
+import { resultText } from './mcp-result.mjs';
 
 /**
  * Best-effort, GENERIC extraction of an "owner/repo" string from a git remote
@@ -96,7 +97,7 @@ export function parseRepoScopeFromRemoteUrl(url) {
 async function listCredentialStoreNames(fleetApi) {
     if (!fleetApi || typeof fleetApi.credentialStoreList !== 'function') return null;
     try {
-        const parsed = JSON.parse(selfHealResultText(await fleetApi.credentialStoreList()));
+        const parsed = JSON.parse(resultText(await fleetApi.credentialStoreList()));
         if (!Array.isArray(parsed)) return null;
         return parsed
             .map((entry) => (entry && typeof entry.name === 'string' ? entry.name : null))
@@ -131,17 +132,6 @@ async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi
         throw new Error(`ERROR: VCS provider '${provider}' returned no provision arguments for member '${base.member_name}'.`);
     }
     return built.args;
-}
-
-// Shared MCP tool-result-to-text extractor for the self-heal callbacks below.
-// Still used for logging the human-readable summary. Classification
-// decisions must use provisionOutcome() below, not this text.
-function selfHealResultText(result) {
-    if (typeof result === 'string') return result;
-    if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
-        return result.content[0].text;
-    }
-    return '';
 }
 
 // apra-fleet-3swo.13: provision_vcs_auth / provision_llm_auth used to be
@@ -341,7 +331,7 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         secretName: azdevopsPatSecretName,
     });
     const provisionRes = await fleetApi.provisionVcsAuth(provisionArgs);
-    const provisionText = selfHealResultText(provisionRes);
+    const provisionText = resultText(provisionRes);
     // provision_vcs_auth NEVER throws on failure -- it reports failure via
     // structuredContent.ok === false (apra-fleet-3swo.13; see
     // provisionOutcome above). A failed provision must never be allowed to
@@ -353,9 +343,9 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // (apra-fleet-3swo.7.5) Credential expiry comes from the STRUCTURED half of
     // the provision result -- `structuredContent.expiresAt`, an ISO timestamp or
     // null (ProvisionVcsAuthFields in src/tools/provision-vcs-auth.ts) -- and is
-    // no longer regex-scraped out of the prose summary by
-    // parseExpiresAtFromProvisionText(), which is retained unused and deprecated
-    // (see its own comment) pending the facade-pin removal task.
+    // no longer regex-scraped out of the prose summary by a dedicated prose
+    // scraper -- that scraper was retired by the facade-pin removal task
+    // (apra-fleet-3swo.7.15).
     //
     // Deliberately inlined rather than factored into a named helper: this
     // module's top-level declarations are pinned symbol-for-symbol by the facade
@@ -534,70 +524,6 @@ export const PR_SKIPPED_NO_MCP_CLIENT = 'pr-skipped-no-mcp-client';
  */
 export function buildCredentialReadCommand(target, label) {
     return getSeCommands(target).readCredentialHelper(label);
-}
-
-// Reads the raw token back out of the git-credential-helper script
-// provision_vcs_auth just deployed onto `member`'s filesystem
-// ($HOME/.fleet-git-credential-<label> on POSIX, or
-// $env:USERPROFILE\.fleet-git-credential-<label>.bat on Windows -- see
-// buildCredentialReadCommand above; an executable script that PRINTS
-// "protocol=...\nhost=...\nusername=...\npassword=<token>\n" when run -- see
-// src/os/linux.ts gitCredentialHelperWrite()/src/os/windows.ts). This is the
-// ONLY way an orchestrator-side caller (VCSModule's runner.js callers) can
-// ever learn the actual token value: provision_vcs_auth's own MCP response
-// never carries it (src/tools/provision-vcs-auth.ts masks it to
-// "<first 4 chars>****" in its metadata) -- the server deploys the credential
-// DIRECTLY onto the member, it never round-trips the plaintext back through
-// the MCP response. Dispatched with `silent: true` so the extraction command
-// itself is never logged/echoed anywhere (the token value briefly transits
-// this one command's captured stdout, held only in-process, and is used
-// immediately to build the VCSModule command).
-// Both the POSIX helper script and the Windows .bat print the same
-// "password=<token>" line, so the extraction regex below is OS-independent.
-//
-// DEPRECATED -- RETAINED, UNUSED, SCHEDULED FOR REMOVAL IN RELEASE v0.5.0.
-//
-// This whole round-trip -- dispatch the deployed credential helper as a member
-// command, then scrape `password=<token>` out of its captured stdout -- is
-// exactly the plaintext transit the server-side handoff exists to remove.
-// raiseVcsPrForMember() now sends the create-pull-request command it already
-// builds with the '{{vcs_token_inline}}' placeholder where the token belongs
-// and dispatches it through fleetApi.vcsCredentialExec() (the
-// vcs_credential_exec tool, src/tools/vcs-credential-exec.ts), which reads the
-// credential, substitutes it and redacts it entirely inside the server. This
-// function therefore has ZERO production call sites.
-//
-// It is deliberately NOT deleted here: the name is hard-pinned by the facade
-// enumerations (MOVED_PRIVATE_SYMBOLS in
-// test/vcs-auth-extraction-facade.test.mjs, which asserts the enumeration and
-// this module's top-level declarations agree symbol-for-symbol), so removing
-// the declaration is a facade-contract change that must land together with
-// those pin updates. That removal is tracked as its own task in this lane.
-// Do not add a new call site: use the vcs_credential_exec handoff instead.
-//
-// @deprecated since the server-side VCS credential handoff; removal release: v0.5.0
-/**
- * @param {{ command: Function, member: string, label?: string, fleetApi?: object, log?: Function }} opts
- * @returns {Promise<string>}
- */
-async function readMemberVcsCredentialToken({ command, member, label = DEFAULT_VCS_CREDENTIAL_LABEL, fleetApi, log = () => {} }) {
-    const target = await resolveMemberTarget({ fleetApi, member, log });
-    const { command: credCommand, descriptor: credFile } = buildCredentialReadCommand(target, label);
-    const res = await command(credCommand, {
-        member_name: member,
-        silent: true,
-        failSoft: true,
-        label: 'Read just-provisioned VCS credential token for PR creation',
-    });
-    if (!res || !res.ok) {
-        throw new Error(`Failed to read VCS credential token for member '${member}' from '${credFile}': ${res ? res.error : '(no result)'}`);
-    }
-    const m = /^password=(.*)$/m.exec(String(res.output || ''));
-    const token = m ? m[1].trim() : '';
-    if (!token) {
-        throw new Error(`VCS credential token for member '${member}' was empty/unreadable after provisioning (expected a 'password=' line from '${credFile}').`);
-    }
-    return token;
 }
 
 // Splits a VCSModule create-pull-request curl result's captured stdout into
@@ -812,7 +738,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             command: built.command,
         });
         const handoff = (execRes && execRes.structuredContent) || {};
-        const handoffText = selfHealResultText(execRes);
+        const handoffText = resultText(execRes);
         // A credential-side failure HARD-FAILS, exactly as reading the token
         // ourselves used to throw -- never an advisory warning that lets the
         // sprint carry on with no credential. 'dispatch_failed' is the one
@@ -885,37 +811,6 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
 
         return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}`, authFailure: isPrAuthFailure(status, errorText) };
     }
-}
-
-// DEPRECATED -- RETAINED, UNUSED, SCHEDULED FOR REMOVAL IN RELEASE v0.5.0.
-//
-// This was the prose scraper: provision_vcs_auth used to return plain
-// human-readable text with no structured response shape, so there was no
-// field to read directly, and the GitHub App path's '  <key>: <value>'
-// metadata rendering was regex-scraped for its `expiresAt` line.
-// provision_vcs_auth now returns a machine-readable
-// `structuredContent.expiresAt` (ProvisionVcsAuthFields in
-// src/tools/provision-vcs-auth.ts), so provisionVcsAuthForMember() reads that
-// field directly and this function has ZERO production call sites.
-//
-// It is deliberately NOT deleted here: the name is hard-pinned by the facade
-// enumerations (MOVED_PRIVATE_SYMBOLS in
-// test/vcs-auth-extraction-facade.test.mjs, which asserts the enumeration and
-// this module's top-level declarations agree symbol-for-symbol), so removing
-// the declaration is a facade-contract change that must land together with
-// those pin updates. That removal is tracked as its own task in this lane.
-// Do not add a new call site: read structuredContent.expiresAt.
-//
-// @deprecated since the structured provision response; removal release: v0.5.0
-/**
- * @param {string} text
- * @returns {Date|null}
- */
-function parseExpiresAtFromProvisionText(text) {
-    const m = /^\s*expiresAt:\s*(\S+)\s*$/m.exec(text || '');
-    if (!m) return null;
-    const d = new Date(m[1]);
-    return Number.isNaN(d.getTime()) ? null : d;
 }
 
 /**
@@ -1104,7 +999,7 @@ export function createLlmAuthSelfHealCallback(opts = {}) {
             return false;
         }
 
-        const text = selfHealResultText(provisionRes).trim();
+        const text = resultText(provisionRes).trim();
         const outcome = provisionOutcome(provisionRes, text);
 
         // apra-fleet-3swo.13: src/tools/provision-auth.ts's OK_REASONS
