@@ -554,6 +554,28 @@ export function buildCredentialReadCommand(target, label) {
 // immediately to build the VCSModule command).
 // Both the POSIX helper script and the Windows .bat print the same
 // "password=<token>" line, so the extraction regex below is OS-independent.
+//
+// DEPRECATED -- RETAINED, UNUSED, SCHEDULED FOR REMOVAL IN RELEASE v0.5.0.
+//
+// This whole round-trip -- dispatch the deployed credential helper as a member
+// command, then scrape `password=<token>` out of its captured stdout -- is
+// exactly the plaintext transit the server-side handoff exists to remove.
+// raiseVcsPrForMember() now sends the create-pull-request command it already
+// builds with the '{{vcs_token_inline}}' placeholder where the token belongs
+// and dispatches it through fleetApi.vcsCredentialExec() (the
+// vcs_credential_exec tool, src/tools/vcs-credential-exec.ts), which reads the
+// credential, substitutes it and redacts it entirely inside the server. This
+// function therefore has ZERO production call sites.
+//
+// It is deliberately NOT deleted here: the name is hard-pinned by the facade
+// enumerations (MOVED_PRIVATE_SYMBOLS in
+// test/vcs-auth-extraction-facade.test.mjs, which asserts the enumeration and
+// this module's top-level declarations agree symbol-for-symbol), so removing
+// the declaration is a facade-contract change that must land together with
+// those pin updates. That removal is tracked as its own task in this lane.
+// Do not add a new call site: use the vcs_credential_exec handoff instead.
+//
+// @deprecated since the server-side VCS credential handoff; removal release: v0.5.0
 /**
  * @param {{ command: Function, member: string, label?: string, fleetApi?: object, log?: Function }} opts
  * @returns {Promise<string>}
@@ -624,11 +646,15 @@ function isPrAuthFailure(status, errorText) {
     return false;
 }
 
-// Mints a just-in-time push+pr credential for `member`, reads back the token
-// it deployed, builds the create-pull-request command through VCSModule (the
-// orchestrator-side command builder, apra-fleet-tfx.7), and dispatches it via
-// `command()` -- `member` is a dumb executor of a command this function (and
-// VCSModule) decided, never `gh`, never a server-side fallback. Returns the
+// Mints a just-in-time push+pr credential for `member`, builds the
+// create-pull-request command through VCSModule (the orchestrator-side
+// command builder, apra-fleet-tfx.7) with a '{{vcs_token_inline}}'
+// placeholder where the credential belongs, and dispatches it through the
+// SERVER-SIDE handoff `fleetApi.vcsCredentialExec()` (vcs_credential_exec),
+// which reads the credential, substitutes it and redacts it without the
+// plaintext ever reaching this process -- `member` is still a dumb executor
+// of a command this function (and VCSModule) decided, never `gh`, never a
+// server-side fallback that picks its own command. Returns the
 // same shape both PR-raising call sites need: { ok, alreadyExists, prUrl,
 // error, authFailure }, mirroring the interpretation contract the reverted
 // server-side create-pull-request.ts tool used (2xx -> success; 422 "already
@@ -636,11 +662,14 @@ function isPrAuthFailure(status, errorText) {
 //
 // REACTIVE auth self-heal (apra-fleet-647.1.1.1): on an auth-classified
 // response (see isPrAuthFailure above), this re-provisions a push+pr
-// credential via provisionPrCapableAuthForMember, re-reads the token, and
-// retries the SAME PR-creation command exactly once -- bounded one-shot
-// semantics mirroring runGitStep/runDoltStep's onAuthFailure loop. If the
-// retry still fails, the failure (auth or not) is returned as-is; the raw
-// token is never logged, only `built.logSafeCommand`.
+// credential via provisionPrCapableAuthForMember and retries the SAME
+// PR-creation command exactly once -- bounded one-shot semantics mirroring
+// runGitStep/runDoltStep's onAuthFailure loop. The retry needs no token
+// re-read of its own any more: the command still carries the placeholder, so
+// the retry's handoff call re-reads the freshly re-provisioned credential
+// server-side. If the retry still fails, the failure (auth or not) is
+// returned as-is; the raw token is never logged (and is never even held
+// here), only `built.logSafeCommand`.
 /**
  * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string }} opts
  * @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean }>}
@@ -685,23 +714,37 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // buildCreatePrCommand dispatches to the right REST dialect for a
     // dev.azure.com (or any other) remote, not just GitHub.
     //
-    // Resolved BEFORE the credential read below because the read is keyed
+    // Resolved BEFORE the handoff below because the credential is keyed
     // by provider too: provision_vcs_auth deploys the credential helper
     // under `label = input.label ?? input.provider`
     // (src/tools/provision-vcs-auth.ts), and neither the shared
     // GitHub-App-shaped arguments nor a provider's buildProvisionArgs hook
-    // sends an explicit label -- so the file to read back is
-    // $HOME/.fleet-git-credential-<provider>. Reading the 'github'-labelled
-    // file unconditionally (the pre-fix default of
-    // readMemberVcsCredentialToken) made every Azure DevOps member's PR
-    // raise fail with "Failed to read VCS credential token ... from
-    // '$HOME/.fleet-git-credential-github'" (or, worse, silently reuse a
+    // sends an explicit label -- so the credential the handoff must read is
+    // the one under $HOME/.fleet-git-credential-<provider>. Passing the
+    // 'github' label unconditionally (the pre-fix default this path once
+    // carried, back when it read the token itself) made every Azure DevOps
+    // member's PR raise fail with "Failed to read VCS credential token ...
+    // from '$HOME/.fleet-git-credential-github'" (or, worse, silently reuse a
     // stale GitHub token left over from an earlier provider and send it to
-    // dev.azure.com).
+    // dev.azure.com). `credentialLabel` is threaded into every
+    // vcsCredentialExec() call below for exactly that reason.
     const { provider } = await resolveProvider(member, { fleetApi });
     const credentialLabel = vcsCredentialLabelForProvider(provider);
 
-    let token = await readMemberVcsCredentialToken({ command, member, label: credentialLabel, fleetApi, log });
+    // apra-fleet-3swo.7.6: the orchestrator never learns the token at all now.
+    // It passes the INLINE placeholder as the `token` parameter, so each
+    // provider's builder emits its existing shQuote()'d shape with the
+    // placeholder sitting inside its OWN quotes (github.mjs still emits
+    // -H 'Authorization: Bearer {{vcs_token_inline}}', azure-devops.mjs still
+    // emits -u ':{{vcs_token_inline}}' -- the authentication MECHANISM is
+    // unchanged, only the substituted word), and the SERVER substitutes it
+    // during the vcs_credential_exec dispatch below, escaped for the interior
+    // of those quotes with no quotes of its own (VCS_TOKEN_INLINE_PLACEHOLDER,
+    // src/tools/vcs-credential-exec.ts). Deliberately inlined here rather than
+    // hoisted to a module constant: the facade suite enumerates this module's
+    // top-level declarations symbol-for-symbol and a new const desyncs that
+    // census.
+    const token = '{{vcs_token_inline}}';
     // Both os AND shell feed the command builder: os picks the curl binary
     // token (curl.exe vs curl), shell picks the quoting dialect. A Windows
     // member whose registered shell is gitbash needs POSIX quoting, not
@@ -750,17 +793,45 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             log(`${logPrefix}: WARNING: PR description for member '${member}' was ${originalLength} chars, exceeding the ${maxLength}-char limit; truncated to the first ${maxLength} chars before raising the PR.`);
         }
 
-        const res = await command(built.command, {
+        // The server-side credential handoff, NOT command(): the placeholder
+        // built into `built.command` above is substituted INSIDE the server,
+        // the substituted command is dispatched from there, and the credential
+        // is redacted out of the stdout/stderr this process reads back. No
+        // plaintext token ever transits the orchestrator, so there is nothing
+        // here for a captured result, a log line or a written file to leak.
+        if (!fleetApi || typeof fleetApi.vcsCredentialExec !== 'function') {
+            throw new Error(
+                `Cannot raise a PR for member '${member}': this fleet client exposes no vcs_credential_exec tool, `
+                + 'and the orchestrator no longer reads VCS credential tokens itself. Upgrade the fleet server/client '
+                + 'to a version that provides the vcs_credential_exec tool.',
+            );
+        }
+        const execRes = await fleetApi.vcsCredentialExec({
             member_name: member,
-            silent: true,
-            failSoft: true,
-            label: `Raise PR to '${base}' via VCSModule (not merged)`,
+            label: credentialLabel,
+            command: built.command,
         });
-        if (!res || !res.ok) {
-            return { ok: false, alreadyExists: false, prUrl: null, error: (res && res.error) || 'execute_command failed', authFailure: false };
+        const handoff = (execRes && execRes.structuredContent) || {};
+        const handoffText = selfHealResultText(execRes);
+        // A credential-side failure HARD-FAILS, exactly as reading the token
+        // ourselves used to throw -- never an advisory warning that lets the
+        // sprint carry on with no credential. 'dispatch_failed' is the one
+        // non-ok reason that is a COMMAND failure rather than a credential
+        // failure, so it degrades the same way a failed command() dispatch
+        // did: returned, not thrown.
+        if (!handoff.ok && handoff.reason !== 'dispatch_failed') {
+            throw new Error(
+                `Failed to read VCS credential token for member '${member}' from the `
+                + `'${credentialLabel}'-labelled credential helper via vcs_credential_exec `
+                + `(reason: ${handoff.reason || '(none)'}): ${handoffText || '(no detail)'}`,
+            );
+        }
+        if (!handoff.ok || (typeof handoff.exitCode === 'number' && handoff.exitCode !== 0)) {
+            const failText = handoff.stderr || handoffText || 'vcs_credential_exec failed';
+            return { ok: false, alreadyExists: false, prUrl: null, error: failText, authFailure: false };
         }
 
-        const { status, body: respBody, bodyText } = parseVcsCurlOutput(res.output);
+        const { status, body: respBody, bodyText } = parseVcsCurlOutput(handoff.stdout);
         const [lo, hi] = built.interpret.successStatusRange;
         if (status !== null && status >= lo && status <= hi) {
             // apra-fleet-lzfv.5: read the created PR's id/url through the
@@ -799,7 +870,11 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             try {
                 const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
                 if (reprov.repo) repo = reprov.repo;
-                token = await readMemberVcsCredentialToken({ command, member, label: credentialLabel, fleetApi, log });
+                // No token re-read here any more: `built.command` still
+                // carries the placeholder, so the retry's own
+                // vcs_credential_exec dispatch re-reads the FRESHLY
+                // re-provisioned credential server-side, once per call. The
+                // bounded one-shot retry semantics are unchanged.
             } catch (healErr) {
                 log(`${logPrefix}: PR auth self-heal failed for member '${member}'; not retrying further: ${healErr.message}`);
                 return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}`, authFailure: true };

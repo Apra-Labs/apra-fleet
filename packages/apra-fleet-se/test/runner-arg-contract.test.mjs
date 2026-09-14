@@ -551,25 +551,34 @@ describe('runner.js mock-level execution', () => {
         // hosted-remote PR-raise path is exercised unchanged, just with one
         // extra command in between.
         // apra-fleet-tfx.8/tfx.8.4: the reverted gh-based `gh pr create` path
-        // is gone. raiseVcsPrForMember() (1) reads back the just-provisioned
-        // push+pr credential's token from the git-credential-helper script,
-        // then (2) dispatches VCSModule's `curl ... /pulls` create-pull-
-        // request command -- so the last 4 commandLog entries are: push,
-        // the classification probe, the credential-token read, and the
+        // is gone. raiseVcsPrForMember() dispatches VCSModule's
+        // `curl ... /pulls` create-pull-request command -- so the last 3
+        // commandLog entries are: push, the classification probe, and the
         // curl POST itself.
+        // apra-fleet-3swo.7.6: that tail used to be 4 entries, with a
+        // `$HOME/.fleet-git-credential-*` token read between the probe and the
+        // curl. The create-PR dispatch now goes through the
+        // vcs_credential_exec handoff, which reads and substitutes the
+        // credential server-side, so the orchestrator dispatches no
+        // credential-read command and the tail is one entry shorter. The
+        // retired positional assertion is replaced below by the strictly
+        // stronger "no credential read anywhere in the log".
         // raiseVcsPrForMember's `remoteUrlOverride` param (fed with the
         // origin URL the Publish PR step already resolved) makes
         // provisionVcsAuthForMember skip its own internal
         // `git remote get-url origin` re-derivation -- eliminating what
         // used to be a second, redundant classification-shaped probe here.
-        const last4 = spy.commandLog.slice(-4);
-        assert.match(last4[0], /^git push -u origin auto-sprint\/reach-test/);
-        assert.match(last4[1], /^git remote get-url origin\b/);
-        assert.match(last4[2], /^\$HOME\/\.fleet-git-credential-/);
-        assert.match(last4[3], /^curl -sS -X POST\b/);
-        assert.ok(last4[3].includes('/pulls'));
-        assert.ok(last4[3].includes('"base":"develop"'));
-        assert.ok(last4[3].includes('"head":"auto-sprint/reach-test"'));
+        const last3 = spy.commandLog.slice(-3);
+        assert.match(last3[0], /^git push -u origin auto-sprint\/reach-test/);
+        assert.match(last3[1], /^git remote get-url origin\b/);
+        assert.match(last3[2], /^curl -sS -X POST\b/);
+        assert.ok(last3[2].includes('/pulls'));
+        assert.ok(last3[2].includes('"base":"develop"'));
+        assert.ok(last3[2].includes('"head":"auto-sprint/reach-test"'));
+        assert.ok(
+            !spy.commandLog.some((c) => typeof c === 'string' && /^\$HOME\/\.fleet-git-credential-/.test(c)),
+            'the orchestrator must dispatch no credential-helper read of its own -- vcs_credential_exec performs it server-side',
+        );
     });
 
     test('a malicious issue id is rejected with a validation error and results in ZERO fleet dispatches', async () => {

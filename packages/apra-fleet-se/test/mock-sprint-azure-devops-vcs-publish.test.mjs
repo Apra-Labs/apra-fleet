@@ -271,17 +271,27 @@ test('finalizeAbort (Azure DevOps): the PR-raise reads the azure-devops-labelled
 
     check(result.reason === 'aborted-pr-created', `Expected reason 'aborted-pr-created', got: ${JSON.stringify(result)} (logs: ${JSON.stringify(logs)})`);
 
-    const credReads = log.filter((c) => /^\$HOME\/\.fleet-git-credential-/.test(c));
-    check(credReads.length >= 1, `Expected at least one credential-helper read, command log: ${JSON.stringify(log)}`);
-    check(
-        credReads.every((c) => c === '$HOME/.fleet-git-credential-azure-devops'),
-        `Expected every credential read to target the azure-devops-labelled file, got: ${JSON.stringify(credReads)}`,
-    );
-    check(!credReads.includes('$HOME/.fleet-git-credential-github'), 'The PR-raise for an Azure DevOps member must never read the github-labelled credential file');
+    // apra-fleet-3swo.7.6: the orchestrator no longer dispatches a discrete
+    // credential read at all -- the create-PR command goes out through
+    // vcs_credential_exec, which resolves the credential BY LABEL inside the
+    // server (here, the shared harness simulator's MOCK_VCS_CREDENTIAL_TOKENS
+    // map). So the old "every $HOME/.fleet-git-credential-* read targets the
+    // azure-devops-labelled file, never the github one" assertion is
+    // unsatisfiable by construction. The PROPERTY it guarded -- an Azure
+    // DevOps member's PR-raise routes the label by PROVIDER and so sends the
+    // azure-devops credential, never the github one -- is now proven on the
+    // dispatched command itself, which is strictly closer to the regression:
+    // a wrong label would make the handoff substitute the GITHUB token, and
+    // the -u assertion below catches exactly that.
+    check(!log.some((c) => /^\$HOME\/\.fleet-git-credential-/.test(c)), `The orchestrator must dispatch NO credential-helper read of its own; the handoff reads it server-side. Command log: ${JSON.stringify(log)}`);
 
     const prCmd = log.find((c) => c.startsWith('curl') && /\/pullrequests\?/.test(c));
     check(!!prCmd, `Expected the Azure DevOps create-pull-request curl to be dispatched, command log: ${JSON.stringify(log)}`);
-    check(prCmd.includes("-u ':mock-ado-pat'"), `Expected the curl -u to carry the Azure DevOps PAT read from its own credential file, got: ${prCmd}`);
+    // The shared simulator's azure-devops token (MOCK_VCS_CREDENTIAL_TOKENS in
+    // test/helpers/mock-sprint-harness.mjs), NOT this file's own
+    // credentialFiles map -- the handoff no longer consults that map.
+    check(prCmd.includes("-u ':mock-azure-devops-pat'"), `Expected the curl -u to carry the azure-devops-LABELLED credential the handoff resolved, got: ${prCmd}`);
+    check(!prCmd.includes('mock-vcs-module-token'), `The github-labelled token must never reach the Azure DevOps REST call -- a wrong label would substitute exactly that, got: ${prCmd}`);
     check(!prCmd.includes('STALE-GITHUB-TOKEN'), `The stale GitHub token must never reach the Azure DevOps REST call, got: ${prCmd}`);
 });
 
@@ -309,10 +319,17 @@ test('finalizeAbort (GitHub control): a GitHub member still reads the github-lab
     });
 
     check(result.prUrl === ghUrl, `Expected the GitHub html_url, got: ${JSON.stringify(result)}`);
-    const credReads = log.filter((c) => /^\$HOME\/\.fleet-git-credential-/.test(c));
-    check(credReads.length >= 1 && credReads.every((c) => c === '$HOME/.fleet-git-credential-github'), `Expected only github-labelled credential reads, got: ${JSON.stringify(credReads)}`);
+    // apra-fleet-3swo.7.6: same re-anchor as the Azure DevOps case above --
+    // the discrete credential read is gone, so "only github-labelled reads
+    // happened" is re-expressed as "the dispatched create-PR command carries
+    // the github-labelled token and not the azure-devops-labelled one",
+    // proving the label follows the provider in this direction too.
+    check(!log.some((c) => /^\$HOME\/\.fleet-git-credential-/.test(c)), `The orchestrator must dispatch NO credential-helper read of its own; the handoff reads it server-side. Command log: ${JSON.stringify(log)}`);
     const prCmd = log.find((c) => c.startsWith('curl') && /\/pulls\b/.test(c));
-    check(!!prCmd && prCmd.includes('Bearer mock-vcs-module-token') && !prCmd.includes('UNRELATED-ADO-PAT'), `Expected the GitHub token in the Authorization header, got: ${prCmd}`);
+    check(!!prCmd, `Expected the GitHub create-pull-request curl to be dispatched, command log: ${JSON.stringify(log)}`);
+    check(prCmd.includes('Bearer mock-vcs-module-token'), `Expected the github-LABELLED token the handoff resolved in the Authorization header, got: ${prCmd}`);
+    check(!prCmd.includes('mock-azure-devops-pat'), `The azure-devops-labelled token must never reach the GitHub REST call -- a wrong label would substitute exactly that, got: ${prCmd}`);
+    check(!prCmd.includes('UNRELATED-ADO-PAT'), `The unrelated ADO PAT must never reach the GitHub REST call, got: ${prCmd}`);
 });
 
 // -----------------------------------------------------------------------

@@ -146,9 +146,35 @@ function buildMockWindowsCommand({ commitCount, pushShouldFail = false, prOutcom
 // simulator (reusing its placeholder substitution and redaction) instead of
 // re-implementing it here -- mirrors mock-sprint-abort-pr.test.mjs's
 // mockAbortCallTool().
-function mockWindowsAbortCallTool(command) {
+// apra-fleet-3swo.7.6: `credentialShouldFail` drives the credential-read
+// FAILURE scenario below. Its old lever -- buildMockWindowsCommand failing the
+// `powershell -EncodedCommand` command -- can no longer fire, because the
+// orchestrator dispatches no such command: the read happens inside
+// vcs_credential_exec. The lever therefore moves to this wrapper, which
+// intercepts the tool call and returns the SAME failure shape the real tool
+// (and the shared simulator) emits for an unreadable credential -- a [FAIL]
+// text plus structuredContent.reason 'credential_read_failed'. The shared
+// harness is not touched.
+function mockWindowsAbortCallTool(command, { credentialShouldFail = false } = {}) {
     const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     return async (name, toolArgs) => {
+        if (name === 'vcs_credential_exec' && credentialShouldFail) {
+            const label = toolArgs && toolArgs.label;
+            return {
+                content: [{ text: `[FAIL] Cannot read a VCS credential for label "${label}" on "${toolArgs && toolArgs.member_name}" (mock Windows credential-read failure: .bat exited nonzero).` }],
+                structuredContent: {
+                    ok: false,
+                    reason: 'credential_read_failed',
+                    exitCode: null,
+                    stdout: '',
+                    stderr: '',
+                    tokenRedactions: 0,
+                    credentialLabel: label ?? null,
+                    memberId: (toolArgs && toolArgs.member_id) ?? null,
+                    memberName: (toolArgs && toolArgs.member_name) ?? null,
+                },
+            };
+        }
         if (name === 'member_detail') {
             // Both resolveMemberOs() (runner.js) and VCSModule.resolveProvider()
             // parse this same member_detail response -- os:'windows' drives the
@@ -185,14 +211,23 @@ test('finalizeAbort (Windows member): builds a valid PowerShell credential-read 
     check(result.reason === 'aborted-pr-created', `Expected the [ABORTED] PR to be created for a Windows member, got: ${JSON.stringify(result)}`);
     check(result.prUrl === prUrl, `Expected the created PR's URL to be surfaced, got: ${JSON.stringify(result)}`);
 
-    const credCmd = log.find((c) => /^powershell -EncodedCommand\b/.test(c));
-    check(!!credCmd, `Expected a Windows-shaped credential-read command (powershell -EncodedCommand ...) to be dispatched, command log: ${JSON.stringify(log)}`);
+    // apra-fleet-3swo.7.6: the orchestrator dispatches NO discrete
+    // credential-read command any more -- the create-PR command is routed
+    // through vcs_credential_exec, which reads the credential server-side. The
+    // retired assertion here was "a powershell -EncodedCommand credential read
+    // was dispatched"; its property (this Windows member's credential is read,
+    // and the PR is raised with it) is carried by the positive create-PR
+    // dispatch + substituted-token assertions below. Both NEGATIVE assertions
+    // are kept byte-for-byte: they are the point of this file and still hold.
     check(!log.some((c) => /^\$HOME\/\.fleet-git-credential-/.test(c)), 'Expected NO POSIX-shaped credential-read command for a Windows member');
     check(!log.some((c) => hasBareHomeExpansion(c)), `Expected no dispatched command to carry a bare $HOME/~ expansion, command log: ${JSON.stringify(log)}`);
 
     const prCmd = log.find((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls'));
-    check(!!prCmd, `Expected a create-pull-request command to be dispatched, command log: ${JSON.stringify(log)}`);
-    check(prCmd.includes('Authorization: Bearer mock-windows-vcs-token'), `Expected the PR-creation command to carry the token extracted from the Windows credential read, got: ${prCmd}`);
+    check(!!prCmd, `Expected a create-pull-request command to be dispatched (i.e. routed through the handoff and substituted), command log: ${JSON.stringify(log)}`);
+    // The shared simulator's github token (MOCK_VCS_CREDENTIAL_TOKENS in
+    // test/helpers/mock-sprint-harness.mjs), not this file's own fixture
+    // token: the handoff resolves the credential by LABEL, server-side.
+    check(prCmd.includes('Authorization: Bearer mock-vcs-module-token'), `Expected the PR-creation command to carry the token the handoff substituted server-side, got: ${prCmd}`);
 });
 
 test('finalizeAbort (Windows member): a failing credential read still throws the existing descriptive error -- no silent degradation', async () => {
@@ -209,7 +244,7 @@ test('finalizeAbort (Windows member): a failing credential read still throws the
             baseBranch: 'main',
             member: 'windows-member-cred-fail',
             command,
-            callTool: mockWindowsAbortCallTool(command),
+            callTool: mockWindowsAbortCallTool(command, { credentialShouldFail: true }),
         });
     } catch (e) {
         thrown = e;
@@ -220,9 +255,19 @@ test('finalizeAbort (Windows member): a failing credential read still throws the
         /Failed to read VCS credential token/.test(thrown.message),
         `Expected the existing descriptive credential-read-failure message, got: ${thrown.message}`
     );
+    // apra-fleet-3swo.7.6: the failure is now reported BY the handoff rather
+    // than by a failed member-side powershell dispatch, so the retired
+    // assertion ("the powershell credential-read command was still attempted")
+    // is re-expressed as: the thrown error still names the member and the
+    // credential it could not read, and it is a HARD failure -- never an
+    // advisory warning that lets the sprint continue.
     check(
-        log.some((c) => /^powershell -EncodedCommand\b/.test(c)),
-        `Expected the Windows credential-read command to still have been attempted, command log: ${JSON.stringify(log)}`
+        thrown.message.includes("windows-member-cred-fail") && thrown.message.includes('github'),
+        `Expected the error to name the member and the credential label it could not read, got: ${thrown.message}`
+    );
+    check(
+        !log.some((c) => /^powershell -EncodedCommand\b/.test(c)),
+        `The orchestrator must dispatch no credential-read command of its own; the handoff owns that read. Command log: ${JSON.stringify(log)}`
     );
     // No PR was ever raised -- the failure happened before the create-pull-request dispatch.
     check(!log.some((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls')), 'Expected NO create-pull-request dispatch when the credential read failed');
@@ -301,12 +346,20 @@ test('finalizeAbort (Windows gitbash member): PR curl uses POSIX quoting, not Po
 
     check(result.reason === 'aborted-pr-created', `Expected the [ABORTED] PR to be created for a gitbash member, got: ${JSON.stringify(result)}`);
 
-    // The credential read took the bash form, never a PowerShell envelope.
-    check(log.some((c) => /^\$HOME\/\.fleet-git-credential-github\.bat$/.test(c)), `Expected the gitbash-shaped credential read, command log: ${JSON.stringify(log)}`);
+    // apra-fleet-3swo.7.6: the retired assertion here was the positive
+    // presence of the gitbash-shaped '$HOME/.fleet-git-credential-github.bat'
+    // read. The orchestrator dispatches no credential read at all now -- the
+    // handoff performs it server-side -- so that assertion is unsatisfiable by
+    // construction. Its property (this member's credential is handled in the
+    // bash dialect, never wrapped in a PowerShell envelope) is carried by the
+    // surviving negative assertion plus the fact that the create-PR curl was
+    // dispatched and POSIX-quoted at all: the command's SHAPE is decided by
+    // the provider builder BEFORE the handoff, and the simulator dispatches
+    // that already-built command through the same executeCommand path.
     check(!log.some((c) => /^powershell -EncodedCommand\b/.test(c)), `Expected NO PowerShell-enveloped dispatch for a gitbash member, command log: ${JSON.stringify(log)}`);
 
     const prCmd = log.find((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls'));
-    check(!!prCmd, `Expected a create-pull-request command to be dispatched, command log: ${JSON.stringify(log)}`);
+    check(!!prCmd, `Expected a create-pull-request command to be dispatched (routed through the handoff and substituted), command log: ${JSON.stringify(log)}`);
     // POSIX close-escape-reopen around the apostrophe; the PowerShell
     // doubled form (doer''s) must NOT appear -- bash would collapse it and
     // corrupt the JSON payload.
@@ -430,13 +483,18 @@ test('mock sprint (Windows member): Publish PR step reads the Windows credential
         check(!scenario.error, `Expected the sprint to complete without throwing, got: ${scenario.error ? `${scenario.error.constructor.name}: ${scenario.error.message}` : ''}`);
         check(scenario.result && scenario.result.status === 'success', `Expected the sprint to succeed (not blocked at Publish PR), got: ${JSON.stringify(scenario.result)}`);
 
-        const credCmd = scenario.commandLog.find((c) => /^powershell -EncodedCommand\b/.test(c));
-        check(!!credCmd, `Expected a Windows-shaped credential-read command to be dispatched, commandLog: ${JSON.stringify(scenario.commandLog)}`);
+        // apra-fleet-3swo.7.6: same re-anchor as the finalizeAbort happy path
+        // above -- the retired "a powershell -EncodedCommand credential read
+        // was dispatched" presence assertion is replaced by the positive
+        // create-PR dispatch + substituted-token pair below, which is what
+        // proves the credential was obtained and used. Both negative
+        // assertions (no POSIX-shaped read, no bare $HOME/~ expansion) stay.
+        check(!scenario.commandLog.some((c) => /^\$HOME\/\.fleet-git-credential-/.test(c)), `Expected NO POSIX-shaped credential-read command for a Windows member, commandLog: ${JSON.stringify(scenario.commandLog)}`);
         check(!scenario.commandLog.some((c) => hasBareHomeExpansion(c)), `Expected no dispatched command to carry a bare $HOME/~ expansion, commandLog: ${JSON.stringify(scenario.commandLog)}`);
 
         const prCmd = scenario.commandLog.find((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls'));
         check(!!prCmd, `Expected the Publish PR step to actually dispatch a create-pull-request command, commandLog: ${JSON.stringify(scenario.commandLog)}`);
-        check(prCmd.includes('Authorization: Bearer mock-windows-vcs-token'), `Expected the create-pull-request dispatch to carry the token read back from the Windows credential command, got: ${prCmd}`);
+        check(prCmd.includes('Authorization: Bearer mock-vcs-module-token'), `Expected the create-pull-request dispatch to carry the token the handoff substituted server-side, got: ${prCmd}`);
     });
 });
 
@@ -453,13 +511,22 @@ test('mock sprint (Windows member): Publish PR auth-retry loop re-reads the Wind
         check(!scenario.error, `Expected the sprint to complete without throwing after the reactive auth-heal retry, got: ${scenario.error ? `${scenario.error.constructor.name}: ${scenario.error.message}` : ''}`);
         check(scenario.result && scenario.result.status === 'success', `Expected the sprint to succeed after the retry, got: ${JSON.stringify(scenario.result)}`);
 
-        // runner.js:1840's auth-retry loop re-reads the credential (a SECOND
-        // powershell -EncodedCommand dispatch) after the 401-classified
-        // response, then retries the SAME create-pull-request command once.
-        const credCalls = scenario.commandLog.filter((c) => /^powershell -EncodedCommand\b/.test(c));
-        check(credCalls.length >= 2, `Expected the Windows credential to be re-read after the 401 (at least 2 credential-read dispatches), commandLog: ${JSON.stringify(scenario.commandLog)}`);
-
+        // apra-fleet-3swo.7.6: the auth-retry loop still re-provisions and
+        // retries the SAME create-pull-request command once, but the
+        // credential re-read now happens INSIDE the handoff -- once per
+        // vcs_credential_exec call, server-side -- so it is no longer
+        // observable in the commandLog. The retired assertion was "at least 2
+        // powershell -EncodedCommand credential reads"; its property (each
+        // attempt, including the post-401 retry, goes out carrying a freshly
+        // resolved credential rather than an empty/stale one) is re-expressed
+        // below as: BOTH create-pull-request attempts carry the substituted
+        // token.
         const prCalls = scenario.commandLog.filter((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls'));
+        check(
+            prCalls.length >= 2 && prCalls.every((c) => c.includes('Authorization: Bearer mock-vcs-module-token')),
+            `Expected BOTH create-pull-request attempts to carry the handoff-substituted token (proving the credential was resolved for the retry too), got: ${JSON.stringify(prCalls)}`
+        );
+
         check(prCalls.length === 2, `Expected exactly one bounded retry (2 total create-pull-request attempts), commandLog: ${JSON.stringify(scenario.commandLog)}`);
         check(
             scenario.logs.some((m) => m.includes('auth-classified failure') && m.includes('HTTP 401')),

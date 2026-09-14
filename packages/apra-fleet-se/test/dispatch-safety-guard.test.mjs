@@ -563,11 +563,21 @@ test('every command() call site in dolt-sync.mjs passes member_name or member_id
 // credential/PR dispatch added there is caught by this suite rather than at
 // runtime on a real fleet dispatch.
 const VCS_AUTH_PATH = path.join(__dirname, '../fleet-sprint/vcs-auth.mjs');
+// Three command() call sites left runner.js with this region:
 // provisionVcsAuthForMember()'s `git remote get-url origin` read,
 // readMemberVcsCredentialToken()'s git-credential-helper read, and
-// raiseVcsPrForMember()'s VCSModule create-pull-request dispatch -- exactly the
-// three that left runner.js.
-const EXPECTED_VCS_AUTH_COMMAND_COUNT = 3;
+// raiseVcsPrForMember()'s VCSModule create-pull-request dispatch.
+//
+// apra-fleet-3swo.7.6 took the THIRD one away: raiseVcsPrForMember() now
+// dispatches the create-pull-request command through the server-side
+// credential handoff (fleetApi.vcsCredentialExec / the vcs_credential_exec
+// tool) instead of command(), so the plaintext token never enters the
+// orchestrator. The other two remain and still pass member_name --
+// provisionVcsAuthForMember()'s git-remote read, and the credential-helper
+// read inside the now-deprecated, zero-call-site
+// readMemberVcsCredentialToken() (whose declaration is retired by a separate
+// facade-pin task, at which point this count drops to 1).
+const EXPECTED_VCS_AUTH_COMMAND_COUNT = 2;
 
 test('every command() call site in vcs-auth.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(VCS_AUTH_PATH);
