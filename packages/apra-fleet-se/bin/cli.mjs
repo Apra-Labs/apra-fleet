@@ -983,6 +983,22 @@ async function main() {
 
 function isMainModule() {
     try {
+        // Never self-execute when this module is loaded as a test file under a
+        // Node test runner. `node --test <file>` sets NODE_TEST_CONTEXT in the
+        // process that evaluates the file AND leaves process.argv[1] pointing at
+        // that file, so the URL comparison below would otherwise treat the test
+        // load as a direct CLI run and fire main() for real. The Phase-4
+        // move-only probe (scripts/phase4-moveonly-probe.mjs) does exactly this:
+        // it copies cli.mjs to a sibling `.phase4probe-cli.mjs` and runs
+        // `node --test` on it, so without this guard main() runs, exits 1 on the
+        // missing required flags, and the CURRENT revision fails to corroborate
+        // as an ANCHOR_DESYNC -- turning the move-only gate red. NODE_TEST_CONTEXT
+        // is stripped from the probe's spawn env, but `node --test` re-injects it
+        // into the file's own process, so it is a reliable "loaded as a test"
+        // signal. A production CLI launch (node bin/cli.mjs ...) and the workflow
+        // import trampoline (src/cli/workflow.ts, which is not a node --test run)
+        // never have it set, so both keep self-executing.
+        if (process.env.NODE_TEST_CONTEXT) return false;
         if (process.argv[1] === undefined) return false;
         const invokedUrl = pathToFileURL(process.argv[1]).href;
         const moduleUrl = import.meta.url;
