@@ -1,0 +1,13 @@
+{
+  "tool": "kb_export",
+  "case": "refusal-repo-path-invalid",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_ROOT>\\this-directory-does-not-exist"
+  },
+  "error": {
+    "message": "kb_export: repo_path does not exist or is not a directory: <SCRATCH_ROOT>\\this-directory-does-not-exist",
+    "thrown": true
+  },
+  "expected_error_code": "E-REPO-PATH-INVALID"
+}

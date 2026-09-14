@@ -1,0 +1,18 @@
+{
+  "tool": "kb_capture",
+  "case": "refusal-no-basis",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "type": "knowledge",
+    "title": "An entry with no cited source files",
+    "summary": "This capture cites no source_files at all.",
+    "content": "Nothing here can ever be falsified by the freshness sweep."
+  },
+  "error": {
+    "message": "kb capture rejected: an entry must cite at least one source file. An entry with no basis can never be staled by the freshness sweep, so nothing can ever falsify it. Entry: An entry with no cited source files",
+    "thrown": true
+  },
+  "expected_error_code": "E-NO-BASIS"
+}

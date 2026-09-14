@@ -1,0 +1,17 @@
+{
+  "tool": "kb_list",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"results\":[{\"id\":\"87e80521-1da1-4a7c-b427-b26497ed598d\",\"type\":\"context-cache\",\"confidence\":\"INFERRED\",\"title\":\"src/example.ts summary\",\"summary\":\"File summary cache entry for src/example.ts.\",\"symbols\":[\"exampleFn\"],\"source_files\":[\"src/example.ts\"]},{\"id\":\"e12c88e9-0a56-44dd-b1ee-c522b3559a3e\",\"type\":\"knowledge\",\"confidence\":\"INFERRED\",\"title\":\"exampleFn returns x + 1\",\"summary\":\"exampleFn in src/example.ts is a trivial increment helper used by the fixture corpus.\",\"symbols\":[\"exampleFn\"],\"source_files\":[\"src/example.ts\"]}],\"total\":2}"
+      }
+    ]
+  }
+}
