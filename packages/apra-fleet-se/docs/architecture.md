@@ -1412,7 +1412,16 @@ The approach was a strangler-fig extraction, not a rewrite:
   never swallowed by the probe, so operator stop still tears the run down. The
   hook fires strictly *outside* any git-sync bracket (`openSyncBracketCount ===
   0`), which is what lets the clean-state pause guard engage the pause instead
-  of deferring it.
+  of deferring it. Two known simplifications: (1) **the pause is sprint-wide,
+  not per-member** -- only the rate-limited member is re-probed while the run
+  is paused; every other member's dispatches are gated by the engine-level
+  pause rather than being individually probed for their own usage limit. (2)
+  **a pause longer than ~30 minutes can let the cloud idle manager
+  (`src/services/cloud/idle-manager.ts`, `DEFAULT_IDLE_TIMEOUT_MS`) suspend a
+  cloud member's VM** while it sits reservation-released during the pause;
+  `ensureCloudReady` (`src/tools/execute-prompt.ts`) transparently restarts it
+  on the probe dispatch that follows `requestResume`, so this is logged but
+  has no special handling in the controller itself.
 - **Pre-sprint validation refusals are typed.** `PreSprintValidationError`
   (a `WorkflowError` subclass, `errors.mjs`) replaces an untyped `Error`
   distinguishable only by prose with a `reason` discriminator drawn from a

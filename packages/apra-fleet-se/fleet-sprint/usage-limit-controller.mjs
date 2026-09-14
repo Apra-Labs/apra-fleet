@@ -24,6 +24,18 @@
 // controller only ever reads the signal's resumeAt or steps the reprobe
 // backoff ladder from role-policies.mjs. It deliberately hard-codes no
 // millisecond wait window of its own.
+//
+// KNOWN SIMPLIFICATIONS (apra-fleet-hzeb.10 -- documented, not fixed here):
+// (1) the pause this controller requests is SPRINT-WIDE, not per-member --
+// only the rate-limited `member` is re-probed above; every other member's
+// dispatches are simply gated by the engine's cooperative pause rather than
+// each being individually probed for its own usage limit.
+// (2) a pause held longer than ~30 minutes (DEFAULT_IDLE_TIMEOUT_MS in
+// src/services/cloud/idle-manager.ts) can let the idle manager suspend a
+// cloud member's VM while it sits reservation-released during the wait;
+// ensureCloudReady (src/tools/execute-prompt.ts) transparently restarts it
+// on the probe dispatch above, so this is logged but given no special
+// handling here.
 import { CancelledError } from '@apralabs/apra-fleet-workflow';
 import { isUsageLimitDispatchError, usageLimitOf, UsageLimitWaitExhaustedError } from './errors.mjs';
 import { USAGE_LIMIT_BUDGET_DEFAULTS } from './role-policies.mjs';
