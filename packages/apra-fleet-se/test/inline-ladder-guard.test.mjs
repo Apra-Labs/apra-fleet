@@ -572,34 +572,40 @@ describe('inline-ladder guard: findInlineLadderViolations() unit behaviour', () 
         // from "no member recorded" (not this guard's hazard -- there is no
         // routing expression to have silently failed to search for).
         //
-        // finding, not falsified (apra-fleet-3swo.69): unlike the two cases
-        // above, no mutation confined to the hazard logic at
-        // inline-ladder-guard.mjs:125-151 (or its guarding early-returns)
-        // makes THIS case fail, and that was verified, not assumed. Tried
-        // three, each restored byte-for-byte before the next: (1) deleting
-        // the throw block entirely -- still passed; (2) making the throw
-        // unconditional by dropping the `if (dispatch.member)` guard -- still
-        // passed; (3) removing the `agentSites.length === 0` early return at
-        // line 106 -- still passed. The reason is structural, not a gap in
-        // the mutations tried: this fixture's src ('export const nothing =
-        // 1;\n') contains no agent()/command() call site at all, so (with
-        // mutation 3 undone) findInlineLadderViolations() returns [] before
-        // the per-role loop is ever entered; and even with that early return
-        // removed too, this policy row has no `member` key at all, so the
-        // loop still falls through to a plain `continue` regardless of any
-        // mutation to the member-resolution branch, and violations stays []
-        // by construction. Making this case genuinely falsifiable would
-        // require giving its fixture a real agent() call site, which this
-        // bead's criteria forbid changing (fixtures are frozen scope here) --
-        // reported as a criteria defect on apra-fleet-3swo.69 rather than
-        // worked around.
+        // falsified (apra-fleet-3swo.69): the fixture now carries a real
+        // agent() call site bearing NO_MEMBER_ROLE_ANCHOR (same shape as the
+        // two (g) cases above), so the [] this case expects now comes out of
+        // the real per-role loop's plain `continue` at inline-ladder-
+        // guard.mjs:152 (because this policy row has no `member` key) rather
+        // than the agentSites.length === 0 early return at line 106 -- the
+        // call site exists but is simply never paired with anything, since
+        // pairs.add() is never reached for a dispatch with no member. Applied
+        // the prescribed mutation -- dropping the `if (dispatch.member)`
+        // guard at inline-ladder-guard.mjs:137 so the throw block is
+        // unconditional -- and re-ran this case: it FAILED with
+        // "TypeError: Cannot read properties of undefined (reading 'kind')"
+        // thrown out of findInlineLadderViolations() (dispatch.member is
+        // undefined for this row, so `dispatch.member.kind` on the now-
+        // unconditional path throws before assert.deepStrictEqual ever runs),
+        // confirming this case is genuinely discriminating now. Restored the
+        // guard byte-for-byte afterward; git diff confirmed only this test
+        // file's intended edit remains.
         const fixtureRolePolicies = {
             'no-member-role': {
                 ladderAnchor: 'NO_MEMBER_ROLE_ANCHOR',
             },
         };
+        const src = [
+            'export async function dispatchNoMember(agent) {',
+            "    await agent('prompt text', {",
+            '        member_name: someUnresolvedExpression,',
+            '        // NO_MEMBER_ROLE_ANCHOR',
+            '    });',
+            '}',
+            '',
+        ].join('\n');
         assert.deepStrictEqual(
-            findInlineLadderViolations('export const nothing = 1;\n', 'no-member.mjs', ['no-member-role'], fixtureRolePolicies),
+            findInlineLadderViolations(src, 'no-member.mjs', ['no-member-role'], fixtureRolePolicies),
             []
         );
     });
