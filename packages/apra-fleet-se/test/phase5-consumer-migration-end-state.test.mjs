@@ -36,13 +36,30 @@ const COORDINATION_SRC = fs.readFileSync(path.join(FLEET_SPRINT_DIR, 'coordinati
 const FACADE_TEST_SRC = fs.readFileSync(path.join(__dirname, 'vcs-auth-extraction-facade.test.mjs'), 'utf8');
 const LEAF_FACADE_TEST_SRC = fs.readFileSync(path.join(__dirname, 'phase1-leaf-facade-completeness.test.mjs'), 'utf8');
 
-// Every .mjs/.js file directly under fleet-sprint/ (non-recursive is enough --
-// the retired pair was a vcs-auth.mjs-local pair with no sub-directory
-// participants; see the bead description's own scoped assertion).
-const FLEET_SPRINT_SOURCE_FILES = fs
-    .readdirSync(FLEET_SPRINT_DIR)
-    .filter((name) => name.endsWith('.mjs') || name.endsWith('.js'))
-    .map((name) => ({ name, src: fs.readFileSync(path.join(FLEET_SPRINT_DIR, name), 'utf8') }));
+// Every .mjs/.js file anywhere under fleet-sprint/, recursively (including
+// phases/ and vcs-providers/), skipping docs/ and skills/ which hold prose
+// and skill markdown/config, not orchestrator source. A non-recursive scan
+// would miss production modules under phases/ and vcs-providers/ that could
+// reintroduce either retired symbol or a production call site of
+// buildCredentialReadCommand without this file noticing.
+const SKIP_DIR_NAMES = new Set(['docs', 'skills']);
+
+function collectSourceFiles(dir, baseDir) {
+    const results = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+            if (SKIP_DIR_NAMES.has(entry.name)) continue;
+            results.push(...collectSourceFiles(path.join(dir, entry.name), baseDir));
+            continue;
+        }
+        if (!entry.name.endsWith('.mjs') && !entry.name.endsWith('.js')) continue;
+        const fullPath = path.join(dir, entry.name);
+        results.push({ name: path.relative(baseDir, fullPath), src: fs.readFileSync(fullPath, 'utf8') });
+    }
+    return results;
+}
+
+const FLEET_SPRINT_SOURCE_FILES = collectSourceFiles(FLEET_SPRINT_DIR, FLEET_SPRINT_DIR);
 
 const RETIRED_NAMES = ['readMemberVcsCredentialToken', 'parseExpiresAtFromProvisionText'];
 
@@ -141,6 +158,16 @@ describe('(3) no prose-shaped branching drives control flow in the two consumer 
     // human-readable provision/reservation result summary must never be
     // inspected with includes()/match()/toLowerCase() to decide what to do
     // next in either module.
+    //
+    // This pattern deliberately bans EVERY includes()/match()/toLowerCase()
+    // call in these two files, not just ones inspecting a result/summary
+    // value -- both files are zero-hit today and are small, focused
+    // consumer modules with no legitimate reason to reach for those methods
+    // on anything else. If a future change needs a genuine non-prose use
+    // (e.g. Array.prototype.includes membership test) in either file, that
+    // is a signal to revisit this blanket ban rather than to weaken it
+    // silently; narrow it then, with the concrete case in hand, instead of
+    // guessing at a narrower pattern now.
     const PROSE_BRANCH_PATTERN = /\.includes\(|\.match\(|\.toLowerCase\(\)/;
 
     test('member-provisioning.mjs has zero prose-branching call sites', () => {
