@@ -14,6 +14,10 @@ import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { runCmd } from './helpers/bd-replay.mjs';
 import { extractVerifyIds } from './helpers/verify-clause.mjs';
 import { StalledSprintError } from '../fleet-sprint/errors.mjs';
+// apra-fleet-j918.7.8: the determinism test resets dolt-sync's process-
+// lifetime sync.remote/tip memoization (apra-fleet-akuv) before its own
+// independent second run -- see that test for why.
+import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -581,6 +585,22 @@ function normalizeText(text, idMap, tempDir) {
  * @param {string} tag - unique per-call scratch-dir suffix
  * @returns {Promise<{ transcript: object[], result: object }>}
  */
+// apra-fleet-j918.7.8: memoizes the ONE 'golden-main' run so the snapshot
+// test and the determinism test's "run1" share it instead of each paying for
+// their own byte-identically-configured full sprint run. Caches the PROMISE
+// (not the resolved value) so concurrent callers await the same in-flight
+// run rather than racing two overlapping sprints -- safe regardless of
+// node:test's execution order for this file's top-level tests. The
+// determinism test still performs its OWN, genuinely independent second run
+// (run2, tag 'golden-det-2') and compares it against this memoized run1, so
+// the comparison is never a run against itself -- see that test for the
+// falsification record proving it is not a tautology.
+let goldenMainRunPromise = null;
+function goldenMainRun() {
+    if (!goldenMainRunPromise) goldenMainRunPromise = runGoldenScenario('golden-main');
+    return goldenMainRunPromise;
+}
+
 async function runGoldenScenario(tag) {
     const { tempDir, epicBead } = await setup(tag);
     const dispatchLog = [];
@@ -694,7 +714,7 @@ function diffFirstDivergence(goldenJsonl, actualJsonl) {
 }
 
 test('golden transcript: mock sprint happy-path dispatch sequence matches the committed snapshot', async (t) => {
-    const { transcript, result } = await runGoldenScenario('golden-main');
+    const { transcript, result } = await goldenMainRun();
     const actualJsonl = transcriptToJsonl(transcript);
 
     assert.strictEqual(result.status, 'success', `Golden scenario did not succeed: ${JSON.stringify(result)}`);
@@ -809,8 +829,37 @@ test('golden transcript: Integ Test closing the childful epic in the same cycle 
     );
 });
 
+// apra-fleet-j918.7.8: run1 is the MEMOIZED 'golden-main' run the snapshot
+// test above already performed (goldenMainRun()) -- this file used to pay
+// for a second, byte-identically-configured full sprint run purely to have
+// a "first run" to diff against. run2 is still a genuinely INDEPENDENT
+// second execution (tag 'golden-det-2', its own tempDir, its own full
+// sprint), so this remains a real two-independent-runs comparison, not a
+// run compared against itself.
+//
+// FALSIFICATION (confirmed by hand): temporarily inserting
+// `run2.transcript[0] = { ...run2.transcript[0], seq: 'MUTATED' };`
+// immediately before the jsonl1/jsonl2 comparison below made this test fail
+// with the expected "produced different transcripts" assert.fail and a
+// first-divergence diff naming the mutated `seq` field; the line was removed
+// immediately afterward and `git diff` confirmed a byte-clean revert. This
+// confirms run1 and run2 are still compared as two distinct values, not
+// short-circuited into a tautological self-comparison.
 test('golden transcript: two consecutive runs of the mock sprint produce an identical transcript (determinism proof)', async () => {
-    const run1 = await runGoldenScenario('golden-det-1');
+    const run1 = await goldenMainRun();
+    // run1 (goldenMainRun()) may have been the FIRST sprint scenario this
+    // test process ever ran, which is when dolt-sync.mjs's per-member
+    // sync.remote/tip memoization (apra-fleet-akuv) is still cold -- discovered
+    // by hand while writing this test: without this reset, run2 comes out
+    // warm-cache (its first git-sync-bracket dispatch is a plain `git fetch`
+    // instead of the cold-cache `bd config get sync.remote --json` probe),
+    // which failed this test's comparison for a reason that has nothing to do
+    // with actual sprint non-determinism. Resetting here puts run2 back in the
+    // same cold-cache state run1 started in, so the comparison is apples to
+    // apples again.
+    invalidateSyncRemoteCache();
+    clearLastSyncedTip();
+    clearTipProbeFailures();
     const run2 = await runGoldenScenario('golden-det-2');
 
     const jsonl1 = transcriptToJsonl(run1.transcript);
