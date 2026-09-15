@@ -83,17 +83,25 @@ this coverage was placed in `test/slow`, which is excluded from the default
 suite and only reached by `npm run test:slow` -- the exact trap the KB entry
 for `test/slow/dispatch-watchdog-timer-ref.test.mjs` warns about.
 
-## Additivity: `mock-sprint-harness.mjs` is unchanged
+## Additivity: `mock-sprint-harness.mjs`'s git/gh mock and failure hook are unchanged
 
 `git log --oneline -- packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs`
-shows the last commit touching that file is `16cf4a2d`, the merge this
-sprint branched from -- no commit in this sprint touched it. Its
-unconditional git/gh mock (`mockCmdResult(0, 'ok (mocked -- no real git
-remote in this mock sprint)', '')`, guarded on `/^(git|gh)\s/`) and its
-`gitGhFailurePattern` failure-injection hook are byte-identical to before
-this feature started. 99 files under `packages/apra-fleet-se/test/` still
-reference it (94 of the `*.test.mjs` files directly), confirming this
-feature's real-execution additions are purely additive, not a replacement.
+shows the last commit touching that file was `16cf4a2d`, the merge this
+sprint branched from, when this section was first written. That is no
+longer true at branch HEAD: commit `82892236` (apra-fleet-j918.8.8) later
+touched the file, but only to correct the harness's fabricated Azure DevOps
+PR-create response body (`_links.web.href`, which no consumer ever read) to
+match the fields `vcs-providers/azure-devops.mjs`'s `mapPullRequestResponse`
+and the real `vcs-http-stub.test.mjs` `AZURE_CREATE_PR_201` fixture actually
+return -- unrelated to this feature's git/dolt real-execution scope
+(`git diff 16cf4a2d 82892236 -- packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs`
+confirms the diff is confined to that one response body). The unconditional
+git/gh mock (`mockCmdResult(0, 'ok (mocked -- no real git remote in this
+mock sprint)', '')`, guarded on `/^(git|gh)\s/`) and the `gitGhFailurePattern`
+failure-injection hook remain byte-identical to before this feature started.
+99 files under `packages/apra-fleet-se/test/` still reference the harness
+(94 of the `*.test.mjs` files directly), confirming this feature's
+real-execution additions are purely additive, not a replacement.
 
 ## Side effects: no artifacts outside each test's own sandbox
 
