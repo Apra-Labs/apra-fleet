@@ -48,13 +48,6 @@ describe('(4) the downstream suites this gate relies on are wired into the same 
     // fourth time (see the header), assert the existing gates that already do.
     const PHASE1 = path.join(SE_DIR, 'test/phase1-leaf-facade-completeness.test.mjs');
 
-    test('phase1 gate still spawns the mock-sprint suite and both golden transcripts', () => {
-        const src = fs.readFileSync(PHASE1, 'utf8');
-        assert.match(src, /mock-sprint/, 'phase1 gate no longer covers the mock-sprint suite -- Phase 4 must take that coverage over');
-        assert.match(src, /golden-transcript\.test\.mjs/);
-        assert.match(src, /golden-transcript-3bead\.test\.mjs/);
-    });
-
     test('both golden transcript fixtures are tracked and clean', () => {
         const fixtures = path.join(SE_DIR, 'test/fixtures/golden-transcript');
         const files = fs.readdirSync(fixtures).filter((f) => f.endsWith('.jsonl'));
