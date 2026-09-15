@@ -51,20 +51,26 @@ const GOLDEN_FIXTURE_DIR = path.join(__dirname, 'fixtures', 'golden-transcript')
 // -----------------------------------------------------------------------------
 // apra-fleet-3yuu.1: shared, env-overridable nested-suite spawn budget.
 //
-// Both describe (3) (golden-transcript) and describe (4) (mock-sprint) below
-// spawn a nested `node --test` child via execFileSync and used to hard-code
-// their own timeout literal (60 seconds / 120 seconds respectively). Under a real
-// bd/dolt-backed run those budgets are roughly an order of magnitude short --
-// golden-transcript.test.mjs alone took 562s standalone in the failing run
-// this bead fixes (apra-fleet-3yuu) -- so both now derive from ONE named
-// constant, overridable by a single env var, defaulting well above that
-// observed runtime. Raising the default further (or overriding per-run) is
-// the correct fix if a real, slower backend needs more headroom; if the
-// raised budget still times out, that is a genuine signal for the separate
-// bd+dolt per-dispatch latency work, not a reason to raise this further.
+// describe (3) (golden-transcript) below spawns a nested `node --test` child
+// via execFileSync and used to hard-code its own timeout literal (60
+// seconds). Under a real bd/dolt-backed run that budget is roughly an order
+// of magnitude short -- golden-transcript.test.mjs alone took 562s standalone
+// in the failing run this bead fixes (apra-fleet-3yuu) -- so it derives from
+// this named constant, overridable by a single env var, defaulting well
+// above that observed runtime. Raising the default further (or overriding
+// per-run) is the correct fix if a real, slower backend needs more headroom;
+// if the raised budget still times out, that is a genuine signal for the
+// separate bd+dolt per-dispatch latency work, not a reason to raise this
+// further.
+//
+// This constant used to also budget a second nested spawn, describe (4)'s
+// full mock-sprint suite run; that run was deleted in apra-fleet-j918.3.2 as
+// a duplicate of phase3-dispatch-engine-completeness.test.mjs's stronger
+// copy (which derives its own, separate budget), leaving describe (3) as the
+// sole consumer of this constant.
 //
 // Override: set PHASE1_NESTED_SUITE_TIMEOUT_MS (milliseconds) in the
-// environment to use a different budget for both nested spawns below.
+// environment to use a different budget for the nested spawn below.
 // -----------------------------------------------------------------------------
 const DEFAULT_NESTED_SUITE_TIMEOUT_MS = 900_000;
 
@@ -463,64 +469,6 @@ describe('(3) golden transcripts reproduce with the fixture directory untouched'
             '',
             `running the golden transcript suites must not rewrite any fixture file. git reported:\n${after}`,
         );
-    });
-});
-
-// -----------------------------------------------------------------------------
-// (4) Every mock-sprint test file passes.
-//
-// Scoped to test/mock-sprint-*.test.mjs -- the package's own `npm test`
-// (`test/*.test.mjs`, non-recursive glob) and `npm run test:unit` boundary --
-// not test/slow/mock-sprint-*.test.mjs, which the repo already separates into
-// its own `test:slow` script specifically because it is expensive (a
-// multi-minute stalled-dispatch scenario); folding it in here would make this
-// one facade-completeness test the slowest thing in the whole suite for a
-// scenario this bead's scope (the Phase 1 leaf extractions) never touched.
-// No APRA_FLEET_BD_MOCK override is passed: bd-replay.mjs's bdMode() already
-// defaults an unset/empty value to 'replay' (recorded-fixture) mode, which is
-// what plain `npm test` runs under too.
-// -----------------------------------------------------------------------------
-describe('(4) every mock-sprint test file passes', () => {
-    test('node --test over every test/mock-sprint-*.test.mjs file exits clean', () => {
-        const testDir = path.join(SE_DIR, 'test');
-        const mockSprintFiles = fs
-            .readdirSync(testDir)
-            .filter((name) => name.startsWith('mock-sprint-') && name.endsWith('.test.mjs'))
-            .sort();
-        assert.ok(mockSprintFiles.length >= 50, `expected a substantial mock-sprint test suite, found ${mockSprintFiles.length} file(s)`);
-
-        // NODE_TEST_CONTEXT must be stripped from the child's env -- see the
-        // detailed rationale in describe (3) above. Without this, node --test
-        // over 62 files returns empty stdout and exit 0 in well under a
-        // second (verified directly), i.e. a false pass that never actually
-        // ran any of the 62 files.
-        const env = { ...process.env };
-        delete env.NODE_TEST_CONTEXT;
-
-        // Passed as an explicit argument list (not a shell glob) so this
-        // spawn needs no shell -- consistent with this repo's guard-test
-        // convention of never letting a dynamically-built string reach a
-        // shell. maxBuffer raised well past Node's 1MB default: 62 mock-
-        // sprint files produce several MB of TAP+workflow-log output, and the
-        // default silently ENOBUFS/overflows on that volume (verified
-        // directly).
-        const childOut = runNestedSuite(
-            'mock-sprint',
-            ['--test', '--test-concurrency=8', ...mockSprintFiles.map((f) => path.join('test', f))],
-            { env, maxBuffer: 200 * 1024 * 1024 },
-        );
-
-        // Falsifiability guard against a no-op child run (see (3) above)
-        // silently reading as success: pin a plausible lower bound on the
-        // number of tests actually run (at least one per file) and zero
-        // failures.
-        const passMatch = childOut.match(/^# pass (\d+)$/m);
-        assert.ok(
-            passMatch && Number(passMatch[1]) >= mockSprintFiles.length,
-            `expected at least ${mockSprintFiles.length} passing tests (one per mock-sprint file) from the child run; got output tail:\n${childOut.slice(-2000)}`,
-        );
-        const failMatch = childOut.match(/^# fail (\d+)$/m);
-        assert.equal(failMatch && failMatch[1], '0', `expected zero failures across the mock-sprint suite; got output tail:\n${childOut.slice(-4000)}`);
     });
 });
 
