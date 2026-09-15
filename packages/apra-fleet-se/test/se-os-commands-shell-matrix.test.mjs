@@ -1,5 +1,10 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
     getSeCommands,
@@ -24,6 +29,18 @@ import { crtParseCommandLine, legacyBinderCommandLine } from './helpers/windows-
 // runner.js's now-removed wrapPowerShellEncodedForMember -- see commit
 // 593f6c08) golden-pins the PowerShell envelope so a change to that shape
 // fails loudly here rather than silently drifting.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/** The full resolution matrix getSeCommands() must answer for. */
+const SHELL_MATRIX = [
+    { os: 'linux', shell: '' },
+    { os: 'darwin', shell: '' },
+    { os: 'windows', shell: 'gitbash' },
+    { os: 'windows', shell: 'pwsh7' },
+    { os: 'windows', shell: 'powershell5' },
+    { os: 'windows', shell: '' },
+];
+
 function coreWrapPowerShellEncoded(psScript) {
     const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`;
     return `powershell -EncodedCommand ${Buffer.from(guarded, 'utf16le').toString('base64')}`;
@@ -397,29 +414,189 @@ describe('VCS create-pull-request curl builders quote by member shell across the
 });
 
 describe('the whole interface is exercisable with neither gitbash nor PowerShell installed on the host (apra-fleet-7dir.3.4)', () => {
-    test('no se-os-commands implementation spawns a process or shells out to build a command string', () => {
-        // Every primitive below is pure string construction; none of them
-        // should require (or attempt) to invoke a real shell binary. Driving
-        // the full resolution + read-credential-helper matrix here, with no
-        // child_process interception installed and no failure, is itself the
-        // proof: if any implementation shelled out on a host with neither
-        // gitbash.exe nor powershell.exe on PATH, this test would throw
-        // ENOENT rather than return a string.
-        const matrix = [
-            { os: 'linux', shell: '' },
-            { os: 'darwin', shell: '' },
-            { os: 'windows', shell: 'gitbash' },
-            { os: 'windows', shell: 'pwsh7' },
-            { os: 'windows', shell: 'powershell5' },
-            { os: 'windows', shell: '' },
-        ];
-        for (const target of matrix) {
-            const cmds = getSeCommands(target);
-            const { command, descriptor } = cmds.readCredentialHelper('github');
-            assert.equal(typeof command, 'string');
-            assert.ok(command.length > 0);
-            assert.equal(typeof descriptor, 'string');
-            assert.ok(descriptor.length > 0);
+    // apra-fleet-j918.6.3: this test used to be named for spawning but only
+    // asserted `typeof command === 'string'`, which cannot catch a quoting or
+    // escaping defect in the emitted command -- the one class of bug that
+    // actually reaches a member. Prove the claim properly instead: BUILD every
+    // command in a child node process whose PATH is an EMPTY directory, so any
+    // implementation that shelled out to a shell binary fails with ENOENT
+    // rather than being taken on trust.
+    test('no se-os-commands implementation spawns a process or shells out to build a command string (PATH emptied, so a shell-out would ENOENT)', () => {
+        const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-nopath-'));
+        const modUrl = pathToFileURL(path.join(__dirname, '..', 'fleet-sprint', 'se-os-commands.mjs')).href;
+        const script = `
+            import { getSeCommands } from ${JSON.stringify(modUrl)};
+            const matrix = ${JSON.stringify(SHELL_MATRIX)};
+            const out = matrix.map((t) => ({ t, r: getSeCommands(t).readCredentialHelper('github') }));
+            process.stdout.write(JSON.stringify(out));
+        `;
+        try {
+            const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+                encoding: 'utf8',
+                // PATH is a real but EMPTY directory: nothing is executable.
+                env: { ...process.env, PATH: emptyDir },
+            });
+            assert.equal(res.status, 0, `building the command matrix with an empty PATH must not spawn anything.\nstderr: ${res.stderr}`);
+            const built = JSON.parse(res.stdout);
+            assert.equal(built.length, SHELL_MATRIX.length);
+            for (const { t, r } of built) {
+                assert.ok(r.command && r.command.length > 0, `empty command for ${JSON.stringify(t)}`);
+                assert.ok(r.descriptor && r.descriptor.length > 0, `empty descriptor for ${JSON.stringify(t)}`);
+            }
+        } finally {
+            fs.rmSync(emptyDir, { recursive: true, force: true });
+        }
+    });
+});
+
+// =============================================================================
+// apra-fleet-j918.6.3 -- ARGUMENT-LEVEL round-trip of the emitted commands.
+//
+// Everything above this point asserts on command TEXT. Text assertions cannot
+// answer the only question that matters at dispatch time: given this string,
+// what arguments does the target shell actually deliver to the helper? A
+// mis-quoted path does not change the text in any way a `typeof` or even a
+// substring assertion notices -- it changes what the shell splits it into.
+//
+// So: run the emitted command through the REAL target shell against a real
+// executable stand-in for the credential helper, and assert on the argv that
+// stand-in receives.
+// =============================================================================
+
+const HOSTILE_DIRNAME = "O'Brien Home";           // apostrophe + space
+const PLAIN_DIRNAME = 'plain-home';
+
+/** Write an executable stand-in for the deployed credential helper that
+ *  reports the argv it was handed. Named exactly as the production helper is,
+ *  including the .bat extension for the Windows shapes -- with a /bin/sh
+ *  shebang so a POSIX host can still exec it (the extension is what the
+ *  emitted command names; the interpreter is this harness's business). */
+function writeHelperStandIn(dir, fileName) {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, fileName);
+    fs.writeFileSync(file, '#!/bin/sh\necho "ARGV0=$0"\necho "ARGC=$#"\nfor a in "$@"; do echo "ARG=$a"; done\n');
+    fs.chmodSync(file, 0o755);
+    return file;
+}
+
+function parseArgvReport(stdout) {
+    const lines = String(stdout).split('\n');
+    const argv0 = (lines.find((l) => l.startsWith('ARGV0=')) || '').slice('ARGV0='.length);
+    const argcLine = lines.find((l) => l.startsWith('ARGC='));
+    const args = lines.filter((l) => l.startsWith('ARG=')).map((l) => l.slice('ARG='.length));
+    return { argv0, argc: argcLine ? Number(argcLine.slice('ARGC='.length)) : null, args };
+}
+
+function detectPowerShell() {
+    for (const bin of ['pwsh', 'powershell.exe', 'powershell']) {
+        let probe;
+        try {
+            probe = spawnSync(bin, ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' });
+        } catch {
+            continue;
+        }
+        if (probe && probe.status === 0 && probe.stdout.trim()) return { bin, version: probe.stdout.trim() };
+    }
+    return null;
+}
+const POWERSHELL = detectPowerShell();
+// A missing shell DEGRADES LOUDLY with a named reason (CLAUDE.md: an advisory
+// warning that never blocks is a false success), never to a silent pass.
+const POWERSHELL_SKIP = POWERSHELL
+    ? false
+    : 'DEGRADED: no real PowerShell on PATH (tried pwsh, powershell.exe, powershell), so the emitted'
+      + ' PowerShell command cannot be ROUND-TRIPPED and the arguments it would deliver are unverified'
+      + ' on this host. Install PowerShell 7 (`pwsh`) -- it is cross-platform -- to run this test.';
+const BASH = spawnSync('bash', ['-c', 'echo ok'], { encoding: 'utf8' }).status === 0;
+const BASH_SKIP = BASH
+    ? false
+    : 'DEGRADED: no bash on PATH, so the emitted POSIX/gitbash command cannot be ROUND-TRIPPED and the'
+      + ' arguments it would deliver are unverified on this host.';
+
+describe('emitted commands round-trip through the REAL target shell and deliver the arguments they claim (apra-fleet-j918.6.3)', () => {
+    for (const target of [
+        { label: 'windows+pwsh7', os: 'windows', shell: 'pwsh7' },
+        { label: 'windows+powershell5', os: 'windows', shell: 'powershell5' },
+        { label: 'windows+unresolved-shell', os: 'windows', shell: '' },
+    ]) {
+        test(`${target.label}: real PowerShell execs the helper at USERPROFILE with ZERO arguments, even when that path carries a quote and a space`, { skip: POWERSHELL_SKIP }, () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'se-psrt-'));
+            try {
+                const home = path.join(root, HOSTILE_DIRNAME);
+                const helper = writeHelperStandIn(home, '.fleet-git-credential-github.bat');
+                const { command, descriptor } = getSeCommands(target).readCredentialHelper('github');
+
+                // Decode the REAL emitted envelope; do not rebuild it.
+                const m = command.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)$/);
+                assert.ok(m, `expected a -EncodedCommand envelope for ${target.label}, got: ${command}`);
+                const script = Buffer.from(m[1], 'base64').toString('utf16le');
+                assert.match(descriptor, /USERPROFILE/, 'the Windows descriptor names USERPROFILE');
+
+                // Point the env var the emitted script reads at the hostile
+                // home, then let real PowerShell parse and run the script.
+                const preamble = `$env:USERPROFILE = '${home.replace(/'/g, "''")}'; `;
+                const res = spawnSync(POWERSHELL.bin, ['-NoProfile', '-Command', preamble + script], { encoding: 'utf8' });
+                assert.equal(res.status, 0, `the emitted command must run cleanly under ${POWERSHELL.bin} ${POWERSHELL.version}.\nstderr: ${res.stderr}`);
+
+                const got = parseArgvReport(res.stdout);
+                assert.equal(
+                    path.resolve(got.argv0),
+                    path.resolve(helper),
+                    `${target.label}: PowerShell must exec exactly the deployed helper. A quoting defect splits the path at the space or terminates the literal at the apostrophe.\nstdout: ${res.stdout}`,
+                );
+                assert.equal(got.argc, 0, `${target.label}: the credential helper takes NO arguments; got ${got.argc}: ${JSON.stringify(got.args)}`);
+            } finally {
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+        });
+    }
+
+    for (const target of [
+        { label: 'linux', os: 'linux', shell: '', file: '.fleet-git-credential-github' },
+        { label: 'darwin', os: 'darwin', shell: '', file: '.fleet-git-credential-github' },
+        { label: 'windows+gitbash', os: 'windows', shell: 'gitbash', file: '.fleet-git-credential-github.bat' },
+    ]) {
+        test(`${target.label}: real bash execs the helper at HOME with ZERO arguments`, { skip: BASH_SKIP }, () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'se-shrt-'));
+            try {
+                const home = path.join(root, PLAIN_DIRNAME);
+                const helper = writeHelperStandIn(home, target.file);
+                const { command } = getSeCommands(target).readCredentialHelper('github');
+                const res = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { ...process.env, HOME: home } });
+                assert.equal(res.status, 0, `the emitted command must run cleanly under bash.\ncommand: ${command}\nstderr: ${res.stderr}`);
+
+                const got = parseArgvReport(res.stdout);
+                assert.equal(path.resolve(got.argv0), path.resolve(helper), `${target.label}: bash must exec exactly the deployed helper.\nstdout: ${res.stdout}`);
+                assert.equal(got.argc, 0, `${target.label}: the credential helper takes NO arguments; got ${got.argc}: ${JSON.stringify(got.args)}`);
+            } finally {
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+        });
+    }
+
+    // KNOWN LIMIT, pinned deliberately rather than left as a silent gap.
+    //
+    // The POSIX/gitbash shapes emit a BARE `$HOME/...` word, so the member's
+    // own shell word-splits it when HOME contains whitespace and the helper is
+    // never found. The PowerShell shapes above do NOT have this weakness (they
+    // quote the path, which is why the hostile-path test passes for them).
+    //
+    // This is asserted as the CURRENT behaviour, not endorsed: if the POSIX
+    // emitters are ever changed to quote the path, this test fails loudly and
+    // should be replaced by the same positive assertion the PowerShell targets
+    // already make -- it must not be able to regress back unnoticed either way.
+    test('KNOWN LIMIT: the POSIX/gitbash shapes emit a BARE $HOME word, so a HOME containing a space does not resolve', { skip: BASH_SKIP }, () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'se-shrt-limit-'));
+        try {
+            const home = path.join(root, HOSTILE_DIRNAME);
+            writeHelperStandIn(home, '.fleet-git-credential-github');
+            const { command } = getSeCommands({ os: 'linux', shell: '' }).readCredentialHelper('github');
+            assert.match(command, /^\$HOME\//, 'precondition: the POSIX shape is a bare $HOME word, unquoted');
+            const res = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { ...process.env, HOME: home } });
+            assert.notEqual(res.status, 0, 'a spaced HOME currently FAILS to resolve for the POSIX shape -- if this now succeeds, the emitters were fixed and this known-limit pin must become a positive assertion');
+            assert.match(`${res.stderr}${res.stdout}`, /No such file or directory/i, `expected a word-splitting failure, got: ${res.stderr || res.stdout}`);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
         }
     });
 });

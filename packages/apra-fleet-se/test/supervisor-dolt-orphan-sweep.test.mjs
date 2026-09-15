@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
     createDoltOrphanSweep,
     buildSweepCommand,
@@ -37,6 +40,116 @@ function decodeWinCommand(wrapped) {
     const m = wrapped.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)$/i);
     assert.ok(m, `expected a -EncodedCommand envelope, got: ${wrapped}`);
     return Buffer.from(m[1], 'base64').toString('utf16le');
+}
+
+// =============================================================================
+// apra-fleet-j918.6.3 -- REAL PowerShell execution of the generated win32 probe.
+//
+// The win32 seam tests below used to extract the generated `-like` clause with
+// a regex and REBUILD it in JavaScript (`split('*').join('.*')`). That is a
+// re-implementation of PowerShell's semantics, not PowerShell: it could not
+// catch a quoting defect, could not catch the `$Matches` clobbering the
+// generated script's own comment warns about, and silently asserted on JS
+// regex behaviour rather than on what a Windows member would actually select.
+//
+// Now the REAL script runs in a REAL PowerShell. `pwsh` (PowerShell 7) is
+// cross-platform, so this executes on Linux and macOS too -- the probe's
+// filter is ordinary PowerShell expression evaluation with no Windows-only
+// dependency except the process SOURCE.
+//
+// EXACTLY ONE substitution is made: the `Get-CimInstance Win32_Process ...`
+// source is swapped for a literal array of fabricated candidate objects.
+// That is unavoidable (Win32_Process is Windows-only) and DESIRABLE (we must
+// never enumerate, let alone kill, the host's real processes). Everything
+// downstream of that pipe is untouched generated text: the whole
+// Where-Object filter -- the `-match '--port (\d+)'` capture, the
+// `[int]$Matches[1]` range bound that depends on it, the `-CreationDate`
+// age bound and the `-like` owner clause -- plus the foreach /
+// Write-Output "ORPHAN:..." / Stop-Process body.
+//
+// SAFETY: `Stop-Process` is shadowed by a no-op function in the preamble, so
+// even a defect that selected a real PID could not kill anything.
+// =============================================================================
+
+/** Locate a usable PowerShell, preferring cross-platform pwsh. Returns null
+ *  when the host has none -- callers must then skip with a VISIBLE reason
+ *  (see POWERSHELL_SKIP), never degrade to a silent pass. */
+function detectPowerShell() {
+    for (const bin of ['pwsh', 'powershell.exe', 'powershell']) {
+        let probe;
+        try {
+            probe = spawnSync(bin, ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' });
+        } catch {
+            continue;
+        }
+        if (probe && probe.status === 0 && probe.stdout.trim()) {
+            return { bin, version: probe.stdout.trim() };
+        }
+    }
+    return null;
+}
+
+const POWERSHELL = detectPowerShell();
+
+// Per CLAUDE.md ("a POSIX-only feature must hard-fail on Windows or gate with
+// a surfaced error; an advisory warning that never blocks is a false
+// success"), the degradation is a NAMED skip that node:test prints, stating
+// what is missing and how to get it -- not a quietly-passing assertion.
+const POWERSHELL_SKIP = POWERSHELL
+    ? false
+    : 'DEGRADED: no real PowerShell on PATH (tried pwsh, powershell.exe, powershell), so the generated'
+      + ' win32 sweep probe cannot be EXECUTED and its process selection is unverified on this host.'
+      + ' Install PowerShell 7 (`pwsh`) -- it is cross-platform -- to run this test.';
+
+/** Quote a value as a PowerShell single-quoted literal (the same doubling
+ *  rule the production psQuote uses). */
+const psLiteral = (value) => `'${String(value).replace(/'/g, "''")}'`;
+
+/**
+ * Execute the REAL generated win32 probe against fabricated candidates and
+ * return its raw stdout, for parseSweepOutput to interpret.
+ *
+ * @param {string} command the wrapped `powershell -EncodedCommand ...` string
+ *        sweepOnce() actually built
+ * @param {Array<{pid:number, cmd:string, ageSeconds?:number}>} candidates
+ *        fabricated Win32_Process stand-ins; ageSeconds defaults to very old
+ *        so the age bound is satisfied unless a test is exercising it
+ */
+function runRealWindowsSweepProbe(command, candidates) {
+    assert.ok(POWERSHELL, 'runRealWindowsSweepProbe must not be called on a host with no PowerShell');
+    const script = decodeWinCommand(command);
+    const CIM_SOURCE = `Get-CimInstance Win32_Process -Filter "Name='dolt.exe'" -ErrorAction SilentlyContinue`;
+    // Anchored on the generated text: if the probe's process source is ever
+    // reworded this fails loudly here rather than silently testing nothing.
+    assert.ok(
+        script.includes(CIM_SOURCE),
+        `the generated win32 probe no longer contains the expected Win32_Process source; update this harness.\nGot: ${script}`,
+    );
+    const rows = candidates
+        .map((c) => `  [pscustomobject]@{ProcessId=${Number(c.pid)}; CreationDate=(Get-Date).AddSeconds(-${Number(c.ageSeconds ?? 99999)}); CommandLine=${psLiteral(c.cmd)}}`)
+        .join('\n');
+    const preamble = [
+        '# Harness preamble -- NOT part of the generated probe.',
+        'function Stop-Process { param([int]$Id, [switch]$Force, [string]$ErrorAction) Write-Output "KILLED:$Id" }',
+        '$candidates = @(',
+        rows,
+        ')',
+        '',
+    ].join('\n');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sweep-probe-'));
+    const file = path.join(dir, 'probe.ps1');
+    try {
+        fs.writeFileSync(file, `${preamble}${script.replace(CIM_SOURCE, '$candidates')}\n`);
+        const res = spawnSync(POWERSHELL.bin, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', file], { encoding: 'utf8' });
+        assert.equal(
+            res.status,
+            0,
+            `the real generated probe must run cleanly under ${POWERSHELL.bin} ${POWERSHELL.version}.\nstderr: ${res.stderr}\nstdout: ${res.stdout}`,
+        );
+        return res.stdout;
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 }
 
 test('the sweep only ever targets settle`s own ephemeral port range', () => {
@@ -376,40 +489,82 @@ test('sweepOnce (posix), driven by the REAL generated+executed probe, kills only
     assert.match(result.killed[0].commandLine, /sandbox-run1/);
 });
 
-test('sweepOnce (win32), applying the ACTUAL generated -like clause, kills only the in-scope process', async () => {
-    const OWNER_WIN = 'C:\\Users\\u\\sandbox-run1';
-    const inScopeCmdLine = 'C:\\dolt.exe sql-server --host 127.0.0.1 --port 13345 --data-dir C:\\Users\\u\\sandbox-run1\\.beads\\embeddeddolt';
-    const outOfScopeCmdLine = 'C:\\dolt.exe sql-server --host 127.0.0.1 --port 13346 --data-dir C:\\Users\\u\\OTHER-supervisor\\.beads\\embeddeddolt';
+test(
+    'sweepOnce (win32), driven by the REAL generated probe EXECUTED in real PowerShell, kills only the in-scope process',
+    { skip: POWERSHELL_SKIP },
+    async () => {
+        const OWNER_WIN = 'C:\\Users\\u\\sandbox-run1';
+        const inScopeCmdLine = 'C:\\dolt.exe sql-server --host 127.0.0.1 --port 13345 --data-dir C:\\Users\\u\\sandbox-run1\\.beads\\embeddeddolt';
+        const outOfScopeCmdLine = 'C:\\dolt.exe sql-server --host 127.0.0.1 --port 13346 --data-dir C:\\Users\\u\\OTHER-supervisor\\.beads\\embeddeddolt';
+        // Two more candidates the JS re-implementation could never have
+        // exercised, because it only ever applied the -like clause: an
+        // out-of-range port and a too-young process. Both are rejected by
+        // OTHER clauses of the same real Where-Object filter, which also
+        // proves the `-match '--port (\d+)'` capture and the `[int]$Matches[1]`
+        // bound that reads it still interoperate after the -like clause was
+        // appended (the exact hazard buildSweepCommand's comment names).
+        const outOfRangePortCmdLine = 'C:\\dolt.exe sql-server --host 127.0.0.1 --port 1337 --data-dir C:\\Users\\u\\sandbox-run1\\.beads\\embeddeddolt';
+        const tooYoungCmdLine = 'C:\\dolt.exe sql-server --host 127.0.0.1 --port 13350 --data-dir C:\\Users\\u\\sandbox-run1\\.beads\\embeddeddolt';
 
-    const sweep = createDoltOrphanSweep({
-        logger: silent,
-        ownerDataDirPrefix: OWNER_WIN,
-        listMembers: async () => ({ members: [{ name: 'w1', os: 'Windows 11' }] }),
-        execCommand: async ({ command }) => {
-            // Extract the REAL -like clause sweepOnce() just generated (PowerShell
-            // itself cannot run in this test env) and apply its ACTUAL semantics
-            // -- not a re-derivation -- to two fabricated candidate command lines.
-            const winScript = decodeWinCommand(command);
-            const likeMatch = winScript.match(/-like '(\*--data-dir\*.*?\*)'/);
-            assert.ok(likeMatch, 'the real generated command must carry the owner -like clause');
-            const likeRe = new RegExp(`^${likeMatch[1].split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'is');
-            const candidates = [
-                { pid: 111, cmd: inScopeCmdLine },
-                { pid: 222, cmd: outOfScopeCmdLine },
-            ];
-            const output = candidates
-                .filter((c) => likeRe.test(c.cmd))
-                .map((c) => `ORPHAN:${c.pid}:${c.cmd}`)
-                .join('\n');
-            return { ok: true, output };
-        },
-    });
+        let probeRan = false;
+        const sweep = createDoltOrphanSweep({
+            logger: silent,
+            ownerDataDirPrefix: OWNER_WIN,
+            listMembers: async () => ({ members: [{ name: 'w1', os: 'Windows 11' }] }),
+            execCommand: async ({ command }) => {
+                probeRan = true;
+                const output = runRealWindowsSweepProbe(command, [
+                    { pid: 111, cmd: inScopeCmdLine },
+                    { pid: 222, cmd: outOfScopeCmdLine },
+                    { pid: 333, cmd: outOfRangePortCmdLine },
+                    { pid: 444, cmd: tooYoungCmdLine, ageSeconds: 0 },
+                ]);
+                return { ok: true, output };
+            },
+        });
 
-    const result = await sweep.sweepOnce();
-    assert.equal(result.killed.length, 1, 'only the in-scope process must be reported killed, not the other supervisor instance`s process');
-    assert.equal(result.killed[0].pid, 111);
-    assert.match(result.killed[0].commandLine, /sandbox-run1/);
-});
+        const result = await sweep.sweepOnce();
+        assert.ok(probeRan, 'the sweep must actually have issued a command for the win32 member');
+        assert.equal(
+            result.killed.length,
+            1,
+            `only the in-scope, in-range, old-enough process may be killed; real PowerShell (${POWERSHELL.bin} ${POWERSHELL.version}) selected: ${JSON.stringify(result.killed)}`,
+        );
+        assert.equal(result.killed[0].pid, 111);
+        assert.match(result.killed[0].commandLine, /sandbox-run1/);
+    },
+);
+
+test(
+    'the REAL generated win32 probe survives an owner path containing a quote and a space (a quoting defect would select the wrong set)',
+    { skip: POWERSHELL_SKIP },
+    async () => {
+        // The old typeof/regex-rebuild assertions could not see a quoting
+        // defect at all. Run a path that is hostile to BOTH the PowerShell
+        // single-quoted literal (embedded apostrophe) and to naive splitting
+        // (embedded spaces) through the real parser, end to end.
+        const OWNER_WIN = "C:\\Users\\O'Brien\\My Sandbox\\run1";
+        const inScope = `C:\\dolt.exe sql-server --host 127.0.0.1 --port 13345 --data-dir ${OWNER_WIN}\\.beads\\embeddeddolt`;
+        const otherOwner = "C:\\dolt.exe sql-server --host 127.0.0.1 --port 13346 --data-dir C:\\Users\\O'Brien\\My Sandbox\\run2\\.beads\\embeddeddolt";
+
+        const sweep = createDoltOrphanSweep({
+            logger: silent,
+            ownerDataDirPrefix: OWNER_WIN,
+            listMembers: async () => ({ members: [{ name: 'w1', os: 'Windows 11' }] }),
+            execCommand: async ({ command }) => ({
+                ok: true,
+                output: runRealWindowsSweepProbe(command, [
+                    { pid: 111, cmd: inScope },
+                    { pid: 222, cmd: otherOwner },
+                ]),
+            }),
+        });
+
+        const result = await sweep.sweepOnce();
+        assert.equal(result.killed.length, 1, `a quote/space in the owner path must not widen or void the selection, got: ${JSON.stringify(result.killed)}`);
+        assert.equal(result.killed[0].pid, 111, 'the sibling run2 sandbox under the same quoted parent must NOT be selected');
+    },
+);
 
 // =============================================================================
 // apra-fleet-5co8.42: dolt-orphan-sweep's file-header KNOWN LIMIT says that
@@ -459,34 +614,30 @@ test('sweepOnce (posix): a RELATIVE --data-dir candidate is excluded (fail-safe 
     assert.match(result.killed[0].commandLine, /sandbox-run1/);
 });
 
-test('sweepOnce (win32): a RELATIVE --data-dir candidate is excluded (fail-safe miss), while the SAME owner`s absolute --data-dir candidate is still selected', async () => {
-    const OWNER_WIN = String.raw`C:\Users\u\sandbox-run1`;
-    const relativeCmdLine = String.raw`"C:\dolt.exe" sql-server --host 127.0.0.1 --port 13345 --data-dir .beads\embeddeddolt`;
-    const absoluteCmdLine = String.raw`"C:\dolt.exe" sql-server --host 127.0.0.1 --port 13346 --data-dir ${OWNER_WIN}\.beads\embeddeddolt`;
+test(
+    'sweepOnce (win32), in real PowerShell: a RELATIVE --data-dir candidate is excluded (fail-safe miss), while the SAME owner`s absolute --data-dir candidate is still selected',
+    { skip: POWERSHELL_SKIP },
+    async () => {
+        const OWNER_WIN = String.raw`C:\Users\u\sandbox-run1`;
+        const relativeCmdLine = String.raw`"C:\dolt.exe" sql-server --host 127.0.0.1 --port 13345 --data-dir .beads\embeddeddolt`;
+        const absoluteCmdLine = String.raw`"C:\dolt.exe" sql-server --host 127.0.0.1 --port 13346 --data-dir ${OWNER_WIN}\.beads\embeddeddolt`;
 
-    const sweep = createDoltOrphanSweep({
-        logger: silent,
-        ownerDataDirPrefix: OWNER_WIN,
-        listMembers: async () => ({ members: [{ name: 'w1', os: 'Windows 11' }] }),
-        execCommand: async ({ command }) => {
-            const winScript = decodeWinCommand(command);
-            const likeMatch = winScript.match(/-like '(\*--data-dir\*.*?\*)'/);
-            assert.ok(likeMatch, 'the real generated command must carry the owner -like clause');
-            const likeRe = new RegExp(`^${likeMatch[1].split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'is');
-            const candidates = [
-                { pid: 111, cmd: relativeCmdLine },
-                { pid: 222, cmd: absoluteCmdLine },
-            ];
-            const output = candidates
-                .filter((c) => likeRe.test(c.cmd))
-                .map((c) => `ORPHAN:${c.pid}:${c.cmd}`)
-                .join('\n');
-            return { ok: true, output };
-        },
-    });
+        const sweep = createDoltOrphanSweep({
+            logger: silent,
+            ownerDataDirPrefix: OWNER_WIN,
+            listMembers: async () => ({ members: [{ name: 'w1', os: 'Windows 11' }] }),
+            execCommand: async ({ command }) => ({
+                ok: true,
+                output: runRealWindowsSweepProbe(command, [
+                    { pid: 111, cmd: relativeCmdLine },
+                    { pid: 222, cmd: absoluteCmdLine },
+                ]),
+            }),
+        });
 
-    const result = await sweep.sweepOnce();
-    assert.equal(result.killed.length, 1, 'only the absolute-data-dir, same-owner candidate is selected; the relative-data-dir candidate is a fail-safe miss, not a kill of something else');
-    assert.equal(result.killed[0].pid, 222, 'the relative-data-dir candidate (pid 111) must never appear here');
-    assert.match(result.killed[0].commandLine, /sandbox-run1/);
-});
+        const result = await sweep.sweepOnce();
+        assert.equal(result.killed.length, 1, 'only the absolute-data-dir, same-owner candidate is selected; the relative-data-dir candidate is a fail-safe miss, not a kill of something else');
+        assert.equal(result.killed[0].pid, 222, 'the relative-data-dir candidate (pid 111) must never appear here');
+        assert.match(result.killed[0].commandLine, /sandbox-run1/);
+    },
+);
