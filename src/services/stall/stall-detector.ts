@@ -241,6 +241,13 @@ export class StallDetector {
     const parsedTickIntervalMs = parseInt(process.env['STALL_POLL_INTERVAL_MS'] ?? String(DEFAULT_POLL_INTERVAL_MS));
     const tickIntervalMs = Number.isFinite(parsedTickIntervalMs) ? parsedTickIntervalMs : DEFAULT_POLL_INTERVAL_MS;
 
+    // apra-fleet-25yl.3.3: counters for observability: track per-entry probe
+    // intervals and whether each entry's probe was issued or skipped by the
+    // adaptive cadence gate. These are emitted once per tick at scope.ok().
+    let probesIssued = 0;
+    let probesSkipped = 0;
+    const entryProbeIntervals: Array<{ memberName: string; probeIntervalMs: number }> = [];
+
     for (const [memberId, entry] of this.stallCheckList.entries()) {
       const stallThresholdMs = entry.thresholdMs ?? fallbackThresholdMs;
 
@@ -277,13 +284,20 @@ export class StallDetector {
         tickIntervalMs,
         Math.min(MAX_STALL_PROBE_INTERVAL_MS, stallThresholdMs / 5),
       );
+      // apra-fleet-25yl.3.3: track probe intervals for observability.
+      entryProbeIntervals.push({ memberName: entry.memberName, probeIntervalMs });
+
       const dueForProbe = entry.lastPolledAt === undefined || (now - entry.lastPolledAt) >= probeIntervalMs;
       if (!dueForProbe) {
+        // apra-fleet-25yl.3.3: count this probe as skipped by the adaptive gate.
+        probesSkipped++;
         if (!entry.stallReported) {
           writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));
         }
         continue;
       }
+      // apra-fleet-25yl.3.3: count this probe as issued.
+      probesIssued++;
       entry.lastPolledAt = now;
 
       if (entry.provisional) {
@@ -488,6 +502,15 @@ export class StallDetector {
         writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));
       }
     }
+
+    // apra-fleet-25yl.3.3: emit tick-level summary with probe counts and
+    // per-entry probe intervals. This single-line close at scope.ok() keeps
+    // log volume constant (one line per tick, not per entry).
+    scope.ok(JSON.stringify({
+      probesIssued,
+      probesSkipped,
+      entryProbeIntervals,
+    }));
   }
 }
 
