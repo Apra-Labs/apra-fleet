@@ -96,6 +96,23 @@ anywhere in the title, so the doubled `[regression][carry-over]` prefix is found
 extra quoting; and it EXCLUDES closed issues by default -- add `--status all` only when
 auditing history.
 
+**Read NOTES before decomposing.** Before decomposing any bead -- sprint goal, feature,
+or task -- that has a non-empty NOTES section, read NOTES in full, in chronological
+order, as part of understanding the bead's current scope, not merely as optional
+background context. A bead's NOTES section functions as an append-only changelog:
+corrections, amendments, and design-review findings accumulate there over the bead's
+lifetime, often after its DESCRIPTION was written. Treat a NOTES entry that explicitly
+corrects, amends, or supersedes something in DESCRIPTION -- recognizable by language such
+as "CORRECTION", "AMENDMENT", "SUPERSEDES", "REVISED", or an explicit "do X, not Y"
+statement -- as authoritative over the DESCRIPTION passage it contradicts. When writing a
+child's own DESCRIPTION/acceptance criteria (Steps 2 and 3 below), do not copy stale
+DESCRIPTION language verbatim if a later NOTES entry corrected it -- write the child from
+the corrected understanding. It is fine, and often preferable, for the child to
+explicitly cite which correction it incorporates, so a later reader does not need to
+cross-reference the parent's full history. This does not change how you decompose a bead
+whose NOTES is empty or purely procedural (e.g. claim/close log lines) -- it applies only
+when NOTES contains substantive corrections to DESCRIPTION.
+
 ## Step 2 -- Decompose sprint goals into features
 
 Every title you write below (Steps 2 and 3) is plain text only -- letters,
