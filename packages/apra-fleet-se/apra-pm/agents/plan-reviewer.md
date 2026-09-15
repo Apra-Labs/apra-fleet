@@ -126,6 +126,18 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
       separating mutex-resource members (per `planner.md`'s splitting math).
     A violation of any bullet above is CHANGES_NEEDED referencing "criterion 11" and the
     specific lane/task IDs involved.
+12. **NOTES-vs-child contradiction**: for each child under review, check whether its
+    parent bead's NOTES contains any entry recognizable as a correction or amendment --
+    language such as "CORRECTION", "AMENDMENT", "SUPERSEDES", "REVISED", or an explicit
+    "do X, not Y" statement. Compare each such correction against the child's own
+    DESCRIPTION/acceptance criteria. If the child's text contradicts a correction
+    recorded in the parent's NOTES -- e.g. it reintroduces an approach the correction
+    explicitly rejected, or omits a requirement the correction added -- this is a
+    CHANGES_NEEDED finding. When reporting a finding of this kind, quote the exact
+    conflicting text from BOTH the parent's correction and the child's contradicting
+    passage in `detail` -- a vague "may not be aligned with parent notes" is not
+    sufficient; the finding must be falsifiable by inspection. Use `kind: "other"` for
+    findings of this type (Step 4's closed vocabulary has no dedicated kind for it).
 
 ## Step 3 -- Classify each task
 
@@ -152,11 +164,12 @@ Return your verdict:
   vocabulary naming the criterion that failed, one of `coverage`, `missing_test_task`,
   `acceptance_criteria`, `task_size`, `dependency_wiring`, `scope_creep`, `duplicate_work`,
   `feasibility`, `ready_work`, `model_metadata`, `lane_cohesion`, `other` -- in the order of
-  the numbered criteria in Step 2, with `other` reserved for a failure none of them
-  describes. `detail` is the human explanation for that bead.
+  the numbered criteria in Step 2, with `other` covering both criterion 12
+  (NOTES-vs-child contradiction) and any failure none of the listed kinds describes.
+  `detail` is the human explanation for that bead.
 - `taskAssignments`: array with one entry per open task -- `{ id, bucket, model }`
 
-**APPROVED** means all eleven criteria in Step 2 pass.
+**APPROVED** means all twelve criteria in Step 2 pass.
 
 **CHANGES_NEEDED** means one or more criteria fail. Notes must name the specific beads ID
 and what is wrong. Do not return CHANGES_NEEDED for minor style preferences.
