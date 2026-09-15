@@ -33,10 +33,14 @@ import { fileURLToPath } from 'node:url';
 // checks. Nothing that survived the probe's deletion is unowned.
 //
 // Section (4) below keeps its original number so it stays greppable against this
-// gate's history. It never probed anything: it asserts that the downstream
-// coverage this gate deliberately did NOT duplicate (the mock-sprint suite and
-// both golden transcripts, spawned by the phase1 gate) is still wired into the
-// same `npm test` run, and that the golden fixtures are tracked and clean.
+// gate's history. It never probed anything. It used to also assert, from
+// phase1-leaf-facade-completeness.test.mjs's SOURCE TEXT, that the mock-sprint
+// suite was still spawned by that gate; that meta-check and the spawn it
+// described are both gone (apra-fleet-j918.3.1/.3.2), and the surviving
+// question -- how many nested mock-sprint runs this package has -- is owned by
+// test/nested-mock-sprint-run-census.test.mjs, which counts real spawn sites.
+// What remains here is what this gate can check first-hand: the golden
+// fixtures are tracked, clean, and well-formed.
 // =============================================================================
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -44,9 +48,16 @@ const SE_DIR = path.join(__dirname, '..');
 const REPO_ROOT = path.join(SE_DIR, '../..');
 
 describe('(4) the downstream suites this gate relies on are wired into the same run', () => {
-    // Rather than spawning the mock-sprint and golden-transcript suites a
-    // fourth time (see the header), assert the existing gates that already do.
-    const PHASE1 = path.join(SE_DIR, 'test/phase1-leaf-facade-completeness.test.mjs');
+    // apra-fleet-j918.3.1 deleted the meta-check that used to live here -- it
+    // read phase1-leaf-facade-completeness.test.mjs's SOURCE TEXT to assert
+    // that phase1 still spawned the mock-sprint suite. apra-fleet-j918.3.2
+    // then deleted the spawn it was asserting about. Neither the check nor the
+    // file handle it needed survives; test/nested-mock-sprint-run-census
+    // .test.mjs now owns the "how many nested mock-sprint runs exist" question
+    // by counting real spawn sites instead of reading one gate's prose.
+    //
+    // What is left below asserts only what this gate can check first-hand: the
+    // golden fixtures it depends on are tracked, clean, and well-formed.
 
     test('both golden transcript fixtures are tracked and clean', () => {
         const fixtures = path.join(SE_DIR, 'test/fixtures/golden-transcript');
