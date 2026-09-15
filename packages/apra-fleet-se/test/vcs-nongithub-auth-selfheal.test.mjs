@@ -2,9 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { classifyFailure } from '../fleet-sprint/vcs-module.mjs';
+import { classifyFailure, toGitVerdict } from '../fleet-sprint/vcs-module.mjs';
 import { VCS_FAILURE_KINDS as K } from '../fleet-sprint/errors.mjs';
 import { classifyGitFailure, syncMemberAfter } from '../fleet-sprint/runner.js';
 import { GitSyncError } from '../fleet-sprint/errors.mjs';
@@ -27,15 +26,6 @@ import { guardedModulePaths, guardedModuleBasenames } from '../fleet-sprint/guar
 // scan to a guarded-modules.mjs-derived census -- see that describe block's
 // own header comment for why runner.js alone stopped being enough once
 // classifyGitFailure moved to git-topology.mjs).
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// apra-fleet-3swo.6.3: classifyGitFailure moved out of runner.js into
-// fleet-sprint/git-topology.mjs, so the delegation assertion below reads its
-// source from there. The pattern-table census (further down) does NOT read a
-// single hard-coded module source like this one -- it iterates the
-// guarded-modules.mjs-derived CENSUS_PATHS set instead, precisely so it is
-// not narrowed to whichever one file happens to be read here.
-const GIT_TOPOLOGY_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/git-topology.mjs'), 'utf8');
 
 const OK = { ok: true, output: '', error: null };
 const fail = (error) => ({ ok: false, output: '', error });
@@ -401,16 +391,42 @@ export function classifyGitFailure(stderr) {
         }
     });
 
-    test('classifyGitFailure delegates to VCSModule (no local regex parsing of VCS stderr)', () => {
-        // Anchor-existence is asserted FIRST: indexOf() returning -1 makes
-        // slice(-1) yield the file's last character instead of throwing, which
-        // would fail this assertion on a one-character body while the negative
-        // assertion below passed VACUOUSLY.
-        const declIdx = GIT_TOPOLOGY_SRC.indexOf('export function classifyGitFailure');
-        assert.notEqual(declIdx, -1, 'classifyGitFailure must be declared in fleet-sprint/git-topology.mjs (re-point this slice if it moves again)');
-        const fnSrc = GIT_TOPOLOGY_SRC.slice(declIdx);
-        const fnBody = fnSrc.slice(0, fnSrc.indexOf('\n}') + 2);
-        assert.ok(/toGitVerdict\(\s*classifyFailure\(/.test(fnBody), `classifyGitFailure must delegate to classifyFailure/toGitVerdict, got: ${fnBody}`);
-        assert.ok(!/\/(?:[^/\n]|\\\/)+\/[a-z]*\s*\.test\(/.test(fnBody), 'classifyGitFailure must not itself run a regex .test() over the stderr');
+    // apra-fleet-j918.8.10: replaces a source-text-slice assertion (indexOf/
+    // slice over a literal read of git-topology.mjs, with a comment admitting
+    // "re-point this slice if it moves again") with a BEHAVIORAL one over the
+    // same property -- "classifyGitFailure delegates to
+    // classifyFailure()+toGitVerdict(), rather than parsing VCS stderr
+    // itself". A source-text assertion breaks when code merely MOVES and
+    // stays silent when behavior breaks (e.g. classifyGitFailure grows its
+    // own regex .test() shortcut that happens to agree with the delegate on
+    // every sample below); this one is the opposite: it is immune to the
+    // function relocating anywhere in the file (or to another file), and it
+    // goes red the moment classifyGitFailure's OUTPUT stops matching the
+    // delegate's for any of these samples -- e.g. a locally-added regex
+    // shortcut that misclassifies even one case. Samples span every
+    // git-topology verdict (diverged/auth/transient/unknown) and both the
+    // provider-named and default-chain paths, reusing this suite's own
+    // vendor-specific fixtures (NON_GITHUB_AUTH_TEXTS_BARE) plus one sample
+    // each from the DIVERGED/TRANSIENT corpora vcs-classify-failure.test.mjs
+    // already pins.
+    describe('classifyGitFailure delegates to classifyFailure()+toGitVerdict() -- behavioral, not source-text', () => {
+        const tf401019 = NON_GITHUB_AUTH_TEXTS_BARE['Azure DevOps (TF401019)'];
+        const appPassword = NON_GITHUB_AUTH_TEXTS_BARE['Bitbucket (Invalid or expired app password)'];
+        const DELEGATION_SAMPLES = [
+            { label: 'diverged sample, no provider', output: 'fatal: Not possible to fast-forward, aborting.', provider: undefined },
+            { label: 'transient sample, no provider', output: "fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com", provider: undefined },
+            { label: 'unknown sample, no provider', output: 'remote: Repository not found.', provider: undefined },
+            { label: 'vendor-specific auth (TF401019), provider named', output: tf401019.text, provider: tf401019.provider },
+            { label: 'vendor-specific auth (TF401019), no provider (must NOT reach the rule)', output: tf401019.text, provider: undefined },
+            { label: 'vendor-specific auth (app password), provider named', output: appPassword.text, provider: appPassword.provider },
+            { label: 'portable GitLab auth, default chain', output: NON_GITHUB_AUTH_TEXTS_BARE['GitLab (HTTP Basic: Access denied)'].text, provider: undefined },
+        ];
+        for (const { label, output, provider } of DELEGATION_SAMPLES) {
+            test(`${label}: classifyGitFailure(output, provider) === toGitVerdict(classifyFailure(output, opts).kind)`, () => {
+                const opts = provider ? { provider } : undefined;
+                const expected = toGitVerdict(classifyFailure(output, opts).kind);
+                assert.equal(classifyGitFailure(output, provider), expected, `classifyGitFailure disagreed with the delegate for: ${JSON.stringify({ output, provider })}`);
+            });
+        }
     });
 });
