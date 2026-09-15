@@ -16,6 +16,13 @@ import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 import { runCmd, sleep, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 import { balancedCallRange } from './helpers/balanced-call-scanner.mjs';
 import { ROLE_POLICIES, allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
+import {
+    loadVcsStderrCorpus,
+    stderrSamples,
+    stderrText,
+    recordedKinds,
+    provenance,
+} from './helpers/vcs-stderr-corpus.mjs';
 
 // =============================================================================
 // apra-fleet-eft.8.7 -- Orchestrator-bracketed git sync: consolidated
@@ -52,6 +59,24 @@ const check = (cond, msg) => assert.ok(cond, msg);
 
 const OK = { ok: true, output: '', error: null };
 const fail = (error) => ({ ok: false, output: '', error });
+
+// -----------------------------------------------------------------------------
+// apra-fleet-j918.6.2 -- the failure texts driven into command() mocks below
+// are RECORDED from real git, not typed from memory. They used to read
+// `fatal: unable to access ... Could not resolve host: github.com`, whose
+// `...` is a human's elision -- git has never printed it, so nothing in this
+// file was ever exercising the classifier against output git actually emits.
+// See test/fixtures/vcs-stderr/README.md for the recorder and re-record steps.
+// -----------------------------------------------------------------------------
+const REAL_TRANSIENT_DNS = stderrText('git/transient/dns-could-not-resolve-host');
+const REAL_TRANSIENT_REFUSED = stderrText('git/transient/connection-refused');
+const REAL_TRANSIENT_LOCK_REF = stderrText('git/transient/cannot-lock-ref');
+const REAL_DIVERGED_FF_ONLY = stderrText('git/diverged/merge-ff-only-refused');
+const REAL_DIVERGED_PUSH_NON_FF = stderrText('git/diverged/push-rejected-non-fast-forward');
+const REAL_DIVERGED_UNMERGED = stderrText('git/diverged/pull-with-unmerged-files');
+const REAL_DIVERGED_CONFLICT = stderrText('git/diverged/merge-conflict');
+const REAL_AUTH_NO_USERNAME = stderrText('git/auth/could-not-read-username-prompts-disabled');
+const REAL_UNKNOWN_BAD_OBJECT = stderrText('git/unknown/not-a-valid-object-name');
 
 // A tiny scripted command() mock: pass a map from cmd-substring -> a sequence
 // of results (each { ok } or { ok:false, error }). Records every call with its
@@ -257,7 +282,7 @@ test('(b) doer streaks on two DIFFERENT members never overlap (global sequencing
 // =============================================================================
 test('(c) a non-FF pull raises a typed GitDivergedError (fail-fast, operation=pull)', async () => {
     const { command } = makeCommandMock({
-        'git merge --ff-only': [fail('fatal: Not possible to fast-forward, aborting.')],
+        'git merge --ff-only': [fail(REAL_DIVERGED_FF_ONLY)],
     });
     let err = null;
     try { await syncMemberBefore('m1', { command }); } catch (e) { err = e; }
@@ -270,7 +295,7 @@ test('(c) a non-FF pull raises a typed GitDivergedError (fail-fast, operation=pu
 
 test('(c) an out-of-turn write during a doer streak (non-FF push, still rejected after one rebase) is a typed fail-fast error', async () => {
     const { command, calls } = makeCommandMock({
-        'git push': [fail(' ! [rejected] (non-fast-forward)')], // always rejected
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)], // always rejected
         'git pull --rebase': [OK],
     });
     let err = null;
@@ -289,8 +314,8 @@ test('(c) an out-of-turn write during a doer streak (non-FF push, still rejected
 // =============================================================================
 test('(d) a G-push failure skips D-push (zero bd dolt push) and rethrows the typed error', async () => {
     const { command, calls } = makeCommandMock({
-        'git push': [fail(' ! [rejected] (non-fast-forward)')],
-        'git pull --rebase': [fail(' ! [rejected] (non-fast-forward), still diverged')],
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)],
+        'git pull --rebase': [fail(`${REAL_DIVERGED_PUSH_NON_FF}\n(second attempt: still diverged after the rebase)`)],
         'git status --porcelain': [{ ok: true, output: '', error: null }],
     });
     const logs = [];
@@ -380,8 +405,8 @@ test('(f) parseUnmergedPaths picks only unmerged XY codes', () => {
 
 test('(f) a rebase conflict is porcelain-detected, rebase --abort restores a clean tree, and the typed error carries the unmerged paths', async () => {
     const { command, calls } = makeCommandMock({
-        'git push': [fail(' ! [rejected] (non-fast-forward)')],
-        'git pull --rebase': [fail('CONFLICT (content): Merge conflict in a.txt')],
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)],
+        'git pull --rebase': [fail(REAL_DIVERGED_CONFLICT)],
         'git status --porcelain': [
             { ok: true, output: 'UU a.txt\n', error: null }, // conflict-detection check
             { ok: true, output: '', error: null },           // post-abort clean check
@@ -409,27 +434,106 @@ test('(f) a rebase conflict is porcelain-detected, rebase --abort restores a cle
 // (g) The retry classifier distinguishes transient (retried) from divergence
 // (never retried). Assert BOTH paths, and that they surface as DISTINCT types.
 // =============================================================================
-test('(g) classifyGitFailure: divergence vs transient vs unknown', () => {
-    check(classifyGitFailure('fatal: Not possible to fast-forward, aborting.') === 'diverged', 'non-FF is diverged');
-    check(classifyGitFailure(' ! [rejected] main -> main (non-fast-forward)') === 'diverged', 'rejected push is diverged');
+// -----------------------------------------------------------------------------
+// apra-fleet-j918.6.2 -- classification is asserted against RECORDED real git
+// stderr (test/fixtures/vcs-stderr/), not hand-typed approximations.
+//
+// NON-OBVIOUS RISK this guards, and why the assertions below are written by
+// DIRECTION rather than as a bag of equalities: the realistic defect is not
+// "someone deletes a rule", it is "git rewords a message" (or someone
+// loosens/tightens a regex) so an existing failure lands in a DIFFERENT
+// bucket. Two directions actually hurt:
+//
+//   diverged -> unknown    fail-fast is disabled. syncMemberBefore/After stop
+//                          raising GitDivergedError and fall into the bounded
+//                          self-heal + single retry path instead, so an
+//                          out-of-turn write is papered over, not surfaced.
+//   diverged -> transient  worse: runGitStep RETRIES a divergence, turning a
+//                          hard stop into a retry loop against a remote that
+//                          will refuse it identically every time.
+//
+// The reverse (transient -> diverged) is also asserted: it would abort a
+// sprint on a DNS blip.
+//
+// REAL-CAPTURE FINDING worth keeping: on git 2.50.1 a push that has not yet
+// fetched the diverging tip says "(fetch first)", NOT "(non-fast-forward)".
+// That sample's diverged verdict rides entirely on "failed to push some refs"
+// / "Updates were rejected" -- so those two rules are load-bearing in a way
+// the old hand-typed " ! [rejected] main -> main (non-fast-forward)" fixture
+// hid completely.
+// -----------------------------------------------------------------------------
+test('(g) classifyGitFailure assigns every RECORDED real-git sample to its recorded bucket', () => {
+    const corpus = loadVcsStderrCorpus();
+    const samples = stderrSamples('git');
+    check(samples.length > 0, 'the recorded git corpus must not be empty');
+    check(
+        typeof corpus.tools.git === 'string' && /^git version /.test(corpus.tools.git),
+        `the corpus must record the git version its samples came from, got ${JSON.stringify(corpus.tools.git)}`,
+    );
+    for (const s of samples) {
+        check(
+            !s.stderr.includes('...') || /\.\.\.$/m.test(s.stderr) || /Pulling\.\.\./.test(s.stderr),
+            `${provenance(s)}: a recorded sample must not carry an elided placeholder`,
+        );
+        const got = classifyGitFailure(s.stderr);
+        check(got === s.expect, `${provenance(s)}: expected ${s.expect}, got ${got}`);
+    }
+});
+
+test('(g) the recorded git corpus covers every bucket classifyGitFailure can return', () => {
+    // If a bucket is ever added to the git verdict taxonomy, this fails until
+    // a recipe that provokes it for real is added to record-vcs-stderr.mjs --
+    // a new bucket must not be able to arrive with only hand-typed coverage.
+    assert.deepEqual(
+        recordedKinds('git'),
+        ['auth', 'diverged', 'transient', 'unknown'],
+        'every classifyGitFailure verdict needs at least one recorded real-git sample',
+    );
+});
+
+test('(g) classifyGitFailure: divergence vs transient vs unknown, asserted by MISCLASSIFICATION DIRECTION', () => {
+    // Diverged must never soften into unknown (fail-fast disabled) or into
+    // transient (divergence retried in a loop).
+    for (const s of stderrSamples('git').filter((x) => x.expect === 'diverged')) {
+        const got = classifyGitFailure(s.stderr);
+        check(got !== 'unknown', `${provenance(s)}: diverged read as unknown DISABLES fail-fast`);
+        check(got !== 'transient', `${provenance(s)}: diverged read as transient turns a hard stop into a RETRY LOOP`);
+        check(got !== 'auth', `${provenance(s)}: diverged read as auth would fire a pointless credential self-heal`);
+        check(got === 'diverged', `${provenance(s)}: expected diverged, got ${got}`);
+    }
+    // Transient must never harden into diverged (a DNS blip would abort the
+    // sprint) and must never silently become unknown (no retry at all).
+    for (const s of stderrSamples('git').filter((x) => x.expect === 'transient')) {
+        const got = classifyGitFailure(s.stderr);
+        check(got !== 'diverged', `${provenance(s)}: transient read as diverged would ABORT the sprint on a blip`);
+        check(got === 'transient', `${provenance(s)}: expected transient, got ${got}`);
+    }
+    // Unrecognized output must stay unknown, never be silently swept into
+    // transient (which would retry a permanently fatal command).
+    for (const s of stderrSamples('git').filter((x) => x.expect === 'unknown')) {
+        const got = classifyGitFailure(s.stderr);
+        check(got !== 'transient', `${provenance(s)}: unrecognized output must NOT be silently retried as transient`);
+        check(got === 'unknown', `${provenance(s)}: expected unknown, got ${got}`);
+    }
     // Ported from the retired mock-sprint-git-sync-brackets.test.mjs
-    // (apra-fleet-7h6n.2): unmerged/conflict/behind-tip diverged variants and
-    // the ssh-timeout/lock-ref transient variants had no other coverage.
-    check(classifyGitFailure('error: Pulling is not possible because you have unmerged files.') === 'diverged', 'unmerged is diverged');
-    check(classifyGitFailure('CONFLICT (content): Merge conflict in a.txt') === 'diverged', 'conflict is diverged');
-    check(classifyGitFailure('hint: Updates were rejected because the tip of your current branch is behind') === 'diverged', 'behind-tip is diverged');
-    check(classifyGitFailure('Could not resolve host: github.com') === 'transient', 'dns is transient');
-    check(classifyGitFailure('fatal: Unable to create /repo/.git/index.lock: File exists.') === 'transient', 'index.lock is transient');
-    check(classifyGitFailure('ssh: connect to host ... Connection timed out') === 'transient', 'conn timeout is transient');
-    check(classifyGitFailure('error: cannot lock ref refs/heads/main') === 'transient', 'lock ref is transient');
-    check(classifyGitFailure('some totally novel git failure') === 'unknown', 'novel is unknown (not silently transient)');
+    // (apra-fleet-7h6n.2): the behind-tip diverged variant and the empty-input
+    // edge case have no recorded sample of their own -- git only prints the
+    // behind-tip hint in the same output as the recorded non-fast-forward push
+    // (asserted above), and no invocation produces empty output.
     check(classifyGitFailure('') === 'unknown', 'empty is unknown');
+    check(classifyGitFailure('some totally novel git failure') === 'unknown', 'novel is unknown (not silently transient)');
+    check(/Updates were rejected because the tip of your current branch is behind/.test(REAL_DIVERGED_PUSH_NON_FF),
+        'the recorded non-FF push sample is also the behind-tip sample');
+    check(/CONFLICT \(content\): Merge conflict in/.test(REAL_DIVERGED_CONFLICT), 'the conflict sample is a real content conflict');
+    check(/unmerged files/i.test(REAL_DIVERGED_UNMERGED), 'the unmerged sample is a real unmerged-paths pull refusal');
+    check(/cannot lock ref/i.test(REAL_TRANSIENT_LOCK_REF), 'the lock-ref sample is a real ref-lock collision');
+    check(/Not a valid object name/i.test(REAL_UNKNOWN_BAD_OBJECT), 'the unknown sample is a real git error, not invented text');
 });
 
 test('(g) a TRANSIENT fetch failure is retried to success; a DIVERGENCE is never retried', async () => {
     // Transient path: fetch fails once (transient), then succeeds -> retried.
     const transient = makeCommandMock({
-        'git fetch': [fail('fatal: unable to access ... Could not resolve host: github.com'), OK],
+        'git fetch': [fail(REAL_TRANSIENT_DNS), OK],
     });
     const res = await syncMemberBefore('m1', { command: transient.command });
     check(res.ok, 'transient fetch failure should be retried to success');
@@ -437,7 +541,7 @@ test('(g) a TRANSIENT fetch failure is retried to success; a DIVERGENCE is never
 
     // Divergence path: merge --ff-only is non-FF twice; must NOT retry.
     const diverged = makeCommandMock({
-        'git merge --ff-only': [fail('fatal: Not possible to fast-forward, aborting.'), OK],
+        'git merge --ff-only': [fail(REAL_DIVERGED_FF_ONLY), OK],
     });
     await assert.rejects(() => syncMemberBefore('m1', { command: diverged.command }), GitDivergedError);
     check(diverged.calls.filter((c) => /git merge --ff-only/.test(c.cmd)).length === 1, 'divergence must NOT be retried');
@@ -445,7 +549,7 @@ test('(g) a TRANSIENT fetch failure is retried to success; a DIVERGENCE is never
 
 test('(g) a transient failure that exhausts its retries raises GitSyncError, NOT GitDivergedError', async () => {
     const { command } = makeCommandMock({
-        'git push': [fail('fatal: unable to access ... Connection timed out')], // never recovers
+        'git push': [fail(REAL_TRANSIENT_REFUSED)], // never recovers
     });
     let err = null;
     try { await syncMemberAfter('m1', { command, maxTransientRetries: 1 }); } catch (e) { err = e; }
@@ -474,7 +578,7 @@ test('(fmu) classifyGitFailure recognizes the live-observed credential failure (
     check(classifyGitFailure('Permission denied (publickey).') === 'auth', 'publickey denial is auth');
     check(classifyGitFailure('remote: Invalid username or token.') === 'auth', 'invalid token is auth');
     check(classifyGitFailure('remote: Invalid username or password.') === 'auth', 'invalid password is auth');
-    check(classifyGitFailure('fatal: could not read Username for ...: terminal prompts disabled') === 'auth', 'terminal prompts disabled is auth');
+    check(classifyGitFailure(REAL_AUTH_NO_USERNAME) === 'auth', 'the RECORDED terminal-prompts-disabled credential failure is auth');
     check(classifyGitFailure('remote: Support for password authentication was removed') === 'auth', 'password-auth-removed is auth');
     check(classifyGitFailure('remote: Bad credentials') === 'auth', 'bad credentials is auth');
 
@@ -623,7 +727,7 @@ test('(647.1.3.3) omitting onAuthFailure preserves pre-existing behavior on an u
 
 test('(647.1.3.3) DIVERGED is still excluded from self-heal/retry even when onAuthFailure is provided -- never retried', async () => {
     const { command, calls } = makeCommandMock({
-        'git merge --ff-only': [fail('fatal: Not possible to fast-forward, aborting.')],
+        'git merge --ff-only': [fail(REAL_DIVERGED_FF_ONLY)],
     });
     let healCalls = 0;
     const onAuthFailure = async () => { healCalls += 1; };
@@ -717,7 +821,7 @@ test('(ported) syncMemberAfter: pushCode:false is a no-op (nothing published)', 
 
 test('(ported) syncMemberAfter: non-FF push triggers EXACTLY ONE pull --rebase then a successful re-push', async () => {
     const { command, calls } = makeCommandMock({
-        'git push': [fail(' ! [rejected] (non-fast-forward)'), OK], // first push rejected, second ok
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF), OK], // first push rejected, second ok
         'git pull --rebase': [OK],
     });
     const res = await syncMemberAfter('m1', { command });
@@ -730,7 +834,7 @@ test('(ported) syncMemberAfter: non-FF push triggers EXACTLY ONE pull --rebase t
 
 test('(ported) syncMemberAfter: a transient push failure is retried (not treated as divergence), then succeeds', async () => {
     const { command, calls } = makeCommandMock({
-        'git push': [fail('fatal: unable to access ... Connection timed out'), OK],
+        'git push': [fail(REAL_TRANSIENT_REFUSED), OK],
     });
     const res = await syncMemberAfter('m1', { command });
     check(res.ok && res.pushed && !res.rebased, 'transient push failure retried without a rebase');
@@ -745,8 +849,8 @@ test('(ported) parseUnmergedPaths: clean/empty porcelain yields no unmerged path
 
 test('(ported) syncMemberAfter: a pull --rebase failure with a CLEAN porcelain (no unmerged paths) does not run rebase --abort but still raises GitDivergedError when classified as diverged', async () => {
     const { command, calls } = makeCommandMock({
-        'git push': [fail(' ! [rejected] (non-fast-forward)')],
-        'git pull --rebase': [fail('CONFLICT (content): Merge conflict in a.txt')],
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)],
+        'git pull --rebase': [fail(REAL_DIVERGED_CONFLICT)],
         'git status --porcelain': [{ ok: true, output: '', error: null }],
     });
     let err = null;
@@ -775,7 +879,7 @@ test('(ported) syncMemberAfterOrdered: clean G-push publishes, then D-push runs 
 
 test('(ported) syncMemberAfterOrdered: a transient-exhausted G-push failure (GitSyncError, not diverged) also skips D-push', async () => {
     const { command, calls } = makeCommandMock({
-        'git push': [fail('fatal: unable to access ... Connection timed out')], // never recovers
+        'git push': [fail(REAL_TRANSIENT_REFUSED)], // never recovers
     });
     let err = null;
     try {
@@ -801,8 +905,8 @@ test('(ported) syncMemberAfterOrdered: non-code-writing roles (pushCode:false) a
 
 test('(ported) syncMemberAfterOrdered: pushBeads:false (read-only bracket) with a G-push failure still skips D-push (nothing to push anyway) and rethrows', async () => {
     const { command, calls } = makeCommandMock({
-        'git push': [fail(' ! [rejected] (non-fast-forward)')],
-        'git pull --rebase': [fail(' ! [rejected] (non-fast-forward), still diverged')],
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)],
+        'git pull --rebase': [fail(`${REAL_DIVERGED_PUSH_NON_FF}\n(second attempt: still diverged after the rebase)`)],
         'git status --porcelain': [{ ok: true, output: '', error: null }],
     });
     let err = null;

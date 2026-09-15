@@ -1,0 +1,212 @@
+{
+  "_comment": "RECORDED, NOT HAND-WRITTEN. Every `stderr` below is verbatim combined stdout+stderr from the `command` beside it, produced by the recorded tool version. Re-record with `node packages/apra-fleet-se/test/fixtures/vcs-stderr/record-vcs-stderr.mjs`; see ./README.md. Do NOT edit a `stderr` value by hand -- a hand-edited sample is exactly the defect this corpus was created to remove.",
+  "recordedAt": "2026-09-15",
+  "recordedOn": "darwin x64",
+  "tools": {
+    "git": "git version 2.50.1 (Apple Git-155)",
+    "dolt": "dolt version 2.2.3",
+    "bd": "bd version 1.1.0 (8e4e59d39: chore/j918-test-suite-cleanup@8e4e59d39f34)"
+  },
+  "samples": [
+    {
+      "id": "git/transient/dns-could-not-resolve-host",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git ls-remote https://no-such-host-apra-fleet-stderr-corpus.invalid/x.git",
+      "expect": "transient",
+      "exitCode": 128,
+      "stderr": "fatal: unable to access 'https://no-such-host-apra-fleet-stderr-corpus.invalid/x.git/': Could not resolve host: no-such-host-apra-fleet-stderr-corpus.invalid",
+      "note": "the sample the old hand-typed \"unable to access ... Could not resolve host\" fixture was guessing at"
+    },
+    {
+      "id": "git/transient/connection-refused",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git ls-remote git://127.0.0.1:9418/x.git",
+      "expect": "transient",
+      "exitCode": 128,
+      "stderr": "fatal: unable to connect to 127.0.0.1:\n127.0.0.1[0: 127.0.0.1]: errno=Connection refused"
+    },
+    {
+      "id": "git/diverged/push-rejected-fetch-first",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git push   (local and remote diverged, remote tip not yet fetched)",
+      "expect": "diverged",
+      "exitCode": 1,
+      "stderr": "To /tmp/vcs-stderr-corpus-vXUAjf/git/remote.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to '/tmp/vcs-stderr-corpus-vXUAjf/git/remote.git'\nhint: Updates were rejected because the remote contains work that you do not\nhint: have locally. This is usually caused by another repository pushing to\nhint: the same ref. If you want to integrate the remote changes, use\nhint: 'git pull' before pushing again.\nhint: See the 'Note about fast-forwards' in 'git push --help' for details.",
+      "note": "git 2.50 says \"(fetch first)\", NOT \"(non-fast-forward)\" -- the diverged verdict survives only via \"failed to push some refs\" / \"Updates were rejected\""
+    },
+    {
+      "id": "git/diverged/push-rejected-non-fast-forward",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git push   (local and remote diverged, remote tip already fetched)",
+      "expect": "diverged",
+      "exitCode": 1,
+      "stderr": "To /tmp/vcs-stderr-corpus-vXUAjf/git/remote.git\n ! [rejected]        main -> main (non-fast-forward)\nerror: failed to push some refs to '/tmp/vcs-stderr-corpus-vXUAjf/git/remote.git'\nhint: Updates were rejected because the tip of your current branch is behind\nhint: its remote counterpart. If you want to integrate the remote changes,\nhint: use 'git pull' before pushing again.\nhint: See the 'Note about fast-forwards' in 'git push --help' for details."
+    },
+    {
+      "id": "git/diverged/merge-ff-only-refused",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git merge --ff-only origin/main   (histories diverged)",
+      "expect": "diverged",
+      "exitCode": 128,
+      "stderr": "hint: Diverging branches can't be fast-forwarded, you need to either:\nhint:\nhint: \tgit merge --no-ff\nhint:\nhint: or:\nhint:\nhint: \tgit rebase\nhint:\nhint: Disable this message with \"git config set advice.diverging false\"\nfatal: Not possible to fast-forward, aborting."
+    },
+    {
+      "id": "git/diverged/merge-conflict",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git merge origin/main   (both sides edited the same line)",
+      "expect": "diverged",
+      "exitCode": 1,
+      "stderr": "Auto-merging f.txt\nCONFLICT (content): Merge conflict in f.txt\nAutomatic merge failed; fix conflicts and then commit the result."
+    },
+    {
+      "id": "git/diverged/pull-with-unmerged-files",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git pull   (run while the working tree still has unmerged paths)",
+      "expect": "diverged",
+      "exitCode": 128,
+      "stderr": "error: Pulling is not possible because you have unmerged files.\nhint: Fix them up in the work tree, and then use 'git add/rm <file>'\nhint: as appropriate to mark resolution and make a commit.\nfatal: Exiting because of an unresolved conflict."
+    },
+    {
+      "id": "git/transient/index-lock-exists",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git add f.txt   (with a stale .git/index.lock present)",
+      "expect": "transient",
+      "exitCode": 128,
+      "stderr": "fatal: Unable to create '/private/tmp/vcs-stderr-corpus-vXUAjf/git/b/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, e.g.\nan editor opened by 'git commit'. Please make sure all processes\nare terminated then try again. If it still fails, a git process\nmay have crashed in this repository earlier:\nremove the file manually to continue."
+    },
+    {
+      "id": "git/transient/cannot-lock-ref",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git branch main/sub   (refs/heads/main already exists as a file)",
+      "expect": "transient",
+      "exitCode": 128,
+      "stderr": "fatal: cannot lock ref 'refs/heads/main/sub': 'refs/heads/main' exists; cannot create 'refs/heads/main/sub'"
+    },
+    {
+      "id": "git/unknown/not-a-valid-object-name",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git cat-file -p deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "expect": "unknown",
+      "exitCode": 128,
+      "stderr": "fatal: Not a valid object name deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    },
+    {
+      "id": "git/unknown/pathspec-did-not-match",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git checkout no-such-branch-in-this-repo",
+      "expect": "unknown",
+      "exitCode": 1,
+      "stderr": "error: pathspec 'no-such-branch-in-this-repo' did not match any file(s) known to git"
+    },
+    {
+      "id": "git/auth/could-not-read-username-prompts-disabled",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "GIT_TERMINAL_PROMPT=0, no credential helper: git ls-remote https://github.com/Apra-Labs/apra-fleet-stderr-corpus-no-such-repo.git",
+      "expect": "auth",
+      "exitCode": 128,
+      "stderr": "fatal: could not read Username for 'https://github.com': terminal prompts disabled"
+    },
+    {
+      "id": "git/auth/permission-denied-publickey",
+      "tool": "git",
+      "toolVersion": "git version 2.50.1 (Apple Git-155)",
+      "command": "git ls-remote git@github.com:Apra-Labs/apra-fleet.git   (GIT_SSH_COMMAND forces IdentityFile=/dev/null)",
+      "expect": "auth",
+      "exitCode": 128,
+      "stderr": "Warning: Permanently added 'github.com' (ED25519) to the list of known hosts.\r\nLoad key \"/dev/null\": invalid format\r\ngit@github.com: Permission denied (publickey).\r\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists."
+    },
+    {
+      "id": "dolt/no-remote/pull-with-no-remote-configured",
+      "tool": "dolt",
+      "toolVersion": "dolt version 2.2.3",
+      "bdVersion": "bd version 1.1.0 (8e4e59d39: chore/j918-test-suite-cleanup@8e4e59d39f34)",
+      "command": "bd dolt pull   (no Dolt remote configured)",
+      "expect": "no-remote",
+      "exitCode": 1,
+      "stderr": "Pulling from Dolt remote...\nError: fetch from origin/main: Error 1105: no remote"
+    },
+    {
+      "id": "dolt/empty-remote/pull-git-remote-without-dolt-data",
+      "tool": "dolt",
+      "toolVersion": "dolt version 2.2.3",
+      "bdVersion": "bd version 1.1.0 (8e4e59d39: chore/j918-test-suite-cleanup@8e4e59d39f34)",
+      "command": "bd dolt pull   (remote is a git repo with commits but no refs/dolt/data)",
+      "expect": "empty-remote",
+      "exitCode": 1,
+      "stderr": "Pulling from Dolt remote...\nError: fetch from origin/main: Error 1105: fetch failed: no branches found in remote 'origin'"
+    },
+    {
+      "id": "dolt/remote-unreachable/push-to-nonexistent-path",
+      "tool": "dolt",
+      "toolVersion": "dolt version 2.2.3",
+      "bdVersion": "bd version 1.1.0 (8e4e59d39: chore/j918-test-suite-cleanup@8e4e59d39f34)",
+      "command": "bd dolt push   (remote file:// path does not exist)",
+      "expect": "remote-unreachable",
+      "exitCode": 1,
+      "stderr": "Pushing to Dolt remote...\nError: push to origin/main: Error 1105: failed to get remote db; the remote: origin 'git+file:///tmp/vcs-stderr-corpus-vXUAjf/dolt/this-path-does-not-exist.git' could not be accessed; fatal: '/tmp/vcs-stderr-corpus-vXUAjf/dolt/this-path-does-not-exist.git' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\nhint: dolt does not support interactive credential prompts\nhint: configure git credentials (credential helper, token) for HTTPS remotes\nhint: run `ssh-add <key>` to pre-load your key for SSH remotes\nhint: ensure non-interactive auth is configured for GCM"
+    },
+    {
+      "id": "dolt/transient/dns-could-not-resolve-host",
+      "tool": "dolt",
+      "toolVersion": "dolt version 2.2.3",
+      "bdVersion": "bd version 1.1.0 (8e4e59d39: chore/j918-test-suite-cleanup@8e4e59d39f34)",
+      "command": "bd dolt pull   (remote host does not resolve)",
+      "expect": "transient",
+      "exitCode": 1,
+      "stderr": "Pulling from Dolt remote...\nError: fetch from origin/main: Error 1105: fatal: unable to access 'https://no-such-host-apra-fleet-stderr-corpus.invalid/x/y.git/': Could not resolve host: no-such-host-apra-fleet-stderr-corpus.invalid\nhint: dolt does not support interactive credential prompts\nhint: configure git credentials (credential helper, token) for HTTPS remotes\nhint: run `ssh-add <key>` to pre-load your key for SSH remotes\nhint: ensure non-interactive auth is configured for GCM"
+    },
+    {
+      "id": "dolt/transient/connection-refused",
+      "tool": "dolt",
+      "toolVersion": "dolt version 2.2.3",
+      "bdVersion": "bd version 1.1.0 (8e4e59d39: chore/j918-test-suite-cleanup@8e4e59d39f34)",
+      "command": "bd dolt pull   (remote port closed)",
+      "expect": "transient",
+      "exitCode": 1,
+      "stderr": "Pulling from Dolt remote...\nError: fetch from origin/main: Error 1105: fatal: unable to access 'http://127.0.0.1:9/x/y.git/': Failed to connect to 127.0.0.1 port 9 after 0 ms: Couldn't connect to server\nhint: dolt does not support interactive credential prompts\nhint: configure git credentials (credential helper, token) for HTTPS remotes\nhint: run `ssh-add <key>` to pre-load your key for SSH remotes\nhint: ensure non-interactive auth is configured for GCM"
+    },
+    {
+      "id": "dolt/auth/could-not-read-username-prompts-disabled",
+      "tool": "dolt",
+      "toolVersion": "dolt version 2.2.3",
+      "bdVersion": "bd version 1.1.0 (8e4e59d39: chore/j918-test-suite-cleanup@8e4e59d39f34)",
+      "command": "GIT_TERMINAL_PROMPT=0, no credential helper: bd dolt pull against https://github.com/Apra-Labs/apra-fleet-stderr-corpus-no-such-repo.git",
+      "expect": "auth",
+      "exitCode": 1,
+      "stderr": "Pulling from Dolt remote...\nError: fetch from origin/main: Error 1105: fatal: could not read Username for 'https://github.com': terminal prompts disabled\nhint: dolt does not support interactive credential prompts\nhint: configure git credentials (credential helper, token) for HTTPS remotes\nhint: run `ssh-add <key>` to pre-load your key for SSH remotes\nhint: ensure non-interactive auth is configured for GCM"
+    },
+    {
+      "id": "dolt/unknown/unknown-remote-name",
+      "tool": "dolt",
+      "toolVersion": "dolt version 2.2.3",
+      "bdVersion": "bd version 1.1.0 (8e4e59d39: chore/j918-test-suite-cleanup@8e4e59d39f34)",
+      "command": "bd dolt remote remove no-such-remote",
+      "expect": "unknown",
+      "exitCode": 1,
+      "stderr": "Error removing remote: remove remote no-such-remote: Error 1105: error: unknown remote: 'no-such-remote'"
+    },
+    {
+      "id": "dolt/diverged/push-no-common-ancestor",
+      "tool": "dolt",
+      "toolVersion": "dolt version 2.2.3",
+      "bdVersion": "bd version 1.1.0 (8e4e59d39: chore/j918-test-suite-cleanup@8e4e59d39f34)",
+      "command": "bd dolt push   (two clones with independent Dolt histories, remote already advanced)",
+      "expect": "diverged",
+      "exitCode": 1,
+      "stderr": "Pushing to Dolt remote...\nError: push to origin/main: Error 1105: unknown push error; no common ancestor\n\nLocal and remote Dolt histories have diverged.\nThis means the local database and the remote have independent commit\nhistories with no common merge base.\n\nRecovery options:\n\n  1. Keep remote, discard local (recommended if remote is authoritative):\n       bd bootstrap              # re-clone from remote\n\n  2. Keep local, overwrite remote (if local is authoritative):\n       bd dolt push --force       # force-push local history to remote\n\n  3. Manual recovery (re-initialize local database):\n       rm -rf .beads/dolt         # delete local Dolt database\n       bd bootstrap              # re-clone from remote\n\nTip: This usually happens when multiple agents independently initialize\ndatabases and push to the same remote. Use 'bd bootstrap' to clone an\nexisting remote instead of 'bd init' to avoid divergent histories.",
+      "note": "the \"have diverged\" token that earns the diverged verdict is on the FOURTH line -- truncating this output to its first line flips the verdict to unknown"
+    }
+  ]
+}
