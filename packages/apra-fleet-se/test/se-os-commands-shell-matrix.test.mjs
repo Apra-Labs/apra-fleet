@@ -120,8 +120,10 @@ describe('gitbash command strings carry no PowerShell dialect (apra-fleet-7dir.3
         assert.ok(!/\$env:USERPROFILE/.test(command), `gitbash command must use $HOME, not $env:USERPROFILE: ${command}`);
 
         // Same shape apra-fleet core's Windows credential-write used for a
-        // gitbash member: a bare unquoted $HOME/... path to a .bat helper.
-        assert.equal(command, '$HOME/.fleet-git-credential-github-push-pr.bat');
+        // gitbash member, now double-quoted (apra-fleet-j918.12) so a HOME
+        // containing whitespace still resolves; the descriptor (used only for
+        // human-readable error messages) stays the bare path.
+        assert.equal(command, '"$HOME/.fleet-git-credential-github-push-pr.bat"');
         assert.equal(descriptor, '$HOME/.fleet-git-credential-github-push-pr.bat');
     });
 
@@ -188,9 +190,9 @@ describe('runner.js buildCredentialReadCommand routes through getSeCommands (apr
         assert.equal(command, coreWrapPowerShellEncoded(expectedInner));
     });
 
-    test('a plain "linux" OS string (back-compat callers) gets the byte-identical historical POSIX string', () => {
+    test('a plain "linux" OS string (back-compat callers) gets the quoted POSIX string (apra-fleet-j918.12)', () => {
         const { command, descriptor } = buildCredentialReadCommand('linux', 'github-push-pr');
-        assert.equal(command, '$HOME/.fleet-git-credential-github-push-pr');
+        assert.equal(command, '"$HOME/.fleet-git-credential-github-push-pr"');
         assert.equal(descriptor, '$HOME/.fleet-git-credential-github-push-pr');
     });
 });
@@ -574,29 +576,37 @@ describe('emitted commands round-trip through the REAL target shell and deliver 
         });
     }
 
-    // KNOWN LIMIT, pinned deliberately rather than left as a silent gap.
-    //
-    // The POSIX/gitbash shapes emit a BARE `$HOME/...` word, so the member's
-    // own shell word-splits it when HOME contains whitespace and the helper is
-    // never found. The PowerShell shapes above do NOT have this weakness (they
-    // quote the path, which is why the hostile-path test passes for them).
-    //
-    // This is asserted as the CURRENT behaviour, not endorsed: if the POSIX
-    // emitters are ever changed to quote the path, this test fails loudly and
-    // should be replaced by the same positive assertion the PowerShell targets
-    // already make -- it must not be able to regress back unnoticed either way.
-    test('KNOWN LIMIT: the POSIX/gitbash shapes emit a BARE $HOME word, so a HOME containing a space does not resolve', { skip: BASH_SKIP }, () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'se-shrt-limit-'));
-        try {
-            const home = path.join(root, HOSTILE_DIRNAME);
-            writeHelperStandIn(home, '.fleet-git-credential-github');
-            const { command } = getSeCommands({ os: 'linux', shell: '' }).readCredentialHelper('github');
-            assert.match(command, /^\$HOME\//, 'precondition: the POSIX shape is a bare $HOME word, unquoted');
-            const res = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { ...process.env, HOME: home } });
-            assert.notEqual(res.status, 0, 'a spaced HOME currently FAILS to resolve for the POSIX shape -- if this now succeeds, the emitters were fixed and this known-limit pin must become a positive assertion');
-            assert.match(`${res.stderr}${res.stdout}`, /No such file or directory/i, `expected a word-splitting failure, got: ${res.stderr || res.stdout}`);
-        } finally {
-            fs.rmSync(root, { recursive: true, force: true });
-        }
-    });
+    // Formerly a KNOWN LIMIT pin: the POSIX/gitbash shapes used to emit a BARE
+    // `$HOME/...` word, so the member's own shell word-split it when HOME
+    // contained whitespace and the helper was never found. Fixed by
+    // apra-fleet-j918.12 (SePosixCommands#invoke now double-quotes the path,
+    // inherited by the gitbash subclass) -- replaced with the same positive
+    // round-trip assertion the PowerShell targets above already make, so this
+    // must not be able to regress back unnoticed.
+    for (const target of [
+        { label: 'linux', os: 'linux', shell: '', file: '.fleet-git-credential-github' },
+        { label: 'darwin', os: 'darwin', shell: '', file: '.fleet-git-credential-github' },
+        { label: 'windows+gitbash', os: 'windows', shell: 'gitbash', file: '.fleet-git-credential-github.bat' },
+    ]) {
+        test(`${target.label}: real bash execs the helper at HOME with ZERO arguments, even when that path carries a quote and a space (apra-fleet-j918.12)`, { skip: BASH_SKIP }, () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'se-shrt-hostile-'));
+            try {
+                const home = path.join(root, HOSTILE_DIRNAME);
+                const helper = writeHelperStandIn(home, target.file);
+                const { command } = getSeCommands(target).readCredentialHelper('github');
+                const res = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { ...process.env, HOME: home } });
+                assert.equal(res.status, 0, `the emitted command must run cleanly under bash even when HOME contains a quote and a space.\ncommand: ${command}\nstderr: ${res.stderr}`);
+
+                const got = parseArgvReport(res.stdout);
+                assert.equal(
+                    path.resolve(got.argv0),
+                    path.resolve(helper),
+                    `${target.label}: bash must exec exactly the deployed helper. A quoting defect splits the path at the space or terminates the literal at the apostrophe.\nstdout: ${res.stdout}`,
+                );
+                assert.equal(got.argc, 0, `${target.label}: the credential helper takes NO arguments; got ${got.argc}: ${JSON.stringify(got.args)}`);
+            } finally {
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+        });
+    }
 });
