@@ -46,6 +46,19 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
     test('both golden transcript tests pass without UPDATE_GOLDEN, and the fixture directory stays clean', () => {
         const env = { ...process.env };
         delete env.UPDATE_GOLDEN;
+        // NODE_TEST_CONTEXT=child-v8 is set by node --test on ITS OWN
+        // process (even standalone, not just when nested under a parent
+        // node --test run). A node --test child spawned via execFileSync
+        // while that var is still in its env silently no-ops ("run() is
+        // being called recursively within a test file. skipping running
+        // files.") -- empty stdout, exit 0, no test actually run -- instead
+        // of executing the requested files. Without this delete, this whole
+        // test falsely passes in well under a second instead of genuinely
+        // exercising golden-transcript.test.mjs / golden-transcript-3bead
+        // .test.mjs. Mirrors the already-working pattern in
+        // phase1-leaf-facade-completeness.test.mjs and phase3-dispatch-
+        // engine-completeness.test.mjs.
+        delete env.NODE_TEST_CONTEXT;
 
         // This duplicates the execution the package's own test/*.test.mjs
         // glob already gives golden-transcript.test.mjs and
@@ -55,12 +68,14 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
         // for the ambient run, which would make the git-status check below a
         // false failure if it depended on that run instead. An explicit
         // timeout caps the risk called out in apra-fleet-3swo.10 of an
-        // untimed spawn silently hanging the whole suite.
+        // untimed spawn silently hanging the whole suite -- raised from a
+        // vacuous-run-sized budget to comfortably cover the genuine ~6776ms
+        // audit baseline now that the child actually runs.
         // Must not throw (node --test exits non-zero on any failing subtest).
         execFileSync(
             process.execPath,
             ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
-            { cwd: packageRoot, env, stdio: 'pipe', timeout: 60_000 },
+            { cwd: packageRoot, env, stdio: 'pipe', timeout: 120_000 },
         );
 
         const dirty = execFileSync('git', ['status', '--porcelain', '--', goldenFixtureDir], {

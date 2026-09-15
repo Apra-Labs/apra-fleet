@@ -171,11 +171,24 @@ describe('(2) golden transcripts reproduce with the fixture directory untouched'
         const env = { ...process.env };
         delete env.UPDATE_GOLDEN;
         assert.equal(env.UPDATE_GOLDEN, undefined, 'UPDATE_GOLDEN must be unset for the child run');
+        // NODE_TEST_CONTEXT=child-v8 is set by node --test on ITS OWN
+        // process (even standalone, not just when nested under a parent
+        // node --test run). A node --test child spawned via execFileSync
+        // while that var is still in its env silently no-ops ("run() is
+        // being called recursively within a test file. skipping running
+        // files.") -- empty stdout, exit 0, no test actually run -- instead
+        // of executing the requested files. Without this delete, this whole
+        // test falsely passes in well under a second instead of genuinely
+        // exercising golden-transcript.test.mjs / golden-transcript-3bead
+        // .test.mjs. Mirrors the already-working pattern in
+        // phase1-leaf-facade-completeness.test.mjs and phase3-dispatch-
+        // engine-completeness.test.mjs.
+        delete env.NODE_TEST_CONTEXT;
 
         execFileSync(
             process.execPath,
             ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
-            { cwd: SE_DIR, env, encoding: 'utf8', stdio: 'pipe' },
+            { cwd: SE_DIR, env, encoding: 'utf8', stdio: 'pipe', timeout: 60_000 },
         );
 
         const after = execFileSync('git', ['status', '--porcelain', '--', 'packages/apra-fleet-se/test/fixtures/golden-transcript'], { cwd: REPO_ROOT, encoding: 'utf8' });
