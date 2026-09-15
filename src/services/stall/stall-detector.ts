@@ -169,6 +169,9 @@ export interface StallEntry {
 export class StallDetector {
   readonly stallCheckList: Map<string, StallEntry> = new Map();
   private pollInterval: NodeJS.Timeout | null = null;
+  // apra-fleet-25yl.6: latches the malformed-STALL_THRESHOLD_MS warning so a
+  // sustained typo logs once, not once per tick for the life of the process.
+  private malformedStallThresholdEnvWarned = false;
 
   add(memberId: string, entry: StallEntry): void {
     if (this.stallCheckList.has(memberId)) {
@@ -229,7 +232,25 @@ export class StallDetector {
     // apra-fleet-25yl.1: env/default baseline is now only the FALLBACK for
     // entries that carry no per-dispatch thresholdMs of their own -- resolved
     // per entry below, not once per tick.
-    const fallbackThresholdMs = parseInt(process.env['STALL_THRESHOLD_MS'] ?? String(DEFAULT_STALL_THRESHOLD_MS));
+    //
+    // apra-fleet-25yl.6: guarded exactly like tickIntervalMs below -- a
+    // non-numeric STALL_THRESHOLD_MS must not silently become NaN. An
+    // unguarded NaN here makes every entry without its own thresholdMs
+    // resolve a NaN probeIntervalMs, which makes the adaptive-cadence gate's
+    // `>= probeIntervalMs` comparison false forever: the entry is probed once
+    // (on its first, lastPolledAt===undefined tick) and never again, silently
+    // disabling stall detection for it for the life of the process.
+    const parsedFallbackThresholdMs = parseInt(process.env['STALL_THRESHOLD_MS'] ?? String(DEFAULT_STALL_THRESHOLD_MS));
+    if (!Number.isFinite(parsedFallbackThresholdMs) && !this.malformedStallThresholdEnvWarned) {
+      this.malformedStallThresholdEnvWarned = true;
+      logWarn('stall_threshold_env_invalid', JSON.stringify({
+        value: process.env['STALL_THRESHOLD_MS'],
+        note: 'STALL_THRESHOLD_MS is not a valid number; falling back to the default stall threshold for entries with no per-dispatch thresholdMs.',
+      }));
+    }
+    const fallbackThresholdMs = Number.isFinite(parsedFallbackThresholdMs)
+      ? parsedFallbackThresholdMs
+      : DEFAULT_STALL_THRESHOLD_MS;
     // apra-fleet-25yl.3 AMENDMENT: the adaptive probe cadence's FLOOR is the
     // loop's own tick interval -- the same resolved value start()'s
     // setInterval uses (STALL_POLL_INTERVAL_MS ?? DEFAULT_POLL_INTERVAL_MS) --
