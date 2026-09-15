@@ -282,15 +282,38 @@ describe('(3) falsification -- the gate is not vacuous', () => {
         }
     });
 
-    test('regression pin: planning-role-dispatch-pins.test.mjs (the exact file apra-fleet-3swo.55 was filed about) classifies ANCHOR_DESYNC, not UNEXPLAINED', { timeout: PROBE_BUDGET_MS }, () => {
+    test('regression pin: a file whose pre-Phase-4 failure text never mentions runner.js still classifies ANCHOR_DESYNC, not UNEXPLAINED', { timeout: PROBE_BUDGET_MS }, () => {
         // apra-fleet-3swo.55: at HEAD 99088ec7, the watchdog-arming commit
-        // 99e0ece0 made this file's pre-Phase-4 revision fail for the same
-        // reason as three OTHER files that were admitted as ANCHOR_DESYNC
-        // (role-policies-table.test.mjs, execution-role-dispatch-pins.test.mjs,
-        // vcs-auth-preflight.test.mjs) -- but this one was rejected as
-        // UNEXPLAINED, purely because its assertion named role-policies.mjs
-        // instead of runner.js. This pin proves the fix: the same file, probed
-        // the same way, is now admitted because its CURRENT revision passes.
+        // 99e0ece0 made planning-role-dispatch-pins.test.mjs's pre-Phase-4
+        // revision fail for the same reason as three OTHER files that were
+        // admitted as ANCHOR_DESYNC (role-policies-table.test.mjs,
+        // execution-role-dispatch-pins.test.mjs, vcs-auth-preflight.test.mjs)
+        // -- but this one was rejected as UNEXPLAINED, purely because its
+        // assertion named role-policies.mjs instead of runner.js.
+        //
+        // apra-fleet-j918.10: that exact file can no longer stand in for the
+        // regression. On main, the pre-Phase-4-refactor history was squashed
+        // into a single commit (16cf4a2d) that is BOTH the first commit under
+        // fleet-sprint/phases/ (so discoverBase() resolves BASE to its parent)
+        // AND the commit that first adds planning-role-dispatch-pins.test.mjs
+        // -- so the file is genuinely absent at BASE (probeFile returns NEW
+        // before ever reaching corroborateAnchorDesync) rather than present
+        // with a failing pre-Phase-4 revision. Re-verify before touching this
+        // pin again: `git cat-file -e <base>:.../planning-role-dispatch-pins.test.mjs`
+        // fails, and `git log --oneline --follow` on that file shows exactly
+        // one commit.
+        //
+        // dolt-sync-brackets.test.mjs preserves the property this pin exists
+        // to guard: it genuinely predates BASE, its pre-Phase-4 revision fails
+        // against HEAD (`expected 20 withGitSync(...) dispatch brackets,
+        // found 0` -- an assertion anchored on runner.js's OLD source shape,
+        // just like the dispatch-pin count planning-role-dispatch-pins.test.mjs
+        // used to assert), and -- like the original file -- its failure text
+        // never mentions the literal string "runner.js". A classifier that
+        // regressed to matching that word in the failure text would therefore
+        // misclassify it UNEXPLAINED exactly as it once misclassified
+        // planning-role-dispatch-pins.test.mjs, so this pin still fails if
+        // corroborateAnchorDesync regresses to text-matching.
         const base = discoverBase();
         // Normalized to forward slashes (same idiom as the probe's own
         // PKG_REL): this path is handed to probeFile -> existsAtBase, which
@@ -298,10 +321,15 @@ describe('(3) falsification -- the gate is not vacuous', () => {
         // pathspecs are always '/'-separated, so on Windows a raw
         // path.relative() result ('packages\...') misses at BASE and the file
         // is misclassified NEW instead of ANCHOR_DESYNC.
-        const repoRelPath = path.relative(REPO_ROOT, path.join(SE_DIR, 'test/planning-role-dispatch-pins.test.mjs'))
+        const repoRelPath = path.relative(REPO_ROOT, path.join(SE_DIR, 'test/dolt-sync-brackets.test.mjs'))
             .split(path.sep).join('/');
         const result = probeFile(base, repoRelPath, PROBE_BUDGET_MS);
         assert.equal(result.klass, 'ANCHOR_DESYNC', `expected ANCHOR_DESYNC, got ${result.klass}: ${result.detail}`);
+        assert.doesNotMatch(
+            result.output || '',
+            /runner\.js/,
+            'this pin only proves wording-independence if the underlying failure text never mentions runner.js',
+        );
     });
 
     test('the probe strips NODE_TEST_CONTEXT, or every classification would be a vacuous INTACT', () => {
