@@ -166,6 +166,17 @@ ${output}`;
 ${output}`;
 }
 
+// apra-fleet-25yl.2.1: the exec-level rolling deadline used for a provider
+// whose ExecTimeoutSource is 'total_ceiling' when the caller supplied NO
+// max_total_s -- i.e. there is no ceiling to mirror. 24h: large enough that it
+// can never bind before any realistic dispatch or client-side deadline, and
+// small enough to stay inside the int32 range setTimeout accepts (Infinity or
+// MAX_SAFE_INTEGER overflow to "fire immediately", which would invert the
+// decoupling into an instant kill). The alternative -- falling back to
+// timeout_s -- is deliberately NOT taken: that is the exact coupling this
+// removes, and for these providers timeout_s belongs to the StallDetector.
+const EXEC_TIMER_NEVER_BINDS_MS = 86_400_000;
+
 const SERVER_RETRY_DELAY_MS = 5000;
 
 // A prompt written whole into a single remote exec command line can exceed
@@ -1120,8 +1131,32 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const durablePath = durableMirrorSupported ? durableOutputPath(scope.getInv()) : undefined;
   const dispatchStartedAt = Date.now();
 
-  const timeoutMs = (input.timeout_s ?? 300) * 1000;
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
+  // apra-fleet-25yl.2.1: the exec-level ROLLING (inactivity) deadline handed to
+  // strategy.execCommand() is no longer provider-blind. It used to be
+  // `timeout_s` for everyone, which is a false kill for the batch-only
+  // providers (they emit nothing on this channel until the turn ends) and the
+  // only working stall signal for the providers with no pollable transcript.
+  // The per-provider answer lives in ONE named place -- ProviderAdapter
+  // .execTimeoutSource() -- so a newly added provider must state its own
+  // (a compile error if it does not) instead of inheriting a default branch.
+  //
+  // NOTE: input.timeout_s still reaches the StallDetector as thresholdMs for
+  // EVERY provider (see stallThresholdMs above). This decision governs the
+  // exec-channel timer only; it must not be used to skip that threading.
+  const execTimeoutSource = provider.execTimeoutSource();
+  const timeoutMs = execTimeoutSource === 'inactivity_timeout'
+    ? (input.timeout_s ?? 300) * 1000
+    // 'total_ceiling': mirror max_total_s, which can never bind before the
+    // caller's own hard ceiling does (a rolling inactivity window of
+    // max_total_s starts at dispatch start and only ever resets later).
+    // max_total_s ABSENT: there is no ceiling to mirror, so use a documented
+    // never-binds-first constant rather than silently falling back to
+    // timeout_s (which is exactly the coupling this change removes). It is
+    // deliberately a finite value well inside the int32 range setTimeout
+    // accepts -- Infinity or Number.MAX_SAFE_INTEGER would overflow and fire
+    // on the next tick, inverting this fix into an instant kill.
+    : (maxTotalMs ?? EXEC_TIMER_NEVER_BINDS_MS);
 
   // apra-fleet-y8q.1: every retry below (dispatch-exception, stale-session,
   // server-overloaded) re-dispatches with a FRESH session but used to reuse the

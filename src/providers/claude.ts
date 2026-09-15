@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -415,6 +415,16 @@ export class ClaudeProvider implements ProviderAdapter {
 
   sessionIdStrategy(): SessionIdStrategy {
     return { type: 'caller-minted' };
+  }
+
+  // apra-fleet-25yl.2.1: a headless `claude -p` dispatch is batch-only -- it
+  // emits nothing on the exec channel until the whole turn is done, so a
+  // `timeout_s`-sized rolling deadline on that channel is a false kill, not a
+  // stall signal. Claude's real mechanism is the StallDetector polling the
+  // session transcript (resolveSessionLogPath below returns a real file), and
+  // that still receives `timeout_s` as its thresholdMs.
+  execTimeoutSource(): ExecTimeoutSource {
+    return 'total_ceiling';
   }
 
   // apra-fleet-lmtg.1: Claude Code's CLI supports fork-mode dispatch natively
