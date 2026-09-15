@@ -259,9 +259,23 @@ export class StallDetector {
       // bounded to roughly one probe interval past the entry's threshold
       // because the stall check further down only runs on ticks that DO
       // probe -- it is never evaluated against stale data on a skipped tick.
-      const probeIntervalMs = Math.min(
-        MAX_STALL_PROBE_INTERVAL_MS,
-        Math.max(tickIntervalMs, stallThresholdMs / 5),
+      //
+      // apra-fleet-25yl.4: the floor (tickIntervalMs) MUST win over the
+      // ceiling (MAX_STALL_PROBE_INTERVAL_MS) -- the invariant that the probe
+      // interval never falls below the loop's own tick interval is
+      // non-negotiable, since a value below it would make the gate fire on
+      // every tick, defeating the point of the cadence. Clamping
+      // stallThresholdMs/5 to the ceiling FIRST, then flooring the result at
+      // tickIntervalMs, gives exactly that precedence: when
+      // STALL_POLL_INTERVAL_MS is overridden above the 300_000ms ceiling, the
+      // tick interval still wins. (The old min(ceiling, max(tick, s/5)) order
+      // let the ceiling win instead, yielding a probe interval BELOW the tick
+      // interval whenever the tick interval itself exceeded the ceiling.)
+      // Behaviourally identical to the old formula whenever tickIntervalMs
+      // <= MAX_STALL_PROBE_INTERVAL_MS (the normal case).
+      const probeIntervalMs = Math.max(
+        tickIntervalMs,
+        Math.min(MAX_STALL_PROBE_INTERVAL_MS, stallThresholdMs / 5),
       );
       const dueForProbe = entry.lastPolledAt === undefined || (now - entry.lastPolledAt) >= probeIntervalMs;
       if (!dueForProbe) {

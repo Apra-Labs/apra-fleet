@@ -623,6 +623,40 @@ describe('StallDetector', () => {
     });
   });
 
+  // apra-fleet-25yl.4: the adaptive probe cadence's floor (the loop's own
+  // tick interval) must win over its 300_000ms ceiling when
+  // STALL_POLL_INTERVAL_MS is overridden above that ceiling. Before this fix,
+  // probeIntervalMs = min(ceiling, max(tick, threshold/5)) let the ceiling
+  // win instead, so an over-ceiling tick interval produced a probe interval
+  // BELOW the tick interval and the gate fired on every tick.
+  describe('_poll — adaptive probe cadence floor wins over the ceiling (apra-fleet-25yl.4)', () => {
+    it('does not probe again until the over-ceiling tick interval has elapsed', async () => {
+      const tickIntervalMs = 360_000; // 6 minutes -- above the 300_000ms ceiling
+      process.env['STALL_POLL_INTERVAL_MS'] = String(tickIntervalMs);
+      process.env['STALL_THRESHOLD_MS'] = '5000'; // threshold/5 = 1000ms, well under the ceiling
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date().toISOString() });
+
+      const start = Date.now();
+      detector.add('member-1', makeEntry({ lastActivityAt: start }));
+
+      // First poll seeds lastPolledAt.
+      await detector._poll();
+      expect(mockPollLogFile).toHaveBeenCalledTimes(1);
+
+      // Past the OLD (buggy) 300_000ms ceiling, but still short of the
+      // 360_000ms tick interval -- with the fix, the floor wins and this
+      // tick must be skipped (no live probe issued).
+      vi.setSystemTime(start + 300_001);
+      await detector._poll();
+      expect(mockPollLogFile).toHaveBeenCalledTimes(1);
+
+      // At/past the tick interval -- now it must probe again.
+      vi.setSystemTime(start + tickIntervalMs + 1);
+      await detector._poll();
+      expect(mockPollLogFile).toHaveBeenCalledTimes(2);
+    });
+  });
+
   // apra-fleet-iuc.2: the transcript file's OS mtime cross-checked against the
   // content-parsed timestamp. Every test above mocks pollLogFile WITHOUT
   // mtimeMs (undefined), so this block is what actually exercises the new
