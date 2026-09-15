@@ -1103,10 +1103,8 @@ async function runSprintCycle(context) {
             : async () => {}
     );
 
-    // The per-dispatch time budget used for BOTH timeout_s and max_total_s:
-    // silent-until-done CLIs make inactivity indistinguishable from total
-    // runtime, so the two must be equal. The integ-test dispatch alone gets a
-    // 2x ceiling.
+    // The per-dispatch HARD elapsed-time ceiling (max_total_s). The integ-test
+    // dispatch alone gets a 2x ceiling.
     const DISPATCH_TIMEOUT_S = validated.dispatchTimeoutS;
     const INTEG_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 2;
     // Hoisted here with its siblings (apra-fleet-3swo.5.7): role-policies.mjs
@@ -1117,6 +1115,15 @@ async function runSprintCycle(context) {
     // elapsed-time ceiling real headroom, since a max_total_s kill surfaces as
     // a plain AgentDispatchError that the max_turns resume ladder cannot catch.
     const REGRESSION_TEST_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 3;
+    // The dispatch INACTIVITY budget (timeout_s): distinct from the HARD
+    // elapsed-time ceiling above (apra-fleet-25yl.1.5). A silent-until-done
+    // dispatch is killed after this many seconds with no observed progress,
+    // independent of how long the run's own total budget allows it to run.
+    // Clamped to the run's own DISPATCH_TIMEOUT_S so a run launched with a
+    // smaller total budget (e.g. dispatch_timeout_s=300) never ends up with
+    // an inactivity budget longer than its own total -- that combination is
+    // incoherent even though the arg contract permits requesting it.
+    const DISPATCH_INACTIVITY_TIMEOUT_S = Math.min(1800, DISPATCH_TIMEOUT_S);
 
     // Apply the optional `budget` arg ceiling to THIS run's budget object.
     // Setting it here, before any dispatch, is what makes the ceiling
@@ -1385,7 +1392,13 @@ async function runSprintCycle(context) {
         // engine arms for a role whose retry.usageLimitPause is set.
         onUsageLimit,
         fixedRoleTier: FIXED_ROLE_TIER,
-        budgets: { DISPATCH_TIMEOUT_S, INTEG_MAX_TOTAL_S, REGRESSION_TEST_MAX_TOTAL_S, ...usageLimitBudgets },
+        budgets: {
+            DISPATCH_TIMEOUT_S,
+            DISPATCH_INACTIVITY_TIMEOUT_S,
+            INTEG_MAX_TOTAL_S,
+            REGRESSION_TEST_MAX_TOTAL_S,
+            ...usageLimitBudgets,
+        },
         schemas: {
             planReviewerVerdict,
             streakAssignment,

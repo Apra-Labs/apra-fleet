@@ -227,8 +227,6 @@ const bracketed = (pushCode, pushBeads) => ({ wrapped: true, pushCode, pushBeads
 const NO_BRACKET = { wrapped: false, pushCode: null, pushBeads: null };
 
 const budgets = (timeoutS, maxTotalS) => ({ timeoutS, maxTotalS });
-/** A dispatch that passes neither timeout, i.e. takes the transport defaults. */
-const NO_BUDGETS = { timeoutS: null, maxTotalS: null };
 
 /**
  * Requires a non-empty rationale string. Both watchdog constructors below
@@ -612,7 +610,7 @@ const planner = policy('planner', {
     schema: null,
     resumeArg: roundSessionResume('planner'),
     bracket: bracketed(false, true),
-    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('PLANNER_MAX_TURNS', 1, 500),
     watchdog: watchdog(
         ['Plan (interactive)'],
@@ -661,7 +659,7 @@ const planReviewer = policy('plan-reviewer', {
     schema: 'planReviewerVerdict',
     resumeArg: null,
     bracket: bracketed(false, null),
-    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('PLAN_REVIEWER_MAX_TURNS', 1, 500),
     watchdog: noWatchdog(
         'A single bounded review pass over an already-produced plan; left disarmed as inherited from the '
@@ -709,7 +707,7 @@ const scopedReplanPlanner = policy('scoped-replan-planner', {
     model: fixedTier('planner'),
     schema: null,
     bracket: bracketed(false, true),
-    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('SCOPED_REPLAN_PLANNER_MAX_TURNS', 1, 500),
     watchdog: watchdog(
         ['Scoped Replan Plan (interactive)'],
@@ -732,7 +730,7 @@ const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
     model: fixedTier('plan-reviewer'),
     schema: 'planReviewerVerdict',
     bracket: bracketed(false, null),
-    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('SCOPED_REPLAN_REVIEWER_MAX_TURNS', 1, 500),
     watchdog: noWatchdog(
         'Same reasoning as plan-reviewer: a single bounded review pass with no code/bead mutation of its own, '
@@ -757,7 +755,12 @@ const streakAssignment = policy('streak-assignment', {
     schema: 'streakAssignment',
     // The one dispatch outside any git-sync bracket: pure compute, no repo access.
     bracket: NO_BRACKET,
-    timeouts: NO_BUDGETS,
+    // Explicit budgets(null, null) rather than the transport just inheriting
+    // NO_BUDGETS from nothing being named: this row and its secondary
+    // (below) are the only two that pass no budget name at all, so stating
+    // both fields explicitly here keeps that a visible, deliberate choice
+    // rather than an implicit default (apra-fleet-25yl.1.5).
+    timeouts: budgets(null, null),
     maxTurns: null,
     watchdog: noWatchdog(
         'The one dispatch with no bracket and no repo state (bracket: NO_BRACKET) -- a stuck session holds no '
@@ -775,6 +778,10 @@ const streakAssignment = policy('streak-assignment', {
 });
 streakAssignment.secondary = secondary(streakAssignment, 'streak-assignment', 'semantic-repair-re-ask', {
     ladderAnchor: "label: 'Streak Assignment (semantic repair)'",
+    // Explicit rather than relying on secondary()'s inherited-from-main
+    // default: this is the sibling to the main row's explicit
+    // budgets(null, null) above (apra-fleet-25yl.1.5).
+    timeouts: budgets(null, null),
 });
 
 const doer = policy('doer', {
@@ -788,7 +795,7 @@ const doer = policy('doer', {
     schema: 'doerReport',
     resumeArg: WORKLIST_RESUME,
     bracket: bracketed(true, true),
-    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('BASE_DOER_MAX_TURNS', 1, 500),
     watchdog: noWatchdog(
         'Doer streaks dispatch and run in PARALLEL across streaks -- the parallel runner isolates each one, and '
@@ -847,7 +854,7 @@ const reviewer = policy('reviewer', {
     schema: 'reviewerVerdict',
     resumeArg: roundSessionResume('reviewer'),
     bracket: bracketed(false, null),
-    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('BASE_REVIEWER_MAX_TURNS', 1, 500),
     watchdog: noWatchdog(
         'One review round at a time, gated behind the same server-side timeout_s as every dispatch, and its own '
@@ -917,7 +924,7 @@ const finalReview = policy('final-review', {
     model: fixedTier('reviewer'),
     schema: 'finalVerdict',
     bracket: bracketed(false, null),
-    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('FINAL_REVIEW_MAX_TURNS', 1, 500),
     watchdog: noWatchdog(
         'Runs exactly once, after every other role finished, with its own bounded auth self-heal and a 4-path '
@@ -977,7 +984,7 @@ const deployer = policy('deployer', {
     model: fixedTier('deployer'),
     schema: 'deployerReport',
     bracket: bracketed(false, null),
-    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('DEPLOYER_MAX_TURNS', 1, 500),
     // ARMED (apra-fleet-3swo.7.12, a behaviour change from previously-inherited
     // NO_WATCHDOG): named explicitly as an obvious arming candidate. One long,
@@ -1040,7 +1047,7 @@ const integTestRunner = policy('integ-test-runner', {
     bracket: bracketed(false, true),
     // Shorter INACTIVITY timer, longer HARD elapsed ceiling: a hung runner
     // still dies on silence, while an active long pass is never killed.
-    timeouts: budgets('DISPATCH_TIMEOUT_S', 'INTEG_MAX_TOTAL_S'),
+    timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'INTEG_MAX_TOTAL_S'),
     maxTurns: turns('INTEG_TEST_MAX_TURNS', 1, 500),
     // ARMED (apra-fleet-3swo.7.12, a behaviour change from previously-inherited
     // NO_WATCHDOG): named explicitly as an obvious arming candidate. Dispatched
@@ -1113,7 +1120,7 @@ const regressionTestRunner = policy('regression-test-runner', {
     model: fixedTier('regression-test-runner'),
     schema: 'regressionReport',
     bracket: bracketed(false, true),
-    timeouts: budgets('DISPATCH_TIMEOUT_S', 'REGRESSION_TEST_MAX_TOTAL_S'),
+    timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'REGRESSION_TEST_MAX_TOTAL_S'),
     maxTurns: turns('REGRESSION_TEST_MAX_TURNS', 1, 500),
     // ARMED (apra-fleet-3swo.7.12, a behaviour change from previously-inherited
     // NO_WATCHDOG): named explicitly as an obvious arming candidate, for the
@@ -1198,7 +1205,7 @@ const harvester = policy('harvester', {
     schema: 'harvesterReport',
     // Writes docs AND defers low-priority beads, so it pushes both.
     bracket: bracketed(true, true),
-    timeouts: budgets('DISPATCH_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
+    timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('HARVESTER_MAX_TURNS', 1, 500),
     watchdog: noWatchdog(
         'Runs after the sprint\'s pass/fail verdict is already decided; a hang here degrades to '
