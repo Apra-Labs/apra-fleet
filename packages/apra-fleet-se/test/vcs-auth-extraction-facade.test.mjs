@@ -184,11 +184,32 @@ describe('(2) golden transcripts reproduce with the fixture directory untouched'
         // phase1-leaf-facade-completeness.test.mjs and phase3-dispatch-
         // engine-completeness.test.mjs.
         delete env.NODE_TEST_CONTEXT;
+        // apra-fleet-j918.13.2: pin the env-hygiene fix itself, asserting on
+        // the actual object handed to the nested spawn below (not a
+        // source-text regex) -- `env` is the same reference passed as the
+        // spawn's `env` option two statements down.
+        assert.equal(env.NODE_TEST_CONTEXT, undefined, 'NODE_TEST_CONTEXT must be unset in the env object handed to the nested golden-transcript spawn, or the child silently no-ops instead of genuinely running');
 
-        execFileSync(
+        const childOut = execFileSync(
             process.execPath,
             ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
             { cwd: SE_DIR, env, encoding: 'utf8', stdio: 'pipe', timeout: 60_000 },
+        );
+
+        // apra-fleet-j918.13.2: falsifiable pin against the vacuous no-op
+        // child (j918.13) recurring -- a bare non-throw/exit-0 is NOT
+        // sufficient, since the no-op child also exits 0 in well under a
+        // second. Assert on OBSERVABLE properties of the child's captured
+        // output instead: the recursive-skip warning must be absent, and the
+        // node:test TAP summary must report a positive executed-test count.
+        assert.ok(
+            !childOut.includes('is being called recursively') && !childOut.includes('skipping running files'),
+            `the nested golden-transcript child must not silently no-op (recursive-skip warning found in its output); got:\n${childOut.slice(-2000)}`,
+        );
+        const passMatch = childOut.match(/^# pass (\d+)$/m);
+        assert.ok(
+            passMatch && Number(passMatch[1]) > 0,
+            `expected the child golden-transcript run to report at least one passing test in its TAP summary; got output:\n${childOut.slice(-2000)}`,
         );
 
         const after = execFileSync('git', ['status', '--porcelain', '--', 'packages/apra-fleet-se/test/fixtures/golden-transcript'], { cwd: REPO_ROOT, encoding: 'utf8' });
