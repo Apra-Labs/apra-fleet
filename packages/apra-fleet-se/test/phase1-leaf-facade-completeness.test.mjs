@@ -33,6 +33,10 @@ import {
 // with phase3-dispatch-engine-completeness.test.mjs now live in one
 // table-driven factory, instantiated below with this gate's own tuple.
 import { describeHandleNestedSuiteSpawnResultCases } from './helpers/nested-suite-spawn-cases.mjs';
+// apra-fleet-x0mr.1: the bd-mock-shim contract's own backend reading, used to
+// pick this gate's nested-suite budget. Imported rather than re-derived from
+// APRA_FLEET_BD_MOCK so a change to the spelling set cannot desynchronize.
+import { bdMode } from './helpers/bd-replay.mjs';
 
 // =============================================================================
 // apra-fleet-3swo.3.7 -- prove Phase 1's leaf extractions (sprint-args.mjs
@@ -53,19 +57,47 @@ const SPRINT_ARGS_PATH = path.join(SE_DIR, 'fleet-sprint/sprint-args.mjs');
 const GOLDEN_FIXTURE_DIR = path.join(__dirname, 'fixtures', 'golden-transcript');
 
 // -----------------------------------------------------------------------------
-// apra-fleet-3yuu.1: shared, env-overridable nested-suite spawn budget.
+// apra-fleet-3yuu.1 / apra-fleet-x0mr.1: shared, BACKEND-AWARE, env-overridable
+// nested-suite spawn budget.
 //
-// describe (3) (golden-transcript) below spawns a nested `node --test` child
-// via execFileSync and used to hard-code its own timeout literal (60
-// seconds). Under a real bd/dolt-backed run that budget is roughly an order
-// of magnitude short -- golden-transcript.test.mjs alone took 562s standalone
-// in the failing run this bead fixes (apra-fleet-3yuu) -- so it derives from
-// this named constant, overridable by a single env var, defaulting well
-// above that observed runtime. Raising the default further (or overriding
-// per-run) is the correct fix if a real, slower backend needs more headroom;
-// if the raised budget still times out, that is a genuine signal for the
-// separate bd+dolt per-dispatch latency work, not a reason to raise this
-// further.
+// describe (3) below spawns the two golden-transcript suites as a nested
+// `node --test` child via execFileSync. It used to hard-code a 60s literal
+// (apra-fleet-3yuu.1 replaced that with the flat 900_000ms constant below),
+// and 900_000ms is a fine budget for the MOCK (replay) bd backend -- the
+// nested child finishes in seconds there. It is not a fine budget for the
+// real-bd suite: that run failed with "nested suite 'golden-transcript'
+// exceeded its 900000ms budget" with no override set (apra-fleet-x0mr), the
+// enclosing file taking 1811676ms overall. golden-transcript.test.mjs alone
+// took 562s standalone under real bd when apra-fleet-3yuu was written, and
+// that figure predates both the second golden file joining this nested run
+// and the outer suite's concurrency contention.
+//
+// apra-fleet-x0mr.1 DECISION -- option (a), derive/expose the budget, chosen
+// over option (b), deleting this nested run as a duplicate of phase3's:
+//   - Option (b) would have left this file with NO nested spawn at all, which
+//     makes runNestedSuite() below dead code and turns sections (6)/(6d) --
+//     the handler-and-budget gates whose phase1 tuple apra-fleet-j918.7.1 had
+//     just been required to keep covered -- into tests of machinery this file
+//     no longer uses. Deleting a duplicate must not cost a live gate its
+//     subject.
+//   - Option (a) fixes the actual reported failure (a budget calibrated for
+//     one backend applied to another) at its cause, and does so with the
+//     mechanism phase3-dispatch-engine-completeness.test.mjs already proved
+//     out for exactly this problem: resolve from bdMode() rather than from a
+//     flat constant.
+// The cost accepted: under real bd the golden pair is still spawned here as
+// well as by phase3 section (7). That duplication is real, but it is a
+// wall-clock cost, not a correctness one, and it is the subject of its own
+// consolidation work -- not something to smuggle in under a budget fix.
+//
+// NOT scaledTimeout(), deliberately: test/helpers/scaled-timeout.mjs reads
+// APRA_FLEET_TEST_CONCURRENCY, which only scripts/run-tests.mjs exports. The
+// package.json test script passes --test-concurrency=8 WITHOUT it, so every
+// scaledTimeout caller silently runs on its unscaled base budget under the
+// very command CI runs. bdMode() has no such gap: it reads
+// APRA_FLEET_BD_MOCK, which is set by whoever selects the backend and is
+// therefore identical under `npm test`, under scripts/run-tests.mjs, and
+// under scripts/run-integ-suites.mjs. Section (6d) pins that equivalence.
 //
 // This constant used to also budget a second nested spawn, describe (4)'s
 // full mock-sprint suite run; that run was deleted in apra-fleet-j918.3.2 as
@@ -74,36 +106,109 @@ const GOLDEN_FIXTURE_DIR = path.join(__dirname, 'fixtures', 'golden-transcript')
 // sole consumer of this constant.
 //
 // Override: set PHASE1_NESTED_SUITE_TIMEOUT_MS (milliseconds) in the
-// environment to use a different budget for the nested spawn below.
+// environment to use a different budget for the nested spawn below. It wins
+// on EITHER backend -- it is the escape hatch the timeout message itself
+// tells the reader to reach for.
 // -----------------------------------------------------------------------------
 const DEFAULT_NESTED_SUITE_TIMEOUT_MS = 900_000;
 
-function resolveNestedSuiteTimeoutMs() {
-    const raw = process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
-    if (raw === undefined || raw === '') return DEFAULT_NESTED_SUITE_TIMEOUT_MS;
-    const parsed = Number(raw);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new Error(`PHASE1_NESTED_SUITE_TIMEOUT_MS must be a positive number of milliseconds, got: ${JSON.stringify(raw)}`);
+// The nested child's file list, declared ONCE and used both as the spawn argv
+// and as the file count the real-bd budget derives from, so the two can never
+// disagree: adding a third golden file here raises the budget with it, and a
+// renamed/deleted file trips the existence check below instead of silently
+// shrinking the nested run to something that still exits 0.
+const NESTED_GOLDEN_SUITE_FILES = [
+    'test/golden-transcript.test.mjs',
+    'test/golden-transcript-3bead.test.mjs',
+];
+for (const rel of NESTED_GOLDEN_SUITE_FILES) {
+    if (!fs.existsSync(path.join(SE_DIR, rel))) {
+        throw new Error(
+            `phase1 nested golden-transcript run names ${rel}, which does not exist. A nested child given a ` +
+            'missing file runs nothing and exits 0, which would read as a pass -- fix the list rather than ' +
+            'letting this gate go vacuous.',
+        );
     }
-    return parsed;
 }
 
-const NESTED_SUITE_TIMEOUT_MS = resolveNestedSuiteTimeoutMs();
+// -----------------------------------------------------------------------------
+// REAL-BD BUDGET DERIVATION (apra-fleet-x0mr.1), stated as factors a reader
+// can re-multiply rather than as one opaque literal:
+//   ASSUMED_REAL_BD_GOLDEN_PER_FILE_MS (900_000 -- 15 min/file, above the 562s
+//     apra-fleet-3yuu measured for golden-transcript.test.mjs standalone under
+//     real bd, with room for the outer suite's concurrency contention)
+//   x NESTED_GOLDEN_SUITE_FILES.length (2 as written, read live from the list
+//     above; the nested child does NOT cap its own concurrency, so treating
+//     the files as serial is the conservative direction)
+//   x REAL_BD_HEADROOM_FACTOR (2, for run-to-run variance -- the same factor
+//     phase3's derivation uses)
+// = 900_000 x 2 x 2 = 3_600_000ms (1h) at the 2-file count in force here.
+//
+// Sanity-check against the failure this fixes: the whole phase1 file took
+// 1811676ms (~30min) in that run WITH a second nested spawn also running, so
+// 1h is comfortably above the worst observed cost of the run it must cover,
+// while still small enough to bind -- a genuine hang is caught within the
+// hour rather than sitting until the outer harness gives up.
+//
+// CEILING, for the same reason phase3 has one (apra-fleet-3swo.51): the
+// derivation scales linearly with the file count, and a budget larger than
+// the suite it lives in can never bind, silently retiring all hang detection
+// on the real-bd path. 2h is ~2x the derived value at the current count, so
+// the ceiling only bites if that count grows past 4 files.
+// -----------------------------------------------------------------------------
+const ASSUMED_REAL_BD_GOLDEN_PER_FILE_MS = 900_000;
+const REAL_BD_HEADROOM_FACTOR = 2;
+const REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS = 2 * 60 * 60 * 1000; // 7_200_000ms
+const REAL_BD_NESTED_SUITE_TIMEOUT_MS = Math.min(
+    Math.ceil(ASSUMED_REAL_BD_GOLDEN_PER_FILE_MS * NESTED_GOLDEN_SUITE_FILES.length * REAL_BD_HEADROOM_FACTOR),
+    REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS,
+);
 
-// -----------------------------------------------------------------------------
-// apra-fleet-3swo.53: this gate's own name/wording for the shared
-// handleNestedSuiteSpawnResult helper imported above.
-// -----------------------------------------------------------------------------
 const PHASE1_ENV_VAR_NAME = 'PHASE1_NESTED_SUITE_TIMEOUT_MS';
 const PHASE1_TIMEOUT_EXTRA_GUIDANCE =
     'or investigate a real hang -- this is not the per-dispatch bd+dolt latency work tracked separately.';
 
-/** Human-readable description of where NESTED_SUITE_TIMEOUT_MS came from, matching this gate's env override vs default. */
-function resolvePhase1BudgetSource() {
+/**
+ * Resolves this gate's nested-suite timeout budget and a human-readable
+ * description of where it came from. PHASE1_NESTED_SUITE_TIMEOUT_MS, when
+ * set, is the highest-precedence value on either backend; otherwise the
+ * budget follows the bd backend actually in force for this process (and so
+ * for the nested child, which inherits the environment). The backend reading
+ * comes from bdMode() in test/helpers/bd-replay.mjs -- the bd-mock-shim
+ * contract's own source -- rather than being re-derived from
+ * APRA_FLEET_BD_MOCK here.
+ */
+function resolveNestedSuiteTimeoutBudget() {
     const raw = process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
-    return raw
-        ? `${PHASE1_ENV_VAR_NAME}=${raw}`
-        : `the default (no ${PHASE1_ENV_VAR_NAME} override set)`;
+    if (raw !== undefined && raw !== '') {
+        const parsed = Number(raw);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+            throw new Error(`PHASE1_NESTED_SUITE_TIMEOUT_MS must be a positive number of milliseconds, got: ${JSON.stringify(raw)}`);
+        }
+        return { ms: parsed, source: `${PHASE1_ENV_VAR_NAME}=${raw}` };
+    }
+    const mode = bdMode();
+    if (mode === 'replay') {
+        return {
+            ms: DEFAULT_NESTED_SUITE_TIMEOUT_MS,
+            source: `the mock-bd default (backend=${mode}, no ${PHASE1_ENV_VAR_NAME} override set)`,
+        };
+    }
+    return {
+        ms: REAL_BD_NESTED_SUITE_TIMEOUT_MS,
+        source: `the real-bd default (backend=${mode}, no ${PHASE1_ENV_VAR_NAME} override set)`,
+    };
+}
+
+function resolveNestedSuiteTimeoutMs() {
+    return resolveNestedSuiteTimeoutBudget().ms;
+}
+
+const NESTED_SUITE_TIMEOUT_MS = resolveNestedSuiteTimeoutMs();
+
+/** Human-readable description of where NESTED_SUITE_TIMEOUT_MS came from. */
+function resolvePhase1BudgetSource() {
+    return resolveNestedSuiteTimeoutBudget().source;
 }
 
 /**
@@ -456,7 +561,7 @@ describe('(3) golden transcripts reproduce with the fixture directory untouched'
 
         const childOut = runNestedSuite(
             'golden-transcript',
-            ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
+            ['--test', ...NESTED_GOLDEN_SUITE_FILES],
             { env },
         );
         // Falsifiability guard against exactly the no-op-pass failure mode
@@ -580,7 +685,10 @@ describeHandleNestedSuiteSpawnResultCases({
     sectionLabel: '(6)',
     handler: handleNestedSuiteSpawnResult,
     envVarName: PHASE1_ENV_VAR_NAME,
-    budgetSource: `the default (no ${PHASE1_ENV_VAR_NAME} override set)`,
+    // The mock-bd branch of resolvePhase1BudgetSource() -- the source string
+    // this gate actually feeds the handler under the backend the unit suite
+    // runs on. Its real-bd counterpart is pinned by section (6d) below.
+    budgetSource: `the mock-bd default (backend=replay, no ${PHASE1_ENV_VAR_NAME} override set)`,
     extraTimeoutGuidance: PHASE1_TIMEOUT_EXTRA_GUIDANCE,
 });
 
@@ -684,135 +792,212 @@ describe('(6c) the shared handleNestedSuiteSpawnResult names failing inner tests
 });
 
 // =============================================================================
-// (6d) phase1-only: the budget CONSTANT itself -- resolveNestedSuiteTimeoutMs()
-// env-override parsing, defaulting, and rejection of unparseable values, plus
-// that the resolved value and resolvePhase1BudgetSource() reach the handler's
-// message. phase3 resolves its budget through its own backend-aware
-// resolveNestedSuiteTimeoutBudget(), covered in its own file, so this case has
-// no phase3 twin and is not part of the shared table.
+// (6d) phase1-only: the budget RESOLVER itself -- override precedence,
+// backend-aware defaulting (apra-fleet-x0mr.1), rejection of unparseable
+// values, and that the resolved value plus resolvePhase1BudgetSource() reach
+// the handler's message. Nothing here spawns a nested suite: these are the
+// resolver and manipulated environment values directly, which is the whole
+// point -- the 900000ms overrun this fixes cost ~30 minutes to observe once.
+// phase3 has its own resolveNestedSuiteTimeoutBudget() covered in its own
+// file, so this section has no phase3 twin and is not part of the shared
+// table.
+//
+// Falsification (required, this section guards a bug fix): reverting
+// resolveNestedSuiteTimeoutBudget() to return the flat
+// { ms: DEFAULT_NESTED_SUITE_TIMEOUT_MS } regardless of bdMode() makes every
+// subcase (d2r) case fail, plus (d4)'s real-bd half -- because the budget
+// then equals the mock default that actually overran.
 // =============================================================================
-describe('(6d) the phase1 nested-suite budget constant honors its env override', () => {
-    test('case (d): budget constant honors env-var override and falls back to default', () => {
-        const originalEnv = process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
+describe('(6d) the phase1 nested-suite budget is backend-aware, precedence-correct and self-describing', () => {
+    // Pulled from bd-replay.mjs's own REAL_VALUES set (the bd-mock-shim
+    // contract's source), not re-guessed here: bdMode() maps unset/anything
+    // else to 'replay' (mock) and exactly these five spellings to 'real'.
+    const REAL_BD_SPELLINGS = ['0', 'false', 'off', 'no', 'real'];
+    const MOCK_BUDGET_MS = 900_000;
 
+    function withEnv(overrides, fn) {
+        const keys = Object.keys(overrides);
+        const originals = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
         try {
-            // Subcase (d1): resolveNestedSuiteTimeoutMs() with env var set returns the override
-            process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = '5000';
-            const resolved1 = resolveNestedSuiteTimeoutMs();
-            assert.equal(resolved1, 5000, 'must parse env override and return numeric value');
-
-            // Verify the handler message reflects this override
-            const timeoutError1 = new Error('timeout signal');
-            timeoutError1.code = 'ETIMEDOUT';
-            timeoutError1.signal = 'SIGTERM';
-
-            assert.throws(
-                () => handleNestedSuiteSpawnResult(
-                    'test-suite',
-                    timeoutError1,
-                    resolved1,
-                    resolvePhase1BudgetSource(),
-                    PHASE1_ENV_VAR_NAME,
-                    PHASE1_TIMEOUT_EXTRA_GUIDANCE,
-                ),
-                (err) => {
-                    const msg = err.message;
-                    assert.ok(
-                        msg.includes('PHASE1_NESTED_SUITE_TIMEOUT_MS=5000'),
-                        `env-override case must mention the override value; got: ${msg}`,
-                    );
-                    assert.ok(
-                        msg.includes('5000'),
-                        `env-override case must include the budget value; got: ${msg}`,
-                    );
-                    return true;
-                },
-            );
-
-            // Subcase (d2): resolveNestedSuiteTimeoutMs() with env var unset returns default
-            delete process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
-            const resolved2 = resolveNestedSuiteTimeoutMs();
-            assert.equal(resolved2, 900_000, 'must return default when env unset');
-
-            // Verify the handler message reflects the default
-            const timeoutError2 = new Error('timeout signal');
-            timeoutError2.code = 'ETIMEDOUT';
-            timeoutError2.signal = 'SIGTERM';
-
-            assert.throws(
-                () => handleNestedSuiteSpawnResult(
-                    'test-suite',
-                    timeoutError2,
-                    resolved2,
-                    resolvePhase1BudgetSource(),
-                    PHASE1_ENV_VAR_NAME,
-                    PHASE1_TIMEOUT_EXTRA_GUIDANCE,
-                ),
-                (err) => {
-                    const msg = err.message;
-                    assert.ok(
-                        msg.includes('the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)'),
-                        `no-override case must mention the default; got: ${msg}`,
-                    );
-                    assert.ok(
-                        msg.includes('900000'),
-                        `no-override case must include the default budget value; got: ${msg}`,
-                    );
-                    return true;
-                },
-            );
-
-            // Subcase (d3): resolveNestedSuiteTimeoutMs() with unparseable env var throws
-            process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = 'abc';
-            assert.throws(
-                () => resolveNestedSuiteTimeoutMs(),
-                (err) => {
-                    assert.ok(
-                        err.message.includes('PHASE1_NESTED_SUITE_TIMEOUT_MS must be a positive number'),
-                        `unparseable case must describe the requirement; got: ${err.message}`,
-                    );
-                    assert.ok(
-                        err.message.includes('abc'),
-                        `unparseable case must show what was received; got: ${err.message}`,
-                    );
-                    return true;
-                },
-            );
-
-            // Subcase (d4): empty string falls back to default (treated same as unset)
-            process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = '';
-            const resolved4 = resolveNestedSuiteTimeoutMs();
-            assert.equal(resolved4, 900_000, 'empty string must fall back to default');
-
-            // Subcase (d5): zero is unparseable (not positive)
-            process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = '0';
-            assert.throws(
-                () => resolveNestedSuiteTimeoutMs(),
-                (err) => {
-                    assert.ok(
-                        err.message.includes('must be a positive number'),
-                        `zero case must describe the requirement; got: ${err.message}`,
-                    );
-                    return true;
-                },
-            );
+            for (const k of keys) {
+                if (overrides[k] === undefined) delete process.env[k];
+                else process.env[k] = overrides[k];
+            }
+            fn();
         } finally {
-            // Restore original env state
-            if (originalEnv !== undefined) {
-                process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = originalEnv;
-            } else {
-                delete process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
+            for (const k of keys) {
+                if (originals[k] === undefined) delete process.env[k];
+                else process.env[k] = originals[k];
+            }
+            for (const k of keys) {
+                assert.equal(process.env[k], originals[k], `env var ${k} must be restored to its original value`);
             }
         }
+    }
+
+    test('subcase (d1): PHASE1_NESTED_SUITE_TIMEOUT_MS wins on EVERY backend, and its value reaches the handler message', () => {
+        for (const backend of [undefined, ...REAL_BD_SPELLINGS, 'record']) {
+            withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: '5000', APRA_FLEET_BD_MOCK: backend }, () => {
+                const budget = resolveNestedSuiteTimeoutBudget();
+                assert.equal(budget.ms, 5000, `override must win with APRA_FLEET_BD_MOCK=${backend}; got ${budget.ms}`);
+                assert.equal(resolveNestedSuiteTimeoutMs(), 5000, 'the ms-only wrapper must agree with the budget object');
+                assert.equal(budget.source, 'PHASE1_NESTED_SUITE_TIMEOUT_MS=5000', `source must name the override; got: ${budget.source}`);
+
+                const timeoutError = new Error('timeout signal');
+                timeoutError.code = 'ETIMEDOUT';
+                timeoutError.signal = 'SIGTERM';
+                assert.throws(
+                    () => handleNestedSuiteSpawnResult('test-suite', timeoutError, budget.ms, resolvePhase1BudgetSource(), PHASE1_ENV_VAR_NAME, PHASE1_TIMEOUT_EXTRA_GUIDANCE),
+                    (err) => {
+                        assert.ok(err.message.includes('PHASE1_NESTED_SUITE_TIMEOUT_MS=5000'), `message must mention the override; got: ${err.message}`);
+                        assert.ok(err.message.includes('5000'), `message must include the budget value; got: ${err.message}`);
+                        return true;
+                    },
+                );
+            });
+        }
+    });
+
+    test('subcase (d2): with no override, the MOCK backend keeps the 900000ms default this gate always shipped', () => {
+        withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: undefined, APRA_FLEET_BD_MOCK: undefined }, () => {
+            const budget = resolveNestedSuiteTimeoutBudget();
+            assert.equal(budget.ms, MOCK_BUDGET_MS, `mock-backend default must be unchanged at ${MOCK_BUDGET_MS}; got ${budget.ms}`);
+            assert.equal(resolveNestedSuiteTimeoutMs(), MOCK_BUDGET_MS, 'the ms-only wrapper must agree with the budget object');
+            assert.ok(budget.source.includes('mock-bd default'), `source must say mock-bd default; got: ${budget.source}`);
+            assert.ok(!budget.source.includes('real-bd default'), `mock source must not also claim real-bd; got: ${budget.source}`);
+            assert.ok(budget.source.includes(PHASE1_ENV_VAR_NAME), `source must still name the override var; got: ${budget.source}`);
+
+            const timeoutError = new Error('timeout signal');
+            timeoutError.code = 'ETIMEDOUT';
+            timeoutError.signal = 'SIGTERM';
+            assert.throws(
+                () => handleNestedSuiteSpawnResult('test-suite', timeoutError, budget.ms, resolvePhase1BudgetSource(), PHASE1_ENV_VAR_NAME, PHASE1_TIMEOUT_EXTRA_GUIDANCE),
+                (err) => {
+                    assert.ok(err.message.includes('mock-bd default'), `no-override case must name the default it used; got: ${err.message}`);
+                    assert.ok(err.message.includes('900000'), `no-override case must include the default budget value; got: ${err.message}`);
+                    return true;
+                },
+            );
+        });
+    });
+
+    // THE REGRESSION THIS SECTION EXISTS FOR (apra-fleet-x0mr): under real bd
+    // the nested golden-transcript child blew the flat 900000ms budget. A
+    // budget that does not move with the backend is the bug; this pins that
+    // it moves.
+    for (const spelling of [...REAL_BD_SPELLINGS, 'record']) {
+        test(`subcase (d2r): APRA_FLEET_BD_MOCK=${spelling} resolves to the larger real-bd budget, not the mock default`, () => {
+            withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: undefined, APRA_FLEET_BD_MOCK: spelling }, () => {
+                const budget = resolveNestedSuiteTimeoutBudget();
+                assert.equal(budget.ms, REAL_BD_NESTED_SUITE_TIMEOUT_MS, `real-bd budget for APRA_FLEET_BD_MOCK=${spelling} must equal the derived/capped REAL_BD_NESTED_SUITE_TIMEOUT_MS; got ${budget.ms}`);
+                assert.ok(
+                    budget.ms > MOCK_BUDGET_MS,
+                    `the real-bd budget must be LARGER than the mock default that overran (${MOCK_BUDGET_MS}ms); got ${budget.ms}`,
+                );
+                assert.ok(budget.source.includes('real-bd default'), `source must say real-bd default; got: ${budget.source}`);
+                assert.ok(!budget.source.includes('mock-bd default'), `real source must not also claim mock-bd; got: ${budget.source}`);
+            });
+        });
+    }
+
+    test('subcase (d2x): the real-bd budget clears the runtime that actually overran (1811676ms file duration, 900000ms budget)', () => {
+        // apra-fleet-x0mr's failing real-bd run: the whole phase1 file took
+        // 1811676ms with TWO nested spawns in it, and the golden one -- the
+        // only one left -- reported exceeding 900000ms. The replacement budget
+        // must clear both of those numbers, or it has not fixed anything.
+        assert.ok(
+            REAL_BD_NESTED_SUITE_TIMEOUT_MS > 1_811_676,
+            `real-bd budget must exceed the 1811676ms the whole file took in the failing run; got ${REAL_BD_NESTED_SUITE_TIMEOUT_MS}`,
+        );
+        // ...and must still BIND: a budget above the ceiling could never fire,
+        // which would trade a false failure for no hang detection at all.
+        assert.ok(
+            REAL_BD_NESTED_SUITE_TIMEOUT_MS <= REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS,
+            `real-bd budget must stay at or under the stated ceiling; got ${REAL_BD_NESTED_SUITE_TIMEOUT_MS}`,
+        );
+    });
+
+    test('subcase (d2d): REAL_BD_NESTED_SUITE_TIMEOUT_MS equals its documented arithmetic (three factors, capped)', () => {
+        const expected = Math.min(
+            Math.ceil(ASSUMED_REAL_BD_GOLDEN_PER_FILE_MS * NESTED_GOLDEN_SUITE_FILES.length * REAL_BD_HEADROOM_FACTOR),
+            REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS,
+        );
+        assert.equal(
+            REAL_BD_NESTED_SUITE_TIMEOUT_MS,
+            expected,
+            `the shipped real-bd budget must equal per-file(${ASSUMED_REAL_BD_GOLDEN_PER_FILE_MS}) x files(${NESTED_GOLDEN_SUITE_FILES.length}) x headroom(${REAL_BD_HEADROOM_FACTOR}), capped at ${REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS}`,
+        );
+        // The file count the budget derives from must be the SAME list the
+        // nested child is actually given -- a budget derived from a different
+        // set than the one that runs is a budget for nothing.
+        assert.ok(NESTED_GOLDEN_SUITE_FILES.length >= 2, `the nested golden run must cover both golden suites; got ${NESTED_GOLDEN_SUITE_FILES.join(', ')}`);
+    });
+
+    // apra-fleet-x0mr.1: the scaledTimeout trap, pinned. test/helpers/
+    // scaled-timeout.mjs scales off APRA_FLEET_TEST_CONCURRENCY, which only
+    // scripts/run-tests.mjs exports -- so a budget scaled that way is inert
+    // under the `npm test` command CI actually runs. This budget must resolve
+    // identically no matter which entry point set (or did not set) that var.
+    test('subcase (d2e): the budget is entry-point independent -- APRA_FLEET_TEST_CONCURRENCY cannot change it', () => {
+        for (const backend of [undefined, 'real']) {
+            let withoutConcurrencyVar;
+            let withConcurrencyVar;
+            withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: undefined, APRA_FLEET_BD_MOCK: backend, APRA_FLEET_TEST_CONCURRENCY: undefined }, () => {
+                withoutConcurrencyVar = resolveNestedSuiteTimeoutBudget();
+            });
+            withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: undefined, APRA_FLEET_BD_MOCK: backend, APRA_FLEET_TEST_CONCURRENCY: '8' }, () => {
+                withConcurrencyVar = resolveNestedSuiteTimeoutBudget();
+            });
+            assert.equal(
+                withConcurrencyVar.ms,
+                withoutConcurrencyVar.ms,
+                `budget for backend=${backend} must not depend on APRA_FLEET_TEST_CONCURRENCY (the scaledTimeout inertness trap); got ${withoutConcurrencyVar.ms} vs ${withConcurrencyVar.ms}`,
+            );
+            assert.equal(withConcurrencyVar.source, withoutConcurrencyVar.source, 'the budget SOURCE must be entry-point independent too');
+        }
+    });
+
+    test('subcase (d3): an unparseable override throws, naming the requirement and what it received', () => {
+        withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: 'abc' }, () => {
+            assert.throws(
+                () => resolveNestedSuiteTimeoutBudget(),
+                (err) => {
+                    assert.ok(err.message.includes('PHASE1_NESTED_SUITE_TIMEOUT_MS must be a positive number'), `unparseable case must describe the requirement; got: ${err.message}`);
+                    assert.ok(err.message.includes('abc'), `unparseable case must show what was received; got: ${err.message}`);
+                    return true;
+                },
+            );
+        });
+    });
+
+    test('subcase (d4): an empty override falls back to the backend default, exactly as unset does', () => {
+        withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: '', APRA_FLEET_BD_MOCK: undefined }, () => {
+            assert.equal(resolveNestedSuiteTimeoutMs(), MOCK_BUDGET_MS, 'empty string must fall back to the mock default');
+        });
+        withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: '', APRA_FLEET_BD_MOCK: 'real' }, () => {
+            assert.equal(resolveNestedSuiteTimeoutMs(), REAL_BD_NESTED_SUITE_TIMEOUT_MS, 'empty string must fall back to the real-bd default, not the mock one');
+        });
+    });
+
+    test('subcase (d5): zero is rejected (not positive)', () => {
+        withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: '0' }, () => {
+            assert.throws(
+                () => resolveNestedSuiteTimeoutBudget(),
+                (err) => {
+                    assert.ok(err.message.includes('must be a positive number'), `zero case must describe the requirement; got: ${err.message}`);
+                    return true;
+                },
+            );
+        });
     });
 });
 
 // =============================================================================
 // Falsification note for criterion (4): reverting the ETIMEDOUT handling in
 // handleNestedSuiteSpawnResult (removing the "if (spawnError.code ===
-// 'ETIMEDOUT')" branch) makes cases (a) and (d) fail: case (a) would fall
-// through to the non-timeout wrapping and lose the "timed out after ...ms"
-// wording, and case (d) subcase (d1) would fail on the missing
+// 'ETIMEDOUT')" branch) makes case (a) and section (6d) fail: case (a) would
+// fall through to the non-timeout wrapping and lose the budget-exceeded
+// wording, and (6d) subcase (d1) would fail on the missing
 // "PHASE1_NESTED_SUITE_TIMEOUT_MS=5000" text.
 //
 // Falsification note for apra-fleet-80q3.1 (cases (b) and (b2)): reverting
