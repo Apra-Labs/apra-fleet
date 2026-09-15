@@ -2,6 +2,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import os from 'os';
+import crypto from 'node:crypto';
 import { runCmd as bdRunCmd } from './bd-replay.mjs';
 import { FleetWorkflow, AgentDispatchError, FleetTransportError } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
@@ -591,10 +592,43 @@ export const describeBdResult = (label, res) => {
  * requiring a contended real-bd run: it defaults to the real `runCmd` above,
  * so every production call site (setup()/setupMinimal()) is unaffected.
  */
+/**
+ * The `bd init` command for a scenario's scratch clone. By default this is the
+ * bare `bd init`, whose recorded form every existing fixture already carries.
+ *
+ * A scenario's Dolt database name is derived from its tempdir basename
+ * (hyphens -> underscores). Dolt (MySQL-compatible) caps identifier length at
+ * 64 chars, so a scenario with a long tag whose tempdir also carries a wide
+ * (7-digit) process id can push that derived name past the limit, making a
+ * bare `bd init` fail with "produces an invalid database name" -- a
+ * host-dependent flake that has nothing to do with the scenario under test.
+ * When the derived name would exceed the limit, we pass an explicit short
+ * `--database` (Dolt db name only -- the issue-id prefix still comes from the
+ * directory, so recorded ids are unchanged). The short name is derived from
+ * the STABLE scenario key (basename minus the trailing -<timestamp>-<pid>), so
+ * the recorded command string is deterministic and matches on replay.
+ */
+export function bdInitCommandForClone(tempDir) {
+    const base = path.basename(tempDir);
+    // Decide from the STABLE scenario key ONLY (basename minus the trailing
+    // -<timestamp>-<pid>), never the volatile suffix: the recorded command must
+    // be byte-identical at record and replay time, and it must not depend on
+    // whether this host's pids are 6 or 7 digits. Worst case a tempdir suffix
+    // adds `_<13-digit ms timestamp>_<up to 7-digit pid>` = 22 chars; if the
+    // stable db name plus that worst case still fits Dolt's 64-char identifier
+    // cap, a bare `bd init` is always safe on any host.
+    const stableKey = base.replace(/-\d+-\d+$/, '');
+    const stableDbName = stableKey.replace(/[^A-Za-z0-9]/g, '_');
+    const WORST_CASE_SUFFIX = 22;
+    if (stableDbName.length + WORST_CASE_SUFFIX <= 64) return 'bd init';
+    const shortHash = crypto.createHash('sha1').update(stableKey).digest('hex').slice(0, 16);
+    return `bd init --database md${shortHash}`;
+}
+
 export async function initScenarioClone(label, tempDir, runCmdFn = runCmd) {
     let initRes;
     try {
-        initRes = await runCmdFn('bd init', tempDir);
+        initRes = await runCmdFn(bdInitCommandForClone(tempDir), tempDir);
     } catch (err) {
         // Real mode serves `bd init` from the shared template copy in
         // bd-replay.mjs rather than spawning bd, so this path can also throw a
