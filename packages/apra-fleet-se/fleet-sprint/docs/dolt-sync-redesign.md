@@ -1193,6 +1193,57 @@ For the target member M, starting from both clones at the same sandbox head:
   declared verified. It is intentionally NOT in any default CI pass, and no
   CI configuration should be added that pretends otherwise.
 
+### 6.7 Re-affirmed CI-exclusion decision (apra-fleet-j918.5.3, current pass)
+
+**Decided 2026-09-15, against tree `f4eda6e08e53412c5cffe5bae25d686280987cbd`
+(branch `chore/j918-test-suite-cleanup`).** A test-suite audit flagged that
+the merge-conflict recovery path (`settleDoltConflicts()`,
+`fleet-sprint/dolt-settle.mjs`) is exercised in `npm test` ONLY by
+`test/dolt-settle.test.mjs`'s hand-written SQL-string simulator -- a scripted
+`command()` mock that regex-matches emitted SQL text (`CALL DOLT_MERGE`,
+`SELECT * FROM dolt_conflicts`, `CALL DOLT_CONFLICTS_RESOLVE`, ...; see e.g.
+`test/dolt-settle.test.mjs:389-423`) rather than running a real `dolt`
+process. This 6.2/6.6 exclusion was decided in 2026-08 for a different
+reason (no generic CI runner has a live fleet server or SSH-reachable
+members) and never separately weighed against the fact that CI's only
+coverage of the real recovery path is that simulator. Re-examining now
+because the failure mode this path guards -- a Dolt-CLI/SQL-dialect
+regression silently corrupting or losing rows in the SHARED beads DB during
+a real merge -- is a data-loss risk, and an inherited justification for a
+different concern is not evidence this specific gap is acceptable.
+
+**The header's exclusion claim was re-verified against the current file
+before writing this section** (`scripts/dolt-settle-integration.mjs:24-27`):
+it still requires a live `apra-fleet` server (`ApraFleet`/`McpClient` over
+`resolveFleetServerConnection`) plus SSH-reachable members
+(`createMemberReservationClient`, real `execute_command` dispatch) -- nothing
+about that dependency has changed since Part 6.2, so **this script itself
+stays excluded from `npm test`/`test:unit`/`test:slow`, unchanged.** Its
+live-fleet/SSH requirement is a hard blocker for any generic CI runner
+regardless of how cheap `dolt` itself is to run.
+
+That said, the data-loss coverage gap is real and worth closing separately,
+because it does not actually require this script's live-fleet/SSH machinery:
+`dolt` is a single, statically-linked binary, already version-pinned
+(`DOLT_VERSION`, Part 5.1), and `settleDoltConflicts()` only needs an
+injected `command()` -- it never requires the fleet/SSH transport itself.
+A much narrower job -- two local `bd` clones on the CI runner, a local
+merge conflict manufactured directly (no fleet server, no member
+reservation, no SSH), and `settleDoltConflicts()` wired to a `command()`
+that shells out to the pinned local `dolt` binary -- is plausible without
+reproducing any of the live-fleet dependency that justifies excluding
+*this* script. Weighed against that: added CI runtime, and the blast
+radius of any CI job that manipulates real Dolt merge state (mitigated by
+running entirely in a disposable local temp dir, same isolation principle
+as Part 6.4, never touching a shared remote).
+
+**Decision: add that narrower, local-only, live-`dolt` test as a follow-up,
+filed as apra-fleet-j918.9 (linked from this doc; not implemented by this
+task).** `scripts/dolt-settle-integration.mjs` remains excluded from CI as
+Part 6.2/6.6 already state -- this section adds the current-pass
+justification and the follow-up, it does not change the exclusion itself.
+No CI configuration is added by this task.
+
 ---
 
 ## Part 7 -- persistent vs. ephemeral `dolt sql-server`, answered precisely
