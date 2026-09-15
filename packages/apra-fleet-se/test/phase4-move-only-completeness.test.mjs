@@ -155,7 +155,7 @@ describe('(1) Phase 4 was move-only: no file in the intersection is a facade bre
 
         // Every file must land in exactly one known class; an unknown label
         // would mean the classifier silently grew a hole.
-        const known = new Set(['NEW', 'INTACT', 'ANCHOR_DESYNC', 'BIN_ENTRYPOINT_SKIP']);
+        const known = new Set(['NEW', 'INTACT', 'ANCHOR_DESYNC', 'BIN_ENTRYPOINT_SKIP', 'SCRIPT_ENTRYPOINT_SKIP']);
         assert.deepEqual(results.filter((r) => !known.has(r.klass)).map((r) => r.file), []);
     });
 
@@ -403,6 +403,41 @@ describe('(3) falsification -- the gate is not vacuous', () => {
         const base = discoverBase();
         const result = probeFile(base, 'packages/apra-fleet-se/bin/serve.mjs', PROBE_BUDGET_MS);
         assert.equal(result.klass, 'BIN_ENTRYPOINT_SKIP', `expected BIN_ENTRYPOINT_SKIP, got ${result.klass}: ${result.detail}`);
+    });
+
+    test('scripts/ entrypoints are excluded from the dynamic probe before any git or execution work happens', () => {
+        // The same exclusion as bin/, for the same reason, reached by a
+        // different door: scripts/ holds operator-run CLI programs, not test
+        // files (the package's `test` script globs only test/*.test.mjs), so
+        // running one under `node --test` says nothing about the Phase-4
+        // facade. A bogus BASE sha plus a file that exists nowhere proves the
+        // check runs BEFORE existsAtBase's `git cat-file` and before any
+        // `node --test` spawn -- if it ran later, this call would throw.
+        const result = probeFile('0000000000000000000000000000000000000000', 'packages/apra-fleet-se/scripts/does-not-exist-anywhere.mjs');
+        assert.equal(result.klass, 'SCRIPT_ENTRYPOINT_SKIP', `expected SCRIPT_ENTRYPOINT_SKIP, got ${result.klass}: ${result.detail}`);
+    });
+
+    test('regression pin: scripts/dolt-settle-integration.mjs -- a set-A importer that runs main() at module scope and exits 2 without --member -- is skipped, not misclassified UNEXPLAINED', { timeout: PROBE_BUDGET_MS }, () => {
+        // The concrete case that forced this hardening (apra-fleet-j918.5.3):
+        // an eight-line COMMENT-ONLY edit to this script put it in the
+        // BASE..HEAD half of the intersection, the probe executed it, and it
+        // exited 2 on its own documented precondition ("pass --member <name>")
+        // -- classified UNEXPLAINED and turning `npm test` red with nothing
+        // whatsoever wrong with the Phase-4 facade.
+        //
+        // This file is the worst case in set A: unlike bin/serve.mjs it has no
+        // isMainModule()-style guard at all, so merely loading it calls main()
+        // and fires a live MCP connection plus real dolt operations. It must
+        // never reach execution.
+        const rel = 'packages/apra-fleet-se/scripts/dolt-settle-integration.mjs';
+        const src = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+        assert.match(src, /^main\(\)\.catch\(/m, 'this pin assumes the script still self-invokes main() at module scope; re-anchor if that changed');
+        assert.doesNotMatch(src, /NODE_TEST_CONTEXT/, 'this pin assumes the script has no probe-awareness guard of its own; re-anchor if one was added');
+        assert.ok(discoverSetA().includes(rel), 'this pin assumes the script is still a direct importer of runner.js (set A)');
+
+        const base = discoverBase();
+        const result = probeFile(base, rel, PROBE_BUDGET_MS);
+        assert.equal(result.klass, 'SCRIPT_ENTRYPOINT_SKIP', `expected SCRIPT_ENTRYPOINT_SKIP, got ${result.klass}: ${result.detail}`);
     });
 
     test('dropping one facade re-export really does produce a FACADE_BREAK classification end to end, and the tracked tree is untouched', { timeout: PROBE_BUDGET_MS }, () => {

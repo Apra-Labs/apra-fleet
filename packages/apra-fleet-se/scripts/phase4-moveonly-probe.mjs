@@ -16,6 +16,18 @@
 //                                 probe; covered instead by the static
 //                                 import-binding check in section (2) of
 //                                 phase4-move-only-completeness.test.mjs)
+//   - file is a scripts/ entrypoint
+//                              -> SCRIPT_ENTRYPOINT_SKIP (same hazard class as
+//                                 bin/, and worse: scripts/ holds operator-run
+//                                 CLI programs, not test files, and at least
+//                                 one of them calls main() unconditionally at
+//                                 module-eval time. Running one under
+//                                 `node --test` executes it for real, or exits
+//                                 non-zero on ordinary CLI-usage grounds such
+//                                 as a missing required flag -- neither of
+//                                 which says anything about the Phase-4
+//                                 facade. Excluded from the dynamic probe;
+//                                 covered by the same static check as bin/)
 //   - file absent at BASE      -> NEW (added by Phase 4; cannot have been broken by it)
 //   - old revision PASSES      -> INTACT (Phase 4 did not force the edit; the old
 //                                 assertions still hold against the new facade)
@@ -218,6 +230,16 @@ export function runTestFile(absPath, timeoutMs = 300000) {
  */
 const BIN_ENTRYPOINT_RE = /(^|\/)bin\/[^/]+\.m?js$/;
 
+/**
+ * Matches a repo-relative path under any package's scripts/ directory, e.g.
+ * `packages/apra-fleet-se/scripts/dolt-settle-integration.mjs`. scripts/ holds
+ * operator-run maintenance and integration entrypoints -- never test files;
+ * the package's `test` script globs only `test/*.test.mjs` -- so running one
+ * under `node --test` is never a statement about the Phase-4 facade. See
+ * SCRIPT_ENTRYPOINT_SKIP below.
+ */
+const SCRIPT_ENTRYPOINT_RE = /(^|\/)scripts\/[^/]+\.m?js$/;
+
 export function probeFile(base, repoRelPath, timeoutMs = 300000) {
   // Bin entrypoints are launcher scripts, not test files: copying one to a
   // sibling probe file and running `node --test` on it loads the SAME
@@ -245,6 +267,32 @@ export function probeFile(base, repoRelPath, timeoutMs = 300000) {
       file: repoRelPath,
       klass: 'BIN_ENTRYPOINT_SKIP',
       detail: 'bin/ entrypoints self-execute at module scope when probed under `node --test`; excluded from the dynamic probe, covered instead by the static import-binding check in section (2)',
+    };
+  }
+  // scripts/ entrypoints are the same hazard as bin/, reached by a different
+  // door. They are operator-run CLI programs rather than test files, so the
+  // dynamic probe's premise -- "this file is a test; run it and see whether it
+  // still passes" -- does not hold for them at all:
+  //   * scripts/dolt-settle-integration.mjs calls main() unconditionally at
+  //     module-eval time (no isMainModule()-style guard exists to opt out
+  //     of), which fires a live MCP connection and real dolt operations;
+  //   * with no CLI arguments it then exits 2 by its own design ("PRECONDITION
+  //     FAILED ... pass --member <name>"), a non-zero exit that has nothing to
+  //     do with whether the Phase-4 facade still resolves.
+  // Probing one therefore manufactures an UNEXPLAINED classification out of
+  // ordinary CLI-usage behaviour, so ANY edit to such a file -- including a
+  // comment-only one, which is all it takes to enter the BASE..HEAD half of
+  // the intersection -- would turn this gate red (apra-fleet-j918.5.3).
+  // Excluded from the DYNAMIC probe on the same terms as bin/: the static
+  // import-binding check in section (2) of
+  // phase4-move-only-completeness.test.mjs still covers every set-A importer,
+  // scripts/ included, without executing anything, so a genuine facade break
+  // here is still caught.
+  if (SCRIPT_ENTRYPOINT_RE.test(repoRelPath)) {
+    return {
+      file: repoRelPath,
+      klass: 'SCRIPT_ENTRYPOINT_SKIP',
+      detail: 'scripts/ entrypoints are operator-run CLI programs, not test files: running one under `node --test` executes its main() for real and/or exits non-zero on ordinary CLI-usage grounds; excluded from the dynamic probe, covered instead by the static import-binding check in section (2)',
     };
   }
   if (!existsAtBase(base, repoRelPath)) {
