@@ -283,6 +283,72 @@ describe('StallDetector', () => {
     });
   });
 
+  describe('_poll — per-entry thresholdMs (apra-fleet-25yl.1.1)', () => {
+    it('a non-provisional entry with its own thresholdMs is evaluated against it, ignoring the env fallback', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000'; // would fire if honored
+      const pastTime = Date.now() - 10_000; // 10s idle -- past the 5s env value
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime, thresholdMs: 60_000 })); // but well within 60s
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(pastTime - 1000).toISOString() });
+
+      await detector._poll();
+
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(0);
+    });
+
+    it('a non-provisional entry with a SHORTER thresholdMs than the env fallback stalls sooner', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '600000'; // env alone would not fire
+      const pastTime = Date.now() - 10_000; // 10s idle
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime, thresholdMs: 5_000 })); // but its own budget is 5s
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(pastTime - 1000).toISOString() });
+
+      await detector._poll();
+
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(1);
+    });
+
+    it('a provisional entry with its own thresholdMs is evaluated against it on the provisional path too', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000'; // would fire if honored
+      const pastTime = Date.now() - 10_000; // 10s idle -- past the 5s env value
+      mockPollDirectoryActivity.mockResolvedValue({ mtimeMs: null, signalAvailable: true });
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({
+        provisional: true,
+        logFilePath: null,
+        lastActivityAt: pastTime,
+        thresholdMs: 60_000, // well within its own 60s budget
+        onStall,
+      }));
+
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalled();
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(0);
+    });
+
+    it('an entry without thresholdMs falls back to the env/default value on both paths (no behavior change)', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const pastTime = Date.now() - 10_000;
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime })); // no thresholdMs set
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(pastTime - 1000).toISOString() });
+
+      await detector._poll();
+
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(1);
+    });
+  });
+
   describe('_poll — missing log file (no false stall)', () => {
     it('does not count as stall cycle when file not yet created', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
@@ -700,5 +766,37 @@ describe('computeEffectiveThresholdMs (PR#416 finding 4: clamp)', () => {
   it('falls back to the built-in ceiling when the env override is unparseable', () => {
     process.env['STALL_MAX_THRESHOLD_MS'] = 'not-a-number';
     expect(computeEffectiveThresholdMs(BASELINE, 86_400_000)).toBe(CEILING);
+  });
+
+  // apra-fleet-25yl.1.1: the trusted baseline (orchestrator-authored
+  // timeout_s) must never be capped by MAX_STALL_THRESHOLD_MS -- that ceiling
+  // exists only to bound the untrusted pendingToolTimeoutMs contribution.
+  describe('trusted baseline is never capped (apra-fleet-25yl.1.1)', () => {
+    it('a trusted baseline at the ceiling survives unchanged with no declaration', () => {
+      expect(computeEffectiveThresholdMs(CEILING, null)).toBe(CEILING);
+      expect(describeClamp(CEILING, null, CEILING)).toBeNull();
+    });
+
+    it('a trusted baseline ABOVE the ceiling survives unchanged with no declaration', () => {
+      const above = CEILING + 1_000_000;
+      expect(computeEffectiveThresholdMs(above, null)).toBe(above);
+      expect(describeClamp(above, null, above)).toBeNull();
+    });
+
+    it('an untrusted pendingToolTimeoutMs is still capped by the ceiling regardless of baseline', () => {
+      const actual = computeEffectiveThresholdMs(300_000, 86_400_000);
+      expect(actual).toBe(CEILING);
+      expect(describeClamp(300_000, 86_400_000, actual)).toBe('ceiling');
+    });
+
+    it('a trusted baseline above the ceiling still wins over a large-but-lesser pending declaration', () => {
+      const above = CEILING + 500_000;
+      const actual = computeEffectiveThresholdMs(above, 900_000);
+      expect(actual).toBe(above);
+      // The baseline dominated the (ceiling-capped) untrusted contribution --
+      // same "floor" verdict as any other case where the trusted value wins,
+      // never mislabeled as a ceiling clamp that did not happen.
+      expect(describeClamp(above, 900_000, actual)).toBe('floor');
+    });
   });
 });
