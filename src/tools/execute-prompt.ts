@@ -98,7 +98,7 @@ export const executePromptSchema = z.object({
     'call. NOTE: this field only covers the schema + the mutual-exclusivity guard; actual fork ' +
     'MODE RESOLUTION (minting/wiring the forked session) is implemented separately.'
   ),
-  timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- the command is killed after this many seconds without any stdout/stderr output (default: 300s / 5 minutes)'),
+  timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- drives the stall detector\'s per-dispatch baseline threshold, measured against the member\'s own session transcript activity, not against this dispatch\'s stdout/stderr channel (default: 300s / 5 minutes). Omitting it yields a 300s baseline, a deliberate change from the previously silent 150s stall-detector default.'),
   max_total_s: z.number().optional().describe('Hard ceiling in seconds -- the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
   model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names -- the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
@@ -839,6 +839,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // confirmed stall settles the pending dispatch immediately and surfaces a
   // typed 'stalled' error instead of hanging.
   const stallAbortController = new AbortController();
+  // apra-fleet-25yl.1.2: input.timeout_s is the real per-dispatch stall
+  // baseline now, not merely an inactivity kill on stdout/stderr -- see the
+  // schema description on `timeout_s` above. A caller that omits timeout_s
+  // gets a 300s baseline (the schema default), a deliberate change from the
+  // previously silent 150s DEFAULT_STALL_THRESHOLD_MS fallback.
+  const stallThresholdMs = (input.timeout_s ?? 300) * 1000;
   stallDetector.add(agent.id, {
     sessionId: null,
     logFilePath: null,
@@ -849,6 +855,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     memberName: agent.friendlyName,
     provisional: true,
     stallReported: false,
+    thresholdMs: stallThresholdMs,
     onStall: () => {
       // Stall detector already wrote 'unknown' to the statusline before calling here.
       // Our job: clear in-process state so the member can accept new calls.
@@ -1082,6 +1089,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     sessionId: activePreSpawnSid,
     logFilePath: resolvedLogPath,
     provisional: !resolvedLogPath,
+    thresholdMs: stallThresholdMs,
   });
 
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
@@ -1267,6 +1275,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         sessionId: mintedId,
         logFilePath: logPath,
         provisional: !logPath,
+        thresholdMs: stallThresholdMs,
       });
     }
   };
@@ -1651,6 +1660,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         sessionId: finalSid,
         logFilePath: postLogPath,
         provisional: !postLogPath,
+        thresholdMs: stallThresholdMs,
       });
     }
     clearStoredPid(agent.id);
