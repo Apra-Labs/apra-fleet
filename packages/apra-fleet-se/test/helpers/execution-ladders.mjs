@@ -80,7 +80,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         // resolves to.
         modelTier: BINDING_VALUES.doerModel,
         maxTurns: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
         // Writes CODE (commits) and BEADS (closes), so it is one of only four
@@ -116,7 +116,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         // budget is the base doubled; the escalation itself is pinned in the
         // retry/degrade block of execution-role-dispatch-pins.test.mjs.
         maxTurns: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
         pushCode: true,
@@ -139,7 +139,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         agentType: 'reviewer',
         modelTier: 'premium',
         maxTurns: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
         pushCode: false,
@@ -160,7 +160,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         agentType: 'reviewer',
         modelTier: 'premium',
         maxTurns: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
         pushCode: false,
@@ -181,7 +181,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         agentType: 'reviewer',
         modelTier: 'premium',
         maxTurns: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
         pushCode: false,
@@ -199,7 +199,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         agentType: 'reviewer',
         modelTier: 'premium',
         maxTurns: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
         pushCode: false,
@@ -221,7 +221,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         // still dies on silence, an active long pass is never killed. Two
         // DISTINCT symbolic budgets, so a pin that resolved both to the same
         // number could not pass.
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'INTEG_MAX_TOTAL_S',
         bracketed: true,
         // Closes passing features and files bug beads, but never touches code.
@@ -242,7 +242,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         agentType: 'integ-test-runner',
         modelTier: 'standard',
         maxTurns: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'INTEG_MAX_TOTAL_S',
         bracketed: true,
         pushCode: false,
@@ -263,7 +263,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         // Shorter INACTIVITY timer, longer HARD elapsed ceiling. Both are
         // still SYMBOLIC: the pin names the budget and the engine must resolve
         // it through ctx.budgets, so a hard-coded number cannot pass.
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'REGRESSION_TEST_MAX_TOTAL_S',
         bracketed: true,
         // Mutates beads (files carry-over bugs) but never touches code.
@@ -284,7 +284,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         agentType: 'regression-test-runner',
         modelTier: 'standard',
         maxTurns: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'REGRESSION_TEST_MAX_TOTAL_S',
         bracketed: true,
         pushCode: false,
@@ -302,7 +302,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         agentType: 'deployer',
         modelTier: 'standard',
         maxTurns: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         // A read-side role (pushCode false) -- but a deployer on a stale
         // checkout is as damaging as a stale reviewer diff, so it still gets
@@ -328,7 +328,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         agentType: 'deployer',
         modelTier: 'standard',
         maxTurns: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
         pushCode: false,
@@ -350,7 +350,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         // by the harness rather than re-typed here. Same fact, resolved.
         modelTier: 'standard',
         maxTurns: 500,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
         // Writes docs/changelog/sprint-analysis commits AND defers low-priority
@@ -371,7 +371,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         agentType: 'harvester',
         modelTier: 'standard',
         maxTurns: 1000,
-        timeoutS: 'DISPATCH_TIMEOUT_S',
+        timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
         pushCode: true,

@@ -96,6 +96,15 @@ export const DISPATCH_TIMEOUT_S = 4242;
 export const INTEG_MAX_TOTAL_S = 8484;
 export const REGRESSION_TEST_MAX_TOTAL_S = 12726;
 
+/**
+ * The per-dispatch inactivity threshold role-policies.mjs now names as the
+ * first budgets() argument on every non-integ/regression role row
+ * (apra-fleet-25yl). A DISTINCT sentinel from DISPATCH_TIMEOUT_S so a pin can
+ * tell whether the engine resolved the inactivity budget or collided on the
+ * elapsed-ceiling one.
+ */
+export const DISPATCH_INACTIVITY_TIMEOUT_S = 6161;
+
 /** The real schema objects, keyed by the name role-policies.mjs records. */
 export const SCHEMAS = Object.freeze({
     planReviewerVerdict,
@@ -217,7 +226,12 @@ export function createRecordingCtx(options = {}) {
         members = {},
         healed = false,
         noMutation = isNoMutationDispatchFailure,
-        budgets = { DISPATCH_TIMEOUT_S, INTEG_MAX_TOTAL_S, REGRESSION_TEST_MAX_TOTAL_S },
+        budgets = {
+            DISPATCH_TIMEOUT_S,
+            DISPATCH_INACTIVITY_TIMEOUT_S,
+            INTEG_MAX_TOTAL_S,
+            REGRESSION_TEST_MAX_TOTAL_S,
+        },
         steps = {},
         // The policy table the engine reads its row from. Left undefined the
         // engine uses the real frozen ROLE_POLICIES; a test that is proving a

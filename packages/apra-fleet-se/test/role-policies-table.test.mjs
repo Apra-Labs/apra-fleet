@@ -1390,11 +1390,12 @@ describe('role policy table: every named variance is expressed as data', () => {
             (err) => err instanceof assert.AssertionError && /regression-test-runner:main/.test(err.message),
             'Same defect, same gate, for regression-test-runner.'
         );
-        // deployer's two budgets are EQUAL (budgets('DISPATCH_TIMEOUT_S',
-        // 'DISPATCH_TIMEOUT_S')), so hard-coding its watchdog to
-        // 'DISPATCH_TIMEOUT_S' is NOT shorter than its own maxTotalS and must
-        // NOT trip the gate -- proving this check does not just fail on any
-        // splice, only on a genuinely-too-short budget.
+        // deployer's own maxTotalS is 'DISPATCH_TIMEOUT_S' (budgets(
+        // 'DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S')), so
+        // hard-coding its watchdog to 'DISPATCH_TIMEOUT_S' names that SAME
+        // maxTotalS budget and is NOT shorter than it -- must NOT trip the
+        // gate -- proving this check does not just fail on any splice, only
+        // on a genuinely-too-short budget.
         assertNoArmedWatchdogShorterThanMaxTotalS(
             splicePolicy('deployer', {
                 watchdog: { ...ROLE_POLICIES.deployer.watchdog, timeoutS: 'DISPATCH_TIMEOUT_S' },
