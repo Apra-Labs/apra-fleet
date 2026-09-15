@@ -30,18 +30,25 @@ const TOOL_TIMEOUT_GRACE_MS = 60_000;
 const MAX_STALL_THRESHOLD_MS = 1_800_000;
 
 /**
- * Clamp the per-tick stall threshold into [baselineMs, MAX_STALL_THRESHOLD_MS].
+ * Resolve the per-tick effective stall threshold.
+ *
+ * `baselineMs` is orchestrator-authored (timeout_s / the generic
+ * STALL_THRESHOLD_MS default) and is TRUSTED: it must never be capped by
+ * MAX_STALL_THRESHOLD_MS, however large it is configured.
  *
  * A pending tool_use's own declared `input.timeout` is a useful hint that a
- * long-running call is legitimately in flight, but it is model-authored and
+ * long-running call is legitimately in flight, but it is model-authored --
+ * read straight out of the transcript's own tool_use.input.timeout -- and
  * must not be trusted as a raw control parameter:
  *
  *  - FLOOR: a small (or seconds-denominated -- `timeout: 30`) value would
- *    otherwise push the effective threshold BELOW the generic baseline and
+ *    otherwise push the effective threshold BELOW the trusted baseline and
  *    make the watchdog fire earlier than it does with no declaration at all.
  *    The floor also neutralizes the seconds-vs-milliseconds unit ambiguity in
  *    `extractPendingToolTimeoutMs`.
  *  - CEILING: an enormous value would otherwise disable detection entirely.
+ *    The ceiling bounds ONLY the untrusted pending-tool-timeout contribution,
+ *    never the trusted baseline.
  *
  * Non-finite / NaN / negative / null / undefined inputs all degrade to the
  * baseline, which is the safe answer for an uninterpretable declaration.
@@ -53,15 +60,19 @@ export function computeEffectiveThresholdMs(
   const maxMs = parseInt(process.env['STALL_MAX_THRESHOLD_MS'] ?? String(MAX_STALL_THRESHOLD_MS));
   const ceilingMs = Number.isFinite(maxMs) ? maxMs : MAX_STALL_THRESHOLD_MS;
   const base = Number.isFinite(baselineMs) ? baselineMs : DEFAULT_STALL_THRESHOLD_MS;
-  // No usable declaration -> the generic baseline stands untouched. (Note this
-  // is deliberately NOT `(pendingToolTimeoutMs ?? 0) + GRACE`: that form would
-  // silently raise the threshold to the grace period alone whenever the
-  // baseline is configured below it, changing behavior for the very common
-  // "no declared timeout" case.)
+  // No usable declaration -> the trusted baseline stands untouched, uncapped.
+  // (Note this is deliberately NOT `(pendingToolTimeoutMs ?? 0) + GRACE`: that
+  // form would silently raise the threshold to the grace period alone
+  // whenever the baseline is configured below it, changing behavior for the
+  // very common "no declared timeout" case.)
   if (typeof pendingToolTimeoutMs !== 'number' || !Number.isFinite(pendingToolTimeoutMs)) {
-    return Math.min(base, ceilingMs);
+    return base;
   }
-  return Math.min(Math.max(base, pendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS), ceilingMs);
+  // The untrusted pending-tool-timeout contribution is clamped into
+  // [0, ceilingMs] BEFORE competing against the trusted baseline, so the
+  // ceiling can never suppress a baseline that legitimately sits at or above
+  // it.
+  return Math.max(base, Math.min(pendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS, ceilingMs));
 }
 
 /** Which clamp (if any) was applied, for observability in the stall_detected log. */
@@ -87,6 +98,14 @@ export interface StallEntry {
   memberId: string;
   memberName: string;
   provisional: boolean;
+  /**
+   * apra-fleet-25yl.1: per-dispatch trusted baseline threshold (typically
+   * derived from the orchestrator's own timeout_s), overriding the
+   * process-wide STALL_THRESHOLD_MS default for this entry only. When unset,
+   * falls back to the env/default baseline -- behaviour for callers that set
+   * nothing is unchanged.
+   */
+  thresholdMs?: number;
   /** A genuine stall has been detected AND reported/killed -- suppresses
    *  re-reporting and re-killing. Reset when activity resumes. */
   stallReported: boolean;
@@ -164,9 +183,13 @@ export class StallDetector {
     }));
 
     const now = Date.now();
-    const stallThresholdMs = parseInt(process.env['STALL_THRESHOLD_MS'] ?? String(DEFAULT_STALL_THRESHOLD_MS));
+    // apra-fleet-25yl.1: env/default baseline is now only the FALLBACK for
+    // entries that carry no per-dispatch thresholdMs of their own -- resolved
+    // per entry below, not once per tick.
+    const fallbackThresholdMs = parseInt(process.env['STALL_THRESHOLD_MS'] ?? String(DEFAULT_STALL_THRESHOLD_MS));
 
     for (const [memberId, entry] of this.stallCheckList.entries()) {
+      const stallThresholdMs = entry.thresholdMs ?? fallbackThresholdMs;
       if (entry.provisional) {
         // Provisional: if logFilePath is available, check mtime; if logFilePath is null, poll directory activity
         let signalAvailable = true;
