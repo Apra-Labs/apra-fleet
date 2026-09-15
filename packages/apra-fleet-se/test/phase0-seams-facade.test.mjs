@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { resultText, resolveMemberTarget, clearMemberOsCache } from '../fleet-sprint/runner.js';
+import { resultText, resolveMemberTarget } from '../fleet-sprint/runner.js';
 
 // apra-fleet-3swo.2.6: proves the two Phase 0 seams (mcp-result.mjs,
 // member-target.mjs -- apra-fleet-3swo.2.4/2.5) are behaviour-preserving:
@@ -75,24 +75,14 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
         assert.equal(typeof resultText, 'function', 'resultText must still resolve from fleet-sprint/runner.js');
     });
 
-    test('member_detail dispatch count does not increase when the same member is resolved twice', async () => {
-        clearMemberOsCache();
-        let callCount = 0;
-        const fleetApi = {
-            memberDetail: async () => {
-                callCount += 1;
-                return { content: [{ text: JSON.stringify({ os: 'linux', shell: '' }) }] };
-            },
-        };
-        const log = () => {};
-
-        await resolveMemberTarget({ fleetApi, member: 'facade-test-member', log });
-        assert.equal(callCount, 1);
-        await resolveMemberTarget({ fleetApi, member: 'facade-test-member', log });
-        assert.equal(callCount, 1, 'a second resolution of the same member must be served from cache, not re-dispatch member_detail');
-
-        clearMemberOsCache();
-    });
+    // apra-fleet-j918.7.2: the member_detail dispatch-count assertion that
+    // used to live here (single member resolved twice -> dispatch count
+    // stays 1) was a strict subset of resolve-member-os-cache.test.mjs's
+    // "member_detail is dispatched at most once per member ..." test
+    // (apra-fleet-3swo.2.5), which asserts the SAME single-member-cached
+    // behavior (via its 'member-a' resolved twice case) PLUS the
+    // distinct-member dispatch case this file never covered. Removed here
+    // rather than duplicated; see that file for the live assertion.
 
     test('falsification: removing the resolveMemberTarget re-export from runner.js demonstrably breaks the facade assertion, then the line is restored', async () => {
         // Runs against a faithful sandbox copy of fleet-sprint/, not the
