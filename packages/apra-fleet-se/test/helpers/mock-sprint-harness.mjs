@@ -1181,7 +1181,33 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     // vcs-providers/azure-devops.mjs. No already-exists
                     // simulation here (that's lzfv.6's canned-queue scope);
                     // always answer with a hermetic default success.
-                    const body = JSON.stringify({ pullRequestId: 101, _links: { web: { href: 'https://dev.azure.com/mock-org/mock-project/_git/mock-repo/pullRequest/101' } } });
+                    //
+                    // apra-fleet-j918.8.8: this body previously fabricated a
+                    // `_links.web.href` field. A real Azure DevOps response
+                    // carries no such field -- vcs-providers/azure-devops.mjs's
+                    // pullRequestResponse.map (mapPullRequestResponse) reads
+                    // ONLY `pullRequestId` from the body and constructs the
+                    // browsable URL itself from org/project/repo context
+                    // (webUrlField: null, "No web-URL field exists in the body
+                    // -- it is constructed"), confirmed against a real
+                    // node:http stub in test/vcs-http-stub.test.mjs's
+                    // AZURE_CREATE_PR_201 fixture. The old `_links` field was
+                    // silently ignored by every consumer (nothing in
+                    // fleet-sprint/ ever read it) rather than causing a wrong
+                    // result, but it was still a disagreement between this
+                    // harness's assumed shape and the real one -- corrected
+                    // here to match the fields the real API and the stub
+                    // fixture actually return.
+                    const body = JSON.stringify({
+                        repository: { id: 'e1a2b3c4', name: 'mock-repo', project: { name: 'mock-project' } },
+                        pullRequestId: 101,
+                        codeReviewId: 101,
+                        status: 'active',
+                        sourceRefName: 'refs/heads/auto-sprint/mock-sprint',
+                        targetRefName: 'refs/heads/main',
+                        title: 'Sprint PR',
+                        url: 'https://dev.azure.com/mock-org/_apis/git/repositories/e1a2b3c4/pullRequests/101',
+                    });
                     return mockCmdResult(0, `${body}\n201`, '');
                 }
                 const headMatch = /"head":"([^"]*)"/.exec(opts.command);
