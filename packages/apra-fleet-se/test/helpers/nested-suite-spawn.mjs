@@ -43,6 +43,111 @@ export function excerptChildOutput(text) {
     );
 }
 
+/** Hard caps on the failing-TAP-entry section appended to the wrapped message.
+ * Both callers' own suites pin the whole message under 20_000 chars, so this
+ * section is bounded independently of the (already capped) stdout/stderr
+ * tails: at most MAX_FAILING_TAP_ENTRIES entries, each at most
+ * MAX_FAILING_TAP_ENTRY_CHARS long. */
+export const MAX_FAILING_TAP_ENTRIES = 5;
+export const MAX_FAILING_TAP_ENTRY_CHARS = 2000;
+export const MAX_FAILING_TAP_ENTRY_LINES = 200;
+
+/**
+ * Pulls the `not ok N - <name>` TAP entries -- and the indented YAML block
+ * node:test attaches to each (location/failureType/error/stack) -- out of a
+ * nested child's stdout.
+ *
+ * Why this exists: excerptChildOutput() above quotes a POSITIONAL tail. When
+ * a nested `node --test` batch runs the whole mock-sprint suite, its stdout is
+ * ~1.6MB and the one failing entry is almost never in the last 4000 chars, so
+ * the wrapped message reliably showed the tail of some unrelated PASSING test
+ * while the actual `not ok` -- present in the very same string -- was
+ * discarded. That is not hypothetical: the Windows CI failure this was written
+ * for reported "showing last 4000 of 1621552 chars" and named no failing test,
+ * twice, which is why the failure class went undiagnosed across two runs. The
+ * positional tail is still quoted (it carries the child's TAP summary counts,
+ * which is real signal); this adds the entries that actually failed.
+ *
+ * Deliberately a string scan, not a TAP parser: the input is arbitrary,
+ * possibly truncated child output that also carries interleaved
+ * `# [Workflow Log]` diagnostics, so anything that could throw on malformed
+ * input would turn a diagnosable failure back into an opaque one. Unparseable
+ * input simply yields zero entries and the caller says so.
+ *
+ * @param {string|undefined} text - the child's stdout
+ * @param {{ maxEntries?: number, maxCharsPerEntry?: number }} [opts]
+ * @returns {{ total: number, entries: string[] }} `total` counts every `not ok`
+ *   found (so a reader knows when the quoted list was capped); `entries` holds
+ *   the first `maxEntries` of them, each individually length-capped.
+ */
+export function extractFailingTapEntries(text, opts = {}) {
+    const maxEntries = opts.maxEntries ?? MAX_FAILING_TAP_ENTRIES;
+    const maxCharsPerEntry = opts.maxCharsPerEntry ?? MAX_FAILING_TAP_ENTRY_CHARS;
+    if (!text) return { total: 0, entries: [] };
+
+    const lines = String(text).split('\n');
+    const entries = [];
+    let total = 0;
+
+    for (let i = 0; i < lines.length; i += 1) {
+        // A TAP failure line, at any nesting depth: node indents subtests.
+        const header = /^(\s*)not ok \d+ - /.exec(lines[i]);
+        if (!header) continue;
+        total += 1;
+        if (entries.length >= maxEntries) continue;
+
+        const indent = header[1];
+        const block = [lines[i]];
+        // Absorb the YAML diagnostic block that follows: every line of it is
+        // indented STRICTLY deeper than the `not ok` line itself, and it ends
+        // at the `...` terminator. Stop at the first line that is not deeper
+        // (the next TAP entry, a bare `# ...` comment, or EOF) so a missing /
+        // truncated terminator can never run away to the end of a 1.6MB string.
+        // MAX_FAILING_TAP_ENTRY_LINES is a second, independent bound: blank
+        // lines are absorbed (a YAML block may contain them), and the
+        // per-entry CHARACTER cap is only applied after joining, so a stream
+        // of blank lines would otherwise be walked to the end before being
+        // trimmed. A real node:test diagnostic block is a few dozen lines.
+        const stopAt = Math.min(lines.length, i + 1 + MAX_FAILING_TAP_ENTRY_LINES);
+        for (let j = i + 1; j < stopAt; j += 1) {
+            const line = lines[j];
+            if (line.length > 0 && !line.startsWith(`${indent} `)) break;
+            block.push(line);
+            if (line.trim() === '...') break;
+        }
+
+        let entry = block.join('\n');
+        if (entry.length > maxCharsPerEntry) {
+            entry = `${entry.slice(0, maxCharsPerEntry)}\n${indent}...[entry truncated at ${maxCharsPerEntry} chars]...`;
+        }
+        entries.push(entry);
+    }
+
+    return { total, entries };
+}
+
+/**
+ * Renders extractFailingTapEntries() output as the message section appended by
+ * handleNestedSuiteSpawnResult(). Always returns a self-describing string --
+ * "none found" is itself a diagnosis (the child died without node:test ever
+ * recording a failure, e.g. a module-load crash), not an empty gap.
+ */
+function describeFailingTapEntries(text) {
+    const { total, entries } = extractFailingTapEntries(text);
+    if (total === 0) {
+        return (
+            'child failing TAP entries: none found -- the child exited non-zero without emitting a ' +
+            "'not ok' line, so node:test never recorded a test failure (suspect a module-load crash, " +
+            'a process-level exit, or output lost before it was captured).'
+        );
+    }
+    const shown = entries.length;
+    const header = shown === total
+        ? `child failing TAP entries (${total} found):`
+        : `child failing TAP entries (${total} found, showing the first ${shown}):`;
+    return `${header}\n${entries.join('\n')}`;
+}
+
 /**
  * Pure helper: turns a spawnSync error (or lack thereof) into either a pass
  * (returns void) or throws with a descriptive message.
@@ -67,10 +172,20 @@ export function excerptChildOutput(text) {
  * names the budget and its source; the non-timeout branch instead names the
  * outer suite label, states explicitly that the outer budget did NOT expire,
  * and quotes the child's exit status plus a length-capped tail of its
- * stdout/stderr so the failing inner file is identifiable from the wrapped
- * message alone. The original spawn error (with its full, uncapped
+ * stdout/stderr. The original spawn error (with its full, uncapped
  * stdout/stderr) is preserved as `.cause` on the thrown error, so no
  * information is lost -- only what reaches the message text is bounded.
+ *
+ * The tail alone was NOT enough to identify the failing inner test, despite an
+ * earlier version of this comment claiming it was: excerptChildOutput() quotes
+ * a POSITIONAL tail, and a nested batch over the whole mock-sprint suite emits
+ * ~1.6MB of TAP plus interleaved workflow logs, so the failing entry is almost
+ * never inside the last 4000 chars. A real Windows CI failure reported
+ * "showing last 4000 of 1621552 chars", quoted a PASSING test's output, and
+ * named no failing test -- twice, leaving the failure class undiagnosed both
+ * times. The non-timeout branch therefore also appends the child's actual
+ * `not ok` entries (see extractFailingTapEntries above), which is what makes
+ * the failing inner test identifiable from the wrapped message alone.
  *
  * @param {string} suiteLabel - name of the nested suite (e.g., 'golden-transcript')
  * @param {Error|null} spawnError - error from execFileSync (or null on success)
@@ -101,7 +216,13 @@ export function handleNestedSuiteSpawnResult(suiteLabel, spawnError, budgetMs, b
         `expire -- the failure is inside the nested child itself, not this gate's own timeout. child exit status: ` +
         `${status}. ` +
         `child stdout (tail):\n${excerptChildOutput(spawnError.stdout)}\n` +
-        `child stderr (tail):\n${excerptChildOutput(spawnError.stderr)}`,
+        `child stderr (tail):\n${excerptChildOutput(spawnError.stderr)}\n` +
+        // Appended AFTER the tails, never before: both callers split the
+        // message on 'child stdout (tail):' and assert the WRAPPER PREFIX
+        // never contains 'timed out'/'exceeded its'. A quoted test NAME can
+        // legitimately contain those words (several in this repo do), so this
+        // section must stay on the child-output side of that split marker.
+        `${describeFailingTapEntries(spawnError.stdout)}`,
         { cause: spawnError },
     );
 }
