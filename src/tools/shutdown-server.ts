@@ -8,8 +8,33 @@ export const shutdownServerSchema = z.object({});
 
 let httpHandle: HttpTransportHandle | null = null;
 
+// Tracked so a test (or any other caller that needs to tear down cleanly
+// before the deferred exit fires) can cancel it via cancelScheduledExit().
+// Without this, under load a test run can outlive the 100ms delay: the timer
+// fires after the owning test file has finished and its process.exit spy has
+// been restored, so it calls the REAL process.exit and vitest reports an
+// uncaught exception even though every assertion passed.
+let pendingExitTimer: NodeJS.Timeout | undefined;
+
 export function setHttpHandle(handle: HttpTransportHandle): void {
   httpHandle = handle;
+}
+
+export function scheduleProcessExit(delayMs = 100): void {
+  if (pendingExitTimer) {
+    clearTimeout(pendingExitTimer);
+  }
+  pendingExitTimer = setTimeout(() => {
+    pendingExitTimer = undefined;
+    process.exit(0);
+  }, delayMs);
+}
+
+export function cancelScheduledExit(): void {
+  if (pendingExitTimer) {
+    clearTimeout(pendingExitTimer);
+    pendingExitTimer = undefined;
+  }
 }
 
 export async function shutdownServer(): Promise<string> {
@@ -24,6 +49,6 @@ export async function shutdownServer(): Promise<string> {
     try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
   }
   closeAllConnections();
-  setTimeout(() => process.exit(0), 100);
+  scheduleProcessExit();
   return 'Server shutting down. Run /mcp to start a fresh instance.';
 }
