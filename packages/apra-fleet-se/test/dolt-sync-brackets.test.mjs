@@ -151,17 +151,17 @@ test('doltPullBefore: a no-remote failure returns a benign skip, never throws', 
 
 test('doltPullBefore: transient/diverged/unknown failures still throw despite the no-remote skip existing', async () => {
     await assert.rejects(
-        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('merge conflict detected')] }).command }),
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('merge conflict detected')] }).command, sleep: async () => {} }),
         DoltDivergedError,
         'diverged D-pull failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] }).command }),
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'transient-exhausted D-pull failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('some brand-new dolt failure text')] }).command }),
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('some brand-new dolt failure text')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'unknown D-pull failures are not swallowed by the no-remote skip',
     );
@@ -178,17 +178,17 @@ test('doltPushAfter: a no-remote failure returns a benign skip, never throws, an
 
 test('doltPushAfter: transient/diverged/unknown failures still throw despite the no-remote skip existing', async () => {
     await assert.rejects(
-        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('cannot fast-forward: divergent branches')], 'bd dolt pull': [OK] }).command }),
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('cannot fast-forward: divergent branches')], 'bd dolt pull': [OK] }).command, sleep: async () => {} }),
         DoltDivergedError,
         'diverged D-push failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('connection refused'), fail('connection refused')] }).command }),
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('connection refused'), fail('connection refused')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'transient-exhausted D-push failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('some brand-new dolt failure text')] }).command }),
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('some brand-new dolt failure text')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'unknown D-push failures are not swallowed by the no-remote skip',
     );
@@ -265,7 +265,7 @@ test('doltPushAfter: still rejected after the one reconcile raises typed DoltDiv
 
 test('doltPushAfter: a transient-exhausted push raises DoltSyncError (not DoltDivergedError), no reconcile', async () => {
     const { command, calls } = makeCommandMock({ 'bd dolt push': [fail('connection refused')] });
-    await assert.rejects(() => doltPushAfter('memberA', { command }), DoltSyncError);
+    await assert.rejects(() => doltPushAfter('memberA', { command, sleep: async () => {} }), DoltSyncError);
     assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'a non-diverged failure triggers no reconcile pull');
 });
 
@@ -620,7 +620,7 @@ test('preflightBeadsHealthGate: no-remote skip passes through unchanged (not tre
 
 test('preflightBeadsHealthGate: a non-diverged (transient-exhausted/unknown) failure is re-thrown unchanged, not rewritten', async () => {
     const { command } = makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] });
-    await assert.rejects(() => preflightBeadsHealthGate('memberA', { command }), DoltSyncError);
+    await assert.rejects(() => preflightBeadsHealthGate('memberA', { command, sleep: async () => {} }), DoltSyncError);
 });
 
 test('preflightBeadsHealthGate: on divergence, composes a one-line cause naming workspace, table(s), and remediation, then throws DoltDivergedError', async () => {
