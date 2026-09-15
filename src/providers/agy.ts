@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -278,6 +278,15 @@ export class AgyProvider implements ProviderAdapter {
 
   sessionIdStrategy(): SessionIdStrategy {
     return { type: 'provider-minted' };
+  }
+
+  // apra-fleet-25yl.2.1: like Claude, an AGY dispatch is batch/CONOUT$-only --
+  // the exec channel carries no mid-turn signal, so a `timeout_s`-sized
+  // rolling deadline there is a false kill. AGY's working mechanism is the
+  // StallDetector watching its brain/transcript directory (resolveSessionLogDir
+  // below returns a real path), which still gets `timeout_s` as thresholdMs.
+  execTimeoutSource(): ExecTimeoutSource {
+    return 'total_ceiling';
   }
 
   resolveSessionLogPath(sessionId: string, _workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {

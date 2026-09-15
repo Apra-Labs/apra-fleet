@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -148,6 +148,19 @@ export class OpenCodeProvider implements ProviderAdapter {
 
   sessionIdStrategy(): SessionIdStrategy {
     return { type: 'provider-minted' };
+  }
+
+  // apra-fleet-25yl.2.1: keep BOTH signals armed for OpenCode, with OR
+  // semantics -- either the exec channel advancing or the log-directory mtime
+  // advancing means not-stalled. resolveSessionLogPath() below returns '' while
+  // resolveSessionLogDir() returns a real directory, so OpenCode's file-side
+  // signal is coarse directory polling only; keeping the exec-level timer as
+  // well is the conservative default. Narrowing this to one mechanism (i.e.
+  // flipping to 'total_ceiling') requires a separate LIVE responsiveness check
+  // of what OpenCode actually emits mid-turn -- it was deliberately not
+  // attempted here, so do not flip it on reasoning alone.
+  execTimeoutSource(): ExecTimeoutSource {
+    return 'inactivity_timeout';
   }
 
   resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string {
