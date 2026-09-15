@@ -3,7 +3,29 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
+
+// On Windows, `child.kill('SIGTERM')` (Node emulates it via TerminateProcess)
+// only terminates the top-level bash.exe handle -- it does not propagate to
+// bash's own children (the subshell running the loop, sleep.exe, etc), so
+// they keep running and racing with the test's log-file assertions. Killing
+// the whole process tree via `taskkill /t` is the Windows equivalent of the
+// POSIX `process.kill(-pid, 'SIGTERM')` process-group kill below.
+function killProcessTree(child) {
+  if (process.platform === 'win32') {
+    try {
+      execSync(`taskkill /pid ${child.pid} /t /f`, { stdio: 'ignore' });
+    } catch (e) {
+      // Process (or its tree) may have already exited; that's ok.
+    }
+    return;
+  }
+  try {
+    process.kill(-child.pid, 'SIGTERM');
+  } catch (e) {
+    // If kill fails, the process may have already exited; that's ok
+  }
+}
 
 // =============================================================================
 // apra-fleet-f28t.2: Verify slow-lane log persistence survives an interrupted run
@@ -146,23 +168,11 @@ test('slow-lane log persistence', async (t) => {
         env: { ...process.env, HOME: sandboxHome, USERPROFILE: sandboxHome }
       });
 
-      const childPid = child.pid;
-
       // Wait for some output to be written (500ms = ~5-6 lines out of 100)
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      // Interrupt the process
-      try {
-        if (process.platform === 'win32') {
-          // On Windows, use a direct kill since detached groups don't work the same way
-          child.kill('SIGTERM');
-        } else {
-          // On POSIX, kill the process group
-          process.kill(-childPid, 'SIGTERM');
-        }
-      } catch (e) {
-        // If kill fails, the process may have already exited; that's ok
-      }
+      // Interrupt the process (and its whole tree -- see killProcessTree)
+      killProcessTree(child);
 
       // Wait for process to exit
       await new Promise((resolve) => {
@@ -222,20 +232,10 @@ test('slow-lane log persistence', async (t) => {
         env: { ...process.env, HOME: sandboxHome, USERPROFILE: sandboxHome }
       });
 
-      const childPid = child.pid;
-
       // Wait a bit (same 500ms as test 1) then interrupt
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      try {
-        if (process.platform === 'win32') {
-          child.kill('SIGTERM');
-        } else {
-          process.kill(-childPid, 'SIGTERM');
-        }
-      } catch (e) {
-        // Process may have already exited
-      }
+      killProcessTree(child);
 
       // Wait for exit
       await new Promise((resolve) => {
