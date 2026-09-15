@@ -274,6 +274,25 @@ describe('(1) runner.js re-exports every symbol it exported before the Phase 1 l
 // binding names must exist on the runner.js export surface -- which proves
 // the identical fact ("no resolution error") without executing any
 // importer's top-level code.
+//
+// THIS SECTION IS NOW THE SINGLE HOME OF THAT CHECK. The Phase-4 gate carried a
+// byte-for-byte equivalent copy (section (2) of
+// phase4-move-only-completeness.test.mjs): same two import regexes, same
+// named-clause parser, same "every imported binding exists on runner.js's export
+// surface" assertion, differing only in how it discovered importers (a git-grep
+// of tracked files under this package, versus the disk walk below). The two
+// discovery routes were measured against each other before the duplicate was
+// deleted and returned the SAME 84 importers, with the walk strictly broader in
+// principle (it also sees untracked and .ts files). The copy went with the rest
+// of the Phase-4 move-only probe; the coverage did not move, because it was
+// already here.
+//
+// The deleted dynamic probe had excluded bin/ and scripts/ entrypoints from
+// execution (they self-invoke main() when loaded under `node --test`) and named
+// THIS static check as the thing that covered them instead. Nothing else does,
+// so the entrypoint-coverage test below pins that they stay in the checked set:
+// a future narrowing of findImporters() that quietly dropped those directories
+// would otherwise take the entrypoints' only facade proof with it, silently.
 // -----------------------------------------------------------------------------
 describe('(2) every direct importer of fleet-sprint/runner.js resolves the bindings it imports', () => {
     const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.gitnexus', 'build']);
@@ -358,6 +377,36 @@ describe('(2) every direct importer of fleet-sprint/runner.js resolves the bindi
             }
         }
         assert.deepEqual(problems, [], `unresolved import(s) found:\n${problems.join('\n')}`);
+    });
+
+    // The entrypoint classes are the ones with no other facade proof: they are
+    // never run by the package's `test/*.test.mjs` glob, and the Phase-4 dynamic
+    // probe that used to exist explicitly skipped executing them (they
+    // self-invoke main() when loaded under `node --test`) on the stated grounds
+    // that this static check covered them. Assert they are actually in the set,
+    // and that they actually contribute named bindings to it -- a set that
+    // contained them but took zero bindings from them would satisfy the
+    // resolution test above vacuously.
+    test('the checked set includes the bin/ and scripts/ entrypoint importers, which nothing else covers', () => {
+        const byRel = new Map(
+            [...findImporters()].map(([file, names]) => [path.relative(SE_DIR, file).split(path.sep).join('/'), names]),
+        );
+        const inDir = (prefix) => [...byRel.keys()].filter((f) => f.startsWith(`${prefix}/`));
+        for (const prefix of ['bin', 'scripts']) {
+            const found = inDir(prefix);
+            assert.ok(
+                found.length > 0,
+                `no ${prefix}/ importer of fleet-sprint/runner.js is in the checked set; `
+                + `either discovery stopped walking ${prefix}/ or the entrypoints stopped importing the facade. `
+                + `Checked set: ${[...byRel.keys()].slice(0, 10).join(', ')}...`,
+            );
+            const named = found.filter((f) => byRel.get(f).length > 0);
+            assert.ok(
+                named.length > 0,
+                `${prefix}/ importers are discovered (${found.join(', ')}) but contribute no named bindings, `
+                + 'so the resolution assertion above says nothing about them',
+            );
+        }
     });
 });
 
