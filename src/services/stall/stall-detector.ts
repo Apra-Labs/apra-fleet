@@ -28,14 +28,12 @@ const TOOL_TIMEOUT_GRACE_MS = 60_000;
 // comfortably above the largest real case that motivated the feature
 // (900_000ms + grace = 960_000ms). Override with STALL_MAX_THRESHOLD_MS.
 const MAX_STALL_THRESHOLD_MS = 1_800_000;
-// apra-fleet-25yl.3: floor for the per-entry ADAPTIVE PROBE cadence (see the
-// gate in _poll()). Without a floor, an entry with a tiny effective
-// threshold would compute a near-zero probe interval; this keeps the live
-// probe (pollLogFile/pollDirectoryActivity) no more frequent than the
-// original fixed 30s tick even for such entries. Override with
-// STALL_PROBE_FLOOR_MS. This is distinct from DEFAULT_POLL_INTERVAL_MS: the
-// shared setInterval loop's own cadence is unchanged by this feature.
-const DEFAULT_STALL_PROBE_FLOOR_MS = 30_000;
+// apra-fleet-25yl.3: ceiling for the per-entry ADAPTIVE PROBE cadence (see
+// the gate in _poll()). Without a ceiling, the 9000s production default
+// threshold yields a 30-minute probe gap and a busy status up to 30 minutes
+// stale. This bounds ONLY the live probe interval -- the shared setInterval
+// loop's own cadence is unchanged by this feature.
+const MAX_STALL_PROBE_INTERVAL_MS = 300_000;
 
 /**
  * Resolve the per-tick effective stall threshold.
@@ -232,20 +230,28 @@ export class StallDetector {
     // entries that carry no per-dispatch thresholdMs of their own -- resolved
     // per entry below, not once per tick.
     const fallbackThresholdMs = parseInt(process.env['STALL_THRESHOLD_MS'] ?? String(DEFAULT_STALL_THRESHOLD_MS));
-    // apra-fleet-25yl.3: resolved once per tick, mirrors the other STALL_*
-    // env overrides above.
-    const parsedProbeFloorMs = parseInt(process.env['STALL_PROBE_FLOOR_MS'] ?? String(DEFAULT_STALL_PROBE_FLOOR_MS));
-    const probeFloorMs = Number.isFinite(parsedProbeFloorMs) ? parsedProbeFloorMs : DEFAULT_STALL_PROBE_FLOOR_MS;
+    // apra-fleet-25yl.3 AMENDMENT: the adaptive probe cadence's FLOOR is the
+    // loop's own tick interval -- the same resolved value start()'s
+    // setInterval uses (STALL_POLL_INTERVAL_MS ?? DEFAULT_POLL_INTERVAL_MS) --
+    // not an independent constant. A separate, smaller floor would make
+    // short-threshold entries poll MORE often than today's fixed cadence,
+    // the opposite of this feature's goal. Resolved once per tick, mirroring
+    // the other STALL_* env overrides above, so an env override of the tick
+    // interval moves the floor with it.
+    const parsedTickIntervalMs = parseInt(process.env['STALL_POLL_INTERVAL_MS'] ?? String(DEFAULT_POLL_INTERVAL_MS));
+    const tickIntervalMs = Number.isFinite(parsedTickIntervalMs) ? parsedTickIntervalMs : DEFAULT_POLL_INTERVAL_MS;
 
     for (const [memberId, entry] of this.stallCheckList.entries()) {
       const stallThresholdMs = entry.thresholdMs ?? fallbackThresholdMs;
 
       // apra-fleet-25yl.3: adaptive per-entry probe cadence. An entry with a
       // large effective threshold (e.g. a long timeout_s dispatch) does not
-      // need a LIVE probe on every DEFAULT_POLL_INTERVAL_MS tick; gate the
-      // live probe call itself (pollLogFile / pollDirectoryActivity, issued
-      // just below in each branch) on max(probeFloorMs, threshold/5), with
-      // no upper ceiling. This gates ONLY the live probe -- the shared
+      // need a LIVE probe on every tick; gate the live probe call itself
+      // (pollLogFile / pollDirectoryActivity, issued just below in each
+      // branch) on clamp(tickIntervalMs, stallThresholdMs/5, 300_000ms):
+      // never less often than the loop's own tick (the floor), and never
+      // more than 5 minutes apart even for the largest trusted threshold
+      // (the ceiling). This gates ONLY the live probe -- the shared
       // setInterval loop and its cadence/unref behaviour are untouched. A
       // skipped tick is simply not evidence in either direction: it must
       // never increment consecutiveIdleCycles/consecutiveReadFailures, and
@@ -253,7 +259,10 @@ export class StallDetector {
       // bounded to roughly one probe interval past the entry's threshold
       // because the stall check further down only runs on ticks that DO
       // probe -- it is never evaluated against stale data on a skipped tick.
-      const probeIntervalMs = Math.max(probeFloorMs, stallThresholdMs / 5);
+      const probeIntervalMs = Math.min(
+        MAX_STALL_PROBE_INTERVAL_MS,
+        Math.max(tickIntervalMs, stallThresholdMs / 5),
+      );
       const dueForProbe = entry.lastPolledAt === undefined || (now - entry.lastPolledAt) >= probeIntervalMs;
       if (!dueForProbe) {
         if (!entry.stallReported) {
