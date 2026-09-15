@@ -1,4 +1,4 @@
-import { test, describe } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
@@ -31,38 +31,6 @@ function createTrackingFleetApi() {
         calls,
         async executePrompt(payload) {
             calls.push(payload.prompt);
-            const memberKey = payload.member_name || payload.member_id;
-            if (!KNOWN_MEMBERS.has(memberKey)) {
-                return { content: [{ text: `Member "${memberKey}" not found.` }] };
-            }
-            return {
-                content: [{ text: `echo: ${payload.prompt}` }],
-                usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
-            };
-        },
-        async executeCommand(payload) {
-            calls.push(payload.command);
-            return { content: [{ text: payload.command }], isError: false };
-        }
-    };
-}
-
-/**
- * Like createTrackingFleetApi(), but throws a transport failure once the Nth
- * executePrompt() call is reached -- simulates a crash partway through a run
- * without needing to actually kill a process. The N-1 prior activities
- * complete (and their activity:end events reach the journal writer) before
- * the throw unwinds the whole executeFile() call as a rejection.
- */
-function createCrashingFleetApi(crashAtCallIndex) {
-    const calls = [];
-    return {
-        calls,
-        async executePrompt(payload) {
-            calls.push(payload.prompt);
-            if (calls.length === crashAtCallIndex) {
-                throw new Error('Simulated crash: connection lost');
-            }
             const memberKey = payload.member_name || payload.member_id;
             if (!KNOWN_MEMBERS.has(memberKey)) {
                 return { content: [{ text: `Member "${memberKey}" not found.` }] };
@@ -113,154 +81,226 @@ async function makeTmpDir() {
     return fs.mkdtemp(path.join(os.tmpdir(), 'fleet-journal-test-'));
 }
 
-describe('apra-fleet-unw.11 (F6): journal writer -- JSONL shape', () => {
-    test('journal file is valid JSONL (one parseable JSON object per line) and records usage/cost when known', async () => {
-        const tmpDir = await makeTmpDir();
-        const journalPath = path.join(tmpDir, 'journal.jsonl');
+// apra-fleet-j918.7.7: several resume-behavior cases below used to each pay
+// for their OWN "fs.mkdtemp + engine1.executeFile(test-journal-sequential.mjs,
+// {}, { journal })" recording leg, differing only in the post-hoc shape their
+// journal ended up in (clean/successful, crash-truncated, or hand-corrupted)
+// and which signal they checked on resume. That recording leg now runs
+// EXACTLY ONCE for this whole file (in the top-level before() below); every
+// case that needs its own journal shape copies the ONE canonical recording
+// into a fresh per-case temp file and, if needed, mutates that COPY -- never
+// the shared canonical file -- so no case can affect another's input, and
+// corrupting one case's copy provably cannot bleed into a sibling case.
+let canonicalDir;
+let canonicalJournalPath;
+let canonicalResult;
+let canonicalJournalSnapshot;
+let recordingInvocationCount = 0;
 
-        const wf = new FleetWorkflow(createTrackingFleetApi());
-        const engine = new WorkflowEngine(wf);
-
-        const result = await engine.executeFile(fixture('test-journal-sequential.mjs'), {}, { journal: journalPath });
-        assert.deepStrictEqual(result, { r1: 'echo: step1', r2: 'echo: step2', r3: 'echo: step3' });
-
-        const raw = await fs.readFile(journalPath, 'utf-8');
-        const lines = raw.split('\n').filter((l) => l.trim().length > 0);
-        assert.ok(lines.length > 0, 'expected at least one journal line');
-
-        const records = lines.map((line, idx) => {
-            let parsed;
-            assert.doesNotThrow(() => { parsed = JSON.parse(line); }, `journal line ${idx} is not valid JSON: ${line}`);
-            return parsed;
-        });
-
-        const runStart = records.find((r) => r.event === 'run:start');
-        assert.ok(runStart, 'expected a run:start record');
-        assert.ok(runStart.scriptPath.includes('test-journal-sequential.mjs'));
-
-        const runEnd = records.find((r) => r.event === 'run:end');
-        assert.ok(runEnd, 'expected a run:end record');
-        assert.strictEqual(runEnd.status, 'success');
-
-        const activityEnds = records.filter((r) => r.event === 'activity:end' && r.type === 'agent');
-        assert.strictEqual(activityEnds.length, 3, 'expected 3 agent activity:end records');
-        for (const rec of activityEnds) {
-            assert.strictEqual(rec.success, true);
-            assert.ok(rec.usage, 'expected usage to be recorded when known');
-            assert.strictEqual(rec.usage.total_tokens, 2);
-            assert.strictEqual(typeof rec.cost, 'number');
-            assert.ok(typeof rec.sequence === 'number');
-            assert.ok(typeof rec.replayKey === 'string');
-        }
-
-        await fs.rm(tmpDir, { recursive: true, force: true });
-    });
+before(async () => {
+    recordingInvocationCount += 1;
+    canonicalDir = await makeTmpDir();
+    canonicalJournalPath = path.join(canonicalDir, 'canonical-recording.jsonl');
+    const wf = new FleetWorkflow(createTrackingFleetApi());
+    const engine = new WorkflowEngine(wf);
+    canonicalResult = await engine.executeFile(fixture('test-journal-sequential.mjs'), {}, { journal: canonicalJournalPath });
+    canonicalJournalSnapshot = await fs.readFile(canonicalJournalPath, 'utf-8');
 });
 
-describe('apra-fleet-unw.11 (F6): resume/replay -- zero re-dispatch for completed activities', () => {
-    test('a crash after 2 of 3 activities, then resume: first 2 are served from the journal with ZERO new dispatches, final result matches an uninterrupted run', async () => {
-        const tmpDir = await makeTmpDir();
-        const journalPath = path.join(tmpDir, 'journal.jsonl');
-
-        // First run: crash simulated on the 3rd executePrompt() call (i.e.
-        // after step1 and step2 have already completed and been journaled).
-        const crashingApi = createCrashingFleetApi(3);
-        const wf1 = new FleetWorkflow(crashingApi);
-        const engine1 = new WorkflowEngine(wf1);
-
-        await assert.rejects(
-            () => engine1.executeFile(fixture('test-journal-sequential.mjs'), {}, { journal: journalPath }),
-            /Simulated crash/
-        );
-        assert.strictEqual(crashingApi.calls.length, 3, 'expected exactly 3 dispatch attempts before the simulated crash');
-
-        // Sanity: the journal captured all 3 activities as "completed" in
-        // the journal sense (each has a matching activity:end -- step1 and
-        // step2 succeeded; step3's dispatch itself failed synchronously, so
-        // FleetWorkflow.agent() still emits a well-formed activity:end for
-        // it, just with success: false). Only step1/step2 are cache HITS on
-        // resume (see the `cached.success` check below) -- step3's
-        // success:false record does not count as replayable.
-        const { completedByKey } = await loadJournal(journalPath);
-        assert.strictEqual(completedByKey.size, 3, 'expected 3 activity:end records (2 successful, 1 failed) in the journal before the crash');
-        const successfulKeys = [...completedByKey.values()].filter((r) => r.success);
-        assert.strictEqual(successfulKeys.length, 2, 'expected exactly 2 successful (replayable) records');
-
-        // Resume: a fresh WorkflowEngine/FleetWorkflow (simulating a brand
-        // new process), with a fleetApi that FAILS the test if called for
-        // step1 or step2 -- those must be served entirely from the journal.
-        const guardedApi = createGuardedFleetApi(new Set(['step1', 'step2']));
-        const wf2 = new FleetWorkflow(guardedApi);
-        const engine2 = new WorkflowEngine(wf2);
-
-        const replayedActivities = [];
-        wf2.on('activity:end', (meta) => { if (meta.replayed) replayedActivities.push(meta); });
-
-        const result = await engine2.executeFile(fixture('test-journal-sequential.mjs'), {}, { resumeJournal: journalPath });
-
-        // Same final result as an uninterrupted run would have produced.
-        assert.deepStrictEqual(result, { r1: 'echo: step1', r2: 'echo: step2', r3: 'echo: step3' });
-
-        // Zero new dispatches for the first 2 (cached) activities; exactly
-        // one live dispatch for step3.
-        assert.deepStrictEqual(guardedApi.calls, ['step3']);
-
-        // The first 2 activities were explicitly served from the replay
-        // cache (marked `replayed: true`); step3 was not.
-        assert.strictEqual(replayedActivities.length, 2);
-        assert.deepStrictEqual(replayedActivities.map((a) => a.label).sort(), ['step1', 'step2']);
-
-        await fs.rm(tmpDir, { recursive: true, force: true });
-    });
+after(async () => {
+    // The invocation counter this bead's acceptance criteria asks for: the
+    // recording leg above must have run exactly once across this whole
+    // file's execution, not once per case that consumes its output.
+    assert.strictEqual(recordingInvocationCount, 1, `expected the shared canonical recording to run exactly once per file execution, ran ${recordingInvocationCount} time(s)`);
+    // Direct proof that no case mutated the SHARED canonical file (as
+    // opposed to its own copy): byte-for-byte unchanged from what before()
+    // wrote, after every case has run. copyCanonicalJournal() only ever
+    // opens canonicalJournalPath for reading.
+    const finalCanonicalContent = await fs.readFile(canonicalJournalPath, 'utf-8');
+    assert.strictEqual(finalCanonicalContent, canonicalJournalSnapshot, 'the shared canonical recording must be byte-identical after every case has run -- a case mutated shared state instead of its own copy');
+    await fs.rm(canonicalDir, { recursive: true, force: true });
 });
 
-describe('apra-fleet-unw.11 (F6): resume/replay -- divergence detection', () => {
-    test('a changed prompt at position k stops replay AT k and falls through to live execution from k onward, not before or after', async () => {
-        const tmpDir = await makeTmpDir();
-        const journalPath = path.join(tmpDir, 'journal.jsonl');
+/**
+ * Copies the ONE canonical recorded journal (test-journal-sequential.mjs,
+ * run cleanly to completion) into a fresh per-case temp file, optionally
+ * transforming its parsed records first via `mutate(records)` -- e.g. to
+ * simulate a crash (flip an activity:end to success:false) or an unfinished
+ * dispatch (truncate before an activity:end). The shared canonical file
+ * itself is never opened for writing. Callers must remove the returned
+ * `dir` when done.
+ * @param {(records: object[]) => object[]} [mutate]
+ * @returns {Promise<{ dir: string, copyPath: string }>}
+ */
+async function copyCanonicalJournal(mutate) {
+    const raw = await fs.readFile(canonicalJournalPath, 'utf-8');
+    const records = raw.split('\n').filter((l) => l.trim().length > 0).map((l) => JSON.parse(l));
+    const finalRecords = mutate ? mutate(records) : records;
+    const dir = await makeTmpDir();
+    const copyPath = path.join(dir, 'case-journal.jsonl');
+    await fs.writeFile(copyPath, finalRecords.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
+    return { dir, copyPath };
+}
 
-        // First (uninterrupted) run: writes a complete journal for the
-        // original 3-step script (step1, step2, step3).
-        const wf1 = new FleetWorkflow(createTrackingFleetApi());
-        const engine1 = new WorkflowEngine(wf1);
-        await engine1.executeFile(fixture('test-journal-sequential.mjs'), {}, { journal: journalPath });
+// apra-fleet-j918.7.7: CASES 1-3 below (journal shape, crash+resume,
+// prompt-divergence) used to be three separate describe blocks, each
+// re-running the "fs.mkdtemp + engine1.executeFile(fixture, {}, {journal})"
+// recording leg with only the post-hoc journal shape and the asserted
+// signal actually differing between them. They now share the ONE canonical
+// recording (see `before()`/`copyCanonicalJournal()` above) and are driven
+// from this CASES table; each case is still individually named in test
+// output (`c.name`) and runs on its OWN copy of the canonical journal, so
+// corrupting one case's copy cannot affect another.
+const CASES = [
+    {
+        name: '1. journal shape: valid JSONL, a run:start/run:end pair, and 3 successful agent activity:end records with usage/cost/sequence/replayKey',
+        async run() {
+            const { dir, copyPath } = await copyCanonicalJournal();
+            try {
+                assert.deepStrictEqual(canonicalResult, { r1: 'echo: step1', r2: 'echo: step2', r3: 'echo: step3' });
 
-        // Second run: SAME script, but the 2nd call's prompt (position k=1,
-        // 0-indexed) is different -- simulating a workflow-script edit
-        // between the crash and the resume. step1 (position 0, before k)
-        // must be replayed from cache with zero dispatch; step2 (position k)
-        // and step3 (after k) must both be dispatched live.
-        const trackingApi2 = createTrackingFleetApi();
-        const wf2 = new FleetWorkflow(trackingApi2);
-        const engine2 = new WorkflowEngine(wf2);
+                const raw = await fs.readFile(copyPath, 'utf-8');
+                const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+                assert.ok(lines.length > 0, 'expected at least one journal line');
 
-        const divergedEvents = [];
-        wf2.on('journal:diverged', (meta) => divergedEvents.push(meta));
-        const replayedActivities = [];
-        wf2.on('activity:end', (meta) => { if (meta.replayed) replayedActivities.push(meta); });
+                const records = lines.map((line, idx) => {
+                    let parsed;
+                    assert.doesNotThrow(() => { parsed = JSON.parse(line); }, `journal line ${idx} is not valid JSON: ${line}`);
+                    return parsed;
+                });
 
-        const result = await engine2.executeFile(
-            fixture('test-journal-sequential.mjs'),
-            { step2Prompt: 'step2-changed' },
-            { resumeJournal: journalPath }
-        );
+                const runStart = records.find((r) => r.event === 'run:start');
+                assert.ok(runStart, 'expected a run:start record');
+                assert.ok(runStart.scriptPath.includes('test-journal-sequential.mjs'));
 
-        assert.deepStrictEqual(result, { r1: 'echo: step1', r2: 'echo: step2-changed', r3: 'echo: step3' });
+                const runEnd = records.find((r) => r.event === 'run:end');
+                assert.ok(runEnd, 'expected a run:end record');
+                assert.strictEqual(runEnd.status, 'success');
 
-        // step1 must NOT have been re-dispatched (served from cache);
-        // step2-changed and step3 MUST have been dispatched live.
-        assert.deepStrictEqual(trackingApi2.calls, ['step2-changed', 'step3']);
+                const activityEnds = records.filter((r) => r.event === 'activity:end' && r.type === 'agent');
+                assert.strictEqual(activityEnds.length, 3, 'expected 3 agent activity:end records');
+                for (const rec of activityEnds) {
+                    assert.strictEqual(rec.success, true);
+                    assert.ok(rec.usage, 'expected usage to be recorded when known');
+                    assert.strictEqual(rec.usage.total_tokens, 2);
+                    assert.strictEqual(typeof rec.cost, 'number');
+                    assert.ok(typeof rec.sequence === 'number');
+                    assert.ok(typeof rec.replayKey === 'string');
+                }
+            } finally {
+                await fs.rm(dir, { recursive: true, force: true });
+            }
+        },
+    },
+    {
+        name: '2. a crash after 2 of 3 activities, then resume: first 2 are served from the journal with ZERO new dispatches, final result matches an uninterrupted run',
+        async run() {
+            // Simulates "crash on the 3rd dispatch" by mutating a COPY of
+            // the canonical (fully successful) recording's step3
+            // activity:end into the exact shape FleetWorkflow.agent() emits
+            // for a real synchronous transport failure (src/workflow/
+            // index.mjs's generic catch-all: `{ ...activityMeta, error,
+            // duration, success: false }` -- no usage/cost/output) --
+            // rather than re-running a real crashing dispatch, which would
+            // need its own separate recording leg and reintroduce the
+            // duplication this task removes.
+            const { dir, copyPath } = await copyCanonicalJournal((records) => records.map((rec) => {
+                if (rec.event === 'activity:end' && rec.label === 'step3') {
+                    const { usage, cost, output, ...rest } = rec;
+                    return { ...rest, error: 'Simulated crash: connection lost', success: false };
+                }
+                return rec;
+            }));
+            try {
+                // Sanity on the mutated copy -- the same fact the original
+                // per-case recording leg's own `crashingApi.calls.length
+                // === 3` assertion verified (3 activities were attempted,
+                // only 2 are replayable), now read from the journal's own
+                // content since there is no real crashing dispatch left to
+                // count calls against in this design.
+                const { completedByKey } = await loadJournal(copyPath);
+                assert.strictEqual(completedByKey.size, 3, 'expected 3 activity:end records (2 successful, 1 failed) in the journal before resume');
+                const successfulKeys = [...completedByKey.values()].filter((r) => r.success);
+                assert.strictEqual(successfulKeys.length, 2, 'expected exactly 2 successful (replayable) records');
 
-        assert.strictEqual(replayedActivities.length, 1);
-        assert.strictEqual(replayedActivities[0].label, 'step1');
+                // Resume: a fresh WorkflowEngine/FleetWorkflow (simulating a
+                // brand new process), with a fleetApi that FAILS the test if
+                // called for step1 or step2 -- those must be served
+                // entirely from the journal.
+                const guardedApi = createGuardedFleetApi(new Set(['step1', 'step2']));
+                const wf2 = new FleetWorkflow(guardedApi);
+                const engine2 = new WorkflowEngine(wf2);
 
-        // Exactly one divergence event, at sequence 1 (the 2nd call, 0-indexed).
-        assert.strictEqual(divergedEvents.length, 1);
-        assert.strictEqual(divergedEvents[0].sequence, 1);
-        assert.strictEqual(divergedEvents[0].type, 'agent');
+                const replayedActivities = [];
+                wf2.on('activity:end', (meta) => { if (meta.replayed) replayedActivities.push(meta); });
 
-        await fs.rm(tmpDir, { recursive: true, force: true });
-    });
+                const result = await engine2.executeFile(fixture('test-journal-sequential.mjs'), {}, { resumeJournal: copyPath });
+
+                // Same final result as an uninterrupted run would have produced.
+                assert.deepStrictEqual(result, { r1: 'echo: step1', r2: 'echo: step2', r3: 'echo: step3' });
+
+                // Zero new dispatches for the first 2 (cached) activities;
+                // exactly one live dispatch for step3.
+                assert.deepStrictEqual(guardedApi.calls, ['step3']);
+
+                // The first 2 activities were explicitly served from the
+                // replay cache (marked `replayed: true`); step3 was not.
+                assert.strictEqual(replayedActivities.length, 2);
+                assert.deepStrictEqual(replayedActivities.map((a) => a.label).sort(), ['step1', 'step2']);
+            } finally {
+                await fs.rm(dir, { recursive: true, force: true });
+            }
+        },
+    },
+    {
+        name: '3. a changed prompt at position k stops replay AT k and falls through to live execution from k onward, not before or after',
+        async run() {
+            // No journal mutation needed for this case: the divergence is
+            // driven entirely by resuming with a DIFFERENT step2Prompt arg
+            // against the unmodified canonical recording's copy -- position
+            // 0 (step1) still matches and replays; position 1 (step2) no
+            // longer matches and diverges.
+            const { dir, copyPath } = await copyCanonicalJournal();
+            try {
+                const trackingApi2 = createTrackingFleetApi();
+                const wf2 = new FleetWorkflow(trackingApi2);
+                const engine2 = new WorkflowEngine(wf2);
+
+                const divergedEvents = [];
+                wf2.on('journal:diverged', (meta) => divergedEvents.push(meta));
+                const replayedActivities = [];
+                wf2.on('activity:end', (meta) => { if (meta.replayed) replayedActivities.push(meta); });
+
+                const result = await engine2.executeFile(
+                    fixture('test-journal-sequential.mjs'),
+                    { step2Prompt: 'step2-changed' },
+                    { resumeJournal: copyPath }
+                );
+
+                assert.deepStrictEqual(result, { r1: 'echo: step1', r2: 'echo: step2-changed', r3: 'echo: step3' });
+
+                // step1 must NOT have been re-dispatched (served from cache);
+                // step2-changed and step3 MUST have been dispatched live.
+                assert.deepStrictEqual(trackingApi2.calls, ['step2-changed', 'step3']);
+
+                assert.strictEqual(replayedActivities.length, 1);
+                assert.strictEqual(replayedActivities[0].label, 'step1');
+
+                // Exactly one divergence event, at sequence 1 (the 2nd call, 0-indexed).
+                assert.strictEqual(divergedEvents.length, 1);
+                assert.strictEqual(divergedEvents[0].sequence, 1);
+                assert.strictEqual(divergedEvents[0].type, 'agent');
+            } finally {
+                await fs.rm(dir, { recursive: true, force: true });
+            }
+        },
+    },
+];
+
+describe('apra-fleet-unw.11 (F6): journal shape, crash+resume, and prompt-divergence -- table-driven over ONE shared recording (apra-fleet-j918.7.7)', () => {
+    for (const c of CASES) {
+        test(c.name, c.run);
+    }
 });
 
 describe('apra-fleet-unw2.13 (N5): replay honors the failSoft result shape for command()', () => {
@@ -354,53 +394,56 @@ describe('apra-fleet-unw2.13 (N5): replay honors the failSoft result shape for c
 });
 
 describe('apra-fleet-unw.11 (F6): ambiguity guard', () => {
-    test('a journal record that is started-but-never-finished is surfaced via journal:ambiguous and is never auto-resolved as a cache hit', async () => {
-        const tmpDir = await makeTmpDir();
-        const journalPath = path.join(tmpDir, 'journal.jsonl');
+    // apra-fleet-j918.7.7: this is resume case 4 of the 5 the parent task
+    // consolidated onto ONE shared canonical recording (see `before()`/
+    // `copyCanonicalJournal()` near the top of this file). It used to
+    // hand-construct its own crashed-mid-dispatch journal from scratch with
+    // manually computed hashText/computeActivityKey values; it now derives
+    // the identical shape by TRUNCATING a copy of the real canonical
+    // recording right after step2's activity:start (dropping step2's
+    // activity:end and all of step3) -- exactly what a real crash between
+    // step2's dispatch and its reply would leave on disk, using the SAME
+    // real ids/keys the production recording produced rather than
+    // hand-typed stand-ins.
+    test('4. a journal record that is started-but-never-finished is surfaced via journal:ambiguous and is never auto-resolved as a cache hit', async () => {
+        const { dir, copyPath } = await copyCanonicalJournal((records) => {
+            const truncated = [];
+            for (const rec of records) {
+                if (rec.event === 'activity:end' && rec.label === 'step2') break;
+                truncated.push(rec);
+            }
+            return truncated;
+        });
+        try {
+            const rawCopy = await fs.readFile(copyPath, 'utf-8');
+            const copyRecords = rawCopy.split('\n').filter((l) => l.trim().length > 0).map((l) => JSON.parse(l));
+            const step2StartRec = copyRecords.find((r) => r.event === 'activity:start' && r.label === 'step2');
+            assert.ok(step2StartRec, "expected the truncated copy to retain step2's activity:start with no matching activity:end");
 
-        // Hand-construct a journal representing a crash mid-dispatch on
-        // step2: step1 completed successfully; step2 has an activity:start
-        // with NO matching activity:end (the process died before the fleet
-        // replied). Uses the SAME hashText/computeActivityKey helpers
-        // production code uses, so the keys line up exactly as a real crash
-        // would produce.
-        const step1Hash = hashText('step1');
-        const step1Key = computeActivityKey({ sequence: 0, type: 'agent', member: 'fleet-dev', textHash: step1Hash });
-        const step2Hash = hashText('step2');
-        const step2Key = computeActivityKey({ sequence: 1, type: 'agent', member: 'fleet-dev', textHash: step2Hash });
+            const guardedApi = createGuardedFleetApi(new Set(['step1']));
+            const wf = new FleetWorkflow(guardedApi);
+            const engine = new WorkflowEngine(wf);
 
-        const lines = [
-            { event: 'run:start', runId: 'crashed-run', timestamp: Date.now(), scriptPath: 'irrelevant.mjs', args: {} },
-            { event: 'activity:start', id: 'act-1', type: 'agent', phase: null, runId: 'crashed-run', label: 'step1', member: 'fleet-dev', model: 'default', repairAttempt: 0, startTime: Date.now(), sequence: 0, replayKey: step1Key },
-            { event: 'activity:end', id: 'act-1', type: 'agent', phase: null, runId: 'crashed-run', label: 'step1', member: 'fleet-dev', model: 'default', repairAttempt: 0, sequence: 0, replayKey: step1Key, duration: 5, success: true, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }, cost: 0.0001, output: 'echo: step1' },
-            // step2 started, never finished:
-            { event: 'activity:start', id: 'act-2', type: 'agent', phase: null, runId: 'crashed-run', label: 'step2', member: 'fleet-dev', model: 'default', repairAttempt: 0, startTime: Date.now(), sequence: 1, replayKey: step2Key }
-        ];
-        await fs.writeFile(journalPath, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf-8');
+            const ambiguousEvents = [];
+            wf.on('journal:ambiguous', (meta) => ambiguousEvents.push(meta));
 
-        const guardedApi = createGuardedFleetApi(new Set(['step1']));
-        const wf = new FleetWorkflow(guardedApi);
-        const engine = new WorkflowEngine(wf);
+            const result = await engine.executeFile(fixture('test-journal-sequential.mjs'), {}, { resumeJournal: copyPath });
 
-        const ambiguousEvents = [];
-        wf.on('journal:ambiguous', (meta) => ambiguousEvents.push(meta));
+            // Surfaced, not silently resolved.
+            assert.strictEqual(ambiguousEvents.length, 1);
+            assert.strictEqual(ambiguousEvents[0].activity.id, step2StartRec.id);
+            assert.strictEqual(ambiguousEvents[0].activity.label, 'step2');
 
-        const result = await engine.executeFile(fixture('test-journal-sequential.mjs'), {}, { resumeJournal: journalPath });
-
-        // Surfaced, not silently resolved.
-        assert.strictEqual(ambiguousEvents.length, 1);
-        assert.strictEqual(ambiguousEvents[0].activity.id, 'act-2');
-        assert.strictEqual(ambiguousEvents[0].activity.label, 'step2');
-
-        // step1 (a genuinely completed record) is still replayed from cache...
-        assert.ok(!guardedApi.calls.includes('step1'));
-        // ...but step2 (ambiguous -- no completed record) and step3 are
-        // dispatched live, since an ambiguous record is never auto-resolved
-        // as a cache hit.
-        assert.deepStrictEqual(guardedApi.calls, ['step2', 'step3']);
-        assert.deepStrictEqual(result, { r1: 'echo: step1', r2: 'echo: step2', r3: 'echo: step3' });
-
-        await fs.rm(tmpDir, { recursive: true, force: true });
+            // step1 (a genuinely completed record) is still replayed from cache...
+            assert.ok(!guardedApi.calls.includes('step1'));
+            // ...but step2 (ambiguous -- no completed record) and step3 are
+            // dispatched live, since an ambiguous record is never auto-resolved
+            // as a cache hit.
+            assert.deepStrictEqual(guardedApi.calls, ['step2', 'step3']);
+            assert.deepStrictEqual(result, { r1: 'echo: step1', r2: 'echo: step2', r3: 'echo: step3' });
+        } finally {
+            await fs.rm(dir, { recursive: true, force: true });
+        }
     });
 });
 
@@ -564,32 +607,33 @@ describe('apra-fleet-unw2.14 (N6): order-independent replay keys across parallel
         await fs.rm(tmpDir, { recursive: true, force: true });
     });
 
-    test('journal:diverged distinguishes a SEQUENTIAL (top-level) mismatch (inParallel:false) from a parallel-region one', async () => {
-        const tmpDir = await makeTmpDir();
-        const journalPath = path.join(tmpDir, 'journal.jsonl');
+    // apra-fleet-j918.7.7: resume case 5 of the 5 consolidated onto ONE
+    // shared canonical recording. Same recipe as CASES[2] above (a copy of
+    // the canonical test-journal-sequential.mjs recording, resumed with a
+    // changed step2Prompt) but checking a DIFFERENT signal (inParallel:false)
+    // -- kept here, next to its parallel-region sibling tests, rather than
+    // folded into the CASES table above, since its point is the CONTRAST
+    // with those siblings and moving it away would lose that context.
+    test('5. journal:diverged distinguishes a SEQUENTIAL (top-level) mismatch (inParallel:false) from a parallel-region one', async () => {
+        const { dir, copyPath } = await copyCanonicalJournal();
+        try {
+            const wf2 = new FleetWorkflow(createTrackingFleetApi());
+            const engine2 = new WorkflowEngine(wf2);
+            const divergedEvents = [];
+            wf2.on('journal:diverged', (meta) => divergedEvents.push(meta));
 
-        // Record a normal sequential run, then resume with a changed 2nd
-        // prompt so divergence happens at the TOP level (not in a parallel).
-        const wf1 = new FleetWorkflow(createTrackingFleetApi());
-        const engine1 = new WorkflowEngine(wf1);
-        await engine1.executeFile(fixture('test-journal-sequential.mjs'), {}, { journal: journalPath });
+            await engine2.executeFile(
+                fixture('test-journal-sequential.mjs'),
+                { step2Prompt: 'step2-changed' },
+                { resumeJournal: copyPath }
+            );
 
-        const wf2 = new FleetWorkflow(createTrackingFleetApi());
-        const engine2 = new WorkflowEngine(wf2);
-        const divergedEvents = [];
-        wf2.on('journal:diverged', (meta) => divergedEvents.push(meta));
-
-        await engine2.executeFile(
-            fixture('test-journal-sequential.mjs'),
-            { step2Prompt: 'step2-changed' },
-            { resumeJournal: journalPath }
-        );
-
-        assert.strictEqual(divergedEvents.length, 1);
-        assert.strictEqual(divergedEvents[0].inParallel, false, 'a top-level mismatch must be flagged inParallel:false');
-        assert.strictEqual(typeof divergedEvents[0].sequence, 'number', 'top-level sequence stays a plain integer (backward compatible)');
-
-        await fs.rm(tmpDir, { recursive: true, force: true });
+            assert.strictEqual(divergedEvents.length, 1);
+            assert.strictEqual(divergedEvents[0].inParallel, false, 'a top-level mismatch must be flagged inParallel:false');
+            assert.strictEqual(typeof divergedEvents[0].sequence, 'number', 'top-level sequence stays a plain integer (backward compatible)');
+        } finally {
+            await fs.rm(dir, { recursive: true, force: true });
+        }
     });
 });
 
