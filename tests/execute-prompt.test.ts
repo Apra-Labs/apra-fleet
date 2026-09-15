@@ -40,6 +40,8 @@ import { seedWorkspaceTrust } from '../src/utils/workspace-trust.js';
 // unaffected -- overridden per-test below to assert the preflight_* reason
 // code mapping at the execute-prompt call site.
 import { preflightCheck } from '../src/services/preflight-check.js';
+import { ClaudeProvider } from '../src/providers/claude.js';
+import type { UsageLimitSignal } from '../src/providers/provider.js';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -1831,6 +1833,115 @@ describe('workspace-not-trusted classification (apra-fleet-eft.40.3)', () => {
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'workspace_not_trusted' });
     // 3 calls only -- proves the stale-session retry (which would add a 4th call) never fired.
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+// apra-fleet-hzeb.2: execute_prompt relays a provider usage-limit signal
+// (detectUsageLimit) as a terminal `reason: 'usage_limit'` result, checked
+// immediately after EVERY provider.parseResponse() call in the dispatch path
+// and regardless of exit code -- a fresh session can never cure a plan/quota
+// limit, so it must short-circuit the stale-session and server-overloaded
+// retries below it rather than burning the shared retry budget.
+describe('execute_prompt: usage-limit relay (apra-fleet-hzeb.2)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('relays a usage_limit signal, skips the stale-session AND server-overloaded retries even though both would otherwise fire, and clears inFlightAgents', async () => {
+    const member = makeTestAgent({ friendlyName: 'usage-limit-member', sessionId: 'old-sess' });
+    addAgent(member);
+    const signal: UsageLimitSignal = {
+      type: 'usage_limit',
+      resumeAt: '2024-01-15T13:20:00.000Z',
+      resumeAtSource: 'parsed',
+      message: "You've hit your session limit",
+    };
+    const detectSpy = vi.spyOn(ClaudeProvider.prototype, 'detectUsageLimit').mockReturnValue(signal);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      // Deliberately shaped so that, absent the usage-limit short-circuit,
+      // BOTH the stale-session retry (member.sessionId set + resume:true +
+      // code!==0) and the server-overloaded retry (stderr matches the
+      // overloaded classifier) would otherwise fire.
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ type: 'result', api_error_status: 429, result: "You've hit your session limit", session_id: 'sess-ul-1' }),
+        stderr: 'HTTP 429 Too Many Requests',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    expect(inFlightAgents.has(member.id)).toBe(false);
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+
+    expect(detectSpy).toHaveBeenCalled();
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'usage_limit', sessionId: 'sess-ul-1' });
+    expect(result.structuredContent?.usageLimit).toBe(signal);
+    expect(resultText(result)).toContain('usage limit');
+    expect(resultText(result)).toContain(signal.resumeAt);
+    // 3 calls: writePromptFile + ONE main dispatch + deletePromptFile -- no
+    // stale-session or server-overloaded retry dispatch was made.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+    expect(inFlightAgents.has(member.id)).toBe(false);
+  });
+
+  it('classifies an exit-0 result whose text carries the usage-limit message as usage_limit, never as a success response', async () => {
+    const member = makeTestAgent({ friendlyName: 'usage-limit-exit0' });
+    addAgent(member);
+    const signal: UsageLimitSignal = {
+      type: 'usage_limit',
+      resumeAt: '2024-01-15T20:00:00.000Z',
+      resumeAtSource: 'guessed',
+      message: "You've hit your weekly limit",
+    };
+    vi.spyOn(ClaudeProvider.prototype, 'detectUsageLimit').mockReturnValue(signal);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ type: 'result', result: "You've hit your weekly limit", session_id: 'sess-ul-exit0' }),
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'usage_limit' });
+    expect(result.structuredContent?.usageLimit).toBe(signal);
+    // A success response wraps the reply as "[RESULT] Response from ..." --
+    // must never appear for a usage_limit classification, even at exit 0.
+    expect(resultText(result)).not.toContain('[RESULT]');
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+
+  // Regression pin: a genuinely transient 529 overload (no api_error_status,
+  // no 'api_error' terminalReason -- just a stderr string) must NOT be
+  // reclassified as a usage limit. detectUsageLimit stays null and the
+  // pre-existing single 5s retry-then-fail path is unchanged.
+  it('a 529 overloaded fixture leaves detectUsageLimit null and takes the existing single 5s retry path, returning reason: overloaded', async () => {
+    const member = makeTestAgent({ friendlyName: 'overloaded-529' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 529 Overloaded', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 529 Overloaded', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const promise = executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    await vi.advanceTimersByTimeAsync(5000);
+    const result = await promise;
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'overloaded' });
+    expect(result.structuredContent?.usageLimit).toBeUndefined();
+    // 4 calls: writePromptFile + main (529) + overloaded-retry (529) + deletePromptFile.
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
 });
 

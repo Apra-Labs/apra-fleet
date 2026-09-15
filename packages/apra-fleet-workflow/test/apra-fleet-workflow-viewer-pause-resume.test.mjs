@@ -179,7 +179,7 @@ describe('apra-fleet-p2to.2.1: POST /pause and /resume routes + state.pause wiri
             assert.strictEqual(wf._paused, false, '/resume must call the real workflow.requestResume()');
 
             const resumed = await getState(port);
-            assert.deepStrictEqual(resumed.pause, { status: 'none', reason: null, since: null, phase: null, group: null });
+            assert.deepStrictEqual(resumed.pause, { status: 'none', reason: null, since: null, phase: null, group: null, resumeAt: null });
         });
     });
 
@@ -191,6 +191,24 @@ describe('apra-fleet-p2to.2.1: POST /pause and /resume routes + state.pause wiri
             assert.strictEqual(statusCode, 200);
             const state = await getState(port);
             assert.strictEqual(state.pause.status, 'paused', 'an idle workflow has zero in-flight activities, so the pause engages right away');
+        });
+    });
+
+    test('apra-fleet-hzeb.3: a script-initiated requestPause(reason, {resumeAt}) exposes pause.resumeAt via GET /state, and it is cleared back to null on resumed', async () => {
+        const wf = new FleetWorkflow(createGatedFleetApi());
+        const server = createDashboardViewer(wf, { port: 0, name: 'Pause ResumeAt Test' });
+        await withServer(server, async (port) => {
+            // Idle: engages right away, exactly like the existing idle-pause test.
+            wf.requestPause('usage limit hit', { resumeAt: '2099-01-01T00:00:00.000Z', source: 'usage_limit' });
+
+            const paused = await getState(port);
+            assert.strictEqual(paused.pause.status, 'paused');
+            assert.strictEqual(paused.pause.resumeAt, '2099-01-01T00:00:00.000Z', 'resumeAt from requestPause() must survive through to the paused dashboard state');
+
+            await wf.requestResume();
+            const resumed = await getState(port);
+            assert.strictEqual(resumed.pause.status, 'none');
+            assert.strictEqual(resumed.pause.resumeAt, null, 'resumeAt must be cleared back to null on resumed');
         });
     });
 
@@ -332,6 +350,23 @@ describe('apra-fleet-p2to.2.1: client-side Pause/Resume button + banner state ma
         assert.ok(!pauseBanner.innerHTML.includes('<script>alert(1)</script>'), 'a malicious pause reason must render inert, not as a live <script> tag');
         assert.ok(pauseBanner.innerHTML.includes(escapeHtml('<script>alert(1)</script>')));
         assert.ok(pauseBanner.innerHTML.includes(escapeHtml('build<x>')));
+    });
+
+    test("apra-fleet-hzeb.3: status 'paused' with a resumeAt renders 'Expected resume:' in the banner, HTML-escaped; absent when resumeAt is null", () => {
+        const since = new Date('2026-08-11T05:00:00.000Z').toISOString();
+        const withResumeAt = renderPause({
+            status: 'running',
+            pause: { status: 'paused', reason: 'usage limit hit', since, phase: null, group: null, resumeAt: '<b>2099</b>' }
+        });
+        assert.ok(withResumeAt.pauseBanner.innerHTML.includes('Expected resume:'));
+        assert.ok(!withResumeAt.pauseBanner.innerHTML.includes('<b>2099</b>'), 'a malicious resumeAt must render inert');
+        assert.ok(withResumeAt.pauseBanner.innerHTML.includes(escapeHtml('<b>2099</b>')));
+
+        const withoutResumeAt = renderPause({
+            status: 'running',
+            pause: { status: 'paused', reason: 'r', since, phase: null, group: null, resumeAt: null }
+        });
+        assert.ok(!withoutResumeAt.pauseBanner.innerHTML.includes('Expected resume:'));
     });
 
     test('resuming (paused -> none) hides the banner again and re-enables the Pause label', () => {

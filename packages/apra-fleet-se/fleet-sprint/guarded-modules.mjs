@@ -348,6 +348,11 @@ export const GUARDED_MODULES = [
     'shell-command-guard.mjs',
     'sprint-lock.mjs',
     'sprint-progress.mjs',
+    // apra-fleet-hzeb.4.2: the usage-limit pause/resume/re-probe controller.
+    // It carries ONE real agent() re-probe dispatch, which names its member
+    // explicitly, so it scans clean under dispatch-safety-guard and is
+    // registered here (not exempted) to keep that live dispatch site guarded.
+    'usage-limit-controller.mjs',
     'unbracketed-push-guard.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',

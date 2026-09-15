@@ -4,6 +4,8 @@ import {
     isAuthDispatchError,
     isPostDispatchSyncFailure,
     isInfraDispatchFailure,
+    isUsageLimitDispatchError,
+    usageLimitOf,
 } from './errors.mjs';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, WorkflowError } from '@apralabs/apra-fleet-workflow';
 
@@ -669,6 +671,21 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
         }
     };
 
+    // A usage-limit re-dispatch after the controller reported the member is
+    // usable again (apra-fleet-hzeb.4.2). It mirrors runAttempt's resume path:
+    // it runs the resume dispatch's own pre-dispatch steps, then the resume
+    // dispatch itself, so a role with a resume ladder continues the SAME member
+    // session it hit the limit on (warm context kept) rather than starting a
+    // fresh one. Only reached when the failing attempt reported a sessionId and
+    // the role actually has a max-turns resume secondary; otherwise the caller
+    // re-runs runAttempt fresh.
+    const redispatchViaUsageLimitResume = async (attemptOpts) => {
+        const secondary = policy.secondary;
+        const shortCircuit = await runPreDispatchSteps(ctx, secondary, member, opts, { resumeAttempt: 1 });
+        if (shortCircuit) return shortCircuit.value;
+        return runDispatch(secondary, opts.resumePrompt ?? opts.prompt, opts.resumeLabel ?? opts.label, attemptOpts, { resumeAttempt: 1 });
+    };
+
     let lastErr = null;
     let value;
     let ok = false;
@@ -686,9 +703,15 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // Set when an attempt's escalating resume ladder ran out under a policy
     // that treats that as terminal. Reset per attempt.
     let resumeLadderSpent = false;
+    // apra-fleet-hzeb.4.2: pending usage-limit re-dispatch mode for the NEXT
+    // loop pass. null = normal attempt; 'fresh' = re-run runAttempt after a
+    // paused-then-resumed member; 'resume' = continue the SAME session via the
+    // resume ladder. A usage-limit re-dispatch does NOT consume a ladder
+    // attempt (see the hook below), so it also skips the retry backoff.
+    let usageLimitRedispatch = null;
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
-        if (backoffMs && backoffMs[attempt - 1] > 0) {
+        if (!usageLimitRedispatch && backoffMs && backoffMs[attempt - 1] > 0) {
             ctx.log(
                 `${roleLabel} dispatch: waiting ${backoffMs[attempt - 1] / 1000}s before retry attempt ` +
                 `${attempt}/${backoffMs.length}...`
@@ -715,7 +738,17 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                     : {}),
                 ...(opts.attemptOptions ? opts.attemptOptions({ attempt }) : {}),
             };
-            value = await runAttempt(attemptOpts);
+            // A usage-limit resume re-dispatch continues the same session via
+            // the resume ladder; every other pass (including a 'fresh'
+            // usage-limit re-dispatch) is a normal full attempt. Read and clear
+            // the mode BEFORE the await so a failing re-dispatch never leaves a
+            // stale mode armed for a later attempt -- the hook re-sets it if the
+            // re-dispatch hits the limit again.
+            const redispatchMode = usageLimitRedispatch;
+            usageLimitRedispatch = null;
+            value = redispatchMode === 'resume'
+                ? await redispatchViaUsageLimitResume(attemptOpts)
+                : await runAttempt(attemptOpts);
             if (opts.afterAttempt) await opts.afterAttempt(value);
             // A postResult step may REJECT the result (the reviewer's
             // contract guard: a CHANGES_NEEDED verdict with nothing for the
@@ -774,6 +807,53 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // pre-dispatch sync. Any other error re-arms it.
             if (!completedButSyncFailed && retry.skipPreDispatchSyncOnNoMutation) {
                 skipPreDispatchSyncNext = ctx.isNoMutationDispatchFailure(err);
+            }
+
+            // Usage-limit pause/resume (apra-fleet-hzeb.4.2). A provider
+            // rate/usage limit is neither a failure of this role nor something a
+            // retry ladder can out-wait on its own budget -- it needs a real
+            // wall-clock wait until the quota window resets. When the policy
+            // arms usageLimitPause and the runner wired an onUsageLimit
+            // controller, hand the signal to it: it pauses the whole run through
+            // the engine's cooperative pause primitive (releasing reservations,
+            // showing the resume time on the dashboard), waits, re-probes the
+            // member on a bounded backoff, and reports whether the member is
+            // usable again. A resumed member RE-DISPATCHES this role WITHOUT
+            // consuming one of the ladder's real attempts; an exhausted wait
+            // gives up with the controller's typed UsageLimitWaitExhaustedError
+            // (registered in abort.mjs's isTypedAbortError, so it routes through
+            // finalizeAbort()/an [ABORTED] PR like every other terminal abort).
+            //
+            // This runs OUTSIDE any withGitSync bracket: the failing dispatch's
+            // bracket has fully unwound by the time its error reaches this catch
+            // (openSyncBracketCount is back to 0), which is what lets the
+            // engine's clean-state pause guard actually engage the pause -- a
+            // pause requested mid-bracket would be deferred forever.
+            if (!completedButSyncFailed && retry.usageLimitPause
+                && isUsageLimitDispatchError(err) && typeof ctx.onUsageLimit === 'function') {
+                const failedSessionId = (err.details && err.details.sessionId) || null;
+                const outcome = await ctx.onUsageLimit({
+                    member,
+                    roleLabel,
+                    signal: usageLimitOf(err),
+                    sessionId: failedSessionId,
+                    tier: resolveModelTier(ctx, policy.model, bindings),
+                });
+                if (outcome && outcome.resumed) {
+                    // The member is usable again: re-dispatch this role without
+                    // charging a ladder attempt. Prefer resuming the reported
+                    // session when the role actually HAS a resume ladder (warm
+                    // context kept); otherwise re-dispatch fresh.
+                    const canResumeSession = Boolean(failedSessionId) && retry.resumeAttempts > 0
+                        && policy.secondary && policy.secondary.kind === 'max-turns-resume';
+                    usageLimitRedispatch = canResumeSession ? 'resume' : 'fresh';
+                    attempt -= 1;
+                    continue;
+                }
+                // The controller waited/re-probed to its budget and the member
+                // is still limited: its typed give-up error is this ladder's
+                // last word and propagates straight out (no degrade).
+                throw (outcome && outcome.error) || err;
             }
 
             // Auth/workspace-trust failures are deterministic -- no retry can

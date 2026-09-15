@@ -482,6 +482,86 @@ export function isInfraDispatchFailure(err) {
 }
 
 // ---------------------------------------------------------------------------
+// apra-fleet-hzeb.4.1 -- usage-limit dispatch classification
+// ---------------------------------------------------------------------------
+//
+// execute_prompt relays a provider's usage-limit signal (e.g. Claude's 429
+// classified via detectUsageLimit) as a structured `details.reason ===
+// 'usage_limit'` on the AgentDispatchError it throws (src/tools/execute-
+// prompt.ts), mirroring the existing `details.reason` classifiers above
+// (isInfraDispatchFailure, isNonRetryableDispatchError). This is the ONLY
+// vocabulary a caller may key on -- NEVER regex on message text, since a
+// usage-limit message is provider-specific prose that can drift or be
+// localized (see isInfraDispatchFailure's own header for the same
+// discipline).
+export const USAGE_LIMIT_DISPATCH_REASON = 'usage_limit';
+
+/**
+ * True when a dispatch error is a provider usage-limit hit, keyed off the
+ * server's structured `details.reason` -- never on message text.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isUsageLimitDispatchError(err) {
+    return err?.details?.reason === USAGE_LIMIT_DISPATCH_REASON;
+}
+
+/**
+ * The provider's usage-limit signal object (see providers/provider.ts's
+ * UsageLimitSignal contract) carried on a usage-limit dispatch error, or
+ * `null` when the error carries none (e.g. it is not a usage-limit error at
+ * all, or a provider that classified the reason but supplied no signal
+ * detail).
+ * @param {unknown} err
+ * @returns {object|null}
+ */
+export function usageLimitOf(err) {
+    return err?.details?.usageLimit ?? null;
+}
+
+/**
+ * Thrown by the fleet-sprint usage-limit pause/resume controller
+ * (apra-fleet-hzeb.4.2, the follow-up to this task) when a dispatch has been
+ * paused and re-probed until its budget (USAGE_LIMIT_MAX_WAIT_S /
+ * USAGE_LIMIT_MAX_REPROBES in role-policies.mjs) is exhausted with no
+ * successful resume. Registered in isTypedAbortError() (abort.mjs) so a
+ * give-up routes through finalizeAbort() / an [ABORTED] PR, exactly like
+ * every other unrecoverable sprint-abort class in that curated list -- a
+ * member permanently rate-limited past every allowed wait/reprobe is exactly
+ * as terminal as a stalled sprint or an unmergeable divergence.
+ *
+ * @property {string|null} member - the member whose dispatch hit the usage limit
+ * @property {string|null} roleLabel - the role/label of the dispatch that was paused
+ * @property {number|null} firstHitAt - epoch ms of the first usage-limit hit
+ * @property {number|null} lastResumeAt - epoch ms of the provider's last reported resumeAt
+ * @property {number} reprobes - how many re-probe attempts were made before giving up
+ * @property {number} waitedMs - total wall-clock time spent paused across all reprobes
+ */
+export class UsageLimitWaitExhaustedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, roleLabel?: string|null, firstHitAt?: number|null, lastResumeAt?: number|null, reprobes?: number, waitedMs?: number, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const {
+            member = null, roleLabel = null, firstHitAt = null, lastResumeAt = null,
+            reprobes = 0, waitedMs = 0, details, cause,
+        } = opts;
+        super(message, {
+            code: 'USAGE_LIMIT_WAIT_EXHAUSTED',
+            details: { member, roleLabel, firstHitAt, lastResumeAt, reprobes, waitedMs, ...details },
+            cause,
+        });
+        this.member = member;
+        this.roleLabel = roleLabel;
+        this.firstHitAt = firstHitAt;
+        this.lastResumeAt = lastResumeAt;
+        this.reprobes = reprobes;
+        this.waitedMs = waitedMs;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // apra-fleet-eft.75.2 -- sprint-launch machine-local pidfile mutex
 // ---------------------------------------------------------------------------
 

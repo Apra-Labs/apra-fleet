@@ -155,7 +155,7 @@ describe('(1) Phase 4 was move-only: no file in the intersection is a facade bre
 
         // Every file must land in exactly one known class; an unknown label
         // would mean the classifier silently grew a hole.
-        const known = new Set(['NEW', 'INTACT', 'ANCHOR_DESYNC']);
+        const known = new Set(['NEW', 'INTACT', 'ANCHOR_DESYNC', 'BIN_ENTRYPOINT_SKIP']);
         assert.deepEqual(results.filter((r) => !known.has(r.klass)).map((r) => r.file), []);
     });
 
@@ -336,6 +336,45 @@ describe('(3) falsification -- the gate is not vacuous', () => {
         } finally {
             fs.rmSync(canary, { force: true });
         }
+    });
+
+    test('bin/ entrypoints are excluded from the dynamic probe before any git or execution work happens', () => {
+        // apra-fleet-hzeb.9: a self-executing CLI launcher (bin/cli.mjs,
+        // bin/serve.mjs) runs its own main() for real when the probe copies
+        // it and runs `node --test` on the copy, because process.argv[1]
+        // resolves to the probe copy's own module URL -- the same shape a
+        // direct CLI launch has. apra-fleet-hzeb.4.2 patched cli.mjs's own
+        // isMainModule() to opt out via a NODE_TEST_CONTEXT check, but that
+        // fix is per-file: any OTHER bin/ entrypoint that lacks the same
+        // guard (bin/serve.mjs today; any future one) would still trip a
+        // false-positive UNEXPLAINED/FACADE_BREAK the moment it entered the
+        // Phase-4 diff intersection. probeFile must recognize the bin/
+        // shape generically and skip dynamic execution for it, independent
+        // of whether that particular file happens to carry a guard.
+        //
+        // Passing a BASE sha that does not resolve and a file that does not
+        // exist on disk proves the bin/ check runs BEFORE existsAtBase's
+        // `git cat-file` call and before any `node --test` spawn -- if it
+        // ran later, this call would throw or hang instead of returning
+        // cleanly.
+        const result = probeFile('0000000000000000000000000000000000000000', 'packages/apra-fleet-se/bin/does-not-exist-anywhere.mjs');
+        assert.equal(result.klass, 'BIN_ENTRYPOINT_SKIP', `expected BIN_ENTRYPOINT_SKIP, got ${result.klass}: ${result.detail}`);
+    });
+
+    test('regression pin: bin/serve.mjs -- a real self-executing entrypoint with no NODE_TEST_CONTEXT guard of its own -- is skipped, not misclassified UNEXPLAINED', { timeout: PROBE_BUDGET_MS }, () => {
+        // The concrete proof that the hzeb.9 hardening is generic and not
+        // merely a restatement of cli.mjs's own hzeb.4.2 fix: bin/serve.mjs
+        // has the identical isMainModule()-at-module-scope shape as cli.mjs
+        // did before hzeb.4.2, but has never been patched with a
+        // NODE_TEST_CONTEXT guard. If probeFile ever executed it, an
+        // unqualified `node --test` run would self-invoke serve.mjs's own
+        // main() and this pin would need to account for whatever that
+        // produces; instead it must never reach execution at all.
+        const src = fs.readFileSync(path.join(SE_DIR, 'bin/serve.mjs'), 'utf8');
+        assert.doesNotMatch(src, /NODE_TEST_CONTEXT/, 'this pin assumes bin/serve.mjs has no probe-awareness guard of its own; re-anchor if one was added');
+        const base = discoverBase();
+        const result = probeFile(base, 'packages/apra-fleet-se/bin/serve.mjs', PROBE_BUDGET_MS);
+        assert.equal(result.klass, 'BIN_ENTRYPOINT_SKIP', `expected BIN_ENTRYPOINT_SKIP, got ${result.klass}: ${result.detail}`);
     });
 
     test('dropping one facade re-export really does produce a FACADE_BREAK classification end to end, and the tracked tree is untouched', { timeout: PROBE_BUDGET_MS }, () => {

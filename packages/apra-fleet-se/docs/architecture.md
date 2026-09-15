@@ -26,7 +26,8 @@ truth for what a caller (the CLI, or a test bypassing the CLI and calling
 - Rejects any key not in `KNOWN_ARG_KEYS` (`target_issues`, `target_issue`
   [legacy single-issue form], `members`, `branch`, `base_branch`, `goal`,
   `max_cycles`, `requirementsFile`, `roleMap`, `budget`,
-  `dispatch_timeout_s`, `serviceUrl`, `run_id`, `assignee`,
+  `dispatch_timeout_s`, `usage_limit_max_wait_s`,
+  `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `assignee`,
   `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`,
   `azdevops_pat_secret_name`, `callTool`). Several of these have no CLI flag
   and are programmatic/test-only -- see `docs/fleet-sprint-cli-contract.md`.
@@ -1381,6 +1382,46 @@ The approach was a strangler-fig extraction, not a rewrite:
   spread); every `budgets()` row keeps `maxTotalS >= timeoutS`, so an armed
   watchdog's hard elapsed ceiling can never end up shorter than its own
   per-turn timeout.
+- **A provider usage/rate limit pauses the run rather than failing the
+  dispatch.** When a role dispatch fails with a usage-limit signal
+  (`execute_prompt` relays the provider's `detectUsageLimit()` result as an
+  `AgentDispatchError` whose `details.reason === 'usage_limit'`, carrying the
+  `UsageLimitSignal` on `details.usageLimit`) and the role's policy sets
+  `retry.usageLimitPause`, `dispatchRole` hands the signal to
+  `ctx.onUsageLimit` -- the controller built by
+  `createUsageLimitPauseController` (`usage-limit-controller.mjs`) and wired in
+  `runner.js`. It uses the engine's **cooperative pause** primitive
+  (`requestPause`/`requestResume`, exposed on the script context) to park the
+  whole run until the provider's own `resumeAt` (never a locally invented 1h
+  window -- the guessed fallback lives in the provider adapter's signal),
+  clamped to `[USAGE_LIMIT_MIN_WAIT_S, USAGE_LIMIT_MAX_WAIT_S]`. Pausing
+  releases member reservations, the watchdog reads `PAUSED`, and the dashboard
+  shows the expected resume time. On wake, `requestResume`'s pre-resume hook
+  performs the **resume re-sync** (member re-reserve/resync as a hard barrier)
+  before the controller runs ONE real re-probe dispatch to the same member; a
+  fresh `usage_limit` re-pauses on a bounded reprobe backoff ladder, any other
+  probe outcome proceeds to let the real re-dispatch be the final test. A
+  resumed member re-dispatches the role **without consuming a retry attempt**;
+  a **retry budget** exhausted across `USAGE_LIMIT_MAX_WAIT_S` /
+  `USAGE_LIMIT_MAX_REPROBES` (in `role-policies.mjs`'s
+  `USAGE_LIMIT_BUDGET_DEFAULTS`; the wait and reprobe caps are CLI-overridable
+  via `usage_limit_max_wait_s` / `usage_limit_max_reprobes`) gives up with a
+  typed `UsageLimitWaitExhaustedError`, which `isTypedAbortError` routes
+  through `finalizeAbort()`/an `[ABORTED]` PR like every other terminal abort.
+  A cooperative stop (`requestStop` -> `CancelledError`) taken mid-pause is
+  never swallowed by the probe, so operator stop still tears the run down. The
+  hook fires strictly *outside* any git-sync bracket (`openSyncBracketCount ===
+  0`), which is what lets the clean-state pause guard engage the pause instead
+  of deferring it. Two known simplifications: (1) **the pause is sprint-wide,
+  not per-member** -- only the rate-limited member is re-probed while the run
+  is paused; every other member's dispatches are gated by the engine-level
+  pause rather than being individually probed for their own usage limit. (2)
+  **a pause longer than ~30 minutes can let the cloud idle manager
+  (`src/services/cloud/idle-manager.ts`, `DEFAULT_IDLE_TIMEOUT_MS`) suspend a
+  cloud member's VM** while it sits reservation-released during the pause;
+  `ensureCloudReady` (`src/tools/execute-prompt.ts`) transparently restarts it
+  on the probe dispatch that follows `requestResume`, so this is logged but
+  has no special handling in the controller itself.
 - **Pre-sprint validation refusals are typed.** `PreSprintValidationError`
   (a `WorkflowError` subclass, `errors.mjs`) replaces an untyped `Error`
   distinguishable only by prose with a `reason` discriminator drawn from a

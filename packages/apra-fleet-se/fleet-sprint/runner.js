@@ -120,7 +120,12 @@ import { createSyncBrackets, createGitSync } from './git-sync.mjs';
 import { dispatchRole, TURN_BASES } from './dispatch-role.mjs';
 // The policy TABLE the engine executes. runner.js reads it only to state, in a
 // log line, the bound the row itself sets -- never to re-implement a ladder.
-import { policyFor } from './role-policies.mjs';
+// USAGE_LIMIT_BUDGET_DEFAULTS is the usage-limit controller's budget row,
+// recorded as data in the same table (apra-fleet-hzeb.4.1/.4.2).
+import { policyFor, USAGE_LIMIT_BUDGET_DEFAULTS } from './role-policies.mjs';
+// apra-fleet-hzeb.4.2: the usage-limit pause/resume/re-probe controller wired
+// into the dispatchRole engine as ctx.onUsageLimit below.
+import { createUsageLimitPauseController } from './usage-limit-controller.mjs';
 // apra-fleet-3swo.6.2: the first two of runSprintCycle's twelve phase()
 // boundaries, sliced into their own modules under ./phases/. Each takes ONE
 // explicit state argument instead of closing over runSprintCycle's locals; the
@@ -768,6 +773,13 @@ export async function resolveSettleShell({ args, member, log = () => {}, sprintS
 // that note before proposing an extraction of anything in the prelude.
 async function runSprintCycle(context) {
     const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget, setPauseGuard } = context;
+    // apra-fleet-hzeb.3/.4.2: the engine's script-facing cooperative pause/
+    // resume primitives, used by the usage-limit controller below. Absent for
+    // direct/legacy runSprintCycle() callers that never go through
+    // WorkflowEngine.executeFile() (the same shape as setPauseGuard above); the
+    // controller is only wired when BOTH are present, so those callers keep the
+    // pre-feature behaviour (a usage-limit error falls through the retry ladder).
+    const { requestPause, requestResume } = context;
 
     // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
     // must result in zero fleet dispatches. This must happen early so the
@@ -1325,6 +1337,30 @@ async function runSprintCycle(context) {
     // withGitSync member, pushCode, dispatch thunk, options.
     const withGitSync = (member, pushCode, dispatchFn, options) => gitSync.withGitSync(member, pushCode, dispatchFn, options);
 
+    // --- usage-limit pause/resume controller (apra-fleet-hzeb.4.2) -----------
+    // The budgets the controller reads: role-policies.mjs's frozen defaults,
+    // with the two CLI-overridable values (usage_limit_max_wait_s /
+    // usage_limit_max_reprobes) applied when provided. Kept alongside the
+    // dispatch budgets, per USAGE_LIMIT_BUDGET_DEFAULTS' own wiring note.
+    const usageLimitBudgets = {
+        ...USAGE_LIMIT_BUDGET_DEFAULTS,
+        ...(validated.usageLimitMaxWaitS !== undefined ? { USAGE_LIMIT_MAX_WAIT_S: validated.usageLimitMaxWaitS } : {}),
+        ...(validated.usageLimitMaxReprobes !== undefined ? { USAGE_LIMIT_MAX_REPROBES: validated.usageLimitMaxReprobes } : {}),
+    };
+    // Only wired when the engine's cooperative pause/resume primitives are
+    // present (they are absent for direct/legacy runSprintCycle() callers).
+    // dispatch-role.mjs guards on `typeof ctx.onUsageLimit === 'function'`, so
+    // leaving it undefined preserves the pre-feature retry-ladder behaviour.
+    const onUsageLimit = (typeof requestPause === 'function' && typeof requestResume === 'function')
+        ? createUsageLimitPauseController({
+            requestPause,
+            requestResume,
+            agent,
+            log,
+            budgets: usageLimitBudgets,
+        })
+        : undefined;
+
     // --- dispatchRole engine context (apra-fleet-3swo.5.3) -------------------
     // Every runner-side primitive fleet-sprint/dispatch-role.mjs needs to run
     // a role's ladder out of role-policies.mjs's data table. INJECTED, never
@@ -1345,8 +1381,11 @@ async function runSprintCycle(context) {
         getMemberForRole,
         memberSessionGuard,
         onLlmAuthFailure,
+        // apra-fleet-hzeb.4.2: the usage-limit pause/resume/re-probe hook the
+        // engine arms for a role whose retry.usageLimitPause is set.
+        onUsageLimit,
         fixedRoleTier: FIXED_ROLE_TIER,
-        budgets: { DISPATCH_TIMEOUT_S, INTEG_MAX_TOTAL_S, REGRESSION_TEST_MAX_TOTAL_S },
+        budgets: { DISPATCH_TIMEOUT_S, INTEG_MAX_TOTAL_S, REGRESSION_TEST_MAX_TOTAL_S, ...usageLimitBudgets },
         schemas: {
             planReviewerVerdict,
             streakAssignment,

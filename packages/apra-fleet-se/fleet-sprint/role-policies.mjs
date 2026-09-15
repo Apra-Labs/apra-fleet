@@ -306,6 +306,18 @@ const WORKLIST_RESUME = { kind: 'worklist' };
 const roundSessionResume = (role) => ({ kind: 'round-session', role });
 
 const retry = (over) => ({
+    /**
+     * apra-fleet-hzeb.4.1: whether this ladder pauses (via the engine's
+     * usage-limit pause/resume primitive, hzeb.4.2 follow-up) on a
+     * usage-limit dispatch failure rather than treating it as an ordinary
+     * dispatch/infra failure. Defaults false and is set true EXPLICITLY on
+     * every one of the 13 roles below -- deliberately not hard-defaulted to
+     * true here, the same "no silent default" discipline `watchdog`/
+     * `noWatchdog` already apply (see requireReason above): a role that never
+     * declares it should fail this axis' shape check loudly rather than
+     * inherit a value nobody chose for it.
+     */
+    usageLimitPause: false,
     /** Dispatch attempts in the ladder, excluding any resume. */
     attempts: 1,
     /** Explicit backoff ladder in ms, when the role has one. */
@@ -610,6 +622,7 @@ const planner = policy('planner', {
     ),
     kbInjection: 'wrapper',
     retry: retry({
+        usageLimitPause: true,
         attempts: 5,
         backoffMs: [0, 5000, 15000, 30000, 60000],
         authSelfHeal: true,
@@ -659,6 +672,7 @@ const planReviewer = policy('plan-reviewer', {
     kbInjection: 'wrapper',
     retry: retry({
         attempts: 2,
+        usageLimitPause: true,
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
@@ -704,7 +718,7 @@ const scopedReplanPlanner = policy('scoped-replan-planner', {
     ),
     kbInjection: 'wrapper',
     // A single bounded attempt: no retry ladder and no resume of its own.
-    retry: retry({ attempts: 1, authSelfHeal: true }),
+    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true }),
     degrade: degrade({ kind: 'defer-to-next-cycle', rethrowsUnrecognisedErrors: false }),
     postResult: ['invalidate-beads-cache'],
 });
@@ -726,7 +740,7 @@ const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
         + 'safe non-approval rather than needing a second, independent kill-path.'
     ),
     kbInjection: 'wrapper',
-    retry: retry({ attempts: 1, authSelfHeal: true }),
+    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true }),
     degrade: degrade({ kind: 'non-approval', rethrowsUnrecognisedErrors: false }),
 });
 
@@ -752,7 +766,7 @@ const streakAssignment = policy('streak-assignment', {
         + 'Left disarmed: inherited, and lower-risk than the bracketed roles for that reason.'
     ),
     kbInjection: 'none',
-    retry: retry({ attempts: 1, authSelfHeal: true, semanticRepairReAsks: 1 }),
+    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true, semanticRepairReAsks: 1 }),
     degrade: degrade({
         kind: 'fallback-value',
         synthesized: { grouping: 'one-bead-per-streak' },
@@ -788,6 +802,7 @@ const doer = policy('doer', {
     kbInjection: 'prompt-builder',
     retry: retry({
         attempts: 2,
+        usageLimitPause: true,
         authSelfHeal: true,
         abortOnNonRetryable: true,
         skipRedispatchOnPostDispatchSyncFailure: true,
@@ -844,6 +859,7 @@ const reviewer = policy('reviewer', {
     kbInjection: 'prompt-builder',
     retry: retry({
         attempts: 2,
+        usageLimitPause: true,
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
@@ -911,6 +927,7 @@ const finalReview = policy('final-review', {
     kbInjection: 'prompt-builder',
     retry: retry({
         attempts: 2,
+        usageLimitPause: true,
         authSelfHeal: true,
         // A healed attempt already produced a verdict; running the generic
         // retry as well would fire a second full review and discard it.
@@ -978,6 +995,7 @@ const deployer = policy('deployer', {
     kbInjection: 'wrapper',
     retry: retry({
         attempts: 1,
+        usageLimitPause: true,
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
@@ -1041,6 +1059,7 @@ const integTestRunner = policy('integ-test-runner', {
     kbInjection: 'wrapper',
     retry: retry({
         attempts: 1,
+        usageLimitPause: true,
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
@@ -1110,6 +1129,7 @@ const regressionTestRunner = policy('regression-test-runner', {
     kbInjection: 'wrapper',
     retry: retry({
         attempts: 1,
+        usageLimitPause: true,
         // The phase never re-dispatches, and it says so explicitly: a
         // post-dispatch sync failure is classified into its own degrade
         // summary (the carry-over beads it filed may be local-only) rather
@@ -1189,6 +1209,7 @@ const harvester = policy('harvester', {
     kbInjection: 'wrapper',
     retry: retry({
         attempts: 1,
+        usageLimitPause: true,
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
@@ -1206,6 +1227,51 @@ harvester.secondary = secondary(harvester, 'harvester', 'max-turns-resume', {
     maxTurns: turns('HARVESTER_MAX_TURNS', 2, 500),
     resumeArg: SAME_SESSION_RESUME,
     preDispatch: ['kill-stale-session'],
+});
+
+// -----------------------------------------------------------------------------
+// Usage-limit pause/resume engine budgets (apra-fleet-hzeb.4.1)
+// -----------------------------------------------------------------------------
+//
+// The classifier/budget half of fleet-sprint's usage-limit pause/resume
+// feature: every role above now carries retry.usageLimitPause === true, and
+// errors.mjs records the matching vocabulary (isUsageLimitDispatchError,
+// usageLimitOf, UsageLimitWaitExhaustedError -- the latter registered in
+// abort.mjs's isTypedAbortError so an exhausted wait routes through
+// finalizeAbort()/an [ABORTED] PR like every other typed sprint abort). The
+// pause/reprobe CONTROLLER that actually reads these budgets and the
+// dispatchRole hook that arms it are the follow-up task (apra-fleet-hzeb.4.2)
+// -- this table only RECORDS the budgets as data, the same way every other
+// engine budget in this file is recorded rather than hard-coded at a call
+// site.
+//
+// USAGE_LIMIT_MAX_WAIT_S is the one CLI-overridable value here (arg
+// `usage_limit_max_wait_s`, seconds). Wiring that CLI override -- and these
+// defaults generally -- into runner.js's dispatchCtx.budgets (alongside
+// DISPATCH_TIMEOUT_S et al.) is part of the hzeb.4.2 controller bring-up, not
+// this task: this task's own scope note names runner.js's ONLY change as
+// registering UsageLimitWaitExhaustedError in isTypedAbortError. Until 4.2
+// wires it through, this exported default is the value in effect.
+export const USAGE_LIMIT_BUDGET_DEFAULTS = freezeDeep({
+    /**
+     * Total wall-clock seconds a single dispatch may stay paused across all
+     * reprobes before giving up (UsageLimitWaitExhaustedError). Default 6h.
+     * Arg: usage_limit_max_wait_s.
+     */
+    USAGE_LIMIT_MAX_WAIT_S: 6 * 60 * 60,
+    /** Max reprobe attempts allowed before giving up, independent of elapsed wait. */
+    USAGE_LIMIT_MAX_REPROBES: 6,
+    /**
+     * Floor on any single wait -- never reprobe sooner than this even when a
+     * provider's resumeAt is imminent.
+     */
+    USAGE_LIMIT_MIN_WAIT_S: 60,
+    /**
+     * Reprobe backoff ladder in ms, one entry per reprobe attempt (index 0 is
+     * the first reprobe): 15m, 30m, then 60m for every attempt after that, up
+     * to USAGE_LIMIT_MAX_REPROBES entries.
+     */
+    USAGE_LIMIT_REPROBE_BACKOFF_MS: [15, 30, 60, 60, 60, 60].map((m) => m * 60 * 1000),
 });
 
 /**

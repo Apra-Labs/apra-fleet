@@ -25,7 +25,10 @@
 // resulting runner.js <-> abort.mjs cycle is safe because every use is inside
 // a function body, never at module-evaluation time.
 import { CommandError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError } from './errors.mjs';
+import {
+    SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError,
+    UsageLimitWaitExhaustedError,
+} from './errors.mjs';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resolveProvider, capabilities as vcsCapabilities } from './vcs-module.mjs';
 import { raiseVcsPrForMember, PR_SKIPPED_NO_MCP_CLIENT } from './vcs-auth.mjs';
@@ -208,6 +211,12 @@ export async function appendRejectedFindingToParentNotes({ command, member, pare
 //     catch below already calls resolveTerminalReason()/captureDoltConflictDump()
 //     precisely to report them as the distinct BEADS_SYNC_CONFLICT terminal
 //     state, which is dead code unless they reach it;
+//   - UsageLimitWaitExhaustedError (apra-fleet-hzeb.4.1/.4.2): the usage-limit
+//     pause/reprobe controller's own give-up error, thrown once its budget
+//     (role-policies.mjs's USAGE_LIMIT_BUDGET_DEFAULTS) is spent with no
+//     successful resume. A member still rate-limited past every allowed wait
+//     is as terminal as a stalled sprint -- no retry or later phase recovers it
+//     either -- so it gets the same finalizeAbort()/[ABORTED]-PR treatment;
 //   - the plain `Error` pre-sprint validation failures, which are not
 //     WorkflowError subclasses and are identified by the stable
 //     'Pre-sprint validation failed:' message prefix every such throw site
@@ -237,6 +246,7 @@ export function isTypedAbortError(err) {
     if (err instanceof ReviewerContractViolationError) return true;
     if (err instanceof BudgetExceededError) return true;
     if (err instanceof GitDivergedError) return true;
+    if (err instanceof UsageLimitWaitExhaustedError) return true;
     // Bare DoltDivergedError, or one wrapped inside a PostDispatchSyncError.
     if (findDoltDivergedCause(err)) return true;
     return typeof err.message === 'string' && err.message.startsWith('Pre-sprint validation failed:');
