@@ -584,18 +584,3 @@ test('repair() with no injected command() reports not-configured rather than pre
     assert.match(result.escalation, /not-configured/);
 });
 
-test('repair() runs the real deterministic settle: a wedged clone is closed with no ladder, no tier, no agent', async () => {
-    // The operator/tool entry point onto the SAME settleDoltConflicts() both
-    // divergence terminals use. An injected settle stand-in keeps this a pure
-    // wiring test (dolt-settle.test.mjs owns settle's own mechanics).
-    const { command } = makeCommandMock({});
-    let invoked = 0;
-    const settle = async () => { invoked += 1; return { ok: true, resolvedTables: ['issues'], warnings: [], doltVersionUsed: '2.2.0' }; };
-
-    const result = await DoltSync.repair('local', { command, settle });
-    assert.equal(result.repaired, true);
-    assert.equal(invoked, 1);
-    assert.deepEqual(result.result.resolvedTables, ['issues']);
-    assert.equal(result.tier, undefined, 'there are no recovery tiers any more');
-    assert.equal(DoltSync.capabilities().supportsRepair, true);
-});

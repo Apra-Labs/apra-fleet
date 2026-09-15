@@ -153,9 +153,10 @@ test('a pull divergence with no settle wired, or with a settle that fails, still
 
 test('repair() runs settle, not a ladder, and reports the settled tables', async () => {
     const { command } = makeQueuedCommand({});
-    const { settle } = fakeSettle({ resolvedTables: ['issues'] });
+    const { settle, invocations } = fakeSettle({ resolvedTables: ['issues'] });
     const result = await repair('local', { command, settle });
     assert.equal(result.repaired, true);
+    assert.equal(invocations.length, 1, 'settle called exactly once');
     assert.deepEqual(result.result.resolvedTables, ['issues']);
     assert.equal(result.tier, undefined, 'there are no tiers any more');
 });
