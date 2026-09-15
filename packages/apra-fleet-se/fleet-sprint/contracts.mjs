@@ -286,7 +286,7 @@ export function assertVersionPin(role, schema, expectedMajor) {
         // agent; it must name the package whose vendored schema drifted (docs/generic-engine-boundary.md).
         throw new Error(
             `[contracts] Version-pin mismatch for role "${role}": this module was written against ` +
-                `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` +
+                `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` + // shell-guard-allow: "$id" here and on the next line is the JSON Schema $id property name (schema.$id), not a shell variable expansion -- this text is a thrown JS Error, never dispatched as a command string.
                 `${JSON.stringify(schema && schema.$id)}. A packages/apra-fleet-se/apra-pm package update changed this ` +
                 `role's contract -- update contracts.mjs (and re-verify every call site that consumes ` +
                 `this schema) before accepting the new vendored version.`,
@@ -426,6 +426,47 @@ const FALLBACK_planReviewerVerdict = {
     properties: {
         verdict: { type: 'string', enum: ['APPROVED', 'CHANGES_NEEDED'] },
         notes: { type: 'string' },
+        // apra-fleet-3swo.7.8: optional, deliberately NOT in `required` below
+        // -- mirrors packages/apra-fleet-se/apra-pm/agents/schemas/plan-reviewer-output.json.
+        // Machine-readable per-bead findings, so a CHANGES_NEEDED verdict can
+        // be routed to the beads it concerns WITHOUT scanning free-text notes
+        // for literal bead ids (the job extractContestedBeadIds does today in
+        // fleet-sprint/newtask-text.mjs; retiring that scraper is a separate
+        // task). An EMPTY array is meaningful -- it is the explicit
+        // "plan-wide objection, no individual bead named" signal, which is the
+        // same thing the prose scan expressed by matching no id. An ABSENT
+        // field is schema-valid and means "this verdict predates the findings
+        // contract", so the consumer may still fall back to notes for one
+        // release; keeping it out of `required` is what makes that fallback
+        // window possible.
+        findings: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    kind: {
+                        type: 'string',
+                        enum: [
+                            'coverage',
+                            'missing_test_task',
+                            'acceptance_criteria',
+                            'task_size',
+                            'dependency_wiring',
+                            'scope_creep',
+                            'duplicate_work',
+                            'feasibility',
+                            'ready_work',
+                            'model_metadata',
+                            'lane_cohesion',
+                            'other',
+                        ],
+                    },
+                    detail: { type: 'string', minLength: 1 },
+                },
+                required: ['id', 'kind', 'detail'],
+            },
+        },
         taskAssignments: { type: 'array', items: taskAssignmentSchema },
     },
     required: ['verdict', 'notes', 'taskAssignments'],

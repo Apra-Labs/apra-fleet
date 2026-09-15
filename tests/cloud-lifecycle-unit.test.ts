@@ -20,10 +20,67 @@ const { mockGetInstanceState, mockStartInstance, mockWaitForRunning, mockGetPubl
   mockStartInstance: vi.fn().mockResolvedValue(undefined),
   mockWaitForRunning: vi.fn().mockResolvedValue(undefined),
   mockGetPublicIp: vi.fn().mockResolvedValue('1.2.3.4'),
-  mockProvisionAuth: vi.fn().mockResolvedValue('✅ auth provisioned'),
-  mockProvisionVcsAuth: vi.fn().mockResolvedValue('✅ vcs auth provisioned'),
+  mockProvisionAuth: vi.fn(),
+  mockProvisionVcsAuth: vi.fn(),
   mockCreateConnection: vi.fn(),
 }));
+
+// ---------------------------------------------------------------------------
+// Provisioning result doubles
+//
+// provisionAuth/provisionVcsAuth return `{ text, structuredContent }`, NOT a
+// bare string: reProvisionAuth branches on `structuredContent.ok`. A double
+// that still resolves to a plain string makes the ok-read dereference
+// undefined, and reProvisionAuth's best-effort catch swallows the resulting
+// TypeError -- the suite stays green while the real code path throws on every
+// call. Keep these shapes in sync with ProvisionAuthResult
+// (src/tools/provision-auth.ts) and ProvisionVcsAuthResult
+// (src/tools/provision-vcs-auth.ts).
+// ---------------------------------------------------------------------------
+
+function authOk() {
+  return {
+    text: '[OK] Auth provisioned',
+    structuredContent: {
+      ok: true, reason: 'ok', provider: 'claude', credentialLabel: 'oauth',
+      expiresAt: null, verified: true, memberId: 'm1', memberName: 'Test Member',
+    },
+  };
+}
+
+function authFail() {
+  return {
+    text: '[FAIL] Auth deploy failed\nmore detail',
+    structuredContent: {
+      ok: false, reason: 'oauth_credential_write_failed', provider: 'claude',
+      credentialLabel: null, expiresAt: null, verified: false,
+      memberId: 'm1', memberName: 'Test Member',
+    },
+  };
+}
+
+function vcsOk() {
+  return {
+    text: '[OK] VCS auth provisioned',
+    structuredContent: {
+      ok: true, reason: 'ok', provider: 'github', credentialLabel: 'github',
+      scopeUrl: 'https://github.com', expiresAt: null, verified: true,
+      verificationSkipped: false, metadata: { token: 'ghs_****' },
+      expiryWarning: null, memberId: 'm1', memberName: 'Test Member',
+    },
+  };
+}
+
+function vcsFail() {
+  return {
+    text: '[FAIL] VCS auth deploy failed\nmore detail',
+    structuredContent: {
+      ok: false, reason: 'deploy_failed', provider: 'github', credentialLabel: 'github',
+      scopeUrl: null, expiresAt: null, verified: false, verificationSkipped: false,
+      metadata: null, expiryWarning: null, memberId: 'm1', memberName: 'Test Member',
+    },
+  };
+}
 
 vi.mock('../src/services/cloud/aws.js', () => ({
   awsProvider: {
@@ -97,8 +154,8 @@ describe('ensureCloudReady - F5 re-provisioning after start', () => {
     mockStartInstance.mockResolvedValue(undefined);
     mockWaitForRunning.mockResolvedValue(undefined);
     mockGetPublicIp.mockResolvedValue('1.2.3.4');
-    mockProvisionAuth.mockResolvedValue('✅ auth provisioned');
-    mockProvisionVcsAuth.mockResolvedValue('✅ vcs auth provisioned');
+    mockProvisionAuth.mockResolvedValue(authOk());
+    mockProvisionVcsAuth.mockResolvedValue(vcsOk());
     mockSshReady();
   });
 
@@ -226,5 +283,118 @@ describe('ensureCloudReady - F5 re-provisioning after start', () => {
     await ensureCloudReady(member);
 
     expect(mockInvalidatePreflightCache).not.toHaveBeenCalled();
+  });
+
+  // ---- structured ok/failed discriminator drives the warning log ----
+  // These are the tests that catch a stale string-shaped double: with the old
+  // `'auth provisioned'` mocks, reading `.ok` throws inside the best-effort
+  // catch, so the ok:true case emits a 'provision_llm_auth failed ... Cannot
+  // read properties of undefined' line and the ok:false case emits the wrong
+  // line -- both assertions below fail.
+
+  function captureStderr(): { lines: () => string[]; restore: () => void } {
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    return { lines: () => written, restore: () => spy.mockRestore() };
+  }
+
+  it('logs NO provisioning warning when both tools report structured ok:true', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    const member = makeStoppedCloudAgent({ gitAccess: 'push', gitRepos: ['Apra-Labs/apra-fleet'] });
+    addAgent(member);
+
+    const stderr = captureStderr();
+    try {
+      const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+      await ensureCloudReady(member);
+    } finally {
+      stderr.restore();
+    }
+
+    expect(mockProvisionAuth).toHaveBeenCalledOnce();
+    expect(mockProvisionVcsAuth).toHaveBeenCalledOnce();
+    const provisionLines = stderr.lines().filter(l => l.includes('provision_'));
+    expect(provisionLines).toEqual([]);
+  });
+
+  it('logs a warning carrying the summary line when provisionAuth reports ok:false', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    mockProvisionAuth.mockResolvedValue(authFail());
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
+
+    const stderr = captureStderr();
+    try {
+      const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+      await ensureCloudReady(member);
+    } finally {
+      stderr.restore();
+    }
+
+    const warnings = stderr.lines().filter(l => l.includes('provision_llm_auth'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('provision_llm_auth warning for ' + member.friendlyName);
+    expect(warnings[0]).toContain('[FAIL] Auth deploy failed');
+    // Only the first prose line is logged, never the trailing detail.
+    expect(warnings[0]).not.toContain('more detail');
+  });
+
+  it('logs a warning when provisionVcsAuth reports ok:false', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    mockProvisionVcsAuth.mockResolvedValue(vcsFail());
+    const member = makeStoppedCloudAgent({ gitAccess: 'push', gitRepos: ['Apra-Labs/apra-fleet'] });
+    addAgent(member);
+
+    const stderr = captureStderr();
+    try {
+      const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+      await ensureCloudReady(member);
+    } finally {
+      stderr.restore();
+    }
+
+    const warnings = stderr.lines().filter(l => l.includes('provision_vcs_auth'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('provision_vcs_auth warning for ' + member.friendlyName);
+    expect(warnings[0]).toContain('[FAIL] VCS auth deploy failed');
+  });
+
+  it('does not throw or warn when a result carries no structuredContent (legacy shape)', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    mockProvisionAuth.mockResolvedValue({ text: '[OK] Auth provisioned' });
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
+
+    const stderr = captureStderr();
+    try {
+      const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+      await expect(ensureCloudReady(member)).resolves.toBeDefined();
+    } finally {
+      stderr.restore();
+    }
+
+    expect(stderr.lines().filter(l => l.includes('provision_llm_auth'))).toEqual([]);
+  });
+
+  it('falls back to the [FAIL] prose marker when a result carries no structuredContent', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    mockProvisionAuth.mockResolvedValue({ text: '[FAIL] Auth deploy failed' });
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
+
+    const stderr = captureStderr();
+    try {
+      const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+      await ensureCloudReady(member);
+    } finally {
+      stderr.restore();
+    }
+
+    const warnings = stderr.lines().filter(l => l.includes('provision_llm_auth'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('provision_llm_auth warning for ' + member.friendlyName);
   });
 });

@@ -26,6 +26,8 @@ apra-fleet workflow fleet-sprint \
   [--viewer-port <port>]          # default 8080
   [--budget <usd>]                # default unlimited
   [--dispatch-timeout-s <s>]      # default 9000
+  [--usage-limit-max-wait-s <s>]  # usage-limit pause budget; default from role-policies
+  [--usage-limit-max-reprobes <n>]# usage-limit reprobe cap; default from role-policies
   [--sync]                        # synced-topology mode
 ```
 
@@ -55,6 +57,11 @@ on this list -- flags evolve and this skill can drift.
   or `@path/to/file.json`.
 - `--goal` controls which bead priorities are in scope for the run.
 - `--budget` caps total spend in USD; the run aborts when it is exhausted.
+- `--usage-limit-max-wait-s` / `--usage-limit-max-reprobes` bound how long a
+  dispatch that hit a provider usage/rate limit is paused (and re-probed on a
+  backoff ladder) before the run gives up with a typed abort. Both are
+  optional; omitted, the engine uses its own defaults. A resumed member
+  re-dispatches without consuming a retry attempt.
 
 ## Preconditions to check first
 

@@ -843,7 +843,12 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                 const sinceStr = pause.since ? new Date(pause.since).toLocaleTimeString([], { hour12: false }) : '-';
                 const reasonHtml = pause.reason ? \`<span>Reason: <strong>\${escapeHtml(pause.reason)}</strong></span>\` : '';
                 const phaseHtml = pause.phase ? \`<span>Phase: <strong>\${escapeHtml(pause.phase)}</strong></span>\` : '';
-                pauseBanner.innerHTML = \`<span>Paused since <strong>\${sinceStr}</strong></span>\${phaseHtml}\${reasonHtml}\`;
+                // (apra-fleet-hzeb.3) Only present for a script-initiated pause
+                // that supplied resumeAt (e.g. a provider usage-limit reset
+                // time via ctx.requestPause(reason, { resumeAt })) -- an
+                // operator-initiated /pause never sets it, so this stays absent.
+                const resumeAtHtml = pause.resumeAt ? \`<span>Expected resume: <strong>\${escapeHtml(pause.resumeAt)}</strong></span>\` : '';
+                pauseBanner.innerHTML = \`<span>Paused since <strong>\${sinceStr}</strong></span>\${phaseHtml}\${reasonHtml}\${resumeAtHtml}\`;
                 pauseBanner.style.display = 'flex';
             } else {
                 pauseBanner.innerHTML = '';
@@ -1078,7 +1083,7 @@ export function createDashboardViewer(workflow, opts = {}) {
         // timestamp). `phase`/`group` mirror wherever the run was when the
         // pause was requested, for the dashboard's reason card. Generic to
         // any workflow -- no fleet-sprint-specific fields.
-        pause: { status: 'none', reason: null, since: null, phase: null, group: null },
+        pause: { status: 'none', reason: null, since: null, phase: null, group: null, resumeAt: null },
         tree: [],
         extensions: {}
     };
@@ -1338,13 +1343,18 @@ export function createDashboardViewer(workflow, opts = {}) {
             reason: payload.reason ?? null,
             since: null,
             phase: payload.phase ?? null,
-            group: payload.group ?? null
+            group: payload.group ?? null,
+            // (apra-fleet-hzeb.3) Set by a script-initiated pause (e.g. a
+            // detected provider usage-limit signal) via ctx.requestPause(reason,
+            // { resumeAt }) -- an operator-initiated pause via the dashboard's
+            // /pause route never sets this, so it stays null there.
+            resumeAt: payload.resumeAt ?? null
         };
         broadcast({ type: 'update' });
     });
 
     workflow.on('paused', (payload) => {
-        // The 'paused' event itself carries no reason (see
+        // The 'paused' event itself carries no reason/resumeAt (see
         // FleetWorkflow._maybeEngagePause) -- preserve whatever
         // 'pause:requested' set, and only stamp `since` now, at the moment
         // the pause actually engaged.
@@ -1353,13 +1363,14 @@ export function createDashboardViewer(workflow, opts = {}) {
             reason: state.pause.reason,
             since: nowIso(),
             phase: payload.phase ?? state.pause.phase,
-            group: payload.group ?? state.pause.group
+            group: payload.group ?? state.pause.group,
+            resumeAt: state.pause.resumeAt
         };
         broadcast({ type: 'update' });
     });
 
     workflow.on('resumed', () => {
-        state.pause = { status: 'none', reason: null, since: null, phase: null, group: null };
+        state.pause = { status: 'none', reason: null, since: null, phase: null, group: null, resumeAt: null };
         broadcast({ type: 'update' });
     });
 

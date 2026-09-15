@@ -22,6 +22,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   const { setupGitAppSchema, setupGitApp } = await import('../tools/setup-git-app.js');
   const { provisionVcsAuthSchema, provisionVcsAuth } = await import('../tools/provision-vcs-auth.js');
   const { revokeVcsAuthSchema, revokeVcsAuth } = await import('../tools/revoke-vcs-auth.js');
+  const { vcsCredentialExecSchema, vcsCredentialExec } = await import('../tools/vcs-credential-exec.js');
   const { fleetStatusSchema, fleetStatus } = await import('../tools/check-status.js');
   const { memberDetailSchema, memberDetail } = await import('../tools/member-detail.js');
   const { updateAgentCliSchema, updateAgentCli } = await import('../tools/update-agent-cli.js');
@@ -139,6 +140,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   server.tool('setup_git_app', "One-time setup: register a GitHub App for git token minting. Requires a GitHub App ID, private key (.pem) file path, and installation ID. The app must already be created at github.com/organizations/{org}/settings/apps.", setupGitAppSchema.shape, wrapTool('setup_git_app', (input) => setupGitApp(input as any)));
   server.tool('provision_vcs_auth', 'Set up git access credentials on a member. Supports GitHub, Bitbucket, and Azure DevOps. Tests connectivity after setup.', provisionVcsAuthSchema.shape, wrapTool('provision_vcs_auth', (input) => provisionVcsAuth(input as any)));
   server.tool('revoke_vcs_auth', 'Remove VCS credentials from a member. Specify the provider (github, bitbucket, or azure-devops) to revoke.', revokeVcsAuthSchema.shape, wrapTool('revoke_vcs_auth', (input) => revokeVcsAuth(input as any)));
+  server.tool('vcs_credential_exec', 'Run a credential-requiring git/VCS command on a member WITHOUT ever learning the credential. Put one of two literal placeholders where the token belongs: {{vcs_token}}, referenced BARE (never inside your own quotes) -- the server substitutes it already escaped AND quoted for that member\'s shell; or {{vcs_token_inline}}, referenced INSIDE your own single quotes (e.g. an Authorization header value) -- the server substitutes it escaped for the interior of a single-quoted string, with no quotes of its own. Using {{vcs_token}} inside your own quotes double-escapes it; use {{vcs_token_inline}} there instead. Both may appear in the same command. The server dispatches the command and redacts the value from the returned stdout/stderr. Use this instead of reading a token back out of a credential helper.', vcsCredentialExecSchema.shape, wrapTool('vcs_credential_exec', (input) => vcsCredentialExec(input as any)));
 
   // Status & Monitoring
   server.tool('fleet_status', 'Get status of all fleet members. Use json format for structured data.', fleetStatusSchema.shape, wrapTool('fleet_status', (input) => fleetStatus(input as any)));

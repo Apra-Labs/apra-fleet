@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { guardedModulePaths } from './guarded-modules.mjs';
 
 // =============================================================================
 // apra-fleet-eft.3.3 -- dispatch-safety guard checker, extracted so it is
@@ -19,6 +20,16 @@ import path from 'path';
 // Invariant under test (unchanged from eft.3.1): EVERY `command(` / `agent(`
 // call site in a scanned source file must supply an explicit `member_name`
 // (or `member_id`) in its options object.
+//
+// MODULE-LIST GENERALIZATION: this guard is no longer pointed at a single
+// hard-coded file. checkModules() below reads the SHARED guarded-module list
+// (./guarded-modules.mjs) -- the one place a newly extracted fleet-sprint
+// module is registered -- so a dispatch that moves out of runner.js into a
+// new module stays covered instead of silently falling out of scan scope.
+// checkPath() remains exported and behaves exactly as before; it is still the
+// right entry point for scanning one specific file (a fixture, or a module
+// like dolt-sync.mjs that is deliberately not on the shared list). This
+// module is the reference implementation the sibling guards follow.
 // =============================================================================
 
 /**
@@ -64,17 +75,70 @@ export function skipStringLiteral(src, start, quoteChar) {
 }
 
 /**
+ * Replaces every comment's characters with spaces (newlines preserved), so
+ * the result has the SAME length and line numbering as `src` but no comment
+ * text -- mirrors test/helpers/dispatch-pin-scanner.mjs's maskComments()
+ * (that file's stripComments() helper is NOT length-preserving, which would
+ * corrupt the positional index math extractBalancedCall depends on).
+ *
+ * WHY THIS EXISTS (apra-fleet-3swo.34): extractBalancedCall()'s depth walk
+ * skips over string literals but, before this fix, did not skip comments.
+ * runner.js's prose comments are full of apostrophes (e.g. "the streak's
+ * scope"); an unmasked walk reads that apostrophe as an opening quote and
+ * swallows everything -- including real closing parens -- until the next
+ * apostrophe, so a call site's balanced range can silently run away to the
+ * end of the file. Masking comments out before walking parens/quotes is what
+ * makes the balanced range trustworthy; the returned callText is still
+ * sliced from the ORIGINAL (unmasked) src so callers keep seeing real
+ * comment text, just with correct boundaries.
+ *
+ * @param {string} src
+ * @returns {string}
+ */
+export function maskComments(src) {
+    let out = '';
+    for (let i = 0; i < src.length; i++) {
+        const ch = src[i];
+        if (ch === '"' || ch === "'" || ch === '`') {
+            const end = skipStringLiteral(src, i, ch);
+            out += src.slice(i, end + 1);
+            i = end;
+            continue;
+        }
+        if (ch === '/' && src[i + 1] === '/') {
+            while (i < src.length && src[i] !== '\n') { out += ' '; i++; }
+            out += '\n';
+            continue;
+        }
+        if (ch === '/' && src[i + 1] === '*') {
+            const end = src.indexOf('*/', i + 2);
+            const stop = end < 0 ? src.length - 1 : end + 1;
+            for (; i <= stop; i++) out += src[i] === '\n' ? '\n' : ' ';
+            i--;
+            continue;
+        }
+        out += ch;
+    }
+    return out;
+}
+
+/**
  * Given the index of an opening '(' in `src`, returns the full call-site
  * text from that '(' through its matching ')', tracking paren depth and
  * skipping over string/template-literal contents (so parens embedded in
  * string/template content, e.g. `bd show ${ids.join(' ')}`, never disturb
- * the depth count).
+ * the depth count) AND over comment spans (so an apostrophe in prose, e.g.
+ * "the streak's scope", is never misread as opening a string -- see
+ * maskComments() above). The depth/quote walk runs over a comment-masked
+ * copy of `src`, but the returned text is sliced from the ORIGINAL `src` so
+ * real comment content is preserved in the output.
  */
 export function extractBalancedCall(src, openParenIdx) {
+    const masked = maskComments(src);
     let depth = 0;
     let i = openParenIdx;
-    for (; i < src.length; i++) {
-        const ch = src[i];
+    for (; i < masked.length; i++) {
+        const ch = masked[i];
         if (ch === '(') {
             depth++;
         } else if (ch === ')') {
@@ -83,7 +147,7 @@ export function extractBalancedCall(src, openParenIdx) {
                 return src.slice(openParenIdx, i + 1);
             }
         } else if (ch === '"' || ch === "'" || ch === '`') {
-            i = skipStringLiteral(src, i, ch);
+            i = skipStringLiteral(masked, i, ch);
         }
     }
     // Unbalanced -- should never happen against real, syntactically-valid
@@ -174,4 +238,43 @@ export function checkPath(filePath) {
     const fileLabel = path.basename(filePath);
     const violations = findViolations(sites, fileLabel);
     return { sites, violations };
+}
+
+/**
+ * Aggregate entry point: scans EVERY module in the shared guarded-module list
+ * (fleet-sprint/guarded-modules.mjs -- runner.js today, plus whatever is
+ * extracted from it) and returns the union of their call sites and
+ * violations. This is the reference implementation the other mechanical
+ * guards in this directory follow.
+ *
+ * Each violation string already carries the basename of the file it came
+ * from (findViolations' `fileLabel`), so an aggregate run over several
+ * modules attributes every finding to the correct module rather than to a
+ * single hard-coded runner.js label. `sitesByFile` gives per-module call-site
+ * counts for baseline assertions that need them.
+ *
+ * `paths` defaults to the shared list; callers pass
+ * guardedModulePaths([fixture]) to prove the list -- not a hard-coded name --
+ * is what the guard actually reads.
+ *
+ * @param {string[]} [paths]
+ * @returns {{ sites: object[], violations: string[], files: string[], sitesByFile: Record<string, object[]> }}
+ */
+export function checkModules(paths = guardedModulePaths()) {
+    if (!Array.isArray(paths)) {
+        throw new TypeError('checkModules(paths): paths must be an array of file paths');
+    }
+    const sites = [];
+    const violations = [];
+    const files = [];
+    const sitesByFile = {};
+    for (const p of paths) {
+        const file = path.basename(p);
+        const result = checkPath(p);
+        files.push(file);
+        sitesByFile[file] = result.sites;
+        sites.push(...result.sites.map((s) => ({ ...s, file })));
+        violations.push(...result.violations);
+    }
+    return { sites, violations, files, sitesByFile };
 }

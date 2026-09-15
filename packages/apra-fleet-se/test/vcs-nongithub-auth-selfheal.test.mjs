@@ -8,6 +8,7 @@ import { classifyFailure } from '../fleet-sprint/vcs-module.mjs';
 import { VCS_FAILURE_KINDS as K } from '../fleet-sprint/errors.mjs';
 import { classifyGitFailure, syncMemberAfter } from '../fleet-sprint/runner.js';
 import { GitSyncError } from '../fleet-sprint/errors.mjs';
+import { guardedModulePaths, guardedModuleBasenames } from '../fleet-sprint/guarded-modules.mjs';
 
 // apra-fleet-647.1.3.4 -- non-GitHub auth texts classify and self-heal
 // instead of aborting the sprint.
@@ -21,10 +22,20 @@ import { GitSyncError } from '../fleet-sprint/errors.mjs';
 //     mechanics for a GitHub credential failure.
 // This suite's own job is the FOUR non-GitHub provider texts named in the
 // bead, plus the "genuinely unrecognized string" retry-then-fail case, plus
-// the source-literal guard that runner.js carries no VCS stderr regex list.
+// the source-literal guard that no guarded fleet-sprint module carries a VCS
+// stderr regex list (apra-fleet-3swo.41 widened this from a runner.js-only
+// scan to a guarded-modules.mjs-derived census -- see that describe block's
+// own header comment for why runner.js alone stopped being enough once
+// classifyGitFailure moved to git-topology.mjs).
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RUNNER_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/runner.js'), 'utf8');
+// apra-fleet-3swo.6.3: classifyGitFailure moved out of runner.js into
+// fleet-sprint/git-topology.mjs, so the delegation assertion below reads its
+// source from there. The pattern-table census (further down) does NOT read a
+// single hard-coded module source like this one -- it iterates the
+// guarded-modules.mjs-derived CENSUS_PATHS set instead, precisely so it is
+// not narrowed to whichever one file happens to be read here.
+const GIT_TOPOLOGY_SRC = fs.readFileSync(path.join(__dirname, '../fleet-sprint/git-topology.mjs'), 'utf8');
 
 const OK = { ok: true, output: '', error: null };
 const fail = (error) => ({ ok: false, output: '', error });
@@ -303,28 +314,101 @@ describe('a genuinely unrecognized VCS failure classifies UNKNOWN, gets exactly 
     });
 });
 
-describe('source assertion: runner.js carries no VCS stderr regex list (apra-fleet-647.1.3.4 AC4)', () => {
-    test('none of the deleted pattern-table identifiers are declared (as a const array) in runner.js', () => {
-        // A bare mention (e.g. this suite's own header comment, or runner.js's
-        // apra-fleet-647.1.3.2 doc comment explaining they are GONE) is fine;
-        // only a live re-declaration would be a regression.
-        for (const identifier of [
-            'GIT_AUTH_PATTERNS',
-            'GIT_DIVERGED_PATTERNS',
-            'GIT_TRANSIENT_PATTERNS',
-            'DOLT_AUTH_PATTERNS',
-            'DOLT_TRANSIENT_PATTERNS',
-        ]) {
-            const declRe = new RegExp(`\\b(?:const|let|var)\\s+${identifier}\\s*=`);
+describe('source assertion: no guarded fleet-sprint module carries a VCS stderr regex list (apra-fleet-3swo.41 widened census)', () => {
+    // The five pattern-table identifiers retired out of runner.js during
+    // apra-fleet-647.1.3.2 / apra-fleet-3swo.6.3. A live re-declaration of any
+    // of these anywhere the classifier can legitimately live is a regression
+    // -- VCS stderr must classify only through classifyFailure() in
+    // vcs-module.mjs. A bare mention (e.g. this suite's own header comment,
+    // or runner.js's own doc comment explaining they are GONE) is fine; only
+    // a live (const|let|var) re-declaration counts.
+    const PATTERN_TABLE_IDENTIFIERS = [
+        'GIT_AUTH_PATTERNS',
+        'GIT_DIVERGED_PATTERNS',
+        'GIT_TRANSIENT_PATTERNS',
+        'DOLT_AUTH_PATTERNS',
+        'DOLT_TRANSIENT_PATTERNS',
+    ];
+
+    function declaresPatternTable(source, identifier) {
+        const declRe = new RegExp(`\\b(?:const|let|var)\\s+${identifier}\\s*=`);
+        return declRe.test(source);
+    }
+
+    // apra-fleet-3swo.41: vcs-module.mjs and vcs-providers/* are excluded
+    // from this census even though they are registered in GUARDED_MODULES
+    // today (guarded-modules.mjs). classifyFailure() in vcs-module.mjs is the
+    // ONE legitimate place VCS stderr is ever parsed (see that file's own
+    // header comment), so it is the pattern tables' rightful OWNER, not a
+    // place a residual table would be a regression. If GUARDED_MODULES ever
+    // stops/starts listing these, this exclusion must stay explicit here.
+    function isPatternTableCensusExempt(filePath) {
+        return (
+            path.basename(filePath) === 'vcs-module.mjs' ||
+            filePath.split(path.sep).includes('vcs-providers')
+        );
+    }
+
+    // Derived from guarded-modules.mjs (guardedModulePaths()) rather than a
+    // hard-coded RUNNER_PATH or a fresh hand-written literal list, so a
+    // future extraction (like the git-topology.mjs split this bead backfills
+    // coverage for) cannot silently narrow the scanned set again.
+    const CENSUS_PATHS = guardedModulePaths().filter((p) => !isPatternTableCensusExempt(p));
+    const CENSUS_BASENAMES = guardedModuleBasenames().filter((b) => b !== 'vcs-module.mjs');
+
+    test('ANTI-VACUOUS: the scanned set is non-empty and provably includes runner.js and git-topology.mjs before any negative assertion runs', () => {
+        assert.ok(CENSUS_PATHS.length > 0, 'the pattern-table census scanned set must not be empty');
+        assert.ok(CENSUS_BASENAMES.includes('runner.js'), 'runner.js must remain in the scanned set');
+        assert.ok(
+            CENSUS_BASENAMES.includes('git-topology.mjs'),
+            'git-topology.mjs must be in the scanned set -- it now owns classifyGitFailure and is the most likely place a local regex table reappears',
+        );
+    });
+
+    test('none of the deleted pattern-table identifiers is declared (as a const/let/var) in any module the classifier can legitimately live in', () => {
+        for (const filePath of CENSUS_PATHS) {
+            // A path that fails to resolve must fail the test loudly rather
+            // than being silently skipped -- readFileSync throws instead of
+            // being wrapped in a try/catch.
+            const source = fs.readFileSync(filePath, 'utf8');
+            for (const identifier of PATTERN_TABLE_IDENTIFIERS) {
+                assert.ok(
+                    !declaresPatternTable(source, identifier),
+                    `${path.basename(filePath)} must not (re-)declare the deleted VCS stderr pattern table '${identifier}' -- classification must live only in vcs-module.mjs/vcs-providers/`,
+                );
+            }
+        }
+    });
+
+    test('FALSIFICATION: the census logic fires when a pattern-table identifier is declared in a synthesized git-topology.mjs-shaped source string', () => {
+        // Proves the widened census can actually fail. On today's tree none
+        // of the five identifiers is declared anywhere (see the positive
+        // test above), so without this the positive test would pass
+        // vacuously. Synthesized source only (never the real git-topology.mjs
+        // on disk), in the style of dispatch-pin-scanner-comments.test.mjs.
+        for (const identifier of PATTERN_TABLE_IDENTIFIERS) {
+            const synthesizedGitTopologySrc = `
+// pretend this is fleet-sprint/git-topology.mjs
+const ${identifier} = [/some-regex/];
+export function classifyGitFailure(stderr) {
+    return ${identifier}.some((re) => re.test(stderr)) ? 'auth' : 'unknown';
+}
+`;
             assert.ok(
-                !declRe.test(RUNNER_SRC),
-                `runner.js must not (re-)declare the deleted VCS stderr pattern table '${identifier}' -- classification must live only in vcs-module.mjs/vcs-providers/`,
+                declaresPatternTable(synthesizedGitTopologySrc, identifier),
+                `the census logic must detect a live '${identifier}' declaration -- it did not fire on a synthesized source that declares it`,
             );
         }
     });
 
     test('classifyGitFailure delegates to VCSModule (no local regex parsing of VCS stderr)', () => {
-        const fnSrc = RUNNER_SRC.slice(RUNNER_SRC.indexOf('export function classifyGitFailure'));
+        // Anchor-existence is asserted FIRST: indexOf() returning -1 makes
+        // slice(-1) yield the file's last character instead of throwing, which
+        // would fail this assertion on a one-character body while the negative
+        // assertion below passed VACUOUSLY.
+        const declIdx = GIT_TOPOLOGY_SRC.indexOf('export function classifyGitFailure');
+        assert.notEqual(declIdx, -1, 'classifyGitFailure must be declared in fleet-sprint/git-topology.mjs (re-point this slice if it moves again)');
+        const fnSrc = GIT_TOPOLOGY_SRC.slice(declIdx);
         const fnBody = fnSrc.slice(0, fnSrc.indexOf('\n}') + 2);
         assert.ok(/toGitVerdict\(\s*classifyFailure\(/.test(fnBody), `classifyGitFailure must delegate to classifyFailure/toGitVerdict, got: ${fnBody}`);
         assert.ok(!/\/(?:[^/\n]|\\\/)+\/[a-z]*\s*\.test\(/.test(fnBody), 'classifyGitFailure must not itself run a regex .test() over the stderr');

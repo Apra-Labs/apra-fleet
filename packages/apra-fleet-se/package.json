@@ -13,7 +13,7 @@
     "fleet-se-serve": "./bin/serve.mjs"
   },
   "scripts": {
-    "test": "node --test --test-reporter=./test/helpers/timestamped-reporter.mjs --test-reporter-destination=stdout --test-concurrency=8 test/*.test.mjs",
+    "test": "node scripts/run-tests.mjs mock",
     "test:slow": "node --test --test-reporter=./test/helpers/timestamped-reporter.mjs --test-reporter-destination=stdout test/slow/*.test.mjs",
     "test:unit": "node scripts/run-tests.mjs mock",
     "test:integration": "node scripts/run-tests.mjs real",

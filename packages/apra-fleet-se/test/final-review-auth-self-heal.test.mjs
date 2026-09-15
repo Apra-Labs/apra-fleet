@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -21,20 +21,30 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // can fix those), but that judgment lives server-side in the tool response,
 // not hardcoded in runner.js by member name; a test-injected callTool can
 // return a real success response for any member to exercise the healed path.
-const healingCallTool = async (name) => {
-    if (name === 'provision_llm_auth') {
-        return { content: [{ text: '✅ provisioned LLM credentials' }] };
-    }
-    // apra-fleet-647.1.2.1: provisionVcsAuthForMember (reached by this
-    // scenario's own git push/PR steps, unrelated to the LLM-auth self-heal
-    // under test here) resolves the member's provider via VCSModule.
-    // resolveProvider(), a 'member_detail' call that requires a real JSON
-    // body -- unlike the other tool names here, which none of runner.js's
-    // VCS/coordination call sites JSON.parse().
-    if (name === 'member_detail') {
-        return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
-    }
-    return { content: [{ text: '' }] };
+// apra-fleet-3swo.7.19: a factory (not a plain callTool) so its fallback can
+// delegate to the SAME shared defaultMockCallTool()/executeCommand this
+// scenario's own mockFleetApi uses -- see runDevelopLoopScenario's
+// callToolFactory doc comment. Needed because this scenario's git push/PR
+// steps (unrelated to the LLM-auth self-heal under test) still reach
+// vcs_credential_exec, which the previous bare `{ content: [{ text: '' }] }`
+// fallback answered with no structuredContent.
+const healingCallToolFactory = (executeCommand) => {
+    const base = defaultMockCallTool({ executeCommand });
+    return async (name, args) => {
+        if (name === 'provision_llm_auth') {
+            return { content: [{ text: '✅ provisioned LLM credentials' }] };
+        }
+        // apra-fleet-647.1.2.1: provisionVcsAuthForMember (reached by this
+        // scenario's own git push/PR steps, unrelated to the LLM-auth self-heal
+        // under test here) resolves the member's provider via VCSModule.
+        // resolveProvider(), a 'member_detail' call that requires a real JSON
+        // body -- unlike the other tool names here, which none of runner.js's
+        // VCS/coordination call sites JSON.parse().
+        if (name === 'member_detail') {
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+        }
+        return base(name, args);
+    };
 };
 
 test('mock sprint: a successful Final Review LLM-auth self-heal short-circuits -- exactly two attempts, healed verdict preserved', async () => {
@@ -45,7 +55,7 @@ test('mock sprint: a successful Final Review LLM-auth self-heal short-circuits -
             members: ['local'],
             taskSpecs: [{ title: 'Task: Final Review auth self-heal success scenario work' }],
             maxCycles: 1,
-            callTool: healingCallTool,
+            callToolFactory: healingCallToolFactory,
             finalReviewHandler: async () => {
                 finalReviewCalls++;
                 if (finalReviewCalls === 1) {
@@ -73,8 +83,12 @@ test('mock sprint: a successful Final Review LLM-auth self-heal short-circuits -
             sc.result && sc.result.status === 'success',
             `Expected the sprint to succeed off the preserved healed PASS verdict, got: ${JSON.stringify(sc.result)}`
         );
+        // apra-fleet-3swo.5.7: the final-review ladder moved onto the
+        // dispatchRole engine, which announces the same events in its own
+        // generic wording. The FACT each line stood for is unchanged and is
+        // still asserted -- only the sentence the engine writes differs.
         check(
-            sc.logs.some((m) => m.includes('LLM auth self-heal succeeded -- retrying once')),
+            sc.logs.some((m) => m.includes('LLM auth self-heal succeeded -- retrying')),
             `Expected the self-heal success log line, logs: ${JSON.stringify(sc.logs)}`
         );
         check(
@@ -92,7 +106,7 @@ test('mock sprint: a Final Review heal-retry that itself throws degrades to the 
             members: ['local'],
             taskSpecs: [{ title: 'Task: Final Review auth self-heal, heal-retry-fails scenario work' }],
             maxCycles: 1,
-            callTool: healingCallTool,
+            callToolFactory: healingCallToolFactory,
             finalReviewHandler: async () => {
                 finalReviewCalls++;
                 if (finalReviewCalls === 1) {
@@ -120,8 +134,13 @@ test('mock sprint: a Final Review heal-retry that itself throws degrades to the 
             sc.result && sc.result.verdict === 'FAIL' && sc.result.status === 'failed',
             `Expected the hardcoded FAIL fallback (heal-retry failure degrades, does not abort), got: ${JSON.stringify(sc.result)}`
         );
+        // apra-fleet-3swo.5.7: the final-review ladder moved onto the
+        // dispatchRole engine, which announces the same events in its own
+        // generic wording. The FACT each line stood for is unchanged and is
+        // still asserted -- only the sentence the engine writes differs.
         check(
-            sc.logs.some((m) => m.includes('heal-retry agent dispatch failed') && m.includes('treating as FAIL')),
+            sc.logs.some((m) => m.includes('LLM auth self-heal succeeded -- retrying'))
+                && sc.logs.some((m) => m.includes('agent dispatch failed, degrading (synthesized-verdict)')),
             `Expected a logged heal-retry-failure -> FAIL fallback message, logs: ${JSON.stringify(sc.logs)}`
         );
     });

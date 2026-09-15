@@ -37,26 +37,32 @@ const AZ_ORIGIN = 'https://dev.azure.com/mock-org/mock-project/_git/mock-repo';
 test('mock sprint: an Azure DevOps member is provisioned unattended by the preflight, with a derived org_url and a secure PAT placeholder', async () => {
     await withScenarioMarkers('5co8.2.2 ado preflight provisions', async () => {
         const vcsAuthCalls = [];
-        const base = defaultMockCallTool();
-        const callTool = async (name, args) => {
-            if (name === 'member_detail') {
-                return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops' }) }] };
-            }
-            if (name === 'credential_store_list') {
-                return { content: [{ text: JSON.stringify([{ name: 'azdevops_pat', scope: 'persistent' }]) }] };
-            }
-            if (name === 'provision_vcs_auth') {
-                vcsAuthCalls.push(args);
-                return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] };
-            }
-            return base(name, args);
+        // apra-fleet-3swo.7.19: callToolFactory (not a plain callTool) so
+        // `base`'s vcs_credential_exec branch can delegate to the SAME
+        // executeCommand this scenario's own mockFleetApi uses -- see
+        // runDevelopLoopScenario's callToolFactory doc comment.
+        const callToolFactory = (executeCommand) => {
+            const base = defaultMockCallTool({ executeCommand });
+            return async (name, args) => {
+                if (name === 'member_detail') {
+                    return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops' }) }] };
+                }
+                if (name === 'credential_store_list') {
+                    return { content: [{ text: JSON.stringify([{ name: 'azdevops_pat', scope: 'persistent' }]) }] };
+                }
+                if (name === 'provision_vcs_auth') {
+                    vcsAuthCalls.push(args);
+                    return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] };
+                }
+                return base(name, args);
+            };
         };
 
         const scenario = await runDevelopLoopScenario('5co82_2ado_ok', {
             members: ['local'],
             taskSpecs: [{ title: 'Task: exercise the unattended Azure DevOps preflight' }],
             maxCycles: 1,
-            callTool,
+            callToolFactory,
             originUrl: AZ_ORIGIN,
         });
 
@@ -127,27 +133,31 @@ test('mock sprint: an Azure DevOps member is provisioned unattended by the prefl
 test("mock sprint: a member whose Azure DevOps PAT secret is absent from the credential store never provisions, and the run's own logs name credential_store_set instead of prompting", async () => {
     await withScenarioMarkers('5co8.2.2 ado preflight missing secret', async () => {
         const vcsAuthCalls = [];
-        const base = defaultMockCallTool();
-        const callTool = async (name, args) => {
-            if (name === 'member_detail') {
-                return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops' }) }] };
-            }
-            if (name === 'credential_store_list') {
-                // The store is reachable but simply has no azdevops_pat entry.
-                return { content: [{ text: JSON.stringify([]) }] };
-            }
-            if (name === 'provision_vcs_auth') {
-                vcsAuthCalls.push(args);
-                return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] };
-            }
-            return base(name, args);
+        // apra-fleet-3swo.7.19: see the sibling scenario above for why this
+        // is a callToolFactory rather than a plain callTool.
+        const callToolFactory = (executeCommand) => {
+            const base = defaultMockCallTool({ executeCommand });
+            return async (name, args) => {
+                if (name === 'member_detail') {
+                    return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops' }) }] };
+                }
+                if (name === 'credential_store_list') {
+                    // The store is reachable but simply has no azdevops_pat entry.
+                    return { content: [{ text: JSON.stringify([]) }] };
+                }
+                if (name === 'provision_vcs_auth') {
+                    vcsAuthCalls.push(args);
+                    return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] };
+                }
+                return base(name, args);
+            };
         };
 
         const scenario = await runDevelopLoopScenario('5co82_2ado_nosec', {
             members: ['local'],
             taskSpecs: [{ title: 'Task: exercise the missing-secret Azure DevOps preflight' }],
             maxCycles: 1,
-            callTool,
+            callToolFactory,
             originUrl: AZ_ORIGIN,
         });
 
@@ -216,19 +226,23 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
 test('mock sprint: a GitHub member is unaffected by the Azure DevOps preflight hook -- its provision_vcs_auth args keep the GitHub-App shape', async () => {
     await withScenarioMarkers('5co8.2.2 github unaffected', async () => {
         const vcsAuthCalls = [];
-        const base = defaultMockCallTool();
-        const callTool = async (name, args) => {
-            if (name === 'provision_vcs_auth') {
-                vcsAuthCalls.push(args);
-            }
-            return base(name, args);
+        // apra-fleet-3swo.7.19: see the first scenario in this file for why
+        // this is a callToolFactory rather than a plain callTool.
+        const callToolFactory = (executeCommand) => {
+            const base = defaultMockCallTool({ executeCommand });
+            return async (name, args) => {
+                if (name === 'provision_vcs_auth') {
+                    vcsAuthCalls.push(args);
+                }
+                return base(name, args);
+            };
         };
 
         const scenario = await runDevelopLoopScenario('5co82_2gh_ok', {
             members: ['local'],
             taskSpecs: [{ title: 'Task: exercise the GitHub preflight path unchanged' }],
             maxCycles: 1,
-            callTool,
+            callToolFactory,
             // defaultMockCallTool()'s member_detail resolves 'github', and the
             // default originUrl is already GitHub-shaped -- no override needed.
         });

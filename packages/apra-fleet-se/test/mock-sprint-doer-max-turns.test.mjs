@@ -45,7 +45,10 @@ test('mock sprint: a max_turns-exhausted doer streak resumes with escalated max_
             `Expected the bounded-give-up log line once all resume attempts also exhaust max_turns, logs: ${JSON.stringify(result.logs)}`
         );
         check(
-            !result.logs.some((m) => /Doer streak .* threw:.*Retrying once\.$/.test(m)),
+            // apra-fleet-3swo.5.7: the doer ladder moved onto the dispatchRole
+            // engine, which names the attempt number where the ladder used to
+            // say "Retrying once." Same fact either way.
+            !result.logs.some((m) => /Doer streak .* dispatch threw:.*Retrying \(attempt 2 of 2\)\.$/.test(m)),
             `Did NOT expect the generic blind-retry-once log line for a max_turns dispatch, logs: ${JSON.stringify(result.logs)}`
         );
     });
@@ -156,7 +159,7 @@ test('mock sprint: a generic (non-max_turns) doer dispatch failure still gets th
         });
 
         check(
-            result.logs.some((m) => /Doer streak .* threw:.*Retrying once\.$/.test(m)),
+            result.logs.some((m) => /Doer streak .* dispatch threw:.*Retrying \(attempt 2 of 2\)\.$/.test(m)),
             `Expected the generic blind-retry log line for a non-max_turns dispatch failure, logs: ${JSON.stringify(result.logs)}`
         );
         check(

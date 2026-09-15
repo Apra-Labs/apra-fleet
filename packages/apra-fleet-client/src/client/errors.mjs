@@ -61,8 +61,12 @@ export class AbortError extends ClientError {
  * to branch on, add a typed error class HERE (transport/request-level
  * failures) or a `reason` code on the workflow layer's AgentDispatchError
  * (dispatch-level failures reported via structuredContent.isError, e.g.
- * 'busy', 'empty_response', 'max_turns_exhausted') -- never a bare Error
- * with only a message string to sniff.
+ * 'busy', 'empty_response', 'max_turns_exhausted', 'usage_limit') -- never a
+ * bare Error with only a message string to sniff. 'usage_limit'
+ * (apra-fleet-hzeb.2) additionally carries a `usageLimit` block ({type,
+ * resumeAt, resumeAtSource, message} -- see api.mjs's ExecutePromptStructured
+ * typedef) on AgentDispatchError.details, since a plan/quota exhaustion needs
+ * a resumeAt to schedule a resume, not just a reason string.
  */
 export class TransportClosedError extends ClientError {
     constructor(message, opts = {}) {

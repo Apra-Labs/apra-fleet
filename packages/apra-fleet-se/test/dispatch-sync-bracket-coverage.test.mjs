@@ -4,6 +4,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { balancedCallRange } from './helpers/balanced-call-scanner.mjs';
+// apra-fleet-3swo.5.7: the push flags now live in the policy table, so the
+// census below reads them from there rather than from runner.js source.
+import { allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -81,12 +84,73 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // max_turns-exhaustion resume, each in its own read-side (pushCode:false,
 // pushBeads:true -- it files carry-over bug beads but never writes code)
 // withGitSync(...) bracket. pushCode:true stays at 4.
-const EXPECTED_AGENT_COUNT = 22;
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 20;
-const STREAK_ASSIGNMENT_MARKERS = [
-    "label: 'Streak Assignment'",
-    "label: 'Streak Assignment (semantic repair)'",
-];
+// 22 -> 20 agent()/20 -> 18 withGitSync (apra-fleet-3swo.5.3): the planner
+// ladder -- its interactive dispatch and its max_turns-exhaustion resume, each
+// in its own read-side (pushCode:false, pushBeads:true) bracket -- moved out of
+// runner.js onto the dispatchRole engine (fleet-sprint/dispatch-role.mjs).
+// The engine opens the SAME bracket around the SAME dispatch; it just does so
+// from one generic place, driven by role-policies.mjs, instead of from a
+// hand-written ladder here. dispatch-role.mjs is a GUARDED_MODULES entry, so
+// dispatch-safety-guard still covers its call site, and the planning-side pins
+// (test/planning-role-dispatch-pins.test.mjs) assert the bracket behaviourally.
+// pushCode:true stays at 4 -- the planner never wrote code.
+// 20 -> 18 agent()/18 -> 16 withGitSync (same bead): the plan-reviewer ladder
+// -- its dispatch and its max_turns-exhaustion resume, each in its own
+// read-side bracket -- followed the planner onto the engine.
+// 18 -> 17 agent()/16 -> 15 withGitSync (same bead): the scoped-replan
+// planner (one dispatch, one pushBeads:true read-side bracket) followed them.
+// 17 -> 16 agent()/15 -> 14 withGitSync (same bead): the scoped-replan
+// plan-reviewer (one dispatch, one read-side bracket) followed them.
+// 16 -> 14 agent() (same bead): the Streak Assignment grouping call and its
+// bounded semantic-repair re-ask followed them. Those two were the file's ONLY
+// documented unbracketed exemptions, so STREAK_ASSIGNMENT_MARKERS is now empty
+// and every remaining runner.js agent() site must be bracketed -- a strictly
+// stronger statement than before. withGitSync stays at 14: the two dispatches
+// that left were the two that never had a bracket.
+// 14 -> 12 (apra-fleet-3swo.5.7): the harvester ladder -- its dispatch and its
+// max_turns-exhaustion resume -- moved onto the dispatchRole engine, starting
+// the execution-side half of the migration. Two agent() call sites left
+// runner.js; none were added.
+// 12 -> 10 (same bead): the deployer ladder -- its dispatch and its
+// max_turns-exhaustion resume -- followed the harvester onto the engine.
+// 10 -> 8 (same bead): the regression-test-runner ladder -- its dispatch and
+// its max_turns-exhaustion resume -- followed the deployer onto the engine.
+// 8 -> 6 (same bead): the integ-test-runner ladder -- its dispatch and its
+// max_turns-exhaustion resume, which is also its ONE infra-recovery resume --
+// followed the regression runner onto the engine.
+// 6 -> 4 (same bead): the final-review ladder -- its dispatch and its
+// max_turns-exhaustion resume -- followed the integ runner onto the engine.
+// 4 -> 2 (same bead): the per-round reviewer ladder -- its dispatch and its
+// max_turns-exhaustion resume -- followed the final review onto the engine.
+// 2 -> 0 (same bead): the doer ladder -- its streak dispatch and its
+// max_turns-exhaustion resume -- was the last inline execution ladder. Every
+// agent() dispatch in the scanned module set is now the dispatchRole engine's
+// single call site, so this runner.js-only census proves nothing and the
+// EXPECTED counts here are zero by construction.
+const EXPECTED_AGENT_COUNT = 0;
+// 14 -> 12 (apra-fleet-3swo.5.7): the harvester's dispatch and resume brackets
+// moved onto the dispatchRole engine's one generic withGitSync call.
+// 12 -> 10 (same bead): the deployer's two read-side brackets followed the
+// harvester onto the engine. Neither carried pushBeads, so that count is
+// unchanged.
+// 10 -> 8 (same bead): the regression runner's two pushBeads:true brackets
+// followed them onto the engine.
+// 8 -> 6 (same bead): the integ runner's two pushBeads:true brackets followed
+// them onto the engine.
+// 6 -> 4 (same bead): the final review's two read-side brackets followed them.
+// 4 -> 2 (same bead): the per-round reviewer's two read-side brackets followed
+// them. Only the doer pair is left inline.
+// 2 -> 0 (same bead): the doer's two brackets were the last inline ones.
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 0;
+// apra-fleet-3swo.5.3: EMPTY. The two Streak Assignment dispatches -- the only
+// documented, deliberate exemptions from the bracket invariant -- now run
+// through the dispatchRole engine, whose policy row records `bracket: {wrapped:
+// false}` as data and whose behaviour is pinned by
+// test/planning-role-dispatch-pins.test.mjs. Every agent() call site LEFT in
+// runner.js must therefore be bracketed, with no exemption at all. Kept as a
+// list rather than deleted so a future deliberate exemption is added here, in
+// the one place this file's arithmetic already accounts for it.
+const STREAK_ASSIGNMENT_MARKERS = [];
 
 /** Same helper as dispatch-safety-guard.test.mjs: is `col` inside an open same-line quote? */
 function isInsideSameLineString(lineText, col) {
@@ -211,40 +275,40 @@ test('every agent() dispatch call site is either wrapped by withGitSync(...) or 
 });
 
 test('pushCode is set true only for the code-writing dispatch roles (doer, harvester)', () => {
+    // apra-fleet-3swo.5.7: RE-ANCHORED, not deleted. Every dispatch ladder has
+    // migrated onto fleet-sprint/dispatch-role.mjs, whose single withGitSync
+    // call passes an EXPRESSION (`dispatch.bracket.pushCode === true`) rather
+    // than a literal, so there is nothing left in runner.js for the textual
+    // scan to classify -- a scan that stayed here would pass vacuously forever.
+    //
+    // The FACT it pinned is unchanged and is asserted against the policy table
+    // that now carries it, plus the guard that every bracket flag really is a
+    // literal boolean in that table (which is what made the old scan possible).
+    // The flags each dispatch's bracket actually RECEIVES are proved
+    // behaviourally by test/execution-role-dispatch-pins.test.mjs and
+    // test/planning-role-dispatch-pins.test.mjs, which run the real engine.
     const src = fs.readFileSync(RUNNER_PATH, 'utf8');
     const withGitSyncSites = findCallSites(src, 'withGitSync', { excludeDeclaration: true });
-
-    assert.strictEqual(withGitSyncSites.length, EXPECTED_WITHGITSYNC_CALL_COUNT);
-
-    // Each withGitSync(member, pushCode, dispatchFn, opts) call's second
-    // positional argument is the literal `true`/`false` pushCode flag at
-    // every current call site (never a variable) -- extract it directly via
-    // a narrow, call-site-scoped regex rather than a full expression parser.
-    // `callText` here is the balanced-paren slice starting at the opening
-    // '(' itself (NOT prefixed with the `withGitSync` identifier), so the
-    // pattern anchors on `^\(` rather than `withGitSync\(`.
-    const pushCodeTrueSites = withGitSyncSites.filter((s) => /^\([^,]+,\s*true\s*,/.test(s.callText));
-    const pushCodeFalseSites = withGitSyncSites.filter((s) => /^\([^,]+,\s*false\s*,/.test(s.callText));
-
     assert.strictEqual(
-        pushCodeTrueSites.length + pushCodeFalseSites.length,
         withGitSyncSites.length,
-        'Every withGitSync(...) call site must pass a literal true/false pushCode argument (second positional arg) so this check can classify it.'
+        EXPECTED_WITHGITSYNC_CALL_COUNT,
+        'A new INLINE dispatch bracket must be added to this count deliberately, not slipped in.'
     );
 
-    // Two roles write code today: doer and harvester -- but doer now has TWO
-    // pushCode:true sites (dispatchDoer and its max_turns-exhaustion
-    // dispatchDoerResume, the same logical streak continuing), so 3 sites
-    // total: doer, doer-resume, harvester.
-    assert.strictEqual(
-        pushCodeTrueSites.length,
-        4,
-        `Expected exactly 4 withGitSync(...) call sites with pushCode:true (doer, doer-resume, harvester, harvester-resume), found ${pushCodeTrueSites.length}.`
+    const codePushers = allDispatchPolicies().filter((p) => p.bracket.pushCode === true);
+    assert.deepStrictEqual(
+        codePushers.map((p) => p.role).sort(),
+        ['doer', 'doer-resume', 'harvester', 'harvester'].sort(),
+        'Exactly the doer pair and the harvester pair write code and therefore G-push; every other role is read-side.'
     );
-    for (const site of pushCodeTrueSites) {
+    for (const p of allDispatchPolicies()) {
+        if (!p.bracket.wrapped) {
+            assert.strictEqual(p.bracket.pushCode, null, `${p.role}: an unbracketed dispatch carries no push flags.`);
+            continue;
+        }
         assert.ok(
-            /agentType:\s*'doer'/.test(site.callText) || /getMemberForRole\('harvester'\)/.test(site.callText),
-            `withGitSync(...) call site with pushCode:true must be doer or harvester, got: ${site.callText.slice(0, 120)}...`
+            p.bracket.pushCode === true || p.bracket.pushCode === false || p.bracket.pushCode === null,
+            `${p.role}: every bracketed dispatch must record a literal pushCode flag so this check can classify it.`
         );
     }
 });

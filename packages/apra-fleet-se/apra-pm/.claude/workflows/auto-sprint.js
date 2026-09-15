@@ -1449,6 +1449,47 @@ const PLAN_REVIEW_SCHEMA = {
     "notes": {
       "type": "string"
     },
+    "findings": {
+      "type": "array",
+      "description": "Machine-readable per-bead findings: one entry per bead that must change, so a caller can route a CHANGES_NEEDED verdict without parsing notes. Populate on every CHANGES_NEEDED verdict. Return an empty array when the objection is genuinely plan-wide and names no individual bead -- an empty array is the explicit 'plan-wide' signal. Omit or return an empty array on APPROVED. Optional, and deliberately absent-tolerant for one release: a verdict produced against the previous contract still validates, and a caller may fall back to reading notes. notes stays the narration channel.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "detail"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The bead this finding concerns, written exactly as it appears in taskAssignments (e.g. BD-14)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Which quality criterion failed, as a closed vocabulary mirroring the numbered criteria in the prose contract's Step 2. Use other only when no listed kind fits, and explain it in detail.",
+            "enum": [
+              "coverage",
+              "missing_test_task",
+              "acceptance_criteria",
+              "task_size",
+              "dependency_wiring",
+              "scope_creep",
+              "duplicate_work",
+              "feasibility",
+              "ready_work",
+              "model_metadata",
+              "lane_cohesion",
+              "other"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The human explanation for this bead: what is wrong and what would make it pass."
+          }
+        }
+      }
+    },
     "taskAssignments": {
       "type": "array",
       "items": {

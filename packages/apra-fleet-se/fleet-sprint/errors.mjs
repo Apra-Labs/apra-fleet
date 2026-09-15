@@ -482,6 +482,86 @@ export function isInfraDispatchFailure(err) {
 }
 
 // ---------------------------------------------------------------------------
+// apra-fleet-hzeb.4.1 -- usage-limit dispatch classification
+// ---------------------------------------------------------------------------
+//
+// execute_prompt relays a provider's usage-limit signal (e.g. Claude's 429
+// classified via detectUsageLimit) as a structured `details.reason ===
+// 'usage_limit'` on the AgentDispatchError it throws (src/tools/execute-
+// prompt.ts), mirroring the existing `details.reason` classifiers above
+// (isInfraDispatchFailure, isNonRetryableDispatchError). This is the ONLY
+// vocabulary a caller may key on -- NEVER regex on message text, since a
+// usage-limit message is provider-specific prose that can drift or be
+// localized (see isInfraDispatchFailure's own header for the same
+// discipline).
+export const USAGE_LIMIT_DISPATCH_REASON = 'usage_limit';
+
+/**
+ * True when a dispatch error is a provider usage-limit hit, keyed off the
+ * server's structured `details.reason` -- never on message text.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isUsageLimitDispatchError(err) {
+    return err?.details?.reason === USAGE_LIMIT_DISPATCH_REASON;
+}
+
+/**
+ * The provider's usage-limit signal object (see providers/provider.ts's
+ * UsageLimitSignal contract) carried on a usage-limit dispatch error, or
+ * `null` when the error carries none (e.g. it is not a usage-limit error at
+ * all, or a provider that classified the reason but supplied no signal
+ * detail).
+ * @param {unknown} err
+ * @returns {object|null}
+ */
+export function usageLimitOf(err) {
+    return err?.details?.usageLimit ?? null;
+}
+
+/**
+ * Thrown by the fleet-sprint usage-limit pause/resume controller
+ * (apra-fleet-hzeb.4.2, the follow-up to this task) when a dispatch has been
+ * paused and re-probed until its budget (USAGE_LIMIT_MAX_WAIT_S /
+ * USAGE_LIMIT_MAX_REPROBES in role-policies.mjs) is exhausted with no
+ * successful resume. Registered in isTypedAbortError() (abort.mjs) so a
+ * give-up routes through finalizeAbort() / an [ABORTED] PR, exactly like
+ * every other unrecoverable sprint-abort class in that curated list -- a
+ * member permanently rate-limited past every allowed wait/reprobe is exactly
+ * as terminal as a stalled sprint or an unmergeable divergence.
+ *
+ * @property {string|null} member - the member whose dispatch hit the usage limit
+ * @property {string|null} roleLabel - the role/label of the dispatch that was paused
+ * @property {number|null} firstHitAt - epoch ms of the first usage-limit hit
+ * @property {number|null} lastResumeAt - epoch ms of the provider's last reported resumeAt
+ * @property {number} reprobes - how many re-probe attempts were made before giving up
+ * @property {number} waitedMs - total wall-clock time spent paused across all reprobes
+ */
+export class UsageLimitWaitExhaustedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, roleLabel?: string|null, firstHitAt?: number|null, lastResumeAt?: number|null, reprobes?: number, waitedMs?: number, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const {
+            member = null, roleLabel = null, firstHitAt = null, lastResumeAt = null,
+            reprobes = 0, waitedMs = 0, details, cause,
+        } = opts;
+        super(message, {
+            code: 'USAGE_LIMIT_WAIT_EXHAUSTED',
+            details: { member, roleLabel, firstHitAt, lastResumeAt, reprobes, waitedMs, ...details },
+            cause,
+        });
+        this.member = member;
+        this.roleLabel = roleLabel;
+        this.firstHitAt = firstHitAt;
+        this.lastResumeAt = lastResumeAt;
+        this.reprobes = reprobes;
+        this.waitedMs = waitedMs;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // apra-fleet-eft.75.2 -- sprint-launch machine-local pidfile mutex
 // ---------------------------------------------------------------------------
 
@@ -653,5 +733,143 @@ export class MemberReservationResumeError extends WorkflowError {
             }
         );
         this.members = members;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// apra-fleet-3swo.4.9 -- sync-bracket mutual-exclusion violation
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by git-sync.mjs's createSyncBrackets() when two brackets sharing the
+ * same `exclusiveKey` genuinely OVERLAP rather than nest -- i.e. the bracket
+ * that opened FIRST closes while a bracket that opened LATER (for the same
+ * key) is still open. Proper nesting (LIFO open/close for the same key) never
+ * throws this; only a crossing close does, which is precisely the shape a
+ * broken bracket pairing (or a regression in the external serialization gate
+ * that is supposed to keep code-writing dispatches sequential, e.g. runner.js
+ * 's `globalDoerTurn`) would produce. Every OTHER key stays fully
+ * independent: two brackets with different `exclusiveKey`s (or no key at all)
+ * may overlap in any order and never trigger this -- that is legitimate,
+ * relied-upon concurrency (e.g. multiple members' D-pushes serialized by
+ * their own dolt push mutex, not by this counter).
+ *
+ * @property {string} exclusiveKey - the shared key the two brackets collided on.
+ * @property {string} closingLabel - the bracket that was closing when the
+ *   violation was detected.
+ * @property {string[]} stillOpenLabels - the other bracket(s) sharing this key
+ *   that were still open at that moment.
+ */
+export class ConcurrentSyncBracketError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ exclusiveKey: string, closingLabel: string, stillOpenLabels: string[], details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { exclusiveKey, closingLabel, stillOpenLabels = [], details, cause } = opts;
+        super(message, {
+            code: 'CONCURRENT_SYNC_BRACKET',
+            details: { exclusiveKey, closingLabel, stillOpenLabels, ...details },
+            cause,
+        });
+        this.exclusiveKey = exclusiveKey;
+        this.closingLabel = closingLabel;
+        this.stillOpenLabels = stillOpenLabels;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pre-sprint validation refusals
+// ---------------------------------------------------------------------------
+//
+// Every refusal raised by runSprintCycle's pre-sprint validation block, as a
+// closed machine-readable vocabulary. Before this existed the block threw bare
+// `Error`s whose only discriminator was their prose, so a caller could not
+// tell "there is genuinely no ready work" (an operator-facing, often benign
+// outcome) from "this orchestrator's bd clone cannot see the target beads at
+// all" (a sync fault) or "the scope is deadlocked" (a graph fault) without
+// substring-matching a human-readable sentence.
+//
+//   TARGET_NOT_VISIBLE   One or more target issue ids are not present in the
+//                        orchestrator member's own bd clone AT ALL. NOT the
+//                        same as those beads being closed: they are invisible
+//                        here, usually because they were created/mutated on a
+//                        different clone that was never dolt-pushed to the
+//                        shared remote. A SYNC fault, fixable by syncing.
+//   NOTHING_TO_DO        The scope resolves to zero open/in-progress/blocked/
+//                        deferred beads -- every target issue is genuinely
+//                        done. Benign: there is no work, not a fault.
+//   CYCLE_REPAIR_FAILED  The scope is deadlocked by parent-child + blocks
+//                        cycle(s), the precise offending edges were computed,
+//                        and the mechanical auto-repair (`bd dep remove`)
+//                        ITSELF failed. Distinct from DEADLOCKED: the fix is
+//                        known and was attempted, but could not be applied.
+//   DEADLOCKED           Not-done beads remain in scope but none are ready,
+//                        and the repairable cycle shape does not explain it.
+//                        Needs a human to break the dependency deadlock.
+//
+// NOT in this vocabulary, deliberately: the VERIFY-ONLY sprint path. An empty
+// ready set with implementation-complete beads routed to verify PROCEEDS, so
+// it is not a refusal and must never raise. Nor is the stale-in-progress
+// reclaim a refusal -- it runs BEFORE any of these are raised, precisely
+// because an empty `--ready` set can be an artifact of an interrupted run
+// rather than an absence of work.
+export const PRE_SPRINT_REFUSAL_REASONS = Object.freeze({
+    TARGET_NOT_VISIBLE: 'TARGET_NOT_VISIBLE',
+    NOTHING_TO_DO: 'NOTHING_TO_DO',
+    CYCLE_REPAIR_FAILED: 'CYCLE_REPAIR_FAILED',
+    DEADLOCKED: 'DEADLOCKED',
+});
+
+/**
+ * Thrown when runSprintCycle's pre-sprint validation refuses to start a
+ * sprint. Adds a machine-readable `reason` discriminator (one of
+ * PRE_SPRINT_REFUSAL_REASONS) to what was previously an untyped `Error`
+ * distinguishable only by its prose.
+ *
+ * The human-readable message is deliberately UNCHANGED from the prose each
+ * refusal already emitted -- this adds a type and a discriminator, it does not
+ * restyle the operator-facing text.
+ *
+ * Like the other sprint-fatal errors here it is never caught inside the
+ * pre-sprint block, so it unwinds runWithContext()'s promise and fails the run
+ * before any dispatch occurs.
+ *
+ * @property {string} reason - one of PRE_SPRINT_REFUSAL_REASONS
+ * @property {string|null} scope - the sprint filter the refusal was raised for
+ * @property {string[]} [invisibleTargets] - TARGET_NOT_VISIBLE: the ids missing
+ *   from the orchestrator member's clone
+ * @property {Array<{blockedIssue: string, blockedBy: string}>} [cyclePairs] -
+ *   CYCLE_REPAIR_FAILED: the parent-child + blocks edge pairs whose removal
+ *   was attempted
+ * @property {string[]} [deadlockedIds] - DEADLOCKED: the not-done bead ids that
+ *   remain in scope with none ready
+ */
+export class PreSprintValidationError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ reason: string, scope?: string|null, invisibleTargets?: string[], cyclePairs?: Array<{blockedIssue: string, blockedBy: string}>, deadlockedIds?: string[], details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { reason, scope = null, invisibleTargets, cyclePairs, deadlockedIds, details, cause } = opts;
+        if (!Object.prototype.hasOwnProperty.call(PRE_SPRINT_REFUSAL_REASONS, String(reason))) {
+            // A refusal with no recognized discriminator is the exact failure
+            // this type exists to prevent, so it fails loudly at construction
+            // rather than shipping an untyped refusal wearing a typed name.
+            throw new TypeError(
+                `PreSprintValidationError requires a reason from PRE_SPRINT_REFUSAL_REASONS ` +
+                `(${Object.keys(PRE_SPRINT_REFUSAL_REASONS).join(', ')}); got ${JSON.stringify(reason)}`
+            );
+        }
+        super(message, {
+            code: 'PRE_SPRINT_VALIDATION',
+            details: { reason, scope, invisibleTargets, cyclePairs, deadlockedIds, ...details },
+            cause,
+        });
+        this.reason = reason;
+        this.scope = scope;
+        if (invisibleTargets) this.invisibleTargets = invisibleTargets;
+        if (cyclePairs) this.cyclePairs = cyclePairs;
+        if (deadlockedIds) this.deadlockedIds = deadlockedIds;
     }
 }

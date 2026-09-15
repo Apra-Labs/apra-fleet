@@ -34,7 +34,7 @@ this pair as "member identifier" rather than repeating it.
 **Execution:** `execute_prompt`, `execute_command`, `stop_prompt`, `monitor_task`.
 
 **Authentication and git:** `provision_llm_auth`, `setup_ssh_key`, `setup_git_app`,
-`provision_vcs_auth`, `revoke_vcs_auth`.
+`provision_vcs_auth`, `revoke_vcs_auth`, `vcs_credential_exec`.
 
 **Status and maintenance:** `fleet_status`, `member_detail`, `update_llm_cli`,
 `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.

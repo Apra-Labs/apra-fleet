@@ -749,11 +749,22 @@ test('golden transcript: mock sprint happy-path dispatch sequence matches the co
 // failing" shape from the real incident) -- which engine.executeFile()
 // rejects `runGoldenScenario()`'s promise with, caught below.
 //
-// MUTATION CHECK: reverting apra-fleet-66u.4's `for (const id of verifyIds)
-// { await runCmd(...) }` loop in buildTranscriptFleetApi()'s
-// integ-test-runner handler above (restoring the old canned
-// {featuresClosed, passed:true}-only response) makes this test's `caught`
-// assertion fail: it throws a StalledSprintError instead of completing.
+// MUTATION CHECK (PERFORMED against real bd by apra-fleet-w7ee.1; recorded
+// here as evidence rather than as a claim). Deleting exactly
+// apra-fleet-66u.4's three-line `for (const id of verifyIds) { await
+// runCmd(`bd close ${id}`, tempDir); }` loop from buildTranscriptFleetApi()'s
+// integ-test-runner handler above (leaving the canned {featuresClosed,
+// passed:true} response, and leaving the doer handler's own closes intact)
+// was OBSERVED to take this file from pass=5 fail=0 to pass=2 fail=3: this
+// test's `caught` assertion failed with a StalledSprintError carrying the
+// original incident's signature, "Sprint stalled: 2 consecutive cycle(s)
+// made no new high-water-mark progress (closed beads + verify-routed beads)
+// ... Closed-count history: [1, 1, 1] (high-water mark on progress score:
+// 2)", and the snapshot and determinism-proof subtests aborted the same way.
+// The tree was then restored byte-for-byte from a pre-mutation copy.
+// The sibling 3-bead guard was likewise proven falsifiable, separately and
+// on its own handler, by apra-fleet-w7ee.2 -- see the MUTATION CHECK block
+// in golden-transcript-3bead.test.mjs for its [3, 3, 3]/high-water-4 shape.
 test('golden transcript: Integ Test closing the childful epic in the same cycle it becomes verify-eligible credits progress and avoids a false stall (apra-fleet-66u.5)', async () => {
     let caught = null;
     let transcript = null;

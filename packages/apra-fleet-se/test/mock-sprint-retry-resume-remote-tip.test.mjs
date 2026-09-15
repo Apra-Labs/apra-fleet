@@ -4,6 +4,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { syncMemberBefore, syncMemberAfter } from '../fleet-sprint/runner.js';
+// apra-fleet-3swo.5.7: the doer's retry flag is policy data now, not a literal
+// at a runner.js call site.
+import { policyFor, ROLE_NAMES } from '../fleet-sprint/role-policies.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -114,25 +117,30 @@ test('syncMemberBefore: resetToRemoteTip defaults false, so a non-retry (or non-
 // (skipPreDispatchSync, which skips the ENTIRE pre-dispatch sync rather than
 // resuming onto the remote tip) must still exist and stay mutually exclusive
 // with the new resumeOntoRemoteTip path -- apra-fleet-eft.87.1 must not have
-// blanket-removed it. withGitSync itself is a closure private to
-// runSprintCycle (not exported), so this is asserted at the source level
-// against the exact code introduced by eft.54.1 / kept by eft.87.1.
+// blanket-removed it. withGitSync moved out of runSprintCycle into
+// git-sync.mjs (apra-fleet-3swo.4.1) and is exported now, but the branch
+// ordering inside its body is still what this guard is about, so it stays a
+// source-level assertion against the exact code introduced by eft.54.1 /
+// kept by eft.87.1 -- read from git-sync.mjs, with the doer-streak call site
+// still read from runner.js.
 // =============================================================================
 test('guard: withGitSync source still has a skipPreDispatchSync short-circuit distinct from (and preceding) the resumeOntoRemoteTip resync path', async () => {
     const runnerSource = await fs.readFile(path.join(__dirname, '../fleet-sprint/runner.js'), 'utf-8');
+    const gitSyncSource = await fs.readFile(path.join(__dirname, '../fleet-sprint/git-sync.mjs'), 'utf-8');
+    const dispatchRoleSource = await fs.readFile(path.join(__dirname, '../fleet-sprint/dispatch-role.mjs'), 'utf-8');
 
     check(
-        /async function withGitSync\(member, pushCode, dispatchFn, \{[^}]*skipPreDispatchSync = false[^}]*resumeOntoRemoteTip = false[^}]*\}/.test(runnerSource),
+        /async function withGitSync\(ctx, member, pushCode, dispatchFn, \{[^}]*skipPreDispatchSync = false[^}]*resumeOntoRemoteTip = false[^}]*\}/.test(gitSyncSource),
         'withGitSync must declare BOTH skipPreDispatchSync and resumeOntoRemoteTip as distinct opts (neither replaced the other)'
     );
 
-    const skipIdx = runnerSource.indexOf('if (skipPreDispatchSync) {');
+    const skipIdx = gitSyncSource.indexOf('if (skipPreDispatchSync) {');
     check(skipIdx !== -1, 'the eft.54.1 skipPreDispatchSync short-circuit branch must still be present');
 
-    const skipLogIdx = runnerSource.indexOf('Skipping pre-dispatch G-pull/D-pull for member', skipIdx);
+    const skipLogIdx = gitSyncSource.indexOf('Skipping pre-dispatch G-pull/D-pull for member', skipIdx);
     check(skipLogIdx !== -1 && skipLogIdx > skipIdx, 'the skip branch must still log that it skipped the redundant pre-dispatch G-pull/D-pull (terminal no-mutation failure case)');
 
-    const resetThreadIdx = runnerSource.indexOf('resetToRemoteTip: resumeOntoRemoteTip', skipIdx);
+    const resetThreadIdx = gitSyncSource.indexOf('resetToRemoteTip: resumeOntoRemoteTip', skipIdx);
     check(resetThreadIdx !== -1, 'syncMemberBefore must still be called with resetToRemoteTip: resumeOntoRemoteTip on the non-skip path');
     check(resetThreadIdx > skipLogIdx, 'the resumeOntoRemoteTip resync must live in the ELSE branch, after (mutually exclusive with) the skipPreDispatchSync short-circuit');
 
@@ -140,8 +148,27 @@ test('guard: withGitSync source still has a skipPreDispatchSync short-circuit di
     // doer-streak throw-retry call site passes only resumeOntoRemoteTip, and
     // the terminal-no-mutation-failure retry ladder passes only
     // skipPreDispatchSync -- never both true together.
+    // apra-fleet-3swo.5.7: RE-ANCHORED. The doer's generic-throw retry used to
+    // be a literal `dispatchDoer({ resumeOntoRemoteTip: true })` call in
+    // runner.js; the ladder migrated onto fleet-sprint/dispatch-role.mjs, where
+    // the flag is set from the 'doer' row's retry.resumeOntoRemoteTipOnRetry.
+    // Both halves of the original fact are still pinned: the row declares it,
+    // and the engine really passes it -- on a RETRY only, and never after a
+    // provably no-mutation auth failure, which had nothing to publish.
     check(
-        /dispatchDoer\(\{ resumeOntoRemoteTip: true \}\)/.test(runnerSource),
-        'the generic-throw doer streak retry call site must still request resumeOntoRemoteTip (this is what apra-fleet-eft.87.1 wired up)'
+        policyFor('doer').retry.resumeOntoRemoteTipOnRetry === true,
+        "the doer row must still declare retry.resumeOntoRemoteTipOnRetry (this is what apra-fleet-eft.87.1 wired up)"
+    );
+    check(
+        /resumeOntoRemoteTip: true/.test(dispatchRoleSource),
+        'the engine must still set resumeOntoRemoteTip on the bracket options for a ladder that declares it'
+    );
+    check(
+        // doer-resume inherits the doer's retry block by spread (it is the
+        // same ladder's secondary), so the doer LADDER is the only one.
+        [...new Set(ROLE_NAMES
+            .filter((r) => policyFor(r).retry.resumeOntoRemoteTipOnRetry)
+            .map((r) => policyFor(r).ladder))].join(',') === 'doer',
+        'the doer streak is the only ladder that resumes a retry onto the branch remote tip'
     );
 });

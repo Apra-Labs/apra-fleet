@@ -315,6 +315,21 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue`;
   }
 
+  gitCredentialHelperRead(label?: string): { command: string; path: string } {
+    // Unlike the POSIX branch, the label here is interpolated into a
+    // PowerShell double-quoted string AND a filename, so anything outside a
+    // safe slug alphabet is refused outright rather than escaped -- the same
+    // rule the fleet-sprint side applies in se-windows.mjs.
+    if (label !== undefined && !/^[A-Za-z0-9._-]+$/.test(label)) {
+      throw new Error(`Refusing to build a Windows credential-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
+    }
+    const credFileName = label ? `.fleet-git-credential-${label}` : '.fleet-git-credential';
+    const credPath = `$env:USERPROFILE\\${credFileName}.bat`;
+    // `&` is PowerShell's call operator: without it a quoted path is echoed as
+    // a string literal rather than executed.
+    return { command: `& "${credPath}"`, path: credPath };
+  }
+
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
     const credFileName = label ? `.fleet-git-credential-${escapeWindowsArg(label).replace(/'/g, "''")}` : '.fleet-git-credential';

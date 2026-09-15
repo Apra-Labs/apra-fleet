@@ -9,6 +9,7 @@ import {
     validateIssueId,
     validateBranchName,
 } from '../fleet-sprint/runner.js';
+import { defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 
 // Unit + mock-level tests for apra-fleet-unw.14: the CLI->runner argument
 // contract (validateArgs/validateIssueId/validateBranchName), and proof
@@ -273,33 +274,43 @@ function mockCmdResult(code, stdout, stderr = '') {
 // THROWS on anything that isn't valid JSON (see mock-sprint-harness.mjs's
 // defaultMockCallTool doc comment for the identical fix there) -- so
 // dolt_push_mutex/child_id_allocator must answer with valid, minimal JSON
-// too, not the plain '✅ mock <name>' prose generic callers elsewhere use.
-function spyCallTool(name, toolArgs) {
-    // apra-fleet-647.1.2.1: provisionVcsAuthForMember resolves the member's
-    // provider via VCSModule.resolveProvider() (a 'member_detail' call)
-    // BEFORE every provision_vcs_auth call.
-    if (name === 'member_detail') {
-        return Promise.resolve({ content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] });
-    }
-    if (name === 'provision_vcs_auth') {
-        const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-        return Promise.resolve({ content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] });
-    }
-    if (name === 'dolt_push_mutex') {
-        const action = toolArgs && toolArgs.action;
-        if (action === 'acquire') {
-            return Promise.resolve({ content: [{ text: JSON.stringify({ granted: true, token: `mock-dolt-mutex-${Date.now()}` }) }] });
+// too, not the plain '[OK] mock <name>' prose generic callers elsewhere use.
+// apra-fleet-3swo.7.19: `executeCommand` (the spy's OWN executeCommand,
+// already in the `({ content, structuredContent }) => Promise` shape
+// defaultMockCallTool()'s vcs_credential_exec branch expects -- no adapter
+// needed, unlike the finalizeAbort-level test files that pass a `{ ok,
+// output, error }`-shaped legacy `command`) lets the fallback below delegate
+// to the SAME shared simulator (reusing its placeholder substitution and
+// redaction) instead of re-implementing it here.
+function spyCallTool(executeCommand) {
+    const base = defaultMockCallTool({ executeCommand });
+    return function (name, toolArgs) {
+        // apra-fleet-647.1.2.1: provisionVcsAuthForMember resolves the member's
+        // provider via VCSModule.resolveProvider() (a 'member_detail' call)
+        // BEFORE every provision_vcs_auth call.
+        if (name === 'member_detail') {
+            return Promise.resolve({ content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] });
         }
-        return Promise.resolve({ content: [{ text: JSON.stringify({ released: true }) }] });
-    }
-    if (name === 'child_id_allocator') {
-        const action = toolArgs && toolArgs.action;
-        if (action === 'allocate') {
-            return Promise.resolve({ content: [{ text: JSON.stringify({ childId: null, token: null }) }] });
+        if (name === 'provision_vcs_auth') {
+            const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+            return Promise.resolve({ content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] });
         }
-        return Promise.resolve({ content: [{ text: JSON.stringify({ confirmed: true, released: true }) }] });
-    }
-    return Promise.resolve({ content: [{ text: `✅ mock ${name}` }] });
+        if (name === 'dolt_push_mutex') {
+            const action = toolArgs && toolArgs.action;
+            if (action === 'acquire') {
+                return Promise.resolve({ content: [{ text: JSON.stringify({ granted: true, token: `mock-dolt-mutex-${Date.now()}` }) }] });
+            }
+            return Promise.resolve({ content: [{ text: JSON.stringify({ released: true }) }] });
+        }
+        if (name === 'child_id_allocator') {
+            const action = toolArgs && toolArgs.action;
+            if (action === 'allocate') {
+                return Promise.resolve({ content: [{ text: JSON.stringify({ childId: null, token: null }) }] });
+            }
+            return Promise.resolve({ content: [{ text: JSON.stringify({ confirmed: true, released: true }) }] });
+        }
+        return Promise.resolve(base(name, toolArgs));
+    };
 }
 
 // apra-fleet-eft.6.7: `allBeadsJson`/`readyJson` let a caller substitute the
@@ -476,7 +487,7 @@ describe('runner.js mock-level execution', () => {
             // degrades to skipping PR creation entirely (apra-fleet-tfx.8.1)
             // -- this test exercises the PR-raise path itself, so it needs a
             // working callTool.
-            callTool: spyCallTool,
+            callTool: spyCallTool(spy.executeCommand),
         }, true);
 
         assert.strictEqual(result.status, 'success');
@@ -540,25 +551,34 @@ describe('runner.js mock-level execution', () => {
         // hosted-remote PR-raise path is exercised unchanged, just with one
         // extra command in between.
         // apra-fleet-tfx.8/tfx.8.4: the reverted gh-based `gh pr create` path
-        // is gone. raiseVcsPrForMember() (1) reads back the just-provisioned
-        // push+pr credential's token from the git-credential-helper script,
-        // then (2) dispatches VCSModule's `curl ... /pulls` create-pull-
-        // request command -- so the last 4 commandLog entries are: push,
-        // the classification probe, the credential-token read, and the
+        // is gone. raiseVcsPrForMember() dispatches VCSModule's
+        // `curl ... /pulls` create-pull-request command -- so the last 3
+        // commandLog entries are: push, the classification probe, and the
         // curl POST itself.
+        // apra-fleet-3swo.7.6: that tail used to be 4 entries, with a
+        // `$HOME/.fleet-git-credential-*` token read between the probe and the
+        // curl. The create-PR dispatch now goes through the
+        // vcs_credential_exec handoff, which reads and substitutes the
+        // credential server-side, so the orchestrator dispatches no
+        // credential-read command and the tail is one entry shorter. The
+        // retired positional assertion is replaced below by the strictly
+        // stronger "no credential read anywhere in the log".
         // raiseVcsPrForMember's `remoteUrlOverride` param (fed with the
         // origin URL the Publish PR step already resolved) makes
         // provisionVcsAuthForMember skip its own internal
         // `git remote get-url origin` re-derivation -- eliminating what
         // used to be a second, redundant classification-shaped probe here.
-        const last4 = spy.commandLog.slice(-4);
-        assert.match(last4[0], /^git push -u origin auto-sprint\/reach-test/);
-        assert.match(last4[1], /^git remote get-url origin\b/);
-        assert.match(last4[2], /^\$HOME\/\.fleet-git-credential-/);
-        assert.match(last4[3], /^curl -sS -X POST\b/);
-        assert.ok(last4[3].includes('/pulls'));
-        assert.ok(last4[3].includes('"base":"develop"'));
-        assert.ok(last4[3].includes('"head":"auto-sprint/reach-test"'));
+        const last3 = spy.commandLog.slice(-3);
+        assert.match(last3[0], /^git push -u origin auto-sprint\/reach-test/);
+        assert.match(last3[1], /^git remote get-url origin\b/);
+        assert.match(last3[2], /^curl -sS -X POST\b/);
+        assert.ok(last3[2].includes('/pulls'));
+        assert.ok(last3[2].includes('"base":"develop"'));
+        assert.ok(last3[2].includes('"head":"auto-sprint/reach-test"'));
+        assert.ok(
+            !spy.commandLog.some((c) => typeof c === 'string' && /^\$HOME\/\.fleet-git-credential-/.test(c)),
+            'the orchestrator must dispatch no credential-helper read of its own -- vcs_credential_exec performs it server-side',
+        );
     });
 
     test('a malicious issue id is rejected with a validation error and results in ZERO fleet dispatches', async () => {

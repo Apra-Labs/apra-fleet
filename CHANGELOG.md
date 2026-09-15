@@ -2,6 +2,302 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- runner.js structural refactor epic closed out: independent end-to-end verification, security tracing, final hardening
+
+Sprint goal: close epic apra-fleet-3swo (the runner.js strangler-fig
+decomposition, dispatch-engine consolidation, and productization work) with
+an independent, from-scratch verification pass against the whole
+`main..branch` diff -- not a re-statement of an earlier sprint's own PASS
+claim -- plus land the last round of hardening findings before closure.
+
+What shipped:
+
+- **Epic apra-fleet-3swo closed, all 70 children closed.** Independent
+  verification (re-derived from source, not read off the diff) confirmed the
+  central claims: `runner.js` 11,849 -> 3,118 lines with 44 new
+  `fleet-sprint/*.mjs` modules covering every module the epic named and all
+  twelve `phases/*.mjs` files, zero files deleted. All 13 sprint roles route
+  through the single `dispatchRole(ctx, roleName, opts)` engine;
+  `inline-ladder-guard.checkModules({})` live-scanned 57 files with 0
+  violations -- the load-bearing proof that no role dispatches twice.
+- **Security/failure-path tracing** across the sprint's new surfaces: the
+  `vcs_credential_exec` server-side credential handoff (the token never
+  enters any returned field, including a thrown dispatch error's message; an
+  OS/shell with no credential-read implementation hard-fails with
+  `unsupported_member_os` rather than degrading to a credential-less
+  dispatch), the structured `provision_auth`/`provision_vcs_auth` responses
+  (traced end-to-end through `wrapTool`'s `structuredContent` passthrough
+  into the outcome check that branches on it), `install --force`'s
+  stop-registered-service-then-escalate kill path, and the sandbox-deploy
+  port-allocation-race retry ladder (bounded retries, gated on a proven
+  conflict only).
+- **The legacy `readMemberVcsCredentialToken` prose-scraping credential-read
+  path is fully retired from production** -- every caller now routes through
+  `vcs_credential_exec`. `buildCredentialReadCommand` (its per-shell command
+  string builder) is kept as `vcs_credential_exec`'s own in-process building
+  block and stays exported and tested.
+- **Test suite, run independently rather than trusted from the sprint's own
+  claim**: root `npx vitest run` -- 322 files / 4581 tests passing, 0
+  failures. `packages/apra-fleet-se npm test` -- 3104 tests, 0 failures,
+  including the long phase4 move-only-completeness `ANCHOR_DESYNC` probe.
+  `packages/apra-fleet-se/scripts/check-generic-boundary.mjs` (this repo's
+  lint-equivalent gate for the generic engine boundary) -- 77 engine files
+  scanned, 0 apra-fleet-specific assumptions found.
+
+Filed as follow-up during this closing review (deliberately left open, not
+closed by this pass -- see "Carried forward" in the sprint analysis
+artifact):
+
+- apra-fleet-3swo.73 (P2) -- an integ-test-runner schema-repair exhaustion
+  currently produces a schema-invalid report indistinguishable from a real
+  test failure; only the `infra` degrade class maps to an inconclusive
+  record today.
+- apra-fleet-3swo.74 (P2) -- a PowerShell inline vcs-token escaping gap.
+- apra-fleet-3swo.75 / .76 / .77 (P3) -- a sprint-analysis cycle undercount,
+  stale emoji-prefix test doubles, and a `provisionFailed` fail-open edge
+  case.
+- Regression carry-over (informational only -- does not gate this sprint's
+  verdict): apra-fleet-x0mr (nested golden-transcript/mock-sprint sub-suite
+  budget overrun) and apra-fleet-wzmv (a bare `phase4-move-only-completeness`
+  failure), both newly filed from the real-bd regression suite;
+  apra-fleet-eft.17, apra-fleet-j48h, and apra-fleet-jz2m (pre-existing
+  tracking beads) updated with fresh evidence rather than duplicated.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $113.2537.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $1.5799 across 10 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 100 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- runner.js structural refactor complete: monolith to modules, dispatch engine fully migrated
+
+Sprint goal: finish the strangler-fig decomposition of
+`fleet-sprint/runner.js` -- extract every module the epic named, collapse
+all hand-written per-role dispatch ladders onto the `dispatchRole(ctx,
+roleName, opts)` engine, and slice `runSprintCycle`'s body into
+`phases/*.mjs` with move-only discipline, verified byte-identical against a
+golden transcript.
+
+What shipped:
+
+- **`runner.js` decomposition is complete.** The file went from 11,849 lines
+  on `main` to 3,118 lines (189,158 bytes) at this branch's tip, with 44 new
+  `fleet-sprint/*.mjs` modules (including all twelve `phases/*.mjs` files and
+  every module the epic named: `vcs-auth`, `git-sync`, `coordination`, `kb`,
+  `beads-scope`, `beads-transitions`, `member-target`, `role-policies`,
+  `sprint-args`, `worklists`, `prompts`, `sprint-state`). No files were
+  deleted; `runner.js` is now a composition root plus a facade that
+  re-exports every symbol its importers and mock-sprint test fixtures rely
+  on.
+- **All 13 sprint roles now dispatch through the single `dispatchRole`
+  engine**, reading `role-policies.mjs`'s data table -- zero hand-written
+  inline `agent()` dispatch ladders remain. `inline-ladder-guard.mjs` is now
+  a live check across every role.
+- **Move-only discipline held for the entire slice**: across the full
+  twelve-phase extraction and the thirteen-role dispatch-engine migration,
+  the golden mock-sprint transcript fixture changed on exactly two lines,
+  and only because the plan-reviewer schema intentionally grew a new field.
+- **Every role's dispatch watchdog is now explicit and reasoned**
+  (`role-policies.mjs`): all 13 roles declare `watchdog()` or `noWatchdog()`
+  with a stated rationale, and each armed watchdog resolves against its own
+  row's hard elapsed ceiling rather than a shared inactivity budget.
+- **Pre-sprint validation refusals are now typed** (`PreSprintValidationError`)
+  with a frozen reason vocabulary, replacing an untyped `Error`
+  distinguishable only by prose.
+- **The plan-reviewer contract carries a structured, per-bead `findings`
+  array** alongside free-text `notes`, and contested-bead routing now reads
+  it directly instead of prose-scraping `notes`.
+- **`vcs_credential_exec` gained an inside-caller-quotes substitution mode**
+  (`{{vcs_token_inline}}`) alongside the existing bare `{{vcs_token}}`
+  placeholder, so a caller needing the token inside its own quoted string no
+  longer has to choose between double-escaping and a broken command; token
+  redaction now also covers a dispatch failure's thrown-error message, not
+  just successful stdout/stderr.
+- **Fixed:** `install --force` no longer races a service-manager-managed
+  server's automatic relaunch -- it stops the registered service first and
+  only escalates to a direct kill when the same pre-stop pid is still alive
+  afterward.
+- **Fixed:** the sandbox deploy helper's OS-assigned-port allocation race
+  (bind failure when a concurrent process claims a just-released port
+  number) is resolved: conflicts are tagged only when proven (a grace-window
+  poll, not a single probe), retries are bounded, and re-allocation excludes
+  both the lost port and its adjacent neighbors.
+- **Fixed:** a crossing sync-bracket close now preserves the bracketed
+  body's own error as `cause` on the mutual-exclusion error it raises,
+  instead of discarding it.
+- **Fixed:** `resultText()` now skips a user-audience onboarding/welcome-back
+  display banner instead of reading it back as if it were the tool's own
+  output.
+
+Carried forward (correctly left open, low priority): the Phase 5
+credential-helper retirement work that routes remaining callers off the
+legacy prose-scraping credential-read path and deletes it -- the new
+server-side credential handoff is live, but the old path still has callers
+pending migration.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $30.6928.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1322 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 27 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- runner.js module decomposition: dispatch engine fully migrated, Phase 4 residual chain mostly landed (sprint FAILED -- scope incomplete, full test gate red)
+
+Sprint goal: continue the strangler-fig decomposition of
+`fleet-sprint/runner.js` -- collapse the remaining hand-written per-role
+dispatch ladders onto the `dispatchRole(ctx, roleName, opts)` engine, and
+keep slicing `runSprintCycle`'s body into `phases/*.mjs` modules with
+move-only discipline.
+
+What shipped:
+
+- **All 13 sprint roles now dispatch through the single `dispatchRole`
+  engine** (`dispatch-role.mjs`) reading `role-policies.mjs`'s data table --
+  zero hand-written inline `agent()` ladders remain for planning or
+  execution dispatch. `inline-ladder-guard.mjs` is now a live check across
+  every role instead of the inert placeholder it was while no role had been
+  migrated.
+- **`runSprintCycle` is now composed from twelve `fleet-sprint/phases/*.mjs`
+  modules**, one per phase (Ensure Sprint Branch, Plan, Replan, Develop,
+  Review, Deploy, Integ Test, Re-Review, Final Review, Regression Test,
+  Harvest, Publish PR), in that fixed order; `runner.js` itself is now a
+  composition root plus facade, down from roughly 11,700 to about 4,000
+  lines. Six more extraction modules landed in the same residual chain:
+  `git-topology.mjs`, `member-sync.mjs`, `member-provisioning.mjs`, plus the
+  facade-completeness scaffolding that carries the chain to its final
+  composition-root gate. That gate (`scripts/phase4-moveonly-probe.mjs`) now
+  runs end to end and passes. A further six extraction modules landed after
+  this entry was first drafted -- `beads-children.mjs`, `sprint-report.mjs`,
+  `newtask-text.mjs`, `round-session.mjs`, `dispatch-failure.mjs`, and
+  `fatal-diagnostics.mjs` -- closing out the extraction slate that was still
+  tracked as remaining.
+- **Fixed:** `install --force` no longer races a launchd/systemd-managed
+  server's automatic relaunch. It now stops the registered service first
+  (graceful `ServiceManager.stop()`), and only escalates to a direct kill
+  signal when the same pre-stop pid is still alive afterward -- a pid that
+  appears only after the stop is reported as a supervisor relaunch (with the
+  platform's service-stop command) instead of being signalled forever.
+- **Fixed:** the fleet-sprint VCS-auth self-heal outcome check now reads the
+  provisioning tool's structured `ok` result first, falling back to legacy
+  prose matching only when structured content is absent -- closing a false-
+  success reading that a retired prose marker could previously produce.
+- **Fixed:** `resultText()`, the shared MCP result-text helper every
+  fleet-sprint dispatch caller reads, now skips a user-audience onboarding
+  or welcome-back display banner that `tool-registry.ts`'s `wrapTool()` may
+  prepend ahead of the real tool result (or append a nudge banner after it),
+  instead of always reading `content[0]`. This closes a window where a
+  caller could read the banner text back as if it were the tool's own
+  output on a first-run or welcome-back dispatch; empty/missing-content and
+  all-banner cases still return `''`, unchanged.
+- **Fixed:** `vcs_credential_exec`'s token redaction now also runs on a
+  dispatch failure's thrown-error message, not just on successful
+  stdout/stderr -- closing a leak path where a failed credentialed command
+  could otherwise echo the plaintext token back through its own error text.
+- **Fixed:** the guarded-module registration completeness check now compares
+  full relative paths instead of bare filenames, closing a collision where a
+  newly nested module (e.g. `phases/index.mjs`) could silently ride on an
+  unrelated top-level module's registration.
+- **Fixed:** a shared dispatch call-site source scanner now skips comments
+  before extracting object-literal text, closing a hazard where an
+  apostrophe inside a comment could swallow the rest of the scanned file.
+- **Every role's dispatch watchdog is now explicit and reasoned**
+  (`role-policies.mjs`): the policy normalizer no longer silently defaults a
+  role's watchdog to disarmed, and all 13 roles now declare `watchdog()` or
+  `noWatchdog()` with a stated rationale. `deployer`, `integ-test-runner` and
+  `regression-test-runner` are newly ARMED (a deliberate behaviour change) as
+  long, unattended, single-dispatch phases with no other client-side
+  kill-path -- operators now see those three phases aborted by the
+  client-side watchdog if they hang, instead of running unbounded. Each
+  armed role's watchdog resolves against its own row's hard elapsed ceiling
+  (`maxTotalS`, e.g. `INTEG_MAX_TOTAL_S`/`REGRESSION_TEST_MAX_TOTAL_S`), not
+  a shared inactivity budget, so operators see a long phase bounded by its
+  own intended ceiling rather than aborted early against an unrelated
+  shorter budget.
+- **Pre-sprint validation refusals are now typed**
+  (`PreSprintValidationError`, a `WorkflowError` subclass) with a frozen
+  reason vocabulary (`TARGET_NOT_VISIBLE`, `NOTHING_TO_DO`,
+  `CYCLE_REPAIR_FAILED`, `DEADLOCKED`). This flips
+  `isTerminalSprintFailure()` from false to true for these refusals, so the
+  supervisor watchdog now reports them as FINISHED (with the refusal reason)
+  instead of CRASHED. The human-readable refusal messages are unchanged byte
+  for byte.
+- **Fixed:** `execute_prompt`'s `fork` argument now normalises once before
+  both its mutual-exclusivity check and its fork-id resolution, so
+  `fork: ''` or a whitespace-only fork id can no longer disagree with
+  itself. Previously the two checks trimmed differently, so a
+  whitespace-only id could be silently misrouted into a best-effort fork
+  that returned a plain fresh session with no error -- exactly the
+  wrong-context dispatch the explicit-fork gate exists to forbid. It now
+  takes the explicit-fork-id branch and gets the same terminal
+  `session_not_found` rejection as any other unknown id.
+- **New `vcs_credential_exec` tool**: a server-side VCS credential handoff
+  that runs a credentialed command without ever handing the plaintext token
+  to the caller. It now supports two placeholders: the original
+  `{{vcs_token}}` (an already-quoted substitution) and a new
+  `{{vcs_token_inline}}`, which substitutes the same token under
+  interior-only escaping for a caller that must interpolate it inside a
+  value it already quotes itself (e.g. a provider's own
+  `Authorization: Bearer <token>` header string); a command may use either
+  or both. `member_reservation`, `provision_llm_auth` and
+  `provision_vcs_auth` all now also return a `structuredContent` half
+  alongside their prose summary; the fleet-sprint orchestrator reads
+  `structuredContent.expiresAt` and `structuredContent.{ok,outcome}`
+  directly for its provisioning and reservation control flow instead of
+  scraping the human-readable text, falling back to the legacy prose/marker
+  path only when a result carries no `structuredContent` at all.
+- **Fixed:** `provision_vcs_auth`'s deploy metadata
+  (`structuredContent.metadata` and the rendered text) is now filtered
+  through a single allowlisted-keys enforcement point instead of being
+  forwarded verbatim from a VCS provider's `deploy()` result -- a
+  defense-in-depth guard, since today's three built-in providers already
+  mask token values themselves, but an unrecognised key from a future or
+  edited provider is now dropped rather than silently published.
+- Two bugs found and filed earlier in this sprint were fixed before this
+  entry closed out: a real, reproducible port-allocation race in the
+  sandbox deploy helper (plus a follow-up that widens port re-allocation to
+  also skip candidates adjacent to a lost port, not just the lost port
+  itself), and a stderr-pattern-table census gap left behind by the
+  `git-topology.mjs` extraction.
+
+Carried forward (filed as open backlog):
+
+- **Phase 5 (observability/productization) is now underway, not
+  unstarted.** The plan-reviewer's structured per-bead findings field now
+  feeds contested-bead routing directly instead of being re-derived from
+  prose, and every role's dispatch watchdog arming decision is now explicit
+  and audited (see "What shipped" above). Still outstanding: routing the
+  VCS-credential-handoff callers onto `{{vcs_token_inline}}`, and deleting the
+  now-retired prose-scraper/credential-read helpers it replaces.
+
+Everything else this section previously tracked as open backlog -- the
+Phase 4 facade-completeness gate, the six extraction modules once still in
+`runner.js`, the sandbox-deploy port-allocation race, the stderr-pattern-
+table census gap, and two low-priority (P3) hardening items (a sync-bracket
+pause-guard re-registration edge case and a shell-command-guard
+header/implementation mismatch, alongside the already-noted `execute_prompt`
+fork-predicate fix) -- was resolved before this entry closed out; see "What
+shipped" above for each. No other gap was found walking the full commit
+range for this entry beyond what is listed above; the remaining commits in
+range are internal test-harness/dev-tooling changes (e.g. the nested-suite
+timeout-budget test governance in `test/phase1-*`/`test/phase3-*`, KB
+snapshot regeneration, and decision-record docs with no behaviour change)
+with no operator-visible effect, and are deliberately not itemised here.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $84.4598.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.7241 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 52 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- execute_prompt: session forking
 
 Sprint goal: let `execute_prompt` branch a new, independent session from an
@@ -52,6 +348,54 @@ Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.3278 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
 Pricing source: all 33 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- runner.js module decomposition: Phases T-2 landed, dispatch engine and remaining phases carried forward (sprint FAILED -- scope incomplete)
+
+Sprint goal: begin the strangler-fig decomposition of `fleet-sprint/runner.js`
+(originally ~11,700 lines) into focused modules plus a policy-driven dispatch
+engine, replacing ~13 hand-written per-role dispatch ladders with one
+`dispatchRole(ctx, roleName, opts)` engine backed by a data table. The
+originally-scoped epic estimated 5-6 sprints of work; this sprint delivered
+the branch-queue triage phase, the guard-preparation phase, the full leaf-module
+extraction phase, and the sync/beads/KB extraction phase (the largest phase),
+landing eleven new `fleet-sprint/*.mjs` modules (`vcs-auth`, `sprint-args`,
+`prompts`, `worklists`, `abort`, `branch-ensure`, `mcp-result`,
+`member-target`, `git-sync`, `coordination`, `kb`, `beads-scope`,
+`beads-transitions`) with move-only discipline, a facade-completeness test per
+extraction, and a shared `guarded-modules.mjs` list so five independent
+mechanical guards (shell-command, dolt-literal, full-db-fetch, unbracketed-push,
+inline-ladder) stay pointed at every extracted module instead of silently
+losing coverage as code moves out of `runner.js`. `runner.js` itself shrank
+from roughly 11,700 to roughly 7,800 lines. Two pause-bracket push holes (the
+Final Review findings push and the Publish-PR push) were closed by
+construction as part of the `git-sync.mjs` extraction. The dispatch-engine
+phase itself landed only its data layer (`role-policies.mjs`, with a
+structural scanner keeping every row honest against the live dispatch sites)
+and an inert readiness guard (`inline-ladder-guard.mjs`) -- no role has
+actually been migrated onto `dispatchRole` yet, and the composition-root
+phase (slicing `runSprintCycle` into `phases/*` modules) and the
+observability/productization phase are both largely carried forward, aside
+from three pieces that landed early: structured (non-prose) MCP responses for
+member reservation and LLM/VCS credential provisioning, and a new server-side
+VCS credential handoff tool that removes a plaintext-token round-trip through
+orchestrator-readable command output. A regression was caught and reopened in
+review: a consumer of the new structured provisioning responses shipped with
+a stale test double that masked the new response shape throwing at runtime
+inside a best-effort error handler. Separately, every deploy attempt this
+sprint failed at the install step; the root cause was diagnosed and traced to
+a pre-existing gap in how the installer stops a service-manager-relaunched
+server, filed as follow-up work rather than fixed in this sprint, which means
+none of the phases routed through a deploy-verified smoke test were actually
+confirmed against a running build.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $81.6134.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 48 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
 
 ## [Unreleased] -- Dolt sync budget: fewer, cheaper beads syncs per sprint
 

@@ -52,6 +52,45 @@ sprint's dispatches depend on, not just your own MCP connection; restarting
 it can collaterally kill their child processes. Run the active-sprints gate
 below first and stop only for a FOREIGN sprint.
 
+### Interim manual recovery: `install --force` cannot stop a launchd-managed server (macOS only)
+
+**Applies to macOS only.** On Linux and Windows the server is not supervised by
+launchd and this step does not apply -- skip it.
+
+A patched installer stops the registered service through the service manager
+before signalling anything, and reports a supervisor RELAUNCH distinctly from a
+process that merely refused to die. An UNPATCHED installer binary (one built
+before that fix) only runs `pkill -x apra-fleet`, which cannot win the race:
+`~/Library/LaunchAgents/com.apra-fleet.server.plist` declares
+`KeepAlive/SuccessfulExit=false`, so launchd relaunches the server under a new
+pid immediately after the SIGKILL, and the installer exits 1 with
+
+    could not stop the running apra-fleet server (it is still running after
+    SIGTERM and a SIGKILL escalation)
+
+while `~/.apra-fleet/data/fleet.log` shows a fresh startup line with a NEW pid.
+
+This is the sanctioned recovery -- take the LaunchAgent out of the picture
+first, then install, then bring it back. Do not invent a wrapper script or an
+alternate kill loop; those only re-race launchd.
+
+```bash
+# macOS only. Take the service down (launchd stops relaunching it), then install.
+launchctl bootout "gui/$(id -u)/com.apra-fleet.server" || true
+pgrep -x apra-fleet || echo "server is down"
+
+# Run this in place of the plain `"$INSTALLER" install --force` line in the
+# Deploy script below ($INSTALLER is resolved there).
+"$INSTALLER" install --force
+
+# install re-registers and starts the service (SEA + HTTP transport). If it
+# reported "registration skipped", bring it back by hand:
+launchctl kickstart -k "gui/$(id -u)/com.apra-fleet.server"
+```
+
+Never leave the LaunchAgent booted out: the machine's shared singleton server
+stays down for every sprint until it is bootstrapped again.
+
 ### Active-sprints gate: your own reservation vs. a foreign one
 
 `GET /api/sprints` lists the supervisor's reservation ledger; each entry has a

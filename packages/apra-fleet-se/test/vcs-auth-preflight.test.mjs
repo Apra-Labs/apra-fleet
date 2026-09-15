@@ -9,11 +9,15 @@ import {
     createVcsAuthSelfHealCallback,
     syncMemberAfter,
 } from '../fleet-sprint/runner.js';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER_PATH = path.join(__dirname, '..', 'fleet-sprint', 'runner.js');
 const runnerSource = fs.readFileSync(RUNNER_PATH, 'utf8');
+// withGitSync moved out of runSprintCycle into git-sync.mjs (apra-fleet-3swo.4.1);
+// the source pin below reads it from there, not from runner.js.
+const GIT_SYNC_PATH = path.join(__dirname, '..', 'fleet-sprint', 'git-sync.mjs');
+const gitSyncSource = fs.readFileSync(GIT_SYNC_PATH, 'utf8');
 
 // =============================================================================
 // apra-fleet-glv.2: regression coverage for apra-fleet-glv's proactive VCS-
@@ -76,6 +80,28 @@ const remoteCommand = async (cmd) => {
 
 const farFutureExpiry = () => new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1h out
 
+// apra-fleet-3swo.7.5: the preflight's freshness cache now reads the credential
+// expiry from the STRUCTURED half of a provision_vcs_auth result
+// (structuredContent.expiresAt -- an ISO string, or null meaning "no expiry
+// tracked -> OK"), never by regex-scraping the prose summary. Every double in
+// this file therefore returns the { content, structuredContent } shape the real
+// tool emits (src/tools/provision-vcs-auth.ts's ProvisionVcsAuthFields). The
+// prose keeps its historical 'expiresAt:' metadata line so a double still LOOKS
+// like a real response, but it is deliberately no longer what the cache reads --
+// if it ever were again, the expiring-soon case below would be the test that
+// caught it, since it is the only one whose cached expiry actually matters.
+const provisionedWithExpiry = (expiresAt) => ({
+    content: [{ text: `Provisioned VCS credential.\n  expiresAt: ${expiresAt}` }],
+    structuredContent: { ok: true, reason: 'ok', expiresAt },
+});
+
+// PAT-mode counterpart: a credential type that never expires reports
+// expiresAt: null, which the cache must read as "known-good, never refresh".
+const provisionedNoExpiry = (text = 'Provisioned VCS credential (PAT mode, no expiry).') => ({
+    content: [{ text }],
+    structuredContent: { ok: true, reason: 'ok', expiresAt: null },
+});
+
 // apra-fleet-647.1.2.1: provisionVcsAuthForMember now resolves the member's
 // provider via VCSModule.resolveProvider(), which itself calls
 // fleetApi.memberDetail() (the 'member_detail' MCP tool) BEFORE ever calling
@@ -93,7 +119,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name, args) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push({ name, args });
-            return { content: [{ text: `Provisioned VCS credential.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const logs = [];
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand, log: (m) => logs.push(m) });
@@ -118,7 +144,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push(name);
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand });
 
@@ -134,7 +160,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name, args) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push(args.member_name);
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand });
 
@@ -156,7 +182,7 @@ describe('createVcsAuthPreflightCallback', () => {
             // Each mint expires 12 minutes out from "now" -- comfortably
             // outside the 10-minute preflight window until the clock below
             // advances far enough to eat into that margin.
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${new Date(nowMs + 12 * 60 * 1000).toISOString()}` }] };
+            return provisionedWithExpiry(new Date(nowMs + 12 * 60 * 1000).toISOString());
         };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand, now });
 
@@ -178,7 +204,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push(1);
-            return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] };
+            return provisionedNoExpiry();
         };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand });
 
@@ -216,7 +242,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name, args) => {
             if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'bitbucket' }) }] };
             calls.push({ name, args });
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const bitbucketCommand = async (cmd) => {
             if (cmd === 'git remote get-url origin') {
@@ -259,7 +285,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name, args) => {
             if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: undefined }) }] };
             calls.push({ name, args });
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const logs = [];
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: unclaimedRemoteCommand, log: (m) => logs.push(m) });
@@ -282,7 +308,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const preflightCallTool = async (name, args) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             preflightCalls.push({ name, args });
-            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+            return provisionedWithExpiry(farFutureExpiry());
         };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool: preflightCallTool, command: remoteCommand });
         await ensureVcsAuthFresh('fleet-mac');
@@ -301,7 +327,7 @@ describe('createVcsAuthPreflightCallback', () => {
         const healCallTool = async (name, args) => {
             if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             healCalls.push({ name, args });
-            return { content: [{ text: 'Provisioned.' }] };
+            return provisionedNoExpiry('Provisioned.');
         };
         const onAuthFailure = createVcsAuthSelfHealCallback({ callTool: healCallTool, command: pushCommand });
 
@@ -339,13 +365,20 @@ describe('runSprintCycle: the real withGitSync pushCode-gated preflight wiring',
     test('a doer dispatch with no prior credential mints exactly once before its turn starts; read-only role dispatches never trigger a preflight call', async () => {
         await withScenarioMarkers('glv.2 preflight end-to-end', async () => {
             const vcsCalls = [];
-            const callTool = async (name, args) => {
-                if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
-                if (name === 'provision_vcs_auth') {
-                    vcsCalls.push(args);
-                    return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
-                }
-                return { content: [{ text: 'ok' }] };
+            // apra-fleet-3swo.7.19: a factory (not a plain callTool) so the
+            // fallback below can delegate vcs_credential_exec to the SAME
+            // shared simulator this scenario's own mockFleetApi uses -- see
+            // runDevelopLoopScenario's callToolFactory doc comment.
+            const callToolFactory = (executeCommand) => {
+                const base = defaultMockCallTool({ executeCommand });
+                return async (name, args) => {
+                    if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+                    if (name === 'provision_vcs_auth') {
+                        vcsCalls.push(args);
+                        return provisionedWithExpiry(farFutureExpiry());
+                    }
+                    return base(name, args);
+                };
             };
 
             const result = await runDevelopLoopScenario('glv2preflight', {
@@ -356,7 +389,7 @@ describe('runSprintCycle: the real withGitSync pushCode-gated preflight wiring',
                     'integ-test-runner': ['member-reviewer'],
                 },
                 taskSpecs: [{ title: 'Task: exercise the VCS-auth preflight' }],
-                callTool,
+                callToolFactory,
                 reviewerHandler: async () => ({
                     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
                 }),
@@ -443,13 +476,18 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
     test('(criteria 1 & 2, MUTATION CHECK target) a pushBeads:true READ-SIDE bracket (planner, integ-test-runner, regression-test-runner) emits the preflight log line AND calls provision_vcs_auth for its OWN member; a pure read-only bracket (reviewer, plan-reviewer, deployer) sharing one member emits NEITHER, for any of the three roles routed onto it', async () => {
         await withScenarioMarkers('417.4 pushBeads-only preflight', async () => {
             const vcsCalls = [];
-            const callTool = async (name, args) => {
-                if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
-                if (name === 'provision_vcs_auth') {
-                    vcsCalls.push(args);
-                    return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
-                }
-                return { content: [{ text: 'ok' }] };
+            // apra-fleet-3swo.7.19: see the sibling scenario above for why
+            // this is a callToolFactory rather than a plain callTool.
+            const callToolFactory = (executeCommand) => {
+                const base = defaultMockCallTool({ executeCommand });
+                return async (name, args) => {
+                    if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+                    if (name === 'provision_vcs_auth') {
+                        vcsCalls.push(args);
+                        return provisionedWithExpiry(farFutureExpiry());
+                    }
+                    return base(name, args);
+                };
             };
 
             const result = await runDevelopLoopScenario('417_4pushbeads', {
@@ -465,7 +503,7 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
                 withRunbooks: true,
                 withRegressionPlaybook: true,
                 taskSpecs: [{ title: 'Task: exercise the pushBeads-only preflight gating' }],
-                callTool,
+                callToolFactory,
                 reviewerHandler: async () => ({
                     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
                 }),
@@ -524,16 +562,21 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
     test('(criterion 4) a preflight FAILURE at a pushBeads:true read-side bracket is logged and swallowed -- the dispatch still runs and the sprint still completes', async () => {
         await withScenarioMarkers('417.4 preflight failure swallowed', async () => {
             const vcsCalls = [];
-            const callTool = async (name, args) => {
-                if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
-                if (name === 'provision_vcs_auth') {
-                    if (args.member_name === ROLE_MEMBERS.planner) {
-                        throw new Error('provision_vcs_auth: fleet server unreachable (injected)');
+            // apra-fleet-3swo.7.19: see the sibling scenarios above for why
+            // this is a callToolFactory rather than a plain callTool.
+            const callToolFactory = (executeCommand) => {
+                const base = defaultMockCallTool({ executeCommand });
+                return async (name, args) => {
+                    if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+                    if (name === 'provision_vcs_auth') {
+                        if (args.member_name === ROLE_MEMBERS.planner) {
+                            throw new Error('provision_vcs_auth: fleet server unreachable (injected)');
+                        }
+                        vcsCalls.push(args);
+                        return provisionedWithExpiry(farFutureExpiry());
                     }
-                    vcsCalls.push(args);
-                    return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
-                }
-                return { content: [{ text: 'ok' }] };
+                    return base(name, args);
+                };
             };
 
             const result = await runDevelopLoopScenario('417_4preflightfail', {
@@ -545,7 +588,7 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
                     deployer: [ROLE_MEMBERS.deployer],
                 },
                 taskSpecs: [{ title: 'Task: exercise a swallowed preflight failure' }],
-                callTool,
+                callToolFactory,
                 reviewerHandler: async () => ({
                     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
                 }),
@@ -568,8 +611,10 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
 
 // =============================================================================
 // apra-fleet-417.4, criterion 3: the `needsVcsAuth` DEFAULT is pinned to
-// exactly `pushCode || pushBeads` at withGitSync's own signature (a source
-// assertion, since withGitSync cannot be imported), and its OR semantics are
+// exactly `pushCode || pushBeads` at withGitSync's own signature (still a
+// source assertion: withGitSync is exported from git-sync.mjs since
+// apra-fleet-3swo.4.1, but a DEFAULT-parameter expression is not observable
+// through the function object), and its OR semantics are
 // unit-mirrored across the full truth table -- including the one combination
 // no CURRENT runner.js call site exercises: an explicit `needsVcsAuth: true`
 // override with BOTH pushCode:false and pushBeads:false. withGitSync's own
@@ -590,8 +635,8 @@ describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) pre
 describe('withGitSync needsVcsAuth default: pinned to the source, OR semantics unit-mirrored', () => {
     test("withGitSync's signature computes needsVcsAuth as exactly `pushCode || pushBeads` by default", () => {
         assert.match(
-            runnerSource,
-            /async function withGitSync\(member, pushCode, dispatchFn, \{ pushBeads = false, needsVcsAuth = pushCode \|\| pushBeads,/,
+            gitSyncSource,
+            /async function withGitSync\(ctx, member, pushCode, dispatchFn, \{ pushBeads = false, needsVcsAuth = pushCode \|\| pushBeads,/,
             "withGitSync's needsVcsAuth default must stay exactly `pushCode || pushBeads` (apra-fleet-647.1.1.2) -- reverting to a plain `pushCode` check (or any other expression) silently drops the preflight for every pushBeads-only bracket (planner, integ-test-runner, regression-test-runner).",
         );
     });

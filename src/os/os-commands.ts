@@ -81,6 +81,17 @@ export interface OsCommands {
   // --- Git credential helper ---
   gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string;
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string;
+  /**
+   * Runs the credential helper gitCredentialHelperWrite() deployed, so its
+   * `password=<token>` line reaches stdout (apra-fleet-3swo.7.3). `path` is the
+   * human-readable helper location for error messages.
+   *
+   * This command's output carries the PLAINTEXT token and is therefore only
+   * ever safe to run server-side (strategy.execCommand inside one tool call).
+   * It must never be handed to a caller-visible dispatch -- that stdout
+   * round-trip is exactly what the server-side credential handoff replaces.
+   */
+  gitCredentialHelperRead(label?: string): { command: string; path: string };
 
   /** Delete ONLY the pre-label, single-file credential helper
    *  (`.fleet-git-credential`, no label suffix) left behind by installs that

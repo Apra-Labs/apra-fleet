@@ -115,7 +115,7 @@ async function startFleetClient() {
 
 /** Every fleet tool that returns a plain string (register_member,
  *  provision_vcs_auth, remove_member) is delivered over MCP as
- *  `content[0].text` -- mirrors runner.js's own selfHealResultText(). */
+ *  `content[0].text` -- mirrors fleet-sprint/mcp-result.mjs's own resultText(). */
 function toolText(result) {
     if (typeof result === 'string') return result;
     if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
@@ -140,7 +140,7 @@ function assertToolSucceeded(result, label) {
 
 // provision_vcs_auth/register_member/remove_member never throw on failure --
 // they return plain text starting with the failure emoji (see runner.js's
-// selfHealResultText/provisionVcsAuthForMember doc comments, which this
+// resultText/provisionVcsAuthForMember doc comments, which this
 // mirrors for the same reason: a failed provision must never be reported as
 // success).
 function assertNotFailureText(text, label) {

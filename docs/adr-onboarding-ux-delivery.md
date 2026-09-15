@@ -91,6 +91,23 @@ The existing content-block channel with `audience: ['user']` annotations remains
 
 The channels fail independently. No single channel is load-bearing.
 
+### The banner content block is prepended, not appended
+
+`wrapTool` pushes the `<apra-fleet-display>` content block (Channel 2/3, with
+`annotations.audience: ['user']`) onto the response's `content` array
+**before** the tool's own real result content, not after. This ordering
+matters for any code inside the process that reads a tool's own result
+programmatically rather than as an LLM-facing transcript: a helper that
+naively reads `content[0]` to get "the tool's answer" gets the banner
+instead whenever one was emitted, silently returning onboarding boilerplate
+as if it were the tool's real payload. The two shared helpers other internal
+callers are expected to use for this (`resultText` and `toolErrorText`,
+`mcp-result.mjs`) know to skip past both the `<apra-fleet-display>` marker
+block and the loose `audience: ['user']`-annotated block rather than
+indexing positionally -- any new internal consumer of a wrapped tool's
+`content` array should call one of those two rather than re-deriving its own
+"read the first block" logic.
+
 ---
 
 ## Decision 2: Sanitize the marker channel against injection
