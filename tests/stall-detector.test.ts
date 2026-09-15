@@ -870,6 +870,57 @@ describe('StallDetector', () => {
     });
   });
 
+  // apra-fleet-25yl.6: a malformed STALL_THRESHOLD_MS must not silently wedge
+  // the adaptive probe gate for entries with no per-dispatch thresholdMs.
+  describe('_poll — malformed STALL_THRESHOLD_MS env guard (apra-fleet-25yl.6)', () => {
+    it('a non-numeric STALL_THRESHOLD_MS still yields a finite probeIntervalMs, and an entry with no thresholdMs is probed a second time on a later tick', async () => {
+      process.env['STALL_THRESHOLD_MS'] = 'not-a-number';
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start })); // no thresholdMs -- uses the fallback
+
+      await detector._poll(); // seed at t=0
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'e')).toHaveLength(1);
+
+      // Advance well past the DEFAULT_STALL_THRESHOLD_MS (150s) fallback the
+      // guard must produce -- a NaN probeIntervalMs would leave dueForProbe
+      // false forever and this entry would never be probed again.
+      vi.setSystemTime(start + 200_000);
+      await detector._poll();
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'e')).toHaveLength(2);
+    });
+
+    it('an entry that DOES carry its own thresholdMs is unaffected by the malformed env value', async () => {
+      process.env['STALL_THRESHOLD_MS'] = 'garbage';
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+      // 60s thresholdMs / 5 = 12s, floored at the 30s tick interval.
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start, thresholdMs: 60_000 }));
+
+      await detector._poll(); // seed
+      vi.setSystemTime(start + 30_000);
+      await detector._poll();
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'e')).toHaveLength(2); // cadence derived purely from its own thresholdMs
+    });
+
+    it('logs the rejected env value exactly once, not once per tick', async () => {
+      process.env['STALL_THRESHOLD_MS'] = 'nope';
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start }));
+
+      await detector._poll();
+      vi.setSystemTime(start + 30_000);
+      await detector._poll();
+      vi.setSystemTime(start + 60_000);
+      await detector._poll();
+
+      const warnCalls = mockLogWarn.mock.calls.filter((c) => c[0] === 'stall_threshold_env_invalid');
+      expect(warnCalls).toHaveLength(1);
+      expect(JSON.parse(warnCalls[0]![1] as string).value).toBe('nope');
+    });
+  });
+
   // apra-fleet-iuc.2: the transcript file's OS mtime cross-checked against the
   // content-parsed timestamp. Every test above mocks pollLogFile WITHOUT
   // mtimeMs (undefined), so this block is what actually exercises the new
