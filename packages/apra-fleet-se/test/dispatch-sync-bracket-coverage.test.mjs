@@ -6,7 +6,10 @@ import fs from 'fs';
 import { balancedCallRange } from './helpers/balanced-call-scanner.mjs';
 // apra-fleet-3swo.5.7: the push flags now live in the policy table, so the
 // census below reads them from there rather than from runner.js source.
-import { allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
+// apra-fleet-j918.7.3: ROLE_POLICIES is also needed now that the runner.js
+// call-site counts below are DERIVED from migration state instead of
+// hand-maintained literals.
+import { allDispatchPolicies, ROLE_POLICIES } from '../fleet-sprint/role-policies.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,73 +87,64 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // max_turns-exhaustion resume, each in its own read-side (pushCode:false,
 // pushBeads:true -- it files carry-over bug beads but never writes code)
 // withGitSync(...) bracket. pushCode:true stays at 4.
-// 22 -> 20 agent()/20 -> 18 withGitSync (apra-fleet-3swo.5.3): the planner
-// ladder -- its interactive dispatch and its max_turns-exhaustion resume, each
-// in its own read-side (pushCode:false, pushBeads:true) bracket -- moved out of
-// runner.js onto the dispatchRole engine (fleet-sprint/dispatch-role.mjs).
-// The engine opens the SAME bracket around the SAME dispatch; it just does so
-// from one generic place, driven by role-policies.mjs, instead of from a
-// hand-written ladder here. dispatch-role.mjs is a GUARDED_MODULES entry, so
-// dispatch-safety-guard still covers its call site, and the planning-side pins
-// (test/planning-role-dispatch-pins.test.mjs) assert the bracket behaviourally.
-// pushCode:true stays at 4 -- the planner never wrote code.
-// 20 -> 18 agent()/18 -> 16 withGitSync (same bead): the plan-reviewer ladder
-// -- its dispatch and its max_turns-exhaustion resume, each in its own
-// read-side bracket -- followed the planner onto the engine.
-// 18 -> 17 agent()/16 -> 15 withGitSync (same bead): the scoped-replan
-// planner (one dispatch, one pushBeads:true read-side bracket) followed them.
-// 17 -> 16 agent()/15 -> 14 withGitSync (same bead): the scoped-replan
-// plan-reviewer (one dispatch, one read-side bracket) followed them.
-// 16 -> 14 agent() (same bead): the Streak Assignment grouping call and its
-// bounded semantic-repair re-ask followed them. Those two were the file's ONLY
-// documented unbracketed exemptions, so STREAK_ASSIGNMENT_MARKERS is now empty
-// and every remaining runner.js agent() site must be bracketed -- a strictly
-// stronger statement than before. withGitSync stays at 14: the two dispatches
-// that left were the two that never had a bracket.
-// 14 -> 12 (apra-fleet-3swo.5.7): the harvester ladder -- its dispatch and its
-// max_turns-exhaustion resume -- moved onto the dispatchRole engine, starting
-// the execution-side half of the migration. Two agent() call sites left
-// runner.js; none were added.
-// 12 -> 10 (same bead): the deployer ladder -- its dispatch and its
-// max_turns-exhaustion resume -- followed the harvester onto the engine.
-// 10 -> 8 (same bead): the regression-test-runner ladder -- its dispatch and
-// its max_turns-exhaustion resume -- followed the deployer onto the engine.
-// 8 -> 6 (same bead): the integ-test-runner ladder -- its dispatch and its
-// max_turns-exhaustion resume, which is also its ONE infra-recovery resume --
-// followed the regression runner onto the engine.
-// 6 -> 4 (same bead): the final-review ladder -- its dispatch and its
-// max_turns-exhaustion resume -- followed the integ runner onto the engine.
-// 4 -> 2 (same bead): the per-round reviewer ladder -- its dispatch and its
-// max_turns-exhaustion resume -- followed the final review onto the engine.
-// 2 -> 0 (same bead): the doer ladder -- its streak dispatch and its
-// max_turns-exhaustion resume -- was the last inline execution ladder. Every
-// agent() dispatch in the scanned module set is now the dispatchRole engine's
-// single call site, so this runner.js-only census proves nothing and the
-// EXPECTED counts here are zero by construction.
-const EXPECTED_AGENT_COUNT = 0;
-// 14 -> 12 (apra-fleet-3swo.5.7): the harvester's dispatch and resume brackets
-// moved onto the dispatchRole engine's one generic withGitSync call.
-// 12 -> 10 (same bead): the deployer's two read-side brackets followed the
-// harvester onto the engine. Neither carried pushBeads, so that count is
-// unchanged.
-// 10 -> 8 (same bead): the regression runner's two pushBeads:true brackets
-// followed them onto the engine.
-// 8 -> 6 (same bead): the integ runner's two pushBeads:true brackets followed
-// them onto the engine.
-// 6 -> 4 (same bead): the final review's two read-side brackets followed them.
-// 4 -> 2 (same bead): the per-round reviewer's two read-side brackets followed
-// them. Only the doer pair is left inline.
-// 2 -> 0 (same bead): the doer's two brackets were the last inline ones.
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 0;
-// apra-fleet-3swo.5.3: EMPTY. The two Streak Assignment dispatches -- the only
-// documented, deliberate exemptions from the bracket invariant -- now run
-// through the dispatchRole engine, whose policy row records `bracket: {wrapped:
-// false}` as data and whose behaviour is pinned by
-// test/planning-role-dispatch-pins.test.mjs. Every agent() call site LEFT in
-// runner.js must therefore be bracketed, with no exemption at all. Kept as a
-// list rather than deleted so a future deliberate exemption is added here, in
-// the one place this file's arithmetic already accounts for it.
+// apra-fleet-j918.7.3 -- HISTORY UP TO HERE PRESERVED IN GIT, NOT RE-STATED:
+// this comment block used to carry a hand-maintained magic number, bumped by
+// hand on every one of the ~11 migration commits that moved a role's ladder
+// off runner.js onto the dispatchRole engine (see `git log -p` on this file
+// for the full sequence, "22 -> 20 agent()" through "2 -> 0"). Once EVERY role
+// finished migrating (role-policies.mjs marks all 13 `migrated: true`), that
+// literal was permanently pinned at 0 -- a runner.js text scan can no longer
+// observe a regression in a migrated role's bracket, because the migrated
+// dispatch's bracket is now DATA (role-policies.mjs's `bracket` field) read
+// by ONE generic call site in fleet-sprint/dispatch-role.mjs, not source text
+// in runner.js. Hardcoding the expected count to that permanent 0 meant this
+// test could never again fail no matter what happened to a migrated role's
+// bracket -- exactly the "permanently vacuous" defect apra-fleet-j918.7.3
+// exists to fix.
+//
+// FIX: EXPECTED_AGENT_COUNT/EXPECTED_WITHGITSYNC_CALL_COUNT are now DERIVED
+// from role-policies.mjs's migration state instead of hand-typed, so they
+// self-adjust (instead of silently going stale) if a role's `migrated` flag
+// is ever flipped without its runner.js ladder actually being added/removed.
+// A non-migrated dispatch is still expected to have exactly one hand-written
+// `agent(` call site in runner.js, wrapped by its own `withGitSync(...)` iff
+// its policy row says `bracket.wrapped`.
+//
+// COVERAGE OWNERSHIP: the runner.js-only scan below can only ever prove
+// things about NON-migrated dispatches (there are none left today, so both
+// derived counts are 0, same as before) plus the narrower fact that no new
+// ad hoc `agent(` ladder was hand-added to runner.js bypassing the engine.
+// The property this test's TITLE claims -- "every dispatch is bracketed,
+// full stop" -- is proved for MIGRATED roles by three other, non-runner.js-
+// scanning guards that this file deliberately does not re-implement:
+// test/git-sync-brackets.test.mjs's "(a)" case (declared-table coverage per
+// role), test/role-policies-table.test.mjs (re-derives every bracket field
+// from REAL behaviour by running the engine), and
+// test/inline-ladder-guard.test.mjs (fails if a migrated role's inline
+// ladder survives ANYWHERE in GUARDED_MODULES, not just runner.js). The
+// direct policy-table check added to this test below intentionally restates
+// git-sync-brackets.test.mjs's own per-role assertion rather than leaving
+// this file silently unable to ever catch that class of regression again --
+// see this bead's notes for why the file was repointed rather than deleted.
+function nonMigratedDispatches() {
+    return allDispatchPolicies().filter((p) => ROLE_POLICIES[p.ladder].migrated !== true);
+}
+const EXPECTED_AGENT_COUNT = nonMigratedDispatches().length;
+const EXPECTED_WITHGITSYNC_CALL_COUNT = nonMigratedDispatches().filter((p) => p.bracket.wrapped).length;
+// The exemption markers list is likewise derived: a non-migrated, genuinely
+// unbracketed dispatch (like the old Streak Assignment ladder used to be)
+// would need its own call-site marker added here so the census below can
+// still tell "documented exemption" apart from "regression". Today there are
+// zero non-migrated dispatches at all, so this is empty by derivation, not
+// by a hand-typed literal -- and the sanity check right after this constant
+// keeps that tied to the real table instead of drifting silently.
 const STREAK_ASSIGNMENT_MARKERS = [];
+assert.strictEqual(
+    STREAK_ASSIGNMENT_MARKERS.length,
+    nonMigratedDispatches().filter((p) => !p.bracket.wrapped).length,
+    'STREAK_ASSIGNMENT_MARKERS must carry one marker per non-migrated, genuinely unbracketed dispatch -- ' +
+    'add the new exemption marker here rather than letting this census go stale.'
+);
 
 /** Same helper as dispatch-safety-guard.test.mjs: is `col` inside an open same-line quote? */
 function isInsideSameLineString(lineText, col) {
@@ -271,6 +265,22 @@ test('every agent() dispatch call site is either wrapped by withGitSync(...) or 
         `${uncovered.map((s) => `runner.js:${s.line}`).join(', ')}. Every one of the seven dispatch types must be ` +
         `bracketed by withGitSync(...) per the Plan 3.3 insertion-point table (apra-fleet-eft.8.2) -- a new ` +
         `dispatch added outside that bracket is exactly the regression this test exists to catch.`
+    );
+
+    // apra-fleet-j918.7.3: the runner.js-only scan above cannot see a MIGRATED
+    // role losing its bracket (its dispatch is DATA now, not runner.js text --
+    // see the comment above EXPECTED_AGENT_COUNT). Re-assert the same fact
+    // directly against the policy table so this test does not go permanently
+    // blind to that regression class just because every role finished
+    // migrating. This restates test/git-sync-brackets.test.mjs's own "(a)"
+    // assertion deliberately -- it is intentional redundancy, not new
+    // coverage, kept here rather than deleted per this bead's notes.
+    const declaredUnbracketed = allDispatchPolicies().filter((p) => !p.bracket.wrapped);
+    assert.deepStrictEqual(
+        [...new Set(declaredUnbracketed.map((p) => p.role))],
+        ['streak-assignment'],
+        'Only the pure-compute Streak Assignment grouping call may be declared unbracketed in the policy table; ' +
+        'every other dispatch, migrated or not, must carry bracket.wrapped === true.'
     );
 });
 
