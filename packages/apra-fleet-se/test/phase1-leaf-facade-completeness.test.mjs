@@ -19,10 +19,16 @@ import * as runner from '../fleet-sprint/runner.js';
 // worklists.mjs, never through the runner.js facade.
 import { selectStreaks } from '../fleet-sprint/worklists.mjs';
 // apra-fleet-3swo.53: shared with phase3-dispatch-engine-completeness.test.mjs
-// -- see that module's header for why this was extracted. (The excerpt cap
-// and excerptChildOutput also live there now, used internally by
-// handleNestedSuiteSpawnResult; this file has no direct use for them.)
-import { handleNestedSuiteSpawnResult } from './helpers/nested-suite-spawn.mjs';
+// -- see that module's header for why this was extracted. (excerptChildOutput
+// also lives there, used internally by handleNestedSuiteSpawnResult; this file
+// has no direct use for it. The excerpt cap IS used directly, by section (6)
+// case (b4), to prove the failing entry it asserts on really does sit outside
+// the quoted tail window.)
+import {
+    handleNestedSuiteSpawnResult,
+    extractFailingTapEntries,
+    MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS,
+} from './helpers/nested-suite-spawn.mjs';
 
 // =============================================================================
 // apra-fleet-3swo.3.7 -- prove Phase 1's leaf extractions (sprint-args.mjs
@@ -686,6 +692,97 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
         // The uncapped original is still available via cause, so nothing is lost.
         assert.equal(caughtErr.cause.stdout.length, 2_000_000, 'cause must retain the full, untruncated original stdout');
         assert.equal(caughtErr.cause.stderr.length, 2_000_000, 'cause must retain the full, untruncated original stderr');
+    });
+
+    // -------------------------------------------------------------------------
+    // case (b4): this gate runs its OWN nested batch over every mock-sprint
+    // file (describe (4) above), so it is exposed to the identical reporting
+    // hole phase3's nested step hit on Windows CI: a ~1.6MB child stream whose
+    // single `not ok` sits far outside the 4000-char tail the wrapped message
+    // quoted, leaving a failure report that named no failing test. Pinned in
+    // BOTH callers deliberately -- the handler is shared (helpers/nested-suite-
+    // spawn.mjs), and the extraction regressing in one gate's favour while the
+    // other stays green is exactly the desynchronization that extraction
+    // existed to prevent.
+    // -------------------------------------------------------------------------
+    test('case (b4): a failing entry OUTSIDE the quoted tail window is still named -- the positional tail alone never identified it', () => {
+        const failingName = 'mock sprint: a scenario whose name only the TAP entry carries';
+        const failingError = 'Expected the sprint to abort on its own, got a hung run';
+        const lines = ['TAP version 13'];
+        // Sized so the synthesized stream clears the megabyte-scale
+        // precondition asserted below (the real failing child emitted
+        // 1,621,552 chars).
+        const TOTAL = 800;
+        for (let n = 1; n <= TOTAL; n += 1) {
+            if (n === 3) {
+                lines.push(`not ok ${n} - ${failingName}`);
+                lines.push('  ---');
+                lines.push("  type: 'test'");
+                lines.push("  failureType: 'testCodeFailure'");
+                lines.push('  error: |-');
+                lines.push(`    ${failingError}`);
+                lines.push("  code: 'ERR_TEST_FAILURE'");
+                lines.push('  ...');
+            } else {
+                lines.push(`ok ${n} - mock sprint: filler scenario ${n}`);
+                lines.push('  ---');
+                lines.push("  type: 'test'");
+                lines.push('  ...');
+            }
+            for (let k = 0; k < 20; k += 1) {
+                lines.push(`# [Workflow Log] filler diagnostic line ${n}/${k} -- padding to reproduce the real stream width`);
+            }
+        }
+        lines.push(`1..${TOTAL}`, `# tests ${TOTAL}`, `# pass ${TOTAL - 1}`, '# fail 1');
+        const stdout = lines.join('\n');
+
+        // Falsification precondition: the name is genuinely absent from the
+        // tail window, so a tail-only implementation cannot pass this.
+        assert.ok(stdout.length > 1_000_000, `the synthesized stream must be megabyte-scale like the real one; got ${stdout.length}`);
+        assert.ok(
+            !stdout.slice(-MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS).includes(failingName),
+            'the failing test name must be absent from the quoted tail window, or this case proves nothing',
+        );
+
+        const err = new Error('Command failed: node --test failed with exit code 1');
+        err.status = 1;
+        err.stdout = stdout;
+        err.stderr = '';
+
+        let caught;
+        try {
+            handleNestedSuiteSpawnResult('mock-sprint', err, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)', PHASE1_ENV_VAR_NAME);
+            assert.fail('should have thrown an error');
+        } catch (e) {
+            caught = e;
+        }
+
+        assert.ok(caught.message.includes(failingName), `the wrapped message must NAME the failing inner test; got:\n${caught.message}`);
+        assert.ok(caught.message.includes(failingError), `the wrapped message must carry the failing test's own error text; got:\n${caught.message}`);
+        assert.ok(
+            caught.message.length < 20_000,
+            `wrapped message must stay length-capped once failing entries are appended; got length ${caught.message.length}`,
+        );
+        const wrapperPrefix = caught.message.split('child stdout (tail):')[0];
+        assert.ok(wrapperPrefix.includes('did NOT expire'), `wrapper prefix must still classify this as an inner child failure; got: ${wrapperPrefix}`);
+        assert.ok(
+            !wrapperPrefix.includes('timed out') && !wrapperPrefix.includes('exceeded its'),
+            `appending failing entries must never leak into the wrapper prefix's timeout classification; got: ${wrapperPrefix}`,
+        );
+        assert.equal(caught.cause, err, 'original spawn error must still be reachable as .cause');
+
+        // The extraction itself: every failure counted, indented (subtest)
+        // entries recognised too, and an unterminated YAML block bounded
+        // rather than running away to the end of a megabyte-scale string.
+        const nested = extractFailingTapEntries(
+            'ok 1 - fine\n    not ok 2 - an indented subtest failure\n      ---\n      error: |-\n        inner boom\n      ...\nok 3 - fine\n',
+        );
+        assert.equal(nested.total, 1, 'an indented subtest failure must still be found');
+        assert.ok(nested.entries[0].includes('an indented subtest failure'), `expected the subtest entry; got: ${nested.entries[0]}`);
+        assert.ok(nested.entries[0].includes('inner boom'), `expected the subtest's error text; got: ${nested.entries[0]}`);
+        assert.ok(!nested.entries[0].includes('ok 3 - fine'), `the entry must stop at its own YAML terminator; got: ${nested.entries[0]}`);
+        assert.deepEqual(extractFailingTapEntries(undefined), { total: 0, entries: [] }, 'undefined stdout must not throw');
+        assert.deepEqual(extractFailingTapEntries(''), { total: 0, entries: [] }, 'empty stdout must not throw');
     });
 
     // apra-fleet-3swo.54: adversarial case apra-fleet-80q3.2's description

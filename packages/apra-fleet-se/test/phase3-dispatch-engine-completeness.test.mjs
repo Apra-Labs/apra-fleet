@@ -28,7 +28,12 @@ import { EXECUTION_INLINE_LADDERS, EXECUTION_ENGINE_DISPATCHES } from './helpers
 import { bdMode } from './helpers/bd-replay.mjs';
 // apra-fleet-3swo.53: shared with phase1-leaf-facade-completeness.test.mjs
 // -- see that module's header for why this was extracted.
-import { handleNestedSuiteSpawnResult } from './helpers/nested-suite-spawn.mjs';
+import {
+    handleNestedSuiteSpawnResult,
+    extractFailingTapEntries,
+    MAX_FAILING_TAP_ENTRIES,
+    MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS,
+} from './helpers/nested-suite-spawn.mjs';
 import {
     createRecordingCtx,
     ROLE_CALL_OPTS,
@@ -1609,6 +1614,156 @@ describe('(6b) the extracted handleNestedSuiteSpawnResult helper converts spawn 
         // The uncapped original is still available via cause, so nothing is lost.
         assert.equal(caughtErr.cause.stdout.length, 2_000_000, 'cause must retain the full, untruncated original stdout');
         assert.equal(caughtErr.cause.stderr.length, 2_000_000, 'cause must retain the full, untruncated original stderr');
+    });
+
+    // -------------------------------------------------------------------------
+    // case (b4): the REAL regression this gate's own nested mock-sprint step
+    // hit on Windows CI. The nested child emitted 1,621,552 chars of TAP plus
+    // interleaved workflow logs with a single `not ok` early in the stream;
+    // the wrapped message quoted only "the last 4000 of 1621552 chars", which
+    // was a PASSING test's output, so the report named no failing test at all
+    // and the failure class survived two CI runs undiagnosed. A positional
+    // tail cannot identify the failing inner test; the entries themselves can.
+    // synthesizeNestedBatchOutput below reproduces that exact shape (failure
+    // far outside the tail window) so this is a falsification, not a
+    // restatement: with the tail-only message it fails, because the name is
+    // provably absent from the last 4000 chars.
+    // -------------------------------------------------------------------------
+    const synthesizeNestedBatchOutput = ({ failingName, failingError, failAt, totalTests }) => {
+        const lines = [];
+        lines.push('TAP version 13');
+        for (let n = 1; n <= totalTests; n += 1) {
+            if (n === failAt) {
+                lines.push(`not ok ${n} - ${failingName}`);
+                lines.push('  ---');
+                lines.push('  duration_ms: 1234.5678');
+                lines.push("  type: 'test'");
+                lines.push("  location: '/repo/packages/apra-fleet-se/test/mock-sprint-example.test.mjs:42:1'");
+                lines.push("  failureType: 'testCodeFailure'");
+                lines.push('  error: |-');
+                lines.push(`    ${failingError}`);
+                lines.push("  code: 'ERR_TEST_FAILURE'");
+                lines.push('  stack: |-');
+                lines.push('    TestContext.<anonymous> (/repo/packages/apra-fleet-se/test/mock-sprint-example.test.mjs:42:9)');
+                lines.push('  ...');
+            } else {
+                lines.push(`ok ${n} - mock sprint: filler scenario ${n}`);
+                lines.push('  ---');
+                lines.push('  duration_ms: 12.3456');
+                lines.push("  type: 'test'");
+                lines.push('  ...');
+            }
+            // Interleaved workflow-log noise, exactly what makes the real
+            // stream megabytes wide and pushes the failure out of the tail.
+            for (let k = 0; k < 20; k += 1) {
+                lines.push(`# [Workflow Log] filler diagnostic line ${n}/${k} -- padding to reproduce the real stream width`);
+            }
+        }
+        lines.push(`1..${totalTests}`);
+        lines.push(`# tests ${totalTests}`);
+        lines.push(`# pass ${totalTests - 1}`);
+        lines.push('# fail 1');
+        return lines.join('\n');
+    };
+
+    test('case (b4): a failing entry OUTSIDE the quoted tail window is still named -- the positional tail alone never identified it', () => {
+        const failingName = 'mock sprint: a scenario whose name only the TAP entry carries';
+        const failingError = 'Expected the sprint to abort on its own, got a hung run';
+        const stdout = synthesizeNestedBatchOutput({
+            failingName,
+            failingError,
+            failAt: 3,
+            // Sized so the synthesized stream clears the megabyte-scale
+            // precondition asserted below (the real failing child emitted
+            // 1,621,552 chars); the failure sits at entry 3, far outside the
+            // 4000-char tail the old message quoted.
+            totalTests: 800,
+        });
+
+        // Precondition that makes this a falsification rather than a tautology:
+        // the failing test's name is genuinely NOT in the tail the old message
+        // quoted, so a tail-only implementation cannot pass this test.
+        assert.ok(stdout.length > 1_000_000, `the synthesized stream must be megabyte-scale like the real one; got ${stdout.length}`);
+        assert.ok(
+            !stdout.slice(-MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS).includes(failingName),
+            'the failing test name must be absent from the quoted tail window, or this case proves nothing',
+        );
+
+        const err = new Error('Command failed: node --test failed with exit code 1');
+        err.status = 1;
+        err.stdout = stdout;
+        err.stderr = '';
+
+        let caughtErr;
+        try {
+            handleNestedSuiteSpawnResult('mock-sprint', err, 900_000, 'the mock-bd default', PHASE3_ENV_VAR_NAME);
+            assert.fail('should have thrown an error');
+        } catch (e) {
+            caughtErr = e;
+        }
+
+        assert.ok(
+            caughtErr.message.includes(failingName),
+            `the wrapped message must NAME the failing inner test; got:\n${caughtErr.message}`,
+        );
+        assert.ok(
+            caughtErr.message.includes(failingError),
+            `the wrapped message must carry the failing test's own error text; got:\n${caughtErr.message}`,
+        );
+        // Still bounded, still classified, still tail-quoted, cause still whole.
+        assert.ok(
+            caughtErr.message.length < 20_000,
+            `wrapped message must stay length-capped once failing entries are appended; got length ${caughtErr.message.length}`,
+        );
+        const wrapperPrefix = caughtErr.message.split('child stdout (tail):')[0];
+        assert.ok(wrapperPrefix.includes('did NOT expire'), `wrapper prefix must still classify this as an inner child failure; got: ${wrapperPrefix}`);
+        assert.equal(caughtErr.cause, err, 'original spawn error must still be reachable as .cause');
+    });
+
+    test('case (b5): many failures are capped and counted, and a child with no `not ok` at all says so instead of leaving a silent gap', () => {
+        const manyFailures = [];
+        for (let n = 1; n <= 12; n += 1) {
+            manyFailures.push(`not ok ${n} - failing scenario number ${n}`);
+            manyFailures.push('  ---');
+            manyFailures.push('  error: |-');
+            manyFailures.push(`    assertion ${n} failed`);
+            manyFailures.push('  ...');
+        }
+        const { total, entries } = extractFailingTapEntries(manyFailures.join('\n'));
+        assert.equal(total, 12, 'every `not ok` must be counted, even beyond the quoting cap');
+        assert.equal(entries.length, MAX_FAILING_TAP_ENTRIES, 'the quoted list must be capped');
+
+        const manyErr = new Error('Command failed');
+        manyErr.status = 1;
+        manyErr.stdout = manyFailures.join('\n');
+        manyErr.stderr = '';
+        let manyCaught;
+        try {
+            handleNestedSuiteSpawnResult('many-suite', manyErr, 900_000, 'the mock-bd default', PHASE3_ENV_VAR_NAME);
+            assert.fail('should have thrown an error');
+        } catch (e) {
+            manyCaught = e;
+        }
+        assert.ok(manyCaught.message.includes('12 found'), `message must report the true failure count; got:\n${manyCaught.message}`);
+
+        // A child that died without node:test recording any failure (module
+        // load crash, process-level exit) must be reported as exactly that --
+        // "none found" is a diagnosis, not an empty section.
+        const crashErr = new Error('Command failed');
+        crashErr.status = 1;
+        crashErr.stdout = 'TAP version 13\nok 1 - something\n';
+        crashErr.stderr = '';
+        let crashCaught;
+        try {
+            handleNestedSuiteSpawnResult('crash-suite', crashErr, 900_000, 'the mock-bd default', PHASE3_ENV_VAR_NAME);
+            assert.fail('should have thrown an error');
+        } catch (e) {
+            crashCaught = e;
+        }
+        assert.ok(
+            crashCaught.message.includes('none found'),
+            `a child with no 'not ok' must say so explicitly; got:\n${crashCaught.message}`,
+        );
     });
 
     // apra-fleet-3swo.54: same adversarial case as phase1-leaf-facade-

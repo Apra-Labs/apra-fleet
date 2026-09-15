@@ -282,26 +282,53 @@ describe('(3) falsification -- the gate is not vacuous', () => {
         }
     });
 
-    test('regression pin: planning-role-dispatch-pins.test.mjs (the exact file apra-fleet-3swo.55 was filed about) classifies ANCHOR_DESYNC, not UNEXPLAINED', { timeout: PROBE_BUDGET_MS }, () => {
+    test('regression pin: planning-role-dispatch-pins.test.mjs (the exact file apra-fleet-3swo.55 was filed about) never classifies UNEXPLAINED', { timeout: PROBE_BUDGET_MS }, () => {
         // apra-fleet-3swo.55: at HEAD 99088ec7, the watchdog-arming commit
         // 99e0ece0 made this file's pre-Phase-4 revision fail for the same
         // reason as three OTHER files that were admitted as ANCHOR_DESYNC
         // (role-policies-table.test.mjs, execution-role-dispatch-pins.test.mjs,
         // vcs-auth-preflight.test.mjs) -- but this one was rejected as
         // UNEXPLAINED, purely because its assertion named role-policies.mjs
-        // instead of runner.js. This pin proves the fix: the same file, probed
-        // the same way, is now admitted because its CURRENT revision passes.
+        // instead of runner.js. This pin originally proved the fix by
+        // asserting ANCHOR_DESYNC: the same file, probed the same way, was
+        // admitted because its CURRENT revision passes.
+        //
+        // PR #469 (feat/runner-refactor-standalone) was SQUASH-merged onto
+        // main as a single commit (16cf4a2d), with its source branch deleted
+        // per this repo's merge convention. discoverBase() walks HEAD's own
+        // linear history for the first commit that added fleet-sprint/phases
+        // or sprint-state.mjs -- on the pre-squash feature branch that found
+        // a commit partway through the epic, so planning-role-dispatch-pins
+        // .test.mjs (which predated that commit on the branch) existed at
+        // BASE and could desync. Post-squash, the ENTIRE epic is one commit,
+        // so that same discovery now finds the squash commit itself, and
+        // BASE becomes its parent -- the pre-epic state on main. This file
+        // was created during the epic, so it genuinely does not exist at
+        // that BASE: NEW is the correct, honest classification per this
+        // probe's own contract ("the file did not exist at BASE, so Phase 4
+        // cannot have broken it"), not a misclassification to fix. The
+        // pre-squash incremental history that let this pin observe
+        // ANCHOR_DESYNC directly is gone for good (branch deleted); the
+        // ANCHOR_DESYNC-vs-UNEXPLAINED wording-independence this pin was
+        // guarding stays covered by the synthetic
+        // corroborateAnchorDesync() fixture test directly above. This pin
+        // now only needs to keep rejecting the one class that would mean a
+        // live regression: UNEXPLAINED (and FACADE_BREAK, which would mean
+        // the facade itself broke).
         const base = discoverBase();
         // Normalized to forward slashes (same idiom as the probe's own
         // PKG_REL): this path is handed to probeFile -> existsAtBase, which
         // spells it into a `git cat-file -e <base>:<path>` pathspec. git
         // pathspecs are always '/'-separated, so on Windows a raw
         // path.relative() result ('packages\...') misses at BASE and the file
-        // is misclassified NEW instead of ANCHOR_DESYNC.
+        // is misclassified NEW instead of its true class.
         const repoRelPath = path.relative(REPO_ROOT, path.join(SE_DIR, 'test/planning-role-dispatch-pins.test.mjs'))
             .split(path.sep).join('/');
         const result = probeFile(base, repoRelPath, PROBE_BUDGET_MS);
-        assert.equal(result.klass, 'ANCHOR_DESYNC', `expected ANCHOR_DESYNC, got ${result.klass}: ${result.detail}`);
+        assert.ok(
+            ['NEW', 'ANCHOR_DESYNC'].includes(result.klass),
+            `expected NEW or ANCHOR_DESYNC, got ${result.klass}: ${result.detail}`,
+        );
     });
 
     test('the probe strips NODE_TEST_CONTEXT, or every classification would be a vacuous INTACT', () => {
