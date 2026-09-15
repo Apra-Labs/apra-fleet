@@ -334,7 +334,7 @@ describe('StallDetector', () => {
       expect(stallCalls).toHaveLength(0);
     });
 
-    it('an entry without thresholdMs falls back to the env/default value on both paths (no behavior change)', async () => {
+    it('an entry without thresholdMs falls back to the env/default value on the non-provisional path (no behavior change)', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const pastTime = Date.now() - 10_000;
       detector.add('member-1', makeEntry({ lastActivityAt: pastTime })); // no thresholdMs set
@@ -342,6 +342,28 @@ describe('StallDetector', () => {
 
       await detector._poll();
 
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(1);
+    });
+
+    it('an entry without thresholdMs falls back to the env/default value on the provisional path too (no behavior change)', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const pastTime = Date.now() - 10_000; // 10s idle -- past the 5s env value
+      mockPollDirectoryActivity.mockResolvedValue({ mtimeMs: null, signalAvailable: true });
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({
+        provisional: true,
+        logFilePath: null,
+        lastActivityAt: pastTime,
+        onStall,
+        // no thresholdMs set
+      }));
+
+      await detector._poll();
+
+      expect(onStall).toHaveBeenCalledTimes(1);
       const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
         try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
       });
@@ -797,6 +819,32 @@ describe('computeEffectiveThresholdMs (PR#416 finding 4: clamp)', () => {
       // same "floor" verdict as any other case where the trusted value wins,
       // never mislabeled as a ceiling clamp that did not happen.
       expect(describeClamp(above, 900_000, actual)).toBe('floor');
+    });
+
+    it('a trusted baseline above the ceiling still wins even when the raw (uncapped) pending value exceeds it', () => {
+      // PRIMARY regression case: base sits ABOVE the ceiling, and raw
+      // (pending + grace) sits ABOVE base too -- the one region the earlier
+      // fix's fixtures never covered. The baseline still wins the max(), but
+      // effective ends up BELOW raw, which is exactly what fooled the old
+      // "effective < raw => ceiling" comparison into lying.
+      const base = 3_600_000; // above CEILING (1_800_000)
+      const pending = 86_400_000; // raw = 86_460_000, far above base
+      const actual = computeEffectiveThresholdMs(base, pending);
+      expect(actual).toBe(base);
+      expect(describeClamp(base, pending, actual)).toBe('floor');
+    });
+
+    it('reports "floor", not null, at the knife-edge where the baseline happens to equal the raw pending value', () => {
+      // SECONDARY regression case: base === pending + GRACE (raw), so the
+      // final effective value coincides with raw even though the ceiling DID
+      // cap the pending contribution internally along the way. The verdict
+      // must reflect that the baseline (floor) is what determined the
+      // result, not fall back to null just because effective === raw.
+      const base = 3_060_000;
+      const pending = 3_000_000; // raw = 3_060_000 === base
+      const actual = computeEffectiveThresholdMs(base, pending);
+      expect(actual).toBe(base);
+      expect(describeClamp(base, pending, actual)).toBe('floor');
     });
   });
 });

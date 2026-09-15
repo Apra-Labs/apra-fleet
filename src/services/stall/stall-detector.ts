@@ -75,7 +75,31 @@ export function computeEffectiveThresholdMs(
   return Math.max(base, Math.min(pendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS, ceilingMs));
 }
 
-/** Which clamp (if any) was applied, for observability in the stall_detected log. */
+/**
+ * Which clamp (if any) actually determined the effective threshold, for
+ * observability in the stall_detected log.
+ *
+ * Mirrors computeEffectiveThresholdMs's shape --
+ * effective = max(base, min(raw, ceiling)) -- so it must report which term of
+ * that max() won, not merely compare the final result against the raw
+ * (uncapped) pending contribution. Comparing against raw alone is what made
+ * the pre-fix version lie: once the trusted baseline can exceed the ceiling,
+ * `effective < raw` no longer implies the ceiling determined the result --
+ * the baseline can still be the one that won, even though the ceiling
+ * capped the untrusted contribution internally along the way.
+ *
+ *  - 'floor': the trusted baseline is >= the (possibly ceiling-capped)
+ *    pending contribution, so the baseline determined effectiveThresholdMs.
+ *    This holds even at the knife-edge where the baseline happens to equal
+ *    the raw (uncapped) pending value -- the ceiling still capped the
+ *    pending contribution internally; it merely didn't end up mattering.
+ *  - 'ceiling': the ceiling genuinely capped the pending contribution
+ *    (min(raw, ceiling) < raw) AND that capped value still exceeds the
+ *    baseline, so the ceiling determined effectiveThresholdMs.
+ *  - null: no usable declaration, or the pending contribution passed
+ *    through unclamped and still exceeded the baseline (effective === raw)
+ *    -- neither clamp changed the outcome.
+ */
 export function describeClamp(
   baselineMs: number,
   pendingToolTimeoutMs: number | null | undefined,
@@ -83,9 +107,13 @@ export function describeClamp(
 ): 'floor' | 'ceiling' | null {
   // No usable declaration -> the baseline was used as-is; nothing was clamped.
   if (typeof pendingToolTimeoutMs !== 'number' || !Number.isFinite(pendingToolTimeoutMs)) return null;
+  const maxMs = parseInt(process.env['STALL_MAX_THRESHOLD_MS'] ?? String(MAX_STALL_THRESHOLD_MS));
+  const ceilingMs = Number.isFinite(maxMs) ? maxMs : MAX_STALL_THRESHOLD_MS;
+  const base = Number.isFinite(baselineMs) ? baselineMs : DEFAULT_STALL_THRESHOLD_MS;
   const raw = pendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS;
-  if (effectiveThresholdMs < raw) return 'ceiling';
-  if (effectiveThresholdMs > raw) return 'floor';
+  const cappedPending = Math.min(raw, ceilingMs);
+  if (base >= cappedPending) return 'floor';
+  if (cappedPending < raw) return 'ceiling';
   return null;
 }
 
@@ -254,7 +282,8 @@ export class StallDetector {
         // the non-provisional path: a pending tool_use's own declared
         // timeout, when present, replaces the generic baseline threshold for
         // this tick's stall check.
-        // Clamped into [baseline, ceiling] -- see computeEffectiveThresholdMs.
+        // Uncapped trusted floor, untrusted contribution capped into
+        // [0, ceiling] -- see computeEffectiveThresholdMs.
         const provisionalEffectiveThresholdMs = computeEffectiveThresholdMs(
           stallThresholdMs,
           provisionalPendingToolTimeoutMs,
@@ -297,7 +326,8 @@ export class StallDetector {
       // it is a hard, model-declared budget for a call already known to be
       // long-running (900000ms in one confirmed stall, 600000ms in another),
       // and the fleet watchdog must not fire before that budget elapses.
-      // Clamped into [baseline, ceiling] -- see computeEffectiveThresholdMs.
+      // Uncapped trusted floor, untrusted contribution capped into
+      // [0, ceiling] -- see computeEffectiveThresholdMs.
       const effectiveThresholdMs = computeEffectiveThresholdMs(stallThresholdMs, pendingToolTimeoutMs);
 
       if (error) {
