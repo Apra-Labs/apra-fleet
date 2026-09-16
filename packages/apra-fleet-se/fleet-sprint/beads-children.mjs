@@ -145,7 +145,7 @@ export async function createChildBeadWithAllocatedId(opts) {
             await allocator.release(grant.token);
             throw new Error(
                 `[id-allocator] refusing to create child bead at id '${grant.childId}': a bead with that id already exists ` +
-                `(status: ${existing.status ?? 'unknown'}); \`bd create --id\` would silently overwrite it. ` +
+                `(status: ${existing.status ?? 'unknown'}); a 'bd create --id' on that id would silently overwrite it. ` +
                 'Released the reservation rather than clobbering the existing bead.',
             );
         }
