@@ -2,6 +2,84 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Stall detector: per-dispatch inactivity threshold, decoupled exec timer, adaptive probe cadence
+
+Sprint goal: fix the stall detector so it honours each dispatch's own
+`timeout_s` instead of a single global env-var threshold, decouple the
+exec-level rolling timer per provider so it stops acting as a sloppier
+version of the total-duration ceiling for providers whose exec channel is
+silent mid-turn, and reduce probe overhead on long-threshold entries with an
+adaptive polling cadence.
+
+What shipped:
+
+- **Per-dispatch stall threshold.** `StallEntry` now carries its own
+  `thresholdMs`, threaded from the dispatch's `timeout_s` at every add/update
+  call site in the dispatch tool, so a caller's declared timeout genuinely
+  drives when that dispatch is judged stalled instead of a single
+  process-wide default. The threshold-clamp formula was also corrected so
+  the orchestrator-authored (trusted) baseline is never capped by the
+  ceiling meant to bound the model-authored (untrusted) pending-tool
+  timeout -- only the untrusted contribution is capped; the trusted baseline
+  competes with it via a max/min combination, so a legitimately long
+  declared timeout is never silently shortened.
+- **Exec-level rolling timer decoupled per provider.** Each provider adapter
+  now declares, as a required capability, whether its exec-level inactivity
+  timer should be sized from the dispatch's `timeout_s` or instead pinned to
+  the total-duration ceiling (`max_total_s`). Providers whose exec channel is
+  a real mid-turn liveness signal (or whose only stall signal at all is this
+  timer) keep the `timeout_s`-sized rolling deadline; providers whose exec
+  channel is silent mid-turn and would otherwise suffer false kills switch to
+  the ceiling-derived timer, relying on transcript-based stall detection as
+  their real stall signal instead. An absent total ceiling falls back to a
+  large-but-finite sentinel rather than an effectively-infinite timeout,
+  because an out-of-range timer delay does not wait forever -- it fires
+  almost immediately.
+- **Adaptive stall probe cadence.** The stall detector now polls each tracked
+  entry on a cadence scaled to that entry's own threshold (floored at the
+  loop's own tick interval, capped at five minutes), instead of polling every
+  entry every tick regardless of its threshold. A tick that gates out a
+  probe performs no stall evaluation for that entry at all. New observability
+  fields on each poll-tick log line report probes issued, probes skipped, and
+  the computed probe interval per entry.
+- **Dispatch inactivity budget split from the total ceiling.** Fleet-sprint
+  role dispatches now derive a distinct inactivity-timeout budget (capped at
+  30 minutes) from the total-duration budget, rather than reusing the total
+  ceiling as the inactivity threshold -- a role with a large total budget no
+  longer gets a correspondingly large grace period before a stalled session
+  is detected.
+- Documentation (`docs/features/stall-detector.md`,
+  `docs/stall-detector-resilience.md`, and the fleet-sprint architecture doc)
+  updated to describe the per-dispatch threshold, the per-provider exec-timer
+  source, and the inactivity/total-ceiling split as current behavior.
+
+Carried forward (deliberately left open, not closed by this sprint):
+
+- An integ-cycle run failed to return a schema-valid report after exhausting
+  its repair attempts; disposed as unrelated to this sprint's diff (a
+  schema-validation failure class, not a stall-detector kill) but the lost
+  integration signal for that cycle is tracked as follow-up.
+- A final-review dispatch was found to have compared against a stale local
+  base-branch revision rather than the remote's current tip; tracked as
+  follow-up to make that check itself more robust.
+- Hub/member clock skew immunity for the stall detector, and a working
+  mid-turn stall signal for one provider that currently has none, remain
+  open, lower-priority follow-ups from earlier sprints.
+- A post-verdict regression pass failed with a stall-detector-driven dispatch
+  abort; informational only, did not gate this sprint's verdict, and carries
+  over as backlog.
+
+### Cost analysis
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $54.3312.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.8319 across 6 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 71 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- planner/plan-reviewer catch decompositions that contradict a bead's own NOTES corrections
 
 Sprint goal: fix a real, observed failure mode where a sprint decomposed a
