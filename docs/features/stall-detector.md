@@ -272,6 +272,48 @@ affects the stall detection threshold on that one tick.
 
 ---
 
+## Per-Provider Exec-Level Timer Source
+
+The exec-level rolling (inactivity) timer that guards the low-level dispatch
+channel is deliberately sourced differently per provider, via a required
+`execTimeoutSource()` capability on each provider adapter that returns either
+`'inactivity_timeout'` or `'total_ceiling'`:
+
+- **`'inactivity_timeout'`** -- arm a rolling deadline sized from the
+  dispatch's `timeout_s`. Correct when the exec channel's own stdout/stderr
+  is a real mid-turn liveness signal, or when the provider has no other stall
+  signal at all: a provider whose adapter returns no session-log directory
+  (so the StallDetector has nothing to poll) relies on this exec-level timer
+  as its *only* stall detection path, and decoupling it there would disable
+  stall detection outright for that provider.
+- **`'total_ceiling'`** -- do NOT arm a `timeout_s`-sized rolling deadline;
+  derive the exec timer from `max_total_s` instead, a value that can never
+  bind before the dispatch's own hard ceiling does. Correct for providers
+  whose exec channel is batch/console-only and emits nothing mid-turn, where
+  a `timeout_s`-sized rolling deadline would be a false kill on a long, still
+  -progressing turn. The StallDetector's transcript polling remains the real
+  stall mechanism for these providers, and it still receives `timeout_s` as
+  its `thresholdMs` independent of this exec-timer choice.
+
+This is a required member of the provider adapter interface rather than an
+optional one with a default, specifically so a newly added provider must
+state its own answer at compile time instead of silently inheriting
+whichever branch happens to be the fallback -- the wrong branch silently
+disables a kill path for that provider.
+
+When a provider's exec timer is sourced from `max_total_s` and the caller
+supplied no `max_total_s`, the timer falls back to a large-but-finite
+sentinel rather than an unbounded/infinite timeout. `setTimeout()` with an
+effectively-infinite delay does not wait forever -- Node coerces an
+out-of-range delay and fires the timer almost immediately (on the order of a
+few milliseconds), which would silently convert "no ceiling configured" into
+"kill almost instantly." The sentinel value is chosen to be larger than any
+realistic dispatch ceiling while still fitting a 32-bit timer delay, so the
+exec timer effectively never binds in the absence of an explicit
+`max_total_s`, without triggering that overflow behavior.
+
+---
+
 ## Observability: stall_poll_tick Fields
 
 **Implemented in apra-fleet-25yl.3.3.**
