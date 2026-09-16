@@ -334,7 +334,9 @@ export function validateArgs(args) {
     // not the genuine-hang protection this timer exists for. Lowering it still
     // bounds the cost of a live-but-silent member hang, which no timer can
     // otherwise distinguish from work. Floor 60: below that even healthy
-    // dispatches cannot complete a single turn.
+    // dispatches cannot complete a single turn. The integ-test dispatch
+    // ceiling is 2x this value and the regression-test ceiling is 3x, since
+    // those suites legitimately run past one budget.
     const dispatchTimeoutS = args.dispatch_timeout_s === undefined ? 9000 : args.dispatch_timeout_s;
     if (typeof dispatchTimeoutS !== 'number' || !Number.isInteger(dispatchTimeoutS) || dispatchTimeoutS < 60) {
         throw new Error(`[Arg Contract] Invalid dispatch_timeout_s "${dispatchTimeoutS}": must be an integer >= 60 (seconds).`);
