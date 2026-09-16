@@ -700,15 +700,19 @@ describeHandleNestedSuiteSpawnResultCases({
 // =============================================================================
 describe('(6c) the shared handleNestedSuiteSpawnResult names failing inner tests outside the quoted tail', () => {
     // -------------------------------------------------------------------------
-    // case (b4): this gate runs its OWN nested batch over every mock-sprint
-    // file (describe (4) above), so it is exposed to the identical reporting
-    // hole phase3's nested step hit on Windows CI: a ~1.6MB child stream whose
-    // single `not ok` sits far outside the 4000-char tail the wrapped message
-    // quoted, leaving a failure report that named no failing test. Pinned in
-    // BOTH callers deliberately -- the handler is shared (helpers/nested-suite-
-    // spawn.mjs), and the extraction regressing in one gate's favour while the
-    // other stays green is exactly the desynchronization that extraction
-    // existed to prevent.
+    // case (b4): phase1's only nested spawn is now describe (3)'s golden-
+    // transcript child -- the mock-sprint batch this comment used to cite was
+    // deleted as a duplicate of phase3's stronger copy. The reporting hole is
+    // a property of the SHARED handler, not of which child produced the
+    // stream: phase3's nested step hit it on Windows CI with a ~1.6MB child
+    // whose single `not ok` sat far outside the 4000-char tail the wrapped
+    // message quoted, leaving a failure report that named no failing test.
+    // Phase1's golden child can emit the same shape, and this case is a pure
+    // unit test of handleNestedSuiteSpawnResult that spawns nothing, so it
+    // costs phase1 nothing to keep. Pinned in BOTH callers deliberately --
+    // the handler is shared (helpers/nested-suite-spawn.mjs), and the
+    // extraction regressing in one gate's favour while the other stays green
+    // is exactly the desynchronization that extraction existed to prevent.
     // -------------------------------------------------------------------------
     test('case (b4): a failing entry OUTSIDE the quoted tail window is still named -- the positional tail alone never identified it', () => {
         const failingName = 'mock sprint: a scenario whose name only the TAP entry carries';
