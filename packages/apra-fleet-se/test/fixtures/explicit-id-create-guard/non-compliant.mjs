@@ -11,11 +11,11 @@
 // issues `bd create ... --id ...` directly instead of routing through
 // beads-children.mjs, so checkExplicitIdCreatePath() against this file must
 // report exactly one violation naming this fixture and its line. The id
-// flag is assembled into an interpolated template-literal expression
-// (mirroring beads-children.mjs:287's own `${parentageFlags}` shape) rather
-// than appearing as a literal `--id` substring, which is exactly the shape
-// the guard is widened to still catch (see explicit-id-create-guard.mjs's
-// module header).
+// flag here is a LITERAL `--id` whose VALUE is interpolated (corrected by
+// apra-fleet-btj9.4 -- the previous wording claimed the flag itself was
+// interpolated). The genuinely interpolated shape, with the whole flag
+// assembled into a variable like beads-children.mjs's `${parentageFlags}`,
+// is covered by the inline-source subtest in the guard's own test file.
 
 function runOne(title, id, member) {
     return command(`bd create "${title}" --id ${id} --silent`, { member_name: member });
