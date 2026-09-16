@@ -7,15 +7,37 @@ import { explicitIdCreateModulePaths, EXPLICIT_ID_CREATE_EXEMPT } from './guarde
 // apra-fleet-btj9.7 -- explicit-id-create guard checker.
 //
 // Invariant under test: no scanned `command(...)` call site may dispatch a
-// bead-creation command that carries an explicit id flag unless it lives in
+// bead-CREATION command (`bd create`, of ANY shape) unless it lives in
 // beads-children.mjs -- the single module that pairs an explicit-id create
 // with the probe-and-refuse seam (assertChildIdFree(), called from
 // createChildBeadWithAllocatedId) that guards against `bd create`'s silent
 // overwrite-on-collision behavior (apra-fleet-btj9). A second, unguarded
-// explicit-id create site anywhere else in this directory is exactly how that
+// bead-creation site anywhere else in this directory is exactly how that
 // overwrite bug returns, so this is a mechanical scan -- same shape as the
 // sibling guards -- rather than a call-graph proof that assertChildIdFree()
 // actually ran first.
+//
+// RULE WIDENED PAST "carries a literal --id flag" (review round on this
+// bead): the first cut of this guard matched `bd create` only when an
+// explicit `--id` flag flag literal appeared LATER in the same balanced call
+// text. That misses the one real call site's own shape --
+// beads-children.mjs:287's `bd create "${title}" --body-file
+// "${descriptionFile}" -p "${priority}" ${parentageFlags} --silent`, where
+// the id flag is assembled into `parentageFlags` (`--id ${grant.childId}`)
+// and never appears as literal text inside the command() call itself. A
+// second, unguarded module that copies exactly that shape -- an interpolated
+// flags variable in the create's flag position -- would scan clean under the
+// literal-`--id` regex. Rather than try to chase every way an id flag can be
+// assembled through a variable (an open-ended, unwinnable text-matching
+// problem), this guard flags ANY `bd create` command() site outside the one
+// exempt module, regardless of whether an id flag is literal, interpolated,
+// or absent entirely. This is deliberately broader than "carries an explicit
+// id": a census of every `command(`/`agent(` call site across the full
+// GUARDED_MODULES set (this bead's own planning pass, re-verified while
+// fixing this gap) found EXACTLY ONE `bd create` dispatch in the entire set
+// -- beads-children.mjs:287 -- so today this widening has zero false
+// positives, and it closes the interpolated-flag hole completely instead of
+// leaving a narrower one of the same shape.
 //
 // CALL-SITE EXTRACTION REUSES dispatch-safety-guard.mjs's findCallSites()
 // (that file's own header names it "the reference implementation the sibling
@@ -24,11 +46,11 @@ import { explicitIdCreateModulePaths, EXPLICIT_ID_CREATE_EXEMPT } from './guarde
 // literal has an inner quoted title BETWEEN "bd create" and the id flag, so a
 // scan that stops at the first quote after "bd create" (the technique
 // dolt-literal-guard.mjs/full-db-fetch-guard.mjs use, safe for THEIR simpler
-// command shapes) would silently miss the id flag entirely. findCallSites()
-// already extracts the FULL balanced call text -- including embedded quotes
-// -- for every `command(`/`agent(` site, and already skips full-line
-// comments and same-line-string false positives, so this guard reuses it
-// rather than re-deriving that logic.
+// command shapes) would silently miss it. findCallSites() already extracts
+// the FULL balanced call text -- including embedded quotes -- for every
+// `command(`/`agent(` site, and already skips full-line comments and
+// same-line-string false positives, so this guard reuses it rather than
+// re-deriving that logic.
 //
 // Two carve-outs, mirroring the sibling guards in this directory:
 //   - Only `command(` sites are considered; `agent(` never dispatches a bd
@@ -47,17 +69,20 @@ import { explicitIdCreateModulePaths, EXPLICIT_ID_CREATE_EXEMPT } from './guarde
 // caller deliberately wants its own violations, none expected).
 // =============================================================================
 
-// Matches a bead-creation subcommand followed, anywhere later in the same
-// balanced call text, by an explicit id flag. `[\s\S]*?` (not `.*`) so it
-// spans the embedded quoted title/body-file arguments a real create command
-// carries between the subcommand and the id flag. Written as `bd` + `\s+` +
-// `create` and `-{2}id` (never a literal space between "bd"/"create", never a
-// literal "--id") so this guard's own definition line can never match itself.
-const EXPLICIT_ID_CREATE_RE = /bd\s+create\b[\s\S]*?(?:^|\s)-{2}id(?:\s|$)/;
+// Matches a bead-creation subcommand ANYWHERE in the balanced call text --
+// deliberately not conditioned on an explicit id flag appearing later (see
+// "RULE WIDENED" above): the one real call site assembles its id flag into
+// an interpolated variable that never appears as literal `--id` text inside
+// the command() call, so requiring a literal id flag would miss the exact
+// shape a copy-paste of that site produces. Written as `bd` + `\s+` +
+// `create` (never a literal space between "bd" and "create") so this guard's
+// own definition line can never match itself.
+const EXPLICIT_ID_CREATE_RE = /bd\s+create\b/;
 
 /**
  * Scans `src` for `command(...)` call sites whose full balanced call text
- * carries a bead-creation subcommand together with an explicit id flag.
+ * carries a bead-creation subcommand (`bd create`, any shape -- see the
+ * module header for why this is not conditioned on a literal `--id` flag).
  * Returns an array of { line, command } for every violating call site.
  */
 export function findExplicitIdCreateViolations(src) {
@@ -80,9 +105,10 @@ export function checkExplicitIdCreatePath(filePath) {
     const src = fs.readFileSync(filePath, 'utf8');
     const fileLabel = path.basename(filePath);
     const violations = findExplicitIdCreateViolations(src).map(({ line, command }) =>
-        `${fileLabel}:${line} issues a bead-creation command with an explicit id flag ("${command}") outside the ` +
-        `single guarded probe-and-refuse seam -- route it through beads-children.mjs's assertChildIdFree() / ` +
-        'createChildBeadWithAllocatedId, the only permitted explicit-id create surface.'
+        `${fileLabel}:${line} issues a bead-creation command ("${command}") outside the single guarded ` +
+        `probe-and-refuse seam -- route it through beads-children.mjs's assertChildIdFree() / ` +
+        'createChildBeadWithAllocatedId, the only permitted bead-creation surface. Flagged regardless of ' +
+        'whether an id flag is literal, interpolated, or absent (see this module\'s header).'
     );
     return { violations };
 }
