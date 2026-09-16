@@ -100,9 +100,18 @@ Notes:
 
 - The supervisor is the always-on fleet-sprint dashboard/API process. It is
   registered only when the workflow assets that contain it were installed
-  (skipped by `--workflows none`), runs with its install directory as its
-  working directory, logs to `~/.apra-fleet/data/fleet-supervisor.log`, and is
-  `Restart=no` (started at boot/login; an exit is treated as intentional).
+  (skipped by `--workflows none`), logs to
+  `~/.apra-fleet/data/fleet-supervisor.log`, and is `Restart=no` (started at
+  boot/login; an exit is treated as intentional). **Known gap:** its working
+  directory is currently the engine's own installed path
+  (`~/.apra-fleet/workflows/fleet-sprint`), not the project it supervises --
+  since that is the directory `bd` resolves the project's beads DB from
+  (`BEADS_DIR`, else a `.beads` walk-up), this means it does not yet reach a
+  real project's beads DB out of the box. The real fix (a folder-selection
+  setting persisted to `supervisor.config.json`, plus graceful degradation
+  when no beads DB is found) is tracked separately; see
+  [`packages/apra-fleet-se/docs/project-model.md`](../packages/apra-fleet-se/docs/project-model.md)
+  for the full supervisor/member/beads schema and gap tracking.
 - Service units do not source shell rc files, so a bare `node` would not
   resolve under nvm/fnm/volta. The installer resolves an **absolute** node path
   at install time and bakes it into the unit -- the same way it passes an

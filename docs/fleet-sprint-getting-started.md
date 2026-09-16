@@ -250,6 +250,13 @@ the member so it can push the branch and open the PR -- apra-fleet's
 `provision_vcs_auth` supports **GitHub**, Bitbucket, and **Azure DevOps** (org URL
 + PAT), so a GitHub- or AzDevOps-hosted git repo is fully supported.
 
+See [`packages/apra-fleet-se/docs/project-model.md`](../packages/apra-fleet-se/docs/project-model.md) for the full
+schema of how a project, its beads DB, its members, and the supervisor
+relate -- in short: one project has exactly one beads DB (any number of code
+repos), each member works from a single folder against a single repo, larger
+setups want a dedicated orchestrator member, and a simple one-member project
+just has that one member play every role.
+
 ### 2.5 Scale sideways: one member per sprint, several sprints at once
 
 The way to get more work done in parallel is **more sprints, not more agents
