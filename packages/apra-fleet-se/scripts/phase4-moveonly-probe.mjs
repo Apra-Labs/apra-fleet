@@ -16,6 +16,24 @@
 //                                 probe; covered instead by the static
 //                                 import-binding check in section (2) of
 //                                 phase4-move-only-completeness.test.mjs)
+//   - file lives under test/slow/ -> SLOW_LANE_SKIP (a slow mock-sprint
+//                                 scenario's own client-side watchdog deadline
+//                                 is calibrated for standalone execution, e.g.
+//                                 `npm run test:slow`. Probing it dynamically
+//                                 here would spawn it twice -- once for the
+//                                 OLD revision, once more if
+//                                 corroborateAnchorDesync fires -- inside the
+//                                 concurrent default `npm test` lane, where
+//                                 CPU contention starves that watchdog and
+//                                 produces a spurious UNEXPLAINED
+//                                 classification indistinguishable from a real
+//                                 facade break, while adding the scenario's
+//                                 full multi-minute duration to every default
+//                                 `npm test` run. Excluded from the dynamic
+//                                 probe; test/phase4-move-only-completeness
+//                                 .test.mjs section (4) asserts test:slow
+//                                 still globs and therefore still exercises
+//                                 these files for real)
 //   - file absent at BASE      -> NEW (added by Phase 4; cannot have been broken by it)
 //   - old revision PASSES      -> INTACT (Phase 4 did not force the edit; the old
 //                                 assertions still hold against the new facade)
@@ -218,6 +236,17 @@ export function runTestFile(absPath, timeoutMs = 300000) {
  */
 const BIN_ENTRYPOINT_RE = /(^|\/)bin\/[^/]+\.m?js$/;
 
+/**
+ * Matches a repo-relative path under any package's test/slow/ directory,
+ * e.g. `packages/apra-fleet-se/test/slow/mock-sprint-planner-dispatch-
+ * stalled-session.test.mjs`. These files already have a dedicated,
+ * non-concurrent execution lane (`npm run test:slow`); see the
+ * SLOW_LANE_SKIP class note above for why the dynamic probe must not spawn
+ * them a second (and third) time inside the concurrent default `npm test`
+ * lane.
+ */
+const SLOW_LANE_RE = /(^|\/)test\/slow\/[^/]+\.test\.mjs$/;
+
 export function probeFile(base, repoRelPath, timeoutMs = 300000) {
   // Bin entrypoints are launcher scripts, not test files: copying one to a
   // sibling probe file and running `node --test` on it loads the SAME
@@ -245,6 +274,13 @@ export function probeFile(base, repoRelPath, timeoutMs = 300000) {
       file: repoRelPath,
       klass: 'BIN_ENTRYPOINT_SKIP',
       detail: 'bin/ entrypoints self-execute at module scope when probed under `node --test`; excluded from the dynamic probe, covered instead by the static import-binding check in section (2)',
+    };
+  }
+  if (SLOW_LANE_RE.test(repoRelPath)) {
+    return {
+      file: repoRelPath,
+      klass: 'SLOW_LANE_SKIP',
+      detail: 'test/slow/ scenarios have their own non-concurrent lane (npm run test:slow); excluded from this dynamic probe so the default npm test lane never pays their multi-minute duration or races their client-side watchdog under concurrent load',
     };
   }
   if (!existsAtBase(base, repoRelPath)) {

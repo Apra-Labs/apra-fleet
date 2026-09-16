@@ -64,6 +64,17 @@ import {
 //                  changed -- a live regression. Not admissible; GATE FAILS,
 //                  so an unrelated regression cannot hide behind the anchor
 //                  class.
+//   SLOW_LANE_SKIP the file lives under test/slow/. Those scenarios already
+//                  have a dedicated, non-concurrent lane (npm run
+//                  test:slow); dynamically probing one here would spawn it
+//                  a second and third time (old revision, then possibly the
+//                  CURRENT-revision corroboration run) inside the default
+//                  npm test lane's concurrent load, where CPU contention
+//                  starves the scenario's own client-side watchdog and
+//                  turns a load flake into a spurious UNEXPLAINED
+//                  classification -- see apra-fleet-25yl.7. Section (4)
+//                  below asserts npm run test:slow still globs and
+//                  therefore still exercises these files for real.
 //
 // This subsumes the whole four-class scheme and needs no commit archaeology:
 // INTACT is strictly stronger evidence than a provenance argument, because it
@@ -155,7 +166,7 @@ describe('(1) Phase 4 was move-only: no file in the intersection is a facade bre
 
         // Every file must land in exactly one known class; an unknown label
         // would mean the classifier silently grew a hole.
-        const known = new Set(['NEW', 'INTACT', 'ANCHOR_DESYNC', 'BIN_ENTRYPOINT_SKIP']);
+        const known = new Set(['NEW', 'INTACT', 'ANCHOR_DESYNC', 'BIN_ENTRYPOINT_SKIP', 'SLOW_LANE_SKIP']);
         assert.deepEqual(results.filter((r) => !known.has(r.klass)).map((r) => r.file), []);
     });
 
@@ -472,6 +483,37 @@ describe('(4) the downstream suites this gate relies on are wired into the same 
             cwd: REPO_ROOT, encoding: 'utf8',
         }).trim();
         assert.equal(status, '', `golden transcript fixtures are dirty:\n${status}`);
+    });
+
+    test('npm run test:slow still globs test/slow/*.test.mjs, so SLOW_LANE_SKIP files are still exercised for real by that lane', () => {
+        // Section (1)'s probe never dynamically runs a test/slow/ file (see
+        // SLOW_LANE_SKIP in probeFile) -- that coverage substitution is only
+        // honest if this script still exists and still runs them. Mirrors the
+        // "assert the wiring exists" idiom just above for phase1's suites,
+        // rather than re-spawning the slow lane here.
+        const pkgJson = JSON.parse(fs.readFileSync(path.join(SE_DIR, 'package.json'), 'utf8'));
+        const testSlowScript = pkgJson.scripts && pkgJson.scripts['test:slow'];
+        assert.ok(testSlowScript, 'expected a test:slow script in package.json');
+        assert.match(testSlowScript, /test\/slow\/\*\.test\.mjs/, 'test:slow no longer globs test/slow/*.test.mjs -- SLOW_LANE_SKIP files would then be probed by nobody');
+    });
+
+    test('regression pin: a test/slow/ file classifies SLOW_LANE_SKIP without touching git or spawning a child process', () => {
+        // apra-fleet-25yl.7: editing test/slow/mock-sprint-planner-dispatch-
+        // stalled-session.test.mjs (a ~7.5 minute scenario) previously pulled
+        // it into this gate's dynamic probe under the concurrent default npm
+        // test lane, where the scenario's own client-side watchdog starved
+        // and a load flake was misreported as UNEXPLAINED (a live
+        // regression). Passing a BASE sha that does not resolve and a file
+        // that does not exist on disk proves the test/slow/ check runs
+        // BEFORE existsAtBase's `git cat-file` call and before any `node
+        // --test` spawn -- if it ran later, this call would throw or hang
+        // instead of returning cleanly, the same falsification shape as the
+        // bin/ entrypoint pin above.
+        const result = probeFile(
+            '0000000000000000000000000000000000000000',
+            'packages/apra-fleet-se/test/slow/does-not-exist-anywhere.test.mjs',
+        );
+        assert.equal(result.klass, 'SLOW_LANE_SKIP', `expected SLOW_LANE_SKIP, got ${result.klass}: ${result.detail}`);
     });
 
     test('the golden transcript records an ordered phase sequence, which is what pins the phase() boundaries', () => {
