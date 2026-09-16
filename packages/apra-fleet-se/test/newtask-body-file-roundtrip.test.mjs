@@ -284,11 +284,14 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         );
     });
 
-    // The parent edge is NOT best-effort: if the link dispatch fails, the
-    // reservation is released and the error propagates (persistNewTaskBestEffort
+    // The parent edge is NOT best-effort: if the link dispatch fails, the `bd
+    // create` has ALREADY landed, so the reservation is CONFIRMED -- never
+    // released, since releasing an id that is genuinely occupied would hand
+    // it back out and collide on the next allocation (apra-fleet-btj9.2) --
+    // and a distinct, orphan-naming error propagates (persistNewTaskBestEffort
     // then degrades to parent-bead notes) rather than silently leaving a child
     // that `bd show` records no PARENT for.
-    test('a failing parent-link dispatch releases the reservation and rethrows', async () => {
+    test('a failing parent-link dispatch confirms the reservation (never releases) and rethrows a distinct orphan error', async () => {
         const calls = [];
         const command = async (cmd) => {
             calls.push(cmd);
@@ -313,9 +316,9 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
                 priority: 'P2',
                 parentId: 'parent-1',
             }),
-            /simulated link failure/,
+            /child bead 'parent-1\.4' was created but is UNLINKED/,
         );
-        assert.deepStrictEqual(allocatorCalls.map((c) => c.fn), ['release'], 'a failed link must release, never confirm');
+        assert.deepStrictEqual(allocatorCalls.map((c) => c.fn), ['confirm'], 'a failed link must confirm (the create genuinely landed), never release');
     });
 
     // Defense in depth: an allocated id that does not sit under the requested

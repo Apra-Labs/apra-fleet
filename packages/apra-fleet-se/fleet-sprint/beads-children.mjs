@@ -215,18 +215,26 @@ export async function assertChildIdFree({ command, member, childId, parentId }) 
  *      clobbering it.
  *   2. `bd create` runs with `--id <childId>` (or, under the null client where
  *      childId is null, lets bd derive the id from `--parent`).
- *   3. On the explicit-id path only, a follow-up `bd update <childId> --parent
- *      <parentId>` establishes the real parent edge.
- *   4. confirm() on success (the id is now durably used) or release() on
- *      failure (the reserved id returns to the pool, never a permanent gap).
+ *   3. confirm() as soon as `bd create` lands (the id is now durably used --
+ *      release() from here on would hand out an id that is genuinely
+ *      occupied, apra-fleet-btj9.2). release() only fires if step 2 itself
+ *      (staging the description or the `bd create` dispatch) fails, so the
+ *      reserved id returns to the pool with no permanent gap.
+ *   4. On the explicit-id path only, a follow-up `bd update <childId> --parent
+ *      <parentId>` establishes the real parent edge, AFTER confirm(). A
+ *      failure here does NOT release the reservation (the bead already
+ *      exists) -- it throws a distinct "created but UNLINKED" error naming
+ *      the orphan id so an operator can re-link it, rather than leaving the
+ *      id allocator's next probe hit a confusing already-exists refusal.
  *
  * `bd create` REJECTS `--id` and `--parent` together, so on the explicit-id
  * path `--parent` must be dropped: the allocator's `${parentId}.${seq}` id
  * shape already encodes the hierarchy. A dotted id alone does NOT record the
  * explicit parent edge, which is what the separate `bd update --parent`
  * supplies; that link step is deliberately NOT best-effort -- a failure
- * throws, releases the reservation, and degrades loudly rather than leaving
- * an edgeless child.
+ * throws and degrades loudly rather than leaving an edgeless child, but
+ * (unlike the create step) it does NOT release the reservation, because by
+ * that point the bead genuinely exists at the allocated id.
  *
  * @param {{
  *   command: Function, allocator: { allocate: Function, confirm: Function, release: Function },
@@ -287,14 +295,6 @@ export async function createChildBeadWithAllocatedId(opts) {
             `bd create "${title}" --body-file "${descriptionFile}" -p "${priority}" ${parentageFlags} --silent`,
             { member_name: member, silent: true, label: label ?? `Create follow-up task: ${title}` }
         );
-        // Explicit-id path only: record the real parent edge that `--parent`
-        // would have recorded, had bd allowed it on the same create.
-        if (grant.childId) {
-            await command(
-                `bd update ${grant.childId} --parent ${parentId}`,
-                { member_name: member, silent: true, label: `Link follow-up task ${grant.childId} under ${parentId}` }
-            );
-        }
     } catch (err) {
         // The create did NOT land -- return the reserved id to the pool so the
         // next allocation reuses it (no permanent gap), then re-throw.
@@ -304,7 +304,35 @@ export async function createChildBeadWithAllocatedId(opts) {
     }
     // The create landed locally -- durably commit the id BEFORE the D-push, so a
     // crash after this point can never reclaim an id that now genuinely exists.
+    // From here on the reservation MUST stay confirmed: the bead already
+    // exists at grant.childId (or bd's own derived id), so releasing it back
+    // to the pool after this point would hand out an id that is genuinely
+    // occupied -- the exact collision assertChildIdFree exists to refuse
+    // (apra-fleet-btj9.2).
     await allocator.confirm(grant.token);
+    // Explicit-id path only: record the real parent edge that `--parent`
+    // would have recorded, had bd allowed it on the same create. Deliberately
+    // OUTSIDE the create's release-on-failure try/catch above: a failure here
+    // must not release grant.token (the id is already in use, not free) and
+    // must not be conflated with the create's own failure. Throw a distinct,
+    // orphan-naming error instead so an operator can re-link rather than hit
+    // an inexplicable id-already-exists refusal on the next newTask under
+    // this parent.
+    if (grant.childId) {
+        try {
+            await command(
+                `bd update ${grant.childId} --parent ${parentId}`,
+                { member_name: member, silent: true, label: `Link follow-up task ${grant.childId} under ${parentId}` }
+            );
+        } catch (linkErr) {
+            log(`[id-allocator] bd create landed for '${grant.childId}' but the follow-up bd update --parent link failed; reservation stays confirmed (the id is genuinely in use): ${linkErr.message}`);
+            throw new Error(
+                `[id-allocator] child bead '${grant.childId}' was created but is UNLINKED under parent '${parentId}': ` +
+                `the follow-up 'bd update ${grant.childId} --parent ${parentId}' failed (${linkErr.message}). The id is ` +
+                'genuinely in use -- re-link it manually rather than retrying newTask under this parent.',
+            );
+        }
+    }
     return { childId: grant.childId ?? null };
 }
 
