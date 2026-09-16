@@ -182,6 +182,10 @@ function deriveStalledAbortFloorMs(dispatchTimeoutS, instantBackoff) {
         inactivityBudgetS: budgets[policy.timeouts.timeoutS],
         attempts,
         floorMs: attempts * perAttemptMs + backoffMs,
+        // See JITTER_MS_PER_ATTEMPT above: the LOWER-bound tolerance, derived
+        // from this same run's `attempts` rather than fixed at one literal
+        // second.
+        toleranceMs: attempts * JITTER_MS_PER_ATTEMPT,
     };
 }
 
@@ -190,6 +194,24 @@ function deriveStalledAbortFloorMs(dispatchTimeoutS, instantBackoff) {
 // number. Wide enough to absorb real-bd setup and host jitter, narrow enough
 // that a SIXTH attempt (or an unbounded hang) still blows it.
 const CEILING_SLACK_FACTOR = 1.35;
+
+// Per-attempt real-time jitter allowance for the LOWER-bound tolerance below
+// (apra-fleet-25yl.9). The green run this scenario was authored against
+// measured 450066.7ms against a 450000ms floor -- about 1066ms of headroom on
+// a wall-clock assertion spanning 5 real setTimeout-driven watchdog fires.
+// A bare `- 1000` literal does not scale: it silently shrinks (as a fraction
+// of the floor) whenever `attempts` or `watchdogBudgetS` grow, and it does not
+// grow when they do, so it can go red on nothing more than coarser host timer
+// resolution or a watchdog firing exactly on its grace boundary instead of
+// after it. Deriving it as `attempts * JITTER_MS_PER_ATTEMPT` instead ties it
+// to the SAME term (`attempts`) the floor and ceiling already scale by, so all
+// three bounds move together if the planner's retry ladder ever changes.
+// 200ms/attempt keeps the derived tolerance at 1000ms for today's 5-attempt
+// ladder (an intentional no-op on the currently-passing run) while staying two
+// orders of magnitude below one whole skipped watchdog budget (perAttemptMs,
+// >= 90000ms at the 60s floor) -- so a genuinely fast abort that skips an
+// entire attempt's budget still fails the lower bound, per this task's ask.
+const JITTER_MS_PER_ATTEMPT = 200;
 
 // "short dispatch_timeout_s" per this task's ask -- 60 is the lowest value
 // validateArgs accepts (must be an integer >= 60). Module scope because the
@@ -282,10 +304,13 @@ test('mock sprint: interactive Planner dispatch against a stalled/dead member se
         // LOWER bound -- the assertion that actually proves the abort was the
         // watchdog spending its per-dispatch budget on every attempt, rather
         // than some unrelated fast failure that would satisfy an upper bound
-        // trivially. A 1s tolerance absorbs timer-resolution jitter only.
+        // trivially. `budget.toleranceMs` (derived from `attempts`, see
+        // JITTER_MS_PER_ATTEMPT above) absorbs real-host timer-resolution
+        // jitter only -- it is orders of magnitude below one whole skipped
+        // watchdog budget, so a genuinely fast abort still fails this check.
         check(
-            elapsedMs >= budget.floorMs - 1000,
-            `Expected the abort to take at least the derived per-dispatch budget floor ${budget.floorMs}ms (${budgetLabel}), took ${elapsedMs}ms -- a faster abort means the watchdog did not spend its budget`
+            elapsedMs >= budget.floorMs - budget.toleranceMs,
+            `Expected the abort to take at least the derived per-dispatch budget floor ${budget.floorMs}ms minus ${budget.toleranceMs}ms jitter tolerance (${budgetLabel}), took ${elapsedMs}ms -- a faster abort means the watchdog did not spend its budget`
         );
         // UPPER bound -- nowhere near "hangs forever" (apra-fleet-eft.28
         // pre-fix) or the up-to-9000s default single-dispatch timeout_s. A
