@@ -119,9 +119,12 @@ function createFakeFleetServer(memberNames) {
 //      `budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S')`, and
 //      runner.js derives DISPATCH_INACTIVITY_TIMEOUT_S per run as
 //      `Math.min(1800, DISPATCH_TIMEOUT_S)`.
-//   2. The 110s backoff term is unreachable here: mock-sprint-harness.mjs
-//      sets APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF=1 for the whole scenario,
-//      and dispatch-role.mjs skips the timed sleep under that switch (the
+//   2. The 50s backoff term (the pessimistic-branch sum of the planner's
+//      first 4 inter-attempt waits -- [0, 5000, 15000, 30000]ms; 5 attempts
+//      have only 4 gaps, so the ladder's 5th configured delay, 60000ms, is
+//      never reached) is unreachable here: mock-sprint-harness.mjs sets
+//      APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF=1 for the whole scenario, and
+//      dispatch-role.mjs skips the timed sleep under that switch (the
 //      "waiting Ns" log line and the configured delay values are unchanged;
 //      only the sleep is skipped). So the ladder's wall clock is watchdog
 //      budgets ONLY.
@@ -162,7 +165,9 @@ function resolveBudgets(dispatchTimeoutS) {
  * plannerHandler below) rather than assumed: the harness sets
  * APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF for the duration of the scenario and
  * restores it in its finally, so reading process.env after the run would
- * always say "off" and inflate the floor by the ladder's 110s of backoff.
+ * always say "off" and inflate the floor by the ladder's 50s of backoff
+ * (the pessimistic-branch sum of the first 4 of the planner's 5 attempts'
+ * inter-attempt waits -- see the file-level comment above).
  */
 function deriveStalledAbortFloorMs(dispatchTimeoutS, instantBackoff) {
     const policy = policyFor('planner');
