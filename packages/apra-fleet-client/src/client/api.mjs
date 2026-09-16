@@ -16,7 +16,7 @@
  * @property {string} [session_id] - Optional explicit session ID to resume (shorthand alias for resume: "<sessionId>")
  * @property {boolean|string} [fork] - Branch a NEW session seeded from an existing one instead of continuing it in place. true = fork from the member's stored last session. A session-id STRING = fork from exactly that session. Mutually exclusive with resume (any non-default value) and with session_id.
  * @property {Record<string, string>} [substitutions] - Optional map of token name to replacement value
- * @property {number} [timeout_s] - Inactivity timeout in seconds -- drives the stall detector's per-dispatch baseline threshold, measured against the member's own session transcript activity, not against this dispatch's stdout/stderr channel (default: 300)
+ * @property {number} [timeout_s] - Inactivity timeout in seconds -- always drives the stall detector's per-dispatch baseline threshold, measured against the member's own session transcript activity (default: 300). Per-provider, it ALSO arms the exec-level rolling timer against this dispatch's stdout/stderr channel for providers with no pollable transcript -- Codex, Copilot, and OpenCode -- while Claude and AGY take that exec-channel ceiling from max_total_s instead (see ProviderAdapter.execTimeoutSource() server-side)
  * @property {number} [expected_context_tokens] - Optional estimate of how many
  *   tokens this dispatch will add to the target session's context. When set (or context_size is
  *   set), the server compares it against the session's remaining context-window headroom BEFORE
