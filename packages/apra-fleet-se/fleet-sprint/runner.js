@@ -468,6 +468,17 @@ export {
     installFatalDiagnosticsGuard, findDoltDivergedCause, resolveTerminalReason, captureDoltConflictDump,
 };
 
+// Pure clamp for the per-run dispatch INACTIVITY budget (apra-fleet-25yl.8):
+// a run's inactivity timer is never allowed to exceed 1800s even if the run's
+// own total budget (dispatch_timeout_s) is larger. Extracted so tests can
+// exercise the exact production clamp instead of recomputing it themselves --
+// a test that recomputes Math.min(1800, x) inline cannot fail if this clamp
+// is ever removed from main().
+function resolveDispatchInactivityTimeoutS(dispatchTimeoutS) {
+    return Math.min(1800, dispatchTimeoutS);
+}
+export { resolveDispatchInactivityTimeoutS };
+
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
 // ---------------------------------------------------------------------------
@@ -1122,8 +1133,11 @@ async function runSprintCycle(context) {
     // Clamped to the run's own DISPATCH_TIMEOUT_S so a run launched with a
     // smaller total budget (e.g. dispatch_timeout_s=300) never ends up with
     // an inactivity budget longer than its own total -- that combination is
-    // incoherent even though the arg contract permits requesting it.
-    const DISPATCH_INACTIVITY_TIMEOUT_S = Math.min(1800, DISPATCH_TIMEOUT_S);
+    // incoherent even though the arg contract permits requesting it. Pulled
+    // out into resolveDispatchInactivityTimeoutS (exported below) so a test
+    // can assert the clamp against the real production logic instead of
+    // reimplementing it (apra-fleet-25yl.8).
+    const DISPATCH_INACTIVITY_TIMEOUT_S = resolveDispatchInactivityTimeoutS(DISPATCH_TIMEOUT_S);
 
     // Apply the optional `budget` arg ceiling to THIS run's budget object.
     // Setting it here, before any dispatch, is what makes the ceiling

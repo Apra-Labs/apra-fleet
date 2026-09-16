@@ -33,7 +33,7 @@ import {
     allDispatchPolicies,
     pushesCode,
 } from '../fleet-sprint/role-policies.mjs';
-import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
+import { KB_SELF_INJECTING_ROLES, resolveDispatchInactivityTimeoutS } from '../fleet-sprint/runner.js';
 import { dispatchRole, resolveBudget } from '../fleet-sprint/dispatch-role.mjs';
 import { PLANNING_LADDERS, ENGINE_DISPATCHES } from './helpers/planning-ladders.mjs';
 import {
@@ -2481,28 +2481,31 @@ describe('apra-fleet-3swo.5.4: the consolidated degrade path is driven by the ta
 // 1800, which is unobservable in a real wall-clock slow test (it would need
 // a run lasting more than 30 minutes).
 //
-// This block reproduces runner.js's own clamp formula directly (rather than
-// importing a runner.js internal, which is not exported) against a
-// dispatch_timeout_s of 9000 -- comfortably above the 1800s clamp ceiling --
-// and resolves the planner row's OWN recorded budget NAMES (never
-// hardcoded) through resolveBudget(), the same function dispatch-role.mjs
-// uses at real dispatch time. It proves two things a same-value scenario
-// cannot: (a) the clamp actually caps the inactivity budget at 1800 while
-// leaving the hard elapsed ceiling at the full 9000, and (b) the armed
-// watchdog still resolves from the UNCLAMPED hard elapsed ceiling
-// (maxTotalS), not from the clamped inactivity budget -- exactly the
-// invariant resolveWatchdogTimeout()'s Final Review reopen (apra-fleet-3swo.7.12)
-// exists to protect.
+// This block calls runner.js's own exported resolveDispatchInactivityTimeoutS
+// clamp directly (apra-fleet-25yl.8 rework: the clamp used to be an inline,
+// unexported const inside main(), which forced this test to reimplement the
+// formula itself -- a reimplementation can never fail if the production
+// clamp is ever removed) against a dispatch_timeout_s of 9000 -- comfortably
+// above the 1800s clamp ceiling -- and resolves the planner row's OWN
+// recorded budget NAMES (never hardcoded) through resolveBudget(), the same
+// function dispatch-role.mjs uses at real dispatch time. It proves two
+// things a same-value scenario cannot: (a) the clamp actually caps the
+// inactivity budget at 1800 while leaving the hard elapsed ceiling at the
+// full 9000, and (b) the armed watchdog still resolves from the UNCLAMPED
+// hard elapsed ceiling (maxTotalS), not from the clamped inactivity budget --
+// exactly the invariant resolveWatchdogTimeout()'s Final Review reopen
+// (apra-fleet-3swo.7.12) exists to protect.
 // =============================================================================
 describe('role policy table: DISPATCH_INACTIVITY_TIMEOUT_S clamp diverges from DISPATCH_TIMEOUT_S above 1800s (apra-fleet-25yl.8)', () => {
-    // Mirrors fleet-sprint/runner.js's own
-    // `const DISPATCH_INACTIVITY_TIMEOUT_S = Math.min(1800, DISPATCH_TIMEOUT_S);`
-    // verbatim, with a dispatch_timeout_s well above the 1800s ceiling so the
-    // clamp actually engages.
+    // Calls fleet-sprint/runner.js's own exported resolveDispatchInactivityTimeoutS
+    // -- the SAME function main() uses to compute DISPATCH_INACTIVITY_TIMEOUT_S --
+    // with a dispatch_timeout_s well above the 1800s ceiling so the clamp
+    // actually engages. If the production clamp is ever removed or changed,
+    // this value (and every assertion built on it below) changes with it.
     const BIG_DISPATCH_TIMEOUT_S = 9000;
-    const CLAMPED_INACTIVITY_TIMEOUT_S = Math.min(1800, BIG_DISPATCH_TIMEOUT_S);
+    const CLAMPED_INACTIVITY_TIMEOUT_S = resolveDispatchInactivityTimeoutS(BIG_DISPATCH_TIMEOUT_S);
 
-    test('sanity: the reproduced clamp formula actually engages at this dispatch_timeout_s', () => {
+    test('sanity: the production clamp (resolveDispatchInactivityTimeoutS) actually engages at this dispatch_timeout_s', () => {
         assert.strictEqual(
             CLAMPED_INACTIVITY_TIMEOUT_S,
             1800,
