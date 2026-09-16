@@ -318,18 +318,24 @@ export function validateArgs(args) {
     }
 
     // --- dispatch_timeout_s (optional, default 9000 = 150min/2.5h) ---------
-    // Per-dispatch time budget in seconds, applied as BOTH timeout_s and
-    // max_total_s on every agent dispatch: `claude -p` emits nothing until the
-    // turn completes, so inactivity equals total runtime and the two timers
-    // must be equal for the ceiling to be reachable. The integ-test dispatch
-    // ceiling is 2x this value and the regression-test ceiling is 3x, since
-    // those suites legitimately run past one budget. Raised from the earlier
-    // 3600s default: an hour was tight enough to misclassify a slow-but-alive
-    // turn (a large diff, a chatty tool loop) as a stall, which is a false
-    // positive, not the genuine-hang protection this timer exists for.
-    // Lowering it still bounds the cost of a live-but-silent member hang,
-    // which no timer can otherwise distinguish from work. Floor 60: below
-    // that even healthy dispatches cannot complete a single turn.
+    // Per-dispatch time budget in seconds. As of apra-fleet-25yl.2, timeout_s
+    // is passed to execute_prompt to drive the stall detector's per-dispatch
+    // baseline threshold (independent of provider); max_total_s is set to the
+    // same value and used by Claude/AGY adapters as the exec-level ceiling
+    // (Codex keeps timeout_s for its exec timer; Copilot unchanged; OpenCode
+    // uses both). The reason timeout_s and max_total_s can be equal is not
+    // that claude -p emits nothing until turn end, but that both serve as
+    // configurable ceilings for different parts of the system: the stall
+    // detector's transcript-based inactivity window and (for some providers)
+    // the exec-level rolling timer. The integ-test dispatch ceiling is 2x
+    // this value and the regression-test ceiling is 3x, since those suites
+    // legitimately run past one budget. Raised from the earlier 3600s default:
+    // an hour was tight enough to misclassify a slow-but-alive turn (a large
+    // diff, a chatty tool loop) as a stall, which is a false positive, not the
+    // genuine-hang protection this timer exists for. Lowering it still bounds
+    // the cost of a live-but-silent member hang, which no timer can otherwise
+    // distinguish from work. Floor 60: below that even healthy dispatches
+    // cannot complete a single turn.
     const dispatchTimeoutS = args.dispatch_timeout_s === undefined ? 9000 : args.dispatch_timeout_s;
     if (typeof dispatchTimeoutS !== 'number' || !Number.isInteger(dispatchTimeoutS) || dispatchTimeoutS < 60) {
         throw new Error(`[Arg Contract] Invalid dispatch_timeout_s "${dispatchTimeoutS}": must be an integer >= 60 (seconds).`);
