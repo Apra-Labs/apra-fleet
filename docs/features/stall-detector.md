@@ -215,8 +215,6 @@ function toLocalISOString(ms: number): string {
 
 ## Adaptive Probe Cadence
 
-**Implemented in apra-fleet-25yl.3 and refined in apra-fleet-25yl.4.**
-
 The stall detector polls each tracked entry on an adaptive cadence tuned to its effective
 threshold, rather than once per tick. This reduces probe volume for long-threshold entries
 while preserving detection latency for short-threshold ones.
@@ -241,7 +239,8 @@ Where:
 
 The **floor** is the loop's own tick interval (`tickIntervalMs`), not a separate constant.
 There is no `STALL_PROBE_FLOOR_MS` constant and no `STALL_PROBE_FLOOR_MS` environment
-variable -- both were removed after apra-fleet-25yl.3. The floor value is the same
+variable -- a prior design considered one, but it was rejected in favor of tying the floor
+directly to the loop's own cadence. The floor value is the same
 `STALL_POLL_INTERVAL_MS` that determines the shared `setInterval()` cadence in `start()`.
 This means a probe is never skipped within a single tick cycle, preserving the invariant that
 probes arrive at least as often as the detector loop itself.
@@ -315,8 +314,6 @@ exec timer effectively never binds in the absence of an explicit
 ---
 
 ## Observability: stall_poll_tick Fields
-
-**Implemented in apra-fleet-25yl.3.3.**
 
 At the end of each poll tick, the detector emits a single `stall_poll_tick` log line
 summarizing the outcomes of that tick's probing. This line is JSON plus an elapsed suffix

@@ -62,8 +62,8 @@ Every role dispatch carries two distinct time budgets, not one:
 
 Both values are passed to the underlying `execute_prompt` dispatch as
 distinct parameters (`timeout_s` for inactivity, `max_total_s` for the total
-ceiling) -- see `docs/features/stall-detector.md` for how the stall detector
-and each provider's exec-level timer consume `timeout_s` differently.
+ceiling); how a given dispatch server and its providers consume those two
+parameters is that server's own concern, not this engine's.
 
 ## Role -> member resolution
 
