@@ -51,10 +51,20 @@ import { resolveSettleShell } from './runner.js';
  * all` is undocumented there (it is a documented value for `bd search`'s `-s`
  * flag, not `bd list`'s).
  *
- * @param {{ command: Function, member: string, parentId: string }} opts
+ * SILENT FAILURE, apra-fleet-btj9.3: every failure mode here -- `bd` exiting
+ * non-zero on a rejected flag, a dispatch timeout, unparseable JSON --
+ * collapses to "this parent has no children", re-seeding the floor to 0 and
+ * letting the allocator re-mint an already-used id. The best-effort RETURN
+ * VALUE (0) is deliberate and stays; the optional `log` callback below makes
+ * the failure itself visible to sprint output instead of vanishing into a
+ * bare catch, matching the injected-log convention this module's other
+ * functions already use (see createChildBeadWithAllocatedId's/
+ * claimBeadsBatched's `log = () => {}` default).
+ *
+ * @param {{ command: Function, member: string, parentId: string, log?: Function }} opts
  * @returns {Promise<number>}
  */
-export async function computeChildFloor({ command, member, parentId }) {
+export async function computeChildFloor({ command, member, parentId, log = () => {} }) {
     try {
         const label = `bd list --parent ${parentId} --json --all`;
         const raw = await command(label, { member_name: member, silent: true });
@@ -70,7 +80,8 @@ export async function computeChildFloor({ command, member, parentId }) {
             if (Number.isInteger(n) && n > max) max = n;
         }
         return max;
-    } catch {
+    } catch (err) {
+        log(`[id-allocator] computeChildFloor: bd list --parent ${parentId} --json --all failed or was unparseable (${err.message}); falling back to floor 0`);
         return 0;
     }
 }

@@ -291,7 +291,7 @@ export async function runFinalReviewPhase({
                 command, member: orchestratorMember, parentId: targetIssues[0],
                 newTask, cycle: finalCycleLabel, log, stage: 'final-review',
                 createFn: async () => {
-                    const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
+                    const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0], log });
                     return createChildBeadWithAllocatedId({
                         command, allocator: childIdAllocator, member: orchestratorMember,
                         title, description, priority, parentId: targetIssues[0],
