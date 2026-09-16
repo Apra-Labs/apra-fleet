@@ -7,6 +7,7 @@ import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
 import { isApraFleetRunning } from './install.js';
 import { getServiceManager } from '../services/service-manager/index.js';
+import { unregisterSupervisorService } from '../services/supervisor-service.js';
 import {
   BIN_DIR,
   HOOKS_DIR,
@@ -317,9 +318,20 @@ Options:
     }
   }
 
-  // Remove service unit (idempotent -- tolerates "not installed")
+  // Remove BOTH registered service units -- the MCP server's and the
+  // fleet-sprint supervisor's. Both are idempotent ("not installed" is fine).
+  const supervisorSvcMgr = await getServiceManager('fleet-supervisor');
+  if (await svcMgr.isInstalled().catch(() => false)) {
+    console.log('  - Removing MCP server service registration');
+  }
+  if (await supervisorSvcMgr.isInstalled().catch(() => false)) {
+    console.log('  - Removing fleet-supervisor service registration');
+  }
   if (!dryRun) {
     try { await svcMgr.unregister(); } catch {}
+    // unregister() stops the supervisor as part of tearing its unit down, so
+    // no separate stop call is needed here.
+    await unregisterSupervisorService();
   }
 
   const installConfig = readInstallConfig();

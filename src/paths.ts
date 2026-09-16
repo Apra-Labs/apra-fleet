@@ -38,3 +38,10 @@ export const DEFAULT_HOST = process.env.APRA_FLEET_HOST?.trim() || '127.0.0.1';
 export const SERVER_INFO_PATH = path.join(FLEET_DIR, 'server.json');
 
 export const LOG_FILE_PATH = path.join(FLEET_DIR, 'fleet.log');
+
+/**
+ * Log file for the fleet-sprint supervisor service (bin/serve.mjs). Kept
+ * separate from LOG_FILE_PATH so the two OS-registered services never
+ * interleave their output in one file.
+ */
+export const SUPERVISOR_LOG_FILE_PATH = path.join(FLEET_DIR, 'fleet-supervisor.log');
