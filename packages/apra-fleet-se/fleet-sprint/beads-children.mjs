@@ -41,18 +41,22 @@ import { resolveSettleShell } from './runner.js';
  * Best-effort: a failed or unparseable list yields 0 (the allocator's own
  * persisted high-water still guards against re-minting after that).
  *
- * MUST include closed children (`--status all`): `bd list --parent` excludes
- * closed issues by default, so once every existing child under a parent is
- * closed an unfiltered list would return [], the floor would compute to 0,
- * and the allocator would re-mint already-used ids (`.1`/`.2`, ...) -- the
- * trigger for the id-collision overwrite bug (apra-fleet-btj9).
+ * MUST include closed children (documented `--all` flag): `bd list --parent`
+ * excludes closed issues by default, so once every existing child under a
+ * parent is closed an unfiltered list would return [], the floor would
+ * compute to 0, and the allocator would re-mint already-used ids (`.1`/`.2`,
+ * ...) -- the trigger for the id-collision overwrite bug (apra-fleet-btj9).
+ * `--all` ("Show all issues including closed") is `bd list`'s documented
+ * spelling for this, per `bd list --help` on installed bd 1.1.0 -- `--status
+ * all` is undocumented there (it is a documented value for `bd search`'s `-s`
+ * flag, not `bd list`'s).
  *
  * @param {{ command: Function, member: string, parentId: string }} opts
  * @returns {Promise<number>}
  */
 export async function computeChildFloor({ command, member, parentId }) {
     try {
-        const label = `bd list --parent ${parentId} --json --status all`;
+        const label = `bd list --parent ${parentId} --json --all`;
         const raw = await command(label, { member_name: member, silent: true });
         const beads = parseBdJson(raw, label);
         let max = 0;
