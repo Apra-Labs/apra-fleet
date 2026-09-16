@@ -213,7 +213,98 @@ function toLocalISOString(ms: number): string {
 
 ---
 
-## Implementation Ready
+## Adaptive Probe Cadence
 
-All design decisions are finalized. No pending experiments. Ready to hand to fleet-dev for
-implementation on `feat/stall-detector`.
+**Implemented in apra-fleet-25yl.3 and refined in apra-fleet-25yl.4.**
+
+The stall detector polls each tracked entry on an adaptive cadence tuned to its effective
+threshold, rather than once per tick. This reduces probe volume for long-threshold entries
+while preserving detection latency for short-threshold ones.
+
+### Probe Interval Formula
+
+For each entry, the effective probe interval is:
+
+```
+probeIntervalMs = max(
+  tickIntervalMs,
+  min(300_000, stallThresholdMs / 5)
+)
+```
+
+Where:
+- `tickIntervalMs` = `STALL_POLL_INTERVAL_MS` env override (default: 30,000ms)
+- `stallThresholdMs` = per-entry `thresholdMs` (set by dispatch's timeout_s) or falls back to
+  `STALL_THRESHOLD_MS` env override (default: 150,000ms)
+
+### Floor
+
+The **floor** is the loop's own tick interval (`tickIntervalMs`), not a separate constant.
+There is no `STALL_PROBE_FLOOR_MS` constant and no `STALL_PROBE_FLOOR_MS` environment
+variable -- both were removed after apra-fleet-25yl.3. The floor value is the same
+`STALL_POLL_INTERVAL_MS` that determines the shared `setInterval()` cadence in `start()`.
+This means a probe is never skipped within a single tick cycle, preserving the invariant that
+probes arrive at least as often as the detector loop itself.
+
+### Ceiling
+
+The **ceiling** is 300,000ms (5 minutes). This prevents absurdly long probe gaps: a
+threshold of 9,000s would otherwise cause a 30-minute probe cadence, making the operator
+busy status equally stale and stall detection equally delayed. The ceiling is hard-coded
+and unoverridden by any environment variable.
+
+### Gating Behavior
+
+- A probe is **issued** (calling `pollLogFile()` or `pollDirectoryActivity()`) only once
+  `now - entry.lastPolledAt >= probeIntervalMs` for that entry.
+- A skipped tick (one where the gate prevents a probe) **performs no stall evaluation**: it
+  does not increment or decrement idle counters, does not read as activity, and does not
+  trigger a stall kill. The entry remains as-is until the next scheduled probe.
+- `entry.lastPolledAt` (wall-clock `Date.now()`) is set only on ticks where a probe is
+  actually issued; undefined until the first successful probe on a freshly added entry.
+
+### Trusted Threshold
+
+The gate uses the **stable, trusted threshold value** (`stallThresholdMs`), never the
+post-clamp effective threshold from a pending tool timeout. This means an extraordinary
+timeout declared in a tool call does not affect the long-term probe schedule; it only
+affects the stall detection threshold on that one tick.
+
+---
+
+## Observability: stall_poll_tick Fields
+
+**Implemented in apra-fleet-25yl.3.3.**
+
+At the end of each poll tick, the detector emits a single `stall_poll_tick` log line
+summarizing the outcomes of that tick's probing. This line is JSON plus an elapsed suffix
+(appended by `LogScope.ok()`), so the entire line is not valid JSON by itself, but the
+payload is:
+
+### Tick-Level Summary Fields
+
+The JSON payload of each `stall_poll_tick` scope contains:
+
+- **`probesIssued`** (number): count of live probes actually issued on this tick
+  (entries whose adaptive cadence gate fired)
+- **`probesSkipped`** (number): count of entries whose probes were gated out by the
+  adaptive cadence check
+- **`entryProbeIntervals`** (array): for each tracked entry, an object with:
+  - `memberName` (string): the entry's assigned member name
+  - `probeIntervalMs` (number): the computed effective probe interval for that entry,
+    reflecting the entry's threshold and the floor/ceiling clamp
+
+The `entryProbeIntervals` list is emitted in the same order as the detector's internal
+`stallCheckList` iteration, regardless of which entries actually probed on this tick, so
+an operator can compare before-and-after snapshots of the list to see which entries
+changed their computed cadence (e.g., after a threshold override).
+
+### Example Log Line
+
+```
+{"timestamp":"2026-09-16T14:23:45.123Z","scope":"stall_poll_tick","level":"info","inv":"xyz123","msg":"{\"activeWatched\":2,\"provisional\":0,\"members\":[\"alice\",\"bob\"]} elapsed=5ms","ok":"{\"probesIssued\":1,\"probesSkipped\":1,\"entryProbeIntervals\":[{\"memberName\":\"alice\",\"probeIntervalMs\":30000},{\"memberName\":\"bob\",\"probeIntervalMs\":300000}]}","elapsed":"5ms"}
+```
+
+The `ok` field contains the actual probe summary. The `msg` field (which closes at the
+scope's entry) is separate JSON that includes tick-level metadata: `activeWatched`,
+`provisional` count, and member list.
