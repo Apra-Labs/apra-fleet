@@ -37,6 +37,7 @@ const __dirname = path.dirname(__filename);
 
 const NON_COMPLIANT_FIXTURE = path.join(__dirname, 'fixtures/explicit-id-create-guard/non-compliant.mjs');
 const COMPLIANT_FIXTURE = path.join(__dirname, 'fixtures/explicit-id-create-guard/compliant.mjs');
+const WRAPPER_DISPATCH_FIXTURE = path.join(__dirname, 'fixtures/explicit-id-create-guard/wrapper-dispatch.mjs');
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -93,6 +94,48 @@ test('explicit-id-create guard fails on a fixture that reintroduces an unguarded
 test('explicit-id-create guard passes on a fixture that only mentions bd create in a comment/import, or routes through the helper (AC3)', () => {
     const { violations } = checkExplicitIdCreatePath(COMPLIANT_FIXTURE);
     check(violations.length === 0, `Expected zero violations against a comment-only/helper-routed mention, got: ${JSON.stringify(violations, null, 2)}`);
+});
+
+// =============================================================================
+// apra-fleet-btj9.9 -- pins the WIDENING 2 gap described in explicit-id-
+// create-guard.mjs's own header: a bd create dispatched through anything
+// other than a call spelled literally `command(` (a local `runBd` helper, a
+// renamed binding, a `ctx.command(...)` method call) used to scan clean
+// because findCallSites()'s lookbehind recognises only `command(`/`agent(`.
+// The command-literal rule closes that gap by matching any string/template
+// literal whose content begins with `bd create` and continues into an
+// argument, regardless of the enclosing call expression -- so this fixture
+// is caught even though its dispatch never spells `command(`.
+// =============================================================================
+
+test('explicit-id-create guard flags a bd create dispatched through a non-command wrapper (AC1)', () => {
+    const { violations } = checkExplicitIdCreatePath(WRAPPER_DISPATCH_FIXTURE);
+    check(
+        violations.length === 1,
+        `Expected exactly one violation in the wrapper-dispatch fixture, got: ${JSON.stringify(violations, null, 2)}`
+    );
+    check(
+        violations[0].includes('wrapper-dispatch.mjs:19'),
+        `Violation must name the offending file and line, got: ${violations[0]}`
+    );
+    check(violations[0].includes('bd create'), `Violation must quote the offending command, got: ${violations[0]}`);
+    check(
+        violations[0].includes('beads-children.mjs') && violations[0].includes('assertChildIdFree'),
+        `Violation must point at the required probe-and-refuse seam, got: ${violations[0]}`
+    );
+});
+
+test('findExplicitIdCreateViolations: a literal starting with "bd create" that continues into English prose (not an argument) is never a violation (AC3)', () => {
+    // Same discriminator the module header documents for the log/reason-
+    // string false positives it was measured against (abort.mjs etc.): the
+    // literal begins with "bd create" but continues into an English word,
+    // not an argument-start character, so it is prose, not a dispatch.
+    const src = 'function log(stage) { return `bd create failed (${stage})`; }';
+    const violations = findExplicitIdCreateViolations(src);
+    check(
+        violations.length === 0,
+        `Expected no violation for a literal that mentions bd create but continues into prose, got: ${JSON.stringify(violations)}`
+    );
 });
 
 test('findExplicitIdCreateViolations: an interpolated id flag (no literal --id text) is still flagged', () => {
