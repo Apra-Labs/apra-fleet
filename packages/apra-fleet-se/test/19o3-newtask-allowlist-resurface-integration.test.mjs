@@ -215,6 +215,33 @@ describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reap
 
                 const badBead = finalBeads.find((b) => b.title === BAD_TITLE);
                 assert.ok(!badBead, `the rejected title must never itself land as a bead, got: ${JSON.stringify(titles)}`);
+
+                // ---- apra-fleet-btj9.3: end-to-end coverage that computeChildFloor's
+                // closed-children read (`bd list --parent <id> --json --all`) genuinely
+                // seeds a NON-ZERO floor through the replayed fixture, not just the
+                // unit test in child-floor-includes-closed-children.test.mjs. The first
+                // newTask ('[test] foo', cycle 1) mints explicit id `<epic>.1` and
+                // closes; the SECOND newTask (the corrected resubmission, cycle 2) is
+                // created only after `<epic>.1` already exists and is closed, so
+                // computeChildFloor's `--all` read (which must see closed children,
+                // apra-fleet-btj9) is the only thing that keeps the allocator from
+                // trying to re-mint `<epic>.1` for it. Asserting the exact sequential
+                // ids below fails if that floor read ever silently degrades back to 0
+                // (apra-fleet-btj9.3's flag-order drift) or reverts to excluding closed
+                // children (apra-fleet-btj9's original bug).
+                assert.equal(goodBead.id, `${epicBead.id}.1`, `expected the first newTask to mint '${epicBead.id}.1', got: ${goodBead.id}`);
+                assert.equal(correctedBead.id, `${epicBead.id}.2`, `expected the second newTask to mint a FRESH '${epicBead.id}.2' (never re-minting the closed '${epicBead.id}.1'), got: ${correctedBead.id}`);
+
+                // The computeChildFloor read must never have silently swallowed a
+                // failure and fallen back to floor 0 -- if it had, the assertion above
+                // would already have failed on a collision refusal, but pin the
+                // absence of the fallback's own log line too so a future flag/format
+                // drift is caught here even if it happens not to cause a visible id
+                // collision in this particular scenario.
+                assert.ok(
+                    !logs.some((l) => l.includes('computeChildFloor') && l.includes('falling back to floor 0')),
+                    `computeChildFloor must not have degraded to floor 0 in this scenario, got logs: ${JSON.stringify(logs.filter((l) => l.includes('computeChildFloor')))}`,
+                );
             } finally {
                 await teardown(tempDir);
             }
