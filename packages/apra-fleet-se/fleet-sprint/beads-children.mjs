@@ -116,6 +116,81 @@ export function classifyBdShowProbeError(probeErr) {
 }
 
 /**
+ * The probe-and-refuse half of the explicit-id collision guard, extracted
+ * (apra-fleet-btj9.7) out of createChildBeadWithAllocatedId's inline block so
+ * it is a single reusable, exported seam rather than logic private to that one
+ * function. `bd create --id <id>` SILENTLY OVERWRITES an existing bead (open
+ * OR closed) that already holds that id -- it reuses the same row and
+ * clobbers its title/description/priority/type with no error. This function
+ * probes for an existing bead at `childId` FIRST and throws rather than let
+ * the caller proceed into an overwrite:
+ *
+ *   - ABSENT (the common, expected case): resolves normally, no throw.
+ *   - PRESENT: throws, naming the existing bead's status.
+ *   - UNKNOWN (the probe itself could not be evaluated -- unparseable output,
+ *     an unrecognized error payload, a transport/dispatch fault): throws,
+ *     FAILING CLOSED rather than assuming the id is free (apra-fleet-btj9.6).
+ *
+ * Does NOT touch the allocator reservation itself (release/confirm) -- that
+ * stays the caller's responsibility, exactly as it was before extraction, so
+ * a future caller with a different reservation lifecycle can reuse this probe
+ * without inheriting allocator-specific side effects.
+ *
+ * @param {{ command: Function, member: string, childId: string, parentId: string }} opts
+ * @returns {Promise<void>}
+ */
+export async function assertChildIdFree({ command, member, childId, parentId }) {
+    const probeLabel = `bd show ${childId} --json`;
+    let existing = null;
+    try {
+        const raw = await command(probeLabel, { member_name: member, silent: true });
+        const beads = parseBdJson(raw, probeLabel);
+        const list = Array.isArray(beads) ? beads : (beads ? [beads] : []);
+        existing = list.find((b) => b && b.id === childId) || null;
+    } catch (probeErr) {
+        // VERIFIED against installed bd 1.1.0 (8e4e59d3): `bd show
+        // <missing-id> --json` does NOT yield `[]` -- it exits non-zero and
+        // prints `{"error": "no issues found matching the provided IDs",
+        // "schema_version": 1}`. So the free-id case (the common, expected
+        // outcome of this probe) always lands here, indistinguishable at
+        // the throw site alone from a genuine dispatch fault. Classify the
+        // catch into ABSENT (bd positively reported no such issue -- proceed)
+        // vs UNKNOWN (anything else -- the probe could not be evaluated).
+        //
+        // FleetWorkflow.command() (packages/apra-fleet-workflow/src/workflow
+        // /index.mjs _commandDispatch) DOES surface the child process's raw
+        // stdout on a non-zero exit: a typed CommandError carries it on
+        // `.details.text`, and its `.message` also embeds it (`Exit code N:
+        // ${outText}`). That makes option 1 (parse the error payload)
+        // implementable, so it is used here rather than the parent-listing
+        // probe alternative.
+        const outcome = classifyBdShowProbeError(probeErr);
+        if (outcome === 'absent') {
+            // The id is free -- the common path. Stay fast and non-noisy:
+            // no log line, proceed to create exactly as before.
+            existing = null;
+        } else {
+            // UNKNOWN: the probe itself could not be evaluated (unparseable
+            // or unrecognized error payload, e.g. a transient dispatch
+            // fault). FAIL CLOSED rather than silently degrading back into
+            // the overwrite behavior apra-fleet-btj9 exists to prevent.
+            throw new Error(
+                `[id-allocator] refusing to create child bead at id '${childId}': the collision probe could not be ` +
+                `evaluated (${probeErr.message}) -- treating as UNKNOWN, not a confirmed-free id. Released the reservation ` +
+                'rather than risking an overwrite.',
+            );
+        }
+    }
+    if (existing) {
+        throw new Error(
+            `[id-allocator] refusing to create child bead at id '${childId}': a bead with that id already exists ` +
+            `(status: ${existing.status ?? 'unknown'}); a 'bd create --id' on that id would silently overwrite it. ` +
+            'Released the reservation rather than clobbering the existing bead.',
+        );
+    }
+}
+
+/**
  * Create a child bead under `parentId` using an allocator-minted,
  * collision-free explicit id. This is the single bead-creation seam every
  * proposed newTask flows through, so that two concurrent sprints never mint
@@ -170,59 +245,16 @@ export async function createChildBeadWithAllocatedId(opts) {
     // The allocator should never hand back an in-use id, but a crashed/partial
     // prior run, a stale persisted high-water, or a manually-created bead can
     // leave one occupied. So on the explicit-id path only, probe for an existing
-    // bead at that id FIRST and REFUSE (release the reservation, throw loudly)
-    // rather than overwrite. The null-allocator path (`bd create --parent`) lets
-    // bd mint a fresh id natively and never collides, so it needs no probe.
+    // bead at that id FIRST via the shared assertChildIdFree() seam (apra-fleet-
+    // btj9.7) and REFUSE (release the reservation, throw loudly) rather than
+    // overwrite. The null-allocator path (`bd create --parent`) lets bd mint a
+    // fresh id natively and never collides, so it needs no probe.
     if (grant.childId) {
-        const probeLabel = `bd show ${grant.childId} --json`;
-        let existing = null;
         try {
-            const raw = await command(probeLabel, { member_name: member, silent: true });
-            const beads = parseBdJson(raw, probeLabel);
-            const list = Array.isArray(beads) ? beads : (beads ? [beads] : []);
-            existing = list.find((b) => b && b.id === grant.childId) || null;
+            await assertChildIdFree({ command, member, childId: grant.childId, parentId });
         } catch (probeErr) {
-            // VERIFIED against installed bd 1.1.0 (8e4e59d3): `bd show
-            // <missing-id> --json` does NOT yield `[]` -- it exits non-zero and
-            // prints `{"error": "no issues found matching the provided IDs",
-            // "schema_version": 1}`. So the free-id case (the common, expected
-            // outcome of this probe) always lands here, indistinguishable at
-            // the throw site alone from a genuine dispatch fault. Classify the
-            // catch into ABSENT (bd positively reported no such issue -- proceed)
-            // vs UNKNOWN (anything else -- the probe could not be evaluated).
-            //
-            // FleetWorkflow.command() (packages/apra-fleet-workflow/src/workflow
-            // /index.mjs _commandDispatch) DOES surface the child process's raw
-            // stdout on a non-zero exit: a typed CommandError carries it on
-            // `.details.text`, and its `.message` also embeds it (`Exit code N:
-            // ${outText}`). That makes option 1 (parse the error payload)
-            // implementable, so it is used here rather than the parent-listing
-            // probe alternative.
-            const outcome = classifyBdShowProbeError(probeErr);
-            if (outcome === 'absent') {
-                // The id is free -- the common path. Stay fast and non-noisy:
-                // no log line, proceed to create exactly as before.
-                existing = null;
-            } else {
-                // UNKNOWN: the probe itself could not be evaluated (unparseable
-                // or unrecognized error payload, e.g. a transient dispatch
-                // fault). FAIL CLOSED rather than silently degrading back into
-                // the overwrite behavior apra-fleet-btj9 exists to prevent.
-                await allocator.release(grant.token);
-                throw new Error(
-                    `[id-allocator] refusing to create child bead at id '${grant.childId}': the collision probe could not be ` +
-                    `evaluated (${probeErr.message}) -- treating as UNKNOWN, not a confirmed-free id. Released the reservation ` +
-                    'rather than risking an overwrite.',
-                );
-            }
-        }
-        if (existing) {
             await allocator.release(grant.token);
-            throw new Error(
-                `[id-allocator] refusing to create child bead at id '${grant.childId}': a bead with that id already exists ` +
-                `(status: ${existing.status ?? 'unknown'}); a 'bd create --id' on that id would silently overwrite it. ` +
-                'Released the reservation rather than clobbering the existing bead.',
-            );
+            throw probeErr;
         }
     }
     // `bd create` refuses `--id` together with `--parent`: carry EITHER the
