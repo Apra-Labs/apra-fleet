@@ -1191,8 +1191,9 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // createChildBeadWithAllocatedId, verifyDoerStreakClosed and
 // claimBeadsBatched.
 //
-// Its baseline is FIVE: createChildBeadWithAllocatedId owns TWO
-// (`bd create --body-file` and the explicit-id path's `bd update --parent`
+// Its baseline is SIX: createChildBeadWithAllocatedId owns THREE
+// (the explicit-id path's `bd show <childId> --json` collision probe, the
+// `bd create --body-file`, and the explicit-id path's `bd update --parent`
 // link) and computeChildFloor/verifyDoerStreakClosed/claimBeadsBatched own ONE
 // each, all verified compliant.
 //
@@ -1202,7 +1203,7 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // helper, which is exactly what a zero baseline turns red.
 // =============================================================================
 const BEADS_CHILDREN_PATH = path.join(__dirname, '../fleet-sprint/beads-children.mjs');
-const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 5;
+const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 6;
 
 test('every command() call site in beads-children.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(BEADS_CHILDREN_PATH);

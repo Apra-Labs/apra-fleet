@@ -73,6 +73,10 @@ export async function computeChildFloor({ command, member, parentId }) {
  *
  * Sequence (mirrors the allocator's reserve -> confirm/release contract):
  *   1. allocate() reserves the next distinct child id under the shared parent.
+ *   1a. Explicit-id path only: probe (`bd show <childId> --json`) that no bead
+ *      already holds that id. `bd create --id` SILENTLY OVERWRITES an existing
+ *      bead, so a collision releases the reservation and throws rather than
+ *      clobbering it.
  *   2. `bd create` runs with `--id <childId>` (or, under the null client where
  *      childId is null, lets bd derive the id from `--parent`).
  *   3. On the explicit-id path only, a follow-up `bd update <childId> --parent
@@ -109,6 +113,42 @@ export async function createChildBeadWithAllocatedId(opts) {
             `[id-allocator] allocated child id '${grant.childId}' is not a child of parent '${parentId}' ` +
             '(expected the `<parentId>.<seq>` shape); released the reservation rather than creating an unparented bead',
         );
+    }
+    // Collision guard: `bd create --id <childId>` SILENTLY OVERWRITES an
+    // existing bead (open OR closed) that already holds that id -- it reuses the
+    // same row and clobbers its title/description/priority/type with no error.
+    // The allocator should never hand back an in-use id, but a crashed/partial
+    // prior run, a stale persisted high-water, or a manually-created bead can
+    // leave one occupied. So on the explicit-id path only, probe for an existing
+    // bead at that id FIRST and REFUSE (release the reservation, throw loudly)
+    // rather than overwrite. The null-allocator path (`bd create --parent`) lets
+    // bd mint a fresh id natively and never collides, so it needs no probe.
+    if (grant.childId) {
+        const probeLabel = `bd show ${grant.childId} --json`;
+        let existing = null;
+        try {
+            const raw = await command(probeLabel, { member_name: member, silent: true });
+            const beads = parseBdJson(raw, probeLabel);
+            const list = Array.isArray(beads) ? beads : (beads ? [beads] : []);
+            existing = list.find((b) => b && b.id === grant.childId) || null;
+        } catch (probeErr) {
+            // `bd show <missing-id> --json` yields [] rather than throwing, so a
+            // throw here means the existence check itself could not run (e.g. a
+            // transient dispatch fault). Treat that as "unknown, not a confirmed
+            // collision" -- consistent with computeChildFloor's best-effort
+            // tolerance -- and let the create proceed rather than failing a
+            // legitimate create on a probe hiccup.
+            log(`[id-allocator] collision probe for '${grant.childId}' could not run (${probeErr.message}); proceeding with create`);
+            existing = null;
+        }
+        if (existing) {
+            await allocator.release(grant.token);
+            throw new Error(
+                `[id-allocator] refusing to create child bead at id '${grant.childId}': a bead with that id already exists ` +
+                `(status: ${existing.status ?? 'unknown'}); \`bd create --id\` would silently overwrite it. ` +
+                'Released the reservation rather than clobbering the existing bead.',
+            );
+        }
     }
     // `bd create` refuses `--id` together with `--parent`: carry EITHER the
     // allocator-minted explicit id (hierarchy encoded in the id, parent edge

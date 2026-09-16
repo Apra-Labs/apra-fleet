@@ -265,13 +265,16 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         });
 
         assert.strictEqual(result.childId, 'parent-1.3');
-        // Three dispatches: member-side staging, bd create, bd update (link).
-        assert.strictEqual(calls.length, 3, `expected staging + create + parent-link dispatches, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
-        const createCmd = calls[1].cmd;
+        // Four dispatches: the explicit-id collision probe (bd show), member-side
+        // staging, bd create, bd update (link).
+        assert.strictEqual(calls.length, 4, `expected collision-probe + staging + create + parent-link dispatches, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
+        const probeCmd = calls[0].cmd;
+        assert.strictEqual(probeCmd, 'bd show parent-1.3 --json', 'the explicit-id path must probe for a pre-existing bead before creating');
+        const createCmd = calls[2].cmd;
         assert.match(createCmd, /^bd create /);
         assert.match(createCmd, /--id parent-1\.3(\s|$)/, 'the create must carry the allocator-minted explicit id');
         assert.ok(!createCmd.includes('--parent'), `the create must NOT carry --parent alongside --id: ${createCmd}`);
-        const linkCmd = calls[2].cmd;
+        const linkCmd = calls[3].cmd;
         assert.strictEqual(linkCmd, 'bd update parent-1.3 --parent parent-1', 'the explicit parent edge must be recorded by a separate bd update');
 
         assert.deepStrictEqual(
