@@ -1,5 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import { computeChildFloor } from '../fleet-sprint/runner.js';
 
 // apra-fleet-bkax.1: computeChildFloor (fleet-sprint/beads-children.mjs)
@@ -95,5 +96,54 @@ describe('computeChildFloor -- includes closed children in the floor computation
         const floor = await computeChildFloor({ command, member: 'local', parentId: 'parent-1' });
 
         assert.strictEqual(floor, 0);
+    });
+
+    // apra-fleet-btj9.4, criterion 1: the tests above drive computeChildFloor
+    // with an injected fake that answers the SAME fixed list regardless of the
+    // dispatched command string, so none of them can catch bd itself rejecting
+    // the `--all` flag -- only that computeChildFloor asks for it. This test
+    // closes that blind spot by shelling out once to the REAL `bd list --help`
+    // and asserting the flag computeChildFloor's label names is one bd 1.1.0
+    // actually documents. Fast, local, help-text-only -- no dolt server, no
+    // sandbox, no sprint fixture -- so it stays out of the slow/real-bd flaky
+    // family. If `bd` is absent from PATH, skip VISIBLY (node:test's skip API)
+    // rather than silently passing.
+    test('bd list --help documents the --all flag computeChildFloor dispatches (apra-fleet-btj9.4)', (t) => {
+        let helpText;
+        try {
+            helpText = execFileSync('bd', ['list', '--help'], { encoding: 'utf8' });
+        } catch (err) {
+            if (err && err.code === 'ENOENT') {
+                t.skip('bd binary not found on PATH -- cannot verify --all against a real `bd list --help`');
+                return;
+            }
+            throw err;
+        }
+        assert.match(
+            helpText,
+            /(^|\s)--all(\s|$)/m,
+            "bd list --help must document the --all flag computeChildFloor's label relies on",
+        );
+    });
+
+    // apra-fleet-btj9.4, criterion 2: pins the apra-fleet-btj9.3 fix (the
+    // catch branch's log emit) itself, not just the best-effort return value
+    // the test above it already covers. A command() fake that throws, paired
+    // with a log spy, must yield floor 0 AND exactly one log call naming the
+    // parent id and the thrown error's own text -- so a caller that grep's
+    // sprint output for this parent id can find why its floor came back 0.
+    test('a failed bd list read logs exactly one line naming the parent id and the error text (apra-fleet-btj9.3)', async () => {
+        const logCalls = [];
+        const log = (msg) => logCalls.push(msg);
+        const command = async () => {
+            throw new Error('dispatch timeout');
+        };
+
+        const floor = await computeChildFloor({ command, member: 'local', parentId: 'parent-9', log });
+
+        assert.strictEqual(floor, 0, 'the best-effort return value is unchanged by adding a log callback');
+        assert.strictEqual(logCalls.length, 1, 'the failure must be logged exactly once, not swallowed silently');
+        assert.match(logCalls[0], /parent-9/, 'the log line must name the parent id so a reader can tell whose floor read failed');
+        assert.match(logCalls[0], /dispatch timeout/, "the log line must include the thrown error's own message text");
     });
 });
