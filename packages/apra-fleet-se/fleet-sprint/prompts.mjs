@@ -14,6 +14,7 @@
 // inside a function body, never at module-evaluation time.
 import { wrapUntrustedBlock } from './contracts.mjs';
 import { PR_DESCRIPTION_MAX_LENGTH } from './vcs-module.mjs';
+import { formatStalenessBlock } from './parent-notes-staleness.mjs';
 import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock } from './runner.js';
 
 /**
@@ -27,10 +28,11 @@ import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock 
  *   replanScope?: string[]|null,
  *   rejectedNewTasksToResubmit?: Array<{title: string, description: string, reason: string, cycle: number|string}>,
  *   verifyExcluded?: string[],
+ *   stalenessNotes?: string[],
  * }} opts
  * @returns {string}
  */
-export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [], verifyExcluded = [] }) {
+export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [], verifyExcluded = [], stalenessNotes = [] }) {
     const lines = [];
 
     // SCOPED in-cycle replan clause: present ONLY when a reviewer flagged
@@ -88,6 +90,17 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
     }
 
     lines.push(`Sprint root issue id(s) (--parent scope for this sprint): ${targetIssues.join(', ')}.`);
+
+    // apra-fleet-fsxg: tooling-computed parent-NOTES staleness signal, injected
+    // prominently near the top so a flagged bead is the first thing the planner
+    // reconciles. Advisory only -- absent (the common case) leaves the prompt
+    // unchanged; present, it names specific beads whose NOTES post-date their
+    // decomposition, which the companion role-prompt guidance then tells the
+    // planner to treat as authoritative over any stale child.
+    const plannerStalenessBlock = formatStalenessBlock(stalenessNotes);
+    if (plannerStalenessBlock) {
+        lines.push(plannerStalenessBlock);
+    }
 
     // apra-fleet-jfo: authoritative, data-driven verify-route exclusion. This
     // supersedes the generic "pending feature-closure" prose above with an
@@ -170,10 +183,11 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
  *   goal: string,
  *   priorRoundVerdicts?: Array<{ round: number, verdict: string, notes: string|null }>,
  *   replanScope?: string[]|null,
+ *   stalenessNotes?: string[],
  * }} opts
  * @returns {string}
  */
-export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null, verifyExcluded = [] }) {
+export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null, verifyExcluded = [], stalenessNotes = [] }) {
     const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
     const lines = [
         'Review the beads DAG created by the planner for this sprint, per your agent contract.',
@@ -181,6 +195,15 @@ export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts
         `sprint root issue id(s) ${targetIssues.join(', ')}, goal priority ${goal}. ` +
         'Review only the features and tasks under this scope.',
     ];
+
+    // apra-fleet-fsxg: same tooling-computed parent-NOTES staleness signal the
+    // planner receives, surfaced here so the plan-reviewer independently knows
+    // which bead(s) had NOTES updated after their decomposition and can check
+    // the existing children against those later corrections. Advisory only.
+    const reviewerStalenessBlock = formatStalenessBlock(stalenessNotes);
+    if (reviewerStalenessBlock) {
+        lines.push(reviewerStalenessBlock);
+    }
 
     // apra-fleet-jfo: same authoritative, data-driven verify-route exclusion
     // as buildPlannerPrompt -- the plan-reviewer must not fail the plan for

@@ -723,6 +723,42 @@ test('every command() call site in phases/plan.mjs passes member_name or member_
 });
 
 // =============================================================================
+// apra-fleet-fsxg: the parent-NOTES staleness signal module. Its impure
+// collector reads each scope bead's children and notes history to decide
+// whether to surface an advisory note, so it carries exactly TWO
+// member_name-bearing command() call sites -- `bd list --parent <id> --json`
+// and `bd history <id> --json` -- and no agent() dispatch (it only feeds text
+// into the planner/plan-reviewer prompts). Registered in GUARDED_MODULES; this
+// explicit baseline is what makes a future third command() site (or a dropped
+// member_name) a red test rather than a silent drift.
+// =============================================================================
+const PARENT_NOTES_STALENESS_PATH = path.join(__dirname, '../fleet-sprint/parent-notes-staleness.mjs');
+const EXPECTED_PARENT_NOTES_STALENESS_COMMAND_COUNT = 2;
+
+test('every command() call site in parent-notes-staleness.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(PARENT_NOTES_STALENESS_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_PARENT_NOTES_STALENESS_COMMAND_COUNT,
+        `Expected ${EXPECTED_PARENT_NOTES_STALENESS_COMMAND_COUNT} command() call site(s) in parent-notes-staleness.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_PARENT_NOTES_STALENESS_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'parent-notes-staleness.mjs must never dispatch an agent() -- it only computes advisory prompt text.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
 // apra-fleet-3swo.6.5: the Review and Deploy phase() boundaries. Same per-module
 // baseline reasoning as the two above -- and the ZERO baselines here are not
 // decorative: phases/deploy.mjs is where a future edit is most likely to reach

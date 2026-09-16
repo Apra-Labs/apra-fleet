@@ -304,6 +304,14 @@ export const GUARDED_MODULES = [
     // in either file into a red test instead of a silently unguarded site.
     'sprint-report.mjs',
     'newtask-text.mjs',
+    // apra-fleet-fsxg: the parent-NOTES staleness signal. Its pure core is text
+    // formatting, but collectParentNotesStalenessNotes carries TWO member_name-
+    // bearing command() call sites (`bd list --parent <id> --json` and `bd
+    // history <id> --json`), so it must be scanned by dispatch-safety-guard
+    // exactly like any other guarded command surface -- see its own explicit
+    // baseline (EXPECTED_PARENT_NOTES_STALENESS_COMMAND_COUNT) in
+    // dispatch-safety-guard.test.mjs.
+    'parent-notes-staleness.mjs',
     // apra-fleet-3swo.6.15: the round-resume session registry
     // (round-session.mjs: DEFAULT_CONTEXT_CEILING, createRoundSessionRegistry)
     // and the dispatch-outcome classification surface (dispatch-failure.mjs:

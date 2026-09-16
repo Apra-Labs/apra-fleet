@@ -6,7 +6,7 @@ import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
-import { runCmd, buildMockFleetApi, teardown, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runCmd, buildMockFleetApi, teardown, withScenarioMarkers, bdInitCommandForClone } from './helpers/mock-sprint-harness.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const check = (cond, msg) => assert.ok(cond, msg);
@@ -33,7 +33,7 @@ const check = (cond, msg) => assert.ok(cond, msg);
 async function setupCycleFixture(tag) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tag}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
-    await runCmd('bd init', tempDir);
+    await runCmd(bdInitCommandForClone(tempDir), tempDir);
 
     const gpRes = await runCmd(`bd create -t epic "Epic: ${tag} grandparent" -d "Scenario grandparent." --silent`, tempDir);
     const gpId = gpRes.stdout.trim();

@@ -48,6 +48,7 @@
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 import { buildPlannerPrompt, buildPlanReviewerPrompt } from '../prompts.mjs';
+import { collectParentNotesStalenessNotes } from '../parent-notes-staleness.mjs';
 import { PlanReviewDispatchFailedError, SprintPlanRejectedError } from '../errors.mjs';
 import { buildSettleCallback } from '../dolt-settle.mjs';
 
@@ -120,6 +121,22 @@ export async function runPlanPhase({
     // controls the delta-vs-full prompt framing.
     const isDeltaCycle = cycle > 1;
 
+    // apra-fleet-fsxg: compute the tooling's parent-NOTES staleness signal ONCE
+    // for this Plan phase, before the planner<->plan-reviewer loop, from the
+    // beads state the planner will actually see at dispatch. It flags any scope
+    // bead whose NOTES were updated after its most recently created child --
+    // i.e. an existing decomposition that may predate a later NOTES correction.
+    // Strictly advisory: it only adds context to the two prompts below, never
+    // blocks planning, and a probe failure yields an empty list (no note), so
+    // the phase degrades to the pre-existing prompt-only behaviour.
+    const parentNotesStalenessNotes = await collectParentNotesStalenessNotes({
+        command,
+        member: orchestratorMember,
+        rootIds: targetIssues,
+        parseBdJson,
+        log,
+    });
+
     let planApproved = false;
     let planningRounds = 0;
     let plannerFeedback = null;
@@ -143,6 +160,7 @@ export async function runPlanPhase({
             feedback: plannerFeedback,
             rejectedNewTasksToResubmit: pendingRejectedNewTasks,
             verifyExcluded: verifySetThisCycle,
+            stalenessNotes: parentNotesStalenessNotes,
         });
         // The planner writes no code but MUTATES beads (it creates the task
         // DAG), so its policy is bracketed pushCode:false / pushBeads:true --
@@ -265,7 +283,7 @@ export async function runPlanPhase({
         // stamps that marker from the policy row; the notes below are the
         // per-error-class text this call site still owns.
         const planReviewOutcome = await dispatchRole(dispatchCtx, 'plan-reviewer', {
-            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle }),
+            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle, stalenessNotes: parentNotesStalenessNotes }),
             resumePrompt: 'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
             roleLabel: 'Plan Reviewer',
             resumeLabel: `Plan Review (resume, max_turns=${TURN_BASES.PLAN_REVIEWER_MAX_TURNS * 2})`,
