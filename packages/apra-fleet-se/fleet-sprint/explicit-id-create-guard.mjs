@@ -1,6 +1,12 @@
 import fs from 'fs';
 import path from 'path';
-import { findCallSites, maskComments, skipStringLiteral } from './dispatch-safety-guard.mjs';
+import {
+    findCallSites,
+    maskComments,
+    skipStringLiteral,
+    canStartRegex,
+    skipRegexLiteral,
+} from './dispatch-safety-guard.mjs';
 import { explicitIdCreateModulePaths, EXPLICIT_ID_CREATE_EXEMPT } from './guarded-modules.mjs';
 
 // =============================================================================
@@ -97,6 +103,16 @@ import { explicitIdCreateModulePaths, EXPLICIT_ID_CREATE_EXEMPT } from './guarde
 //     call-graph proof; a create reached through a module that is not
 //     registered in guarded-modules.mjs is out of scope by construction
 //     (that list is what guarded-modules-coverage.test.mjs pins).
+//   - The command-literal rule lexes JavaScript with a hand-written scanner
+//     (scanModuleLiterals() below), so its grammar coverage has a frontier:
+//     comments, regex literals (including character classes), strings, and
+//     templates with nested `${...}` interpolations are modeled; anything
+//     else that can open a literal is not. That frontier is deliberately NOT
+//     silent -- see the DESYNC BACKSTOP note on scanModuleLiterals(): a
+//     construct that provably desyncs the walk is reported as a loud
+//     `parse-desync` violation naming the file and line, so a module this
+//     guard cannot read fails it instead of passing it. Measured on the tree
+//     as it stands: zero desyncs across the 58 scanned modules.
 //   - NOT a limit, contrary to an earlier note on this bead: `bd` and
 //     `create` split across a newline inside a template literal ARE matched,
 //     because both rules join them with `\s+`, which matches a newline. This
@@ -113,11 +129,21 @@ import { explicitIdCreateModulePaths, EXPLICIT_ID_CREATE_EXEMPT } from './guarde
 // the FULL balanced call text -- including embedded quotes -- for every
 // `command(`/`agent(` site, and already skips full-line comments and
 // same-line-string false positives, so this guard reuses it rather than
-// re-deriving that logic. The command-literal rule reuses the same module's
-// maskComments()/skipStringLiteral() for the same reason -- comments are
-// masked out before any literal is extracted, so the many prose mentions of
-// `bd create` in this directory's comments (including this header) can never
-// be read as dispatches.
+// re-deriving that logic.
+//
+// THE COMMAND-LITERAL RULE, BY CONTRAST, LEXES THE RAW SOURCE ITSELF
+// (scanModuleLiterals() below) instead of walking a maskComments() copy. Its
+// first cut did reuse maskComments()/skipStringLiteral(), on the same "do not
+// re-derive it" reasoning -- and was measured SILENTLY BLIND over 867 lines
+// of the real scanned set, because three ordinary constructs open a phantom
+// string in a naive quote-walk: a regex body holding an apostrophe, a regex
+// character class holding a quote, and a nested template inside a `${...}`
+// interpolation (that last one desyncs maskComments() ITSELF, so it cannot
+// be repaired downstream of it). The full account, naming the real modules
+// that trigger each, is on scanModuleLiterals(). Comment spans are still
+// never entered, so the many prose mentions of `bd create` in this
+// directory's comments (including this header) are still never read as
+// dispatches.
 //
 // EXEMPTION: beads-children.mjs itself (EXPLICIT_ID_CREATE_EXEMPT), the
 // single permitted surface -- scanning it would flag the module for being
@@ -149,44 +175,218 @@ const EXPLICIT_ID_CREATE_RE = /bd\s+create\b/;
 // the bead-creation command itself and continues into an argument (see
 // "HOW WIDENING 2 IS DONE" above). The argument-start character class is
 // written with hex escapes -- \x22 " , \x27 ' , \x60 ` -- rather than the
-// characters themselves, because maskComments() does not model regex
-// literals and would read a bare quote here as opening a string, corrupting
-// this very file's masking.
+// characters themselves. That is belt-and-braces rather than load-bearing
+// now: both this guard's own lexer and maskComments() model regex literals,
+// so a bare quote inside this regex would no longer corrupt the scan of this
+// very file (which IS in the guarded set). The escapes are kept because they
+// cost nothing and keep the line safe for any SIMPLER scanner that does not
+// model regex literals.
 const CREATE_DISPATCH_LITERAL_RE = /^\s*bd\s+create\s+(\x22|\x27|\x60|\$|-|$)/;
 
+// A raw (unescaped) newline inside a `'`/`"` literal. Such a literal is
+// INVALID JavaScript -- only a template literal may span lines -- so seeing
+// one means the scan's own notion of "where string literals begin and end"
+// has desynced from the real source, and every line it swallowed is invisible
+// to the command-literal rule below. Matched as: a newline preceded by an
+// EVEN number of backslashes (zero counts), so a legitimate line
+// continuation (`\` immediately before the newline) is not mistaken for one.
+const RAW_NEWLINE_IN_QUOTED_LITERAL_RE = /(?:^|[^\\])(?:\\\\)*\n/;
+
 /**
- * Returns every string/template literal in `src` as { line, content }, with
- * comments masked out first (so prose mentions of a command inside a comment
- * are never extracted). Positions are computed against the masked copy,
- * which maskComments() guarantees is the same length and line numbering as
- * `src`.
+ * Walks `src` once and returns BOTH of the things the command-literal rule
+ * needs:
+ *   - `literals`: every string/template literal as { line, content }, in
+ *     source order, with comment spans never entered (so prose mentions of a
+ *     command inside a comment are never extracted);
+ *   - `desyncs`: every position where the walk could not trust its own
+ *     literal boundaries (see the DESYNC note in the module header).
+ *
+ * WHY THIS IS A LOCAL LEXER AND NOT maskComments() + skipStringLiteral()
+ * (this bead's review round). The first cut of this rule extracted literals
+ * by walking a maskComments() copy and calling skipStringLiteral() at every
+ * quote. Measured against the real scanned set, that walk was SILENTLY BLIND:
+ * 867 lines across 8 of the 58 scanned modules sat inside a phantom `'`/`"`
+ * span, and injecting a real wrapper dispatch line by line showed 1085
+ * injection points -- ordinary statements in function bodies, in abort.mjs,
+ * member-sync.mjs, branch-ensure.mjs, newtask-text.mjs, contracts.mjs and
+ * five more -- that this rule reported CLEAN and now reports. (The same
+ * desync also had a false-POSITIVE direction, prose inside a phantom span
+ * being read as a dispatch; that half was already closed upstream when
+ * maskComments() learned about regex literals, and is pinned by
+ * dispatch-safety-guard.test.mjs.) Three distinct constructs open a
+ * "phantom string" that swallows source up to the next matching quote:
+ *   1. a REGEX whose body holds a quote -- branch-ensure.mjs's
+ *      `/couldn't find remote ref/i`. maskComments() copies a regex through
+ *      VERBATIM (it is real code, not a comment), so the apostrophe inside
+ *      it is still there for a naive quote-walk to trip over. Handled here by
+ *      skipping regex spans with the SAME canStartRegex()/skipRegexLiteral()
+ *      heuristic maskComments() used when it decided to copy that span.
+ *   2. a CHARACTER CLASS holding a quote -- newtask-text.mjs's
+ *      SAFE_TEXT_RE -- same cause, same fix.
+ *   3. a NESTED TEMPLATE inside a `${...}` interpolation --
+ *      vcs-providers/shell-helpers.mjs's
+ *      shQuote (a `.replace()` whose arguments are themselves backtick
+ *      literals). skipStringLiteral() has no notion of interpolation, so it
+ *      ends the OUTER template at the INNER template's opening backtick and
+ *      every boundary after that is off by one literal. This one desyncs
+ *      maskComments() itself, so no amount of care in a walk built on its
+ *      output can recover -- which is why the walk below lexes the raw source
+ *      directly instead.
+ * The call-site rule is unaffected by all three: it reads
+ * extractBalancedCall(), which skips regex spans and only needs paren depth.
+ *
+ * DESYNC BACKSTOP. Lexing JavaScript with a hand-written scanner will always
+ * have a frontier. So rather than trusting this one to be complete, it
+ * reports the two constructs that PROVE it has lost the thread -- a
+ * `'`/`"` literal carrying a raw newline, and an unterminated template --
+ * as `desyncs`, which findExplicitIdCreateViolations() turns into a loud
+ * violation. A guard that cannot parse a module must say so, not report it
+ * clean.
+ */
+export function scanModuleLiterals(src) {
+    const lineStarts = [0];
+    for (let i = 0; i < src.length; i++) {
+        if (src[i] === '\n') lineStarts.push(i + 1);
+    }
+    const lineNumberForIndex = (idx) => {
+        let lo = 0;
+        let hi = lineStarts.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (lineStarts[mid] <= idx) lo = mid;
+            else hi = mid - 1;
+        }
+        return lo + 1; // 1-based
+    };
+
+    const ctx = {
+        literals: [],
+        desyncs: [],
+        // Code seen so far with comments blanked, ONLY so canStartRegex()'s
+        // preceding-token heuristic sees the same thing it would have seen
+        // inside maskComments(). Never scanned for content.
+        code: '',
+        lineNumberForIndex,
+    };
+
+    scanCodeSpan(src, 0, null, ctx);
+    return { literals: ctx.literals, desyncs: ctx.desyncs };
+}
+
+/**
+ * Scans a CODE region of `src` starting at `start`, recording every string /
+ * template literal it contains (including inside nested `${...}`
+ * interpolations) into `ctx`. When `stopAt` is `'}'` the scan is inside a
+ * `${...}` interpolation and returns the index just past the `}` that closes
+ * it, counting nested braces on the way; when `stopAt` is null it runs to end
+ * of file. Returns the index it stopped at.
+ */
+function scanCodeSpan(src, start, stopAt, ctx) {
+    let depth = 0;
+    let i = start;
+    while (i < src.length) {
+        const ch = src[i];
+        if (ch === '/' && src[i + 1] === '/') {
+            while (i < src.length && src[i] !== '\n') { ctx.code += ' '; i++; }
+            continue;
+        }
+        if (ch === '/' && src[i + 1] === '*') {
+            const close = src.indexOf('*/', i + 2);
+            const stop = close < 0 ? src.length : close + 2;
+            for (; i < stop; i++) ctx.code += src[i] === '\n' ? '\n' : ' ';
+            continue;
+        }
+        if (ch === '/' && canStartRegex(ctx.code, ctx.code.length)) {
+            const close = skipRegexLiteral(src, i);
+            if (close !== -1) {
+                let flagEnd = close;
+                while (flagEnd + 1 < src.length && /[a-zA-Z]/.test(src[flagEnd + 1])) flagEnd++;
+                ctx.code += src.slice(i, flagEnd + 1);
+                i = flagEnd + 1;
+                continue;
+            }
+            // No closing `/` before end of line: not a regex after all, so
+            // fall through and treat it as an ordinary character.
+        }
+        if (ch === '"' || ch === "'") {
+            const close = skipStringLiteral(src, i, ch);
+            const content = src.slice(i + 1, close);
+            if (RAW_NEWLINE_IN_QUOTED_LITERAL_RE.test(content)) {
+                // Desync: do NOT consume the span. Consuming it is what makes
+                // the blindness silent -- report it loudly and carry on from
+                // the very next character so the rest of the module is still
+                // examined rather than swallowed.
+                ctx.desyncs.push({ line: ctx.lineNumberForIndex(i), detail: `a ${ch} string literal` });
+                ctx.code += ' ';
+                i++;
+                continue;
+            }
+            ctx.literals.push({ line: ctx.lineNumberForIndex(i), content });
+            ctx.code += src.slice(i, close + 1);
+            i = close + 1;
+            continue;
+        }
+        if (ch === '`') {
+            i = scanTemplateLiteral(src, i, ctx);
+            continue;
+        }
+        if (stopAt === '}') {
+            if (ch === '{') depth++;
+            else if (ch === '}') {
+                if (depth === 0) { ctx.code += ch; return i + 1; }
+                depth--;
+            }
+        }
+        ctx.code += ch;
+        i++;
+    }
+    return i;
+}
+
+/**
+ * Scans the template literal opening at `start`, recording it (and anything
+ * nested in its `${...}` interpolations) into `ctx`. Returns the index just
+ * past the closing backtick. The recorded `content` is the RAW text between
+ * the backticks, interpolations included, which is exactly what
+ * CREATE_DISPATCH_LITERAL_RE wants to see: a dispatch's command text with its
+ * `${...}` arguments still in place.
+ */
+function scanTemplateLiteral(src, start, ctx) {
+    for (let i = start + 1; i < src.length; i++) {
+        const ch = src[i];
+        if (ch === '\\') { i++; continue; }
+        if (ch === '`') {
+            ctx.literals.push({ line: ctx.lineNumberForIndex(start), content: src.slice(start + 1, i) });
+            // Only a marker: ctx.code exists solely so canStartRegex() can see
+            // what token precedes a `/`, and "a literal just ended" is all it
+            // needs to know here.
+            ctx.code += '`';
+            return i + 1;
+        }
+        if (ch === '$' && src[i + 1] === '{') {
+            // Recurse through the interpolation so a literal nested inside it
+            // is seen, and so the OUTER template ends at the right backtick.
+            // The parens bracket the interpolation in ctx.code so that a `/`
+            // as its first token reads as a regex start, exactly as it would
+            // after a real `(`.
+            ctx.code += '(';
+            i = scanCodeSpan(src, i + 2, '}', ctx) - 1;
+            ctx.code += ')';
+        }
+    }
+    // Unterminated template literal: another unambiguous desync tell, since
+    // the rest of the file has just been swallowed by it.
+    ctx.desyncs.push({ line: ctx.lineNumberForIndex(start), detail: 'a template literal' });
+    return src.length;
+}
+
+/**
+ * Convenience wrapper over scanModuleLiterals() for callers that only want
+ * the literals. Kept as a named export because it is this guard's most
+ * reusable primitive.
  */
 export function findCommandLiterals(src) {
-    const masked = maskComments(src);
-    const lineStarts = [];
-    let offset = 0;
-    for (const line of masked.split('\n')) {
-        lineStarts.push(offset);
-        offset += line.length + 1; // +1 for the '\n' stripped by split()
-    }
-    function lineNumberForIndex(idx) {
-        let ln = 0;
-        for (let i = 0; i < lineStarts.length; i++) {
-            if (lineStarts[i] > idx) break;
-            ln = i;
-        }
-        return ln + 1; // 1-based
-    }
-    const literals = [];
-    for (let i = 0; i < masked.length; i++) {
-        const ch = masked[i];
-        if (ch === '"' || ch === "'" || ch === '`') {
-            const end = skipStringLiteral(masked, i, ch);
-            literals.push({ line: lineNumberForIndex(i), content: masked.slice(i + 1, end) });
-            i = end;
-        }
-    }
-    return literals;
+    return scanModuleLiterals(src).literals;
 }
 
 /**
@@ -220,13 +420,26 @@ export function findExplicitIdCreateViolations(src) {
             command: site.callText.replace(/\s+/g, ' ').trim(),
         });
     }
-    for (const literal of findCommandLiterals(src)) {
+    const { literals, desyncs } = scanModuleLiterals(src);
+    for (const literal of literals) {
         if (!CREATE_DISPATCH_LITERAL_RE.test(literal.content)) continue;
         if (claimed.has(literal.line) || byLine.has(literal.line)) continue;
         byLine.set(literal.line, {
             line: literal.line,
             rule: 'command-literal',
             command: literal.content.replace(/\s+/g, ' ').trim(),
+        });
+    }
+    // Reported LAST and never deduplicated away: a desync is not a dispatch,
+    // it is this scan admitting it could not read the module. Silently
+    // returning "clean" for such a module is the exact failure mode this
+    // guard exists to prevent.
+    for (const desync of desyncs) {
+        if (byLine.has(desync.line)) continue;
+        byLine.set(desync.line, {
+            line: desync.line,
+            rule: 'parse-desync',
+            command: desync.detail,
         });
     }
     return [...byLine.values()].sort((a, b) => a.line - b.line);
@@ -241,11 +454,17 @@ export function checkExplicitIdCreatePath(filePath) {
     const src = fs.readFileSync(filePath, 'utf8');
     const fileLabel = path.basename(filePath);
     const violations = findExplicitIdCreateViolations(src).map(({ line, rule, command }) =>
-        `${fileLabel}:${line} issues a bead-creation command ("${command}", matched by the ${rule} rule) ` +
-        'outside the single guarded probe-and-refuse seam -- route it through beads-children.mjs\'s ' +
-        'assertChildIdFree() / createChildBeadWithAllocatedId, the only permitted bead-creation surface. ' +
-        'Flagged regardless of whether an id flag is literal, interpolated, or absent, and regardless of ' +
-        'the wrapper it is dispatched through (see this module\'s header).'
+        rule === 'parse-desync'
+            ? `${fileLabel}:${line} could not be scanned reliably: ${command} opens here and is never closed ` +
+              'where the JavaScript grammar requires, which means this scan\'s literal boundaries have desynced ' +
+              'from the real source and an unguarded bead-creation command could be hiding in the span it would ' +
+              'otherwise have swallowed. This guard refuses to report a module it cannot parse as clean -- fix the ' +
+              'construct that confuses the scan (see this module\'s DESYNC note), do not suppress this message.'
+            : `${fileLabel}:${line} issues a bead-creation command ("${command}", matched by the ${rule} rule) ` +
+              'outside the single guarded probe-and-refuse seam -- route it through beads-children.mjs\'s ' +
+              'assertChildIdFree() / createChildBeadWithAllocatedId, the only permitted bead-creation surface. ' +
+              'Flagged regardless of whether an id flag is literal, interpolated, or absent, and regardless of ' +
+              'the wrapper it is dispatched through (see this module\'s header).'
     );
     return { violations };
 }
