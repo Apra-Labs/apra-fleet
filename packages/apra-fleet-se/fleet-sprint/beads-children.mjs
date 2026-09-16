@@ -41,12 +41,18 @@ import { resolveSettleShell } from './runner.js';
  * Best-effort: a failed or unparseable list yields 0 (the allocator's own
  * persisted high-water still guards against re-minting after that).
  *
+ * MUST include closed children (`--status all`): `bd list --parent` excludes
+ * closed issues by default, so once every existing child under a parent is
+ * closed an unfiltered list would return [], the floor would compute to 0,
+ * and the allocator would re-mint already-used ids (`.1`/`.2`, ...) -- the
+ * trigger for the id-collision overwrite bug (apra-fleet-btj9).
+ *
  * @param {{ command: Function, member: string, parentId: string }} opts
  * @returns {Promise<number>}
  */
 export async function computeChildFloor({ command, member, parentId }) {
     try {
-        const label = `bd list --parent ${parentId} --json`;
+        const label = `bd list --parent ${parentId} --json --status all`;
         const raw = await command(label, { member_name: member, silent: true });
         const beads = parseBdJson(raw, label);
         let max = 0;
