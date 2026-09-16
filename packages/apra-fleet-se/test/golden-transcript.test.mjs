@@ -14,10 +14,6 @@ import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { runCmd } from './helpers/bd-replay.mjs';
 import { extractVerifyIds } from './helpers/verify-clause.mjs';
 import { StalledSprintError } from '../fleet-sprint/errors.mjs';
-// apra-fleet-j918.7.8: the determinism test resets dolt-sync's process-
-// lifetime sync.remote/tip memoization (apra-fleet-akuv) before its own
-// independent second run -- see that test for why.
-import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 // apra-fleet-j918.13.3: harvest.mjs derives the analysisArtifactFile path
 // (docs/sprint-analysis-<slug>.md) from the sprint's branch via this exact
 // function (see fleet-sprint/phases/harvest.mjs) -- reused (not
@@ -899,13 +895,10 @@ test('golden transcript: Integ Test closing the childful epic in the same cycle 
     );
 });
 
-// apra-fleet-j918.7.8: run1 is the MEMOIZED 'golden-main' run the snapshot
-// test above already performed (goldenMainRun()) -- this file used to pay
-// for a second, byte-identically-configured full sprint run purely to have
-// a "first run" to diff against. run2 is still a genuinely INDEPENDENT
-// second execution (tag 'golden-det-2', its own tempDir, its own full
-// sprint), so this remains a real two-independent-runs comparison, not a
-// run compared against itself.
+// run1 (tag 'golden-det-1') and run2 (tag 'golden-det-2') are two genuinely
+// INDEPENDENT full sprint executions, each with its own tempDir and its own
+// cold dolt-sync cache state, so this is a real two-independent-runs
+// comparison, not a run compared against itself.
 //
 // FALSIFICATION (confirmed by hand): temporarily inserting
 // `run2.transcript[0] = { ...run2.transcript[0], seq: 'MUTATED' };`
@@ -916,20 +909,12 @@ test('golden transcript: Integ Test closing the childful epic in the same cycle 
 // confirms run1 and run2 are still compared as two distinct values, not
 // short-circuited into a tautological self-comparison.
 test('golden transcript: two consecutive runs of the mock sprint produce an identical transcript (determinism proof)', async () => {
-    const run1 = await goldenMainRun();
-    // run1 (goldenMainRun()) may have been the FIRST sprint scenario this
-    // test process ever ran, which is when dolt-sync.mjs's per-member
-    // sync.remote/tip memoization (apra-fleet-akuv) is still cold -- discovered
-    // by hand while writing this test: without this reset, run2 comes out
-    // warm-cache (its first git-sync-bracket dispatch is a plain `git fetch`
-    // instead of the cold-cache `bd config get sync.remote --json` probe),
-    // which failed this test's comparison for a reason that has nothing to do
-    // with actual sprint non-determinism. Resetting here puts run2 back in the
-    // same cold-cache state run1 started in, so the comparison is apples to
-    // apples again.
-    invalidateSyncRemoteCache();
-    clearLastSyncedTip();
-    clearTipProbeFailures();
+    // run1 uses its own independent scenario run (tag 'golden-det-1') rather
+    // than the memoized goldenMainRun(), so it does not inherit
+    // goldenMainRun()'s warm dolt-sync state (per-member sync.remote/tip
+    // memoization in dolt-sync.mjs). Both runs therefore start independently
+    // cold, making the comparison apples-to-apples without any cache reset.
+    const run1 = await runGoldenScenario('golden-det-1');
     const run2 = await runGoldenScenario('golden-det-2');
 
     const jsonl1 = transcriptToJsonl(run1.transcript);
