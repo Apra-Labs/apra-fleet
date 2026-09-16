@@ -72,6 +72,46 @@ export async function computeChildFloor({ command, member, parentId }) {
 }
 
 /**
+ * Classifies a `bd show <id> --json` probe failure (apra-fleet-btj9.6) into
+ * one of two outcomes, so the collision guard above can tell a genuine "the
+ * id is free" result apart from "the probe itself could not be evaluated":
+ *
+ *   - 'absent': the thrown error's payload positively matches bd's documented
+ *     no-such-issue shape (`{"error": "no issues found matching the provided
+ *     IDs", ...}`, verified against installed bd 1.1.0). This is the ordinary,
+ *     expected outcome of probing a genuinely free id.
+ *   - 'unknown': anything else -- unparseable output, a differently-shaped
+ *     error payload, a transport/dispatch fault. The caller MUST fail closed
+ *     on this outcome rather than assume the id is free.
+ *
+ * Reads `probeErr.details.text` first (the raw stdout a typed CommandError
+ * carries, see packages/apra-fleet-workflow/src/workflow/errors.mjs) and
+ * falls back to `probeErr.message` (which production's FleetWorkflow.command()
+ * also embeds the same raw stdout into, e.g. `Exit code 1: {...}`) for
+ * callers/fakes that only ever throw a plain Error.
+ *
+ * @param {Error} probeErr
+ * @returns {'absent'|'unknown'}
+ */
+export function classifyBdShowProbeError(probeErr) {
+    const text = (probeErr && probeErr.details && typeof probeErr.details.text === 'string')
+        ? probeErr.details.text
+        : (probeErr && typeof probeErr.message === 'string' ? probeErr.message : '');
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) {
+        try {
+            const parsed = JSON.parse(match[0]);
+            if (parsed && typeof parsed.error === 'string' && /no issues found/i.test(parsed.error)) {
+                return 'absent';
+            }
+        } catch {
+            // Not JSON, or not the expected shape -- fall through to unknown.
+        }
+    }
+    return 'unknown';
+}
+
+/**
  * Create a child bead under `parentId` using an allocator-minted,
  * collision-free explicit id. This is the single bead-creation seam every
  * proposed newTask flows through, so that two concurrent sprints never mint
@@ -138,14 +178,39 @@ export async function createChildBeadWithAllocatedId(opts) {
             const list = Array.isArray(beads) ? beads : (beads ? [beads] : []);
             existing = list.find((b) => b && b.id === grant.childId) || null;
         } catch (probeErr) {
-            // `bd show <missing-id> --json` yields [] rather than throwing, so a
-            // throw here means the existence check itself could not run (e.g. a
-            // transient dispatch fault). Treat that as "unknown, not a confirmed
-            // collision" -- consistent with computeChildFloor's best-effort
-            // tolerance -- and let the create proceed rather than failing a
-            // legitimate create on a probe hiccup.
-            log(`[id-allocator] collision probe for '${grant.childId}' could not run (${probeErr.message}); proceeding with create`);
-            existing = null;
+            // VERIFIED against installed bd 1.1.0 (8e4e59d3): `bd show
+            // <missing-id> --json` does NOT yield `[]` -- it exits non-zero and
+            // prints `{"error": "no issues found matching the provided IDs",
+            // "schema_version": 1}`. So the free-id case (the common, expected
+            // outcome of this probe) always lands here, indistinguishable at
+            // the throw site alone from a genuine dispatch fault. Classify the
+            // catch into ABSENT (bd positively reported no such issue -- proceed)
+            // vs UNKNOWN (anything else -- the probe could not be evaluated).
+            //
+            // FleetWorkflow.command() (packages/apra-fleet-workflow/src/workflow
+            // /index.mjs _commandDispatch) DOES surface the child process's raw
+            // stdout on a non-zero exit: a typed CommandError carries it on
+            // `.details.text`, and its `.message` also embeds it (`Exit code N:
+            // ${outText}`). That makes option 1 (parse the error payload)
+            // implementable, so it is used here rather than the parent-listing
+            // probe alternative.
+            const outcome = classifyBdShowProbeError(probeErr);
+            if (outcome === 'absent') {
+                // The id is free -- the common path. Stay fast and non-noisy:
+                // no log line, proceed to create exactly as before.
+                existing = null;
+            } else {
+                // UNKNOWN: the probe itself could not be evaluated (unparseable
+                // or unrecognized error payload, e.g. a transient dispatch
+                // fault). FAIL CLOSED rather than silently degrading back into
+                // the overwrite behavior apra-fleet-btj9 exists to prevent.
+                await allocator.release(grant.token);
+                throw new Error(
+                    `[id-allocator] refusing to create child bead at id '${grant.childId}': the collision probe could not be ` +
+                    `evaluated (${probeErr.message}) -- treating as UNKNOWN, not a confirmed-free id. Released the reservation ` +
+                    'rather than risking an overwrite.',
+                );
+            }
         }
         if (existing) {
             await allocator.release(grant.token);
