@@ -2,6 +2,55 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- planner/plan-reviewer catch decompositions that contradict a bead's own NOTES corrections
+
+Sprint goal: fix a real, observed failure mode where a sprint decomposed a
+bead into children that were faithful to its original DESCRIPTION but
+silently contradicted corrections already recorded in that bead's own NOTES
+history -- caught only by a manual adversarial review, not by the normal
+plan/review loop.
+
+What shipped:
+
+- **Planner reads NOTES before decomposing.** Before decomposing any bead
+  with a non-empty NOTES section, the planner role now reads NOTES in full,
+  chronologically, and treats a later correction/amendment/supersession entry
+  as authoritative over the DESCRIPTION passage it contradicts, rather than
+  decomposing from DESCRIPTION alone.
+- **Plan-reviewer gains an independent safety-net check.** A new review
+  criterion flags a child whose content contradicts a correction recorded in
+  its parent's NOTES; a CHANGES_NEEDED finding of this kind must quote the
+  exact conflicting text from both the parent's correction and the child's
+  contradicting passage, so the finding is falsifiable by inspection rather
+  than a vague "may not be aligned" assertion.
+- **A tooling-computed staleness signal**, independent of the model
+  remembering to check: once per planning phase, the engine now flags any
+  in-scope bead whose NOTES were updated after its most recently created
+  child, and surfaces that as an advisory note in both the planner's and the
+  plan-reviewer's dispatch context. The signal never blocks planning and
+  degrades silently to the prior prompt-only behavior on any lookup failure.
+  See `docs/planner-plan-reviewer-notes-staleness.md` for the full design,
+  including a known limitation (the signal currently only considers a bead's
+  *open* children, so it can miss or misfire once children close) and a note
+  on two beads-health-gate test scenarios that are flaky only under full test
+  concurrency -- both left open as low-priority backlog rather than papered
+  over in this change.
+
+Deploy could not be verified end-to-end this sprint: the sandbox smoke step
+failed for an environmental reason (the `node` binary resolved from `PATH`
+predated the `node:sqlite` built-in the fleet server now requires), not a
+code or runbook defect. Re-run once the environment resolves a supported
+Node version.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $3.5589.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 7 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- runner.js structural refactor epic closed out: independent end-to-end verification, security tracing, final hardening
 
 Sprint goal: close epic apra-fleet-3swo (the runner.js strangler-fig
