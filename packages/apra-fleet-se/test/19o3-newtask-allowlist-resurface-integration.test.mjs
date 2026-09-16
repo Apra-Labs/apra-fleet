@@ -216,28 +216,56 @@ describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reap
                 const badBead = finalBeads.find((b) => b.title === BAD_TITLE);
                 assert.ok(!badBead, `the rejected title must never itself land as a bead, got: ${JSON.stringify(titles)}`);
 
-                // ---- apra-fleet-btj9.3: end-to-end coverage that computeChildFloor's
-                // closed-children read (`bd list --parent <id> --json --all`) genuinely
-                // seeds a NON-ZERO floor through the replayed fixture, not just the
-                // unit test in child-floor-includes-closed-children.test.mjs. The first
-                // newTask ('[test] foo', cycle 1) mints explicit id `<epic>.1` and
-                // closes; the SECOND newTask (the corrected resubmission, cycle 2) is
-                // created only after `<epic>.1` already exists and is closed, so
-                // computeChildFloor's `--all` read (which must see closed children,
-                // apra-fleet-btj9) is the only thing that keeps the allocator from
-                // trying to re-mint `<epic>.1` for it. Asserting the exact sequential
-                // ids below fails if that floor read ever silently degrades back to 0
-                // (apra-fleet-btj9.3's flag-order drift) or reverts to excluding closed
-                // children (apra-fleet-btj9's original bug).
+                // These two ids just pin bd's own native sequential id derivation
+                // under this mock-sprint harness's no-op allocator (childId always
+                // null here, see runner.js's childIdAllocator fallback chain -- every
+                // newTask create below carries `--parent <epic>`, never `--id`). They
+                // are NOT end-to-end coverage of computeChildFloor's floor VALUE:
+                // the no-op allocator's allocate() ignores the `floor` argument
+                // entirely, so these ids would come out identical even if
+                // computeChildFloor always returned 0. (Corrected per apra-fleet-
+                // btj9.3 review: an earlier version of this comment claimed the
+                // `--all` read was "the only thing" keeping these sequential -- false,
+                // proven by mutation: forcing computeChildFloor to return 0
+                // unconditionally still passes this test.)
                 assert.equal(goodBead.id, `${epicBead.id}.1`, `expected the first newTask to mint '${epicBead.id}.1', got: ${goodBead.id}`);
                 assert.equal(correctedBead.id, `${epicBead.id}.2`, `expected the second newTask to mint a FRESH '${epicBead.id}.2' (never re-minting the closed '${epicBead.id}.1'), got: ${correctedBead.id}`);
 
+                // ---- apra-fleet-btj9.3 AC3: genuine end-to-end coverage that
+                // computeChildFloor's closed-children read (`bd list --parent <id>
+                // --json --all`) reaches a NON-ZERO floor through the REPLAYED
+                // fixture, not just the unit test in
+                // child-floor-includes-closed-children.test.mjs. By the time cycle
+                // 2's Review round creates the corrected resubmission, the first
+                // newTask ('[test] foo') already exists AND is closed under the
+                // epic, so computeChildFloor's `--all` read must find it and report
+                // a non-zero floor -- computeChildFloor logs this (and ONLY a
+                // non-zero result, to stay non-noisy) as
+                // "computeChildFloor: parent <id> closed-children read found floor
+                // N". Observing that log line, with N > 0, for THIS epic is the
+                // actual proof the fixed flag order reaches a real closed child via
+                // replay; the sequential-id assertions above cannot serve as that
+                // proof because the no-op allocator ignores the floor value they'd
+                // be indirectly gated on.
+                const floorLogs = logs.filter(
+                    (l) => l.includes('computeChildFloor') && l.includes(`parent ${epicBead.id} closed-children read found floor`),
+                );
+                assert.ok(
+                    floorLogs.length > 0,
+                    `expected at least one computeChildFloor success log naming a non-zero floor for parent ${epicBead.id}, got logs: ${JSON.stringify(logs.filter((l) => l.includes('computeChildFloor')))}`,
+                );
+                const floorValues = floorLogs.map((l) => Number(l.match(/found floor (\d+)/)[1]));
+                assert.ok(
+                    floorValues.some((n) => n > 0),
+                    `expected at least one non-zero floor reached via the replayed closed-children read, got: ${JSON.stringify(floorValues)}`,
+                );
+
                 // The computeChildFloor read must never have silently swallowed a
-                // failure and fallen back to floor 0 -- if it had, the assertion above
-                // would already have failed on a collision refusal, but pin the
-                // absence of the fallback's own log line too so a future flag/format
-                // drift is caught here even if it happens not to cause a visible id
-                // collision in this particular scenario.
+                // failure and fallen back to floor 0 -- if it had, the non-zero-floor
+                // assertion above would already have failed, but pin the absence of
+                // the fallback's own log line too so a future flag/format drift is
+                // caught here even if it happens not to cause a visible id collision
+                // in this particular scenario.
                 assert.ok(
                     !logs.some((l) => l.includes('computeChildFloor') && l.includes('falling back to floor 0')),
                     `computeChildFloor must not have degraded to floor 0 in this scenario, got logs: ${JSON.stringify(logs.filter((l) => l.includes('computeChildFloor')))}`,

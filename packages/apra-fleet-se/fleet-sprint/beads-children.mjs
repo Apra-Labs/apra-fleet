@@ -61,6 +61,14 @@ import { resolveSettleShell } from './runner.js';
  * functions already use (see createChildBeadWithAllocatedId's/
  * claimBeadsBatched's `log = () => {}` default).
  *
+ * SUCCESS-PATH LOG, apra-fleet-btj9.3: a non-zero result is ALSO logged (a
+ * zero floor -- the common "parent has no children yet" case -- is not, to
+ * stay non-noisy). This is the only externally observable signal that the
+ * `--all` closed-children read actually found and counted a prior child,
+ * which is what lets a replayed mock-sprint scenario prove end to end that
+ * this read reaches a genuine non-zero floor rather than only being covered
+ * by the direct unit tests in child-floor-includes-closed-children.test.mjs.
+ *
  * @param {{ command: Function, member: string, parentId: string, log?: Function }} opts
  * @returns {Promise<number>}
  */
@@ -78,6 +86,9 @@ export async function computeChildFloor({ command, member, parentId, log = () =>
             if (!/^\d+$/.test(tail)) continue;
             const n = Number(tail);
             if (Number.isInteger(n) && n > max) max = n;
+        }
+        if (max > 0) {
+            log(`[id-allocator] computeChildFloor: parent ${parentId} closed-children read found floor ${max}`);
         }
         return max;
     } catch (err) {
