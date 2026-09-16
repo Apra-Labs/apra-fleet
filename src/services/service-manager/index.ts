@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import { SERVER_INFO_PATH } from '../../paths.js';
-import type { ServiceManager, ServiceStatus } from './types.js';
+import type { RegisterOptions, ServiceId, ServiceManager, ServiceStatus } from './types.js';
+import { DEFAULT_SERVICE_ID } from './types.js';
 import { isPidAlive, postShutdown } from '../../utils/process-utils.js';
 
-export type { ServiceManager, ServiceStatus };
+export type { RegisterOptions, ServiceId, ServiceManager, ServiceStatus };
 
 export async function gracefulStopByServerJson(fallbackKill?: (pid: number) => void): Promise<void> {
   let info: { pid?: number; url?: string };
@@ -35,7 +36,8 @@ export async function gracefulStopByServerJson(fallbackKill?: (pid: number) => v
 }
 
 class NoopServiceManager implements ServiceManager {
-  async register(_binaryPath: string, _args: string[], _logPath: string): Promise<void> {}
+  constructor(readonly serviceId: ServiceId = DEFAULT_SERVICE_ID) {}
+  async register(_binaryPath: string, _args: string[], _logPath: string, _options?: RegisterOptions): Promise<void> {}
   async unregister(): Promise<void> {}
   async start(): Promise<void> {}
   async stop(): Promise<void> {}
@@ -43,23 +45,31 @@ class NoopServiceManager implements ServiceManager {
   async isInstalled(): Promise<boolean> { return false; }
 }
 
-export async function getServiceManager(): Promise<ServiceManager> {
+/**
+ * Platform service manager for one named service. `serviceId` defaults to the
+ * apra-fleet MCP server, so every pre-existing `getServiceManager()` call site
+ * keeps its exact previous behavior; pass 'fleet-supervisor' to manage the
+ * fleet-sprint supervisor's own independent unit/plist/task.
+ */
+export async function getServiceManager(
+  serviceId: ServiceId = DEFAULT_SERVICE_ID,
+): Promise<ServiceManager> {
   switch (process.platform) {
     case 'win32': {
       const { WindowsServiceManager } = await import('./windows.js');
-      return new WindowsServiceManager();
+      return new WindowsServiceManager(serviceId);
     }
     case 'linux': {
       const { LinuxServiceManager } = await import('./linux.js');
-      return new LinuxServiceManager();
+      return new LinuxServiceManager(serviceId);
     }
     case 'darwin': {
       const { MacOSServiceManager } = await import('./macos.js');
-      return new MacOSServiceManager();
+      return new MacOSServiceManager(serviceId);
     }
     default: {
       console.warn(`apra-fleet: service management is not supported on platform '${process.platform}'. Using no-op stub.`);
-      return new NoopServiceManager();
+      return new NoopServiceManager(serviceId);
     }
   }
 }

@@ -281,6 +281,171 @@ describe('LinuxServiceManager', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Linux -- 'fleet-supervisor' service (the second registered service).
+//
+// The reference unit was created and verified by hand on a real Linux dev box:
+//   ExecStart=<abs node> <installed>/workflows/fleet-sprint/bin/serve.mjs
+//   WorkingDirectory=<installed>/workflows/fleet-sprint
+//   Restart=no
+// These tests pin exactly that shape, plus the independence of the two units.
+// ---------------------------------------------------------------------------
+describe('LinuxServiceManager -- fleet-supervisor service', () => {
+  const savedXdg = process.env.XDG_RUNTIME_DIR;
+  const NODE = '/home/dev/.nvm/versions/node/v22.16.0/bin/node';
+  const SERVE = '/home/dev/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs';
+  const WORKDIR = '/home/dev/.apra-fleet/workflows/fleet-sprint';
+  const LOG = '/home/dev/.apra-fleet/data/fleet-supervisor.log';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.XDG_RUNTIME_DIR = '/run/user/1000';
+    vi.mocked(execFileSync).mockReturnValue('' as any);
+    vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any);
+    vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
+    vi.mocked(fs.unlinkSync).mockReturnValue(undefined);
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      String(p).replace(/\\/g, '/').endsWith('/systemd'),
+    );
+  });
+
+  afterEach(() => {
+    if (savedXdg === undefined) delete process.env.XDG_RUNTIME_DIR;
+    else process.env.XDG_RUNTIME_DIR = savedXdg;
+  });
+
+  function supervisor() {
+    return new LinuxServiceManager('fleet-supervisor');
+  }
+
+  it('exposes its service id', () => {
+    expect(supervisor().serviceId).toBe('fleet-supervisor');
+    expect(new LinuxServiceManager().serviceId).toBe('mcp-server');
+  });
+
+  it('writes a SEPARATE unit file named fleet-supervisor.service', async () => {
+    await supervisor().register(NODE, [SERVE], LOG, { workingDirectory: WORKDIR });
+    const [unitPath] = vi.mocked(fs.writeFileSync).mock.calls[0];
+    const normalized = String(unitPath).replace(/\\/g, '/');
+    expect(normalized).toContain('/.config/systemd/user/fleet-supervisor.service');
+    expect(normalized).not.toContain('apra-fleet.service');
+  });
+
+  it('writes ExecStart with the resolved absolute node path, WorkingDirectory and Restart=no', async () => {
+    await supervisor().register(NODE, [SERVE], LOG, { workingDirectory: WORKDIR });
+    const [, content] = vi.mocked(fs.writeFileSync).mock.calls[0];
+    expect(content).toContain('Description=Apra Fleet Sprint Supervisor');
+    expect(content).toContain(`ExecStart=${NODE} ${SERVE}`);
+    expect(content).toContain(`WorkingDirectory=${WORKDIR}`);
+    expect(content).toContain('Restart=no');
+    expect(content).not.toContain('Restart=on-failure');
+    expect(content).toContain(`StandardOutput=append:${LOG}`);
+    expect(content).toContain(`StandardError=append:${LOG}`);
+    expect(content).toContain('WantedBy=default.target');
+  });
+
+  it('omits WorkingDirectory when none is supplied', async () => {
+    await supervisor().register(NODE, [SERVE], LOG);
+    const [, content] = vi.mocked(fs.writeFileSync).mock.calls[0];
+    expect(content).not.toContain('WorkingDirectory=');
+  });
+
+  it('enables the supervisor unit -- not the MCP server unit', async () => {
+    await supervisor().register(NODE, [SERVE], LOG, { workingDirectory: WORKDIR });
+    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'daemon-reload']);
+    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'enable', 'fleet-supervisor']);
+    expect(execFileSync).not.toHaveBeenCalledWith('systemctl', ['--user', 'enable', 'apra-fleet']);
+  });
+
+  it('start/query/isInstalled all target the supervisor unit', async () => {
+    await supervisor().start();
+    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'start', 'fleet-supervisor']);
+
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(execFileSync).mockImplementation((_cmd: any, args: any) => {
+      if ((args as string[]).includes('is-active')) return 'active\n' as any;
+      if ((args as string[]).includes('is-enabled')) return 'enabled\n' as any;
+      return '' as any;
+    });
+    expect(await supervisor().query()).toEqual({ installed: true, running: true, enabled: true });
+    expect(execFileSync).toHaveBeenCalledWith(
+      'systemctl', ['--user', 'is-active', 'fleet-supervisor'], { encoding: 'utf8' },
+    );
+    expect(await supervisor().isInstalled()).toBe(true);
+  });
+
+  it('stops via systemctl, NOT via the MCP server server.json handshake', async () => {
+    await supervisor().stop();
+    expect(mockGracefulStop).not.toHaveBeenCalled();
+    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'stop', 'fleet-supervisor']);
+  });
+
+  it('unregisters without the MCP server server.json handshake', async () => {
+    await supervisor().unregister();
+    expect(mockGracefulStop).not.toHaveBeenCalled();
+    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'disable', 'fleet-supervisor']);
+    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'stop', 'fleet-supervisor']);
+    expect(fs.unlinkSync).toHaveBeenCalledWith(
+      expect.stringContaining('fleet-supervisor.service'),
+    );
+  });
+
+  it('reports not-installed when only the MCP server unit exists', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) => {
+      const s = String(p).replace(/\\/g, '/');
+      return s.endsWith('/systemd') || s.endsWith('/apra-fleet.service');
+    });
+    expect(await supervisor().isInstalled()).toBe(false);
+    expect(await new LinuxServiceManager().isInstalled()).toBe(true);
+  });
+
+  it('still requires systemd', async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    await expect(supervisor().register(NODE, [SERVE], LOG)).rejects.toThrow(
+      'systemd user mode is not available',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-platform: the supervisor never collides with the MCP server's names
+// ---------------------------------------------------------------------------
+describe('service identity is distinct per platform', () => {
+  it('windows uses a distinct task name and wrapper bat', async () => {
+    vi.clearAllMocks();
+    vi.mocked(execFileSync).mockReturnValue('' as any);
+    vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any);
+    vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
+    const mgr = new WindowsServiceManager('fleet-supervisor');
+    await mgr.register('C:\\node\\node.exe', ['C:\\wf\\serve.mjs'], 'C:\\logs\\sup.log', {
+      workingDirectory: 'C:\\wf',
+    });
+    const [wrapperPath, content] = vi.mocked(fs.writeFileSync).mock.calls[0];
+    expect(String(wrapperPath)).toContain('apra-fleet-supervisor-service.bat');
+    expect(String(content)).toContain('cd /d "C:\\wf"');
+    expect(execFileSync).toHaveBeenCalledWith('schtasks', expect.arrayContaining([
+      '/create', '/tn', 'ApraFleetSupervisor',
+    ]));
+  });
+
+  it('macos uses a distinct plist label, no KeepAlive, and a WorkingDirectory', async () => {
+    vi.clearAllMocks();
+    vi.mocked(execFileSync).mockReturnValue('' as any);
+    vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any);
+    vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
+    const mgr = new MacOSServiceManager('fleet-supervisor');
+    await mgr.register('/usr/local/bin/node', ['/wf/serve.mjs'], '/logs/sup.log', {
+      workingDirectory: '/wf',
+    });
+    const [plistPath, content] = vi.mocked(fs.writeFileSync).mock.calls[0];
+    expect(String(plistPath)).toContain('com.apra-fleet.supervisor.plist');
+    expect(String(content)).toContain('<string>com.apra-fleet.supervisor</string>');
+    expect(String(content)).toContain('<key>WorkingDirectory</key>');
+    expect(String(content)).toContain('<string>/wf</string>');
+    expect(String(content)).not.toContain('<key>KeepAlive</key>');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // macOS
 // ---------------------------------------------------------------------------
 describe('MacOSServiceManager', () => {
