@@ -121,7 +121,7 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 - The stall threshold (`_poll()`'s `now - entry.lastActivityAt > stallThresholdMs` check) only fires once BOTH signals agree there has been no advancement -- i.e. the threshold check is genuinely mtime-corroborated, not a pure content-parsing artifact. This is what lets a dead session (mtime frozen, no content advancing) be caught within the configured window instead of only at the 3630s ceiling, while a long silent tool call whose transcript is still being appended to (by either signal) is never falsely killed.
 - Every existing caller/test that mocks `pollLogFile()`'s return value without an `mtimeMs` field gets `undefined`, which is treated identically to `null` -- this is a pure superset of the prior content-only behavior; it can only convert what would have been a false stall into recognized activity, never the reverse.
 
-**Configuration:** `STALL_THRESHOLD_MS` (default 120000 = 2 minutes) is the single configurable inactivity window used for both the content-based and mtime-based signals -- there is no separate mtime threshold. `STALL_POLL_INTERVAL_MS` (default 30000) governs how often both signals are re-checked.
+**Configuration:** `STALL_THRESHOLD_MS` (default 150000 = 2.5 minutes) is the single configurable inactivity window used for both the content-based and mtime-based signals -- there is no separate mtime threshold. `STALL_POLL_INTERVAL_MS` (default 30000) governs how often both signals are re-checked. This process-wide default is superseded per dispatch by the `timeout_s` parameter (300s / 5 minutes when omitted) -- see "Per-Dispatch Stall Threshold" below.
 
 ### Per-Dispatch Stall Threshold
 
@@ -214,8 +214,8 @@ null/missing-file behavior.
 1. **Use structured logging** for all stall detector events (reads, failures, stalls, debug). Event names: `stall_poll`, `stall_log_read`, `stall_log_read_failure`, `stall_log_read_warning`, `stall_detected`.
 2. **Idempotent operations:** `remove()` is a no-op if entry doesn't exist; `update()` merges fields; `add()` overwrites with a warning.
 3. **Environment variables:**
-   - `STALL_POLL_INTERVAL_MS` (default 15000): Polling frequency.
-   - `STALL_THRESHOLD_MS` (default 120000): Idle threshold before stall event is emitted.
+   - `STALL_POLL_INTERVAL_MS` (default 30000): Polling frequency.
+   - `STALL_THRESHOLD_MS` (default 150000): Idle threshold before stall event is emitted.
 4. **Timeout for log reads:** `readLogTail()` uses 5000ms timeout for the tail command. This is short enough to avoid blocking the poll loop but long enough for most file reads.
 5. **No direct filesystem access:** All log file reads go through `execute_command` via the strategy abstraction. This ensures the same code path works for local and remote members.
 
