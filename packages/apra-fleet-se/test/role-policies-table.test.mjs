@@ -34,7 +34,7 @@ import {
     pushesCode,
 } from '../fleet-sprint/role-policies.mjs';
 import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
-import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
+import { dispatchRole, resolveBudget } from '../fleet-sprint/dispatch-role.mjs';
 import { PLANNING_LADDERS, ENGINE_DISPATCHES } from './helpers/planning-ladders.mjs';
 import {
     createRecordingCtx,
@@ -2461,5 +2461,105 @@ describe('apra-fleet-3swo.5.4: the consolidated degrade path is driven by the ta
                 `${role}: names a schema the engine can resolve, so agent() validates and repairs its output.`
             );
         }
+    });
+});
+
+// =============================================================================
+// apra-fleet-25yl.8: deterministic fast-lane coverage for the divergence
+// between DISPATCH_INACTIVITY_TIMEOUT_S and DISPATCH_TIMEOUT_S.
+//
+// The slow-lane stalled-session test
+// (test/slow/mock-sprint-planner-dispatch-stalled-session.test.mjs) derives
+// both of its wall-clock bounds through budgets[policy.watchdog.timeoutS],
+// which resolveWatchdogTimeout() (fleet-sprint/role-policies.mjs) collapses
+// to the row's maxTotalS -- i.e. DISPATCH_TIMEOUT_S, never
+// DISPATCH_INACTIVITY_TIMEOUT_S. At that scenario's dispatch_timeout_s floor
+// of 60, runner.js's own clamp (Math.min(1800, DISPATCH_TIMEOUT_S), see
+// fleet-sprint/runner.js) yields Math.min(1800, 60) === 60, so the two
+// budgets are numerically identical there and no assertion in that file can
+// tell them apart. The divergence only appears once DISPATCH_TIMEOUT_S >
+// 1800, which is unobservable in a real wall-clock slow test (it would need
+// a run lasting more than 30 minutes).
+//
+// This block reproduces runner.js's own clamp formula directly (rather than
+// importing a runner.js internal, which is not exported) against a
+// dispatch_timeout_s of 9000 -- comfortably above the 1800s clamp ceiling --
+// and resolves the planner row's OWN recorded budget NAMES (never
+// hardcoded) through resolveBudget(), the same function dispatch-role.mjs
+// uses at real dispatch time. It proves two things a same-value scenario
+// cannot: (a) the clamp actually caps the inactivity budget at 1800 while
+// leaving the hard elapsed ceiling at the full 9000, and (b) the armed
+// watchdog still resolves from the UNCLAMPED hard elapsed ceiling
+// (maxTotalS), not from the clamped inactivity budget -- exactly the
+// invariant resolveWatchdogTimeout()'s Final Review reopen (apra-fleet-3swo.7.12)
+// exists to protect.
+// =============================================================================
+describe('role policy table: DISPATCH_INACTIVITY_TIMEOUT_S clamp diverges from DISPATCH_TIMEOUT_S above 1800s (apra-fleet-25yl.8)', () => {
+    // Mirrors fleet-sprint/runner.js's own
+    // `const DISPATCH_INACTIVITY_TIMEOUT_S = Math.min(1800, DISPATCH_TIMEOUT_S);`
+    // verbatim, with a dispatch_timeout_s well above the 1800s ceiling so the
+    // clamp actually engages.
+    const BIG_DISPATCH_TIMEOUT_S = 9000;
+    const CLAMPED_INACTIVITY_TIMEOUT_S = Math.min(1800, BIG_DISPATCH_TIMEOUT_S);
+
+    test('sanity: the reproduced clamp formula actually engages at this dispatch_timeout_s', () => {
+        assert.strictEqual(
+            CLAMPED_INACTIVITY_TIMEOUT_S,
+            1800,
+            'this test is only meaningful once DISPATCH_TIMEOUT_S exceeds the 1800s clamp ceiling.'
+        );
+        assert.notStrictEqual(
+            CLAMPED_INACTIVITY_TIMEOUT_S,
+            BIG_DISPATCH_TIMEOUT_S,
+            'the two budgets must actually diverge for this scenario to discriminate them.'
+        );
+    });
+
+    test('planner: timeouts.timeoutS clamps to 1800 while timeouts.maxTotalS keeps the full 9000s ceiling', () => {
+        const ctx = { budgets: { DISPATCH_TIMEOUT_S: BIG_DISPATCH_TIMEOUT_S, DISPATCH_INACTIVITY_TIMEOUT_S: CLAMPED_INACTIVITY_TIMEOUT_S } };
+        const p = ROLE_POLICIES.planner;
+
+        assert.strictEqual(p.timeouts.timeoutS, 'DISPATCH_INACTIVITY_TIMEOUT_S', 'planner names the inactivity budget by its symbolic name.');
+        assert.strictEqual(p.timeouts.maxTotalS, 'DISPATCH_TIMEOUT_S', 'planner names the hard elapsed ceiling by its symbolic name.');
+
+        assert.strictEqual(
+            resolveBudget(ctx, p.timeouts.timeoutS),
+            1800,
+            'the resolved inactivity budget must be clamped to 1800s even though DISPATCH_TIMEOUT_S is 9000.'
+        );
+        assert.strictEqual(
+            resolveBudget(ctx, p.timeouts.maxTotalS),
+            9000,
+            'the resolved hard elapsed ceiling must stay at the full, unclamped DISPATCH_TIMEOUT_S.'
+        );
+    });
+
+    test('planner: the armed watchdog still resolves from the unclamped maxTotalS (9000), never the clamped inactivity budget (1800)', () => {
+        const ctx = { budgets: { DISPATCH_TIMEOUT_S: BIG_DISPATCH_TIMEOUT_S, DISPATCH_INACTIVITY_TIMEOUT_S: CLAMPED_INACTIVITY_TIMEOUT_S } };
+        const p = ROLE_POLICIES.planner;
+
+        assert.strictEqual(p.watchdog.armed, true, 'this scenario is vacuous if the planner watchdog is ever disarmed.');
+        // resolveWatchdogTimeout() names the watchdog's budget as
+        // timeouts.maxTotalS ?? timeouts.timeoutS -- assert the NAME first so
+        // a later table change that flips which budget the watchdog names
+        // fails loudly here rather than silently passing on a coincidental
+        // resolved value.
+        assert.strictEqual(
+            p.watchdog.timeoutS,
+            p.timeouts.maxTotalS,
+            'the armed watchdog must name this row\'s own maxTotalS budget, not its inactivity budget.'
+        );
+
+        const resolvedWatchdogTimeoutS = resolveBudget(ctx, p.watchdog.timeoutS);
+        assert.strictEqual(
+            resolvedWatchdogTimeoutS,
+            9000,
+            'the armed watchdog must resolve to the full 9000s hard elapsed ceiling.'
+        );
+        assert.notStrictEqual(
+            resolvedWatchdogTimeoutS,
+            resolveBudget(ctx, p.timeouts.timeoutS),
+            'the armed watchdog must never resolve to the clamped 1800s inactivity budget.'
+        );
     });
 });
