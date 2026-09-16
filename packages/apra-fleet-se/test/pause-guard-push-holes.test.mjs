@@ -387,4 +387,64 @@ describe('apra-fleet-3swo.4.2: falsification -- the scan detects a reverted (bar
             fs.rmSync(dir, { recursive: true, force: true });
         }
     });
+
+    // apra-fleet-btj9.10: findFunctionBodyRange() used to re-implement its
+    // own inline comment/quote scan (the same shape dispatch-safety-guard.
+    // mjs's maskComments() had before it learned to recognize regex
+    // literals). A regex literal containing a quote inside a sanctioned
+    // wrapper's body opened a phantom string with no closing quote before
+    // end-of-file, so the wrapper's detected body range silently swallowed
+    // the REST OF THE FILE -- including a genuinely bare, unbracketed
+    // primitive call in a later, unrelated function -- and reported zero
+    // violations. Measured directly against the pre-fix checker: this exact
+    // fixture produced `violations: []`.
+    test('a bare doltPushAfter() call AFTER a sanctioned wrapper whose body contains a quote-bearing regex literal is still flagged (regex-literal phantom-span regression)', () => {
+        const fixture = [
+            'export function syncMemberAfterOrdered() {',
+            "    const RE = /it's fine/;",
+            '    return 1;',
+            '}',
+            '',
+            'export function unrelatedCaller() {',
+            '    doltPushAfter();',
+            '}',
+            '',
+        ].join('\n');
+        const violations = findUnbracketedPushViolations(fixture, 'regex-phantom-span.mjs');
+        assert.ok(
+            violations.some((v) => v.includes('bare doltPushAfter() call site')),
+            `expected the bare call after the sanctioned wrapper's regex-bearing body to still be flagged, got: ${JSON.stringify(violations)}`,
+        );
+    });
+
+    // Same bug class, but in the parameter-list walk (findFunctionBodyRange's
+    // FIRST loop, which finds where the parameter list ends so it can then
+    // locate the body's opening brace): a quote-bearing regex literal in a
+    // sanctioned wrapper's own default parameter value opened the same kind
+    // of phantom string, this time with no closing quote before the
+    // parameter list's real closing paren. Pre-fix, that ran the walk past
+    // end-of-file, so `indexOf('{', i)` (i now beyond the source length)
+    // returned -1 and findFunctionBodyRange gave up entirely -- the wrapper
+    // was not recognized as a sanctioned range AT ALL, so ITS OWN legitimate
+    // call to a raw primitive was wrongly flagged as a bare, unbracketed
+    // site (a false positive on a compliant call, the mirror image of the
+    // false negative the body-range test above pins). Measured directly:
+    // the pre-fix checker reported a violation for this call; post-fix it
+    // reports none.
+    test('a regex literal with a quote in a sanctioned wrapper\'s parameter default does not stop the guard from recognizing that wrapper\'s own real call as sanctioned', () => {
+        const fixture = [
+            "import { syncMemberAfter } from './runner.js';",
+            "export async function syncMemberAfterOrdered(re = /it's fine/) {",
+            '    const gPush = await syncMemberAfter();',
+            '    return gPush;',
+            '}',
+            '',
+        ].join('\n');
+        const violations = findUnbracketedPushViolations(fixture, 'regex-in-params.mjs');
+        assert.deepEqual(
+            violations,
+            [],
+            `expected the sanctioned wrapper's own call to be recognized as inside its body despite the regex-bearing parameter default, got: ${JSON.stringify(violations)}`,
+        );
+    });
 });

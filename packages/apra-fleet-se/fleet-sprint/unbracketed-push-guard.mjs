@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { isInsideSameLineString, skipStringLiteral } from './dispatch-safety-guard.mjs';
+import { isInsideSameLineString, skipStringLiteral, maskComments, canStartRegex, skipRegexLiteral } from './dispatch-safety-guard.mjs';
 import { unbracketedPushModulePaths, UNBRACKETED_PUSH_EXEMPT } from './guarded-modules.mjs';
 
 // =============================================================================
@@ -90,46 +90,73 @@ export function findRealCallSites(src, fnName) {
  * top-level `function fnName(` declaration is found. Tracks brace depth while
  * skipping over string/template-literal contents and comments so a `{`/`}`
  * embedded in a quoted value or a comment never disturbs the count.
+ *
+ * WHY THIS WALKS A maskComments()-MASKED COPY (apra-fleet-btj9.10): this used
+ * to re-implement its own inline comment-skip (`//`, `/*`) ahead of the
+ * quote-skip, the exact shape dispatch-safety-guard.mjs's maskComments() had
+ * before it learned to recognize regex literals. A regex literal containing
+ * a quote or apostrophe inside a SANCTIONED_WRAPPER_FUNCTIONS body (e.g.
+ * `const RE = /it's fine/;`) opened the same kind of phantom string that
+ * bug produced elsewhere: with no matching apostrophe later in the file, the
+ * "string" ran to end-of-file, so every subsequent `}` was read as string
+ * content and never closed the wrapper's body -- inflating its detected
+ * range to the WHOLE REST OF THE FILE and silently sanctioning every bare
+ * primitive call site after it (measured: a `doltPushAfter()` call in a
+ * later, unrelated function went unreported). Delegating to the same
+ * maskComments() the reference implementation (dispatch-safety-guard.mjs)
+ * uses closes this the same way for both call sites -- see that function's
+ * own header for the regex-literal handling.
+ *
+ * A SECOND, subtler instance of the same class of bug (also apra-fleet-
+ * btj9.10): maskComments() copies a regex literal's body through VERBATIM,
+ * so a quote embedded in one (e.g. `const RE = /it's fine/;`) is still
+ * sitting in the returned `masked` text. This function's own quote-skip
+ * below, walking that already-masked text a SECOND time, would otherwise
+ * re-discover that same apostrophe and misread it as opening a real string
+ * -- exactly dispatch-safety-guard.mjs's extractBalancedCall() had to guard
+ * against for the identical reason. canStartRegex()/skipRegexLiteral() are
+ * reused here (not re-derived) so both walks treat a `/` as a regex start in
+ * exactly the same cases maskComments() itself does.
  */
 function findFunctionBodyRange(src, fnName) {
     const declRe = new RegExp(`(?:export\\s+)?(?:async\\s+)?function\\s+${fnName}\\s*\\(`);
     const decl = declRe.exec(src);
     if (!decl) return null;
 
+    const masked = maskComments(src);
+
     // Skip past the parameter list (balanced parens, so default values
     // containing '(' -- e.g. `opts = {}` never does, but a future
     // `(a = f())` shape would -- do not end the scan early).
     let depth = 0;
-    let i = src.indexOf('(', decl.index);
-    for (; i < src.length; i++) {
-        const ch = src[i];
+    let i = masked.indexOf('(', decl.index);
+    for (; i < masked.length; i++) {
+        const ch = masked[i];
         if (ch === '(') depth++;
         else if (ch === ')') {
             depth--;
             if (depth === 0) break;
+        } else if (ch === '/' && canStartRegex(masked, i)) {
+            const end = skipRegexLiteral(masked, i);
+            if (end !== -1) i = end;
         } else if (ch === '"' || ch === "'" || ch === '`') {
-            i = skipStringLiteral(src, i, ch);
+            i = skipStringLiteral(masked, i, ch);
         }
     }
 
-    const braceOpen = src.indexOf('{', i);
+    const braceOpen = masked.indexOf('{', i);
     if (braceOpen === -1) return null;
 
     depth = 0;
-    for (let j = braceOpen; j < src.length; j++) {
-        const ch = src[j];
-        if (ch === '/' && src[j + 1] === '/') {
-            const nl = src.indexOf('\n', j);
-            j = nl === -1 ? src.length : nl;
-            continue;
-        }
-        if (ch === '/' && src[j + 1] === '*') {
-            const end = src.indexOf('*/', j + 2);
-            j = end === -1 ? src.length : end + 1;
+    for (let j = braceOpen; j < masked.length; j++) {
+        const ch = masked[j];
+        if (ch === '/' && canStartRegex(masked, j)) {
+            const end = skipRegexLiteral(masked, j);
+            if (end !== -1) j = end;
             continue;
         }
         if (ch === '"' || ch === "'" || ch === '`') {
-            j = skipStringLiteral(src, j, ch);
+            j = skipStringLiteral(masked, j, ch);
             continue;
         }
         if (ch === '{') depth++;
@@ -138,7 +165,7 @@ function findFunctionBodyRange(src, fnName) {
             if (depth === 0) return [braceOpen, j];
         }
     }
-    return [braceOpen, src.length - 1];
+    return [braceOpen, masked.length - 1];
 }
 
 /**

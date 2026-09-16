@@ -313,6 +313,43 @@ describe('inline-ladder guard: findInlineLadderViolations() unit behaviour', () 
         assert.deepStrictEqual(findInlineLadderViolations(src, 'x.mjs', ['no-such-role'], ROLE_POLICIES), []);
     });
 
+    // apra-fleet-btj9.10: this guard reuses dispatch-safety-guard.mjs's
+    // findCallSites() (and, transitively, extractBalancedCall()/
+    // maskComments()) to get each agent() call site's callText, then checks
+    // that text for the migrated role's member expression AND ladderAnchor.
+    // Before maskComments() learned to recognize regex literals, a quote
+    // inside one -- appearing ANYWHERE earlier in the module, not even
+    // inside the call itself -- opened a phantom string with no closing
+    // quote before end-of-file, truncating every later callText at the
+    // first comment's stray character. That silently hid a REAL surviving
+    // inline ladder: measured directly against the pre-fix checker, this
+    // exact fixture (a migrated role's ladder, with member expression and
+    // ladderAnchor both present, sitting after an unrelated quote-bearing
+    // regex) reported zero violations.
+    test('a surviving inline ladder for a migrated role is still flagged when a quote-bearing regex literal appears earlier in the module', () => {
+        const rolePolicies = {
+            planner: {
+                member: { kind: 'role', role: 'planner' },
+                ladderAnchor: 'PLANNER_LADDER_ANCHOR_V1',
+            },
+        };
+        const src = [
+            "export const RE_WITH_QUOTE = /it's broken/;",
+            '',
+            'function dispatch() {',
+            "    agent(",
+            '        // reminder: keep this simple )',
+            "        { member_name: getMemberForRole('planner'), tag: 'PLANNER_LADDER_ANCHOR_V1' }",
+            '    );',
+            '}',
+        ].join('\n');
+        const violations = findInlineLadderViolations(src, 'fixture.mjs', ['planner'], rolePolicies);
+        assert.ok(
+            violations.some((v) => v.includes("still dispatches role 'planner' inline")),
+            `expected the surviving inline ladder after the regex trigger to be flagged, got: ${JSON.stringify(violations)}`
+        );
+    });
+
     // -------------------------------------------------------------------
     // apra-fleet-3swo.30 -- proves the apra-fleet-3swo.24 anchor fix ACTUALLY
     // discriminates the two three/two-way member-sharing clusters
