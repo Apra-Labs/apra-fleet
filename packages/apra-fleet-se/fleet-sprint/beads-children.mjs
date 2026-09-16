@@ -219,13 +219,19 @@ export async function assertChildIdFree({ command, member, childId, parentId }) 
  *      release() from here on would hand out an id that is genuinely
  *      occupied, apra-fleet-btj9.2). release() only fires if step 2 itself
  *      (staging the description or the `bd create` dispatch) fails, so the
- *      reserved id returns to the pool with no permanent gap.
+ *      reserved id returns to the pool with no permanent gap. confirm()
+ *      ITSELF can fail (allocator transport fault, apra-fleet-btj9.5); that
+ *      failure is caught (never released -- the bead already exists) and
+ *      reported via a distinct orphan-naming error after step 4 runs.
  *   4. On the explicit-id path only, a follow-up `bd update <childId> --parent
- *      <parentId>` establishes the real parent edge, AFTER confirm(). A
- *      failure here does NOT release the reservation (the bead already
- *      exists) -- it throws a distinct "created but UNLINKED" error naming
- *      the orphan id so an operator can re-link it, rather than leaving the
- *      id allocator's next probe hit a confusing already-exists refusal.
+ *      <parentId>` establishes the real parent edge, attempted regardless of
+ *      whether confirm() in step 3 failed. A failure here does NOT release
+ *      the reservation (the bead already exists) -- it throws a distinct
+ *      "created but UNLINKED" error naming the orphan id so an operator can
+ *      re-link it, rather than leaving the id allocator's next probe hit a
+ *      confusing already-exists refusal. If step 3's confirm() ALSO failed,
+ *      that failure is reported instead (with the link outcome folded in),
+ *      never masked by this one.
  *
  * `bd create` REJECTS `--id` and `--parent` together, so on the explicit-id
  * path `--parent` must be dropped: the allocator's `${parentId}.${seq}` id
@@ -309,7 +315,23 @@ export async function createChildBeadWithAllocatedId(opts) {
     // to the pool after this point would hand out an id that is genuinely
     // occupied -- the exact collision assertChildIdFree exists to refuse
     // (apra-fleet-btj9.2).
-    await allocator.confirm(grant.token);
+    //
+    // confirm() itself can fail (an HTTP allocator route erroring, an MCP
+    // transport fault, a supervisor restart) -- apra-fleet-btj9.5. That
+    // failure sits OUTSIDE any release-on-failure try/catch, by design: the
+    // bead already exists at this id, so release() must NEVER fire here,
+    // exactly as for a link failure below. Capture the error instead of
+    // letting it propagate raw, so the caller gets an orphan-naming message
+    // rather than a bare transport-fault string with no indication that a
+    // child bead now exists, is possibly unlinked, and may not be durably
+    // confirmed in the allocator's own state.
+    let confirmError = null;
+    try {
+        await allocator.confirm(grant.token);
+    } catch (err) {
+        confirmError = err;
+        log(`[id-allocator] bd create landed for '${grant.childId ?? '(bd-derived)'}' but allocator.confirm() failed; reservation stays UNRELEASED (the id is genuinely in use) but may not be durably confirmed in the allocator's own state: ${err.message}`);
+    }
     // Explicit-id path only: record the real parent edge that `--parent`
     // would have recorded, had bd allowed it on the same create. Deliberately
     // OUTSIDE the create's release-on-failure try/catch above: a failure here
@@ -318,20 +340,46 @@ export async function createChildBeadWithAllocatedId(opts) {
     // orphan-naming error instead so an operator can re-link rather than hit
     // an inexplicable id-already-exists refusal on the next newTask under
     // this parent.
+    //
+    // DECISION (apra-fleet-btj9.5): the link is attempted even when confirm()
+    // above already failed. confirm() talks to the id-allocator's own
+    // bookkeeping (HTTP/MCP transport); the link is a separate `bd update`
+    // dispatch against bd itself, and a fault in the former says nothing
+    // about whether the latter would also fail -- attempting it anyway means
+    // a transient confirm blip does not ALSO cost the parent edge. If the
+    // link then also fails, the confirm failure is still reported (it is the
+    // more actionable signal: durable allocator state is what guards against
+    // a future re-mint) with the link outcome folded into the SAME message,
+    // rather than thrown separately, so the confirm failure is never masked
+    // by a later link error.
+    let linkError = null;
     if (grant.childId) {
         try {
             await command(
                 `bd update ${grant.childId} --parent ${parentId}`,
                 { member_name: member, silent: true, label: `Link follow-up task ${grant.childId} under ${parentId}` }
             );
-        } catch (linkErr) {
-            log(`[id-allocator] bd create landed for '${grant.childId}' but the follow-up bd update --parent link failed; reservation stays confirmed (the id is genuinely in use): ${linkErr.message}`);
-            throw new Error(
-                `[id-allocator] child bead '${grant.childId}' was created but is UNLINKED under parent '${parentId}': ` +
-                `the follow-up 'bd update ${grant.childId} --parent ${parentId}' failed (${linkErr.message}). The id is ` +
-                'genuinely in use -- re-link it manually rather than retrying newTask under this parent.',
-            );
+        } catch (err) {
+            linkError = err;
+            log(`[id-allocator] bd create landed for '${grant.childId}' but the follow-up bd update --parent link failed; reservation stays confirmed (the id is genuinely in use): ${err.message}`);
         }
+    }
+    if (confirmError) {
+        const idLabel = grant.childId ?? '(bd-derived id, unknown to the allocator)';
+        throw new Error(
+            `[id-allocator] child bead '${idLabel}' was created but allocator.confirm() FAILED: ${confirmError.message}. ` +
+            `The bead exists at that id and is ${linkError ? 'also UNLINKED from' : 'linked under'} parent '${parentId}', ` +
+            "and the reservation may not be durably confirmed in the allocator's own state -- do NOT release this id; " +
+            'investigate the allocator directly rather than retrying newTask under this parent.' +
+            (linkError ? ` (the follow-up parent-link dispatch also failed: ${linkError.message})` : ''),
+        );
+    }
+    if (linkError) {
+        throw new Error(
+            `[id-allocator] child bead '${grant.childId}' was created but is UNLINKED under parent '${parentId}': ` +
+            `the follow-up 'bd update ${grant.childId} --parent ${parentId}' failed (${linkError.message}). The id is ` +
+            'genuinely in use -- re-link it manually rather than retrying newTask under this parent.',
+        );
     }
     return { childId: grant.childId ?? null };
 }
