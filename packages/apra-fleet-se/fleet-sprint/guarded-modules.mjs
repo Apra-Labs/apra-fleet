@@ -362,6 +362,13 @@ export const GUARDED_MODULES = [
     // registered here (not exempted) to keep that live dispatch site guarded.
     'usage-limit-controller.mjs',
     'unbracketed-push-guard.mjs',
+    // apra-fleet-btj9.7: the explicit-id-create guard checker. Registered
+    // normally (not exempted) like unbracketed-push-guard.mjs above -- it
+    // issues no command()/agent() call of its own (its 'bd create' mentions
+    // are all prose inside comments/messages, never a dispatched call), so it
+    // scans clean under itself and every other guard rather than needing a
+    // GUARD_REGISTRATION_EXEMPT carve-out.
+    'explicit-id-create-guard.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
     'vcs-providers/azure-devops.mjs',
@@ -395,6 +402,19 @@ export const DOLT_LITERAL_EXEMPT = ['dolt-sync.mjs'];
  * above.
  */
 export const UNBRACKETED_PUSH_EXEMPT = ['git-sync.mjs'];
+
+/**
+ * Modules the explicit-id create guard (explicit-id-create-guard.mjs) must
+ * NEVER scan, by basename. beads-children.mjs is the single module allowed to
+ * issue a `bd create` command AT ALL (the guard flags any `bd create` site,
+ * not just ones carrying a literal `--id` flag -- see that file's header for
+ * why): it is the only place the probe-and-refuse seam (assertChildIdFree(),
+ * called from createChildBeadWithAllocatedId, apra-fleet-btj9.7) sits
+ * immediately before that create, so pointing the guard at beads-children.mjs
+ * itself would flag the module for being the module. Mirrors
+ * DOLT_LITERAL_EXEMPT's precedent for dolt-sync.mjs above.
+ */
+export const EXPLICIT_ID_CREATE_EXEMPT = ['beads-children.mjs'];
 
 /**
  * apra-fleet-3swo.25: modules deliberately excluded from GUARDED_MODULES
@@ -524,4 +544,14 @@ export function doltLiteralModulePaths(extraPaths = []) {
  */
 export function unbracketedPushModulePaths(extraPaths = []) {
     return guardedModulePaths(extraPaths).filter((p) => !UNBRACKETED_PUSH_EXEMPT.includes(path.basename(p)));
+}
+
+/**
+ * The guarded-module list as the explicit-id create guard must see it: the
+ * shared list with EXPLICIT_ID_CREATE_EXEMPT basenames filtered out. Same
+ * `extraPaths` contract as guardedModulePaths/doltLiteralModulePaths/
+ * unbracketedPushModulePaths.
+ */
+export function explicitIdCreateModulePaths(extraPaths = []) {
+    return guardedModulePaths(extraPaths).filter((p) => !EXPLICIT_ID_CREATE_EXEMPT.includes(path.basename(p)));
 }

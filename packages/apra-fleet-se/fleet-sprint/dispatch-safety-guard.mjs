@@ -74,6 +74,75 @@ export function skipStringLiteral(src, start, quoteChar) {
     return i;
 }
 
+// A `/` that opens a REGEX literal (as opposed to a division/`/=` operator)
+// is only ever preceded -- skipping whitespace -- by one of these punctuation
+// characters, by the start of the file, or by one of the listed keywords.
+// This is the same heuristic real tokenizers use to disambiguate the two: a
+// division operator always follows a value (an identifier, number, `)`, `]`,
+// `}`, or a closing quote), never one of these. Good enough for source text
+// that is valid, already-linted JS (this repo's own modules), which is the
+// only input maskComments() is ever run against.
+const REGEX_PRECEDING_PUNCT_CHARS = new Set('([{,;:=!&|?+-*%^~<>'.split(''));
+const REGEX_PRECEDING_KEYWORDS = new Set([
+    'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+    'yield', 'throw', 'case', 'do', 'else', 'await',
+]);
+
+/**
+ * True when a `/` at position `idx` in `text` opens a regex literal rather
+ * than a division or `/=` operator. Scans backward from `idx` (skipping
+ * whitespace) to the last significant character/word and checks it against
+ * REGEX_PRECEDING_PUNCT_CHARS/REGEX_PRECEDING_KEYWORDS above. `text` must
+ * already have comments masked to whitespace at every position before `idx`
+ * (both maskComments()'s own in-progress `out` buffer and its finished
+ * return value satisfy this), so a `/` right after where a comment used to
+ * be correctly sees whatever preceded the comment, not the comment itself.
+ * EXPORTED so any OTHER walk over an already-masked copy of source (e.g. a
+ * depth-count loop that must not miscount a quote or bracket embedded in a
+ * regex body) can reuse the exact same regex-vs-division heuristic instead
+ * of re-deriving it -- see extractBalancedCall() below and
+ * unbracketed-push-guard.mjs's findFunctionBodyRange() for two consumers
+ * that got this wrong before apra-fleet-btj9.10.
+ */
+export function canStartRegex(text, idx) {
+    let j = idx - 1;
+    while (j >= 0 && /\s/.test(text[j])) j--;
+    if (j < 0) return true; // start of file
+    if (REGEX_PRECEDING_PUNCT_CHARS.has(text[j])) return true;
+    let k = j;
+    while (k >= 0 && /[A-Za-z0-9_$]/.test(text[k])) k--;
+    const word = text.slice(k + 1, j + 1);
+    return REGEX_PRECEDING_KEYWORDS.has(word);
+}
+
+/**
+ * Returns the index of the closing `/` of a regex literal that opens at
+ * `start`, or -1 if none is found before end-of-line/end-of-file (a regex
+ * literal can never span a raw newline in valid JS, so hitting one means the
+ * leading `/` was misclassified as a regex start -- the caller falls back to
+ * treating it as an ordinary character). Tracks bracket-expression state
+ * (`[...]`) because a `/` inside a character class does not close the regex
+ * (this is exactly what SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/+[\]-]+$/ in
+ * newtask-text.mjs relies on), and skips backslash-escaped characters
+ * (inside or outside the class) the same way skipStringLiteral() does.
+ * EXPORTED for the same reason as canStartRegex() above.
+ */
+export function skipRegexLiteral(src, start) {
+    let inClass = false;
+    for (let i = start + 1; i < src.length; i++) {
+        const ch = src[i];
+        if (ch === '\\') { i++; continue; }
+        if (ch === '\n') return -1;
+        if (inClass) {
+            if (ch === ']') inClass = false;
+            continue;
+        }
+        if (ch === '[') { inClass = true; continue; }
+        if (ch === '/') return i;
+    }
+    return -1;
+}
+
 /**
  * Replaces every comment's characters with spaces (newlines preserved), so
  * the result has the SAME length and line numbering as `src` but no comment
@@ -92,6 +161,19 @@ export function skipStringLiteral(src, start, quoteChar) {
  * sliced from the ORIGINAL (unmasked) src so callers keep seeing real
  * comment text, just with correct boundaries.
  *
+ * REGEX LITERALS (apra-fleet-btj9.10): a regex whose body contains a quote or
+ * apostrophe -- e.g. newtask-text.mjs's
+ * `SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/+[\]-]+$/` or branch-ensure.mjs's
+ * `/couldn't find remote ref/i` -- used to open the SAME kind of phantom
+ * string the comment-blindness fix above closed for apostrophes in prose: the
+ * string branch below would treat that quote as opening a real string and
+ * copy everything up to the next matching quote through UNMASKED, including
+ * any real comment in between (whose stray parens could then desync a later
+ * extractBalancedCall() depth walk). Regex literals are recognized (via
+ * canStartRegex()/skipRegexLiteral() above) and copied through verbatim --
+ * like a string, not stripped -- BEFORE the string branch gets a chance to
+ * misread the quote inside one.
+ *
  * @param {string} src
  * @returns {string}
  */
@@ -99,12 +181,6 @@ export function maskComments(src) {
     let out = '';
     for (let i = 0; i < src.length; i++) {
         const ch = src[i];
-        if (ch === '"' || ch === "'" || ch === '`') {
-            const end = skipStringLiteral(src, i, ch);
-            out += src.slice(i, end + 1);
-            i = end;
-            continue;
-        }
         if (ch === '/' && src[i + 1] === '/') {
             while (i < src.length && src[i] !== '\n') { out += ' '; i++; }
             out += '\n';
@@ -115,6 +191,25 @@ export function maskComments(src) {
             const stop = end < 0 ? src.length - 1 : end + 1;
             for (; i <= stop; i++) out += src[i] === '\n' ? '\n' : ' ';
             i--;
+            continue;
+        }
+        if (ch === '/' && canStartRegex(out, out.length)) {
+            const end = skipRegexLiteral(src, i);
+            if (end !== -1) {
+                let flagEnd = end;
+                while (flagEnd + 1 < src.length && /[a-zA-Z]/.test(src[flagEnd + 1])) flagEnd++;
+                out += src.slice(i, flagEnd + 1);
+                i = flagEnd;
+                continue;
+            }
+            // Not actually a regex (no closing `/` before end of line) --
+            // fall through and let the default branch below copy the `/`
+            // as an ordinary character.
+        }
+        if (ch === '"' || ch === "'" || ch === '`') {
+            const end = skipStringLiteral(src, i, ch);
+            out += src.slice(i, end + 1);
+            i = end;
             continue;
         }
         out += ch;
@@ -132,6 +227,17 @@ export function maskComments(src) {
  * maskComments() above). The depth/quote walk runs over a comment-masked
  * copy of `src`, but the returned text is sliced from the ORIGINAL `src` so
  * real comment content is preserved in the output.
+ *
+ * ALSO skips over regex literals in this SAME walk (apra-fleet-btj9.10):
+ * maskComments() copies a regex literal's body through verbatim (like a
+ * string's), so a quote/apostrophe inside one (e.g. a call argument written
+ * `/it's ok/`) is still sitting right there in `masked`. Without this,
+ * THIS walk's own quote branch below would re-discover that apostrophe and
+ * misread it as opening a real string, potentially running the depth walk
+ * away past the call's real closing paren. Uses the same
+ * canStartRegex()/skipRegexLiteral() maskComments() itself uses, so a
+ * `/` is only ever treated as a regex open here in the exact cases it would
+ * have been treated as one during masking.
  */
 export function extractBalancedCall(src, openParenIdx) {
     const masked = maskComments(src);
@@ -146,6 +252,9 @@ export function extractBalancedCall(src, openParenIdx) {
             if (depth === 0) {
                 return src.slice(openParenIdx, i + 1);
             }
+        } else if (ch === '/' && canStartRegex(masked, i)) {
+            const end = skipRegexLiteral(masked, i);
+            if (end !== -1) i = end;
         } else if (ch === '"' || ch === "'" || ch === '`') {
             i = skipStringLiteral(masked, i, ch);
         }

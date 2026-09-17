@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "4e5799f1864b758ccd6d72863d49937887b0f9dd",
     "branch": "chore/bkax-planner-notes-contradiction-check",
-    "entry_count": 207
+    "entry_count": 252
   },
   "entries": [
     {
@@ -4078,6 +4078,396 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-12T10:10:02.009Z"
+    },
+    {
+      "id": "03858e18-b478-4840-a621-8f1d93ccf8c2",
+      "type": "knowledge",
+      "title": "The collision probe fails closed only on the throw path; an exit-0 probe with empty or non-array output still proceeds",
+      "summary": "The fail-closed classification guards the catch branch only. On the success branch, parseBdJson turns ''/undefined into [] and a non-array JSON body matches no id, so an unexpected exit-0 response is treated as ABSENT and the create goes ahead.",
+      "symbols": [
+        "createChildBeadWithAllocatedId",
+        "classifyBdShowProbeError",
+        "parseBdJson"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-children.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/test/child-create-collision-probe-fail-closed.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-16T17:39:39.480Z"
+    },
+    {
+      "id": "056b14ed-d7b0-466b-a144-708a60994278",
+      "type": "knowledge",
+      "title": "guarded-modules-coverage's isAccountedFor compares full relative paths, not basenames",
+      "summary": "A KB entry claiming isAccountedFor reduces paths to path.basename is stale: it compares the full relPath, and an explicit regression test pins that a basename-colliding nested path is still reported unaccounted-for.",
+      "symbols": [
+        "isAccountedFor",
+        "GUARDED_MODULES",
+        "GUARD_REGISTRATION_EXEMPT",
+        "EXPLICIT_ID_CREATE_EXEMPT"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-16T18:11:45.269Z"
+    },
+    {
+      "id": "0c6b6a92-161c-4072-ac90-3f716e736238",
+      "type": "learning",
+      "title": "mock-sprint-harness's Azure DevOps PR-create mock fabricated a _links field the real API and parser never produce or read",
+      "summary": "The harness's hermetic Azure DevOps create-pull-request success response included a _links.web.href field with no basis in the real API; vcs-providers/azure-devops.mjs's mapPullRequestResponse never reads it (webUrlField: null -- the browsable URL is constructed from org/project/repo context, never read from the response body), so the field was silently unused rather than causing a wrong result, but it was still a real assumed-shape drift from production.",
+      "symbols": [
+        "mapPullRequestResponse",
+        "pullRequestResponse"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs",
+        "packages/apra-fleet-se/test/helpers/vcs-http-stub.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-15T17:51:40.869Z"
+    },
+    {
+      "id": "113ee347-91ee-487e-abb7-180a057d9885",
+      "type": "learning",
+      "title": "Deriving a crash/corruption journal scenario by mutating a clean recording, instead of re-running a real crashing dispatch",
+      "summary": "A test needing a 'crashed mid-dispatch' or 'unfinished activity' journal shape can copy a single clean successful recording and post-hoc mutate/truncate the copy, rather than paying for its own separate crashing/hand-written recording leg -- verified equivalent via loadJournal()'s completedByKey/ambiguous outputs.",
+      "symbols": [
+        "loadJournal",
+        "JournalWriter",
+        "FleetWorkflow.agent"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/test/apra-fleet-workflow-journal.test.mjs",
+        "packages/apra-fleet-workflow/src/workflow/journal.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-15T12:40:50.757Z"
+    },
+    {
+      "id": "1b311527-6c6e-4366-bb39-b437ce8ff153",
+      "type": "learning",
+      "title": "How to falsify a guarded-modules guard test in both directions",
+      "summary": "Neutering the guard's regex only proves the fixture assertions bite; to prove the CI regression guard is live you must add a real violating call site to a module in the shared GUARDED_MODULES list.",
+      "symbols": [
+        "checkExplicitIdCreateModules",
+        "explicitIdCreateModulePaths",
+        "EXPLICIT_ID_CREATE_EXEMPT",
+        "findCallSites"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/explicit-id-create-guard.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/explicit-id-create-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/test/dolt-literal-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-17T00:47:07.847Z"
+    },
+    {
+      "id": "20ba2446-7463-4ee6-ab8f-4f17b3757c57",
+      "type": "knowledge",
+      "title": "Real dolt failure text reaches the classifier only through bd, and the raw dolt CLI wording is different",
+      "summary": "classifyDoltFailure parses `bd dolt` output, which re-surfaces dolt errors as 'Error 1105: ...' from dolt_pull()/dolt_push(). The raw dolt CLI emits different text for the same conditions, so fixtures recorded from the CLI do not match the provider rule tables.",
+      "symbols": [
+        "classifyDoltFailure",
+        "DoltVCS",
+        "extractDoltRemoteUrl"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/dolt.mjs",
+        "packages/apra-fleet-se/test/fixtures/vcs-stderr/record-vcs-stderr.mjs",
+        "packages/apra-fleet-se/test/fixtures/vcs-stderr/vcs-stderr-corpus.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-15T12:40:50.749Z"
+    },
+    {
+      "id": "218ebe58-6bc4-4334-b544-fce3e98a2a16",
+      "type": "knowledge",
+      "title": "What the timing-hazard guard actually catches, and the three ways a sleep escapes it",
+      "summary": "timing-hazard-guard.test.mjs only flags an unassigned setTimeout with a LITERAL delay of at least 500ms, in three hardcoded files, so a helper-wrapped or parameterized sleep, or a fourth file, is invisible to it.",
+      "symbols": [
+        "findBareLongSleeps",
+        "stripComments",
+        "waitForChildSettled",
+        "waitForCondition"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/timing-hazard-guard.test.mjs",
+        "packages/apra-fleet-se/test/slow-lane-log-persistence.test.mjs",
+        "packages/apra-fleet-se/test/installed-supervisor.test.mjs",
+        "packages/apra-fleet-se/test/serve-wiring-integration.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-15T18:34:53.653Z"
+    },
+    {
+      "id": "225bda3e-1036-4bc2-ae3a-f00292985c8d",
+      "type": "learning",
+      "title": "A source-text guard that scans clean may be inert, not satisfied -- probe it inside the file, not on a fixture",
+      "summary": "Running a new guard over the real module set and getting zero violations proves nothing about coverage; inject the violating construct at specific line offsets in a real scanned module to find spans where the rule is silently blind.",
+      "symbols": [
+        "findExplicitIdCreateViolations",
+        "checkExplicitIdCreateModules",
+        "findCommandLiterals"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/explicit-id-create-guard.mjs",
+        "packages/apra-fleet-se/test/explicit-id-create-guard.test.mjs",
+        "packages/apra-fleet-se/test/fixtures/explicit-id-create-guard/non-compliant.mjs",
+        "packages/apra-fleet-se/fleet-sprint/branch-ensure.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-16T23:27:37.279Z"
+    },
+    {
+      "id": "27a963f3-104c-4de8-97b9-9ac370330e55",
+      "type": "learning",
+      "title": "Measure a source-text guard's coverage by line-by-line injection, and count only the before/after delta",
+      "summary": "Injecting a real violating line at every line of every scanned module, then comparing the old and new checker, is what turns 'the guard scans clean' into evidence. Raw blind-line counts overstate the hole because an injection inside a comment or template text is legitimately not code -- only the delta, plus a classification of the residual, is defensible.",
+      "symbols": [
+        "checkExplicitIdCreateModules",
+        "findExplicitIdCreateViolations",
+        "explicitIdCreateModulePaths"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/explicit-id-create-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/test/explicit-id-create-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-16T23:27:37.283Z"
+    },
+    {
+      "id": "27ea42a5-8993-4258-84c3-c4ac2993308e",
+      "type": "learning",
+      "title": "Isolating a phantom-string guard miss from a wrapper-identifier miss at revision 1f3fbc44",
+      "summary": "Running the pre-lexer explicit-id guard at 1f3fbc44 over the phantom fixtures returns zero while wrapper-dispatch.mjs still reports, which is what proves the phantom pins are load-bearing.",
+      "symbols": [
+        "checkExplicitIdCreatePath",
+        "findExplicitIdCreateViolations",
+        "scanModuleLiterals",
+        "maskComments"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/explicit-id-create-guard.mjs",
+        "packages/apra-fleet-se/test/explicit-id-create-guard.test.mjs",
+        "packages/apra-fleet-se/test/fixtures/explicit-id-create-guard/wrapper-dispatch.mjs",
+        "packages/apra-fleet-se/test/fixtures/explicit-id-create-guard/phantom-regex-apostrophe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-17T00:47:07.844Z"
+    },
+    {
+      "id": "2f0feb05-dc94-401f-bdd4-dcbc4ce18520",
+      "type": "knowledge",
+      "title": "phase1's real-bd nested golden run costs ~104s/file, not the 900s/file its budget assumes",
+      "summary": "A live bounded real-bd run of phase1-leaf-facade-completeness.test.mjs measured the nested golden-transcript child at 208321ms for both golden files, against a derived 3600000ms budget -- a 17.3x margin, and 8.7x faster than the 1811676ms failure that motivated the budget.",
+      "symbols": [
+        "resolveNestedSuiteTimeoutBudget",
+        "REAL_BD_NESTED_SUITE_TIMEOUT_MS",
+        "ASSUMED_REAL_BD_GOLDEN_PER_FILE_MS",
+        "NESTED_GOLDEN_SUITE_FILES"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs",
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/test/golden-transcript.test.mjs",
+        "packages/apra-fleet-se/test/golden-transcript-3bead.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-16T08:08:47.255Z"
+    },
+    {
+      "id": "2ffc0a85-7607-49d0-9e9a-f3ca9b8cfbb4",
+      "type": "learning",
+      "title": "execute_command's input schema is not zod .strict(), unlike execute_prompt's, so a removed field silently strips instead of rejecting",
+      "summary": "src/tools/execute-prompt.ts's executePromptSchema ends with .strict(), rejecting unrecognized keys, but src/tools/execute-command.ts's executeCommandSchema does not, so removing a field from it does not make zod throw -- the field is just silently dropped from the parsed/validated payload.",
+      "symbols": [
+        "executePromptSchema",
+        "executeCommandSchema",
+        "validateAgainstSchema"
+      ],
+      "source_files": [
+        "src/tools/execute-prompt.ts",
+        "src/tools/execute-command.ts",
+        "packages/apra-fleet-workflow/test/schema-validated-fake-api.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-15T17:51:40.873Z"
+    },
+    {
+      "id": "394c2031-1c18-4fc1-bf38-424e22066dec",
+      "type": "knowledge",
+      "title": "bd show on a missing id exits 1, so every fleet-sprint existence probe lands in its catch branch",
+      "summary": "bd show <missing-id> --json exits 1 with an error envelope rather than returning [], and FleetWorkflow.command() throws on any non-zero exit, so an existence probe's catch branch is the NORMAL path, not the rare one.",
+      "symbols": [
+        "createChildBeadWithAllocatedId",
+        "parseBdJson",
+        "command"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-children.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-se/test/child-create-collision-guard.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-16T16:54:05.605Z"
+    },
+    {
+      "id": "45d5d161-53e7-4b40-8d2f-ce2282615ca2",
+      "type": "knowledge",
+      "title": "apra-fleet-workflow tests now hard-depend on the root dist build",
+      "summary": "packages/apra-fleet-workflow/test/schema-validated-fake-api.mjs imports the real zod schemas from dist/tools/*.js at module load, so that package's tests cannot run without a prior root npm run build.",
+      "symbols": [
+        "createSchemaValidatedFakeApi",
+        "validateAgainstSchema",
+        "findRealResponseFieldName"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/test/schema-validated-fake-api.mjs",
+        "packages/apra-fleet-workflow/test/schema-validated-fake-api-output-shape.test.mjs",
+        "packages/apra-fleet-workflow/test/apra-fleet-workflow.test.mjs",
+        ".github/workflows/ci.yml"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-15T18:34:53.647Z"
+    },
+    {
+      "id": "4d04faed-7125-4399-a716-2c934ea446d9",
+      "type": "knowledge",
+      "title": "APRA_FLEET_TEST_CONCURRENCY IS exported by the command CI runs, so scaledTimeout is not inert there",
+      "summary": "The apra-fleet-se package test script is scripts/run-tests.mjs, which exports APRA_FLEET_TEST_CONCURRENCY=8, so scaledTimeout-derived budgets do scale under npm test; the comment in phase1-leaf-facade-completeness.test.mjs claiming otherwise is stale.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/test/helpers/scaled-timeout.mjs",
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs",
+        ".github/workflows/ci.yml"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-16T19:01:27.276Z"
+    },
+    {
+      "id": "501d7380-c67e-4f67-bb89-3fa2d3031e33",
+      "type": "runbook",
+      "title": "Execute the generated win32 sweep probe for real by swapping only its Get-CimInstance source",
+      "summary": "pwsh is cross-platform, so the real generated PowerShell probe can be executed on Linux/macOS by substituting only the Win32_Process source with fabricated objects and shadowing Stop-Process, leaving the entire filter and kill body as real generated text.",
+      "symbols": [
+        "buildSweepCommand",
+        "parseSweepOutput",
+        "psQuote",
+        "psLikeEscape",
+        "wrapForMember"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs",
+        "packages/apra-fleet-se/test/supervisor-dolt-orphan-sweep.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs",
+        "packages/apra-fleet-se/test/se-os-commands-shell-matrix.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-15T12:40:50.753Z"
+    },
+    {
+      "id": "502ff5d8-a072-4ca0-8b15-d2d588ff6706",
+      "type": "knowledge",
+      "title": "A configured Dolt sync.remote can be tested with a bare git repo over file://, no dolt or bd binary",
+      "summary": "beads syncs through refs/dolt/data on a git remote, and dolt-sync.mjs's own tip probe assumes exactly that, so a bare git repo plus a file:// URL is a complete stand-in for a configured sync.remote in unit tests.",
+      "symbols": [
+        "doltPullBefore",
+        "doltPushAfter",
+        "isMemberSyncRemoteConfigured",
+        "toGitLsRemoteUrl",
+        "createDoltRemoteFixture"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/test/helpers/dolt-remote-fixture.mjs",
+        "packages/apra-fleet-se/test/dolt-sync-configured-remote.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/dolt.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-15T09:18:06.543Z"
+    },
+    {
+      "id": "5b8314e3-d75e-4b90-ae07-7aeec006a90d",
+      "type": "knowledge",
+      "title": "explicit-id-create guard now uses a call-expression-agnostic command-literal rule, unioned with the command() site rule",
+      "summary": "The guard no longer depends on findCallSites recognising the enclosing call identifier. A second rule flags any string literal whose content begins with the bd create command and continues into an argument, so wrappers, renamed bindings and method calls are covered.",
+      "symbols": [
+        "findExplicitIdCreateViolations",
+        "findCommandLiterals",
+        "CREATE_DISPATCH_LITERAL_RE",
+        "EXPLICIT_ID_CREATE_RE",
+        "maskComments",
+        "skipStringLiteral",
+        "findCallSites"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/explicit-id-create-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-safety-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/test/explicit-id-create-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-16T23:27:37.275Z"
+    },
+    {
+      "id": "6bfc8a4f-90be-4f6d-8ddb-492017ec0c1d",
+      "type": "runbook",
+      "title": "Falsify a root-repo vitest test with a detached git worktree, not a scratch copy",
+      "summary": "A tests/*.ts file needs the whole project graph, so the copy-a-directory-to-tmp pattern does not work; add a detached worktree, symlink node_modules into it, revert the impl there, and run npx vitest from inside it.",
+      "symbols": [],
+      "source_files": [
+        "vitest.config.ts",
+        "tests/setup.ts",
+        "tests/global-setup.ts",
+        "tests/vcs-credential-exec-inline-token.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-15T18:34:53.639Z"
+    },
+    {
+      "id": "70a63c57-5dc5-4e1f-ad3d-e1855481516d",
+      "type": "knowledge",
+      "title": "A third of the phase4 gate's runtime is an assertion that can no longer fail",
+      "summary": "test/phase4-move-only-completeness.test.mjs's every-ANCHOR_DESYNC-file-passes test re-probes the whole intersection and re-runs each desynced file, but the property is now guaranteed by probeFile's own corroboration step.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase4-move-only-completeness.test.mjs",
+        "packages/apra-fleet-se/scripts/phase4-moveonly-probe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-15T12:40:50.761Z"
+    },
+    {
+      "id": "80f14d2d-be56-4c4a-8690-ca75def070c1",
+      "type": "knowledge",
+      "title": "Why the phase4 move-only probe never contaminates a fleet-sprint source census",
+      "summary": "The probe writes a dot-prefixed copy of an old revision beside each probed file, and its importer discovery only matches the long fleet-sprint/runner.js spelling, so probe files land under test/ and never inside fleet-sprint/.",
+      "symbols": [
+        "probeFile",
+        "discoverSetA",
+        "collectSourceFiles"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/scripts/phase4-moveonly-probe.mjs",
+        "packages/apra-fleet-se/test/phase5-consumer-migration-end-state.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-children.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-15T14:12:28.029Z"
     }
   ]
 }

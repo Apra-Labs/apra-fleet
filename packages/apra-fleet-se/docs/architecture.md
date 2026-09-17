@@ -581,6 +581,69 @@ reach):
   requested before the creation is trusted -- a mismatch is treated as a
   failed create, not silently accepted.
 
+#### The allocator's floor read must include closed children, and the create
+#### itself must be probed, not trusted
+
+Two independent gaps let the allocator hand out an id that already belongs
+to an existing bead, and `bd create --id <id>` on an occupied id is not a
+safe no-op: it **silently overwrites** whatever bead already holds that id
+(open or closed), reusing the same row and clobbering its
+title/description/priority/type with no error. Both gaps had to close for
+the hazard to actually go away -- fixing only one leaves the other as a live
+path to the same silent-overwrite outcome:
+
+- **Floor computation must count closed children.** The allocator seeds its
+  first allocation under a parent from a best-effort read of the parent's
+  existing direct children (`bd list --parent <id>`), so it never mints an
+  id colliding with a child created before the allocator's own persisted
+  state existed. `bd list --parent` excludes closed issues by default, so
+  once every existing child under a parent is closed, an unfiltered read
+  returns empty, the floor computes to 0, and the allocator re-mints
+  already-used ids (`.1`, `.2`, ...) that collide with the just-closed
+  originals. The fix reads with `bd list`'s documented `--all` flag ("show
+  all issues including closed"); `--status all` is a documented value for
+  `bd search`'s `-s` flag, not for `bd list`, and does not fix this. Every
+  failure mode of this read (a rejected flag, a dispatch timeout,
+  unparseable JSON) still collapses to the same best-effort floor of 0 by
+  design -- that return value is deliberate and unchanged -- but the failure
+  is now logged instead of vanishing into a bare catch, so a silent
+  mis-seed is at least observable in sprint output.
+- **The create itself must probe for an existing occupant first, regardless
+  of how it got its id.** The allocator handing back a genuinely free id is
+  the common case, but is not a guarantee an occupied-id create can safely
+  skip past: a crashed/partial prior run, a stale persisted high-water, or a
+  manually-created bead can leave an id occupied despite the allocator
+  believing otherwise. On the explicit-id path, the creator therefore probes
+  (`bd show <id> --json`) before ever calling `bd create --id`, and refuses
+  (releasing the reservation, throwing loudly) rather than proceeding into
+  an overwrite if the id is already occupied. The probe's failure mode is
+  itself two-valued and must be told apart: `bd show <missing-id> --json`
+  does not exit 0 with an empty result, it exits non-zero with a documented
+  "no issues found" error payload -- so the probe's own catch block
+  classifies that payload as "id positively confirmed absent, proceed" and
+  treats every OTHER catch shape (unparseable output, a differently-shaped
+  error, a transport/dispatch fault) as "unknown, fail closed" rather than
+  assuming an unrecognized failure means the id is free. The null-allocator
+  fallback path (`bd create --parent`, no explicit id) needs no such probe:
+  `bd` mints the id itself in that case and cannot collide.
+
+**Reservation lifecycle after the create lands is asymmetric, and that
+asymmetry is load-bearing, not an oversight.** `release()` returns a
+reservation to the pool for reuse and is only ever correct while the id is
+still genuinely free; `confirm()` durably commits it. Once `bd create`
+itself has landed, the id is genuinely occupied, so the reservation is
+confirmed immediately (before the follow-up parent-link update and before
+any Dolt push) and **must never be released again**, no matter what fails
+next: a failure in the immediately-following `bd update <id> --parent
+<parentId>` link step, or in `confirm()` itself (an allocator transport
+fault), both throw a distinct, orphan-id-naming error so an operator can
+recover manually -- but neither one releases the id back to the pool, since
+doing so would hand the same, now-genuinely-occupied id to the next
+allocation and reproduce the exact collision this whole mechanism exists to
+prevent. `release()` fires in exactly one place: when staging the
+description or dispatching `bd create` itself fails, i.e. before the bead
+exists at all.
+
 ### Two coordination hosts, not one -- and why
 
 Both primitives exist in **two independent implementations that must stay
@@ -1516,3 +1579,60 @@ registration, even though it was never registered itself. Both comparisons
 are correct for what each one is checking -- the distinction is per-guard
 reporting fidelity (basename) versus registration completeness (full path)
 -- so do not "fix" one by making it consistent with the other.
+
+#### An exempt-list guard is a different shape from a violation-count guard
+
+The explicit-id-create guard (enforcing the child-id collision-refusal
+invariant above -- no scanned module may dispatch a bead-CREATION command
+unless it lives in the one module paired with the probe-and-refuse seam)
+deliberately does not fit the per-module "N raw calls allowed" shape the
+other mechanical guards use. Its invariant is binary: exactly one module in
+the scanned set is allowed to contain a bead-creation dispatch at all, and
+every other scanned module must report zero, forever -- there is no
+legitimate count above zero to baseline elsewhere. It therefore keeps its
+own exemption constant (a single path, not a per-file violation-count map)
+alongside a shared list of the module paths it scans, both sourced from
+`guarded-modules.mjs` so a newly extracted module is still picked up
+automatically the same way the count-based guards are.
+
+The guard's own rule had to widen twice past its first cut, and both
+widenings generalize to any future mechanical scanner in this family:
+neither "does an explicit `--id` flag literal appear in this call" nor
+"is this call spelled through the literal identifier `command(`/`agent(`"
+survives a caller that assembles the flag from a variable or dispatches
+through a renamed/wrapped binding (a local helper, a destructured import, a
+method call). The rule that does survive both is shape-based rather than
+identifier-based: flag any string/template literal whose content begins
+with the dispatched command name and continues into what looks like an
+argument, regardless of which call expression carries it. A scanner in this
+family should default to a content-shape rule over an
+identifier/call-expression rule for exactly this reason -- the latter is
+trivially defeated by renaming or wrapping, the former is not.
+
+#### A source-text scanner that masks comments/strings must treat regex
+#### literals as opaque spans too, or a quote inside one desyncs the walk
+
+Every mechanical guard in this family that walks raw source text to find
+call sites or balanced ranges (`dispatch-safety-guard.mjs`'s
+`extractBalancedCall`, `unbracketed-push-guard.mjs`'s
+`findFunctionBodyRange`) does so over a comment-masked copy of the source,
+so a stray apostrophe in a prose comment is never misread as opening a real
+string. That masking pass has a second, less obvious hazard: a regex
+literal in real source can itself contain a quote or apostrophe in its body
+(a character class like `[.,:;!?()'_/+[\]-]`, or a literal like `/couldn't
+find remote ref/i`). A masking/depth-walk that recognizes strings but not
+regex literals reads that embedded quote as opening a real string and
+swallows everything up to the next matching quote -- including real
+comments, brackets, and parens in between -- silently desyncing the walk's
+positional accounting. The fix is to recognize and copy a regex literal
+through verbatim (masked the same way a string is: preserved, not
+stripped) BEFORE the string-literal branch gets a chance to misread the
+quote inside it, using a real regex-vs-division disambiguation heuristic
+(scan backward past whitespace to the last significant token; a `/`
+immediately following an identifier/number/`)`/`]`/`}`/closing-quote is
+division, everything else can open a regex). Any new source-text scanner
+added to this family must reuse the shared `maskComments()` /
+`canStartRegex()` / `skipRegexLiteral()` helpers rather than re-deriving
+this heuristic locally -- two independent guards got this wrong before
+converging on the shared helpers, which is a strong signal it is not safe
+to hand-roll again.

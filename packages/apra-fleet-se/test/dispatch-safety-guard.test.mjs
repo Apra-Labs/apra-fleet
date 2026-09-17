@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'node:fs';
 import os from 'node:os';
-import { checkPath, checkModules, findCallSites, extractBalancedCall } from '../fleet-sprint/dispatch-safety-guard.mjs';
+import { checkPath, checkModules, findCallSites, extractBalancedCall, maskComments } from '../fleet-sprint/dispatch-safety-guard.mjs';
 import { GUARDED_MODULES, guardedModulePaths, guardedModuleBasenames } from '../fleet-sprint/guarded-modules.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1191,8 +1191,9 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // createChildBeadWithAllocatedId, verifyDoerStreakClosed and
 // claimBeadsBatched.
 //
-// Its baseline is FIVE: createChildBeadWithAllocatedId owns TWO
-// (`bd create --body-file` and the explicit-id path's `bd update --parent`
+// Its baseline is SIX: createChildBeadWithAllocatedId owns THREE
+// (the explicit-id path's `bd show <childId> --json` collision probe, the
+// `bd create --body-file`, and the explicit-id path's `bd update --parent`
 // link) and computeChildFloor/verifyDoerStreakClosed/claimBeadsBatched own ONE
 // each, all verified compliant.
 //
@@ -1202,7 +1203,7 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // helper, which is exactly what a zero baseline turns red.
 // =============================================================================
 const BEADS_CHILDREN_PATH = path.join(__dirname, '../fleet-sprint/beads-children.mjs');
-const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 5;
+const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 6;
 
 test('every command() call site in beads-children.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(BEADS_CHILDREN_PATH);
@@ -1515,6 +1516,99 @@ test("no agent()/command() call site in runner.js has a callText far larger than
         'runner.js dispatches only through the engine now; a new inline agent() call must be added to this count ' +
         'deliberately, not slipped in.'
     );
+});
+
+// =============================================================================
+// apra-fleet-btj9.10 -- maskComments() did not model regex literals, so a
+// regex whose body holds a quote or apostrophe opened the SAME kind of
+// phantom string the apostrophe-in-comment fix above closed for prose: the
+// string branch treated that quote as opening a real string and copied
+// everything up to the next matching quote through UNMASKED, which could
+// desync a later extractBalancedCall() depth walk. Two REAL triggers were
+// found in the guarded module set:
+//   - newtask-text.mjs: `SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/+[\]-]+$/;`
+//   - branch-ensure.mjs: `/couldn't find remote ref/i`
+// These tests pin both real triggers directly (maskComments() must still be
+// length/line-preserving and must not open a phantom span across them) and
+// reproduce the guard-level failure mode the desync produced: a comment's
+// stray ')' inside a call site that follows one of these regexes used to
+// desync extractBalancedCall()'s depth walk and truncate callText early.
+// =============================================================================
+
+test('maskComments() does not open a phantom string on newtask-text.mjs\'s real SAFE_TEXT_RE trigger', () => {
+    const src = [
+        "export const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/+[\\]-]+$/;",
+        '',
+        'function dispatch() {',
+        '    command(',
+        '        // reminder: keep this simple )',
+        '        { prompt: "hello" }',
+        '    );',
+        '}',
+    ].join('\n');
+    const masked = maskComments(src);
+    assert.strictEqual(masked.length, src.length, 'maskComments() must be length-preserving');
+    assert.strictEqual(masked.split('\n').length, src.split('\n').length, 'maskComments() must be line-preserving');
+    // The comment's stray ')' must be blanked to a space -- if the regex's
+    // internal apostrophe opened a phantom string, this comment would still
+    // be copied through verbatim (unmasked) instead.
+    assert.ok(!masked.includes('reminder: keep'), `regex apostrophe desynced the mask -- comment was left unmasked: ${JSON.stringify(masked)}`);
+
+    const openParenIdx = src.indexOf('command(') + 'command'.length;
+    const callText = extractBalancedCall(src, openParenIdx);
+    assert.ok(callText.endsWith(')'), `callText should end at the real closing paren, got: ${JSON.stringify(callText)}`);
+    assert.ok(!callText.includes('SAFE_TEXT_RE'), `callText ran away past its own call site: ${JSON.stringify(callText)}`);
+});
+
+test('maskComments() does not open a phantom string on branch-ensure.mjs\'s real "couldn\'t find remote ref" trigger', () => {
+    const src = [
+        "if (!branchFetchOk && !/couldn't find remote ref/i.test(branchFetchError || '')) {",
+        '    return {',
+        '        action: "abort",',
+        '    };',
+        '}',
+        '',
+        'function dispatch() {',
+        '    command(',
+        '        // reminder: keep this simple )',
+        '        { prompt: "hello" }',
+        '    );',
+        '}',
+    ].join('\n');
+    const masked = maskComments(src);
+    assert.strictEqual(masked.length, src.length, 'maskComments() must be length-preserving');
+    assert.strictEqual(masked.split('\n').length, src.split('\n').length, 'maskComments() must be line-preserving');
+    assert.ok(!masked.includes('reminder: keep'), `regex apostrophe desynced the mask -- comment was left unmasked: ${JSON.stringify(masked)}`);
+
+    const openParenIdx = src.indexOf('command(') + 'command'.length;
+    const callText = extractBalancedCall(src, openParenIdx);
+    assert.ok(callText.endsWith(')'), `callText should end at the real closing paren, got: ${JSON.stringify(callText)}`);
+});
+
+test("a command() call following newtask-text.mjs's real SAFE_TEXT_RE trigger and CARRYING member_name is NOT falsely flagged (guard-level regression)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'regex-phantom-span-'));
+    try {
+        const fixturePath = path.join(dir, 'fixture.mjs');
+        fs.writeFileSync(fixturePath, [
+            "export const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/+[\\]-]+$/;",
+            '',
+            'function dispatch() {',
+            '    command(',
+            '        // reminder: keep this simple )',
+            '        { prompt: "hello", member_name: "akhil" }',
+            '    );',
+            '}',
+            '',
+        ].join('\n'));
+        const { violations } = checkPath(fixturePath);
+        assert.deepStrictEqual(
+            violations,
+            [],
+            `expected the compliant call after the regex trigger to report no violations, got: ${JSON.stringify(violations)}`
+        );
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 });
 
 // =============================================================================
