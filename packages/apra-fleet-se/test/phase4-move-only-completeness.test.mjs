@@ -1,468 +1,78 @@
-import { test, describe, before } from 'node:test';
+import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-// Namespace import on purpose, same reason phase0/phase1/vcs-auth give: a
-// STATIC named import of a symbol this suite is checking for would turn a
-// dropped re-export into a module-load SyntaxError that kills the whole file
-// before the assertion that names the missing symbol can run.
-import * as runner from '../fleet-sprint/runner.js';
-
-import {
-    discoverBase,
-    discoverSetA,
-    discoverSetB,
-    discoverSetC,
-    discoverIntersection,
-    probeFile,
-    classifyFailure,
-    corroborateAnchorDesync,
-    runTestFile,
-} from '../scripts/phase4-moveonly-probe.mjs';
-
 // =============================================================================
-// Phase 4 gate -- prove the runSprintCycle slice into fleet-sprint/phases/* +
-// sprint-state.mjs was move-only and left the runner.js facade complete.
+// What is left of the Phase 4 gate, and why.
 //
-// WHY THIS GATE IS SHAPED DIFFERENTLY FROM THE PHASE 1 AND PHASE 3 GATES.
+// This file used to carry a dynamic "move-only" probe: for every file that both
+// imported runner.js and was edited inside the Phase-4 commit range, it ran that
+// file's PRE-Phase-4 revision against the current HEAD tree and classified the
+// outcome (NEW / INTACT / FACADE_BREAK / ANCHOR_DESYNC / UNEXPLAINED), backed by
+// the machinery in scripts/phase4-moveonly-probe.mjs. Both are now deleted.
 //
-// The earlier phase gates prove facade completeness by enumerating a symbol
-// census and by re-running downstream suites. Phase 4 needed one more thing:
-// a decision procedure for the files that BOTH import runner.js AND were
-// edited somewhere in the Phase-4 commit range. Three successive attempts to
-// settle those files by hand-classifying diff hunks failed, because the
-// question "was this edit caused by Phase 4?" is not answerable from a hunk:
-// a long-lived branch carries unrelated already-reviewed work in the same
-// range, and reading intent out of commit subjects is not a gate.
+// The probe was a ONE-TIME migration gate. It answered "did slicing
+// runSprintCycle into fleet-sprint/phases/* + sprint-state.mjs leave the
+// runner.js facade complete?" -- a question about a commit range that is long
+// since settled and that no future edit can re-open. Its ongoing cost was not
+// one-time: it re-ran a superseded revision of every changed runner.js importer
+// on every `npm test`, so a comment-only edit to an unrelated operator script
+// under scripts/ was enough to turn the suite red, and a third of its runtime
+// went on re-running old revisions of tests that already pass at HEAD.
 //
-// The probe replaces that judgement with an experiment. For every file in the
-// intersection, its PRE-Phase-4 revision is run, unmodified, against the
-// CURRENT HEAD tree:
+// The GENERAL property the probe leaned on -- every direct importer of
+// fleet-sprint/runner.js resolves the named bindings it imports, the bin/ and
+// scripts/ entrypoints (which the dynamic probe skipped as unsafe to execute)
+// included -- is facade completeness, not Phase-4 history. That check lives in
+// section (2) of phase1-leaf-facade-completeness.test.mjs, which already ran the
+// identical static assertion over an identically-discovered importer set, and
+// which now also pins that those entrypoint classes stay inside the set it
+// checks. Nothing that survived the probe's deletion is unowned.
 //
-//   NEW            the file did not exist at BASE, so Phase 4 cannot have
-//                  broken it.
-//   INTACT         the old revision still passes. This is positive proof that
-//                  Phase 4 did not force the edit -- whatever else the commit
-//                  range did to this file was independent of the facade.
-//   FACADE_BREAK   the old revision fails with a module-resolution or
-//                  missing-export error. The facade is incomplete. GATE FAILS.
-//   ANCHOR_DESYNC  the old revision fails without a module-resolution error,
-//                  and the file's CURRENT committed revision (as it stands on
-//                  disk right now) PASSES against HEAD. Whatever tripped the
-//                  old assertion -- raw source text, line position, phase
-//                  sequence, a role's watchdog census, or similar -- was
-//                  superseded by a later, real edit to this same file, and
-//                  that supersession is proved by re-running the file, not by
-//                  reading its failure message.
-//   UNEXPLAINED    the old revision fails without a module-resolution error,
-//                  and the CURRENT committed revision ALSO fails against
-//                  HEAD. The failure survives past whatever legitimately
-//                  changed -- a live regression. Not admissible; GATE FAILS,
-//                  so an unrelated regression cannot hide behind the anchor
-//                  class.
-//
-// This subsumes the whole four-class scheme and needs no commit archaeology:
-// INTACT is strictly stronger evidence than a provenance argument, because it
-// is a command anyone can re-run, and ANCHOR_DESYNC must be positively
-// corroborated by a SECOND experiment (does the file's current revision
-// pass?), never by matching words in the old revision's failure text. An
-// earlier version of this gate decided ANCHOR_DESYNC vs UNEXPLAINED by
-// checking whether the failure text happened to mention "runner.js" --
-// apra-fleet-3swo.55 found that this let three files through as ANCHOR_DESYNC
-// purely because their assertions quoted runner.js, while a fourth file
-// failing for the exact same reason (a later, legitimate behaviour change)
-// was rejected as UNEXPLAINED only because its assertion named
-// role-policies.mjs instead. Whether a real, later behaviour change is
-// tolerated must not depend on incidental assertion wording.
-//
-// WHAT THIS GATE DELIBERATELY DOES NOT RE-RUN. phase1-leaf-facade-completeness
-// .test.mjs already spawns the full mock-sprint suite and both golden
-// transcript suites as nested children inside this same `npm test` run, and
-// phase3-dispatch-engine-completeness.test.mjs spawns the mock-sprint suite
-// again. A fourth copy would trebles this suite's wall clock for no added
-// signal. Sections (3) and (4) below assert that that coverage EXISTS and is
-// wired into the same suite, rather than duplicating it.
+// Section (4) below keeps its original number so it stays greppable against this
+// gate's history. It never probed anything. It used to also assert, from
+// phase1-leaf-facade-completeness.test.mjs's SOURCE TEXT, that the mock-sprint
+// suite was still spawned by that gate; that meta-check and the spawn it
+// described are both gone (apra-fleet-j918.3.1/.3.2), and the surviving
+// question -- how many nested mock-sprint runs this package has -- is owned by
+// test/nested-mock-sprint-run-census.test.mjs, which counts real spawn sites.
+// What remains here is what this gate can check first-hand: the golden
+// fixtures are tracked, clean, and well-formed.
 // =============================================================================
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SE_DIR = path.join(__dirname, '..');
 const REPO_ROOT = path.join(SE_DIR, '../..');
-const RUNNER_PATH = path.join(SE_DIR, 'fleet-sprint/runner.js');
+const __filename_self = fileURLToPath(import.meta.url);
 
-// Probing one file spawns one `node --test` child. The intersection is small
-// (a dozen files) and each child is a single test file, so the default budget
-// is generous; it is overridable for slower machines.
-const PROBE_BUDGET_MS = Number(process.env.PHASE4_PROBE_TIMEOUT_MS || 900000);
-
-describe('(0) the discovered sets are non-empty and are discovered, not hardcoded', () => {
-    let sets;
-    before(() => {
-        sets = { A: discoverSetA(), B: discoverSetB(), C: discoverSetC() };
-    });
-
-    // An empty discovery result is a defect in the discovery command, never a
-    // vacuously satisfied gate -- the whole gate is quantified over these sets.
-    test('set A (direct importers of fleet-sprint/runner.js) is non-empty', () => {
-        assert.ok(sets.A.length > 0, 'discovery command A returned no importers; treat as a broken command, not a passing gate');
-        console.log(`    set A (importers) = ${sets.A.length} files`);
-    });
-
-    test('set B (mock-sprint files under npm test) is non-empty', () => {
-        assert.ok(sets.B.length > 0, 'discovery command B returned no mock-sprint files');
-        console.log(`    set B (mock-sprint, flat) = ${sets.B.length} files`);
-    });
-
-    test('set C (mock-sprint files under npm run test:slow) is non-empty', () => {
-        assert.ok(sets.C.length > 0, 'discovery command C returned no slow mock-sprint files');
-        console.log(`    set C (mock-sprint, slow) = ${sets.C.length} files`);
-    });
-
-    test('BASE resolves to a commit and is an ancestor of HEAD', () => {
-        const base = discoverBase();
-        assert.match(base, /^[0-9a-f]{40}$/, `BASE should be a full SHA, got ${base}`);
-        const type = execFileSync('git', ['cat-file', '-t', base], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
-        assert.equal(type, 'commit');
-        execFileSync('git', ['merge-base', '--is-ancestor', base, 'HEAD'], { cwd: REPO_ROOT });
-        console.log(`    BASE (parent of the first Phase-4 commit) = ${base}`);
-    });
-});
-
-describe('(1) Phase 4 was move-only: no file in the intersection is a facade break', () => {
-    let base;
-    let intersection;
-    before(() => {
-        base = discoverBase();
-        intersection = discoverIntersection(base);
-    });
-
-    test('the intersection is measured, reported, and every file is classified', { timeout: PROBE_BUDGET_MS }, () => {
-        const results = intersection.map((file) => probeFile(base, file));
-        for (const r of results) console.log(`    [${r.klass}] ${path.relative(REPO_ROOT, path.join(REPO_ROOT, r.file))}`);
-
-        const disallowed = results.filter((r) => r.klass === 'FACADE_BREAK' || r.klass === 'UNEXPLAINED');
-        const detail = disallowed
-            .map((r) => `${r.file}\n  ${r.klass}: ${r.detail}\n${(r.output || '').slice(-2000)}`)
-            .join('\n\n');
-        assert.deepEqual(
-            disallowed.map((r) => `${r.klass} ${r.file}`),
-            [],
-            `Phase 4 is not move-only -- the pre-Phase-4 revision of these files no longer works against HEAD:\n${detail}`,
-        );
-
-        // Every file must land in exactly one known class; an unknown label
-        // would mean the classifier silently grew a hole.
-        const known = new Set(['NEW', 'INTACT', 'ANCHOR_DESYNC', 'BIN_ENTRYPOINT_SKIP']);
-        assert.deepEqual(results.filter((r) => !known.has(r.klass)).map((r) => r.file), []);
-    });
-
-    test('every ANCHOR_DESYNC file passes at its CURRENT revision', { timeout: PROBE_BUDGET_MS }, () => {
-        // An anchor desync is only benign if the file was actually re-anchored.
-        // A file that fails at BOTH revisions is a live regression, not a move.
-        const results = intersection.map((file) => probeFile(base, file));
-        const desynced = results.filter((r) => r.klass === 'ANCHOR_DESYNC');
-        const stillBroken = [];
-        for (const r of desynced) {
-            // runTestFile, not a bare execFileSync: it strips NODE_TEST_CONTEXT
-            // and corroborates exit status against the child's TAP summary.
-            const { ok } = runTestFile(path.join(REPO_ROOT, r.file), PROBE_BUDGET_MS);
-            if (!ok) stillBroken.push(r.file);
-        }
-        assert.deepEqual(stillBroken, [], 're-anchored files must pass at HEAD');
-    });
-});
-
-describe('(2) every direct importer of runner.js resolves the bindings it imports', () => {
-    // Static link-time check rather than a live import of each importer: at
-    // least one importer (scripts/dolt-settle-integration.mjs) calls main() at
-    // module-eval time with live side effects. A named-import resolution
-    // failure is an ECMAScript link-time fact, so checking that every imported
-    // binding name exists on runner.js's export surface proves the same thing
-    // without executing anything. Same rationale and same regexes as
-    // phase1-leaf-facade-completeness.test.mjs section (2).
-    const STATIC_IMPORT_RE = /import\s*(\*\s*as\s+[A-Za-z_$][\w$]*|\{[^}]*\})\s*from\s*(['"])([^'"]*)\2/g;
-    const DYNAMIC_IMPORT_RE = /(?:const|let)\s*\{([^}]*)\}\s*=\s*await\s+import\(\s*(['"])([^'"]*)\2\s*\)/g;
-    const RUNNER_SPEC_RE = /fleet-sprint\/runner\.js$/;
-
-    function parseNamedClause(clause) {
-        return clause.trim().replace(/^\{/, '').replace(/\}$/, '')
-            .split(',').map((s) => s.trim()).filter(Boolean)
-            .map((part) => {
-                const asMatch = part.match(/^([A-Za-z_$][\w$]*)\s+as\s+[A-Za-z_$][\w$]*$/);
-                return asMatch ? asMatch[1] : part;
-            });
-    }
-
-    function importedBindings() {
-        const importers = new Map();
-        for (const rel of discoverSetA()) {
-            const abs = path.join(REPO_ROOT, rel);
-            if (path.resolve(abs) === path.resolve(RUNNER_PATH)) continue;
-            if (!fs.existsSync(abs)) continue;
-            const src = fs.readFileSync(abs, 'utf8');
-            for (const re of [STATIC_IMPORT_RE, DYNAMIC_IMPORT_RE]) {
-                re.lastIndex = 0;
-                let m;
-                while ((m = re.exec(src))) {
-                    const spec = re === STATIC_IMPORT_RE ? m[3] : m[3];
-                    if (!RUNNER_SPEC_RE.test(spec)) continue;
-                    const clause = re === STATIC_IMPORT_RE ? m[1].trim() : m[1];
-                    const names = clause.startsWith('*') ? [] : parseNamedClause(clause);
-                    if (!importers.has(rel)) importers.set(rel, []);
-                    importers.get(rel).push(...names);
-                }
-            }
-        }
-        return importers;
-    }
-
-    test('every named binding every importer takes from runner.js exists on its export surface', () => {
-        const exportSet = new Set(Object.keys(runner));
-        const problems = [];
-        for (const [file, names] of importedBindings()) {
-            for (const name of names) {
-                if (!exportSet.has(name)) problems.push(`${file}: imports '${name}', which runner.js does not export`);
-            }
-        }
-        assert.deepEqual(problems, [], `unresolved import(s):\n${problems.join('\n')}`);
-    });
-});
-
-describe('(3) falsification -- the gate is not vacuous', () => {
-    test('classifyFailure calls a missing-export failure a FACADE_BREAK, not an anchor desync', () => {
-        const missingExport = "SyntaxError: The requested module '../fleet-sprint/runner.js' does not provide an export named 'someSymbol'";
-        assert.equal(classifyFailure(missingExport).klass, 'FACADE_BREAK');
-        assert.equal(classifyFailure('Error [ERR_MODULE_NOT_FOUND]: Cannot find module ...').klass, 'FACADE_BREAK');
-        // The facade-side signature, distinct from the consumer-side one above.
-        assert.equal(
-            classifyFailure("SyntaxError: Export 'KB_SELF_INJECTING_ROLES' is not defined in module").klass,
-            'FACADE_BREAK',
-        );
-    });
-
-    test('classifyFailure no longer decides ANCHOR_DESYNC by matching words in the failure text', () => {
-        // Before apra-fleet-3swo.55, this classifier admitted ANY failure that
-        // merely mentioned "runner.js" as ANCHOR_DESYNC -- which is exactly the
-        // bug: whether a later, legitimate behaviour change is tolerated must
-        // not depend on incidental assertion wording. classifyFailure now only
-        // ever returns FACADE_BREAK or UNEXPLAINED; the ANCHOR_DESYNC decision
-        // is made by corroborateAnchorDesync() (below), which re-runs the
-        // file's CURRENT revision instead of reading its failure text.
-        assert.equal(classifyFailure('AssertionError: expected 2 to equal 3').klass, 'UNEXPLAINED');
-        assert.equal(
-            classifyFailure("AssertionError: expected to find the marker in runner.js").klass,
-            'UNEXPLAINED',
-        );
-    });
-
-    test('corroborateAnchorDesync decides ANCHOR_DESYNC vs UNEXPLAINED by re-running the CURRENT revision, not by reading the OLD failure text', { timeout: PROBE_BUDGET_MS }, () => {
-        const passingAbs = path.join(SE_DIR, 'test', '.phase4-corroborate-passing.test.mjs');
-        const failingAbs = path.join(SE_DIR, 'test', '.phase4-corroborate-failing.test.mjs');
-        const passingRel = path.relative(REPO_ROOT, passingAbs);
-        const failingRel = path.relative(REPO_ROOT, failingAbs);
-        fs.writeFileSync(passingAbs, "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('passes', () => assert.equal(1, 1));\n");
-        fs.writeFileSync(failingAbs, "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fails, and mentions nothing about runner.js or a Phase-4 module', () => assert.equal(1, 2));\n");
-        try {
-            assert.equal(
-                corroborateAnchorDesync(passingRel, PROBE_BUDGET_MS).klass,
-                'ANCHOR_DESYNC',
-                'a CURRENT revision that passes against HEAD must be admitted as an anchor desync regardless of wording',
-            );
-            assert.equal(
-                corroborateAnchorDesync(failingRel, PROBE_BUDGET_MS).klass,
-                'UNEXPLAINED',
-                'a CURRENT revision that ALSO fails must stay UNEXPLAINED -- a live regression cannot hide behind the anchor class',
-            );
-        } finally {
-            fs.rmSync(passingAbs, { force: true });
-            fs.rmSync(failingAbs, { force: true });
-        }
-    });
-
-    test('regression pin: planning-role-dispatch-pins.test.mjs (the exact file apra-fleet-3swo.55 was filed about) never classifies UNEXPLAINED', { timeout: PROBE_BUDGET_MS }, () => {
-        // apra-fleet-3swo.55: at HEAD 99088ec7, the watchdog-arming commit
-        // 99e0ece0 made this file's pre-Phase-4 revision fail for the same
-        // reason as three OTHER files that were admitted as ANCHOR_DESYNC
-        // (role-policies-table.test.mjs, execution-role-dispatch-pins.test.mjs,
-        // vcs-auth-preflight.test.mjs) -- but this one was rejected as
-        // UNEXPLAINED, purely because its assertion named role-policies.mjs
-        // instead of runner.js. This pin originally proved the fix by
-        // asserting ANCHOR_DESYNC: the same file, probed the same way, was
-        // admitted because its CURRENT revision passes.
-        //
-        // PR #469 (feat/runner-refactor-standalone) was SQUASH-merged onto
-        // main as a single commit (16cf4a2d), with its source branch deleted
-        // per this repo's merge convention. discoverBase() walks HEAD's own
-        // linear history for the first commit that added fleet-sprint/phases
-        // or sprint-state.mjs -- on the pre-squash feature branch that found
-        // a commit partway through the epic, so planning-role-dispatch-pins
-        // .test.mjs (which predated that commit on the branch) existed at
-        // BASE and could desync. Post-squash, the ENTIRE epic is one commit,
-        // so that same discovery now finds the squash commit itself, and
-        // BASE becomes its parent -- the pre-epic state on main. This file
-        // was created during the epic, so it genuinely does not exist at
-        // that BASE: NEW is the correct, honest classification per this
-        // probe's own contract ("the file did not exist at BASE, so Phase 4
-        // cannot have broken it"), not a misclassification to fix. The
-        // pre-squash incremental history that let this pin observe
-        // ANCHOR_DESYNC directly is gone for good (branch deleted); the
-        // ANCHOR_DESYNC-vs-UNEXPLAINED wording-independence this pin was
-        // guarding stays covered by the synthetic
-        // corroborateAnchorDesync() fixture test directly above. This pin
-        // now only needs to keep rejecting the one class that would mean a
-        // live regression: UNEXPLAINED (and FACADE_BREAK, which would mean
-        // the facade itself broke).
-        const base = discoverBase();
-        // Normalized to forward slashes (same idiom as the probe's own
-        // PKG_REL): this path is handed to probeFile -> existsAtBase, which
-        // spells it into a `git cat-file -e <base>:<path>` pathspec. git
-        // pathspecs are always '/'-separated, so on Windows a raw
-        // path.relative() result ('packages\...') misses at BASE and the file
-        // is misclassified NEW instead of its true class.
-        const repoRelPath = path.relative(REPO_ROOT, path.join(SE_DIR, 'test/planning-role-dispatch-pins.test.mjs'))
-            .split(path.sep).join('/');
-        const result = probeFile(base, repoRelPath, PROBE_BUDGET_MS);
-        assert.ok(
-            ['NEW', 'ANCHOR_DESYNC'].includes(result.klass),
-            `expected NEW or ANCHOR_DESYNC, got ${result.klass}: ${result.detail}`,
-        );
-    });
-
-    test('the probe strips NODE_TEST_CONTEXT, or every classification would be a vacuous INTACT', () => {
-        // Found the hard way: this gate initially reported all 12 files INTACT
-        // when run under `node --test` and a mix of INTACT/ANCHOR_DESYNC when
-        // run standalone. The cause was an inherited NODE_TEST_CONTEXT putting
-        // each probe child into child-process-reporter mode, where exit status
-        // stops reflecting the child's own result. A gate that passes because
-        // it cannot observe failure is worse than no gate.
-        const src = fs.readFileSync(path.join(SE_DIR, 'scripts/phase4-moveonly-probe.mjs'), 'utf8');
-        assert.match(src, /delete env\.NODE_TEST_CONTEXT/, 'the probe must strip NODE_TEST_CONTEXT from its children');
-        assert.match(src, /delete env\.UPDATE_GOLDEN/, 'the probe must strip UPDATE_GOLDEN from its children');
-        assert.match(src, /# fail \(\\d\+\)/, 'the probe must corroborate exit status against the child TAP summary');
-    });
-
-    test('the probe observes a real failure: a knowingly-broken file is never classified INTACT', { timeout: PROBE_BUDGET_MS }, () => {
-        // End-to-end proof that the vacuity bug above cannot silently return.
-        // A file that asserts false must never come back INTACT, whether this
-        // suite is run standalone or nested inside `node --test`.
-        const probeDir = path.join(SE_DIR, 'test');
-        const canary = path.join(probeDir, '.phase4-canary-check.test.mjs');
-        fs.writeFileSync(canary, "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('canary', () => assert.equal(1, 2));\n");
-        try {
-            const child = execFileSync(process.execPath, ['-e', `
-                const { spawnSync } = require('child_process');
-                const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
-                const r = spawnSync(process.execPath, ['--test', ${JSON.stringify(canary)}], { encoding: 'utf8', env });
-                console.log(JSON.stringify({ status: r.status }));
-            `, ], { cwd: SE_DIR, encoding: 'utf8', timeout: PROBE_BUDGET_MS });
-            const { status } = JSON.parse(child.trim().split('\n').pop());
-            assert.notEqual(status, 0, 'a failing test file must produce a non-zero exit once NODE_TEST_CONTEXT is stripped');
-        } finally {
-            fs.rmSync(canary, { force: true });
-        }
-    });
-
-    test('bin/ entrypoints are excluded from the dynamic probe before any git or execution work happens', () => {
-        // apra-fleet-hzeb.9: a self-executing CLI launcher (bin/cli.mjs,
-        // bin/serve.mjs) runs its own main() for real when the probe copies
-        // it and runs `node --test` on the copy, because process.argv[1]
-        // resolves to the probe copy's own module URL -- the same shape a
-        // direct CLI launch has. apra-fleet-hzeb.4.2 patched cli.mjs's own
-        // isMainModule() to opt out via a NODE_TEST_CONTEXT check, but that
-        // fix is per-file: any OTHER bin/ entrypoint that lacks the same
-        // guard (bin/serve.mjs today; any future one) would still trip a
-        // false-positive UNEXPLAINED/FACADE_BREAK the moment it entered the
-        // Phase-4 diff intersection. probeFile must recognize the bin/
-        // shape generically and skip dynamic execution for it, independent
-        // of whether that particular file happens to carry a guard.
-        //
-        // Passing a BASE sha that does not resolve and a file that does not
-        // exist on disk proves the bin/ check runs BEFORE existsAtBase's
-        // `git cat-file` call and before any `node --test` spawn -- if it
-        // ran later, this call would throw or hang instead of returning
-        // cleanly.
-        const result = probeFile('0000000000000000000000000000000000000000', 'packages/apra-fleet-se/bin/does-not-exist-anywhere.mjs');
-        assert.equal(result.klass, 'BIN_ENTRYPOINT_SKIP', `expected BIN_ENTRYPOINT_SKIP, got ${result.klass}: ${result.detail}`);
-    });
-
-    test('regression pin: bin/serve.mjs -- a real self-executing entrypoint with no NODE_TEST_CONTEXT guard of its own -- is skipped, not misclassified UNEXPLAINED', { timeout: PROBE_BUDGET_MS }, () => {
-        // The concrete proof that the hzeb.9 hardening is generic and not
-        // merely a restatement of cli.mjs's own hzeb.4.2 fix: bin/serve.mjs
-        // has the identical isMainModule()-at-module-scope shape as cli.mjs
-        // did before hzeb.4.2, but has never been patched with a
-        // NODE_TEST_CONTEXT guard. If probeFile ever executed it, an
-        // unqualified `node --test` run would self-invoke serve.mjs's own
-        // main() and this pin would need to account for whatever that
-        // produces; instead it must never reach execution at all.
-        const src = fs.readFileSync(path.join(SE_DIR, 'bin/serve.mjs'), 'utf8');
-        assert.doesNotMatch(src, /NODE_TEST_CONTEXT/, 'this pin assumes bin/serve.mjs has no probe-awareness guard of its own; re-anchor if one was added');
-        const base = discoverBase();
-        const result = probeFile(base, 'packages/apra-fleet-se/bin/serve.mjs', PROBE_BUDGET_MS);
-        assert.equal(result.klass, 'BIN_ENTRYPOINT_SKIP', `expected BIN_ENTRYPOINT_SKIP, got ${result.klass}: ${result.detail}`);
-    });
-
-    test('dropping one facade re-export really does produce a FACADE_BREAK classification end to end, and the tracked tree is untouched', { timeout: PROBE_BUDGET_MS }, () => {
-        // A real end-to-end falsification, not a string-manipulation stand-in:
-        // build a SANDBOX copy of fleet-sprint/ with exactly one re-export
-        // removed, point a consumer at it, run that consumer the same way the
-        // probe runs its children, and assert the resulting output classifies
-        // as FACADE_BREAK. The tracked tree is never written to; phase1's
-        // falsification uses the same sandbox discipline.
-        const before = fs.readFileSync(RUNNER_PATH);
-        const src = before.toString('utf8');
-        const line = src.split('\n').find((l) => /^\s*createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,/.test(l));
-        assert.ok(line, 'expected the kb re-export line to still exist; re-anchor this falsification if the facade was reshaped');
-
-        const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'phase4-falsify-'));
-        try {
-            fs.cpSync(path.join(SE_DIR, 'fleet-sprint'), path.join(sandbox, 'fleet-sprint'), { recursive: true });
-            // node_modules is reached by symlink so the sandbox module graph
-            // resolves the same dependencies as the real tree.
-            try {
-                fs.symlinkSync(path.join(SE_DIR, 'node_modules'), path.join(sandbox, 'node_modules'), 'junction');
-            } catch { /* already present, or unsupported -- the import below will say so */ }
-
-            const sandboxRunner = path.join(sandbox, 'fleet-sprint/runner.js');
-            const broken = src.replace(line, line.replace('KB_SELF_INJECTING_ROLES, ', ''));
-            assert.notEqual(broken, src, 'the falsification must actually change the source');
-            fs.writeFileSync(sandboxRunner, broken);
-
-            const consumer = path.join(sandbox, 'consumer.test.mjs');
-            fs.writeFileSync(consumer, [
-                "import test from 'node:test';",
-                "import { KB_SELF_INJECTING_ROLES } from './fleet-sprint/runner.js';",
-                "test('links', () => { if (!KB_SELF_INJECTING_ROLES) throw new Error('missing'); });",
-                '',
-            ].join('\n'));
-
-            const { ok, output } = runTestFile(consumer, PROBE_BUDGET_MS);
-            assert.equal(ok, false, 'a consumer of a dropped re-export must not pass');
-            assert.equal(
-                classifyFailure(output).klass,
-                'FACADE_BREAK',
-                `expected a FACADE_BREAK classification, got:\n${output.slice(-2000)}`,
-            );
-        } finally {
-            fs.rmSync(sandbox, { recursive: true, force: true });
-        }
-        assert.deepEqual(fs.readFileSync(RUNNER_PATH), before, 'the tracked runner.js must be byte-identical after the falsification');
-    });
-});
+// apra-fleet-wzmv.2: capture the wall-clock the instant this module starts
+// evaluating, so a final test below can assert a CONCRETE ceiling on this
+// file's own total runtime rather than merely recording a number. Reference
+// point: the trimmed 79-line gate (no probe left, no bd interaction at all)
+// measures ~130ms standalone under both mock and real bd. DURATION_BUDGET_MS
+// leaves roughly 20x headroom over that measurement while still failing
+// loudly if a spawning probe is ever reintroduced -- a single `node --test`
+// child process costs at least several hundred ms of interpreter startup
+// alone, and the deleted probe (scripts/phase4-moveonly-probe.mjs) used to
+// spawn one such child per changed runner.js importer (65+ candidates), so
+// even ONE reintroduced spawn blows well past this budget.
+const FILE_START_MS = Date.now();
+const DURATION_BUDGET_MS = 3000;
 
 describe('(4) the downstream suites this gate relies on are wired into the same run', () => {
-    // Rather than spawning the mock-sprint and golden-transcript suites a
-    // fourth time (see the header), assert the existing gates that already do.
-    const PHASE1 = path.join(SE_DIR, 'test/phase1-leaf-facade-completeness.test.mjs');
-
-    test('phase1 gate still spawns the mock-sprint suite and both golden transcripts', () => {
-        const src = fs.readFileSync(PHASE1, 'utf8');
-        assert.match(src, /mock-sprint/, 'phase1 gate no longer covers the mock-sprint suite -- Phase 4 must take that coverage over');
-        assert.match(src, /golden-transcript\.test\.mjs/);
-        assert.match(src, /golden-transcript-3bead\.test\.mjs/);
-    });
+    // apra-fleet-j918.3.1 deleted the meta-check that used to live here -- it
+    // read phase1-leaf-facade-completeness.test.mjs's SOURCE TEXT to assert
+    // that phase1 still spawned the mock-sprint suite. apra-fleet-j918.3.2
+    // then deleted the spawn it was asserting about. Neither the check nor the
+    // file handle it needed survives; test/nested-mock-sprint-run-census
+    // .test.mjs now owns the "how many nested mock-sprint runs exist" question
+    // by counting real spawn sites instead of reading one gate's prose.
+    //
+    // What is left below asserts only what this gate can check first-hand: the
+    // golden fixtures it depends on are tracked, clean, and well-formed.
 
     test('both golden transcript fixtures are tracked and clean', () => {
         const fixtures = path.join(SE_DIR, 'test/fixtures/golden-transcript');
@@ -484,5 +94,44 @@ describe('(4) the downstream suites this gate relies on are wired into the same 
         const lines = fs.readFileSync(happy, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
         assert.ok(lines.length > 0);
         assert.deepEqual(lines.map((l) => l.seq), lines.map((_, i) => i), 'the transcript must be a dense ordered sequence');
+    });
+});
+
+// =============================================================================
+// (5) REINTRODUCTION GUARD (apra-fleet-wzmv.2): this gate's whole raison
+// d'etre now is proving the deleted move-only probe (scripts/phase4-
+// moveonly-probe.mjs) stays deleted. Nothing above would catch it coming
+// back -- both tests below are the tripwire.
+// =============================================================================
+describe('(5) reintroduction guard: this gate must never regain a per-revision probe', () => {
+    test('this file spawns no child process other than `git` (no node --test probe of another revision)', () => {
+        // Static self-scan, not a runtime spy: the probe pattern is "spawn
+        // node --test over some OTHER revision of a changed file", and the
+        // only child process this gate is allowed to launch is the `git
+        // status` calls above (against the golden-fixture directory). Any
+        // OTHER spawn target appearing in this file's own source is exactly
+        // the reintroduced pattern.
+        const ownSource = fs.readFileSync(__filename_self, 'utf8');
+        const spawnCalls = [...ownSource.matchAll(/\b(?:execFileSync|execSync|spawnSync|spawn|execFile|fork)\(\s*([^,)]+)/g)];
+        assert.ok(spawnCalls.length > 0, 'sanity check failed: expected to find at least the `git status` calls above -- the scan pattern itself is broken');
+        const offenders = spawnCalls
+            .map(([, arg]) => arg.trim())
+            .filter((arg) => !/^['"]git['"]$/.test(arg));
+        assert.deepEqual(
+            offenders,
+            [],
+            `this gate may only ever spawn \`git\`; found (a) spawn call target(s) of: ${offenders.join(', ')} -- `
+            + 'that is the reintroduced per-revision move-only probe pattern (scripts/phase4-moveonly-probe.mjs, deleted apra-fleet-j918.2.3).',
+        );
+    });
+
+    test('this file completes within its stated time budget (no reintroduced probe subprocess ballooning runtime)', () => {
+        const elapsedMs = Date.now() - FILE_START_MS;
+        assert.ok(
+            elapsedMs < DURATION_BUDGET_MS,
+            `this file took ${elapsedMs}ms, at or over its ${DURATION_BUDGET_MS}ms budget -- `
+            + 'the trimmed gate (no probe, no bd interaction) measures ~130ms standalone; a duration '
+            + 'anywhere near this budget means a subprocess (node --test over another revision) crept back in.',
+        );
     });
 });

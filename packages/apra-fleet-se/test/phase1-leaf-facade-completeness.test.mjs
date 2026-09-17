@@ -29,6 +29,14 @@ import {
     extractFailingTapEntries,
     MAX_NESTED_SUITE_FAILURE_EXCERPT_CHARS,
 } from './helpers/nested-suite-spawn.mjs';
+// apra-fleet-j918.7.1: the six handler unit cases this file shares verbatim
+// with phase3-dispatch-engine-completeness.test.mjs now live in one
+// table-driven factory, instantiated below with this gate's own tuple.
+import { describeHandleNestedSuiteSpawnResultCases } from './helpers/nested-suite-spawn-cases.mjs';
+// apra-fleet-x0mr.1: the bd-mock-shim contract's own backend reading, used to
+// pick this gate's nested-suite budget. Imported rather than re-derived from
+// APRA_FLEET_BD_MOCK so a change to the spelling set cannot desynchronize.
+import { bdMode } from './helpers/bd-replay.mjs';
 
 // =============================================================================
 // apra-fleet-3swo.3.7 -- prove Phase 1's leaf extractions (sprint-args.mjs
@@ -49,51 +57,158 @@ const SPRINT_ARGS_PATH = path.join(SE_DIR, 'fleet-sprint/sprint-args.mjs');
 const GOLDEN_FIXTURE_DIR = path.join(__dirname, 'fixtures', 'golden-transcript');
 
 // -----------------------------------------------------------------------------
-// apra-fleet-3yuu.1: shared, env-overridable nested-suite spawn budget.
+// apra-fleet-3yuu.1 / apra-fleet-x0mr.1: shared, BACKEND-AWARE, env-overridable
+// nested-suite spawn budget.
 //
-// Both describe (3) (golden-transcript) and describe (4) (mock-sprint) below
-// spawn a nested `node --test` child via execFileSync and used to hard-code
-// their own timeout literal (60 seconds / 120 seconds respectively). Under a real
-// bd/dolt-backed run those budgets are roughly an order of magnitude short --
-// golden-transcript.test.mjs alone took 562s standalone in the failing run
-// this bead fixes (apra-fleet-3yuu) -- so both now derive from ONE named
-// constant, overridable by a single env var, defaulting well above that
-// observed runtime. Raising the default further (or overriding per-run) is
-// the correct fix if a real, slower backend needs more headroom; if the
-// raised budget still times out, that is a genuine signal for the separate
-// bd+dolt per-dispatch latency work, not a reason to raise this further.
+// describe (3) below spawns the two golden-transcript suites as a nested
+// `node --test` child via execFileSync. It used to hard-code a 60s literal
+// (apra-fleet-3yuu.1 replaced that with the flat 900_000ms constant below),
+// and 900_000ms is a fine budget for the MOCK (replay) bd backend -- the
+// nested child finishes in seconds there. It is not a fine budget for the
+// real-bd suite: that run failed with "nested suite 'golden-transcript'
+// exceeded its 900000ms budget" with no override set (apra-fleet-x0mr), the
+// enclosing file taking 1811676ms overall. golden-transcript.test.mjs alone
+// took 562s standalone under real bd when apra-fleet-3yuu was written, and
+// that figure predates both the second golden file joining this nested run
+// and the outer suite's concurrency contention.
+//
+// apra-fleet-x0mr.1 DECISION -- option (a), derive/expose the budget, chosen
+// over option (b), deleting this nested run as a duplicate of phase3's:
+//   - Option (b) would have left this file with NO nested spawn at all, which
+//     makes runNestedSuite() below dead code and turns sections (6)/(6d) --
+//     the handler-and-budget gates whose phase1 tuple apra-fleet-j918.7.1 had
+//     just been required to keep covered -- into tests of machinery this file
+//     no longer uses. Deleting a duplicate must not cost a live gate its
+//     subject.
+//   - Option (a) fixes the actual reported failure (a budget calibrated for
+//     one backend applied to another) at its cause, and does so with the
+//     mechanism phase3-dispatch-engine-completeness.test.mjs already proved
+//     out for exactly this problem: resolve from bdMode() rather than from a
+//     flat constant.
+// The cost accepted: under real bd the golden pair is still spawned here as
+// well as by phase3 section (7). That duplication is real, but it is a
+// wall-clock cost, not a correctness one, and it is the subject of its own
+// consolidation work -- not something to smuggle in under a budget fix.
+//
+// NOT scaledTimeout(), deliberately: test/helpers/scaled-timeout.mjs reads
+// APRA_FLEET_TEST_CONCURRENCY, which only scripts/run-tests.mjs exports. The
+// package.json test script passes --test-concurrency=8 WITHOUT it, so every
+// scaledTimeout caller silently runs on its unscaled base budget under the
+// very command CI runs. bdMode() has no such gap: it reads
+// APRA_FLEET_BD_MOCK, which is set by whoever selects the backend and is
+// therefore identical under `npm test`, under scripts/run-tests.mjs, and
+// under scripts/run-integ-suites.mjs. Section (6d) pins that equivalence.
+//
+// This constant used to also budget a second nested spawn, describe (4)'s
+// full mock-sprint suite run; that run was deleted in apra-fleet-j918.3.2 as
+// a duplicate of phase3-dispatch-engine-completeness.test.mjs's stronger
+// copy (which derives its own, separate budget), leaving describe (3) as the
+// sole consumer of this constant.
 //
 // Override: set PHASE1_NESTED_SUITE_TIMEOUT_MS (milliseconds) in the
-// environment to use a different budget for both nested spawns below.
+// environment to use a different budget for the nested spawn below. It wins
+// on EITHER backend -- it is the escape hatch the timeout message itself
+// tells the reader to reach for.
 // -----------------------------------------------------------------------------
 const DEFAULT_NESTED_SUITE_TIMEOUT_MS = 900_000;
 
-function resolveNestedSuiteTimeoutMs() {
-    const raw = process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
-    if (raw === undefined || raw === '') return DEFAULT_NESTED_SUITE_TIMEOUT_MS;
-    const parsed = Number(raw);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new Error(`PHASE1_NESTED_SUITE_TIMEOUT_MS must be a positive number of milliseconds, got: ${JSON.stringify(raw)}`);
+// The nested child's file list, declared ONCE and used both as the spawn argv
+// and as the file count the real-bd budget derives from, so the two can never
+// disagree: adding a third golden file here raises the budget with it, and a
+// renamed/deleted file trips the existence check below instead of silently
+// shrinking the nested run to something that still exits 0.
+const NESTED_GOLDEN_SUITE_FILES = [
+    'test/golden-transcript.test.mjs',
+    'test/golden-transcript-3bead.test.mjs',
+];
+for (const rel of NESTED_GOLDEN_SUITE_FILES) {
+    if (!fs.existsSync(path.join(SE_DIR, rel))) {
+        throw new Error(
+            `phase1 nested golden-transcript run names ${rel}, which does not exist. A nested child given a ` +
+            'missing file runs nothing and exits 0, which would read as a pass -- fix the list rather than ' +
+            'letting this gate go vacuous.',
+        );
     }
-    return parsed;
 }
 
-const NESTED_SUITE_TIMEOUT_MS = resolveNestedSuiteTimeoutMs();
+// -----------------------------------------------------------------------------
+// REAL-BD BUDGET DERIVATION (apra-fleet-x0mr.1), stated as factors a reader
+// can re-multiply rather than as one opaque literal:
+//   ASSUMED_REAL_BD_GOLDEN_PER_FILE_MS (900_000 -- 15 min/file, above the 562s
+//     apra-fleet-3yuu measured for golden-transcript.test.mjs standalone under
+//     real bd, with room for the outer suite's concurrency contention)
+//   x NESTED_GOLDEN_SUITE_FILES.length (2 as written, read live from the list
+//     above; the nested child does NOT cap its own concurrency, so treating
+//     the files as serial is the conservative direction)
+//   x REAL_BD_HEADROOM_FACTOR (2, for run-to-run variance -- the same factor
+//     phase3's derivation uses)
+// = 900_000 x 2 x 2 = 3_600_000ms (1h) at the 2-file count in force here.
+//
+// Sanity-check against the failure this fixes: the whole phase1 file took
+// 1811676ms (~30min) in that run WITH a second nested spawn also running, so
+// 1h is comfortably above the worst observed cost of the run it must cover,
+// while still small enough to bind -- a genuine hang is caught within the
+// hour rather than sitting until the outer harness gives up.
+//
+// CEILING, for the same reason phase3 has one (apra-fleet-3swo.51): the
+// derivation scales linearly with the file count, and a budget larger than
+// the suite it lives in can never bind, silently retiring all hang detection
+// on the real-bd path. 2h is ~2x the derived value at the current count, so
+// the ceiling only bites if that count grows past 4 files.
+// -----------------------------------------------------------------------------
+const ASSUMED_REAL_BD_GOLDEN_PER_FILE_MS = 900_000;
+const REAL_BD_HEADROOM_FACTOR = 2;
+const REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS = 2 * 60 * 60 * 1000; // 7_200_000ms
+const REAL_BD_NESTED_SUITE_TIMEOUT_MS = Math.min(
+    Math.ceil(ASSUMED_REAL_BD_GOLDEN_PER_FILE_MS * NESTED_GOLDEN_SUITE_FILES.length * REAL_BD_HEADROOM_FACTOR),
+    REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS,
+);
 
-// -----------------------------------------------------------------------------
-// apra-fleet-3swo.53: this gate's own name/wording for the shared
-// handleNestedSuiteSpawnResult helper imported above.
-// -----------------------------------------------------------------------------
 const PHASE1_ENV_VAR_NAME = 'PHASE1_NESTED_SUITE_TIMEOUT_MS';
 const PHASE1_TIMEOUT_EXTRA_GUIDANCE =
     'or investigate a real hang -- this is not the per-dispatch bd+dolt latency work tracked separately.';
 
-/** Human-readable description of where NESTED_SUITE_TIMEOUT_MS came from, matching this gate's env override vs default. */
-function resolvePhase1BudgetSource() {
+/**
+ * Resolves this gate's nested-suite timeout budget and a human-readable
+ * description of where it came from. PHASE1_NESTED_SUITE_TIMEOUT_MS, when
+ * set, is the highest-precedence value on either backend; otherwise the
+ * budget follows the bd backend actually in force for this process (and so
+ * for the nested child, which inherits the environment). The backend reading
+ * comes from bdMode() in test/helpers/bd-replay.mjs -- the bd-mock-shim
+ * contract's own source -- rather than being re-derived from
+ * APRA_FLEET_BD_MOCK here.
+ */
+function resolveNestedSuiteTimeoutBudget() {
     const raw = process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
-    return raw
-        ? `${PHASE1_ENV_VAR_NAME}=${raw}`
-        : `the default (no ${PHASE1_ENV_VAR_NAME} override set)`;
+    if (raw !== undefined && raw !== '') {
+        const parsed = Number(raw);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+            throw new Error(`PHASE1_NESTED_SUITE_TIMEOUT_MS must be a positive number of milliseconds, got: ${JSON.stringify(raw)}`);
+        }
+        return { ms: parsed, source: `${PHASE1_ENV_VAR_NAME}=${raw}` };
+    }
+    const mode = bdMode();
+    if (mode === 'replay') {
+        return {
+            ms: DEFAULT_NESTED_SUITE_TIMEOUT_MS,
+            source: `the mock-bd default (backend=${mode}, no ${PHASE1_ENV_VAR_NAME} override set)`,
+        };
+    }
+    return {
+        ms: REAL_BD_NESTED_SUITE_TIMEOUT_MS,
+        source: `the real-bd default (backend=${mode}, no ${PHASE1_ENV_VAR_NAME} override set)`,
+    };
+}
+
+function resolveNestedSuiteTimeoutMs() {
+    return resolveNestedSuiteTimeoutBudget().ms;
+}
+
+const NESTED_SUITE_TIMEOUT_MS = resolveNestedSuiteTimeoutMs();
+
+/** Human-readable description of where NESTED_SUITE_TIMEOUT_MS came from. */
+function resolvePhase1BudgetSource() {
+    return resolveNestedSuiteTimeoutBudget().source;
 }
 
 /**
@@ -274,6 +389,25 @@ describe('(1) runner.js re-exports every symbol it exported before the Phase 1 l
 // binding names must exist on the runner.js export surface -- which proves
 // the identical fact ("no resolution error") without executing any
 // importer's top-level code.
+//
+// THIS SECTION IS NOW THE SINGLE HOME OF THAT CHECK. The Phase-4 gate carried a
+// byte-for-byte equivalent copy (section (2) of
+// phase4-move-only-completeness.test.mjs): same two import regexes, same
+// named-clause parser, same "every imported binding exists on runner.js's export
+// surface" assertion, differing only in how it discovered importers (a git-grep
+// of tracked files under this package, versus the disk walk below). The two
+// discovery routes were measured against each other before the duplicate was
+// deleted and returned the SAME 84 importers, with the walk strictly broader in
+// principle (it also sees untracked and .ts files). The copy went with the rest
+// of the Phase-4 move-only probe; the coverage did not move, because it was
+// already here.
+//
+// The deleted dynamic probe had excluded bin/ and scripts/ entrypoints from
+// execution (they self-invoke main() when loaded under `node --test`) and named
+// THIS static check as the thing that covered them instead. Nothing else does,
+// so the entrypoint-coverage test below pins that they stay in the checked set:
+// a future narrowing of findImporters() that quietly dropped those directories
+// would otherwise take the entrypoints' only facade proof with it, silently.
 // -----------------------------------------------------------------------------
 describe('(2) every direct importer of fleet-sprint/runner.js resolves the bindings it imports', () => {
     const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.gitnexus', 'build']);
@@ -359,6 +493,36 @@ describe('(2) every direct importer of fleet-sprint/runner.js resolves the bindi
         }
         assert.deepEqual(problems, [], `unresolved import(s) found:\n${problems.join('\n')}`);
     });
+
+    // The entrypoint classes are the ones with no other facade proof: they are
+    // never run by the package's `test/*.test.mjs` glob, and the Phase-4 dynamic
+    // probe that used to exist explicitly skipped executing them (they
+    // self-invoke main() when loaded under `node --test`) on the stated grounds
+    // that this static check covered them. Assert they are actually in the set,
+    // and that they actually contribute named bindings to it -- a set that
+    // contained them but took zero bindings from them would satisfy the
+    // resolution test above vacuously.
+    test('the checked set includes the bin/ and scripts/ entrypoint importers, which nothing else covers', () => {
+        const byRel = new Map(
+            [...findImporters()].map(([file, names]) => [path.relative(SE_DIR, file).split(path.sep).join('/'), names]),
+        );
+        const inDir = (prefix) => [...byRel.keys()].filter((f) => f.startsWith(`${prefix}/`));
+        for (const prefix of ['bin', 'scripts']) {
+            const found = inDir(prefix);
+            assert.ok(
+                found.length > 0,
+                `no ${prefix}/ importer of fleet-sprint/runner.js is in the checked set; `
+                + `either discovery stopped walking ${prefix}/ or the entrypoints stopped importing the facade. `
+                + `Checked set: ${[...byRel.keys()].slice(0, 10).join(', ')}...`,
+            );
+            const named = found.filter((f) => byRel.get(f).length > 0);
+            assert.ok(
+                named.length > 0,
+                `${prefix}/ importers are discovered (${found.join(', ')}) but contribute no named bindings, `
+                + 'so the resolution assertion above says nothing about them',
+            );
+        }
+    });
 });
 
 // -----------------------------------------------------------------------------
@@ -397,7 +561,7 @@ describe('(3) golden transcripts reproduce with the fixture directory untouched'
 
         const childOut = runNestedSuite(
             'golden-transcript',
-            ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
+            ['--test', ...NESTED_GOLDEN_SUITE_FILES],
             { env },
         );
         // Falsifiability guard against exactly the no-op-pass failure mode
@@ -414,64 +578,6 @@ describe('(3) golden transcripts reproduce with the fixture directory untouched'
             '',
             `running the golden transcript suites must not rewrite any fixture file. git reported:\n${after}`,
         );
-    });
-});
-
-// -----------------------------------------------------------------------------
-// (4) Every mock-sprint test file passes.
-//
-// Scoped to test/mock-sprint-*.test.mjs -- the package's own `npm test`
-// (`test/*.test.mjs`, non-recursive glob) and `npm run test:unit` boundary --
-// not test/slow/mock-sprint-*.test.mjs, which the repo already separates into
-// its own `test:slow` script specifically because it is expensive (a
-// multi-minute stalled-dispatch scenario); folding it in here would make this
-// one facade-completeness test the slowest thing in the whole suite for a
-// scenario this bead's scope (the Phase 1 leaf extractions) never touched.
-// No APRA_FLEET_BD_MOCK override is passed: bd-replay.mjs's bdMode() already
-// defaults an unset/empty value to 'replay' (recorded-fixture) mode, which is
-// what plain `npm test` runs under too.
-// -----------------------------------------------------------------------------
-describe('(4) every mock-sprint test file passes', () => {
-    test('node --test over every test/mock-sprint-*.test.mjs file exits clean', () => {
-        const testDir = path.join(SE_DIR, 'test');
-        const mockSprintFiles = fs
-            .readdirSync(testDir)
-            .filter((name) => name.startsWith('mock-sprint-') && name.endsWith('.test.mjs'))
-            .sort();
-        assert.ok(mockSprintFiles.length >= 50, `expected a substantial mock-sprint test suite, found ${mockSprintFiles.length} file(s)`);
-
-        // NODE_TEST_CONTEXT must be stripped from the child's env -- see the
-        // detailed rationale in describe (3) above. Without this, node --test
-        // over 62 files returns empty stdout and exit 0 in well under a
-        // second (verified directly), i.e. a false pass that never actually
-        // ran any of the 62 files.
-        const env = { ...process.env };
-        delete env.NODE_TEST_CONTEXT;
-
-        // Passed as an explicit argument list (not a shell glob) so this
-        // spawn needs no shell -- consistent with this repo's guard-test
-        // convention of never letting a dynamically-built string reach a
-        // shell. maxBuffer raised well past Node's 1MB default: 62 mock-
-        // sprint files produce several MB of TAP+workflow-log output, and the
-        // default silently ENOBUFS/overflows on that volume (verified
-        // directly).
-        const childOut = runNestedSuite(
-            'mock-sprint',
-            ['--test', '--test-concurrency=8', ...mockSprintFiles.map((f) => path.join('test', f))],
-            { env, maxBuffer: 200 * 1024 * 1024 },
-        );
-
-        // Falsifiability guard against a no-op child run (see (3) above)
-        // silently reading as success: pin a plausible lower bound on the
-        // number of tests actually run (at least one per file) and zero
-        // failures.
-        const passMatch = childOut.match(/^# pass (\d+)$/m);
-        assert.ok(
-            passMatch && Number(passMatch[1]) >= mockSprintFiles.length,
-            `expected at least ${mockSprintFiles.length} passing tests (one per mock-sprint file) from the child run; got output tail:\n${childOut.slice(-2000)}`,
-        );
-        const failMatch = childOut.match(/^# fail (\d+)$/m);
-        assert.equal(failMatch && failMatch[1], '0', `expected zero failures across the mock-sprint suite; got output tail:\n${childOut.slice(-4000)}`);
     });
 });
 
@@ -561,149 +667,52 @@ describe('(5) the extracted pure helpers run with no injected agent, command or 
 // =============================================================================
 // (6) apra-fleet-3yuu.2 -- prove the extracted timeout-error handler works
 // correctly over synthesized spawnSync results, without spawning real nested
-// suites. Covers the four cases: ETIMEDOUT with suite label and budget;
-// non-zero-status with unchanged output message; success (null error); and
-// budget-constant env-var override behavior.
+// suites.
+//
+// apra-fleet-j918.7.1: the six cases below ((a) ETIMEDOUT, (b) non-zero status
+// wraps, (b2) excerpt cap, (b3) classification is by error.code, (c) success,
+// and the single-definition identity case) used to be duplicated near-verbatim
+// here and in phase3-dispatch-engine-completeness.test.mjs section (6b),
+// differing only in the (envVarName, budgetSource, extraTimeoutGuidance) tuple.
+// They are now defined ONCE in helpers/nested-suite-spawn-cases.mjs and
+// instantiated once per gate, with each gate passing its own tuple and its own
+// imported handler binding. This gate's tuple is instantiated below; phase3's
+// is instantiated from its own file. Section (6d) that follows stays here
+// because it exercises phase1's OWN resolveNestedSuiteTimeoutMs, which phase3
+// does not have.
 // =============================================================================
-describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn results to pass/fail', () => {
-    test('case (a): ETIMEDOUT error yields message with suite label and budget', () => {
-        const timeoutError = new Error('timeout signal');
-        timeoutError.code = 'ETIMEDOUT';
-        timeoutError.signal = 'SIGTERM';
-        timeoutError.status = null;
+describeHandleNestedSuiteSpawnResultCases({
+    sectionLabel: '(6)',
+    handler: handleNestedSuiteSpawnResult,
+    envVarName: PHASE1_ENV_VAR_NAME,
+    // The mock-bd branch of resolvePhase1BudgetSource() -- the source string
+    // this gate actually feeds the handler under the backend the unit suite
+    // runs on. Its real-bd counterpart is pinned by section (6d) below.
+    budgetSource: `the mock-bd default (backend=replay, no ${PHASE1_ENV_VAR_NAME} override set)`,
+    extraTimeoutGuidance: PHASE1_TIMEOUT_EXTRA_GUIDANCE,
+});
 
-        assert.throws(
-            () => handleNestedSuiteSpawnResult(
-                'my-golden-suite',
-                timeoutError,
-                900_000,
-                'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)',
-                PHASE1_ENV_VAR_NAME,
-                PHASE1_TIMEOUT_EXTRA_GUIDANCE,
-            ),
-            (err) => {
-                const msg = err.message;
-                assert.ok(
-                    msg.includes('my-golden-suite'),
-                    `message must include suite label; got: ${msg}`
-                );
-                assert.ok(
-                    msg.includes('900000'),
-                    `message must include budget in ms; got: ${msg}`
-                );
-                return true;
-            },
-        );
-    });
-
-    test('case (b): non-zero status wraps with suite label, "budget did not expire", exit status and a bounded excerpt, preserving the original as cause', () => {
-        const nonZeroError = new Error('Command failed: node --test failed with exit code 1');
-        nonZeroError.status = 1;
-        nonZeroError.stdout = 'TAP output line 1\n';
-        nonZeroError.stderr = 'stderr line 1\n';
-
-        let caughtErr;
-        try {
-            handleNestedSuiteSpawnResult('my-suite', nonZeroError, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)');
-            assert.fail('should have thrown an error');
-        } catch (e) {
-            caughtErr = e;
-        }
-
-        assert.ok(caughtErr.message.includes('my-suite'), `message must name the outer suite label; got: ${caughtErr.message}`);
-        assert.ok(
-            caughtErr.message.includes('did NOT expire'),
-            `message must explicitly state the outer budget did not expire, to distinguish this from case (a); got: ${caughtErr.message}`,
-        );
-        assert.ok(caughtErr.message.includes('900000'), `message must include the outer budget in ms; got: ${caughtErr.message}`);
-        assert.ok(caughtErr.message.includes('exit status: 1'), `message must include the child exit status; got: ${caughtErr.message}`);
-        assert.ok(caughtErr.message.includes('TAP output line 1'), `message must include a tail excerpt of child stdout; got: ${caughtErr.message}`);
-        assert.ok(caughtErr.message.includes('stderr line 1'), `message must include a tail excerpt of child stderr; got: ${caughtErr.message}`);
-        // apra-fleet-3swo.50: the two failure modes must never share text in
-        // the WRAPPER PREFIX -- the portion of the message the wrapper itself
-        // authors, before the quoted child stdout/stderr excerpt. The excerpt
-        // is arbitrary child output and CAN legitimately contain the
-        // substring "timed out" (e.g. an inner per-test timeout, as
-        // apra-fleet-80q3's real case did), so asserting the absence of
-        // "timed out" over the WHOLE message (including the excerpt) is a
-        // false requirement on child output content, not a real guarantee
-        // about the wrapper. Pin the distinguishing contract on the prefix,
-        // where the wrapper itself actually enforces it.
-        const wrapperPrefix = caughtErr.message.split('child stdout (tail):')[0];
-        assert.ok(
-            wrapperPrefix.includes('did NOT expire'),
-            `wrapper prefix must explicitly state the outer budget did not expire; got: ${wrapperPrefix}`,
-        );
-        assert.ok(
-            !wrapperPrefix.includes('timed out'),
-            `wrapper prefix (excluding the quoted child excerpt) must never claim a timeout; got: ${wrapperPrefix}`,
-        );
-        // Cross-check against the ETIMEDOUT branch: its wrapper prefix never
-        // claims the outer budget did NOT expire -- the two wrapper prefixes
-        // are mutually exclusive on this marker.
-        const crossCheckTimeoutError = new Error('timeout signal');
-        crossCheckTimeoutError.code = 'ETIMEDOUT';
-        crossCheckTimeoutError.signal = 'SIGTERM';
-        let crossCheckTimeoutErr;
-        try {
-            handleNestedSuiteSpawnResult(
-                'my-suite',
-                crossCheckTimeoutError,
-                900_000,
-                'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)',
-                PHASE1_ENV_VAR_NAME,
-                PHASE1_TIMEOUT_EXTRA_GUIDANCE,
-            );
-            assert.fail('should have thrown an error');
-        } catch (e) {
-            crossCheckTimeoutErr = e;
-        }
-        assert.ok(
-            !crossCheckTimeoutErr.message.includes('did NOT expire'),
-            `ETIMEDOUT wrapper prefix must never claim the outer budget did NOT expire; got: ${crossCheckTimeoutErr.message}`,
-        );
-        // The original spawn error must still be reachable, unmodified, as
-        // `cause` -- no information is lost, only bounded in the message text.
-        assert.equal(caughtErr.cause, nonZeroError, 'original spawn error must be reachable as .cause');
-        assert.equal(caughtErr.cause.status, 1, 'cause must preserve the original exit status');
-        assert.equal(caughtErr.cause.stdout, 'TAP output line 1\n', 'cause must preserve the original stdout verbatim');
-        assert.equal(caughtErr.cause.stderr, 'stderr line 1\n', 'cause must preserve the original stderr verbatim');
-    });
-
-    test('case (b2): a multi-megabyte child stdout/stderr is length-capped in the wrapped message, not quoted verbatim', () => {
-        const hugeError = new Error('Command failed: node --test failed with exit code 1');
-        hugeError.status = 1;
-        hugeError.stdout = 'x'.repeat(2_000_000);
-        hugeError.stderr = 'y'.repeat(2_000_000);
-
-        let caughtErr;
-        try {
-            handleNestedSuiteSpawnResult('huge-suite', hugeError, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)');
-            assert.fail('should have thrown an error');
-        } catch (e) {
-            caughtErr = e;
-        }
-
-        assert.ok(
-            caughtErr.message.length < 20_000,
-            `wrapped message must be length-capped regardless of a multi-megabyte child output; got length ${caughtErr.message.length}`,
-        );
-        assert.ok(caughtErr.message.includes('truncated'), `message should note the excerpt was truncated; got a message of length ${caughtErr.message.length}`);
-        // The uncapped original is still available via cause, so nothing is lost.
-        assert.equal(caughtErr.cause.stdout.length, 2_000_000, 'cause must retain the full, untruncated original stdout');
-        assert.equal(caughtErr.cause.stderr.length, 2_000_000, 'cause must retain the full, untruncated original stderr');
-    });
-
+// =============================================================================
+// (6c) phase1-only -- cases added AFTER the shared table was extracted, so they
+// are not part of describeHandleNestedSuiteSpawnResultCases(). Kept verbatim
+// here (and mirrored in phase3's own file) because the comment below explains
+// why this one is deliberately pinned in BOTH callers of the shared handler.
+// =============================================================================
+describe('(6c) the shared handleNestedSuiteSpawnResult names failing inner tests outside the quoted tail', () => {
     // -------------------------------------------------------------------------
-    // case (b4): this gate runs its OWN nested batch over every mock-sprint
-    // file (describe (4) above), so it is exposed to the identical reporting
-    // hole phase3's nested step hit on Windows CI: a ~1.6MB child stream whose
-    // single `not ok` sits far outside the 4000-char tail the wrapped message
-    // quoted, leaving a failure report that named no failing test. Pinned in
-    // BOTH callers deliberately -- the handler is shared (helpers/nested-suite-
-    // spawn.mjs), and the extraction regressing in one gate's favour while the
-    // other stays green is exactly the desynchronization that extraction
-    // existed to prevent.
+    // case (b4): phase1's only nested spawn is now describe (3)'s golden-
+    // transcript child -- the mock-sprint batch this comment used to cite was
+    // deleted as a duplicate of phase3's stronger copy. The reporting hole is
+    // a property of the SHARED handler, not of which child produced the
+    // stream: phase3's nested step hit it on Windows CI with a ~1.6MB child
+    // whose single `not ok` sat far outside the 4000-char tail the wrapped
+    // message quoted, leaving a failure report that named no failing test.
+    // Phase1's golden child can emit the same shape, and this case is a pure
+    // unit test of handleNestedSuiteSpawnResult that spawns nothing, so it
+    // costs phase1 nothing to keep. Pinned in BOTH callers deliberately --
+    // the handler is shared (helpers/nested-suite-spawn.mjs), and the
+    // extraction regressing in one gate's favour while the other stays green
+    // is exactly the desynchronization that extraction existed to prevent.
     // -------------------------------------------------------------------------
     test('case (b4): a failing entry OUTSIDE the quoted tail window is still named -- the positional tail alone never identified it', () => {
         const failingName = 'mock sprint: a scenario whose name only the TAP entry carries';
@@ -784,212 +793,215 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
         assert.deepEqual(extractFailingTapEntries(undefined), { total: 0, entries: [] }, 'undefined stdout must not throw');
         assert.deepEqual(extractFailingTapEntries(''), { total: 0, entries: [] }, 'empty stdout must not throw');
     });
+});
 
-    // apra-fleet-3swo.54: adversarial case apra-fleet-80q3.2's description
-    // originally asked for -- a non-ETIMEDOUT-CODED error whose own MESSAGE
-    // happens to be the literal raw spawnSync-ETIMEDOUT text. Node's real
-    // shapes (verified by standalone repro against execFileSync/stdio pipe)
-    // never actually produce this combination: a timeout always sets
-    // code='ETIMEDOUT'/status=null/message='spawnSync <file> ETIMEDOUT',
-    // while a non-zero exit always sets code=undefined/status=N/message=
-    // 'Command failed: ...', so the two never mix in practice. But nothing
-    // in the shared handler (test/helpers/nested-suite-spawn.mjs) currently
-    // PINS that the branch is chosen by error.code rather than by sniffing
-    // error.message for "ETIMEDOUT" -- a mutation that widened the ETIMEDOUT
-    // branch's condition to also match /ETIMEDOUT/ on the message would pass
-    // every other case here and silently re-create the exact apra-fleet-80q3
-    // misdiagnosis (an inner child failure reported as the gate's own budget
-    // expiring). This case makes that mutation observable by constructing
-    // the adversarial combination directly, bypassing what Node itself would
-    // ever produce.
-    test('case (b3): classification is by error.code, not error.message -- a numeric-status error whose message is raw ETIMEDOUT text still reports as an inner child failure', () => {
-        const adversarialError = new Error('spawnSync node ETIMEDOUT');
-        adversarialError.status = 1;
-        adversarialError.stdout = 'inner child stdout\n';
-        adversarialError.stderr = 'inner child stderr\n';
-        // code is deliberately left undefined -- the real distinguishing
-        // signal -- while the message text alone would read as a timeout.
+// =============================================================================
+// (6d) phase1-only: the budget RESOLVER itself -- override precedence,
+// backend-aware defaulting (apra-fleet-x0mr.1), rejection of unparseable
+// values, and that the resolved value plus resolvePhase1BudgetSource() reach
+// the handler's message. Nothing here spawns a nested suite: these are the
+// resolver and manipulated environment values directly, which is the whole
+// point -- the 900000ms overrun this fixes cost ~30 minutes to observe once.
+// phase3 has its own resolveNestedSuiteTimeoutBudget() covered in its own
+// file, so this section has no phase3 twin and is not part of the shared
+// table.
+//
+// Falsification (required, this section guards a bug fix): reverting
+// resolveNestedSuiteTimeoutBudget() to return the flat
+// { ms: DEFAULT_NESTED_SUITE_TIMEOUT_MS } regardless of bdMode() makes every
+// subcase (d2r) case fail, plus (d4)'s real-bd half -- because the budget
+// then equals the mock default that actually overran.
+// =============================================================================
+describe('(6d) the phase1 nested-suite budget is backend-aware, precedence-correct and self-describing', () => {
+    // Pulled from bd-replay.mjs's own REAL_VALUES set (the bd-mock-shim
+    // contract's source), not re-guessed here: bdMode() maps unset/anything
+    // else to 'replay' (mock) and exactly these five spellings to 'real'.
+    const REAL_BD_SPELLINGS = ['0', 'false', 'off', 'no', 'real'];
+    const MOCK_BUDGET_MS = 900_000;
 
-        let caughtErr;
+    function withEnv(overrides, fn) {
+        const keys = Object.keys(overrides);
+        const originals = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
         try {
-            handleNestedSuiteSpawnResult('adversarial-suite', adversarialError, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)');
-            assert.fail('should have thrown an error');
-        } catch (e) {
-            caughtErr = e;
-        }
-
-        assert.ok(caughtErr.message.includes('adversarial-suite'), `message must name the outer suite label; got: ${caughtErr.message}`);
-        assert.ok(caughtErr.message.includes('exit status: 1'), `message must carry the child exit status; got: ${caughtErr.message}`);
-        const wrapperPrefix = caughtErr.message.split('child stdout (tail):')[0];
-        assert.ok(
-            wrapperPrefix.includes('did NOT expire'),
-            `wrapper prefix must classify this as an inner child failure despite the adversarial message text; got: ${wrapperPrefix}`,
-        );
-        assert.ok(
-            !wrapperPrefix.includes('timed out') && !wrapperPrefix.includes('exceeded its'),
-            `wrapper prefix must never claim a timeout for a non-ETIMEDOUT-coded error, even when its message text says ETIMEDOUT; got: ${wrapperPrefix}`,
-        );
-        assert.equal(caughtErr.cause, adversarialError, 'original spawn error must be reachable as .cause');
-    });
-
-    test('case (c): null error (status 0) yields pass (no throw)', () => {
-        // Should not throw or return; just complete normally
-        const result = handleNestedSuiteSpawnResult('my-suite', null, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)');
-        assert.equal(result, undefined, 'success case should return undefined');
-    });
-
-    test('case (d): budget constant honors env-var override and falls back to default', () => {
-        const originalEnv = process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
-
-        try {
-            // Subcase (d1): resolveNestedSuiteTimeoutMs() with env var set returns the override
-            process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = '5000';
-            const resolved1 = resolveNestedSuiteTimeoutMs();
-            assert.equal(resolved1, 5000, 'must parse env override and return numeric value');
-
-            // Verify the handler message reflects this override
-            const timeoutError1 = new Error('timeout signal');
-            timeoutError1.code = 'ETIMEDOUT';
-            timeoutError1.signal = 'SIGTERM';
-
-            assert.throws(
-                () => handleNestedSuiteSpawnResult(
-                    'test-suite',
-                    timeoutError1,
-                    resolved1,
-                    resolvePhase1BudgetSource(),
-                    PHASE1_ENV_VAR_NAME,
-                    PHASE1_TIMEOUT_EXTRA_GUIDANCE,
-                ),
-                (err) => {
-                    const msg = err.message;
-                    assert.ok(
-                        msg.includes('PHASE1_NESTED_SUITE_TIMEOUT_MS=5000'),
-                        `env-override case must mention the override value; got: ${msg}`,
-                    );
-                    assert.ok(
-                        msg.includes('5000'),
-                        `env-override case must include the budget value; got: ${msg}`,
-                    );
-                    return true;
-                },
-            );
-
-            // Subcase (d2): resolveNestedSuiteTimeoutMs() with env var unset returns default
-            delete process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
-            const resolved2 = resolveNestedSuiteTimeoutMs();
-            assert.equal(resolved2, 900_000, 'must return default when env unset');
-
-            // Verify the handler message reflects the default
-            const timeoutError2 = new Error('timeout signal');
-            timeoutError2.code = 'ETIMEDOUT';
-            timeoutError2.signal = 'SIGTERM';
-
-            assert.throws(
-                () => handleNestedSuiteSpawnResult(
-                    'test-suite',
-                    timeoutError2,
-                    resolved2,
-                    resolvePhase1BudgetSource(),
-                    PHASE1_ENV_VAR_NAME,
-                    PHASE1_TIMEOUT_EXTRA_GUIDANCE,
-                ),
-                (err) => {
-                    const msg = err.message;
-                    assert.ok(
-                        msg.includes('the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)'),
-                        `no-override case must mention the default; got: ${msg}`,
-                    );
-                    assert.ok(
-                        msg.includes('900000'),
-                        `no-override case must include the default budget value; got: ${msg}`,
-                    );
-                    return true;
-                },
-            );
-
-            // Subcase (d3): resolveNestedSuiteTimeoutMs() with unparseable env var throws
-            process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = 'abc';
-            assert.throws(
-                () => resolveNestedSuiteTimeoutMs(),
-                (err) => {
-                    assert.ok(
-                        err.message.includes('PHASE1_NESTED_SUITE_TIMEOUT_MS must be a positive number'),
-                        `unparseable case must describe the requirement; got: ${err.message}`,
-                    );
-                    assert.ok(
-                        err.message.includes('abc'),
-                        `unparseable case must show what was received; got: ${err.message}`,
-                    );
-                    return true;
-                },
-            );
-
-            // Subcase (d4): empty string falls back to default (treated same as unset)
-            process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = '';
-            const resolved4 = resolveNestedSuiteTimeoutMs();
-            assert.equal(resolved4, 900_000, 'empty string must fall back to default');
-
-            // Subcase (d5): zero is unparseable (not positive)
-            process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = '0';
-            assert.throws(
-                () => resolveNestedSuiteTimeoutMs(),
-                (err) => {
-                    assert.ok(
-                        err.message.includes('must be a positive number'),
-                        `zero case must describe the requirement; got: ${err.message}`,
-                    );
-                    return true;
-                },
-            );
+            for (const k of keys) {
+                if (overrides[k] === undefined) delete process.env[k];
+                else process.env[k] = overrides[k];
+            }
+            fn();
         } finally {
-            // Restore original env state
-            if (originalEnv !== undefined) {
-                process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS = originalEnv;
-            } else {
-                delete process.env.PHASE1_NESTED_SUITE_TIMEOUT_MS;
+            for (const k of keys) {
+                if (originals[k] === undefined) delete process.env[k];
+                else process.env[k] = originals[k];
+            }
+            for (const k of keys) {
+                assert.equal(process.env[k], originals[k], `env var ${k} must be restored to its original value`);
             }
         }
+    }
+
+    test('subcase (d1): PHASE1_NESTED_SUITE_TIMEOUT_MS wins on EVERY backend, and its value reaches the handler message', () => {
+        for (const backend of [undefined, ...REAL_BD_SPELLINGS, 'record']) {
+            withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: '5000', APRA_FLEET_BD_MOCK: backend }, () => {
+                const budget = resolveNestedSuiteTimeoutBudget();
+                assert.equal(budget.ms, 5000, `override must win with APRA_FLEET_BD_MOCK=${backend}; got ${budget.ms}`);
+                assert.equal(resolveNestedSuiteTimeoutMs(), 5000, 'the ms-only wrapper must agree with the budget object');
+                assert.equal(budget.source, 'PHASE1_NESTED_SUITE_TIMEOUT_MS=5000', `source must name the override; got: ${budget.source}`);
+
+                const timeoutError = new Error('timeout signal');
+                timeoutError.code = 'ETIMEDOUT';
+                timeoutError.signal = 'SIGTERM';
+                assert.throws(
+                    () => handleNestedSuiteSpawnResult('test-suite', timeoutError, budget.ms, resolvePhase1BudgetSource(), PHASE1_ENV_VAR_NAME, PHASE1_TIMEOUT_EXTRA_GUIDANCE),
+                    (err) => {
+                        assert.ok(err.message.includes('PHASE1_NESTED_SUITE_TIMEOUT_MS=5000'), `message must mention the override; got: ${err.message}`);
+                        assert.ok(err.message.includes('5000'), `message must include the budget value; got: ${err.message}`);
+                        return true;
+                    },
+                );
+            });
+        }
     });
 
-    test('the handler is the same function runNestedSuite uses (single definition, import-proven)', () => {
-        // Proof of single-definition identity: runNestedSuite calls
-        // handleNestedSuiteSpawnResult directly in its catch/error path, and
-        // this test file imports the SAME function from the shared
-        // helpers/nested-suite-spawn.mjs module (apra-fleet-3swo.53) that
-        // phase3-dispatch-engine-completeness.test.mjs also imports. If
-        // handleNestedSuiteSpawnResult were copied/duplicated for testing only,
-        // a mutation here would not propagate to the real calls, and the
-        // acceptance criterion would be violated. This test asserts they are
-        // the same reference.
-        const testErrorOk = new Error('test');
-        testErrorOk.code = 'ETIMEDOUT';
-        testErrorOk.signal = 'SIGTERM';
+    test('subcase (d2): with no override, the MOCK backend keeps the 900000ms default this gate always shipped', () => {
+        withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: undefined, APRA_FLEET_BD_MOCK: undefined }, () => {
+            const budget = resolveNestedSuiteTimeoutBudget();
+            assert.equal(budget.ms, MOCK_BUDGET_MS, `mock-backend default must be unchanged at ${MOCK_BUDGET_MS}; got ${budget.ms}`);
+            assert.equal(resolveNestedSuiteTimeoutMs(), MOCK_BUDGET_MS, 'the ms-only wrapper must agree with the budget object');
+            assert.ok(budget.source.includes('mock-bd default'), `source must say mock-bd default; got: ${budget.source}`);
+            assert.ok(!budget.source.includes('real-bd default'), `mock source must not also claim real-bd; got: ${budget.source}`);
+            assert.ok(budget.source.includes(PHASE1_ENV_VAR_NAME), `source must still name the override var; got: ${budget.source}`);
 
-        // Call the function directly (from this test scope)
-        let directCallThrew = false;
-        try {
-            handleNestedSuiteSpawnResult('test', testErrorOk, 900_000, 'the default (no PHASE1_NESTED_SUITE_TIMEOUT_MS override set)', PHASE1_ENV_VAR_NAME);
-        } catch (e) {
-            directCallThrew = true;
+            const timeoutError = new Error('timeout signal');
+            timeoutError.code = 'ETIMEDOUT';
+            timeoutError.signal = 'SIGTERM';
+            assert.throws(
+                () => handleNestedSuiteSpawnResult('test-suite', timeoutError, budget.ms, resolvePhase1BudgetSource(), PHASE1_ENV_VAR_NAME, PHASE1_TIMEOUT_EXTRA_GUIDANCE),
+                (err) => {
+                    assert.ok(err.message.includes('mock-bd default'), `no-override case must name the default it used; got: ${err.message}`);
+                    assert.ok(err.message.includes('900000'), `no-override case must include the default budget value; got: ${err.message}`);
+                    return true;
+                },
+            );
+        });
+    });
+
+    // THE REGRESSION THIS SECTION EXISTS FOR (apra-fleet-x0mr): under real bd
+    // the nested golden-transcript child blew the flat 900000ms budget. A
+    // budget that does not move with the backend is the bug; this pins that
+    // it moves.
+    for (const spelling of [...REAL_BD_SPELLINGS, 'record']) {
+        test(`subcase (d2r): APRA_FLEET_BD_MOCK=${spelling} resolves to the larger real-bd budget, not the mock default`, () => {
+            withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: undefined, APRA_FLEET_BD_MOCK: spelling }, () => {
+                const budget = resolveNestedSuiteTimeoutBudget();
+                assert.equal(budget.ms, REAL_BD_NESTED_SUITE_TIMEOUT_MS, `real-bd budget for APRA_FLEET_BD_MOCK=${spelling} must equal the derived/capped REAL_BD_NESTED_SUITE_TIMEOUT_MS; got ${budget.ms}`);
+                assert.ok(
+                    budget.ms > MOCK_BUDGET_MS,
+                    `the real-bd budget must be LARGER than the mock default that overran (${MOCK_BUDGET_MS}ms); got ${budget.ms}`,
+                );
+                assert.ok(budget.source.includes('real-bd default'), `source must say real-bd default; got: ${budget.source}`);
+                assert.ok(!budget.source.includes('mock-bd default'), `real source must not also claim mock-bd; got: ${budget.source}`);
+            });
+        });
+    }
+
+    test('subcase (d2x): the real-bd budget clears the runtime that actually overran (1811676ms file duration, 900000ms budget)', () => {
+        // apra-fleet-x0mr's failing real-bd run: the whole phase1 file took
+        // 1811676ms with TWO nested spawns in it, and the golden one -- the
+        // only one left -- reported exceeding 900000ms. The replacement budget
+        // must clear both of those numbers, or it has not fixed anything.
+        assert.ok(
+            REAL_BD_NESTED_SUITE_TIMEOUT_MS > 1_811_676,
+            `real-bd budget must exceed the 1811676ms the whole file took in the failing run; got ${REAL_BD_NESTED_SUITE_TIMEOUT_MS}`,
+        );
+        // ...and must still BIND: a budget above the ceiling could never fire,
+        // which would trade a false failure for no hang detection at all.
+        assert.ok(
+            REAL_BD_NESTED_SUITE_TIMEOUT_MS <= REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS,
+            `real-bd budget must stay at or under the stated ceiling; got ${REAL_BD_NESTED_SUITE_TIMEOUT_MS}`,
+        );
+    });
+
+    test('subcase (d2d): REAL_BD_NESTED_SUITE_TIMEOUT_MS equals its documented arithmetic (three factors, capped)', () => {
+        const expected = Math.min(
+            Math.ceil(ASSUMED_REAL_BD_GOLDEN_PER_FILE_MS * NESTED_GOLDEN_SUITE_FILES.length * REAL_BD_HEADROOM_FACTOR),
+            REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS,
+        );
+        assert.equal(
+            REAL_BD_NESTED_SUITE_TIMEOUT_MS,
+            expected,
+            `the shipped real-bd budget must equal per-file(${ASSUMED_REAL_BD_GOLDEN_PER_FILE_MS}) x files(${NESTED_GOLDEN_SUITE_FILES.length}) x headroom(${REAL_BD_HEADROOM_FACTOR}), capped at ${REAL_BD_NESTED_SUITE_TIMEOUT_CEILING_MS}`,
+        );
+        // The file count the budget derives from must be the SAME list the
+        // nested child is actually given -- a budget derived from a different
+        // set than the one that runs is a budget for nothing.
+        assert.ok(NESTED_GOLDEN_SUITE_FILES.length >= 2, `the nested golden run must cover both golden suites; got ${NESTED_GOLDEN_SUITE_FILES.join(', ')}`);
+    });
+
+    // apra-fleet-x0mr.1: the scaledTimeout trap, pinned. test/helpers/
+    // scaled-timeout.mjs scales off APRA_FLEET_TEST_CONCURRENCY, which only
+    // scripts/run-tests.mjs exports -- so a budget scaled that way is inert
+    // under the `npm test` command CI actually runs. This budget must resolve
+    // identically no matter which entry point set (or did not set) that var.
+    test('subcase (d2e): the budget is entry-point independent -- APRA_FLEET_TEST_CONCURRENCY cannot change it', () => {
+        for (const backend of [undefined, 'real']) {
+            let withoutConcurrencyVar;
+            let withConcurrencyVar;
+            withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: undefined, APRA_FLEET_BD_MOCK: backend, APRA_FLEET_TEST_CONCURRENCY: undefined }, () => {
+                withoutConcurrencyVar = resolveNestedSuiteTimeoutBudget();
+            });
+            withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: undefined, APRA_FLEET_BD_MOCK: backend, APRA_FLEET_TEST_CONCURRENCY: '8' }, () => {
+                withConcurrencyVar = resolveNestedSuiteTimeoutBudget();
+            });
+            assert.equal(
+                withConcurrencyVar.ms,
+                withoutConcurrencyVar.ms,
+                `budget for backend=${backend} must not depend on APRA_FLEET_TEST_CONCURRENCY (the scaledTimeout inertness trap); got ${withoutConcurrencyVar.ms} vs ${withConcurrencyVar.ms}`,
+            );
+            assert.equal(withConcurrencyVar.source, withoutConcurrencyVar.source, 'the budget SOURCE must be entry-point independent too');
         }
-        assert.ok(directCallThrew, 'direct call must throw on ETIMEDOUT');
+    });
 
-        // The function is imported in this file's scope (import statements
-        // are hoisted above every describe() block), so there is no
-        // re-export or indirect import: it is the same handleNestedSuiteSpawnResult
-        // that runNestedSuite invokes. This assertion would fail if the
-        // import were missing or shadowed.
-        assert.equal(typeof handleNestedSuiteSpawnResult, 'function', 'handleNestedSuiteSpawnResult must be imported at module scope for runNestedSuite to use');
+    test('subcase (d3): an unparseable override throws, naming the requirement and what it received', () => {
+        withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: 'abc' }, () => {
+            assert.throws(
+                () => resolveNestedSuiteTimeoutBudget(),
+                (err) => {
+                    assert.ok(err.message.includes('PHASE1_NESTED_SUITE_TIMEOUT_MS must be a positive number'), `unparseable case must describe the requirement; got: ${err.message}`);
+                    assert.ok(err.message.includes('abc'), `unparseable case must show what was received; got: ${err.message}`);
+                    return true;
+                },
+            );
+        });
+    });
+
+    test('subcase (d4): an empty override falls back to the backend default, exactly as unset does', () => {
+        withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: '', APRA_FLEET_BD_MOCK: undefined }, () => {
+            assert.equal(resolveNestedSuiteTimeoutMs(), MOCK_BUDGET_MS, 'empty string must fall back to the mock default');
+        });
+        withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: '', APRA_FLEET_BD_MOCK: 'real' }, () => {
+            assert.equal(resolveNestedSuiteTimeoutMs(), REAL_BD_NESTED_SUITE_TIMEOUT_MS, 'empty string must fall back to the real-bd default, not the mock one');
+        });
+    });
+
+    test('subcase (d5): zero is rejected (not positive)', () => {
+        withEnv({ PHASE1_NESTED_SUITE_TIMEOUT_MS: '0' }, () => {
+            assert.throws(
+                () => resolveNestedSuiteTimeoutBudget(),
+                (err) => {
+                    assert.ok(err.message.includes('must be a positive number'), `zero case must describe the requirement; got: ${err.message}`);
+                    return true;
+                },
+            );
+        });
     });
 });
 
 // =============================================================================
 // Falsification note for criterion (4): reverting the ETIMEDOUT handling in
 // handleNestedSuiteSpawnResult (removing the "if (spawnError.code ===
-// 'ETIMEDOUT')" branch) makes cases (a) and (d) fail: case (a) would fall
-// through to the non-timeout wrapping and lose the "timed out after ...ms"
-// wording, and case (d) subcase (d1) would fail on the missing
+// 'ETIMEDOUT')" branch) makes case (a) and section (6d) fail: case (a) would
+// fall through to the non-timeout wrapping and lose the budget-exceeded
+// wording, and (6d) subcase (d1) would fail on the missing
 // "PHASE1_NESTED_SUITE_TIMEOUT_MS=5000" text.
 //
 // Falsification note for apra-fleet-80q3.1 (cases (b) and (b2)): reverting
@@ -999,4 +1011,9 @@ describe('(6) the extracted handleNestedSuiteSpawnResult helper converts spawn r
 // the thrown object would again be the bare original error with none of that
 // text, and case (b2) would fail because an unwrapped error's message is the
 // original short "Command failed: ..." text, never containing "truncated".
+//
+// Cases (a)/(b)/(b2) now live in helpers/nested-suite-spawn-cases.mjs and run
+// here via the (6) instantiation above, so these mutations are still observed
+// from this file -- and, because the same table also runs under phase3's
+// tuple, each of them now fails BOTH gates instead of one.
 // =============================================================================

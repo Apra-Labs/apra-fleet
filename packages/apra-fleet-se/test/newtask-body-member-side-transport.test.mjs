@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { spawnSync } from 'node:child_process';
 import {
     validateNewTask,
     createChildBeadWithAllocatedId,
@@ -50,6 +51,35 @@ const NOOP_ALLOCATOR = {
     async confirm() { return true; },
     async release() { return true; },
 };
+
+// apra-fleet-j918.6.4: every test in this file (and in newtask-body-file-
+// roundtrip.test.mjs) emulates the member by extracting the base64 argument
+// straight out of the `node -e ...` command STRING and decoding it in-
+// process -- the emitted command is never actually handed to a shell. That
+// suite's companion test covers the POSIX (bash) shell family; this one
+// covers the OTHER shell family a member may run (CLAUDE.md: a member-bound
+// command string must not rely on shell-level `$`-expansion, since the
+// member's shell may be PowerShell, not POSIX), gated with a specific,
+// surfaced reason -- never a silent pass -- when no real PowerShell is on
+// PATH, matching test/se-os-commands-shell-matrix.test.mjs's convention.
+function detectPowerShell() {
+    for (const bin of ['pwsh', 'powershell.exe', 'powershell']) {
+        let probe;
+        try {
+            probe = spawnSync(bin, ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' });
+        } catch {
+            continue;
+        }
+        if (probe && probe.status === 0 && probe.stdout.trim()) return { bin, version: probe.stdout.trim() };
+    }
+    return null;
+}
+const POWERSHELL = detectPowerShell();
+const POWERSHELL_SKIP = POWERSHELL
+    ? false
+    : 'DEGRADED: no real PowerShell on PATH (tried pwsh, powershell.exe, powershell), so the emitted node -e staging'
+      + ' command cannot be round-tripped through a real PowerShell-family shell on this host. Install PowerShell 7'
+      + ' (`pwsh`) -- it is cross-platform -- to run this test.';
 
 // A command() fake that plays the role of a REMOTE member: it has its OWN
 // temp directory namespace (prefixed distinctly from this process's own
@@ -226,5 +256,52 @@ describe('apra-fleet-eft.73.2 -- newTask/notes body reaches member-side without 
             assert.strictEqual(opts.member_name, 'remote-member-1');
         }
         assert.ok(logLines.some((l) => l.includes("Rejected newTask finding appended verbatim to 'parent-2' notes")));
+    });
+
+    test('real shell: the member-side node -e staging command actually executes under real PowerShell and byte-exact round-trips spaces/double-quotes/$/backtick', { skip: POWERSHELL_SKIP }, async () => {
+        const payload = 'Payload has spaces, "double quotes", a $DOLLAR sign, and a `backtick` mark.';
+        // Redirect the CHILD node process's os.tmpdir() into a sandbox this
+        // test owns and tears down, so the staged file never lands outside
+        // the test sandbox even though stageCommandBodyMemberSide hardcodes
+        // os.tmpdir() internally.
+        const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'stage-realshell-ps-'));
+        try {
+            const calls = [];
+            const command = async (cmd, opts) => {
+                calls.push({ cmd, opts });
+                if (/^node -e "/.test(cmd)) {
+                    // Unlike every other test in this file, hand the REAL
+                    // emitted command string to a REAL PowerShell -- exactly
+                    // the shape a Windows member's command() implementation
+                    // would (the emitted command is deliberately the SAME
+                    // string form regardless of target member OS).
+                    const res = spawnSync(POWERSHELL.bin, ['-NoProfile', '-Command', cmd], { encoding: 'utf8', env: { ...process.env, TMPDIR: sandbox, TEMP: sandbox, TMP: sandbox } });
+                    assert.strictEqual(res.status, 0, `staging command must execute cleanly under real ${POWERSHELL.bin} ${POWERSHELL.version}.\ncommand: ${cmd}\nstderr: ${res.stderr}`);
+                    return res.stdout.trim();
+                }
+                return '';
+            };
+
+            const result = await createChildBeadWithAllocatedId({
+                command,
+                allocator: NOOP_ALLOCATOR,
+                member: 'remote-member-1',
+                title: 'Real-PowerShell staging round-trip',
+                description: payload,
+                priority: 'P1',
+                parentId: 'parent-1',
+            });
+
+            assert.strictEqual(result.childId, null);
+            assert.strictEqual(calls.length, 2, 'expected a member-side staging dispatch then a bd create dispatch');
+            const createCmd = calls[1].cmd;
+            const stagedPath = extractQuotedFlagValue(createCmd, '--body-file');
+            assert.ok(stagedPath, `expected a --body-file path sourced from the real staging command's stdout: ${createCmd}`);
+            assert.ok(stagedPath.startsWith(sandbox), `staged file must land inside this test's sandbox tempdir, not the host's real tmpdir: ${stagedPath}`);
+            const onDisk = await fs.readFile(stagedPath, 'utf-8');
+            assert.strictEqual(onDisk, payload, 'the payload must survive REAL PowerShell quoting + REAL node base64 decode byte-for-byte');
+        } finally {
+            await fs.rm(sandbox, { recursive: true, force: true });
+        }
     });
 });

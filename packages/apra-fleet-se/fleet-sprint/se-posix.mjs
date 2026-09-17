@@ -70,18 +70,23 @@ export class SePosixCommands {
    * Invoke an executable at `path` with `args`.
    *
    * QUOTING CONTRACT (differs per implementation on purpose -- pass `path`
-   * UNQUOTED): POSIX emits the path token verbatim, adding no quoting, because
-   * the historical credential-read command is a bare unquoted `$HOME/...`
-   * string that must stay byte-identical. The PowerShell implementation adds
-   * both the call operator and double quotes, without which PowerShell merely
-   * echoes the path back as a string and the failure looks like success.
-   * @param {string} path unquoted; POSIX callers needing quotes add them
+   * UNQUOTED; this method adds its own quoting): POSIX double-quotes the path
+   * token so a member whose HOME contains whitespace (or other word-splitting
+   * characters) still resolves correctly -- `$HOME` still expands inside
+   * double quotes, it just no longer gets split on the result (apra-fleet-
+   * j918.12; the bare, unquoted form was a real production defect, pinned by
+   * apra-fleet-j918.6.3's round-trip harness before this fix). The PowerShell
+   * implementation adds both the call operator and double quotes, without
+   * which PowerShell merely echoes the path back as a string and the failure
+   * looks like success.
+   * @param {string} path unquoted; this method adds double quotes
    * @param {string} [args]
    * @returns {string}
    */
   invoke(path, args = '') {
     const suffix = String(args || '').trim();
-    return suffix ? `${path} ${suffix}` : String(path);
+    const quoted = `"${path}"`;
+    return suffix ? `${quoted} ${suffix}` : quoted;
   }
 
   /**
@@ -101,11 +106,11 @@ export class SePosixCommands {
    * -- on the PowerShell side the command itself is an opaque base64 blob, so
    * the descriptor has to carry the readable path.
    *
-   * NOTE: the POSIX label is intentionally NOT validated. The historical
-   * string is a bare, unquoted `$HOME/...` path and must stay byte-identical
-   * for every non-Windows member; adding validation here would change
-   * behaviour for callers that have worked for a long time. The PowerShell
-   * implementation, which is newer, does validate.
+   * NOTE: the POSIX label is intentionally NOT validated, unlike the
+   * PowerShell implementation (which is newer and does validate). The path
+   * itself is now double-quoted by `invoke()` (apra-fleet-j918.12) so a
+   * member whose HOME contains whitespace still resolves; that quoting
+   * change does not extend to validating the label.
    * @param {string} label
    * @returns {{ command: string, descriptor: string }}
    */

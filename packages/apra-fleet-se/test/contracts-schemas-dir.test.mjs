@@ -52,10 +52,20 @@ describe('resolveSchemasDir: freshness-first precedence between existing candida
         );
     });
 
-    test('3. both exist with equal freshness -> resolves dist (documented tie-break, preserves pre-fix behaviour)', () => {
+    test('3. both exist with equal freshness -> resolves dist (documented tie-break, preserves pre-fix behaviour), and dist is the FIRST candidate probed', () => {
+        // apra-fleet-j918.7.4: the probe-order assertion below was moved in
+        // from contracts-schema-packaging.test.mjs's (now-removed) duplicate
+        // "scenario a" -- it proved the root-bundled layout wins over the
+        // standalone/dev fallback not just by RESULT but by being the first
+        // candidate exists() is asked about, which the result alone does not
+        // establish.
+        const seen = [];
         const result = resolveSchemasDir({
             env: {},
-            exists: () => true,
+            exists: (candidate) => {
+                seen.push(candidate);
+                return true;
+            },
             newestJsonMtimeMs: () => 1000,
         });
         assert.strictEqual(
@@ -63,6 +73,7 @@ describe('resolveSchemasDir: freshness-first precedence between existing candida
             DIST_BUNDLED_SCHEMAS_DIR,
             `expected a freshness tie to resolve to DIST_BUNDLED_SCHEMAS_DIR (${DIST_BUNDLED_SCHEMAS_DIR}), got ${result}`
         );
+        assert.strictEqual(seen[0], DIST_BUNDLED_SCHEMAS_DIR, `expected DIST_BUNDLED_SCHEMAS_DIR to be the first candidate probed, got ${seen[0]}`);
     });
 
     test('4. only-one-exists falls through without consulting freshness; neither exists -> null', () => {
@@ -82,11 +93,19 @@ describe('resolveSchemasDir: freshness-first precedence between existing candida
         assert.strictEqual(neither, null, `expected neither-exists to resolve null, got ${neither}`);
     });
 
-    test('5. APRA_FLEET_SE_SCHEMAS_DIR override wins outright and the freshness seam is never consulted', () => {
+    test('5. APRA_FLEET_SE_SCHEMAS_DIR override wins outright and neither exists() nor the freshness seam is ever consulted', () => {
+        // apra-fleet-j918.7.4: the exists()-must-never-be-called half of
+        // this assertion was moved in from contracts-schemas-dir-
+        // resolution.test.mjs's (now-removed) duplicate "branch 1" -- this
+        // file's own pre-existing version only proved the freshness seam
+        // was skipped, which does not establish that exists() itself is
+        // short-circuited too.
         let freshnessCalls = 0;
         const result = resolveSchemasDir({
             env: { APRA_FLEET_SE_SCHEMAS_DIR: '/fixture/explicit-override' },
-            exists: () => true,
+            exists: () => {
+                throw new Error('exists() must not be called when the env override is set');
+            },
             newestJsonMtimeMs: () => {
                 freshnessCalls++;
                 return 999;

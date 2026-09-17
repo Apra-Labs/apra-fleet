@@ -235,6 +235,14 @@ describe('id-allocator -- lives in the supervisor (end-to-end over HTTP routes)'
     });
 });
 
+// apra-fleet-j918.7.5: reduced from a three-test EPERM/EBUSY ladder RE-PROOF
+// to a WIRING proof -- see test/supervisor-ledger.test.mjs's identical
+// describe block for the full rationale and the falsification record (this
+// file's call site has the exact same shape: a static import of
+// renameWithRetry, called as renameWithRetry(fs, tmpPath, filePath,
+// renameRetryOpts) from src/supervisor/id-allocator.mjs). The backoff-ladder
+// algorithm itself stays owned exclusively by
+// test/supervisor-rename-with-retry.test.mjs.
 describe('id-allocator -- persist() rename retries transient EPERM/EBUSY (apra-fleet-cvb.5)', () => {
     /** A fake fs.rename() that fails N times with `code`, then delegates to the real rename. */
     function flakyRenameFs(realFs, code, failCount) {
@@ -256,23 +264,26 @@ describe('id-allocator -- persist() rename retries transient EPERM/EBUSY (apra-f
         };
     }
 
-    test('retry-then-succeed: a transient EPERM on rename() does not drop the allocation', async () => {
+    test('wiring: a transient EPERM on rename() is retried through the shared helper, and the allocation still commits durably', async () => {
         const realFs = await import('node:fs/promises');
-        const fakeFs = flakyRenameFs(realFs, 'EPERM', 2);
-        const sleeps = [];
+        const fakeFs = flakyRenameFs(realFs, 'EPERM', 1);
+        let sleepCalls = 0;
         const alloc = createIdAllocator({
             dataDir: dir,
             leaseMs: 100_000,
             fs: fakeFs,
-            renameRetry: { sleep: async (ms) => { sleeps.push(ms); } },
+            renameRetry: { sleep: async () => { sleepCalls += 1; } },
         });
         await alloc.start();
 
         const parent = 'apra-fleet-eft.9';
         const g = await alloc.allocate(parent, { pid: process.pid });
-        assert.equal(seqOf(g.childId, parent), 1, 'allocation must succeed despite the transient rename failures');
-        assert.equal(fakeFs.renameCalls, 3, 'rename must be retried until it succeeds (1 + 2 retries)');
-        assert.equal(sleeps.length, 2, 'a bounded backoff sleep is injected between retries, never a real wall-clock wait');
+        assert.equal(seqOf(g.childId, parent), 1, 'allocation must succeed despite the transient rename failure');
+        // WIRING ONLY -- see the ledger.test.mjs sibling block for why the
+        // exact attempt/backoff arithmetic is deliberately not re-asserted
+        // here.
+        assert.ok(fakeFs.renameCalls > 1, 'a transient rename failure must be retried, not surfaced immediately');
+        assert.ok(sleepCalls > 0, 'the shared helper\'s injected sleep must fire during the retry -- proves persist() delegates to renameWithRetry rather than a local retry loop');
 
         // The snapshot including this allocation must actually be durable on disk
         // -- confirming the audit is not lost, mirroring history.mjs/ledger.mjs coverage.
@@ -282,21 +293,27 @@ describe('id-allocator -- persist() rename retries transient EPERM/EBUSY (apra-f
         await alloc.stop();
     });
 
-    test('retry-then-succeed: a transient EBUSY on rename() does not drop the allocation', async () => {
+    test('wiring: a custom renameRetry.maxAttempts is honored by the REAL shared helper, not a local reimplementation', async () => {
         const realFs = await import('node:fs/promises');
-        const fakeFs = flakyRenameFs(realFs, 'EBUSY', 1);
+        const fakeFs = flakyRenameFs(realFs, 'EPERM', 99); // always fails
         const alloc = createIdAllocator({
             dataDir: dir,
             leaseMs: 100_000,
             fs: fakeFs,
-            renameRetry: { sleep: async () => {} },
+            renameRetry: { maxAttempts: 2, sleep: async () => {} },
         });
         await alloc.start();
 
         const parent = 'p';
-        const g = await alloc.allocate(parent, { pid: process.pid });
-        assert.equal(seqOf(g.childId, parent), 1);
-        assert.equal(fakeFs.renameCalls, 2, 'rename must be retried after a single transient EBUSY');
+        // FALSIFIABILITY: see test/supervisor-ledger.test.mjs's identical
+        // check for the by-hand falsification record (same call-site shape,
+        // confirmed against a /tmp copy of the package so the mutation never
+        // touched the tracked tree).
+        await assert.rejects(
+            () => alloc.allocate(parent, { pid: process.pid }),
+            (err) => err.code === 'EPERM',
+        );
+        assert.equal(fakeFs.renameCalls, 2, 'the custom maxAttempts option must be forwarded to and honored by the real shared helper');
 
         await alloc.stop();
     });

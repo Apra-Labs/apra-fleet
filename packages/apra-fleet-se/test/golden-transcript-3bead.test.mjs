@@ -14,6 +14,10 @@ import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { runCmd } from './helpers/bd-replay.mjs';
 import { extractVerifyIds } from './helpers/verify-clause.mjs';
 import { StalledSprintError } from '../fleet-sprint/errors.mjs';
+// apra-fleet-j918.7.8: the determinism test resets dolt-sync's process-
+// lifetime sync.remote/tip memoization (apra-fleet-akuv) before its own
+// independent second run -- see that test for why.
+import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -648,6 +652,18 @@ function extractReviewerBeadIdList(prompt) {
     return match ? match[1] : null;
 }
 
+// apra-fleet-j918.7.8: memoizes the ONE 'golden-3bead-main' run so the
+// snapshot test and the determinism test's "run1" share it instead of each
+// paying for their own byte-identically-configured full sprint run -- see
+// golden-transcript.test.mjs's identical-purpose goldenMainRun() for the
+// full rationale (promise memoization, why the determinism test's run2 stays
+// genuinely independent, and the falsification record).
+let golden3BeadMainRunPromise = null;
+function golden3BeadMainRun() {
+    if (!golden3BeadMainRunPromise) golden3BeadMainRunPromise = run3BeadScenario('golden-3bead-main');
+    return golden3BeadMainRunPromise;
+}
+
 /**
  * Runs one full deterministic 3-bead mock sprint and returns ONLY the two
  * order-sensitive artifacts this golden variant protects -- never the full
@@ -783,7 +799,7 @@ function diffFirstDivergence(goldenJsonl, actualJsonl) {
 }
 
 test('golden transcript (3-bead): streak-assignment prompt + reviewer bead-id list match the committed snapshot', async (t) => {
-    const { artifacts, result } = await run3BeadScenario('golden-3bead-main');
+    const { artifacts, result } = await golden3BeadMainRun();
     const actualJsonl = artifactsToJsonl(artifacts);
 
     assert.strictEqual(result.status, 'success', `3-bead scenario did not succeed: ${JSON.stringify(result)}`);
@@ -907,8 +923,25 @@ test('golden transcript (3-bead): Integ Test closing the childful epic in the sa
     );
 });
 
+// apra-fleet-j918.7.8: run1 is the MEMOIZED 'golden-3bead-main' run the
+// snapshot test above already performed (golden3BeadMainRun()) -- this file
+// used to pay for a second, byte-identically-configured full sprint run
+// purely to have a "first run" to diff against. run2 is still a genuinely
+// INDEPENDENT second execution (tag 'golden-3bead-det-2', its own tempDir,
+// its own full sprint), so this remains a real two-independent-runs
+// comparison, not a run compared against itself. See
+// golden-transcript.test.mjs's identical-purpose test for the falsification
+// record proving the comparison still fires on a real divergence.
 test('golden transcript (3-bead): two consecutive runs produce an identical snapshot (determinism proof)', async () => {
-    const run1 = await run3BeadScenario('golden-3bead-det-1');
+    const run1 = await golden3BeadMainRun();
+    // run1 may have been the FIRST sprint scenario this test process ever
+    // ran, which is when dolt-sync.mjs's per-member sync.remote/tip
+    // memoization (apra-fleet-akuv) is still cold -- see
+    // golden-transcript.test.mjs's identical reset for why this is required
+    // for an apples-to-apples comparison against run2.
+    invalidateSyncRemoteCache();
+    clearLastSyncedTip();
+    clearTipProbeFailures();
     const run2 = await run3BeadScenario('golden-3bead-det-2');
 
     const jsonl1 = artifactsToJsonl(run1.artifacts);

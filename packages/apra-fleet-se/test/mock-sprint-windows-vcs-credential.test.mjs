@@ -83,10 +83,13 @@ test('buildCredentialReadCommand: windows -- no bare $HOME/~, references the .ba
     check(hasBareHomeExpansion(decoded) === false, `decoded script must not carry a bare $HOME/~ expansion either, got: ${decoded}`);
 });
 
-test('buildCredentialReadCommand: linux -- byte-identical to the pre-ot2z.1 $HOME/... string', () => {
+test('buildCredentialReadCommand: linux -- the double-quoted $HOME/... string (apra-fleet-j918.12)', () => {
     const { command, descriptor } = buildCredentialReadCommand('linux', 'github');
-    check(command === '$HOME/.fleet-git-credential-github', `expected the byte-identical pre-fix POSIX string, got: ${command}`);
-    check(descriptor === command, `expected descriptor === command on the POSIX branch, got descriptor: ${descriptor}`);
+    // apra-fleet-j918.12: the POSIX/gitbash shapes now double-quote the path
+    // so a HOME containing whitespace still resolves; the descriptor (used
+    // only for human-readable error messages) stays the bare, unquoted path.
+    check(command === '"$HOME/.fleet-git-credential-github"', `expected the quoted POSIX string, got: ${command}`);
+    check(descriptor === '$HOME/.fleet-git-credential-github', `expected the bare descriptor, got: ${descriptor}`);
 });
 
 // -----------------------------------------------------------------------

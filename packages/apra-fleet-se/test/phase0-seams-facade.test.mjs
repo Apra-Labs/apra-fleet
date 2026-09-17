@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { resultText, resolveMemberTarget, clearMemberOsCache } from '../fleet-sprint/runner.js';
+import { resultText, resolveMemberTarget } from '../fleet-sprint/runner.js';
 
 // apra-fleet-3swo.2.6: proves the two Phase 0 seams (mcp-result.mjs,
 // member-target.mjs -- apra-fleet-3swo.2.4/2.5) are behaviour-preserving:
@@ -46,6 +46,24 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
     test('both golden transcript tests pass without UPDATE_GOLDEN, and the fixture directory stays clean', () => {
         const env = { ...process.env };
         delete env.UPDATE_GOLDEN;
+        // NODE_TEST_CONTEXT=child-v8 is set by node --test on ITS OWN
+        // process (even standalone, not just when nested under a parent
+        // node --test run). A node --test child spawned via execFileSync
+        // while that var is still in its env silently no-ops ("run() is
+        // being called recursively within a test file. skipping running
+        // files.") -- empty stdout, exit 0, no test actually run -- instead
+        // of executing the requested files. Without this delete, this whole
+        // test falsely passes in well under a second instead of genuinely
+        // exercising golden-transcript.test.mjs / golden-transcript-3bead
+        // .test.mjs. Mirrors the already-working pattern in
+        // phase1-leaf-facade-completeness.test.mjs and phase3-dispatch-
+        // engine-completeness.test.mjs.
+        delete env.NODE_TEST_CONTEXT;
+        // apra-fleet-j918.13.2: pin the env-hygiene fix itself, asserting on
+        // the actual object handed to the nested spawn below (not a
+        // source-text regex) -- `env` is the same reference passed as the
+        // spawn's `env` option two statements down.
+        assert.equal(env.NODE_TEST_CONTEXT, undefined, 'NODE_TEST_CONTEXT must be unset in the env object handed to the nested golden-transcript spawn, or the child silently no-ops instead of genuinely running');
 
         // This duplicates the execution the package's own test/*.test.mjs
         // glob already gives golden-transcript.test.mjs and
@@ -55,12 +73,30 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
         // for the ambient run, which would make the git-status check below a
         // false failure if it depended on that run instead. An explicit
         // timeout caps the risk called out in apra-fleet-3swo.10 of an
-        // untimed spawn silently hanging the whole suite.
+        // untimed spawn silently hanging the whole suite -- raised from a
+        // vacuous-run-sized budget to comfortably cover the genuine ~6776ms
+        // audit baseline now that the child actually runs.
         // Must not throw (node --test exits non-zero on any failing subtest).
-        execFileSync(
+        const childOut = execFileSync(
             process.execPath,
             ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
-            { cwd: packageRoot, env, stdio: 'pipe', timeout: 60_000 },
+            { cwd: packageRoot, env, encoding: 'utf-8', stdio: 'pipe', timeout: 120_000 },
+        );
+
+        // apra-fleet-j918.13.2: falsifiable pin against the vacuous no-op
+        // child (j918.13) recurring -- a bare non-throw/exit-0 is NOT
+        // sufficient, since the no-op child also exits 0 in well under a
+        // second. Assert on OBSERVABLE properties of the child's captured
+        // output instead: the recursive-skip warning must be absent, and the
+        // node:test TAP summary must report a positive executed-test count.
+        assert.ok(
+            !childOut.includes('is being called recursively') && !childOut.includes('skipping running files'),
+            `the nested golden-transcript child must not silently no-op (recursive-skip warning found in its output); got:\n${childOut.slice(-2000)}`,
+        );
+        const passMatch = childOut.match(/^# pass (\d+)$/m);
+        assert.ok(
+            passMatch && Number(passMatch[1]) > 0,
+            `expected the child golden-transcript run to report at least one passing test in its TAP summary; got output:\n${childOut.slice(-2000)}`,
         );
 
         const dirty = execFileSync('git', ['status', '--porcelain', '--', goldenFixtureDir], {
@@ -75,24 +111,14 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
         assert.equal(typeof resultText, 'function', 'resultText must still resolve from fleet-sprint/runner.js');
     });
 
-    test('member_detail dispatch count does not increase when the same member is resolved twice', async () => {
-        clearMemberOsCache();
-        let callCount = 0;
-        const fleetApi = {
-            memberDetail: async () => {
-                callCount += 1;
-                return { content: [{ text: JSON.stringify({ os: 'linux', shell: '' }) }] };
-            },
-        };
-        const log = () => {};
-
-        await resolveMemberTarget({ fleetApi, member: 'facade-test-member', log });
-        assert.equal(callCount, 1);
-        await resolveMemberTarget({ fleetApi, member: 'facade-test-member', log });
-        assert.equal(callCount, 1, 'a second resolution of the same member must be served from cache, not re-dispatch member_detail');
-
-        clearMemberOsCache();
-    });
+    // apra-fleet-j918.7.2: the member_detail dispatch-count assertion that
+    // used to live here (single member resolved twice -> dispatch count
+    // stays 1) was a strict subset of resolve-member-os-cache.test.mjs's
+    // "member_detail is dispatched at most once per member ..." test
+    // (apra-fleet-3swo.2.5), which asserts the SAME single-member-cached
+    // behavior (via its 'member-a' resolved twice case) PLUS the
+    // distinct-member dispatch case this file never covered. Removed here
+    // rather than duplicated; see that file for the live assertion.
 
     test('falsification: removing the resolveMemberTarget re-export from runner.js demonstrably breaks the facade assertion, then the line is restored', async () => {
         // Runs against a faithful sandbox copy of fleet-sprint/, not the

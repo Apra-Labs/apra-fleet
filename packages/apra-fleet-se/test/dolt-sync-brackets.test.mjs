@@ -14,11 +14,24 @@ import {
     preflightBeadsHealthGate,
     verifyDoerStreakClosed,
 } from '../fleet-sprint/runner.js';
-import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
+import {
+    invalidateSyncRemoteCache,
+    clearLastSyncedTip,
+    clearTipProbeFailures,
+    extractDoltRemoteUrl,
+} from '../fleet-sprint/dolt-sync.mjs';
 import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
 // apra-fleet-3swo.5.7: the D-push flags now live in the policy table, so the
 // census below reads them from there rather than from runner.js source.
 import { allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
+import {
+    loadVcsStderrCorpus,
+    stderrSamples,
+    stderrSample,
+    stderrText,
+    recordedKinds,
+    provenance,
+} from './helpers/vcs-stderr-corpus.mjs';
 
 // The sync.remote probe memo and the remote-tip fingerprint are both
 // module-level, process-lifetime caches keyed by member name (apra-fleet-akuv,
@@ -82,21 +95,105 @@ const OK = { ok: true, output: '', error: null };
 const fail = (error) => ({ ok: false, output: '', error });
 
 // -----------------------------------------------------------------------------
-// classifyDoltFailure: the transient-vs-diverged split the reconcile hinges on.
+// apra-fleet-j918.6.2 -- failure texts driven into the command() mocks below
+// are RECORDED from real `bd dolt` runs, not typed from memory. See
+// test/fixtures/vcs-stderr/README.md for the recorder and re-record steps.
 // -----------------------------------------------------------------------------
-test('classifyDoltFailure: conflict / non-fast-forward outputs classify as diverged', () => {
-    assert.equal(classifyDoltFailure('cannot fast-forward: divergent branches'), 'diverged');
-    assert.equal(classifyDoltFailure('merge conflict detected in table issues'), 'diverged');
-    assert.equal(classifyDoltFailure('Updates were rejected because the remote contains work'), 'diverged');
+const REAL_DOLT_AUTH_ID = 'dolt/auth/could-not-read-username-prompts-disabled';
+const REAL_DOLT_AUTH = stderrText(REAL_DOLT_AUTH_ID);
+const REAL_DOLT_DIVERGED = stderrText('dolt/diverged/push-no-common-ancestor');
+const REAL_DOLT_TRANSIENT_REFUSED = stderrText('dolt/transient/connection-refused');
+const REAL_DOLT_NO_REMOTE = stderrText('dolt/no-remote/pull-with-no-remote-configured');
+const REAL_DOLT_EMPTY_REMOTE = stderrText('dolt/empty-remote/pull-git-remote-without-dolt-data');
+const REAL_DOLT_REMOTE_UNREACHABLE = stderrText('dolt/remote-unreachable/push-to-nonexistent-path');
+
+// -----------------------------------------------------------------------------
+// classifyDoltFailure -- asserted against RECORDED real `bd dolt` output
+// (apra-fleet-j918.6.2). The corpus lives in test/fixtures/vcs-stderr/ and is
+// produced by that directory's record-vcs-stderr.mjs; see its README.md.
+//
+// Recorded through `bd dolt`, NOT the raw `dolt` CLI, because that is the only
+// surface dolt-sync.mjs ever parses: bd re-surfaces dolt's error as
+// `Error 1105: ...` out of dolt_pull()/dolt_push(), and the raw CLI wording is
+// different text entirely.
+//
+// NON-OBVIOUS RISK this guards, and why the assertions are written by
+// DIRECTION rather than as a bag of equalities: the realistic defect is a
+// message REWORD (dolt's or bd's), not a deleted rule, and the two directions
+// that hurt are:
+//
+//   diverged -> unknown    fail-fast is disabled: doltPushAfter stops raising
+//                          DoltDivergedError, so an independent-history
+//                          divergence is papered over instead of surfaced for
+//                          reconcile.
+//   diverged -> transient  worse: the D-push bracket RETRIES a divergence,
+//                          turning a hard stop into a retry loop against a
+//                          remote that refuses it identically every time.
+//
+// REAL-CAPTURE FINDING worth keeping: the recorded divergence sample earns its
+// 'diverged' verdict from "histories have diverged" on its FOURTH line. Its
+// first line is `Error 1105: unknown push error; no common ancestor`, which
+// matches no rule at all -- so any change that truncates or first-lines dolt
+// output before classifying flips the verdict to 'unknown' and silently
+// disables fail-fast. That is asserted explicitly below.
+// -----------------------------------------------------------------------------
+test('classifyDoltFailure assigns every RECORDED real-dolt sample to its recorded bucket', () => {
+    const corpus = loadVcsStderrCorpus();
+    const samples = stderrSamples('dolt');
+    assert.ok(samples.length > 0, 'the recorded dolt corpus must not be empty');
+    assert.match(String(corpus.tools.dolt), /^dolt version /, 'the corpus must record the dolt version');
+    assert.match(String(corpus.tools.bd), /^bd version /, 'the corpus must record the bd version that wrapped dolt');
+    for (const s of samples) {
+        assert.equal(classifyDoltFailure(s.stderr), s.expect, provenance(s));
+    }
 });
 
-test('classifyDoltFailure: network / lock outputs classify as transient', () => {
-    assert.equal(classifyDoltFailure('connection refused'), 'transient');
-    assert.equal(classifyDoltFailure('could not resolve host: dolthub.com'), 'transient');
+test('the recorded dolt corpus covers every bucket classifyDoltFailure can return', () => {
+    // A new bucket must not be able to arrive with only hand-typed coverage:
+    // this fails until record-vcs-stderr.mjs grows a recipe that provokes it.
+    assert.deepEqual(
+        recordedKinds('dolt'),
+        ['auth', 'diverged', 'empty-remote', 'no-remote', 'remote-unreachable', 'transient', 'unknown'],
+        'every classifyDoltFailure verdict needs at least one recorded real-dolt sample',
+    );
+});
+
+test('classifyDoltFailure: recorded divergence is never softened to unknown or hardened into a retry', () => {
+    for (const s of stderrSamples('dolt').filter((x) => x.expect === 'diverged')) {
+        const got = classifyDoltFailure(s.stderr);
+        assert.notEqual(got, 'unknown', `${provenance(s)}: diverged read as unknown DISABLES fail-fast`);
+        assert.notEqual(got, 'transient', `${provenance(s)}: diverged read as transient turns a hard stop into a RETRY LOOP`);
+        assert.notEqual(got, 'auth', `${provenance(s)}: diverged read as auth would fire a pointless credential self-heal`);
+        assert.equal(got, 'diverged', provenance(s));
+    }
+    // The load-bearing line is NOT the first one. Pin that explicitly so a
+    // future "just log the first line" change fails here rather than in
+    // production.
+    const div = stderrSample('dolt/diverged/push-no-common-ancestor');
+    const firstLine = div.stderr.split('\n').find((l) => l.includes('Error 1105'));
+    assert.equal(
+        classifyDoltFailure(firstLine),
+        'unknown',
+        `${provenance(div)}: precondition -- the Error 1105 line alone classifies as unknown, so the verdict depends on NOT truncating`,
+    );
+    assert.equal(classifyDoltFailure(div.stderr), 'diverged', `${provenance(div)}: the full recorded output must classify diverged`);
+});
+
+test('classifyDoltFailure: recorded transient output is never hardened into diverged', () => {
+    for (const s of stderrSamples('dolt').filter((x) => x.expect === 'transient')) {
+        const got = classifyDoltFailure(s.stderr);
+        assert.notEqual(got, 'diverged', `${provenance(s)}: transient read as diverged would ABORT the sprint on a network blip`);
+        assert.equal(got, 'transient', provenance(s));
+    }
 });
 
 test('classifyDoltFailure: unclassifiable output is unknown (never silently transient)', () => {
-    assert.equal(classifyDoltFailure('some brand-new dolt failure text'), 'unknown');
+    for (const s of stderrSamples('dolt').filter((x) => x.expect === 'unknown')) {
+        const got = classifyDoltFailure(s.stderr);
+        assert.notEqual(got, 'transient', `${provenance(s)}: unrecognized output must NOT be silently retried as transient`);
+        assert.equal(got, 'unknown', provenance(s));
+    }
+    // No real invocation produces empty output, so this edge stays synthetic.
     assert.equal(classifyDoltFailure(''), 'unknown');
 });
 
@@ -107,6 +204,13 @@ test('classifyDoltFailure: unclassifiable output is unknown (never silently tran
 // classifyGitFailure, checked after 'diverged' but before 'transient'.
 // -----------------------------------------------------------------------------
 test('classifyDoltFailure: credential-style outputs classify as a new "auth" kind, checked after diverged but before transient', () => {
+    // RECORDED: a real `bd dolt pull` against an HTTPS remote with no usable
+    // credential helper and GIT_TERMINAL_PROMPT=0 (apra-fleet-j918.6.2).
+    assert.equal(classifyDoltFailure(REAL_DOLT_AUTH), 'auth', provenance(stderrSample(REAL_DOLT_AUTH_ID)));
+    // The literal text from the 2026-08-02 fleet-mac live incident, kept
+    // verbatim: it is real observed output, and it is the exact string whose
+    // misclassification as 'diverged' hard-aborted a healthy sprint and made
+    // dolt.mjs check AUTH before DIVERGED (see that provider's header).
     assert.equal(
         classifyDoltFailure("fatal: could not read Username for 'https://github.com': Device not configured"),
         'auth',
@@ -114,10 +218,11 @@ test('classifyDoltFailure: credential-style outputs classify as a new "auth" kin
     );
     assert.equal(classifyDoltFailure('remote: Bad credentials'), 'auth');
     assert.equal(classifyDoltFailure('remote: Authentication failed'), 'auth');
-    // Divergence must never be misclassified as auth.
-    assert.equal(classifyDoltFailure('cannot fast-forward: divergent branches'), 'diverged');
+    // Divergence must never be misclassified as auth -- asserted against the
+    // RECORDED divergence, not a hand-typed approximation of one.
+    assert.equal(classifyDoltFailure(REAL_DOLT_DIVERGED), 'diverged');
     // Transient stays transient, unaffected.
-    assert.equal(classifyDoltFailure('connection refused'), 'transient');
+    assert.equal(classifyDoltFailure(REAL_DOLT_TRANSIENT_REFUSED), 'transient');
 });
 
 // -----------------------------------------------------------------------------
@@ -129,15 +234,46 @@ test('classifyDoltFailure: credential-style outputs classify as a new "auth" kin
 // skip is not over-broad).
 // -----------------------------------------------------------------------------
 test("classifyDoltFailure: 'Error 1105: no remote' and 'no remote' fetch text classify as no-remote", () => {
-    assert.equal(
-        classifyDoltFailure("fetch from origin/main: Error 1105: no remote"),
-        'no-remote',
+    // RECORDED: `bd dolt pull` in a beads clone with no Dolt remote at all.
+    assert.equal(classifyDoltFailure(REAL_DOLT_NO_REMOTE), 'no-remote', provenance(stderrSample('dolt/no-remote/pull-with-no-remote-configured')));
+    assert.match(
+        REAL_DOLT_NO_REMOTE,
+        /Error 1105: no remote/,
+        'the recorded sample is the real "Error 1105: no remote" wording this bucket was written for',
     );
-    assert.equal(
-        classifyDoltFailure("[Command Failed] Error: fetch from origin/main: Error 1105: no remote"),
-        'no-remote',
-    );
+    // The `[Command Failed] Error: ` prefix is added by the fleet command()
+    // layer, not by bd, so it cannot be recorded from a bd invocation -- wrap
+    // the RECORDED text rather than re-typing a whole fake message.
+    assert.equal(classifyDoltFailure(`[Command Failed] Error: ${REAL_DOLT_NO_REMOTE}`), 'no-remote');
     assert.equal(classifyDoltFailure('no remote configured for this repository'), 'no-remote');
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-j918.6.2: the two remaining benign/fatal non-error buckets
+// (empty-remote, remote-unreachable) had no recorded coverage either. Both are
+// ROUTING decisions -- empty-remote is a benign skip, remote-unreachable is a
+// named permanent diagnosis -- so a reword that collapses either into
+// 'unknown' or 'transient' changes behavior silently.
+// -----------------------------------------------------------------------------
+test('classifyDoltFailure: recorded empty-remote and remote-unreachable keep their distinct buckets', () => {
+    const empty = stderrSample('dolt/empty-remote/pull-git-remote-without-dolt-data');
+    assert.equal(classifyDoltFailure(REAL_DOLT_EMPTY_REMOTE), 'empty-remote', provenance(empty));
+    assert.notEqual(classifyDoltFailure(REAL_DOLT_EMPTY_REMOTE), 'transient', `${provenance(empty)}: an empty remote must never be retried`);
+
+    const unreachable = stderrSample('dolt/remote-unreachable/push-to-nonexistent-path');
+    assert.equal(classifyDoltFailure(REAL_DOLT_REMOTE_UNREACHABLE), 'remote-unreachable', provenance(unreachable));
+    assert.notEqual(
+        classifyDoltFailure(REAL_DOLT_REMOTE_UNREACHABLE),
+        'diverged',
+        `${provenance(unreachable)}: a dead remote must never be reported to the operator as data divergence`,
+    );
+    // extractDoltRemoteUrl feeds the named diagnosis for this bucket, so it
+    // must survive the real wrapper text too, not just a hand-typed one.
+    assert.match(
+        String(extractDoltRemoteUrl(REAL_DOLT_REMOTE_UNREACHABLE)),
+        /this-path-does-not-exist\.git$/,
+        `${provenance(unreachable)}: extractDoltRemoteUrl must recover the remote URL from the REAL wrapper text`,
+    );
 });
 
 test('doltPullBefore: a no-remote failure returns a benign skip, never throws', async () => {
@@ -151,17 +287,17 @@ test('doltPullBefore: a no-remote failure returns a benign skip, never throws', 
 
 test('doltPullBefore: transient/diverged/unknown failures still throw despite the no-remote skip existing', async () => {
     await assert.rejects(
-        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('merge conflict detected')] }).command }),
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('merge conflict detected')] }).command, sleep: async () => {} }),
         DoltDivergedError,
         'diverged D-pull failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] }).command }),
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'transient-exhausted D-pull failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('some brand-new dolt failure text')] }).command }),
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('some brand-new dolt failure text')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'unknown D-pull failures are not swallowed by the no-remote skip',
     );
@@ -178,17 +314,17 @@ test('doltPushAfter: a no-remote failure returns a benign skip, never throws, an
 
 test('doltPushAfter: transient/diverged/unknown failures still throw despite the no-remote skip existing', async () => {
     await assert.rejects(
-        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('cannot fast-forward: divergent branches')], 'bd dolt pull': [OK] }).command }),
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('cannot fast-forward: divergent branches')], 'bd dolt pull': [OK] }).command, sleep: async () => {} }),
         DoltDivergedError,
         'diverged D-push failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('connection refused'), fail('connection refused')] }).command }),
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('connection refused'), fail('connection refused')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'transient-exhausted D-push failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('some brand-new dolt failure text')] }).command }),
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('some brand-new dolt failure text')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'unknown D-push failures are not swallowed by the no-remote skip',
     );
@@ -265,7 +401,7 @@ test('doltPushAfter: still rejected after the one reconcile raises typed DoltDiv
 
 test('doltPushAfter: a transient-exhausted push raises DoltSyncError (not DoltDivergedError), no reconcile', async () => {
     const { command, calls } = makeCommandMock({ 'bd dolt push': [fail('connection refused')] });
-    await assert.rejects(() => doltPushAfter('memberA', { command }), DoltSyncError);
+    await assert.rejects(() => doltPushAfter('memberA', { command, sleep: async () => {} }), DoltSyncError);
     assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'a non-diverged failure triggers no reconcile pull');
 });
 
@@ -620,7 +756,7 @@ test('preflightBeadsHealthGate: no-remote skip passes through unchanged (not tre
 
 test('preflightBeadsHealthGate: a non-diverged (transient-exhausted/unknown) failure is re-thrown unchanged, not rewritten', async () => {
     const { command } = makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] });
-    await assert.rejects(() => preflightBeadsHealthGate('memberA', { command }), DoltSyncError);
+    await assert.rejects(() => preflightBeadsHealthGate('memberA', { command, sleep: async () => {} }), DoltSyncError);
 });
 
 test('preflightBeadsHealthGate: on divergence, composes a one-line cause naming workspace, table(s), and remediation, then throws DoltDivergedError', async () => {
