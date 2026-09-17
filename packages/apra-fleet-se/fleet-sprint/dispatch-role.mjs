@@ -224,16 +224,32 @@ function turnBaseValue(name) {
 }
 
 /**
- * The same-session resume argument, resolved from `policy.resumeArg`:
- *   null            -- absent
+ * The resume argument, resolved from `policy.resumeArg`:
  *   'same-session'  -- true (an in-dispatch continuation of the session just run)
+ *   'fresh-session' -- false (a self-contained one-off instruction)
  *   'round-session' -- opts.resumeArg, the runner's per-round session lookup
  *   'worklist'      -- opts.resumeArg, the doer's per-worklist resume argument
+ *   null/absent     -- false, NOT undefined (see below)
+ *
+ * NEVER RETURNS `undefined`. The dispatch below strips undefined options, so
+ * an undefined here means the `resume` field is omitted from the payload
+ * entirely -- and an omitted `resume` is not neutral: execute_prompt's own
+ * default is `resume: true`, a best-effort reattachment to whatever session
+ * that member last ran. A dispatch that never declared an intent to continue
+ * anything would then silently inherit an unrelated, possibly enormous prior
+ * context. Falling back to `false` states the safe intent explicitly instead
+ * of letting the transport chain decide it. Every row of the policy table
+ * also names its own resumeArg, so this fallback is a backstop for a future
+ * row that forgets, not the table's working default.
  */
 export function resolveResumeArg(resumeArg, opts) {
-    if (!resumeArg) return undefined;
+    if (!resumeArg) return false;
     if (resumeArg.kind === 'same-session') return true;
-    return opts.resumeArg;
+    if (resumeArg.kind === 'fresh-session') return false;
+    // A runner-supplied argument: already `false` or an explicit session id at
+    // every call site today. `?? false` keeps the never-undefined guarantee if
+    // a caller ever omits it.
+    return opts.resumeArg ?? false;
 }
 
 /**

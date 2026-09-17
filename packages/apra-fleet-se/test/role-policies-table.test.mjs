@@ -371,6 +371,7 @@ function maxTurnsExpr(maxTurns) {
 function resumeArgExpr(resumeArg) {
     if (resumeArg === null) return null;
     if (resumeArg.kind === 'same-session') return 'true';
+    if (resumeArg.kind === 'fresh-session') return 'false';
     if (resumeArg.kind === 'worklist') return 'worklistResumeArg';
     return `roundSessions.resumeArgFor('${resumeArg.role}', cycle)`;
 }
@@ -1713,10 +1714,14 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                     `${row.name}: hard elapsed-time budget.`
                 );
 
-                const expectedResume = p.resumeArg === null
-                    ? null
-                    : (p.resumeArg.kind === 'same-session' ? true : (opts.resumeArg ?? null));
-                assert.strictEqual(o.resume ?? null, expectedResume, `${row.name}: same-session resume argument.`);
+                // Every row now declares its resume intent, and the engine
+                // never emits `undefined` for it -- an omitted `resume` would
+                // inherit execute_prompt's own `resume: true` default and
+                // silently reattach a one-off dispatch to a stale session.
+                const expectedResume = p.resumeArg === null || p.resumeArg.kind === 'fresh-session'
+                    ? false
+                    : (p.resumeArg.kind === 'same-session' ? true : (opts.resumeArg ?? false));
+                assert.strictEqual(o.resume ?? null, expectedResume, `${row.name}: resume argument.`);
                 assert.strictEqual(o.agentType ?? null, p.agentType, `${row.name}: persona.`);
                 assert.strictEqual(
                     o.schema ?? null,

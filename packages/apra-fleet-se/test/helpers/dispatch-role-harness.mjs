@@ -397,6 +397,12 @@ export const ROLE_CALL_OPTS = Object.freeze({
             maxTurns: TURN_BASES.BASE_DOER_MAX_TURNS * (2 ** Math.max(resumeAttempt, 1)),
         }),
         prompt: 'DOER PROMPT',
+        // The worklist resume argument the runner computes per streak. `false`
+        // is the FIRST-streak value production really passes (a later streak
+        // passes the captured session id instead); it is spelled here because
+        // the doer's dispatch must carry an explicit resume either way --
+        // omitting it would inherit execute_prompt's `resume: true` default.
+        resumeArg: false,
         resumePrompt: 'DOER RESUME PROMPT',
         roleLabel: 'Doer streak [bead-1]',
         label: 'Streak [bead-1]',
