@@ -33,8 +33,8 @@ import {
     allDispatchPolicies,
     pushesCode,
 } from '../fleet-sprint/role-policies.mjs';
-import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
-import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
+import { KB_SELF_INJECTING_ROLES, resolveDispatchInactivityTimeoutS } from '../fleet-sprint/runner.js';
+import { dispatchRole, resolveBudget } from '../fleet-sprint/dispatch-role.mjs';
 import { PLANNING_LADDERS, ENGINE_DISPATCHES } from './helpers/planning-ladders.mjs';
 import {
     createRecordingCtx,
@@ -505,6 +505,67 @@ function assertNoArmedWatchdogShorterThanMaxTotalS(policies) {
             );
         }
     }
+}
+
+/**
+ * THE table-level gate for apra-fleet-25yl.1.6: at every dispatch that
+ * declares real budgets, the RESOLVED inactivity budget must be strictly
+ * LESS THAN the RESOLVED hard elapsed ceiling for that same row -- an
+ * inactivity budget that ever equals or exceeds its own row's max total
+ * cannot do the job DISPATCH_INACTIVITY_TIMEOUT_S exists for (catching a
+ * silent dispatch before the hard ceiling would anyway), and the two rows
+ * whose maxTotalS is a multiple of DISPATCH_TIMEOUT_S rather than
+ * DISPATCH_TIMEOUT_S itself (integ-test-runner, regression-test-runner) are
+ * exactly the ones a symbolic rename to the wrong name could silently keep
+ * numerically true for at other args -- see the falsification below.
+ *
+ * The one row (streak-assignment, main dispatch AND its own semantic-repair
+ * re-ask secondary -- apra-fleet-25yl.1.5) that declares budgets(null, null)
+ * has nothing to compare and is skipped EXPLICITLY, with the skip count
+ * itself asserted so a future change that nulls a row cannot silently empty
+ * the loop.
+ *
+ * Iterates every dispatch the same way allDispatchPolicies() does (main +
+ * secondary, de-duplicated), but takes `policies` and `ctx` as parameters --
+ * so the falsification test below can run it against a spliced table.
+ * @param {object} policies a ROLE_POLICIES-shaped table
+ * @param {object} ctx a dispatch-role.mjs ctx carrying ctx.budgets
+ */
+function assertInactivityBudgetStrictlyLessThanMaxTotal(policies, ctx) {
+    const seen = new Set();
+    let skipped = 0;
+    let compared = 0;
+    for (const name of Object.keys(policies)) {
+        const entry = policies[name];
+        for (const dispatch of [entry, entry.secondary]) {
+            if (!dispatch || seen.has(dispatch)) continue;
+            seen.add(dispatch);
+            const { timeoutS, maxTotalS } = dispatch.timeouts;
+            if (timeoutS === null && maxTotalS === null) {
+                skipped += 1;
+                continue;
+            }
+            compared += 1;
+            const inactivity = resolveBudget(ctx, timeoutS);
+            const maxTotal = resolveBudget(ctx, maxTotalS);
+            assert.ok(
+                inactivity < maxTotal,
+                `${dispatch.role}:${dispatch.kind}: resolved inactivity budget (${inactivity}) must be strictly ` +
+                `less than this row's own resolved max total (${maxTotal}), never equal or greater.`
+            );
+        }
+    }
+    assert.strictEqual(
+        skipped,
+        2,
+        'expected exactly two dispatches (streak-assignment main + its semantic-repair re-ask) to declare no ' +
+        'budgets at all and be skipped -- a different skip count means a row that should be comparable was ' +
+        'missed, or a row that should be compared went null.'
+    );
+    assert.ok(
+        compared >= 11,
+        `expected at least 11 dispatches with real budgets to be compared for distinctness, got ${compared}.`
+    );
 }
 
 /** Rebuilds a watchdog label's source expression from its segment list. */
@@ -1390,11 +1451,12 @@ describe('role policy table: every named variance is expressed as data', () => {
             (err) => err instanceof assert.AssertionError && /regression-test-runner:main/.test(err.message),
             'Same defect, same gate, for regression-test-runner.'
         );
-        // deployer's two budgets are EQUAL (budgets('DISPATCH_TIMEOUT_S',
-        // 'DISPATCH_TIMEOUT_S')), so hard-coding its watchdog to
-        // 'DISPATCH_TIMEOUT_S' is NOT shorter than its own maxTotalS and must
-        // NOT trip the gate -- proving this check does not just fail on any
-        // splice, only on a genuinely-too-short budget.
+        // deployer's own maxTotalS is 'DISPATCH_TIMEOUT_S' (budgets(
+        // 'DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S')), so
+        // hard-coding its watchdog to 'DISPATCH_TIMEOUT_S' names that SAME
+        // maxTotalS budget and is NOT shorter than it -- must NOT trip the
+        // gate -- proving this check does not just fail on any splice, only
+        // on a genuinely-too-short budget.
         assertNoArmedWatchdogShorterThanMaxTotalS(
             splicePolicy('deployer', {
                 watchdog: { ...ROLE_POLICIES.deployer.watchdog, timeoutS: 'DISPATCH_TIMEOUT_S' },
@@ -2460,5 +2522,210 @@ describe('apra-fleet-3swo.5.4: the consolidated degrade path is driven by the ta
                 `${role}: names a schema the engine can resolve, so agent() validates and repairs its output.`
             );
         }
+    });
+});
+
+// =============================================================================
+// apra-fleet-25yl.8: deterministic fast-lane coverage for the divergence
+// between DISPATCH_INACTIVITY_TIMEOUT_S and DISPATCH_TIMEOUT_S.
+//
+// The slow-lane stalled-session test
+// (test/slow/mock-sprint-planner-dispatch-stalled-session.test.mjs) derives
+// both of its wall-clock bounds through budgets[policy.watchdog.timeoutS],
+// which resolveWatchdogTimeout() (fleet-sprint/role-policies.mjs) collapses
+// to the row's maxTotalS -- i.e. DISPATCH_TIMEOUT_S, never
+// DISPATCH_INACTIVITY_TIMEOUT_S. At that scenario's dispatch_timeout_s floor
+// of 60, runner.js's own clamp (Math.min(1800, DISPATCH_TIMEOUT_S), see
+// fleet-sprint/runner.js) yields Math.min(1800, 60) === 60, so the two
+// budgets are numerically identical there and no assertion in that file can
+// tell them apart. The divergence only appears once DISPATCH_TIMEOUT_S >
+// 1800, which is unobservable in a real wall-clock slow test (it would need
+// a run lasting more than 30 minutes).
+//
+// This block calls runner.js's own exported resolveDispatchInactivityTimeoutS
+// clamp directly (apra-fleet-25yl.8 rework: the clamp used to be an inline,
+// unexported const inside main(), which forced this test to reimplement the
+// formula itself -- a reimplementation can never fail if the production
+// clamp is ever removed) against a dispatch_timeout_s of 9000 -- comfortably
+// above the 1800s clamp ceiling -- and resolves the planner row's OWN
+// recorded budget NAMES (never hardcoded) through resolveBudget(), the same
+// function dispatch-role.mjs uses at real dispatch time. It proves two
+// things a same-value scenario cannot: (a) the clamp actually caps the
+// inactivity budget at 1800 while leaving the hard elapsed ceiling at the
+// full 9000, and (b) the armed watchdog still resolves from the UNCLAMPED
+// hard elapsed ceiling (maxTotalS), not from the clamped inactivity budget --
+// exactly the invariant resolveWatchdogTimeout()'s Final Review reopen
+// (apra-fleet-3swo.7.12) exists to protect.
+// =============================================================================
+describe('role policy table: DISPATCH_INACTIVITY_TIMEOUT_S clamp diverges from DISPATCH_TIMEOUT_S above 1800s (apra-fleet-25yl.8)', () => {
+    // Calls fleet-sprint/runner.js's own exported resolveDispatchInactivityTimeoutS
+    // -- the SAME function main() uses to compute DISPATCH_INACTIVITY_TIMEOUT_S --
+    // with a dispatch_timeout_s well above the 1800s ceiling so the clamp
+    // actually engages. If the production clamp is ever removed or changed,
+    // this value (and every assertion built on it below) changes with it.
+    const BIG_DISPATCH_TIMEOUT_S = 9000;
+    const CLAMPED_INACTIVITY_TIMEOUT_S = resolveDispatchInactivityTimeoutS(BIG_DISPATCH_TIMEOUT_S);
+
+    test('sanity: the production clamp (resolveDispatchInactivityTimeoutS) actually engages at this dispatch_timeout_s', () => {
+        assert.strictEqual(
+            CLAMPED_INACTIVITY_TIMEOUT_S,
+            1800,
+            'this test is only meaningful once DISPATCH_TIMEOUT_S exceeds the 1800s clamp ceiling.'
+        );
+        assert.notStrictEqual(
+            CLAMPED_INACTIVITY_TIMEOUT_S,
+            BIG_DISPATCH_TIMEOUT_S,
+            'the two budgets must actually diverge for this scenario to discriminate them.'
+        );
+    });
+
+    test('planner: timeouts.timeoutS clamps to 1800 while timeouts.maxTotalS keeps the full 9000s ceiling', () => {
+        const ctx = { budgets: { DISPATCH_TIMEOUT_S: BIG_DISPATCH_TIMEOUT_S, DISPATCH_INACTIVITY_TIMEOUT_S: CLAMPED_INACTIVITY_TIMEOUT_S } };
+        const p = ROLE_POLICIES.planner;
+
+        assert.strictEqual(p.timeouts.timeoutS, 'DISPATCH_INACTIVITY_TIMEOUT_S', 'planner names the inactivity budget by its symbolic name.');
+        assert.strictEqual(p.timeouts.maxTotalS, 'DISPATCH_TIMEOUT_S', 'planner names the hard elapsed ceiling by its symbolic name.');
+
+        assert.strictEqual(
+            resolveBudget(ctx, p.timeouts.timeoutS),
+            1800,
+            'the resolved inactivity budget must be clamped to 1800s even though DISPATCH_TIMEOUT_S is 9000.'
+        );
+        assert.strictEqual(
+            resolveBudget(ctx, p.timeouts.maxTotalS),
+            9000,
+            'the resolved hard elapsed ceiling must stay at the full, unclamped DISPATCH_TIMEOUT_S.'
+        );
+    });
+
+    test('planner: the armed watchdog still resolves from the unclamped maxTotalS (9000), never the clamped inactivity budget (1800)', () => {
+        const ctx = { budgets: { DISPATCH_TIMEOUT_S: BIG_DISPATCH_TIMEOUT_S, DISPATCH_INACTIVITY_TIMEOUT_S: CLAMPED_INACTIVITY_TIMEOUT_S } };
+        const p = ROLE_POLICIES.planner;
+
+        assert.strictEqual(p.watchdog.armed, true, 'this scenario is vacuous if the planner watchdog is ever disarmed.');
+        // resolveWatchdogTimeout() names the watchdog's budget as
+        // timeouts.maxTotalS ?? timeouts.timeoutS -- assert the NAME first so
+        // a later table change that flips which budget the watchdog names
+        // fails loudly here rather than silently passing on a coincidental
+        // resolved value.
+        assert.strictEqual(
+            p.watchdog.timeoutS,
+            p.timeouts.maxTotalS,
+            'the armed watchdog must name this row\'s own maxTotalS budget, not its inactivity budget.'
+        );
+
+        const resolvedWatchdogTimeoutS = resolveBudget(ctx, p.watchdog.timeoutS);
+        assert.strictEqual(
+            resolvedWatchdogTimeoutS,
+            9000,
+            'the armed watchdog must resolve to the full 9000s hard elapsed ceiling.'
+        );
+        assert.notStrictEqual(
+            resolvedWatchdogTimeoutS,
+            resolveBudget(ctx, p.timeouts.timeoutS),
+            'the armed watchdog must never resolve to the clamped 1800s inactivity budget.'
+        );
+    });
+});
+
+// =============================================================================
+// apra-fleet-25yl.1.6: distinctness of DISPATCH_INACTIVITY_TIMEOUT_S from
+// max_total_s, at the production default.
+//
+// apra-fleet-25yl.5 registered DISPATCH_INACTIVITY_TIMEOUT_S in the test
+// harness and realigned the pin/ladder tables to it, and apra-fleet-25yl.1.5
+// introduced the real resolveDispatchInactivityTimeoutS() clamp in
+// fleet-sprint/runner.js, but neither left a regression guard proving the
+// inactivity budget is actually SHORTER than each row's own hard elapsed
+// ceiling once real (production-resolved) numbers are involved -- the
+// symbolic-name equality checks in section (3) above and the clamp-engages
+// sanity check in the apra-fleet-25yl.8 block do not, by themselves, rule
+// out a future change that points a row's inactivity budget at the SAME
+// symbolic name as its own maxTotalS (which resolveBudget() would resolve
+// identically, silently defeating the whole point of a separate inactivity
+// budget).
+//
+// Uses the production default dispatch_timeout_s of 9000 -- comfortably
+// above the 1800s clamp ceiling, so DISPATCH_INACTIVITY_TIMEOUT_S and
+// DISPATCH_TIMEOUT_S are guaranteed to diverge -- and derives
+// INTEG_MAX_TOTAL_S / REGRESSION_TEST_MAX_TOTAL_S with the exact multipliers
+// fleet-sprint/runner.js uses (x2, x3), never re-typed as bare numbers.
+// =============================================================================
+describe('role policy table: inactivity budget vs max total distinctness (apra-fleet-25yl.1.6)', () => {
+    const DEFAULT_DISPATCH_TIMEOUT_S = 9000;
+    const DEFAULT_CTX = {
+        budgets: {
+            DISPATCH_TIMEOUT_S: DEFAULT_DISPATCH_TIMEOUT_S,
+            DISPATCH_INACTIVITY_TIMEOUT_S: resolveDispatchInactivityTimeoutS(DEFAULT_DISPATCH_TIMEOUT_S),
+            INTEG_MAX_TOTAL_S: DEFAULT_DISPATCH_TIMEOUT_S * 2,
+            REGRESSION_TEST_MAX_TOTAL_S: DEFAULT_DISPATCH_TIMEOUT_S * 3,
+        },
+    };
+
+    test('every dispatch\'s resolved inactivity budget is strictly less than its own resolved max total', () => {
+        // At the default 9000, the clamp caps the inactivity budget at 1800 --
+        // strictly less than DISPATCH_TIMEOUT_S itself (9000), and a fortiori
+        // less than the 2x/3x ceilings the integ/regression rows carry.
+        assert.strictEqual(DEFAULT_CTX.budgets.DISPATCH_INACTIVITY_TIMEOUT_S, 1800);
+        assertInactivityBudgetStrictlyLessThanMaxTotal(ROLE_POLICIES, DEFAULT_CTX);
+    });
+
+    // NOTE: assertion scoped to the production default (9000s) rather than
+    // claimed for every possible dispatch_timeout_s -- at a small enough
+    // dispatch_timeout_s the clamp stops engaging and the two budgets become
+    // EQUAL (see the small-budget test below), at which point this row-by-row
+    // "strictly less than" invariant would legitimately not hold for the rows
+    // whose maxTotalS equals DISPATCH_TIMEOUT_S itself.
+    test('resolveDispatchInactivityTimeoutS(300) is 300, not 1800 -- the clamp never exceeds the run\'s own total', () => {
+        assert.strictEqual(
+            resolveDispatchInactivityTimeoutS(300),
+            300,
+            'at a dispatch_timeout_s below the 1800s clamp ceiling, the inactivity budget must equal the run\'s ' +
+            'own total, never the (here, irrelevant) 1800s ceiling.'
+        );
+        // At 300, a row whose maxTotalS names DISPATCH_TIMEOUT_S resolves its
+        // inactivity budget and its max total to the SAME 300 -- the two
+        // budgets are EQUAL, not distinct -- which is exactly why the
+        // strictly-less-than assertion above is scoped to the 9000 default
+        // rather than asserted for every possible dispatch_timeout_s.
+        const smallCtx = {
+            budgets: {
+                DISPATCH_TIMEOUT_S: 300,
+                DISPATCH_INACTIVITY_TIMEOUT_S: resolveDispatchInactivityTimeoutS(300),
+                INTEG_MAX_TOTAL_S: 300 * 2,
+                REGRESSION_TEST_MAX_TOTAL_S: 300 * 3,
+            },
+        };
+        const p = ROLE_POLICIES.planner;
+        assert.strictEqual(
+            resolveBudget(smallCtx, p.timeouts.timeoutS),
+            resolveBudget(smallCtx, p.timeouts.maxTotalS),
+            'at dispatch_timeout_s=300 the planner row\'s inactivity budget and max total resolve to the same value.'
+        );
+    });
+
+    // Falsification (apra-fleet-25yl.1.6's acceptance criteria): drives the
+    // REAL gate above (assertInactivityBudgetStrictlyLessThanMaxTotal), never
+    // a re-implementation of it, against a spliced table (splicePolicy, the
+    // same mutation seam the watchdog-rationale falsification above uses).
+    // The frozen ROLE_POLICIES table is never mutated -- splicePolicy returns
+    // a copy.
+    test('falsification: renaming the planner row\'s inactivity budget onto DISPATCH_TIMEOUT_S (== its own maxTotalS) makes the gate fail', () => {
+        assert.strictEqual(
+            ROLE_POLICIES.planner.timeouts.maxTotalS,
+            'DISPATCH_TIMEOUT_S',
+            'this falsification only proves the gate is non-vacuous against a row whose ceiling IS ' +
+            'DISPATCH_TIMEOUT_S itself -- the integ/regression rows would still pass at 2x/3x and would prove ' +
+            'nothing (same trap as the siteFor() anchor-uniqueness gate).'
+        );
+        const spliced = splicePolicy('planner', {
+            timeouts: { timeoutS: 'DISPATCH_TIMEOUT_S', maxTotalS: 'DISPATCH_TIMEOUT_S' },
+        });
+        assert.throws(
+            () => assertInactivityBudgetStrictlyLessThanMaxTotal(spliced, DEFAULT_CTX),
+            (err) => err instanceof assert.AssertionError && /planner:main/.test(err.message),
+            'a planner row whose inactivity budget names the same symbol as its own maxTotalS (9000 < 9000 is ' +
+            'false) must fail the distinctness gate rather than pass silently.'
+        );
     });
 });

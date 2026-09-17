@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -123,6 +123,16 @@ export class CodexProvider implements ProviderAdapter {
 
   sessionIdStrategy(): SessionIdStrategy {
     return { type: 'provider-minted' };
+  }
+
+  // apra-fleet-25yl.2.1: LOAD-BEARING. resolveSessionLogDir() below returns
+  // null, so the StallDetector has no log to poll for a Codex dispatch and the
+  // exec-level rolling timer is Codex's ONLY stall signal. Decoupling it here
+  // would not "relax" stall detection for Codex, it would remove it. Do not
+  // flip this to 'total_ceiling' without first giving Codex a pollable
+  // transcript path.
+  execTimeoutSource(): ExecTimeoutSource {
+    return 'inactivity_timeout';
   }
 
   resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string {

@@ -54,6 +54,33 @@ export type SessionIdStrategy =
   | { type: 'caller-minted' }
   | { type: 'provider-minted' };
 
+/**
+ * apra-fleet-25yl.2.1: what the EXEC-LEVEL ROLLING (inactivity) timeout handed
+ * to `strategy.execCommand()` is derived from, for this provider.
+ *
+ *  - 'inactivity_timeout' -- derive it from the caller's `timeout_s`. Choose
+ *    this when the exec channel (stdout/stderr on the dispatch pipe) is a
+ *    REAL mid-turn liveness signal for the provider, OR when preserving the
+ *    provider's current behaviour is the point. Codex is the load-bearing
+ *    case: its adapter returns null from resolveSessionLogDir(), so the
+ *    StallDetector has no transcript to poll and this timer is its ONLY stall
+ *    signal -- decoupling it there disables stall detection outright.
+ *  - 'total_ceiling' -- do NOT arm a `timeout_s`-sized rolling deadline;
+ *    derive it from `max_total_s` instead (a value that can never bind before
+ *    the caller's own hard ceiling does). Choose this when the provider is
+ *    batch/CONOUT$-only, so the exec channel emits nothing mid-turn and a
+ *    `timeout_s`-sized rolling deadline is a false kill. The StallDetector's
+ *    transcript polling is the real stall mechanism for these providers, and
+ *    it still gets `timeout_s` as its thresholdMs.
+ *
+ * This is deliberately a REQUIRED member of {@link ProviderAdapter} rather
+ * than an optional one with a default: a newly added provider must state its
+ * own answer (a compile error if it does not) instead of silently inheriting
+ * whichever branch happens to be the fallback, because the wrong branch
+ * silently disables a kill path.
+ */
+export type ExecTimeoutSource = 'inactivity_timeout' | 'total_ceiling';
+
 export function encodeClaudeProjectDir(workFolder: string): string {
   return workFolder.replace(/[^a-zA-Z0-9]/g, '-');
 }
@@ -302,6 +329,11 @@ export interface ProviderAdapter {
   resumeFlag(sessionId?: string, resuming?: boolean): string;
   /** Defines whether this provider accepts caller-minted UUIDs or generates session IDs natively. */
   sessionIdStrategy(): SessionIdStrategy;
+  /** apra-fleet-25yl.2.1: what the exec-level rolling (inactivity) timeout is
+   *  derived from for this provider -- see {@link ExecTimeoutSource}. REQUIRED
+   *  on every adapter, deliberately with no default, so a new provider must
+   *  state its answer rather than inherit one. */
+  execTimeoutSource(): ExecTimeoutSource;
   /** apra-fleet-lmtg.1: true when this provider supports fork-mode dispatch --
    *  branching a NEW, distinct session id from an existing session's context,
    *  as opposed to resume (which continues the source id in place). Optional:

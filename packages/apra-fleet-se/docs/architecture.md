@@ -44,6 +44,27 @@ truth for what a caller (the CLI, or a test bypassing the CLI and calling
 Validation runs to completion, and only then does the very first `command()`
 dispatch happen -- a rejected/malformed arg produces zero fleet dispatches.
 
+### Dispatch timeout budgets are split: total ceiling vs. inactivity threshold
+
+Every role dispatch carries two distinct time budgets, not one:
+
+- `DISPATCH_TIMEOUT_S` (from `dispatch_timeout_s`, derived per-role) is the
+  hard total-duration ceiling for the dispatch -- the outer bound regardless
+  of whether the remote session is actively producing output.
+- `DISPATCH_INACTIVITY_TIMEOUT_S`, derived from `DISPATCH_TIMEOUT_S` via
+  `min(1800, DISPATCH_TIMEOUT_S)`, is the value actually threaded through as
+  the dispatch's `timeout_s` -- the inactivity/stall threshold a stalled
+  session is killed on. Capping this at 30 minutes independent of how large
+  the total ceiling is means a role with a very large total budget (hours)
+  does not also get a multi-hour grace period before a genuinely stalled
+  session is detected and killed; the stall threshold and the total-duration
+  ceiling are allowed to diverge, and normally do.
+
+Both values are passed to the underlying `execute_prompt` dispatch as
+distinct parameters (`timeout_s` for inactivity, `max_total_s` for the total
+ceiling); how a given dispatch server and its providers consume those two
+parameters is that server's own concern, not this engine's.
+
 ## Role -> member resolution
 
 Two helpers resolve which physical fleet member(s) a role dispatches to,

@@ -98,7 +98,7 @@ export const executePromptSchema = z.object({
     'call. NOTE: this field only covers the schema + the mutual-exclusivity guard; actual fork ' +
     'MODE RESOLUTION (minting/wiring the forked session) is implemented separately.'
   ),
-  timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- the command is killed after this many seconds without any stdout/stderr output (default: 300s / 5 minutes)'),
+  timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- always drives the stall detector\'s per-dispatch baseline threshold, measured against the member\'s own session transcript activity (default: 300s / 5 minutes). Omitting it yields a 300s baseline, a deliberate change from the previously silent 150s stall-detector default. Per-provider, it ALSO arms the exec-level rolling timer against this dispatch\'s stdout/stderr channel for Codex and Copilot, which have no pollable transcript; Claude and AGY take that exec-channel ceiling from max_total_s instead; and OpenCode keeps BOTH signals armed at once (this exec-channel timer plus coarse log-directory-mtime polling, combined with OR semantics -- either advancing counts as not-stalled), since its transcript signal is directory-level only, not a per-turn file (see ProviderAdapter.execTimeoutSource()).'),
   max_total_s: z.number().optional().describe('Hard ceiling in seconds -- the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
   model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names -- the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
@@ -165,6 +165,17 @@ ${output}`;
     : `[FAIL] Prompt failed on "${agentName}":
 ${output}`;
 }
+
+// apra-fleet-25yl.2.1: the exec-level rolling deadline used for a provider
+// whose ExecTimeoutSource is 'total_ceiling' when the caller supplied NO
+// max_total_s -- i.e. there is no ceiling to mirror. 24h: large enough that it
+// can never bind before any realistic dispatch or client-side deadline, and
+// small enough to stay inside the int32 range setTimeout accepts (Infinity or
+// MAX_SAFE_INTEGER overflow to "fire immediately", which would invert the
+// decoupling into an instant kill). The alternative -- falling back to
+// timeout_s -- is deliberately NOT taken: that is the exact coupling this
+// removes, and for these providers timeout_s belongs to the StallDetector.
+const EXEC_TIMER_NEVER_BINDS_MS = 86_400_000;
 
 const SERVER_RETRY_DELAY_MS = 5000;
 
@@ -839,6 +850,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // confirmed stall settles the pending dispatch immediately and surfaces a
   // typed 'stalled' error instead of hanging.
   const stallAbortController = new AbortController();
+  // apra-fleet-25yl.1.2: input.timeout_s is the real per-dispatch stall
+  // baseline now, not merely an inactivity kill on stdout/stderr -- see the
+  // schema description on `timeout_s` above. A caller that omits timeout_s
+  // gets a 300s baseline (the schema default), a deliberate change from the
+  // previously silent 150s DEFAULT_STALL_THRESHOLD_MS fallback.
+  const stallThresholdMs = (input.timeout_s ?? 300) * 1000;
   stallDetector.add(agent.id, {
     sessionId: null,
     logFilePath: null,
@@ -849,6 +866,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     memberName: agent.friendlyName,
     provisional: true,
     stallReported: false,
+    thresholdMs: stallThresholdMs,
     onStall: () => {
       // Stall detector already wrote 'unknown' to the statusline before calling here.
       // Our job: clear in-process state so the member can accept new calls.
@@ -1082,6 +1100,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     sessionId: activePreSpawnSid,
     logFilePath: resolvedLogPath,
     provisional: !resolvedLogPath,
+    thresholdMs: stallThresholdMs,
   });
 
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
@@ -1112,8 +1131,32 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const durablePath = durableMirrorSupported ? durableOutputPath(scope.getInv()) : undefined;
   const dispatchStartedAt = Date.now();
 
-  const timeoutMs = (input.timeout_s ?? 300) * 1000;
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
+  // apra-fleet-25yl.2.1: the exec-level ROLLING (inactivity) deadline handed to
+  // strategy.execCommand() is no longer provider-blind. It used to be
+  // `timeout_s` for everyone, which is a false kill for the batch-only
+  // providers (they emit nothing on this channel until the turn ends) and the
+  // only working stall signal for the providers with no pollable transcript.
+  // The per-provider answer lives in ONE named place -- ProviderAdapter
+  // .execTimeoutSource() -- so a newly added provider must state its own
+  // (a compile error if it does not) instead of inheriting a default branch.
+  //
+  // NOTE: input.timeout_s still reaches the StallDetector as thresholdMs for
+  // EVERY provider (see stallThresholdMs above). This decision governs the
+  // exec-channel timer only; it must not be used to skip that threading.
+  const execTimeoutSource = provider.execTimeoutSource();
+  const timeoutMs = execTimeoutSource === 'inactivity_timeout'
+    ? (input.timeout_s ?? 300) * 1000
+    // 'total_ceiling': mirror max_total_s, which can never bind before the
+    // caller's own hard ceiling does (a rolling inactivity window of
+    // max_total_s starts at dispatch start and only ever resets later).
+    // max_total_s ABSENT: there is no ceiling to mirror, so use a documented
+    // never-binds-first constant rather than silently falling back to
+    // timeout_s (which is exactly the coupling this change removes). It is
+    // deliberately a finite value well inside the int32 range setTimeout
+    // accepts -- Infinity or Number.MAX_SAFE_INTEGER would overflow and fire
+    // on the next tick, inverting this fix into an instant kill.
+    : (maxTotalMs ?? EXEC_TIMER_NEVER_BINDS_MS);
 
   // apra-fleet-y8q.1: every retry below (dispatch-exception, stale-session,
   // server-overloaded) re-dispatches with a FRESH session but used to reuse the
@@ -1267,6 +1310,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         sessionId: mintedId,
         logFilePath: logPath,
         provisional: !logPath,
+        thresholdMs: stallThresholdMs,
       });
     }
   };
@@ -1651,6 +1695,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         sessionId: finalSid,
         logFilePath: postLogPath,
         provisional: !postLogPath,
+        thresholdMs: stallThresholdMs,
       });
     }
     clearStoredPid(agent.id);

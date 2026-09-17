@@ -16,7 +16,7 @@
  * @property {string} [session_id] - Optional explicit session ID to resume (shorthand alias for resume: "<sessionId>")
  * @property {boolean|string} [fork] - Branch a NEW session seeded from an existing one instead of continuing it in place. true = fork from the member's stored last session. A session-id STRING = fork from exactly that session. Mutually exclusive with resume (any non-default value) and with session_id.
  * @property {Record<string, string>} [substitutions] - Optional map of token name to replacement value
- * @property {number} [timeout_s] - Inactivity timeout in seconds (default: 300)
+ * @property {number} [timeout_s] - Inactivity timeout in seconds -- always drives the stall detector's per-dispatch baseline threshold, measured against the member's own session transcript activity (default: 300). Per-provider, it ALSO arms the exec-level rolling timer against this dispatch's stdout/stderr channel for Codex and Copilot, which have no pollable transcript; Claude and AGY take that exec-channel ceiling from max_total_s instead; and OpenCode keeps BOTH signals armed at once (this exec-channel timer plus coarse log-directory-mtime polling, combined with OR semantics -- either advancing counts as not-stalled), since its transcript signal is directory-level only, not a per-turn file (see ProviderAdapter.execTimeoutSource() server-side)
  * @property {number} [expected_context_tokens] - Optional estimate of how many
  *   tokens this dispatch will add to the target session's context. When set (or context_size is
  *   set), the server compares it against the session's remaining context-window headroom BEFORE
@@ -479,8 +479,14 @@ const TIMEOUT_GRACE_MS = 30 * 1000;
 
 /**
  * Derives a client-side McpClient.request() timeout (ms) from a payload's
- * own timeout hints. Prefers max_total_s (a hard ceiling) over timeout_s
- * (an inactivity timeout) when both are present, then adds a grace margin.
+ * own timeout hints. Intentionally prefers max_total_s (a hard ceiling) over
+ * timeout_s (the stall-detector inactivity baseline) when both are present.
+ * This reflects the post-apra-fleet-25yl.2 contract: max_total_s is the
+ * primary exec deadline for Claude/AGY, while timeout_s drives only the stall
+ * detector's per-dispatch baseline (other providers have different exec-timer
+ * mappings per their own adapters). The client's own deadline thus uses the
+ * appropriate upper bound for the dispatch. Adds a grace margin to account
+ * for server-side retry overhead.
  * Returns undefined when neither hint is present, letting McpClient fall
  * back to its own conservative default (never infinite).
  *
