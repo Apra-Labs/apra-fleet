@@ -51,6 +51,16 @@ choice but to throw away their local `.beads/` and re-clone.
 
 ## Procedure
 
+**Order matters: prune first, then flatten -- never the other way round.**
+`bd prune` only deletes rows; Dolt's differential storage still holds that
+data in old commit generations until something GCs it. `bd flatten` does a
+single full GC pass at the end of its squash. Pruning first means that one
+GC pass reclaims both the old history *and* the just-deleted rows together.
+Flattening first and pruning after would leave the prune's deletion commits
+un-reclaimed on top of the already-squashed history, requiring a second
+full GC (another flatten or `bd gc`) to actually free that space -- wasteful
+given a full GC can take minutes on multi-gigabyte stores.
+
 Run from any single clone with dolt push access to the shared remote
 (the orchestrator member's beads-only folder is a good choice -- see
 `supervisor-setup-guide.md` Step 3).
