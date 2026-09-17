@@ -476,7 +476,7 @@ const PLAIN_DIRNAME = 'plain-home';
 function writeHelperStandIn(dir, fileName) {
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, fileName);
-    if (fileName.endsWith('.bat')) {
+    if (fileName.endsWith('.bat') && process.platform === 'win32') {
         const content = [
             '@echo off',
             'echo ARGV0=%~f0',
