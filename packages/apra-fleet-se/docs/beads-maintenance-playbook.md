@@ -57,18 +57,28 @@ Run from any single clone with dolt push access to the shared remote
 
 1. **Dry-run the prune first:**
    ```bash
-   bd prune --pattern '*' --dry-run
+   bd prune --older-than 14d --dry-run
    ```
-   Review what would be deleted. `bd prune` only removes closed,
-   non-ephemeral beads (issues/deps/labels/events/comments); pinned, open,
-   in-progress, and closed-but-referenced-by-an-open-bead items are skipped
-   by default. Pass `--ignore-references` only if you deliberately want to
-   drop closed beads that an open bead still references in its
+   `--older-than` (not `--days` -- that flag belongs to `bd compact`, see
+   below) is the age gate: run this on a 2-week cadence and use
+   `--older-than 14d` to match, so each run only sweeps the closed backlog
+   that has aged out since the last run instead of re-sweeping everything
+   closed every time. Adjust the value if the team's actual cadence drifts
+   (e.g. `--older-than 30d` for a monthly cadence). `--pattern '*'` (delete
+   every closed bead regardless of age) is also available but not the
+   recommended default for a recurring maintenance cadence -- reserve it for
+   a one-off full sweep.
+
+   Review the dry-run output before proceeding. `bd prune` only removes
+   closed, non-ephemeral beads (issues/deps/labels/events/comments); pinned,
+   open, in-progress, and closed-but-referenced-by-an-open-bead items are
+   skipped by default. Pass `--ignore-references` only if you deliberately
+   want to drop closed beads that an open bead still references in its
    description/notes/comments.
 
 2. **Run the prune for real:**
    ```bash
-   bd prune --pattern '*' --force
+   bd prune --older-than 14d --force
    ```
 
 3. **Flatten the history to reclaim storage:**
