@@ -302,6 +302,22 @@ function resolveWatchdogTimeout(watchdogSpec, timeoutsSpec) {
 const SAME_SESSION_RESUME = { kind: 'same-session' };
 const WORKLIST_RESUME = { kind: 'worklist' };
 const roundSessionResume = (role) => ({ kind: 'round-session', role });
+/**
+ * A dispatch that must ALWAYS start a clean session: a single, self-contained
+ * instruction that assumes no prior conversation with the member.
+ *
+ * Spelled explicitly rather than left as the table's `null` default because
+ * `resume` is a field whose ABSENCE is not neutral: execute_prompt's own
+ * server-side default is `resume: true` (best-effort resume of the member's
+ * stored last session). Any transport that forwards an omitted `resume`
+ * straight through therefore silently reattaches a one-off dispatch to
+ * whatever unrelated session that member last ran -- cross-contaminating a
+ * fresh instruction with a stale, possibly huge prior context. A row that
+ * says nothing about resume is the row most likely to be wrong about it, so
+ * every dispatch here states its intent and `resolveResumeArg` never emits
+ * `undefined`.
+ */
+const FRESH_SESSION_RESUME = { kind: 'fresh-session' };
 
 const retry = (over) => ({
     /**
@@ -657,7 +673,9 @@ const planReviewer = policy('plan-reviewer', {
     agentType: 'plan-reviewer',
     model: fixedTier('plan-reviewer'),
     schema: 'planReviewerVerdict',
-    resumeArg: null,
+    // One bounded review pass over an already-produced plan, self-contained in
+    // its prompt: never a continuation of anything this member ran before.
+    resumeArg: FRESH_SESSION_RESUME,
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('PLAN_REVIEWER_MAX_TURNS', 1, 500),
@@ -706,6 +724,10 @@ const scopedReplanPlanner = policy('scoped-replan-planner', {
     agentType: 'planner',
     model: fixedTier('planner'),
     schema: null,
+    // A scoped re-plan is a fresh, single-purpose instruction: it carries the
+    // reviewer's scope in its own prompt and must not inherit the interactive
+    // planner's (or anyone else's) stored session on this member.
+    resumeArg: FRESH_SESSION_RESUME,
     bracket: bracketed(false, true),
     timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('SCOPED_REPLAN_PLANNER_MAX_TURNS', 1, 500),
@@ -729,6 +751,9 @@ const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
     agentType: 'plan-reviewer',
     model: fixedTier('plan-reviewer'),
     schema: 'planReviewerVerdict',
+    // Reviews ONE scoped re-plan on its own terms; same reasoning as
+    // plan-reviewer above -- a self-contained pass, never a continuation.
+    resumeArg: FRESH_SESSION_RESUME,
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('SCOPED_REPLAN_REVIEWER_MAX_TURNS', 1, 500),
@@ -753,6 +778,12 @@ const streakAssignment = policy('streak-assignment', {
     agentType: null,
     model: fixedTier('streakAssignment'),
     schema: 'streakAssignment',
+    // Pure compute over a bead list handed to it in the prompt -- there is no
+    // prior conversation to continue, and inheriting one would only pollute
+    // the assignment with unrelated context. Its 'semantic-repair-re-ask'
+    // secondary inherits this: that re-ask is deliberately self-contained
+    // (it restates the whole question), not a resume of the failed attempt.
+    resumeArg: FRESH_SESSION_RESUME,
     // The one dispatch outside any git-sync bracket: pure compute, no repo access.
     bracket: NO_BRACKET,
     // Explicit budgets(null, null) rather than the transport just inheriting
@@ -923,6 +954,10 @@ const finalReview = policy('final-review', {
     agentType: 'reviewer',
     model: fixedTier('reviewer'),
     schema: 'finalVerdict',
+    // Runs ONCE, over the whole sprint, from a prompt that carries its entire
+    // scope. Deliberately NOT a continuation of the per-round reviewer
+    // sessions on the same member: final review is meant to be fresh eyes.
+    resumeArg: FRESH_SESSION_RESUME,
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('FINAL_REVIEW_MAX_TURNS', 1, 500),
@@ -983,6 +1018,9 @@ const deployer = policy('deployer', {
     agentType: 'deployer',
     model: fixedTier('deployer'),
     schema: 'deployerReport',
+    // A single deploy pass driven entirely by the target's deploy runbook in
+    // its own prompt; no prior session on this member is relevant to it.
+    resumeArg: FRESH_SESSION_RESUME,
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('DEPLOYER_MAX_TURNS', 1, 500),
@@ -1044,6 +1082,10 @@ const integTestRunner = policy('integ-test-runner', {
     agentType: 'integ-test-runner',
     model: fixedTier('integ-test-runner'),
     schema: 'integReport',
+    // One self-contained playbook run per cycle. Resuming a prior cycle's (or
+    // any other role's) session would let stale context stand in for the live
+    // evidence this role exists to collect.
+    resumeArg: FRESH_SESSION_RESUME,
     bracket: bracketed(false, true),
     // Shorter INACTIVITY timer, longer HARD elapsed ceiling: a hung runner
     // still dies on silence, while an active long pass is never killed.
@@ -1119,6 +1161,9 @@ const regressionTestRunner = policy('regression-test-runner', {
     agentType: 'regression-test-runner',
     model: fixedTier('regression-test-runner'),
     schema: 'regressionReport',
+    // Same reasoning as integ-test-runner: one self-contained playbook run
+    // per sprint, whose evidence must come from THIS run, not a warm session.
+    resumeArg: FRESH_SESSION_RESUME,
     bracket: bracketed(false, true),
     timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'REGRESSION_TEST_MAX_TOTAL_S'),
     maxTurns: turns('REGRESSION_TEST_MAX_TURNS', 1, 500),
@@ -1203,6 +1248,9 @@ const harvester = policy('harvester', {
     agentType: 'harvester',
     model: fixedTier('harvester'),
     schema: 'harvesterReport',
+    // Runs once at the end of the sprint from a fully-specified prompt; no
+    // earlier session on this member is part of its job.
+    resumeArg: FRESH_SESSION_RESUME,
     // Writes docs AND defers low-priority beads, so it pushes both.
     bracket: bracketed(true, true),
     timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),

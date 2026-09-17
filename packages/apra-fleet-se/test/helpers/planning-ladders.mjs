@@ -124,7 +124,7 @@ export const PLANNING_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'planReviewerVerdict',
-        resume: null,
+        resume: false,
     },
     {
         role: 'plan-reviewer',
@@ -160,7 +160,7 @@ export const PLANNING_ENGINE_DISPATCHES = [
         watchdog: true,
         watchdogLabel: 'Scoped Replan Plan (interactive)',
         schema: null,
-        resume: null,
+        resume: false,
     },
     {
         role: 'scoped-replan-plan-reviewer',
@@ -178,7 +178,7 @@ export const PLANNING_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'planReviewerVerdict',
-        resume: null,
+        resume: false,
     },
     {
         role: 'streak-assignment',
@@ -200,7 +200,7 @@ export const PLANNING_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'streakAssignment',
-        resume: null,
+        resume: false,
     },
     {
         role: 'streak-assignment',
@@ -218,7 +218,7 @@ export const PLANNING_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'streakAssignment',
-        resume: null,
+        resume: false,
     },
 ];
 

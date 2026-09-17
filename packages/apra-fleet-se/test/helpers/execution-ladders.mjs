@@ -189,7 +189,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'finalVerdict',
-        resume: null,
+        resume: false,
     },
     {
         role: 'final-review',
@@ -232,7 +232,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: true,
         watchdogLabel: 'Integration Test',
         schema: 'integReport',
-        resume: null,
+        resume: false,
     },
     {
         role: 'integ-test-runner',
@@ -274,7 +274,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: true,
         watchdogLabel: 'Regression Test',
         schema: 'regressionReport',
-        resume: null,
+        resume: false,
     },
     {
         role: 'regression-test-runner',
@@ -318,7 +318,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: true,
         watchdogLabel: 'Deploy',
         schema: 'deployerReport',
-        resume: null,
+        resume: false,
     },
     {
         role: 'deployer',
@@ -361,7 +361,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'harvesterReport',
-        resume: null,
+        resume: false,
     },
     {
         role: 'harvester',

@@ -13,6 +13,14 @@
  *   always sends this field explicitly, defaulting it to `false` for workflow-authored
  *   prompts (see AgentOptions.resume there and apra-fleet-unw.3 / F10) -- so workflow
  *   callers effectively opt out of this client-level default unless they ask for resume.
+ *   CALLER OBLIGATION: anything reaching executePrompt() WITHOUT going through that
+ *   workflow layer must set this field explicitly. Omitting it is never neutral -- the
+ *   server resumes the member's stored last session, so a one-off instruction silently
+ *   lands in whatever unrelated (and possibly very large) conversation that member last
+ *   ran. This client deliberately does NOT inject a default of its own: doing so would
+ *   change the documented tool contract for every existing caller. State the intent at
+ *   the call site: `true` to continue that member's prior session, a session-id string
+ *   to continue a specific one, `false` for a self-contained dispatch.
  * @property {string} [session_id] - Optional explicit session ID to resume (shorthand alias for resume: "<sessionId>")
  * @property {boolean|string} [fork] - Branch a NEW session seeded from an existing one instead of continuing it in place. true = fork from the member's stored last session. A session-id STRING = fork from exactly that session. Mutually exclusive with resume (any non-default value) and with session_id.
  * @property {Record<string, string>} [substitutions] - Optional map of token name to replacement value
