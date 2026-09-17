@@ -253,16 +253,26 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         // not a flat literal) and pass isAlive so a genuinely crashed
         // `serve` subprocess still fails fast instead of eating the whole
         // widened ceiling.
+        //
+        // CI-watcher fix (runs 35249061362/35262798890 on two unrelated
+        // branches, same failure both times): a 200 response does not mean
+        // the backlog has finished rendering. `GET /` can return 200 before
+        // renderBeadsHtml's async bd read completes, so the FIRST 200
+        // sometimes ships a page still missing `id="backlog-table"`, failing
+        // the marker assertion below even though the server is healthy. Poll
+        // on the actual rendered marker, not just the status code, so a slow
+        // first render (CI runner load) is retried instead of asserted
+        // against.
         const res = await waitFor(async () => {
             try {
                 const attempt = await httpGet(port, '/');
-                return attempt.status === 200 ? attempt : false;
+                return attempt.status === 200 && attempt.body.includes('id="backlog-table"') ? attempt : false;
             } catch {
                 return false;
             }
         }, {
             timeoutMs: scaledTimeout(15000, { concurrency: 8, multiplier: 6 }),
-            label: 'GET / to render the dashboard',
+            label: 'GET / to render the dashboard with the backlog table',
             isAlive: () => !serveExited,
         });
         assert.equal(res.status, 200, res.body);
