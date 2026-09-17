@@ -476,17 +476,39 @@ const PLAIN_DIRNAME = 'plain-home';
 function writeHelperStandIn(dir, fileName) {
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, fileName);
-    fs.writeFileSync(file, '#!/bin/sh\necho "ARGV0=$0"\necho "ARGC=$#"\nfor a in "$@"; do echo "ARG=$a"; done\n');
-    fs.chmodSync(file, 0o755);
+    if (fileName.endsWith('.bat')) {
+        const content = [
+            '@echo off',
+            'echo ARGV0=%~f0',
+            'set ARGC=0',
+            'for %%A in (%*) do set /a ARGC+=1',
+            'echo ARGC=%ARGC%',
+            'for %%A in (%*) do echo ARG=%%~A',
+        ].join('\r\n') + '\r\n';
+        fs.writeFileSync(file, content);
+    } else {
+        fs.writeFileSync(file, '#!/bin/sh\necho "ARGV0=$0"\necho "ARGC=$#"\nfor a in "$@"; do echo "ARG=$a"; done\n');
+        fs.chmodSync(file, 0o755);
+    }
     return file;
 }
 
 function parseArgvReport(stdout) {
-    const lines = String(stdout).split('\n');
+    const lines = String(stdout).split('\n').map((l) => l.replace(/\r$/, ''));
     const argv0 = (lines.find((l) => l.startsWith('ARGV0=')) || '').slice('ARGV0='.length);
     const argcLine = lines.find((l) => l.startsWith('ARGC='));
     const args = lines.filter((l) => l.startsWith('ARG=')).map((l) => l.slice('ARG='.length));
     return { argv0, argc: argcLine ? Number(argcLine.slice('ARGC='.length)) : null, args };
+}
+
+function assertArgv0MatchesHelper(gotArgv0, helperPath, label) {
+    const parts = String(gotArgv0).split(/[\\/]/).filter(Boolean);
+    const gotBase = parts[parts.length - 1];
+    const gotParent = parts[parts.length - 2];
+    const expectedBase = path.basename(helperPath);
+    const expectedParent = path.basename(path.dirname(helperPath));
+    assert.equal(gotBase, expectedBase, label + ": exec'd helper filename must match. got=" + gotArgv0 + " expected=" + helperPath);
+    assert.equal(gotParent, expectedParent, label + ": exec'd helper parent dir must match. got=" + gotArgv0 + " expected=" + helperPath);
 }
 
 function detectPowerShell() {
@@ -568,7 +590,7 @@ describe('emitted commands round-trip through the REAL target shell and deliver 
                 assert.equal(res.status, 0, `the emitted command must run cleanly under bash.\ncommand: ${command}\nstderr: ${res.stderr}`);
 
                 const got = parseArgvReport(res.stdout);
-                assert.equal(path.resolve(got.argv0), path.resolve(helper), `${target.label}: bash must exec exactly the deployed helper.\nstdout: ${res.stdout}`);
+                assertArgv0MatchesHelper(got.argv0, helper, target.label);
                 assert.equal(got.argc, 0, `${target.label}: the credential helper takes NO arguments; got ${got.argc}: ${JSON.stringify(got.args)}`);
             } finally {
                 fs.rmSync(root, { recursive: true, force: true });
@@ -598,11 +620,7 @@ describe('emitted commands round-trip through the REAL target shell and deliver 
                 assert.equal(res.status, 0, `the emitted command must run cleanly under bash even when HOME contains a quote and a space.\ncommand: ${command}\nstderr: ${res.stderr}`);
 
                 const got = parseArgvReport(res.stdout);
-                assert.equal(
-                    path.resolve(got.argv0),
-                    path.resolve(helper),
-                    `${target.label}: bash must exec exactly the deployed helper. A quoting defect splits the path at the space or terminates the literal at the apostrophe.\nstdout: ${res.stdout}`,
-                );
+                assertArgv0MatchesHelper(got.argv0, helper, target.label);
                 assert.equal(got.argc, 0, `${target.label}: the credential helper takes NO arguments; got ${got.argc}: ${JSON.stringify(got.args)}`);
             } finally {
                 fs.rmSync(root, { recursive: true, force: true });

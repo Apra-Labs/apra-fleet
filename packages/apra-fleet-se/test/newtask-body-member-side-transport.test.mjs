@@ -275,7 +275,7 @@ describe('apra-fleet-eft.73.2 -- newTask/notes body reaches member-side without 
                     // the shape a Windows member's command() implementation
                     // would (the emitted command is deliberately the SAME
                     // string form regardless of target member OS).
-                    const res = spawnSync(POWERSHELL.bin, ['-NoProfile', '-Command', cmd], { encoding: 'utf8', env: { ...process.env, TMPDIR: sandbox } });
+                    const res = spawnSync(POWERSHELL.bin, ['-NoProfile', '-Command', cmd], { encoding: 'utf8', env: { ...process.env, TMPDIR: sandbox, TEMP: sandbox, TMP: sandbox } });
                     assert.strictEqual(res.status, 0, `staging command must execute cleanly under real ${POWERSHELL.bin} ${POWERSHELL.version}.\ncommand: ${cmd}\nstderr: ${res.stderr}`);
                     return res.stdout.trim();
                 }

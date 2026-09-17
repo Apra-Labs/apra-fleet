@@ -359,7 +359,7 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
                     // Unlike every other test in this file, hand the REAL
                     // emitted command string to a REAL bash -- exactly the
                     // shape a POSIX member's command() implementation would.
-                    const res = spawnSync('bash', ['-c', cmd], { encoding: 'utf8', env: { ...process.env, TMPDIR: sandbox } });
+                    const res = spawnSync('bash', ['-c', cmd], { encoding: 'utf8', env: { ...process.env, TMPDIR: sandbox, TEMP: sandbox, TMP: sandbox } });
                     assert.strictEqual(res.status, 0, `staging command must execute cleanly under real bash.\ncommand: ${cmd}\nstderr: ${res.stderr}`);
                     return res.stdout.trim();
                 }
