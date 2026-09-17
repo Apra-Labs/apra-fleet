@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -38,6 +39,10 @@ const __dirname = path.dirname(__filename);
 const NON_COMPLIANT_FIXTURE = path.join(__dirname, 'fixtures/explicit-id-create-guard/non-compliant.mjs');
 const COMPLIANT_FIXTURE = path.join(__dirname, 'fixtures/explicit-id-create-guard/compliant.mjs');
 const WRAPPER_DISPATCH_FIXTURE = path.join(__dirname, 'fixtures/explicit-id-create-guard/wrapper-dispatch.mjs');
+const PHANTOM_REGEX_APOSTROPHE_FIXTURE = path.join(__dirname, 'fixtures/explicit-id-create-guard/phantom-regex-apostrophe.mjs');
+const PHANTOM_REGEX_CHARCLASS_QUOTE_FIXTURE = path.join(__dirname, 'fixtures/explicit-id-create-guard/phantom-regex-charclass-quote.mjs');
+const PHANTOM_NESTED_TEMPLATE_FIXTURE = path.join(__dirname, 'fixtures/explicit-id-create-guard/phantom-nested-template.mjs');
+const RAW_NEWLINE_DESYNC_FIXTURE = path.join(__dirname, 'fixtures/explicit-id-create-guard/raw-newline-desync.mjs');
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -162,6 +167,85 @@ test('findExplicitIdCreateViolations: an agent() call mentioning bd create is ne
     const src = "agent('reviewer', { prompt: \"never run bd create directly\" });";
     const violations = findExplicitIdCreateViolations(src);
     check(violations.length === 0, `Expected no violation for an agent() call, got: ${JSON.stringify(violations)}`);
+});
+
+// =============================================================================
+// apra-fleet-btj9.9 -- pins the three PHANTOM-STRING shapes that silently
+// blinded the OLD command-literal walk (maskComments()/skipStringLiteral())
+// over 1085 real code lines, plus the FAIL-LOUD BACKSTOP itself. Each fixture
+// places the phantom-opening construct BEFORE a real explicit-id `bd create`
+// dispatch routed through a non-command `runBd` wrapper (not `command(...)`,
+// so ONLY the command-literal rule -- the one scanModuleLiterals() fixed --
+// can catch it; a `command(...)` call would also trip the call-site rule,
+// which reads extractBalancedCall() and already skips regex spans on its
+// own, muddying which rule actually caught the dispatch).
+//
+// FALSIFICATION (AC11), run by hand against a scratch git worktree checked
+// out at 1f3fbc44 (the guard revision immediately before both the lexer
+// rewrite AND maskComments()'s independent regex-literal fix in 5fa8c5fe --
+// see that commit's own note on why reverting explicit-id-create-guard.mjs
+// alone would be insufficient): checkExplicitIdCreatePath() against each of
+// the four fixtures below returned `[]` (zero violations) at that revision --
+// confirmed directly, not assumed. That is the evidence AC7-AC10 pin.
+// =============================================================================
+
+test('phantom-string shape (a): a regex body holding an apostrophe does not swallow a later bd create dispatch (AC7)', () => {
+    const { violations } = checkExplicitIdCreatePath(PHANTOM_REGEX_APOSTROPHE_FIXTURE);
+    check(
+        violations.length === 1,
+        `Expected exactly one violation in the phantom-regex-apostrophe fixture, got: ${JSON.stringify(violations, null, 2)}`
+    );
+    check(
+        violations[0].includes('phantom-regex-apostrophe.mjs:30'),
+        `Violation must name the offending file and line, got: ${violations[0]}`
+    );
+    check(violations[0].includes('bd create'), `Violation must quote the offending command, got: ${violations[0]}`);
+});
+
+test('phantom-string shape (b): a regex character class holding a quote does not swallow a later bd create dispatch (AC8)', () => {
+    const { violations } = checkExplicitIdCreatePath(PHANTOM_REGEX_CHARCLASS_QUOTE_FIXTURE);
+    check(
+        violations.length === 1,
+        `Expected exactly one violation in the phantom-regex-charclass-quote fixture, got: ${JSON.stringify(violations, null, 2)}`
+    );
+    check(
+        violations[0].includes('phantom-regex-charclass-quote.mjs:23'),
+        `Violation must name the offending file and line, got: ${violations[0]}`
+    );
+    check(violations[0].includes('bd create'), `Violation must quote the offending command, got: ${violations[0]}`);
+});
+
+test('phantom-string shape (c): a nested template inside a ${...} interpolation does not swallow a later bd create dispatch (AC9)', () => {
+    const { violations } = checkExplicitIdCreatePath(PHANTOM_NESTED_TEMPLATE_FIXTURE);
+    check(
+        violations.length === 1,
+        `Expected exactly one violation in the phantom-nested-template fixture, got: ${JSON.stringify(violations, null, 2)}`
+    );
+    check(
+        violations[0].includes('phantom-nested-template.mjs:28'),
+        `Violation must name the offending file and line, got: ${violations[0]}`
+    );
+    check(violations[0].includes('bd create'), `Violation must quote the offending command, got: ${violations[0]}`);
+});
+
+test('fail-loud backstop (d): a quoted literal carrying a raw newline produces a parse-desync violation, not a clean scan (AC10)', () => {
+    const src = fs.readFileSync(RAW_NEWLINE_DESYNC_FIXTURE, 'utf8');
+    const violations = findExplicitIdCreateViolations(src);
+    check(
+        violations.length >= 1,
+        `Expected at least one violation for the raw-newline-desync fixture (not a clean scan), got: ${JSON.stringify(violations)}`
+    );
+    check(
+        violations.some((v) => v.rule === 'parse-desync'),
+        `Expected a violation whose rule is exactly 'parse-desync', got: ${JSON.stringify(violations)}`
+    );
+    // Also pin it through the file-level checker, whose formatted message
+    // names the file:line and explicitly refuses to call the module clean.
+    const { violations: fileViolations } = checkExplicitIdCreatePath(RAW_NEWLINE_DESYNC_FIXTURE);
+    check(
+        fileViolations.length >= 1 && fileViolations[0].includes('could not be scanned reliably'),
+        `Expected checkExplicitIdCreatePath() to refuse to report the module clean, got: ${JSON.stringify(fileViolations)}`
+    );
 });
 
 // =============================================================================
