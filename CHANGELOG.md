@@ -2,6 +2,71 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-sprint: child-bead creation refuses an id collision instead of silently overwriting
+
+Sprint goal: close the hole where creating a child bead at an id that
+already belongs to an existing bead (open or closed) silently overwrote
+that bead's content in place, rather than failing loudly -- and land it as
+two independent fixes, since patching only the trigger would have left the
+underlying creation path unguarded.
+
+What shipped:
+
+- **Every explicit-id child-bead create now probes before creating.** The
+  single seam every proposed follow-up task flows through checks for an
+  existing occupant at the target id first and refuses (releasing the
+  reservation, throwing loudly) rather than letting `bd create --id` run
+  into a silent overwrite. The probe's own failure path fails closed: an
+  unrecognized or unparseable outcome is treated as "unknown, do not
+  assume free," not as an implicit green light.
+- **The id allocator's floor computation now counts closed children.** The
+  read that seeds the very first allocation under a parent previously
+  excluded closed issues by default, so once every child under a parent
+  was closed the floor silently reset to 0 and the allocator re-minted
+  already-used ids -- the actual trigger that produced the collision this
+  epic exists to prevent. Both fixes land together and are independently
+  verified; neither alone closes the hole.
+- **Reservation lifecycle hardening**: the allocator's reservation is
+  confirmed as soon as the create lands and is never released again after
+  that point, even if the follow-up parent-link update or the confirm call
+  itself fails -- releasing an id that already genuinely exists would hand
+  it out again and reproduce the same collision.
+- **A new mechanical CI guard** (in the same family as the repo's existing
+  shell-command/dolt-literal/unbracketed-push guards) enforces that no
+  other module in the scanned set dispatches a bead-creation command
+  outside the one guarded seam, using a content-shape rule (robust to a
+  renamed helper or wrapped call) rather than an identifier-matching rule
+  (trivially defeated by one). A related lexing gap shared by several of
+  these guards -- a regex literal containing a quote or apostrophe could
+  desync a source-text scanner's comment/string masking -- was fixed once,
+  in the shared helper every guard in the family now reuses.
+
+Filed as follow-up (deliberately left open, not closed by this pass --
+none block this fix's own acceptance criteria):
+
+- apra-fleet-btj9.11 / .12 (P3) -- the collision probe's failure
+  classification is brittle at both ends: against a legacy server response
+  shape a genuinely free id can fail closed, and a zero-exit but
+  unrecognized payload shape can be misread as free.
+- apra-fleet-btj9.13 / .14 (P3) -- the best-effort follow-up-task fallback
+  path can mislabel and duplicate a finding when the underlying create
+  actually landed.
+- apra-fleet-btj9.15 / .16 (P3) -- the new guard is not yet wired into the
+  cross-guard coverage matrix, and some stale test recordings elsewhere
+  still emit unrelated drift noise.
+- Regression carry-over (informational only -- does not gate this sprint's
+  verdict): the real-bd regression suite and smoke test both failed on a
+  dispatch stall in this pass; no new carry-over bead was filed from it.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $58.8740.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2723 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 47 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Stall detector: per-dispatch inactivity threshold, decoupled exec timer, adaptive probe cadence
 
 Sprint goal: fix the stall detector so it honours each dispatch's own
