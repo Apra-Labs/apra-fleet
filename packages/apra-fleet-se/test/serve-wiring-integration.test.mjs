@@ -34,6 +34,9 @@ const SE_PKG_ROOT = path.join(__dirname, '..');
 const spawnedPids = new Set();
 /** @type {Set<string>} */
 const tmpDirs = new Set();
+// TEMPORARY DIAGNOSTIC (apra-fleet-4ipl) -- see the note where this is
+// populated, in the 'boots bin/serve.mjs...' test below.
+let capturedServeOutput = '';
 
 function track(pid) {
     if (Number.isInteger(pid) && pid > 0) spawnedPids.add(pid);
@@ -45,6 +48,8 @@ function forceKill(pid) {
 }
 
 after(async () => {
+    // eslint-disable-next-line no-console
+    console.log(`\n----- serve.mjs captured stdout/stderr (apra-fleet-4ipl diagnostic) -----\n${capturedServeOutput || '(no output captured)'}\n----- end captured output -----\n`);
     for (const pid of spawnedPids) forceKill(pid);
     spawnedPids.clear();
     for (const dir of tmpDirs) {
@@ -150,6 +155,14 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
     // the process has genuinely died, independent of however generous their
     // timeoutMs ceiling is.
     let serveExited = false;
+    // TEMPORARY DIAGNOSTIC (apra-fleet-4ipl): the spawned server's own
+    // stdout/stderr have been silenced (stdio: ['ignore','ignore','ignore'])
+    // since this test was written, so every prior CI investigation of the
+    // GET / timeout has had zero visibility into what the server itself was
+    // doing while stuck. Capture it (into the module-level
+    // capturedServeOutput, printed unconditionally in the top-level after()
+    // above) so the next red run's log actually shows server-side evidence
+    // instead of more speculation. Revert once root-caused.
 
     // The suite shares ONE real `fleet-se serve` subprocess across every
     // assertion below (matching supervisor-lifecycle.test.mjs's (a) case):
@@ -162,11 +175,13 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
 
         serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
             cwd: SE_PKG_ROOT,
-            stdio: ['ignore', 'ignore', 'ignore'],
+            stdio: ['ignore', 'pipe', 'pipe'],
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
         });
         track(serve.pid);
         serve.on('exit', () => { serveExited = true; });
+        serve.stdout.on('data', (c) => { capturedServeOutput += `[stdout] ${c}`; });
+        serve.stderr.on('data', (c) => { capturedServeOutput += `[stderr] ${c}`; });
 
         // apra-fleet-ryk / apra-fleet-33c.1: same contention-starvation fix
         // already applied to the GET / wait below -- this boot-wait must also
