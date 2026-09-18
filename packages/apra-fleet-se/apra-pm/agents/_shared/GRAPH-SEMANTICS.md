@@ -12,8 +12,14 @@ a `parent-child` ancestor/descendant and remove it.
 
 **How to wire a decomposed item correctly:**
 - Parent the subtasks under the item being decomposed: `bd create ... --parent <item-id>`.
-- Order subtasks relative to EACH OTHER with `blocks` (e.g. "test task blocked by impl
-  task" -- they're siblings, this is fine): `bd dep add <test-task> <impl-task>`.
+- Order subtasks relative to EACH OTHER with `blocks` ONLY when they are in DIFFERENT
+  streak lanes (different `metadata.streak` ids) -- e.g. "lane B blocked by lane A's last
+  task": `bd dep add <B-task> <A-last-task>`. Inside one lane, order comes from
+  `streakOrder` alone; a `blocks` edge between two tasks that share a `streak` id is a
+  bug, not a convenience -- the dispatch engine only ever streaks together tasks that are
+  simultaneously unblocked, so an intra-lane edge silently splits the lane into separate
+  review rounds instead of ordering it. See `planner.md`'s "Lanes are review units"
+  section for how lanes and `blocks` divide the ordering job between them.
 - Never `bd dep add <item-id> <subtask-id>` or `bd dep add <subtask-id> <item-id>` -- the
   item's "not done until subtasks close" status comes from inspecting its children
   (`dependent_count`, `bd epic status <id>` for epic-typed parents), never from a `blocks`

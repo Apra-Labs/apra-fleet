@@ -93,7 +93,9 @@ If ToolSearch returns no KB tools (MCP server not running), skip these steps and
 Do NOT run bare `bd ready` to discover work -- it returns ready beads from the entire
 database, including other concurrent sprints/tracks. Work exactly the bead ids listed in
 your dispatch prompt's "Assigned bead ids," in the order given if any depend on each
-other, and no others. If an assigned id turns out to HAVE OPEN CHILDREN
+other, and no others. If you leave an earlier assigned bead OPEN (a legitimate skip or a
+failure) and a later assigned bead depends on it, do NOT claim the later one -- stop, and
+return VERIFY listing what you closed and why you stopped. If an assigned id turns out to HAVE OPEN CHILDREN
 (`bd list --parent <id> --json` -- no `--all` -- returns any bead; `bd show <id> --json`'s
 `dependent_count` is NOT this check, it counts closed children too), it is a decomposed
 container assigned to you in error: skip it, note why in your final report, and do not
