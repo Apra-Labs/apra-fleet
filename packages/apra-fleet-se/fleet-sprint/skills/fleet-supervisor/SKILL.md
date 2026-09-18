@@ -9,10 +9,32 @@ Sprints are started, checked, and killed through the supervisor's HTTP API.
 Default port: **8787**. Never invoke `apra-fleet workflow fleet-sprint` or
 `bin/cli.mjs` directly -- always go through this API.
 
+## Authentication
+
+The supervisor binds loopback-only and guards its whole `/api/` surface (plus
+POST to any `/sprints/:id/live/...` sub-route) with a shared bearer service
+token. The token lives at `<dataDir>/private/token` -- a plain-text file the
+supervisor mints on first boot and reuses on every restart against the same
+`dataDir` -- and is **never printed** to a log, a terminal, or anywhere else;
+read it directly from that file for each request instead of echoing it.
+
+Every `curl` example below carries it as
+`-H "Authorization: Bearer $(cat <dataDir>/private/token)"` (bash) or
+`-H "Authorization: Bearer $(Get-Content <dataDir>\private\token)"`
+(PowerShell) -- substitute the real `dataDir` path on the target member.
+
 ## 0. Start the supervisor (if not already running)
 
-Check first: `curl -s -m 5 http://localhost:8787/api/sprints`. Connection
-refused/timeout = not running. `{"sprints": [...]}` = already up, skip this.
+Check first (bash):
+```bash
+curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints
+```
+PowerShell:
+```powershell
+curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints
+```
+Connection refused/timeout = not running. `{"sprints": [...]}` = already up,
+skip this.
 
 Start it detached (it runs indefinitely -- exits only on `POST
 /api/shutdown` or SIGINT/SIGTERM, never on its own):
@@ -24,10 +46,15 @@ node packages/apra-fleet-se/bin/serve.mjs   # background/detached, from repo roo
 `--port <n>` overrides the default (8787). Self-logs to
 `<dataDir>/logs/supervisor.log` in addition to stdout.
 
-Smoke test (a few seconds after launch -- give it time to bind):
+Smoke test (a few seconds after launch -- give it time to bind), bash:
 ```bash
-curl -s -m 5 http://localhost:8787/api/sprints   # expect {"sprints":[],...}
-curl -s -m 5 http://localhost:8787/api/members   # expect the registered fleet, non-empty
+curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints   # expect {"sprints":[],...}
+curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/members   # expect the registered fleet, non-empty
+```
+PowerShell:
+```powershell
+curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints
+curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/members
 ```
 Both must succeed before treating the supervisor as up -- a bound port with
 a 500 on `/api/members` still means something is broken.
@@ -42,23 +69,39 @@ members run PowerShell, not POSIX.
 
 ### Graceful (preferred)
 
+Bash:
 ```bash
-curl -s -X POST http://localhost:8787/api/shutdown
+curl -s -X POST -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/shutdown
+```
+PowerShell:
+```powershell
+curl -s -X POST -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/shutdown
 ```
 Returns `{"status":"shutting-down"}` immediately; the process then finishes
 tearing down every seam (ledger, watchdog, dashboard, etc) and exits on its
-own a moment later. Confirm it is actually gone:
+own a moment later. Confirm it is actually gone, bash:
 ```bash
-curl -s -m 5 http://localhost:8787/api/sprints   # expect connection refused
+curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints   # expect connection refused
+```
+PowerShell:
+```powershell
+curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints
 ```
 If that still connects after a few seconds, fall through to hard-stop below.
 
 ### Find the supervisor's PID/port (when the API is unresponsive)
 
-`GET /api/health` normally reports the running `pid` directly (`curl -s -m 5
-http://localhost:8787/api/health`), but if the API itself is unresponsive
-that call will hang or refuse -- fall back to an OS-level lookup by port
-(default **8787**) or process name (`serve.mjs`):
+`GET /api/health` normally reports the running `pid` directly, bash:
+```bash
+curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/health
+```
+PowerShell:
+```powershell
+curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/health
+```
+but if the API itself is unresponsive that call will hang or refuse -- fall
+back to an OS-level lookup by port (default **8787**) or process name
+(`serve.mjs`):
 
 **macOS / Linux:**
 ```bash
@@ -107,10 +150,11 @@ taskkill /PID <pid>
 taskkill /PID <pid> /F
 ```
 
-After either path, verify the port is free before restarting:
-`curl -s -m 5 http://localhost:8787/api/sprints` must refuse the connection
-(macOS/Linux), or the port-lookup command above must return nothing
-(Windows).
+After either path, verify the port is free before restarting -- bash:
+`curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints`
+(PowerShell: `curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints`)
+must refuse the connection (macOS/Linux), or the port-lookup command above
+must return nothing (Windows).
 
 ## Restart the supervisor
 
@@ -120,7 +164,9 @@ restart command exists:
 1. **Stop** it: graceful shutdown above; if that does not actually stop it
    (still answering after a few seconds), fall back to the hard-stop path
    above.
-2. **Confirm it is down**: `curl -s -m 5 http://localhost:8787/api/sprints`
+2. **Confirm it is down**: bash
+   `curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints`
+   (PowerShell: `curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints`)
    must refuse the connection (or the per-OS port lookup above returns
    nothing).
 3. **Start** it again: see section 0 ("Start the supervisor") above, then
@@ -266,9 +312,24 @@ start with no login (`loginctl enable-linger <username>`).
 
 ## 2. Start a sprint
 
+Bash:
 ```bash
 curl -s -X POST http://localhost:8787/api/sprints \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat <dataDir>/private/token)" \
+  -d '{
+    "issue": "<id[,id2,...]>",
+    "branch": "<new-or-existing-branch>",
+    "base": "<base-branch>",
+    "members": ["<member-name>"],
+    "goal": "P1/P2"
+  }'
+```
+PowerShell:
+```powershell
+curl -s -X POST http://localhost:8787/api/sprints `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" `
   -d '{
     "issue": "<id[,id2,...]>",
     "branch": "<new-or-existing-branch>",
@@ -301,15 +362,23 @@ a few seconds after launch.
 
 ## 3. Check status
 
-All live sprints:
+All live sprints, bash:
 ```bash
-curl -s http://localhost:8787/api/sprints
+curl -s -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints
+```
+PowerShell:
+```powershell
+curl -s -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints
 ```
 Empty `sprints: []` after a launch = it already died. Check its `logPath`.
 
-One sprint (live state, or its terminal record if it finished/crashed):
+One sprint (live state, or its terminal record if it finished/crashed), bash:
 ```bash
-curl -s http://localhost:8787/api/sprints/<sprintId>
+curl -s -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints/<sprintId>
+```
+PowerShell:
+```powershell
+curl -s -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints/<sprintId>
 ```
 
 Sprint-scoped dashboard (per-role activity, bead DAG, cost, PR link):
@@ -317,8 +386,13 @@ Sprint-scoped dashboard (per-role activity, bead DAG, cost, PR link):
 
 ## 4. Kill a sprint
 
+Bash:
 ```bash
-curl -s -X POST http://localhost:8787/api/sprints/<sprintId>/stop
+curl -s -X POST -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints/<sprintId>/stop
+```
+PowerShell:
+```powershell
+curl -s -X POST -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints/<sprintId>/stop
 ```
 
 ## Relaunch gate
