@@ -220,15 +220,20 @@ bd create ... --metadata '{"model": "<cheap|standard|premium>", "size": "<S|M|L>
 dispatched in that round together. A lane is therefore the SMALLEST thing a review can
 cover: never split one coherent increment across two lanes joined by a `blocks` edge,
 because each extra link in that chain costs a full review round (diff read + full test
-run). Lanes with no `blocks` edge between them dispatch and review in the SAME round and
-cost nothing extra, so keep genuinely independent work in separate lanes rather than
-merging it for size alone -- merging removes parallelism without saving a single review.
+run). Lanes with no `blocks` edge between them dispatch and review in the SAME round
+whenever the round's doer count and effort budget allow (unlaned-but-independent lanes
+overflow to the next round only under doer/budget pressure, not because they were kept
+separate), so normally that costs nothing extra -- keep genuinely independent work in
+separate lanes rather than merging it for size alone; merging removes parallelism without
+reliably saving a review.
 
 Put tasks in the SAME lane when they are highly coupled or cohesive -- any of:
 - they touch the same files, module, or component, or the same test suite;
 - one exists to enable the next (add a helper, then use it; change a schema, then its
   consumer; implement, then its `[test]` task) -- an `[impl]` task and its paired `[test]`
-  task ALWAYS share a lane;
+  task ALWAYS share a lane, UNLESS the feature's impl work itself had to span multiple
+  lanes under the sizing rules below -- then the feature's `[test]` task takes the LAST
+  impl lane, or ends its own final lane wired cross-lane to every impl lane it verifies;
 - they contend for a **mutex resource** -- a resource only one change may hold at a time,
   e.g. the same submodule pointer, a shared version/manifest field, or the same test
   fixture -- these MUST share a lane and MUST NOT be separated into different streaks;
@@ -263,8 +268,10 @@ exists yet):
   State in the lane's first task description why a lane was left below target if it was.
 
 A lane over either cap is split ONLY at a point where the earlier part is a self-contained,
-reviewable increment (never mid-refactor, never between an `[impl]` and its `[test]`, never
-between mutex-resource members). Give each part its own `streak` id and renumber
+reviewable increment (never mid-refactor, never between mutex-resource members). An
+`[impl]` lane may be split from its feature's `[test]` task ONLY as the exception above
+describes -- the test task then ends the chain, cross-lane blocked on every impl lane it
+verifies; it is never itself mid-split. Give each part its own `streak` id and renumber
 `streakOrder` from the start within it.
 
 Wire dependencies (semantics: `bd dep add A B` means A is blocked by B -- B must finish before A can close):

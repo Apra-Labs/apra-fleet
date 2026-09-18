@@ -95,12 +95,13 @@ database, including other concurrent sprints/tracks. Work exactly the bead ids l
 your dispatch prompt's "Assigned bead ids," in the order given if any depend on each
 other, and no others.
 
-**Same-lane stop rule**: if you leave an earlier assigned bead OPEN (a legitimate skip or
-a failure), check whether a later assigned bead shares its `metadata.streak` value (visible
-in `bd show <id>`, per Step 2.2 below) -- tasks in the same lane were planned as one
-dependent increment. If it does, do NOT claim that later bead: stop, and return VERIFY
-listing what you closed and why you stopped (this is a legal early VERIFY, see Step 3). A
-later assigned bead in a DIFFERENT lane, or with no `streak` metadata shared with the
+**Same-lane stop rule**: before starting Step 2's per-id loop, read `metadata.streak` for
+every assigned id up front with `bd show <id> --json` (a cheap read, not a claim). If you
+later leave an earlier assigned bead OPEN (a legitimate skip or a failure), check that map
+for a later assigned bead sharing its `streak` value -- tasks in the same lane were planned
+as one dependent increment. If one shares it, do NOT claim that later bead: stop, and
+return VERIFY listing what you closed and why you stopped (this is a legal early VERIFY,
+see Step 3). A later assigned bead in a DIFFERENT lane, or with no `streak` shared with the
 skipped one, is unaffected -- keep working it normally; your assignment may bundle several
 independent lanes into one session.
 

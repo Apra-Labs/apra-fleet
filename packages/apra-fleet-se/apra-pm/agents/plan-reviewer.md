@@ -119,9 +119,10 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
     in `bd show <id>` -- the single location, per `planner.md` Step 3; never `--notes`
     or free text). A missing key is a criterion-10 failure; Step 3's fallback is for
     classification/reporting only.
-11. **Lane cohesion and sizing**: every task carries `model`, `size`, `streak` and
-    `streakOrder` in the same `--metadata` channel -- a task missing any of these keys is
-    a criterion-11 finding. Beyond presence:
+11. **Lane cohesion and sizing**: every task carries `size`, `streak` and `streakOrder` in
+    the same `--metadata` channel as `model` -- a task missing any of these three keys is
+    a criterion-11 finding. (A missing `model` key is criterion 10's finding,
+    `kind: "model_metadata"` -- do not also report it here.) Beyond presence:
     - **Cohesive lanes**: tasks sharing a `streak` id name overlapping files, the same
       component/module, or an enabling relationship in their descriptions -- a lane
       grouping unrelated work areas is a finding.
@@ -129,11 +130,13 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
       produce): two lanes joined by a `blocks` edge (directly, or transitively through
       other lanes) that are cohesive by the planner's SAME-lane rules (same
       files/component, enabling relationship, impl and its test, mutex members) and whose
-      combined effort is within `laneMaxEffort` and `laneMaxTasks` must be ONE lane. Each
-      unnecessary lane boundary in a CHAIN is an extra review round; name the lanes to
-      merge. Two cohesive lanes with NO `blocks` edge between them already run in the same
-      review round -- merging them would only remove parallelism for no review saving, so
-      that is NOT a finding.
+      combined effort is within `laneMaxEffort` and `laneMaxTasks` must be ONE lane, UNLESS
+      the downstream lane is a feature-level `[test]` lane covering impl work legitimately
+      split across several lanes (criterion 5's exception) -- that cross-lane wiring is
+      required, not under-batching. Each other unnecessary lane boundary in a CHAIN is an
+      extra review round; name the lanes to merge. Two cohesive lanes with NO `blocks` edge
+      between them normally already run in the same review round -- merging them would only
+      remove parallelism, usually for no review saving, so that is NOT a finding.
     - **No intra-lane `blocks` edges; cross-lane edges wired correctly**: see criterion 5
       for the rule -- report a violation there as `kind: "dependency_wiring"`, not here.
     - **Mutex resources co-laned**: tasks that contend for the same mutual-exclusion
@@ -153,8 +156,9 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
       the planner named (contract change, migration, security-sensitive or destructive
       path); a downstream task's criteria genuinely depend on the upstream outcome being
       reviewed first; or the merged lane would exceed either cap.
-    A violation of any bullet above is CHANGES_NEEDED referencing "criterion 11" and the
-    specific lane/task IDs involved.
+    A violation of any finding bullet above -- excluding the intra-lane/cross-lane bullet
+    (routes to criterion 5) and the Safety valves bullet (describes non-findings) -- is
+    CHANGES_NEEDED referencing "criterion 11" and the specific lane/task IDs involved.
 12. **NOTES-vs-child contradiction**: for each child under review, check whether its
     parent bead's NOTES contains any entry recognizable as a correction or amendment --
     language such as "CORRECTION", "AMENDMENT", "SUPERSEDES", "REVISED", or an explicit
