@@ -48,8 +48,15 @@ function forceKill(pid) {
 }
 
 after(async () => {
+    // console.error, not console.log: the custom reporter CI uses
+    // (test/helpers/timestamped-reporter.mjs) only forwards test:pass,
+    // test:fail, test:diagnostic, and test:stderr events -- a plain
+    // console.log produces a test:stdout event, which its switch statement
+    // has no case for and silently drops (default: break). Verified this
+    // the hard way: an earlier console.log version of this diagnostic never
+    // appeared in CI at all, only in a local run using the default reporter.
     // eslint-disable-next-line no-console
-    console.log(`\n----- serve.mjs captured stdout/stderr (apra-fleet-4ipl diagnostic) -----\n${capturedServeOutput || '(no output captured)'}\n----- end captured output -----\n`);
+    console.error(`\n----- serve.mjs captured stdout/stderr (apra-fleet-4ipl diagnostic) -----\n${capturedServeOutput || '(no output captured)'}\n----- end captured output -----\n`);
     for (const pid of spawnedPids) forceKill(pid);
     spawnedPids.clear();
     for (const dir of tmpDirs) {
