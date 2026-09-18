@@ -402,6 +402,12 @@ export function createSupervisor(deps = {}) {
         get server() { return server; },
         seams,
         get port() { return port; },
+        // apra-fleet-50j6.2.2: exposes the SAME token the per-request guard
+        // above checks requests against, so a route handler (dashboard.mjs's
+        // GET / cookie-setter) can hand it back out to a trusted, loopback-
+        // only client without a second source of truth. `null` when auth was
+        // never configured (see the deps.token/deps.dataDir comment above).
+        get token() { return token; },
         /** Resolves once the supervisor has fully shut down. */
         get shutdownRequested() { return shutdownRequested; },
     };
