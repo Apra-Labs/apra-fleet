@@ -8,7 +8,7 @@ import net from 'node:net';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { loadOrCreateToken } from '../src/supervisor/auth.mjs';
+import { tokenFilePath } from '../src/supervisor/auth.mjs';
 
 // apra-fleet-7h6n.4 -- merged from n4lu2-packaged-supervisor-boot.test.mjs,
 // qqof-supervisor-selfcontained-audit.test.mjs, and
@@ -447,11 +447,6 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         const dataDir = await mkTmp('installed-supervisor-data-');
         const seDataDir = await mkTmp('installed-supervisor-se-data-');
         const port = await getFreePort();
-        // apra-fleet-50j6.1.2: mint/load the SAME shared bearer service
-        // token the spawned subprocess will (deterministic, idempotent
-        // function of seDataDir -- see auth.mjs's loadOrCreateToken), so
-        // this test can carry it on every request below.
-        const serviceToken = loadOrCreateToken(seDataDir).token;
 
         let stderrBuf = '';
         const serve = spawn(process.execPath, [serveBin, '--port', String(port)], {
@@ -463,6 +458,32 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         serve.stderr.on('data', (chunk) => { stderrBuf += chunk.toString('utf-8'); });
         let exited = false;
         serve.once('exit', () => { exited = true; });
+
+        // apra-fleet-50j6.2.3 criterion (4): read the shared bearer service
+        // token from <FLEET_SE_DATA_DIR>/private/token AFTER the supervisor
+        // has actually minted it -- never pre-mint it ourselves. The
+        // supervisor writes the token file as part of its own boot (server.
+        // mjs -> auth.mjs's loadOrCreateToken(deps.dataDir)), so wait for
+        // that file to exist before reading it, under the same exited/
+        // deadline fail-fast guards used for the /api/health poll below.
+        const tokenFile = tokenFilePath(seDataDir);
+        const tokenDeadline = Date.now() + 20000;
+        for (;;) {
+            if (exited) {
+                assert.fail(
+                    `serve.mjs exited (code=${serve.exitCode}, signal=${serve.signalCode}) before ` +
+                    `writing its token file -- likely a packaging/module-resolution failure.\nstderr:\n${stderrBuf}`
+                );
+            }
+            if (fs.existsSync(tokenFile)) break;
+            if (Date.now() > tokenDeadline) {
+                assert.fail(`timed out waiting for the installed supervisor to write ${tokenFile}.\nstderr so far:\n${stderrBuf}`);
+            }
+            // eslint-disable-next-line no-await-in-loop
+            await sleep(100);
+        }
+        const serviceToken = fs.readFileSync(tokenFile, 'utf-8').trim();
+        assert.ok(serviceToken.length > 0, `token file ${tokenFile} was created but is empty`);
 
         // Poll for /api/health, but fail fast (with the captured stderr) if
         // the process exits first -- e.g. on a reintroduced ERR_MODULE_NOT_FOUND
@@ -486,6 +507,14 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         }
 
         assert.doesNotMatch(stderrBuf, /ERR_MODULE_NOT_FOUND/, `installed supervisor logged ERR_MODULE_NOT_FOUND:\n${stderrBuf}`);
+
+        // apra-fleet-50j6.2.3 criterion (4): a corrupted token (same length,
+        // one flipped char -- never mutate the on-disk file, which auth.mjs's
+        // readExistingToken() rejects as malformed on next mint/load) must be
+        // rejected 401 by the guarded /api/health route.
+        const corruptedToken = (serviceToken[0] === '0' ? '1' : '0') + serviceToken.slice(1);
+        const unauthorizedHealth = await httpRequest(port, '/api/health', 'GET', corruptedToken);
+        assert.equal(unauthorizedHealth.status, 401, 'a corrupted bearer token must be rejected, not silently accepted');
 
         // (n4lu.2 + qqof.2) GET /api/sprints: a fresh ledger, so an empty
         // (but well-formed) list.

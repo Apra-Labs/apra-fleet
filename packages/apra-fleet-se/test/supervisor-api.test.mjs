@@ -8,7 +8,6 @@ import http from 'node:http';
 import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_FILENAME, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
-import { createSupervisor } from '../src/supervisor/server.mjs';
 import {
     createSprintController,
     registerSprintRoutes,
@@ -18,6 +17,7 @@ import {
     formatMemberConflict,
     ApiError,
 } from '../src/supervisor/api.mjs';
+import { createTestSupervisor } from './helpers/supervisor-harness.mjs';
 
 // apra-fleet-eft.4.4 -- supervisor HTTP endpoints: members, backlog,
 // sprints CRUD, stop proxy. Validation reuses runner.js validateIssueId /
@@ -70,12 +70,20 @@ function recordingSpawner(captured) {
     });
 }
 
-/** Mock req/res driving supervisor.handleRequest directly. */
-function mockReq(method, url, body) {
+/**
+ * Mock req/res driving supervisor.handleRequest directly.
+ * apra-fleet-50j6.2.3: accepts an optional `headers` bag -- callers that
+ * migrated to createTestSupervisor() pass its returned `headers()` so the
+ * server's per-request bearer-token guard (auth.mjs's isAuthorized(), read
+ * off `req.headers`) sees the same Authorization header a real request would
+ * carry.
+ */
+function mockReq(method, url, body, headers) {
     const chunks = body !== undefined ? [Buffer.from(JSON.stringify(body))] : [];
     return {
         method,
         url,
+        headers: headers ?? {},
         on(event, cb) {
             if (event === 'data') { for (const c of chunks) cb(c); }
             if (event === 'end') { cb(); }
@@ -280,7 +288,7 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
         const captured = [];
-        const supervisor = createSupervisor({ port: 0 });
+        const { supervisor, headers } = await createTestSupervisor({ port: 0, dataDir: dir });
         registerSprintRoutes(supervisor, createSprintController({
             ledger, history, spawner: recordingSpawner(captured),
             listMembers: () => ({ members: [] }), getBacklog: () => ({}),
@@ -288,7 +296,7 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
 
         const res = mockRes();
         await supervisor.handleRequest(
-            mockReq('POST', '/api/sprints', { issue: 'epic-1,bad id!!', members: ['a'], branch: 'feat/x', base: 'main' }),
+            mockReq('POST', '/api/sprints', { issue: 'epic-1,bad id!!', members: ['a'], branch: 'feat/x', base: 'main' }, headers()),
             res,
         );
         assert.equal(res.statusCode, 400);
@@ -308,7 +316,7 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
         const captured = [];
-        const supervisor = createSupervisor({ port: 0 });
+        const { supervisor, headers } = await createTestSupervisor({ port: 0, dataDir: dir });
         registerSprintRoutes(supervisor, createSprintController({
             ledger, history, spawner: recordingSpawner(captured),
             listMembers: () => ({ members: [] }), getBacklog: () => ({}),
@@ -316,7 +324,7 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
 
         const res = mockRes();
         await supervisor.handleRequest(
-            mockReq('POST', '/api/sprints', { issue: 'bad id!!', members: ['a'], branch: 'feat/x', base: 'main' }),
+            mockReq('POST', '/api/sprints', { issue: 'bad id!!', members: ['a'], branch: 'feat/x', base: 'main' }, headers()),
             res,
         );
         assert.equal(res.statusCode, 400);
@@ -330,7 +338,7 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
         const captured = [];
-        const supervisor = createSupervisor({ port: 0 });
+        const { supervisor, headers } = await createTestSupervisor({ port: 0, dataDir: dir });
         registerSprintRoutes(supervisor, createSprintController({
             ledger, history, spawner: recordingSpawner(captured),
             listMembers: () => ({ members: [] }), getBacklog: () => ({}),
@@ -338,7 +346,7 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
 
         const res = mockRes();
         await supervisor.handleRequest(
-            mockReq('POST', '/api/sprints', { issue: 'PROJ-1', members: ['a'], branch: 'bad branch~name', base: 'main' }),
+            mockReq('POST', '/api/sprints', { issue: 'PROJ-1', members: ['a'], branch: 'bad branch~name', base: 'main' }, headers()),
             res,
         );
         assert.equal(res.statusCode, 400);
@@ -824,7 +832,7 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
         await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
-        const supervisor = createSupervisor({ port: 0 });
+        const { supervisor, headers } = await createTestSupervisor({ port: 0, dataDir: dir });
         registerSprintRoutes(supervisor, createSprintController({
             ledger, history, spawner: recordingSpawner([]),
             listMembers: () => ({}), getBacklog: () => ({}),
@@ -834,7 +842,7 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
         }));
 
         const res = mockRes();
-        await supervisor.handleRequest(mockReq('GET', '/api/sprints/s1'), res);
+        await supervisor.handleRequest(mockReq('GET', '/api/sprints/s1', undefined, headers()), res);
         assert.equal(res.statusCode, 200, 'must be a clean 2xx, not a 500 from a doomed proxy into the closed port');
         const payload = payloadOf(res);
         // A structured status payload -- NOT the generic { error: ... }
@@ -921,7 +929,7 @@ describe('api -- POST /api/sprints/:id/stop proxy', () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
         await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
-        const supervisor = createSupervisor({ port: 0 });
+        const { supervisor, headers } = await createTestSupervisor({ port: 0, dataDir: dir });
         registerSprintRoutes(supervisor, createSprintController({
             ledger, history, spawner: recordingSpawner([]),
             listMembers: () => ({}), getBacklog: () => ({}),
@@ -931,7 +939,7 @@ describe('api -- POST /api/sprints/:id/stop proxy', () => {
         }));
 
         const res = mockRes();
-        await supervisor.handleRequest(mockReq('POST', '/api/sprints/s1/stop'), res);
+        await supervisor.handleRequest(mockReq('POST', '/api/sprints/s1/stop', undefined, headers()), res);
         assert.equal(res.statusCode, 200, 'must be a clean 2xx no-op, not a 500 from a doomed proxy into the closed port');
         assert.deepEqual(payloadOf(res), { sprintId: 's1', status: 'already-terminal', child: null });
         await fsp.rm(dir, { recursive: true, force: true });
@@ -944,7 +952,7 @@ describe('api -- POST /api/sprints/:id/stop proxy', () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
         await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
-        const supervisor = createSupervisor({ port: 0 });
+        const { supervisor, headers } = await createTestSupervisor({ port: 0, dataDir: dir });
         let stoppedPort = null;
         registerSprintRoutes(supervisor, createSprintController({
             ledger, history, spawner: recordingSpawner([]),
@@ -955,7 +963,7 @@ describe('api -- POST /api/sprints/:id/stop proxy', () => {
         }));
 
         const res = mockRes();
-        await supervisor.handleRequest(mockReq('POST', '/api/sprints/s1/stop'), res);
+        await supervisor.handleRequest(mockReq('POST', '/api/sprints/s1/stop', undefined, headers()), res);
         assert.equal(res.statusCode, 200);
         assert.equal(stoppedPort, 9200);
         assert.equal(payloadOf(res).status, 'stopping');
@@ -999,7 +1007,7 @@ describe('api -- route registration coexists with lifecycle routes', () => {
     test('all six routes register and exact/pattern routes do not shadow health', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
-        const supervisor = createSupervisor({ port: 0 });
+        const { supervisor, headers } = await createTestSupervisor({ port: 0, dataDir: dir });
         registerSprintRoutes(supervisor, createSprintController({
             ledger, history, spawner: recordingSpawner([]),
             listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
@@ -1007,25 +1015,64 @@ describe('api -- route registration coexists with lifecycle routes', () => {
 
         // GET /api/members
         let res = mockRes();
-        await supervisor.handleRequest(mockReq('GET', '/api/members'), res);
+        await supervisor.handleRequest(mockReq('GET', '/api/members', undefined, headers()), res);
         assert.equal(res.statusCode, 200);
 
         // GET /api/backlog
         res = mockRes();
-        await supervisor.handleRequest(mockReq('GET', '/api/backlog'), res);
+        await supervisor.handleRequest(mockReq('GET', '/api/backlog', undefined, headers()), res);
         assert.equal(res.statusCode, 200);
 
         // GET /api/sprints (exact) still works alongside the :id pattern route
         res = mockRes();
-        await supervisor.handleRequest(mockReq('GET', '/api/sprints'), res);
+        await supervisor.handleRequest(mockReq('GET', '/api/sprints', undefined, headers()), res);
         assert.equal(res.statusCode, 200);
         assert.ok(Array.isArray(payloadOf(res).sprints));
 
         // Lifecycle-owned GET /api/health is not shadowed.
         res = mockRes();
-        await supervisor.handleRequest(mockReq('GET', '/api/health'), res);
+        await supervisor.handleRequest(mockReq('GET', '/api/health', undefined, headers()), res);
         assert.equal(res.statusCode, 200);
         assert.equal(payloadOf(res).status, 'ok');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+// apra-fleet-50j6.2.3 criterion (2): createTestSupervisor() must be
+// auth-ENFORCING, not auth-bypassing -- a request made without headers()
+// must 401, proving the harness always supplies a token (never builds a
+// supervisor with neither deps.token nor deps.dataDir, which server.mjs
+// treats as "auth disabled").
+describe('api -- apra-fleet-50j6.2.3 harness is auth-enforcing, not auth-bypassing', () => {
+    test('a guarded /api/* request through the harness WITHOUT headers() gets 401', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const { supervisor } = await createTestSupervisor({ port: 0, dataDir: dir });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/members'), res);
+        assert.equal(res.statusCode, 401, 'a request with no Authorization header must be rejected, not silently allowed through');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('the SAME request WITH headers() succeeds -- proves the 401 above is the auth guard, not a broken route', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const { supervisor, headers } = await createTestSupervisor({ port: 0, dataDir: dir });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/members', undefined, headers()), res);
+        assert.equal(res.statusCode, 200);
 
         await fsp.rm(dir, { recursive: true, force: true });
     });
