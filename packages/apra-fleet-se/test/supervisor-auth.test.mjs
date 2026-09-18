@@ -69,6 +69,60 @@ describe('loadOrCreateToken', () => {
         assert.equal(result.created, true);
     });
 
+    // Under a concurrent cold start, our read can land before a peer's write and
+    // see ENOENT even though the peer is about to publish a good token. Absent
+    // and present-but-blank must therefore be distinguished: only the blank case
+    // may unlink. `withFirstReadMissing` reproduces that interleaving by forcing
+    // exactly one ENOENT out of the first read of the token file.
+    function withFirstReadMissing(file, reads, fn) {
+        const realRead = fs.readFileSync;
+        let remaining = reads;
+        fs.readFileSync = (target, ...rest) => {
+            if (remaining > 0 && target === file) {
+                remaining -= 1;
+                const err = new Error(`ENOENT: no such file or directory, open '${target}'`);
+                err.code = 'ENOENT';
+                throw err;
+            }
+            return realRead(target, ...rest);
+        };
+        try {
+            return fn();
+        } finally {
+            fs.readFileSync = realRead;
+        }
+    }
+
+    test('a racing start never unlinks or diverges from a peer\'s written token', () => {
+        const file = tokenFilePath(dir);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const peerToken = 'b'.repeat(64);
+        fs.writeFileSync(file, peerToken);
+
+        const result = withFirstReadMissing(file, 1, () => loadOrCreateToken(dir));
+
+        assert.equal(result.created, false, 'must not claim to have minted the token');
+        assert.equal(result.token, peerToken, 'must adopt the peer token, not a fresh one');
+        assert.equal(
+            fs.readFileSync(file, 'utf8').trim(),
+            peerToken,
+            'peer token must still be on disk (it must never be unlinked)',
+        );
+    });
+
+    test('an EEXIST race whose file still reads empty fails loudly', () => {
+        const file = tokenFilePath(dir);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const peerToken = 'c'.repeat(64);
+        fs.writeFileSync(file, peerToken);
+
+        assert.throws(
+            () => withFirstReadMissing(file, 2, () => loadOrCreateToken(dir)),
+            /exists but is empty/,
+        );
+        assert.equal(fs.readFileSync(file, 'utf8').trim(), peerToken);
+    });
+
     test('a malformed non-empty token file is a hard error, not a silent replace', () => {
         const file = tokenFilePath(dir);
         fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -135,6 +189,18 @@ describe('requiresAuth', () => {
         // A path that merely mentions api/ or live/ deeper down is not guarded.
         ['GET', '/static/api/thing', false],
         ['POST', '/sprints/x/dead/stop', false],
+        // Dot segments are normalized BEFORE matching, exactly as the HTTP
+        // router does: a raw req.url that resolves onto a guarded route must not
+        // slip past the guard and then reach the guarded handler.
+        ['GET', '/foo/../api/health', true],
+        ['POST', '/sprints/x/live/pause/../stop', true],
+        // Same bypass on the live-control branch: raw, `[^/]+` binds `foo` and
+        // the pattern misses, but the router dispatches /sprints/x/live/stop.
+        ['POST', '/sprints/x/foo/../live/stop', true],
+        ['GET', '/api/health#frag', true],
+        // Protocol-relative form resolves to host 'api', path '/health' -- the
+        // router reaches the same (unrouted) path, so guard and router agree.
+        ['GET', '//api/health', false],
     ];
 
     for (const [method, urlPath, expected] of REQUIRES_AUTH_TABLE) {
@@ -150,6 +216,32 @@ describe('requiresAuth', () => {
     test('non-string arguments do not throw', () => {
         assert.equal(requiresAuth(undefined, undefined), false);
         assert.equal(requiresAuth(null, null), false);
+    });
+
+    test('a raw req.url and the router-normalized pathname always agree', () => {
+        // server.mjs routes on `new URL(req.url || '/', origin).pathname`; if the
+        // guard answered on the raw string instead, the two would disagree and
+        // the disagreement is an auth bypass.
+        const rawUrls = [
+            '/api/health',
+            '/foo/../api/health',
+            '/api/../api/health',
+            '/sprints/x/live/pause/../stop',
+            '/sprints/x/foo/../live/stop',
+            '/sprints/x/live',
+            '/api/health?verbose=1',
+            '/state',
+        ];
+        for (const raw of rawUrls) {
+            const routed = new URL(raw, 'http://localhost:1234').pathname;
+            for (const method of ['GET', 'POST']) {
+                assert.equal(
+                    requiresAuth(method, raw),
+                    requiresAuth(method, routed),
+                    `guard disagrees with router for ${method} ${raw} (routes to ${routed})`,
+                );
+            }
+        }
     });
 });
 

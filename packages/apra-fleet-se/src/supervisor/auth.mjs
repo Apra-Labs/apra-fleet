@@ -74,6 +74,13 @@ const TOKEN_PATTERN = new RegExp(`^[0-9a-f]{${TOKEN_BYTES * 2}}$`);
  */
 const LIVE_CONTROL_PATTERN = /^\/sprints\/[^/]+\/live\//;
 
+/**
+ * Dummy origin used to normalize a request path before matching. Mirrors the
+ * HTTP router's own `new URL(req.url || '/', <origin>)`, so the guard and the
+ * dispatcher can never disagree about which route a URL names.
+ */
+const NORMALIZATION_BASE = 'http://localhost';
+
 /** True when this process is running on Windows (Git Bash included). */
 function isWindows() {
     return process.platform === 'win32';
@@ -94,9 +101,18 @@ export function tokenFilePath(dir) {
 }
 
 /**
+ * Sentinel returned by readExistingToken when the token file exists but holds
+ * nothing but whitespace (a torn write from a crashed mint). It MUST stay
+ * distinct from `null` (file absent): only the torn-write case may unlink, and
+ * conflating the two lets a racing supervisor delete a peer's good token.
+ */
+const TOKEN_FILE_EMPTY = Symbol('token-file-empty');
+
+/**
  * Read an existing token file.
  * @param {string} file
- * @returns {string|null} the token, or null if the file is absent or empty
+ * @returns {string|null|typeof TOKEN_FILE_EMPTY} the token, `null` if the file
+ *   is absent, or TOKEN_FILE_EMPTY if it exists but is blank
  */
 function readExistingToken(file) {
     let raw;
@@ -107,10 +123,10 @@ function readExistingToken(file) {
         throw err;
     }
     const token = raw.trim();
-    // An empty/whitespace-only file is a torn write from a crashed mint: treat it
-    // as absent and re-mint. Anything else non-empty but malformed is somebody
-    // else's file and must not be silently replaced.
-    if (token.length === 0) return null;
+    // An empty/whitespace-only file is a torn write from a crashed mint: report
+    // it distinctly so the caller may clear it. Anything else non-empty but
+    // malformed is somebody else's file and must not be silently replaced.
+    if (token.length === 0) return TOKEN_FILE_EMPTY;
     if (!TOKEN_PATTERN.test(token)) {
         throw new Error(
             `Service token file is malformed (expected ${TOKEN_BYTES * 2} hex chars): ${file}`,
@@ -138,8 +154,17 @@ function enforcePosixTokenMode(file) {
  * Mint the supervisor service token, or reuse the one already on disk.
  *
  * Idempotent: repeated calls against the same `dir` always return the same
- * token. Creation is exclusive (flag 'wx'), so two supervisors racing on a cold
- * data root converge on one token instead of clobbering each other.
+ * token. Creation is exclusive (flag 'wx') and an absent file is never
+ * unlinked, so two supervisors racing on a COLD data root converge on one
+ * token: the loser of the create race adopts the winner's token rather than
+ * clobbering it.
+ *
+ * Known bounded exception: recovery from a torn write. 'wx' is open-then-write,
+ * so a peer that reads the file in that microsecond window sees it blank, treats
+ * it as a torn mint, unlinks it and mints its own -- the two starts then diverge.
+ * Closing that window needs write-temp-then-rename, which loses the atomic
+ * create-with-mode-0600 property, so the window is accepted rather than traded
+ * away. Do NOT widen this claim to "no race can ever diverge".
  *
  * @param {string} dir supervisor data root
  * @returns {{ token: string, path: string, created: boolean, aclVerified: boolean }}
@@ -156,17 +181,22 @@ export function loadOrCreateToken(dir) {
         ...(windows ? {} : { mode: PRIVATE_DIR_MODE }),
     });
 
-    let token = readExistingToken(file);
+    const existing = readExistingToken(file);
+    let token = typeof existing === 'string' ? existing : null;
     let created = false;
 
     if (token === null) {
-        // `token === null` means absent OR a zero-length file left by a torn
-        // mint. Clear the latter so the exclusive create below still applies --
-        // otherwise an empty file would wedge the supervisor permanently.
-        try {
-            fs.unlinkSync(file);
-        } catch (err) {
-            if (!err || err.code !== 'ENOENT') throw err;
+        // Unlink ONLY a present-but-blank file (a torn mint), which would
+        // otherwise wedge the supervisor permanently by defeating the exclusive
+        // create below. The absent case must NOT unlink: under a concurrent cold
+        // start our read can lose to a peer's write, and unlinking there would
+        // delete the peer's fully written token and hand out a divergent one.
+        if (existing === TOKEN_FILE_EMPTY) {
+            try {
+                fs.unlinkSync(file);
+            } catch (err) {
+                if (!err || err.code !== 'ENOENT') throw err;
+            }
         }
         const minted = crypto.randomBytes(TOKEN_BYTES).toString('hex');
         try {
@@ -177,7 +207,8 @@ export function loadOrCreateToken(dir) {
             if (!err || err.code !== 'EEXIST') throw err;
             // Lost the create race (or an empty file was completed by a peer):
             // the winner's token is authoritative.
-            token = readExistingToken(file);
+            const raced = readExistingToken(file);
+            token = typeof raced === 'string' ? raced : null;
             if (token === null) {
                 // A peer created the file but has not written it yet. Truncating
                 // and re-minting here would hand out a token the peer never sees,
@@ -270,12 +301,26 @@ export function isAuthorized(req, token) {
  * dashboard shell, /state, /events, the live view itself, history -- stays open
  * because the server is loopback-bound and those are read-only views.
  *
+ * The path is normalized exactly the way the HTTP router normalizes it (parse
+ * against a dummy origin, take `.pathname`) before any matching, so a raw
+ * `req.url` and a pre-parsed `url.pathname` always answer the same. Without
+ * that, `/foo/../api/health` would answer OPEN here while the router dispatched
+ * the guarded `/api/health` handler -- an auth bypass. An unparseable path is
+ * fail-closed (guarded).
+ *
  * @param {string} method HTTP method
- * @param {string} urlPath request path (no origin; a query string is tolerated)
+ * @param {string} urlPath request path or raw `req.url` (a query string,
+ *   fragment, or dot segments are all tolerated; an origin is not expected)
  * @returns {boolean}
  */
 export function requiresAuth(method, urlPath) {
-    const p = typeof urlPath === 'string' ? urlPath : '';
+    const raw = typeof urlPath === 'string' && urlPath.length > 0 ? urlPath : '/';
+    let p;
+    try {
+        p = new URL(raw, NORMALIZATION_BASE).pathname;
+    } catch {
+        return true;
+    }
     if (p.startsWith('/api/')) return true;
     const verb = typeof method === 'string' ? method.toUpperCase() : '';
     return verb === 'POST' && LIVE_CONTROL_PATTERN.test(p);
