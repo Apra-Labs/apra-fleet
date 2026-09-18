@@ -13,6 +13,7 @@
 import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { TEST_CONCURRENCY } from '../test/helpers/test-concurrency.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.join(__dirname, '..');
@@ -24,11 +25,10 @@ if (!Object.prototype.hasOwnProperty.call(MODES, mode)) {
     process.exit(2);
 }
 
-// Keep in sync with the --test-concurrency value passed below. Exported into
-// the test workers' env so test/helpers/scaled-timeout.mjs can derive
+// TEST_CONCURRENCY (test/helpers/test-concurrency.mjs) is exported into the
+// test workers' env below so test/helpers/scaled-timeout.mjs can derive
 // contention-aware timeout budgets instead of hardcoding fixed wall-clock
 // bounds that blow up under concurrent load but pass standalone.
-const TEST_CONCURRENCY = 8;
 
 const extraArgs = process.argv.slice(3);
 const result = spawnSync(
