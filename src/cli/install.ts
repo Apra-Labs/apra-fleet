@@ -1612,7 +1612,9 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       // already installed - skip
     } catch {
       // not installed - install it
-      execFileSync('npm', ['install', '-g', '@beads/bd@1.1.2'], { stdio: 'inherit', shell: true });
+      // apra-fleet-4ipl: bumped 1.1.2 -> 1.3.0 to match .github/workflows/ci.yml's
+      // pin -- see that file's comment for why (schema v66 compatibility).
+      execFileSync('npm', ['install', '-g', '@beads/bd@1.3.0'], { stdio: 'inherit', shell: true });
     }
   } catch (err) {
     // non-fatal: warn but don't fail the install

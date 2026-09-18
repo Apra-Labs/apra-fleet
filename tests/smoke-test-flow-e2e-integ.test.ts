@@ -166,6 +166,16 @@ describe.skipIf(!BD_AVAILABLE)(
       git(toyRepo, ['remote', 'set-url', 'origin', `file://${gitMirror}`]);
 
       doltRemote = path.join(sandboxRoot, '.apra-fleet-toy-dolt-remote');
+      // apra-fleet-4ipl: bd's dolt-remote-history probe runs `git ls-remote`
+      // against `doltRemote` before `bd init` has created anything there. A
+      // nonexistent (or plain, non-git) path makes that probe fail with
+      // "does not appear to be a git repository" (exit 128), which a newer
+      // bd treats conservatively as "assume history exists" and refuses
+      // --from-jsonl init -- same root cause as scripts/sandbox-seed-
+      // beads.mjs's identical fix. Pre-create doltRemote as a real (empty)
+      // bare git repo so the probe gets an unambiguous "no refs" instead.
+      fs.mkdirSync(doltRemote, { recursive: true });
+      git(doltRemote, ['init', '--bare']);
       bd(toyRepo, ['init', '--from-jsonl', '--prefix', 'gh-toy', '--remote', `file://${doltRemote}`, '--non-interactive']);
       bd(toyRepo, ['dolt', 'push']);
 
