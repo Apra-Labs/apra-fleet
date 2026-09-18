@@ -832,6 +832,8 @@ describe('dashboard -- registerDashboardRoutes / GET /', () => {
         const dashboard = createDashboard({
             ledger: fakeLedger([]),
             watchdog: fakeWatchdog({}),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
         });
         const supervisor = createSupervisor({ logger: { log() {}, error() {} }, token: 'test-token-abc123' });
         registerDashboardRoutes(supervisor, dashboard);
