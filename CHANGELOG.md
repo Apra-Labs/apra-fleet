@@ -54,9 +54,8 @@ Known follow-on gaps (deliberately left open, not closed by this pass):
   design decision (e.g. a first-use pairing flow), not a one-file patch.
 - Deploy/regression tooling that polls `/api/health` unauthenticated
   needs updating in lockstep with this guard, or it misreads a healthy,
-  now-authenticated supervisor as crashed/unreachable -- filed as
-  follow-up rather than patched here (out of scope for the harvested
-  branch's role boundaries).
+  now-authenticated supervisor as crashed/unreachable -- left to
+  follow-up rather than patched alongside the guard.
 - Authenticate or replace the remaining bare supervisor curl examples in
   `deploy.md` and user docs; pin percent-encoded path forms in the
   `requiresAuth` truth table; a test-harness temp-directory leak; add the
