@@ -43,7 +43,7 @@ import { MemberReservationResumeError } from './errors.mjs';
  * not resolve in the shipped layout. The { acquire, release } surface is
  * exactly what doltPushAfter() calls.
  *
- * @param {{ serviceUrl: string, sprintId: string, fetch?: typeof fetch, log?: Function }} opts
+ * @param {{ serviceUrl: string, sprintId: string, token?: string, fetch?: typeof fetch, log?: Function }} opts
  * @returns {{ acquire: (sprintId: string, o?: { pid?: number|null }) => Promise<{ token: string|null }>, release: (token: string|null) => Promise<boolean> }}
  */
 export function createHttpDoltPushMutexClient(opts = {}) {
@@ -55,13 +55,24 @@ export function createHttpDoltPushMutexClient(opts = {}) {
         throw new Error('createHttpDoltPushMutexClient requires a fetch implementation (Node >=18 global fetch or an injected one)');
     }
     const log = opts.log ?? (() => {});
+    // apra-fleet-50j6.2.1: service token for Authorization header. Injected
+    // via opts.token (test/direct construction) or falls back to
+    // process.env.FLEET_SE_SERVICE_TOKEN (production, where spawner.mjs
+    // passes it via the child env).
+    const serviceToken = opts.token ?? process.env.FLEET_SE_SERVICE_TOKEN;
     const routeFor = (sprintId, action) =>
         `${base}/api/dolt-push-mutex/${encodeURIComponent(sprintId)}/${action}`;
 
     async function postJson(url, body) {
+        const headers = { 'content-type': 'application/json' };
+        // apra-fleet-50j6.2.1: add Authorization header if service token
+        // is present. Absent token → request still sent (server decides).
+        if (serviceToken) {
+            headers.Authorization = `Bearer ${serviceToken}`;
+        }
         const res = await fetchImpl(url, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers,
             body: JSON.stringify(body ?? {}),
         });
         if (!res || !res.ok) {
@@ -128,7 +139,7 @@ export function createHttpDoltPushMutexClient(opts = {}) {
  * client above. The { allocate, confirm, release } surface is exactly what the
  * bead-creation path calls.
  *
- * @param {{ serviceUrl: string, sprintId?: string, fetch?: typeof fetch, log?: Function }} opts
+ * @param {{ serviceUrl: string, sprintId?: string, token?: string, fetch?: typeof fetch, log?: Function }} opts
  * @returns {{ allocate: Function, confirm: Function, release: Function }}
  */
 export function createHttpChildIdAllocatorClient(opts = {}) {
@@ -140,11 +151,22 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
         throw new Error('createHttpChildIdAllocatorClient requires a fetch implementation (Node >=18 global fetch or an injected one)');
     }
     const log = opts.log ?? (() => {});
+    // apra-fleet-50j6.2.1: service token for Authorization header. Injected
+    // via opts.token (test/direct construction) or falls back to
+    // process.env.FLEET_SE_SERVICE_TOKEN (production, where spawner.mjs
+    // passes it via the child env).
+    const serviceToken = opts.token ?? process.env.FLEET_SE_SERVICE_TOKEN;
 
     async function postJson(url, body) {
+        const headers = { 'content-type': 'application/json' };
+        // apra-fleet-50j6.2.1: add Authorization header if service token
+        // is present. Absent token → request still sent (server decides).
+        if (serviceToken) {
+            headers.Authorization = `Bearer ${serviceToken}`;
+        }
         const res = await fetchImpl(url, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers,
             body: JSON.stringify(body ?? {}),
         });
         if (!res || !res.ok) {

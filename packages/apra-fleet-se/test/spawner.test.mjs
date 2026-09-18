@@ -365,6 +365,72 @@ describe('createSpawner -- unit behavior (fake spawn)', () => {
         assert.ok(!calls[0].args.includes('--service-url'));
     });
 
+    // apra-fleet-50j6.2.1: spawner passes FLEET_SE_SERVICE_TOKEN in the
+    // child env for the coordination clients to use as Authorization bearer.
+    test('spawnSprint includes FLEET_SE_SERVICE_TOKEN in the child env when deps.serviceToken is provided', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([224]);
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            basePort: 9061,
+            isPortAvailable: async () => true,
+            serviceToken: 'test-token-xyz',
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.ok(calls[0].opts.env, 'spawn should be called with an env object');
+        assert.equal(calls[0].opts.env.FLEET_SE_SERVICE_TOKEN, 'test-token-xyz');
+    });
+
+    test('spawnSprint omits FLEET_SE_SERVICE_TOKEN from env when deps.serviceToken is not provided', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([225]);
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            basePort: 9062,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        // If no env is set at all, the criterion is satisfied (child inherits parent env naturally).
+        // If env is set, it should not contain FLEET_SE_SERVICE_TOKEN.
+        if (calls[0].opts.env) {
+            assert.equal(calls[0].opts.env.FLEET_SE_SERVICE_TOKEN, undefined);
+        }
+    });
+
+    test('spawnSprint argv is unchanged when token is passed (security: argv is world-readable in ps)', async () => {
+        const { spawnFn: spawnWithToken, calls: callsWithToken } = makeFakeSpawn([226]);
+        const spawnerWithToken = createSpawner({
+            spawn: spawnWithToken,
+            basePort: 9063,
+            isPortAvailable: async () => true,
+            serviceToken: 'secret-token-abc-xyz',
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        const { spawnFn: spawnNoToken, calls: callsNoToken } = makeFakeSpawn([227]);
+        const spawnerNoToken = createSpawner({
+            spawn: spawnNoToken,
+            basePort: 9063,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        await spawnerWithToken.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+        await spawnerNoToken.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        // argv must be identical regardless of token presence (token goes in env, not argv)
+        assert.deepEqual(callsWithToken[0].args, callsNoToken[0].args, 'token must never appear in argv');
+        assert.ok(!callsWithToken[0].args.some((arg) => arg.includes('secret-token')), 'token string must not leak into argv');
+    });
+
     // apra-fleet-k7b.3: the optional onChildExit callback is invoked with the
     // Node 'exit' event's own (code, signal) args, this launch's runId, and
     // an injectable clock -- so bin/serve.mjs's wiring can persist them into
