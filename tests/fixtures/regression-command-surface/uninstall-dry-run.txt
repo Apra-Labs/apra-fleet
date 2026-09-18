@@ -1,6 +1,8 @@
 
 Uninstalling Apra Fleet {VERSION}... (DRY RUN)
 
+  - Removing MCP server service registration
+  - Removing fleet-supervisor service registration
 Cleaning up Claude...
   - Removing MCP server via Claude CLI
   - Removing PM skills: {PM_SKILLS_DIR}
