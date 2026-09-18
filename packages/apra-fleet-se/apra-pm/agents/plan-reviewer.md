@@ -81,11 +81,16 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
    criteria, AND flag a chain of tasks that were split only to stay small (e.g. "add
    helper" / "call helper" / "test helper" as three tasks with no independent value) --
    those should be fewer tasks, or at minimum one lane.
-5. **Dependency wiring**: a `[test]` task follows its `[impl]` task -- in the SAME lane
-   with a higher `streakOrder` (the normal case), or in a downstream lane joined by a
-   `blocks` edge. A `blocks` edge between two tasks that share a `streak` id is a finding
-   (it splits the lane into separate review rounds). A cross-lane edge must originate from
-   every task of the downstream lane and target the upstream lane's last task.
+5. **Dependency wiring**: a `[test]` task follows its `[impl]` task in the SAME lane with
+   a higher `streakOrder` -- splitting an impl/test pair across two lanes for convenience
+   is a finding. The only legitimate exception is a feature-level `[test]` task whose impl
+   work was itself split across multiple lanes by the sizing rules (planner.md's rule that
+   a lane is split "ONLY at a point where the earlier part is a self-contained, reviewable
+   increment"): then the test task's own lane may depend cross-lane on each of those impl
+   lanes. A `blocks` edge between two tasks that share a `streak` id is ALWAYS a finding,
+   regardless of task type -- it silently splits the lane into separate review rounds. A
+   legitimate cross-lane edge must originate from every task of the downstream lane and
+   target the last (highest `streakOrder`) task of the upstream lane.
 6. **No scope creep**: tasks address only the original sprint goals and open bugs/features
 7. **No duplicate work**: no two tasks do the same thing
 8. **Feasibility**: no task assumes something that has not been built yet
@@ -121,15 +126,16 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
       component/module, or an enabling relationship in their descriptions -- a lane
       grouping unrelated work areas is a finding.
     - **Under-batched lanes** (this is the finding this criterion most often should
-      produce): two lanes that are cohesive by the planner's SAME-lane rules (same
+      produce): two lanes joined by a `blocks` edge (directly, or transitively through
+      other lanes) that are cohesive by the planner's SAME-lane rules (same
       files/component, enabling relationship, impl and its test, mutex members) and whose
       combined effort is within `laneMaxEffort` and `laneMaxTasks` must be ONE lane. Each
-      unnecessary lane boundary in a chain is an extra review round; name the lanes to
-      merge.
-    - **No intra-lane `blocks` edges**: no `blocks` edge exists between two tasks that
-      share a `streak` id -- that splits the lane into separate review rounds. Cross-lane
-      edges must originate from every task of the downstream lane and target the upstream
-      lane's last task (criterion 5).
+      unnecessary lane boundary in a CHAIN is an extra review round; name the lanes to
+      merge. Two cohesive lanes with NO `blocks` edge between them already run in the same
+      review round -- merging them would only remove parallelism for no review saving, so
+      that is NOT a finding.
+    - **No intra-lane `blocks` edges; cross-lane edges wired correctly**: see criterion 5
+      for the rule -- report a violation there as `kind: "dependency_wiring"`, not here.
     - **Mutex resources co-laned**: tasks that contend for the same mutual-exclusion
       resource (a resource only one change may hold at a time -- e.g. the same submodule
       pointer, a shared version/manifest field, or the same test fixture) share one `streak`
@@ -137,14 +143,16 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
     - **Within limits**: per lane, task count `<=` `laneMaxTasks` and `effort` (computed
       from the recorded `size` values, not your own estimate -- `effort = sum of size
       points S=1/M=2/L=4 x max model weight in the lane, cheap=1/standard=10/premium=20`)
-      `<=` `laneMaxEffort`, using the LANE SIZING PARAMETERS in your dispatch prompt
-      (defaults: `laneMaxTasks=6`, `laneMaxEffort=200`, `laneTargetEffort=60`). A lane
-      over either cap is a finding unless it was split at a point where the earlier part
-      is a self-contained, reviewable increment, without separating mutex-resource members.
-    - **Safety valves -- do NOT ask for a merge when**: the lanes sit across a risk
-      boundary the planner named (contract change, migration, security-sensitive or
-      destructive path); a downstream task's criteria genuinely depend on the upstream
-      outcome being reviewed first; or the merged lane would exceed either cap.
+      `<=` `laneMaxEffort`. These three numbers (defaults `laneMaxTasks=6`,
+      `laneMaxEffort=200`, `laneTargetEffort=60`) are fixed for now -- no per-dispatch
+      override channel exists yet. A lane over either cap is a finding unless it was split
+      at a point where the earlier part is a self-contained, reviewable increment, without
+      separating mutex-resource members.
+    - **Safety valves -- do NOT ask for a merge when**: the lanes have no `blocks` edge
+      between them (see Under-batched lanes above); the lanes sit across a risk boundary
+      the planner named (contract change, migration, security-sensitive or destructive
+      path); a downstream task's criteria genuinely depend on the upstream outcome being
+      reviewed first; or the merged lane would exceed either cap.
     A violation of any bullet above is CHANGES_NEEDED referencing "criterion 11" and the
     specific lane/task IDs involved.
 12. **NOTES-vs-child contradiction**: for each child under review, check whether its
@@ -174,8 +182,10 @@ For each open `type=task` issue, determine:
 criterion 10 as a CHANGES_NEEDED finding -- the fallback lets you finish
 classification, it does not excuse the planner.
 
-Compare your bucket with the task's recorded `size` (Step 2 criterion 11); a mismatch of
-more than one bucket (S vs L) is a criterion-11 finding, not a silent override.
+Compare your bucket with the task's recorded `size`. Agreement, or a one-step difference
+(S/M or M/L), needs no action. A two-step disagreement -- your bucket `L` against a
+recorded `size` of `S`, or the reverse -- is a finding under criterion 4
+(`kind: "task_size"`), not a silent override.
 
 ## Step 4 -- Output verdict
 
@@ -223,7 +233,7 @@ placeholder):
 ```json
 {
   "verdict": "CHANGES_NEEDED",
-  "notes": "BD-14 missing [test] task; BD-22 has no model tier metadata set",
+  "notes": "Expected review rounds: 2. BD-14 missing [test] task; BD-22 has no model tier metadata set",
   "findings": [
     { "id": "BD-14", "kind": "missing_test_task", "detail": "Feature has an [impl] task but no [test] task covering it." },
     { "id": "BD-22", "kind": "model_metadata", "detail": "No model key in beads metadata; classified as standard under the Step 3 fallback." }

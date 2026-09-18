@@ -214,13 +214,14 @@ export function streakMinPriority(streak) {
 
 /**
  * A streak's effort-point total, computed with the shared planner.md formula
- * (computeLaneEffort: sum of size points x max model weight). planner.md only
- * mandates `model`/`streak`/`streakOrder` metadata, so a bead usually carries
- * no size: a bead without a usable `metadata.size` (S/M/L) defaults to 'M',
- * the middle of the scale, and a bead without a tier-shaped model defaults to
- * 'standard' for the WEIGHT term only. The defaults feed budget arithmetic and
- * never affect which model a dispatch runs on -- streakRequiredTier decides
- * that.
+ * (computeLaneEffort: sum of size points x max model weight). planner.md
+ * mandates `size` alongside `model`/`streak`/`streakOrder`, but the defaults
+ * below still cover beads created outside a planner pass (e.g. reviewer
+ * `newTasks`, `[integ]` bugs, adopted carry-over beads): a bead without a
+ * usable `metadata.size` (S/M/L) defaults to 'M', the middle of the scale,
+ * and a bead without a tier-shaped model defaults to 'standard' for the
+ * WEIGHT term only. The defaults feed budget arithmetic and never affect
+ * which model a dispatch runs on -- streakRequiredTier decides that.
  * @param {Array<{metadata?: {size?: unknown, model?: unknown}}>} streak
  * @returns {number}
  */

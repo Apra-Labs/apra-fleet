@@ -93,14 +93,23 @@ If ToolSearch returns no KB tools (MCP server not running), skip these steps and
 Do NOT run bare `bd ready` to discover work -- it returns ready beads from the entire
 database, including other concurrent sprints/tracks. Work exactly the bead ids listed in
 your dispatch prompt's "Assigned bead ids," in the order given if any depend on each
-other, and no others. If you leave an earlier assigned bead OPEN (a legitimate skip or a
-failure) and a later assigned bead depends on it, do NOT claim the later one -- stop, and
-return VERIFY listing what you closed and why you stopped. If an assigned id turns out to HAVE OPEN CHILDREN
-(`bd list --parent <id> --json` -- no `--all` -- returns any bead; `bd show <id> --json`'s
-`dependent_count` is NOT this check, it counts closed children too), it is a decomposed
-container assigned to you in error: skip it, note why in your final report, and do not
-claim or close it. **`issue_type` has no bearing on this** -- per the graph-semantics
-section, only the presence of OPEN children makes a bead non-leaf.
+other, and no others.
+
+**Same-lane stop rule**: if you leave an earlier assigned bead OPEN (a legitimate skip or
+a failure), check whether a later assigned bead shares its `metadata.streak` value (visible
+in `bd show <id>`, per Step 2.2 below) -- tasks in the same lane were planned as one
+dependent increment. If it does, do NOT claim that later bead: stop, and return VERIFY
+listing what you closed and why you stopped (this is a legal early VERIFY, see Step 3). A
+later assigned bead in a DIFFERENT lane, or with no `streak` metadata shared with the
+skipped one, is unaffected -- keep working it normally; your assignment may bundle several
+independent lanes into one session.
+
+If an assigned id turns out to HAVE OPEN CHILDREN (`bd list --parent <id> --json` -- no
+`--all` -- returns any bead; `bd show <id> --json`'s `dependent_count` is NOT this check,
+it counts closed children too), it is a decomposed container assigned to you in error:
+skip it, note why in your final report, and do not claim or close it. **`issue_type` has
+no bearing on this** -- per the graph-semantics section, only the presence of OPEN
+children makes a bead non-leaf.
 
 A bead whose children are ALL closed is NOT this case -- see Step 2.2's wrap-up handling
 below; do not skip it on that basis alone.
@@ -202,8 +211,9 @@ killed mid-work. Instead:
 **STOP RULE:** the instant `bd close` returns for your last assigned bead id (or your last remaining id is disposed of via an explicit skip exception), your ONLY next action is emitting the VERIFY JSON below. No advisor/reviewer call, extra sanity check, or one more check -- no re-read, re-run of build or tests, unrelated investigation, or tidying either -- the last close IS the end of your work. Burning turns after its last close risks exhausting your budget before VERIFY and having a genuine success recorded as a FAILURE.
 
 When every assigned bead id has been closed (or explicitly skipped per Step 1's
-has-open-children case, Step 2.2's ambiguous-wrap-up case, the scope/criteria-defect
-escape hatch, or the missing-input behavior above), you MUST stop and return:
+has-open-children case, Step 1's same-lane stop rule, Step 2.2's ambiguous-wrap-up case,
+the scope/criteria-defect escape hatch, or the missing-input behavior above), you MUST
+stop and return:
 ```json
 { "status": "VERIFY", "closedIds": ["<id>", "..."], "notes": "string" }
 ```
@@ -249,10 +259,10 @@ or as prose if you are answering a human directly.
   returns any bead); `issue_type` has no bearing. All-children-closed is not this case --
   see Step 2.2.
 - NEVER skip an assigned bead id for convenience -- work them in dependency order. The
-  only skip exceptions: has open children, an unresolved wrap-up ambiguity, missing
-  acceptance criteria/context, or a recorded criteria defect (escape hatch above). A
-  missing secret is NOT a skip -- close with a blocked reason per Branch and secrets
-  rules.
+  only skip exceptions: has open children, the same-lane stop rule (Step 1) after an
+  earlier lane-mate was left open, an unresolved wrap-up ambiguity, missing acceptance
+  criteria/context, or a recorded criteria defect (escape hatch above). A missing secret
+  is NOT a skip -- close with a blocked reason per Branch and secrets rules.
 - Tests for the changed area must pass before each commit (Step 2.5)
 - No PLAN.md, no progress.json -- beads is the only work tracker
 - If the target repo replays `bd` from recorded fixtures in its tests, record any NEW
