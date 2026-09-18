@@ -66,7 +66,7 @@ export function createHttpDoltPushMutexClient(opts = {}) {
     async function postJson(url, body) {
         const headers = { 'content-type': 'application/json' };
         // apra-fleet-50j6.2.1: add Authorization header if service token
-        // is present. Absent token → request still sent (server decides).
+        // is present. Absent token -> request still sent (server decides).
         if (serviceToken) {
             headers.Authorization = `Bearer ${serviceToken}`;
         }
@@ -160,7 +160,7 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
     async function postJson(url, body) {
         const headers = { 'content-type': 'application/json' };
         // apra-fleet-50j6.2.1: add Authorization header if service token
-        // is present. Absent token → request still sent (server decides).
+        // is present. Absent token -> request still sent (server decides).
         if (serviceToken) {
             headers.Authorization = `Bearer ${serviceToken}`;
         }
