@@ -22,6 +22,8 @@ import {
   SandboxDeployError,
   // @ts-expect-error -- plain .mjs helper, no type declarations
 } from '../scripts/sandbox-deploy.mjs';
+// @ts-expect-error -- plain .mjs helper, no type declarations
+import { loadOrCreateToken } from '../packages/apra-fleet-se/src/supervisor/auth.mjs';
 
 // deploy.md's "## Sandbox Deploy" lifecycle (scripts/sandbox-deploy.mjs):
 // the values-file discovery channel, the pid-checked teardown order, and
@@ -349,7 +351,8 @@ describe.skipIf(!fs.existsSync(DIST))('live: up / env / teardown across separate
       expect(Number(v.SUPERVISOR_PORT)).not.toBe(squatterPort);
       const health = await getJson(`http://127.0.0.1:${v.APRA_FLEET_PORT}/health`);
       expect(String(health?.pid)).toBe(v.MCP_PID);
-      const supHealth = await getJson(`http://127.0.0.1:${v.SUPERVISOR_PORT}/api/health`);
+      const supervisorToken = loadOrCreateToken(v.FLEET_SE_DATA_DIR).token;
+      const supHealth = await getJson(`http://127.0.0.1:${v.SUPERVISOR_PORT}/api/health`, 2000, supervisorToken);
       expect(String(supHealth?.pid)).toBe(v.SUPERVISOR_PID);
     } finally {
       // Tear down in-process (not via a separate CLI subprocess, unlike the

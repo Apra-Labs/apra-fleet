@@ -8,6 +8,7 @@ import net from 'node:net';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { tokenFilePath } from '../src/supervisor/auth.mjs';
 
 // apra-fleet-7h6n.4 -- merged from n4lu2-packaged-supervisor-boot.test.mjs,
 // qqof-supervisor-selfcontained-audit.test.mjs, and
@@ -108,10 +109,16 @@ function getFreePort() {
     });
 }
 
-function httpRequest(port, pathname, method = 'GET') {
+/**
+ * apra-fleet-50j6.1.2: `serviceToken`, when provided, rides as a Bearer
+ * Authorization header -- the whole `/api/` surface (including /api/health)
+ * is guarded now, so every real-subprocess request in this suite needs it.
+ */
+function httpRequest(port, pathname, method = 'GET', serviceToken) {
     return new Promise((resolve, reject) => {
+        const headers = serviceToken ? { authorization: `Bearer ${serviceToken}` } : {};
         const req = http.request(
-            { host: '127.0.0.1', port, path: pathname, method, timeout: 3000 },
+            { host: '127.0.0.1', port, path: pathname, method, timeout: 3000, headers },
             (res) => {
                 let body = '';
                 res.on('data', (c) => { body += c; });
@@ -452,6 +459,32 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         let exited = false;
         serve.once('exit', () => { exited = true; });
 
+        // apra-fleet-50j6.2.3 criterion (4): read the shared bearer service
+        // token from <FLEET_SE_DATA_DIR>/private/token AFTER the supervisor
+        // has actually minted it -- never pre-mint it ourselves. The
+        // supervisor writes the token file as part of its own boot (server.
+        // mjs -> auth.mjs's loadOrCreateToken(deps.dataDir)), so wait for
+        // that file to exist before reading it, under the same exited/
+        // deadline fail-fast guards used for the /api/health poll below.
+        const tokenFile = tokenFilePath(seDataDir);
+        const tokenDeadline = Date.now() + 20000;
+        for (;;) {
+            if (exited) {
+                assert.fail(
+                    `serve.mjs exited (code=${serve.exitCode}, signal=${serve.signalCode}) before ` +
+                    `writing its token file -- likely a packaging/module-resolution failure.\nstderr:\n${stderrBuf}`
+                );
+            }
+            if (fs.existsSync(tokenFile)) break;
+            if (Date.now() > tokenDeadline) {
+                assert.fail(`timed out waiting for the installed supervisor to write ${tokenFile}.\nstderr so far:\n${stderrBuf}`);
+            }
+            // eslint-disable-next-line no-await-in-loop
+            await sleep(100);
+        }
+        const serviceToken = fs.readFileSync(tokenFile, 'utf-8').trim();
+        assert.ok(serviceToken.length > 0, `token file ${tokenFile} was created but is empty`);
+
         // Poll for /api/health, but fail fast (with the captured stderr) if
         // the process exits first -- e.g. on a reintroduced ERR_MODULE_NOT_FOUND
         // or other source-repo-relative resolution failure.
@@ -464,7 +497,7 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
                 );
             }
             // eslint-disable-next-line no-await-in-loop
-            const health = await httpRequest(port, '/api/health').catch(() => null);
+            const health = await httpRequest(port, '/api/health', 'GET', serviceToken).catch(() => null);
             if (health && health.status === 200) break;
             if (Date.now() > deadline) {
                 assert.fail(`timed out waiting for /api/health from the installed supervisor.\nstderr so far:\n${stderrBuf}`);
@@ -475,9 +508,17 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
 
         assert.doesNotMatch(stderrBuf, /ERR_MODULE_NOT_FOUND/, `installed supervisor logged ERR_MODULE_NOT_FOUND:\n${stderrBuf}`);
 
+        // apra-fleet-50j6.2.3 criterion (4): a corrupted token (same length,
+        // one flipped char -- never mutate the on-disk file, which auth.mjs's
+        // readExistingToken() rejects as malformed on next mint/load) must be
+        // rejected 401 by the guarded /api/health route.
+        const corruptedToken = (serviceToken[0] === '0' ? '1' : '0') + serviceToken.slice(1);
+        const unauthorizedHealth = await httpRequest(port, '/api/health', 'GET', corruptedToken);
+        assert.equal(unauthorizedHealth.status, 401, 'a corrupted bearer token must be rejected, not silently accepted');
+
         // (n4lu.2 + qqof.2) GET /api/sprints: a fresh ledger, so an empty
         // (but well-formed) list.
-        const getSprints = await httpRequest(port, '/api/sprints');
+        const getSprints = await httpRequest(port, '/api/sprints', 'GET', serviceToken);
         assert.equal(getSprints.status, 200, `GET /api/sprints did not respond 200: ${getSprints.body}`);
         const sprintsBody = JSON.parse(getSprints.body);
         assert.deepEqual(sprintsBody.sprints, []);
@@ -488,7 +529,7 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         // the installed supervisor actually ROUTES and RESPONDS to the
         // request (never a connection failure / silent crash), not that it
         // launches.
-        const postSprints = await httpRequest(port, '/api/sprints', 'POST');
+        const postSprints = await httpRequest(port, '/api/sprints', 'POST', serviceToken);
         assert.equal(postSprints.status, 400, `POST /api/sprints (empty body) did not respond 400: ${postSprints.body}`);
         const postBody = JSON.parse(postSprints.body);
         assert.ok(postBody.error, 'POST /api/sprints error response is missing an "error" field');
@@ -500,7 +541,7 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         // all, proving the whole GET /api/members import path (api.mjs ->
         // fleet-members.mjs -> @apralabs/apra-fleet-client) resolved
         // cleanly inside the installed tree.
-        const getMembers = await httpRequest(port, '/api/members');
+        const getMembers = await httpRequest(port, '/api/members', 'GET', serviceToken);
         assert.equal(getMembers.status, 200, `GET /api/members did not respond 200: ${getMembers.body}`);
         const membersBody = JSON.parse(getMembers.body);
         assert.ok(Array.isArray(membersBody.members), `GET /api/members response is missing a "members" array: ${getMembers.body}`);
@@ -509,7 +550,7 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
 
         // Clean shutdown -- the in-band way to stop; confirms the process is
         // still fully alive and responsive after every request above.
-        const shutdown = await httpRequest(port, '/api/shutdown', 'POST');
+        const shutdown = await httpRequest(port, '/api/shutdown', 'POST', serviceToken);
         assert.equal(shutdown.status, 200);
 
         await waitForExit(serve, 10000);

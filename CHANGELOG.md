@@ -2,6 +2,74 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Supervisor: loopback-only bind + bearer-token auth guard
+
+Sprint goal: `fleet-se-serve` previously bound every interface with no
+authentication on its API surface. This sprint made it bind `127.0.0.1`
+only and put a shared bearer-token guard in front of the mutating/sensitive
+routes, while keeping every existing client (dashboard, sprint-runner
+coordination clients, spawned children, operator tooling) working
+unchanged from the user's point of view.
+
+What shipped:
+
+- **`src/supervisor/auth.mjs` (new)**: mints a 32-byte hex service token
+  under `<supervisor-data-root>/private/token` on first start (idempotent
+  reuse thereafter), enforces/heals 0600 on POSIX and reports an
+  `aclVerified` flag on Windows (where mode bits cannot be asserted), and
+  authorizes a request via `Authorization: Bearer <token>` or an
+  `se_token` cookie, compared with a constant-time check. The token is
+  never logged or included in error text.
+- **`server.mjs`** listens on `127.0.0.1` only and answers `401` with a
+  `WWW-Authenticate: Bearer` header before any route dispatch for every
+  guarded route. The entire `/api/` surface and `POST` to any
+  `/sprints/:id/live/*` sub-route are guarded; the dashboard shell, live
+  view, `/state`, `/events`, and history stay open (loopback-bound,
+  read-only).
+- **Every existing client updated to authenticate**: the dashboard's
+  `GET /` now sets the `se_token` cookie for same-origin fetches; the
+  sprint-runner's HTTP coordination clients send the bearer header; the
+  spawner passes the token into spawned children via environment (never
+  argv); `scripts/check-foreign-sprints.mjs` and
+  `scripts/sandbox-deploy.mjs` were updated to send the token on every
+  supervisor call they make; the fleet-supervisor skill's curl examples
+  got bash + PowerShell twins showing the bearer header.
+- **Test harness and coverage**: a new `test/helpers/supervisor-harness.mjs`
+  spins up an authenticated supervisor for tests; new/expanded suites
+  cover the bind + auth guard end to end, every client working with auth
+  on, and a set of path-normalization bypass classes (dot segments,
+  protocol-relative paths, percent-encoding) to prove the guard and the
+  HTTP router can never disagree about which route a URL names.
+- **Flake fix**: `check-sandbox-sync-remote.test.ts` teardown paths now
+  route through one shared non-throwing cleanup helper instead of several
+  bare, throwing `fs.rmSync` calls, fixing an intermittent Windows EBUSY
+  failure unrelated to the auth work but discovered alongside it.
+
+Known follow-on gaps (deliberately left open, not closed by this pass):
+
+- **Criteria defect**: `GET /` must stay open (unauthenticated dashboard
+  shell) and must hand the token to the browser via the `se_token` cookie
+  for same-origin fetches to work -- together those requirements mean any
+  loopback caller can harvest the token by hitting `GET /`. Needs a
+  design decision (e.g. a first-use pairing flow), not a one-file patch.
+- Deploy/regression tooling that polls `/api/health` unauthenticated
+  needs updating in lockstep with this guard, or it misreads a healthy,
+  now-authenticated supervisor as crashed/unreachable -- left to
+  follow-up rather than patched alongside the guard.
+- Authenticate or replace the remaining bare supervisor curl examples in
+  `deploy.md` and user docs; pin percent-encoded path forms in the
+  `requiresAuth` truth table; a test-harness temp-directory leak; add the
+  beads gate lock file to `.gitignore`.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $29.8612.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1913 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 36 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- fleet-sprint: child-bead creation refuses an id collision instead of silently overwriting
 
 Sprint goal: close the hole where creating a child bead at an id that

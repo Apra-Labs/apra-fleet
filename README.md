@@ -179,7 +179,7 @@ flowchart LR
 - **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet. `execute_prompt` supports session forking (`fork`) on fork-capable providers -- branch a new, independent session from an existing one's context (e.g. a primed session reused across per-task dispatches) without continuing to write into the source session. See [docs/mcp-tools.md](docs/mcp-tools.md#execute_prompt) for the parameter contract.
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket.
 - **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, per-activity persistent state, and a cooperative pause/resume gate any workflow can hook into.
-- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger, crash watchdog (including a live "paused" state and base-branch-drift indicator), run history.
+- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger, crash watchdog (including a live "paused" state and base-branch-drift indicator), run history. Binds loopback-only (`127.0.0.1`) and guards its `/api/` surface and mutating live-sprint routes with a per-host bearer token (minted under `<supervisor-data-root>/private/token`, sent as `Authorization: Bearer <token>`); read-only dashboard/live views stay open on loopback. See [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md#supervisor-loopback-bind--bearer-token-auth-guard).
 
 ## Knowledge Layer
 

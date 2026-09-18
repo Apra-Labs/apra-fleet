@@ -819,6 +819,57 @@ describe('dashboard -- registerDashboardRoutes / GET /', () => {
         assert.ok(res.headers['content-type'].includes('text/html'));
         assert.ok(res.body.includes('sprint-1'));
         assert.ok(res.body.includes('/sprints/sprint-1/live'));
+        // apra-fleet-50j6.2.2: no auth configured on this supervisor (no
+        // token/dataDir), so no cookie is needed -- the per-request guard is
+        // skipped entirely in this case (server.mjs).
+        assert.ok(!('set-cookie' in res.headers), 'no Set-Cookie header when auth is not configured');
+    });
+
+    // apra-fleet-50j6.2.2: dashboard.mjs GET / sets the se_token cookie so
+    // the page's own same-origin fetches (to /api/*, /sprints/:id/live/*)
+    // carry it automatically once auth IS configured.
+    test('GET / sets Set-Cookie: se_token=<token> when the supervisor is built with an auth token', async () => {
+        const dashboard = createDashboard({
+            ledger: fakeLedger([]),
+            watchdog: fakeWatchdog({}),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
+        });
+        const supervisor = createSupervisor({ logger: { log() {}, error() {} }, token: 'test-token-abc123' });
+        registerDashboardRoutes(supervisor, dashboard);
+
+        const res = await request(supervisor, 'GET', '/');
+        assert.equal(res.statusCode, 200);
+        assert.equal(res.headers['set-cookie'], 'se_token=test-token-abc123; Path=/; SameSite=Strict; HttpOnly');
+    });
+
+    // apra-fleet-50j6.2.2 acceptance criterion (3): a wrong cookie value on a
+    // guarded route (GET /api/health, registered by createSupervisor's own
+    // lifecycle) is rejected 401 -- proving the cookie the test above proves
+    // GET / hands out is actually load-bearing for auth, not decorative.
+    test('a guarded /api/* request carrying the WRONG se_token cookie value is rejected 401', async () => {
+        const dashboard = createDashboard({ ledger: fakeLedger([]), watchdog: fakeWatchdog({}) });
+        const supervisor = createSupervisor({ logger: { log() {}, error() {} }, token: 'the-real-token' });
+        registerDashboardRoutes(supervisor, dashboard);
+
+        const req = { method: 'GET', url: '/api/health', headers: { cookie: 'se_token=wrong-value' }, on() {} };
+        const res = { writeHead(status, headers) { this.statusCode = status; this.headers = headers; }, end() {} };
+        await supervisor.handleRequest(req, res);
+        assert.equal(res.statusCode, 401);
+    });
+
+    // Control case: the SAME guarded route with the CORRECT cookie succeeds --
+    // proves the 401 above is the auth guard rejecting a mismatch, not a
+    // broken route.
+    test('a guarded /api/* request carrying the CORRECT se_token cookie value succeeds', async () => {
+        const dashboard = createDashboard({ ledger: fakeLedger([]), watchdog: fakeWatchdog({}) });
+        const supervisor = createSupervisor({ logger: { log() {}, error() {} }, token: 'the-real-token' });
+        registerDashboardRoutes(supervisor, dashboard);
+
+        const req = { method: 'GET', url: '/api/health', headers: { cookie: 'se_token=the-real-token' }, on() {} };
+        const res = { writeHead(status, headers) { this.statusCode = status; this.headers = headers; }, end() {} };
+        await supervisor.handleRequest(req, res);
+        assert.equal(res.statusCode, 200);
     });
 
     // apra-fleet-siqi.1.1
