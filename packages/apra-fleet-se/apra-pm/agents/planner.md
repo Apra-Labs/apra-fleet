@@ -138,7 +138,11 @@ making them independent siblings.
 For each feature create two classes of tasks:
 
 **Implementation tasks** (`[impl]` prefix optional but helpful):
-- One task per cohesive code change (1-3 file changes max)
+- One task per independently verifiable change. A task is the unit the doer commits and
+  closes; the LANE (below) is the unit the reviewer reviews. Keep a task small enough to
+  have crisp acceptance criteria (typically 1-4 files), but do NOT split a change into
+  several tasks just to keep each one small -- a chain of tiny dependent tasks is more
+  expensive to review than one lane that holds them together.
 - Title: specific and imperative ("Add password reset endpoint to auth router")
 - Description includes: expected files to change, expected behaviour, acceptance
   criteria. The file list is a best-effort scope estimate, NOT an allowlist -- phrase it
@@ -199,35 +203,75 @@ Pick from the models actually available in the current environment. A user overr
 always wins.
 
 **Streak lane metadata** (required on every task, both impl and test): in addition to
-`model`, record two lane fields through the SAME beads metadata channel at creation time --
+`model`, record three lane fields through the SAME beads metadata channel at creation time --
 never in `--notes`, a METADATA-section comment, or anywhere else:
 ```bash
-bd create ... --metadata '{"model": "<cheap|standard|premium>", "streak": "<lane-id>", "streakOrder": <n>}'
+bd create ... --metadata '{"model": "<cheap|standard|premium>", "size": "<S|M|L>", "streak": "<lane-id>", "streakOrder": <n>}'
 ```
 - `streak` -- a stable lane identifier (any short opaque string) shared by every task to
   be dispatched together to a single doer; read back via `bd show <id>` like `model`.
 - `streakOrder` -- an integer giving this task's intended position within its lane. Lower
-  runs first; ties fall back to the existing `blocks` edges (see the graph-semantics
-  section above).
+  runs first; ties break by insertion order -- do NOT use a `blocks` edge to break an
+  intra-lane tie (see the dependency-wiring rules below).
+- `size` -- `S`/`M`/`L`, used for lane sizing below.
 
-Group tasks into lanes for high cohesion, following these rules:
-- An `[impl]` task and its paired `[test]` task co-streak by default (they share one
-  `streak`), so the doer that writes the code also runs its test in the same session.
-- Tasks that contend for a **mutex resource** -- a resource only one change may hold at a
-  time, e.g. the same submodule pointer, a shared version/manifest field, or the same test
-  fixture -- MUST share a lane and MUST NOT be separated into different streaks.
+**Lanes are review units.** The engine dispatches every task in one lane to ONE doer in
+`streakOrder`, and the reviewer reviews a whole Develop ROUND at once -- every lane
+dispatched in that round together. A lane is therefore the SMALLEST thing a review can
+cover: never split one coherent increment across two lanes joined by a `blocks` edge,
+because each extra link in that chain costs a full review round (diff read + full test
+run). Lanes with no `blocks` edge between them dispatch and review in the SAME round
+whenever the round's doer count and effort budget allow (unlaned-but-independent lanes
+overflow to the next round only under doer/budget pressure, not because they were kept
+separate), so normally that costs nothing extra -- keep genuinely independent work in
+separate lanes rather than merging it for size alone; merging removes parallelism without
+reliably saving a review.
 
-**Effort-point splitting math.** Before finalizing a lane, size it so a single streak stays
-within one doer's reach:
-- size points per task: `S=1`, `M=2`, `L=4`
-- model weight per tier: `cheap=1`, `standard=10`, `premium=20`
-- `effort = (sum of size points over the lane's tasks) x (max model weight in the lane)`
+Put tasks in the SAME lane when they are highly coupled or cohesive -- any of:
+- they touch the same files, module, or component, or the same test suite;
+- one exists to enable the next (add a helper, then use it; change a schema, then its
+  consumer; implement, then its `[test]` task) -- an `[impl]` task and its paired `[test]`
+  task ALWAYS share a lane, UNLESS the feature's impl work itself had to span multiple
+  lanes under the sizing rules below -- then the feature's `[test]` task takes the LAST
+  impl lane, or ends its own final lane wired cross-lane to every impl lane it verifies;
+- they contend for a **mutex resource** -- a resource only one change may hold at a time,
+  e.g. the same submodule pointer, a shared version/manifest field, or the same test
+  fixture -- these MUST share a lane and MUST NOT be separated into different streaks;
+- reviewing one without the other would leave the reviewer unable to judge whether the
+  feature actually works.
 
-If a lane's `effort` exceeds the effort threshold constant (default `200`), split it into
-two or more streaks. Split ONLY at a `blocks`-edge boundary -- so each resulting streak is a
-contiguous prefix/suffix of the dependency order, never an arbitrary mid-lane cut -- and
-NEVER separate mutex-resource members (above) across the split, even if honoring that leaves
-a streak over threshold. Give each split streak a fresh `streak` id and renumber
+Put tasks in DIFFERENT lanes only when at least one of these holds:
+- they are genuinely independent (different feature areas, no shared files, no enabling
+  relationship) -- so multiple doers can run them in parallel;
+- they sit on different sides of a RISK BOUNDARY: a change the reviewer must sign off
+  before further work is safe to build on (a public contract change, a data migration, a
+  security-sensitive path, a destructive operation);
+- a later task cannot be reviewed until the earlier one's outcome has been judged (true
+  design uncertainty) -- write the later task's criteria as conditional on that outcome,
+  not left blank, and state the dependency explicitly in its description so the criteria
+  are never read as unconditional; the earlier task ends its lane, and the later one
+  starts a new lane in the next round;
+- the lane would exceed the sizing limits below.
+
+**Sizing a lane.** Size buckets are the same ones the plan reviewer classifies with:
+S = 1 file/narrow, M = 2-3 files/moderate logic, L = 3+ files or non-trivial design (see
+the `bd create ... --metadata` example above -- `size` is recorded there, alongside
+`model`/`streak`/`streakOrder`, not as a separate call). Then check each lane against
+these LANE SIZING PARAMETERS (fixed defaults for now -- no per-dispatch override channel
+exists yet):
+- `laneMaxTasks` (default `6`): hard cap on tasks per lane -- a reviewer must be able to
+  verify the whole lane in one pass.
+- `laneMaxEffort` (default `200`): `effort = (sum of size points S=1/M=2/L=4) x (max model
+  weight in the lane, cheap=1/standard=10/premium=20)`; caps one doer session's load.
+- `laneTargetEffort` (default `60`): a lane BELOW this that has a cohesive neighbour (per
+  the SAME-lane rules above) should be MERGED with it, not left as its own review round.
+  State in the lane's first task description why a lane was left below target if it was.
+
+A lane over either cap is split ONLY at a point where the earlier part is a self-contained,
+reviewable increment (never mid-refactor, never between mutex-resource members). An
+`[impl]` lane may be split from its feature's `[test]` task ONLY as the exception above
+describes -- the test task then ends the chain, cross-lane blocked on every impl lane it
+verifies; it is never itself mid-split. Give each part its own `streak` id and renumber
 `streakOrder` from the start within it.
 
 Wire dependencies (semantics: `bd dep add A B` means A is blocked by B -- B must finish before A can close):
@@ -235,9 +279,16 @@ Wire dependencies (semantics: `bd dep add A B` means A is blocked by B -- B must
   do NOT `bd dep add <feature-id> <impl-task>` or `<feature-id> <test-task>`; a feature's
   "not done until its tasks close" status comes from its children, never from a `blocks`
   edge back onto them)
-- `bd dep add <test-task> <impl-task>` (test task blocked until impl task is done -- this
-  IS correct: impl-task and test-task are siblings, not ancestor/descendant)
-- For tasks that depend on a prior sibling task: `bd dep add <later-task> <earlier-task>`
+- INSIDE a lane, order comes from `streakOrder` ONLY. Do NOT add a `blocks` edge between
+  two tasks in the same lane -- the engine dispatches only currently-unblocked tasks, so an
+  intra-lane edge would push the later task into a separate review round and silently
+  defeat the lane. This includes the `[test]` task: it follows its `[impl]` task by
+  `streakOrder`, not by an edge.
+- BETWEEN lanes, order comes from `blocks` edges: when lane B must not start until lane A
+  is done, add `bd dep add <B-task> <A-last-task>` for EVERY task in lane B against the
+  LAST (highest `streakOrder`) task of lane A. Wiring only B's first task would let B's
+  later tasks become ready out of order.
+- Sibling tasks in different lanes with no enabling relationship get no edge.
 
 ## Step 4 -- Validate your own DAG
 
@@ -274,11 +325,18 @@ direction, and re-run the scoped `--ready` query to confirm issues are unblocked
 Also check each open feature:
 - Has at least one [impl] task AND one [test] task?
 - Every task description has clear acceptance criteria?
-- No task spans more than ~3 file changes?
-- Test tasks are downstream of implementation tasks?
-- Every task has a model tier set via `--metadata '{"model": "..."}'` (see Step 3)?
-- Every task carries `streak` and `streakOrder` lane metadata (see Step 3)? Impl/test
-  pairs and mutex-resource members co-laned, and no lane's effort exceeds the threshold?
+- Every task carries `model`, `size`, `streak`, `streakOrder` metadata via `--metadata`
+  (see Step 3) -- never `--notes`?
+- Does every lane hold ONE reviewable increment (impl + its test, all mutex members, all
+  enabling chains), within `laneMaxTasks` / `laneMaxEffort`?
+- Is every lane below `laneTargetEffort` either justified in its first task description or
+  merged with a cohesive neighbour?
+- Is there NO `blocks` edge between two tasks that share a `streak` id?
+- Does every cross-lane `blocks` edge target the upstream lane's LAST task and originate
+  from EVERY task of the downstream lane?
+- Expected review rounds (= longest chain of lanes joined by `blocks` edges): state the
+  number in your `notes`. If it exceeds 3 for one sprint goal, re-examine whether the
+  chain can be shortened by merging lanes.
 - Where `kb_stats` backed a model tier choice, does the task description cite the
   coverage number (see Step 3)? Not required for tiers set on qualitative KB signals
   alone or when `kb_stats` was unavailable.
@@ -307,7 +365,7 @@ array (see Step 0.4 -- omit or send `[]` to capture nothing). Example instance:
 ```json
 {
   "status": "OK",
-  "notes": "Created 2 features, 6 tasks across 3 streak lanes.",
+  "notes": "Created 2 features, 6 tasks across 3 streak lanes; expected review rounds: 2.",
   "featureIds": ["BD-20", "BD-21"],
   "taskIds": ["BD-22", "BD-23", "BD-24", "BD-25", "BD-26", "BD-27"],
   "kb_captures": []
@@ -321,7 +379,9 @@ array (see Step 0.4 -- omit or send `[]` to capture nothing). Example instance:
 - NEVER add scope beyond the sprint goals you were given and open bugs/features
 - Every task must be completable in one agent session
 - A task with no acceptance criteria is incomplete -- fix it before finishing
-- Every task must carry a model tier in `--metadata '{"model": "..."}'` -- fix before finishing
-- Every task must carry `streak`/`streakOrder` lane metadata alongside `model` in the same
-  `--metadata` channel; lanes must respect the effort threshold and never split
-  mutex-resource members apart -- fix before finishing
+- Every task must carry `model`, `size`, `streak` and `streakOrder` in the SAME
+  `--metadata` channel at creation time -- never `--notes` -- fix before finishing
+- Lanes must respect `laneMaxEffort`/`laneMaxTasks` and never split mutex-resource members
+  apart
+- Never place a `blocks` edge between two tasks that share a `streak` id -- it silently
+  defeats the lane by pushing the later task into a separate review round
