@@ -202,7 +202,7 @@ Implementations:
 
 | Provider | Backend | When to use |
 |----------|---------|-------------|
-| `SqliteProvider` (default) | `better-sqlite3` + FTS5, local file | Single user, no sharing needed |
+| `SqliteProvider` (default) | `node:sqlite` (builtin) + FTS5, local file | Single user, no sharing needed |
 | `HttpKbProvider` | HTTP REST -> KB server (fleet machine) | Team sharing via apra-fleet KB server |
 | `PostgresProvider` | Self-hosted Postgres + pgvector | Team sharing, existing Postgres infra |
 | `GBrainProvider` | GBrain PGLite -> Postgres | Teams wanting GBrain's graph |
