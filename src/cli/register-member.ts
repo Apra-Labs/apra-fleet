@@ -36,7 +36,7 @@ Remote members:
   --port <n>               SSH port (default: 22)
   --username <user>        SSH username (required for remote)
   --auth <password|key>    Authentication method (required for remote)
-  --password <pw>          SSH password (supports {{secure.NAME}} tokens)
+  --password <pw>          SSH password (supports {{secret.NAME}} tokens)
   --key-path <path>        Path to SSH private key
 
 Git access:

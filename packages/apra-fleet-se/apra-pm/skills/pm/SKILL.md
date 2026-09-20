@@ -322,7 +322,7 @@ via `compose_permissions` using the same tag set before every dispatch. See
 
 When running via fleet, never pass raw secrets in `execute_prompt` prompts --
 reference the credential by name only (e.g. "authenticate using credential
-github_pat"). The member then uses `{{secure.github_pat}}` in its own
+github_pat"). The member then uses `{{secret.github_pat}}` in its own
 `execute_command` calls. See `fleet-addendum.md` for the full reference.
 
 ## Provider awareness (fleet mode)

@@ -29,7 +29,7 @@ import type { Agent } from '../types.js';
  *      NEVER part of this tool's result;
  *   2. substitutes whichever placeholder(s) are present with the token,
  *      escaped for the member's OWN shell (the same isPosixShell branch
- *      execute_command uses for {{secure.NAME}}) -- `{{vcs_token}}` gets the
+ *      execute_command uses for {{secret.NAME}}) -- `{{vcs_token}}` gets the
  *      fully-quoted form, `{{vcs_token_inline}}` gets the bare interior
  *      escaping with no quotes of its own;
  *   3. dispatches the substituted command;
@@ -44,7 +44,7 @@ import type { Agent } from '../types.js';
 /**
  * Reference this one BARE (never inside your own quotes): the substituted
  * value arrives ALREADY shell-escaped for the member's shell (quotes
- * included), exactly like execute_command's {{secure.NAME}} tokens --
+ * included), exactly like execute_command's {{secret.NAME}} tokens --
  * wrapping it in the caller's own quotes double-escapes it and surfaces as a
  * false 401 / invalid-token error.
  */

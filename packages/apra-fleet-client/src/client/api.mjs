@@ -179,7 +179,7 @@
  * @property {number} [port] - New SSH port
  * @property {"password" | "key"} [auth_type] - New auth method
  * @property {string} [password] - New SSH password
- * @property {boolean} [rotate_password] - Trigger secure out-of-band password re-entry for a member already using password auth. Ignored if auth_type is not password.
+ * @property {boolean} [rotate_password] - Trigger out-of-band password re-entry for a member already using password auth. Ignored if auth_type is not password.
  * @property {string} [key_path] - New SSH private key path
  * @property {"read" | "push" | "admin" | "issues" | "full"} [git_access] - Git access level for this member
  * @property {string[]} [git_repos] - Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])
@@ -273,7 +273,7 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [api_key] - AI provider API key. If omitted, the local OAuth
- *   session is copied to the member instead. Supports {{secure.NAME}} token --
+ *   session is copied to the member instead. Supports {{secret.NAME}} token --
  *   resolved from the credential store server-side before use.
  */
 
@@ -320,8 +320,8 @@
  * @typedef {Object} ProvisionAuthStructured
  * @property {boolean} ok - True when credentials were deployed (verified or not).
  * @property {"ok" | "deployed_unverified" | "deployed_with_errors" | "skipped_local_member" |
- *   "member_not_found" | "member_offline" | "secure_credential_not_found" |
- *   "secure_credential_denied" | "secure_credential_expired" | "oauth_not_supported" |
+ *   "member_not_found" | "member_offline" | "secret_variable_not_found" |
+ *   "secret_variable_denied" | "secret_variable_expired" | "oauth_not_supported" |
  *   "oauth_token_expired_no_refresh" | "oauth_credential_file_missing" |
  *   "oauth_credential_write_failed" | "oauth_settings_merge_failed" | "oauth_copy_failed" |
  *   "oob_cancelled"} reason - Machine-readable outcome code. Branch on this, never on the text.
@@ -343,8 +343,8 @@
  * @typedef {Object} ProvisionVcsAuthStructured
  * @property {boolean} ok - True when the credential was actually deployed onto the member.
  * @property {"ok" | "deployed_unverified" | "deployed_verification_skipped" |
- *   "member_not_found" | "member_offline" | "secure_credential_not_found" |
- *   "secure_credential_denied" | "secure_credential_expired" | "oob_cancelled" |
+ *   "member_not_found" | "member_offline" | "secret_variable_not_found" |
+ *   "secret_variable_denied" | "secret_variable_expired" | "oob_cancelled" |
  *   "credential_assembly_unsupported" | "credential_assembly_failed" | "deploy_threw" |
  *   "deploy_failed"} reason - Machine-readable outcome code. Branch on this, never on the text.
  * @property {string} provider - The VCS provider requested.
@@ -379,16 +379,16 @@
  * @property {"github-app" | "pat"} [github_mode] - GitHub auth mode: github-app (mint via
  *   configured app) or pat (personal access token)
  * @property {string} [token] - Personal access token (GitHub PAT or Azure DevOps PAT).
- *   Supports {{secure.NAME}} token -- resolved from the credential store server-side before use.
+ *   Supports {{secret.NAME}} token -- resolved from the credential store server-side before use.
  * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
  * @property {string} [email] - Bitbucket account email
- * @property {string} [api_token] - Bitbucket API token. Supports {{secure.NAME}} token --
+ * @property {string} [api_token] - Bitbucket API token. Supports {{secret.NAME}} token --
  *   resolved from the credential store server-side before use.
  * @property {string} [workspace] - Bitbucket workspace slug
  * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)
- * @property {string} [pat] - Azure DevOps personal access token. Supports {{secure.NAME}}
+ * @property {string} [pat] - Azure DevOps personal access token. Supports {{secret.NAME}}
  *   token -- resolved from the credential store server-side before use.
  * @property {string} [pat_expires_at] - ISO 8601 date/time the Azure DevOps PAT expires, as
  *   chosen when creating the token. Propagated to the member registry so provisioning can

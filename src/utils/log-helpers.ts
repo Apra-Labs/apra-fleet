@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { FLEET_DIR } from '../paths.js';
+import { redactSecretTokens } from '../services/secret-token.js';
 
 let _stream: fs.WriteStream | null = null;
 let _activeLogFile: string | null = null;
@@ -114,8 +115,7 @@ export class LogScope {
 
 export function maskSecrets(text: string): string {
   try {
-    return text
-      .replace(/\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/g, '[REDACTED]')
+    return redactSecretTokens(text)
       .replace(/sec:\/\/[a-zA-Z0-9_]+/g, '[REDACTED]');
   } catch {
     return text;

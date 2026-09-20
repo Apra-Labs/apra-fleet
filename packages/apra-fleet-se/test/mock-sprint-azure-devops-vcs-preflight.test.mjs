@@ -23,7 +23,7 @@ const check = (cond, msg) => assert.ok(cond, msg);
 //
 // Three cases per the bead:
 //   (a) an Azure DevOps member: provision_vcs_auth is invoked with the
-//       derived org_url and a secure PAT placeholder, unattended -- no
+//       derived org_url and a secret PAT placeholder, unattended -- no
 //       out-of-band prompt path is ever entered.
 //   (b) the named secret is absent from the credential store: the preflight
 //       never calls provision_vcs_auth and the run's own logs surface the
@@ -34,7 +34,7 @@ const check = (cond, msg) => assert.ok(cond, msg);
 
 const AZ_ORIGIN = 'https://dev.azure.com/mock-org/mock-project/_git/mock-repo';
 
-test('mock sprint: an Azure DevOps member is provisioned unattended by the preflight, with a derived org_url and a secure PAT placeholder', async () => {
+test('mock sprint: an Azure DevOps member is provisioned unattended by the preflight, with a derived org_url and a secret PAT placeholder', async () => {
     await withScenarioMarkers('5co8.2.2 ado preflight provisions', async () => {
         const vcsAuthCalls = [];
         // apra-fleet-3swo.7.19: callToolFactory (not a plain callTool) so
@@ -106,17 +106,17 @@ test('mock sprint: an Azure DevOps member is provisioned unattended by the prefl
 
         // THE acceptance criterion: provision_vcs_auth was invoked, unattended,
         // with the org_url derived from the member's own git remote and the
-        // PAT passed as a secure placeholder -- never a raw value, never
+        // PAT passed as a secret placeholder -- never a raw value, never
         // GitHub-App vocabulary (git_access/repos).
         check(
             vcsAuthCalls.some((c) => c
                 && c.member_name === 'local'
                 && c.provider === 'azure-devops'
                 && c.org_url === 'https://dev.azure.com/mock-org'
-                && c.pat === '{{secure.azdevops_pat}}'
+                && c.pat === '{{secret.azdevops_pat}}'
                 && !('git_access' in c)
                 && !('repos' in c)),
-            `expected an unattended provision_vcs_auth call with a derived org_url and a secure PAT placeholder, got: ${JSON.stringify(vcsAuthCalls)}`,
+            `expected an unattended provision_vcs_auth call with a derived org_url and a secret PAT placeholder, got: ${JSON.stringify(vcsAuthCalls)}`,
         );
 
         // apra-fleet-5co8.19: happy-path control for the missing-secret

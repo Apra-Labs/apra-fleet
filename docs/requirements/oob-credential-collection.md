@@ -15,7 +15,7 @@ apra-fleet secret --set MyPass
 
 **Implicit / on-demand** - a tool call needs a credential it doesn't have:
 - `register_member` with SSH password auth and no password provided -> OOB opens with the SSH context as the prompt
-- Any `{{secure.NAME}}` reference where `NAME` is not yet in the store -> OOB opens, user is asked whether to persist the value after entry
+- Any `{{secret.NAME}}` reference where `NAME` is not yet in the store -> OOB opens, user is asked whether to persist the value after entry
 - `credential_store_set` tool call -> OOB always opens
 
 In all cases the UX is identical - only the prompt text changes to give the user context about what they're entering.
@@ -36,7 +36,7 @@ If the terminal is left idle for 5 minutes without input it closes automatically
 
 Once confirmed, the value is sent over a local socket directly to the waiting fleet server process. It is never written to disk unencrypted, never appears in any log, and is zeroed from memory immediately after delivery. The terminal closes.
 
-If the user opts to persist the value (either via `--persist` flag or when prompted), it is encrypted and stored in the local credential vault. Persisted credentials are referenced as `{{secure.NAME}}` in subsequent tool calls.
+If the user opts to persist the value (either via `--persist` flag or when prompted), it is encrypted and stored in the local credential vault. Persisted credentials are referenced as `{{secret.NAME}}` in subsequent tool calls.
 
 ---
 

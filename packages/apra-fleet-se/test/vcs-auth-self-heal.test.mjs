@@ -327,7 +327,7 @@ describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch o
             if (name === 'provision_llm_auth') {
                 return {
                     content: [{ text: '[FAIL] secure credential denied' }],
-                    structuredContent: { ok: false, reason: 'secure_credential_denied' },
+                    structuredContent: { ok: false, reason: 'secret_variable_denied' },
                 };
             }
             return { content: [{ text: '' }] };

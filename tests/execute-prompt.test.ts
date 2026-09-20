@@ -88,26 +88,44 @@ describe('executePrompt', () => {
     vi.useRealTimers();
   });
 
-  it('rejects prompt containing {{secure.NAME}} token without executing', async () => {
-    const member = makeTestAgent({ friendlyName: 'secure-guard' });
+  it('rejects prompt containing {{secret.NAME}} token without executing', async () => {
+    const member = makeTestAgent({ friendlyName: 'secret-guard' });
     addAgent(member);
 
-    const result = await executePrompt({ member_id: member.id, prompt: 'use {{secure.github_pat}} to auth', resume: false, timeout_s: 5 });
-    expect(resultText(result)).toContain('{{secure.NAME}} token');
+    const result = await executePrompt({ member_id: member.id, prompt: 'use {{secret.github_pat}} to auth', resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('{{secret.NAME}} token');
     expect(resultText(result)).toContain('execute_command');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
-  it('rejects prompt with {{secure.NAME}} token regardless of surrounding text', async () => {
-    const member = makeTestAgent({ friendlyName: 'secure-guard-2' });
+  it('rejects prompt with {{secret.NAME}} token regardless of surrounding text', async () => {
+    const member = makeTestAgent({ friendlyName: 'secret-guard-2' });
     addAgent(member);
 
-    const result = await executePrompt({ member_id: member.id, prompt: 'auth with {{secure.my_token_123}} please', resume: false, timeout_s: 5 });
-    expect(resultText(result)).toContain('{{secure.NAME}} token');
+    const result = await executePrompt({ member_id: member.id, prompt: 'auth with {{secret.my_token_123}} please', resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('{{secret.NAME}} token');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
-  it('allows prompt without {{secure.NAME}} token', async () => {
+  it('rejects prompt containing legacy {{secure.NAME}} token without executing', async () => {
+    const member = makeTestAgent({ friendlyName: 'secure-guard-legacy' });
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'use {{secure.github_pat}} to auth', resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('{{secret.NAME}} token');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects prompt containing a mix of {{secret.NAME}} and {{secure.NAME}} tokens', async () => {
+    const member = makeTestAgent({ friendlyName: 'mixed-guard' });
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'use {{secret.a}} and {{secure.b}} to auth', resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('{{secret.NAME}} token');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('allows prompt without {{secret.NAME}} token', async () => {
     const member = makeTestAgent({ friendlyName: 'secure-allow' });
     addAgent(member);
     mockExecCommand.mockResolvedValue({

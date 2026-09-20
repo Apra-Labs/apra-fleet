@@ -12,10 +12,11 @@ import { escapeShellArg, escapePowerShellArg, escapeWindowsArg } from '../utils/
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
-import { LogScope, maskSecrets, truncateForLog, logLine } from '../utils/log-helpers.js';
+import { LogScope, maskSecrets, truncateForLog, logLine, logWarn } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import { preflightCheck } from '../services/preflight-check.js';
+import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import type { Agent } from '../types.js';
 
 export function resolveTilde(p: string): string {
@@ -60,33 +61,31 @@ interface ResolvedCredential {
 }
 
 /**
- * Scan a command string for {{secure.NAME}} tokens, resolve each from the
- * credential store, and return the substituted command plus metadata for
+ * Scan a command string for {{secret.NAME}} tokens (the legacy {{secure.NAME}}
+ * spelling is also accepted, with a deprecation warning), resolve each from
+ * the credential store, and return the substituted command plus metadata for
  * output redaction and egress checks.
  *
  * Returns an error string if any token cannot be resolved or is blocked.
  */
-async function resolveSecureTokens(
+async function resolveSecretTokens(
   command: string,
   agentOs: 'windows' | 'macos' | 'linux',
   callingMember: string,
   agentShell: ReturnType<typeof getAgentShell>,
-): Promise<{ resolved: string; credentials: ResolvedCredential[] } | { error: string }> {
+): Promise<{ resolved: string; credentials: ResolvedCredential[]; legacyWarning?: string } | { error: string }> {
   // Refuse if raw sec:// handles appear (these should not be passed to commands)
   if (/sec:\/\/[a-zA-Z0-9_]+/.test(command)) {
-    return { error: 'Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.' };
+    return { error: 'Credentials cannot be passed to LLM sessions — use {{secret.NAME}} tokens instead of sec:// handles.' };
   }
 
-  const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
+  const tokens = findSecretTokens(command);
   const credentials: ResolvedCredential[] = [];
   let resolved = command;
-  let match: RegExpExecArray | null;
 
   // Collect all unique token names first
-  const tokenNames = new Set<string>();
-  while ((match = TOKEN_RE.exec(command)) !== null) {
-    tokenNames.add(match[1]);
-  }
+  const tokenNames = new Set(tokens.map((t) => t.name));
+  const legacyNames = tokens.filter((t) => t.legacy).map((t) => t.name);
 
   for (const name of tokenNames) {
     const entry = credentialResolve(name, callingMember);
@@ -111,10 +110,12 @@ async function resolveSecureTokens(
     const escaped = isPosixShell(agentOs, agentShell)
       ? escapeShellArg(cred.plaintext)
       : escapePowerShellArg(cred.plaintext);
-    resolved = resolved.replaceAll(`{{secure.${cred.name}}}`, escaped);
+    resolved = resolved.replaceAll(`{{secret.${cred.name}}}`, escaped);
+    resolved = resolved.replaceAll(`{{secure.${cred.name}}}`, escaped); // legacy spelling
   }
 
-  return { resolved, credentials };
+  const legacyWarning = legacyNames.length > 0 ? legacyTokenWarning(legacyNames) : undefined;
+  return { resolved, credentials, legacyWarning };
 }
 
 /**
@@ -199,30 +200,37 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
 
   // -- Block sec:// handles in run_from and restart_command --
   if (input.run_from && SEC_RE.test(input.run_from)) {
-    return '❌ Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.';
+    return '❌ Credentials cannot be passed to LLM sessions — use {{secret.NAME}} tokens instead of sec:// handles.';
   }
   if (input.restart_command && SEC_RE.test(input.restart_command)) {
-    return '❌ Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.';
+    return '❌ Credentials cannot be passed to LLM sessions — use {{secret.NAME}} tokens instead of sec:// handles.';
   }
 
-  // -- Resolve {{secure.NAME}} tokens --
-  const tokenResult = await resolveSecureTokens(input.command, agentOs, agent.friendlyName, agentShell);
+  // -- Resolve {{secret.NAME}} / legacy {{secure.NAME}} tokens --
+  const tokenResult = await resolveSecretTokens(input.command, agentOs, agent.friendlyName, agentShell);
   if ('error' in tokenResult) return `❌ ${tokenResult.error}`;
 
   const { resolved: resolvedCommand, credentials } = tokenResult;
+  const legacyWarnings: string[] = [];
+  if (tokenResult.legacyWarning) legacyWarnings.push(tokenResult.legacyWarning);
 
   // Also resolve tokens in restart_command (H1)
   let resolvedRestartCommand: string | undefined;
   if (input.restart_command) {
-    const restartTokenResult = await resolveSecureTokens(input.restart_command, agentOs, agent.friendlyName, agentShell);
+    const restartTokenResult = await resolveSecretTokens(input.restart_command, agentOs, agent.friendlyName, agentShell);
     if ('error' in restartTokenResult) return `❌ ${restartTokenResult.error}`;
     resolvedRestartCommand = restartTokenResult.resolved;
+    if (restartTokenResult.legacyWarning) legacyWarnings.push(restartTokenResult.legacyWarning);
     // Merge any additional credentials from restart_command (de-dup by name)
     for (const cred of restartTokenResult.credentials) {
       if (!credentials.find(c => c.name === cred.name)) {
         credentials.push(cred);
       }
     }
+  }
+
+  if (legacyWarnings.length > 0) {
+    logWarn('execute_command', legacyWarnings.join('; '), agent);
   }
 
   // -- Network egress check for credentials with confirm/deny policy --
@@ -336,7 +344,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
         ? redactOutput(launchResult.stdout + launchResult.stderr, credentials)
         : '';
       void launchOutput; // output not surfaced to caller; redaction is a safety measure
-      return `${longRunningOsWarning}Task launched: task_id=${taskId}\nUse monitor_task to track progress.`;
+      const legacySuffix = legacyWarnings.length > 0 ? `\n${legacyWarnings.join('\n')}` : '';
+      return `${longRunningOsWarning}Task launched: task_id=${taskId}\nUse monitor_task to track progress.${legacySuffix}`;
     } catch (err: any) {
       writeStatusline(new Map([[agent.id, 'offline']]));
       return `Failed to launch task on "${agent.friendlyName}": ${err.message}`;
@@ -390,8 +399,9 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     // an ADDITIVE machine-readable channel alongside it, not a replacement.
     // Programmatic callers (e.g. FleetWorkflow.command()) should prefer
     // structuredContent.stdout over scraping/stripping the text prefix.
+    const legacySuffix = legacyWarnings.length > 0 ? `\n${legacyWarnings.join('\n')}` : '';
     return {
-      text: result.code === 0 ? `Exit code: 0\n${output}` : `Exit code: ${result.code}\n${output}`,
+      text: (result.code === 0 ? `Exit code: 0\n${output}` : `Exit code: ${result.code}\n${output}`) + legacySuffix,
       structuredContent: { exitCode: result.code, stdout: redactedStdout, stderr: redactedStderr },
     };
   } catch (err: any) {

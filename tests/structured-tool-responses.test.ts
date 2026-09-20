@@ -261,14 +261,14 @@ describe('check 2: provision_llm_auth reason codes', () => {
     expect(structuredContent.ok).toBe(false);
   });
 
-  it('an unresolvable {{secure.NAME}} token reports reason=secure_credential_not_found', async () => {
+  it('an unresolvable {{secret.NAME}} token reports reason=secret_variable_not_found', async () => {
     const member = makeTestAgent({ friendlyName: 'prov-nosecret' });
     addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
 
-    const { structuredContent } = await provisionAuth({ member_id: member.id, api_key: '{{secure.NO_SUCH_CREDENTIAL}}' });
+    const { structuredContent } = await provisionAuth({ member_id: member.id, api_key: '{{secret.NO_SUCH_CREDENTIAL}}' });
 
-    expect(structuredContent.reason).toBe('secure_credential_not_found');
+    expect(structuredContent.reason).toBe('secret_variable_not_found');
     expect(structuredContent.ok).toBe(false);
   });
 
@@ -283,7 +283,7 @@ describe('check 2: provision_llm_auth reason codes', () => {
 
     const secretMember = makeTestAgent({ friendlyName: 'triple-secret' });
     addAgent(secretMember);
-    reasons.add((await provisionAuth({ member_id: secretMember.id, api_key: '{{secure.STILL_NO_SUCH_CREDENTIAL}}' })).structuredContent.reason);
+    reasons.add((await provisionAuth({ member_id: secretMember.id, api_key: '{{secret.STILL_NO_SUCH_CREDENTIAL}}' })).structuredContent.reason);
 
     mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'down' });
     const offMember = makeTestAgent({ friendlyName: 'triple-off' });

@@ -46,10 +46,10 @@ Usage:
   apra-fleet secret --delete <name>    Delete a secret
   apra-fleet secret --confirm <credential-name>               Confirm network egress for that credential (interactive)
   apra-fleet auth --oauth [--llm <provider>] <token>          Write OAuth token to provider credential file
-  apra-fleet auth --oauth [--llm <provider>] secure.<name>    Resolve token from persistent credential store
-  apra-fleet auth --oauth --member <name> secure.<name>       Provision a member's encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN directly (no credential file)
+  apra-fleet auth --oauth [--llm <provider>] secret.<name>    Resolve token from persistent credential store
+  apra-fleet auth --oauth --member <name> secret.<name>       Provision a member's encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN directly (no credential file)
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
-  apra-fleet auth --api-key [--llm <provider>] secure.<name>  Resolve API key from persistent credential store
+  apra-fleet auth --api-key [--llm <provider>] secret.<name>  Resolve API key from persistent credential store
   apra-fleet kb directives                             List pending + active user-directives
   apra-fleet kb approve-directive <id>                 Activate a pending directive proposal (human-only)
   apra-fleet kb reject-directive <id>                  Reject a proposal or retire an active directive

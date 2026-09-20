@@ -10,7 +10,7 @@ import { AzureDevOpsVCS } from '../fleet-sprint/vcs-providers/index.mjs';
 //   1. the hook itself, called directly (pure/deterministic);
 //   2. the runtime wiring, through createVcsAuthPreflightCallback -- the real
 //      unattended preflight -- with a scripted callTool, so "an Azure DevOps
-//      member provisions with a derived org_url and a secure placeholder, and
+//      member provisions with a derived org_url and a secret placeholder, and
 //      never reaches an out-of-band prompt" is a runtime assertion rather than
 //      a source-code reading.
 
@@ -49,7 +49,7 @@ function makeCallTool({ provider, secrets, onProvision }) {
 describe('AzureDevOpsVCS.buildProvisionArgs (apra-fleet-5co8.2.1)', () => {
     const base = { member_name: 'fleet-mac', provider: 'azure-devops', git_access: 'push', repos: ['a/b/c'] };
 
-    test('derives org_url from the member ref and passes the PAT as a secure placeholder', () => {
+    test('derives org_url from the member ref and passes the PAT as a secret placeholder', () => {
         const built = AzureDevOpsVCS.buildProvisionArgs({
             base,
             repoRef: { org: 'apralabs', project: 'e2e-fleet-testing', repo: 'fleet-e2e-toy' },
@@ -59,7 +59,7 @@ describe('AzureDevOpsVCS.buildProvisionArgs (apra-fleet-5co8.2.1)', () => {
             member_name: 'fleet-mac',
             provider: 'azure-devops',
             org_url: 'https://dev.azure.com/apralabs',
-            pat: '{{secure.azdevops_pat}}',
+            pat: '{{secret.azdevops_pat}}',
         });
         // GitHub-App vocabulary must NOT be forwarded to a provider that has
         // no App/installation model.
@@ -95,12 +95,12 @@ describe('AzureDevOpsVCS.buildProvisionArgs (apra-fleet-5co8.2.1)', () => {
         const built = AzureDevOpsVCS.buildProvisionArgs({
             base, repoRef: { org: 'apralabs' }, availableSecrets: ['fleet-e2e-ado'], secretName: 'fleet-e2e-ado',
         });
-        assert.equal(built.args.pat, '{{secure.fleet-e2e-ado}}');
+        assert.equal(built.args.pat, '{{secret.fleet-e2e-ado}}');
     });
 });
 
 describe('unattended provisioning dispatches through the hook (apra-fleet-5co8.2.1)', () => {
-    test('an Azure DevOps member provisions with a derived org_url and a secure placeholder', async () => {
+    test('an Azure DevOps member provisions with a derived org_url and a secret placeholder', async () => {
         const { calls, callTool } = makeCallTool({ provider: 'azure-devops', secrets: ['azdevops_pat'] });
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommandFor(AZ_REMOTE) });
 
@@ -112,10 +112,10 @@ describe('unattended provisioning dispatches through the hook (apra-fleet-5co8.2
             member_name: 'fleet-mac',
             provider: 'azure-devops',
             org_url: 'https://dev.azure.com/apralabs',
-            pat: '{{secure.azdevops_pat}}',
+            pat: '{{secret.azdevops_pat}}',
         });
         // No raw token value anywhere in what the runner sent.
-        assert.match(JSON.stringify(calls[0].args), /\{\{secure\.azdevops_pat\}\}/);
+        assert.match(JSON.stringify(calls[0].args), /\{\{secret\.azdevops_pat\}\}/);
     });
 
     test('a missing secret fails the preflight with the remedial command, never a prompt', async () => {

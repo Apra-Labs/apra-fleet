@@ -972,19 +972,22 @@ function longestBacktickRun(content) {
 }
 
 /**
- * The pattern src/tools/execute-prompt.ts matches to reject a dispatch
- * outright. Duplicated here as a literal rather than imported: this module
- * deliberately has no dependency on the fleet server sources.
+ * The pattern src/services/secret-token.ts (SECRET_TOKEN_RE) matches to
+ * reject a dispatch outright / redact untrusted content. Mirrored here as a
+ * literal rather than imported: this module deliberately has no dependency
+ * on the fleet server sources. Accepts both the canonical {{secret.NAME}}
+ * spelling and the deprecated {{secure.NAME}} one.
  */
-const SECURE_TOKEN_RE_G = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
+const SECRET_TOKEN_RE_G = /\{\{(secret|secure)\.([a-zA-Z0-9_-]{1,64})\}\}/g;
 
-const SECURE_REDACTION_NOTE = 'NOTE: secure-token braces were redacted from the block above '
-    + '(secure.NAME is shown without its surrounding double braces). Write the braced form when '
+const SECRET_REDACTION_NOTE = 'NOTE: secret-token braces were redacted from the block above '
+    + '(secret.NAME is shown without its surrounding double braces). Write the braced form when '
     + 'you actually use the token in an execute_command call.';
 
 /**
- * Strips the surrounding double braces from any secure-token reference in
- * untrusted content, keeping the token NAME so the text still reads.
+ * Strips the surrounding double braces from any secret-token reference
+ * (either {{secret.NAME}} or the deprecated {{secure.NAME}}) in untrusted
+ * content, keeping the "secret.NAME"/"secure.NAME" text so it still reads.
  *
  * Why this must happen before the content reaches a prompt: execute_prompt
  * rejects the ENTIRE dispatch -- no LLM call, an error string returned in
@@ -997,17 +1000,17 @@ const SECURE_REDACTION_NOTE = 'NOTE: secure-token braces were redacted from the 
  * @param {string} content
  * @returns {{text: string, redacted: boolean}}
  */
-function redactSecureTokens(content) {
+function redactSecretTokens(content) {
     let text = content;
     let redacted = false;
     // Run to a fixed point rather than a single pass: replacing the inner
-    // token in `{{{{secure.A}}}}` leaves `{{secure.A}}`, so the surrounding
+    // token in `{{{{secret.A}}}}` leaves `{{secret.A}}`, so the surrounding
     // braces close over the redacted name and rebuild exactly the pattern
     // being removed. Untrusted content is attacker-influenced free-text, so
     // one pass is not enough. Guaranteed to terminate -- every replacement
     // removes four brace characters, so `text` strictly shrinks.
     for (;;) {
-        const next = text.replace(SECURE_TOKEN_RE_G, (_match, name) => `secure.${name}`);
+        const next = text.replace(SECRET_TOKEN_RE_G, (_match, kind, name) => `${kind}.${name}`);
         if (next === text) break;
         text = next;
         redacted = true;
@@ -1040,7 +1043,7 @@ export function wrapUntrustedBlock(sourceLabel, content) {
     if (typeof content !== 'string') {
         throw new TypeError('[contracts] wrapUntrustedBlock requires content to be a string');
     }
-    const { text: safeContent, redacted } = redactSecureTokens(content);
+    const { text: safeContent, redacted } = redactSecretTokens(content);
     const fenceLength = Math.max(MIN_FENCE_LENGTH, longestBacktickRun(safeContent) + 1);
     const fence = '`'.repeat(fenceLength);
     return [
@@ -1049,7 +1052,7 @@ export function wrapUntrustedBlock(sourceLabel, content) {
         `${fence}${UNTRUSTED_BLOCK_FENCE_LABEL}`,
         safeContent,
         fence,
-        ...(redacted ? [SECURE_REDACTION_NOTE] : []),
+        ...(redacted ? [SECRET_REDACTION_NOTE] : []),
     ].join('\n');
 }
 

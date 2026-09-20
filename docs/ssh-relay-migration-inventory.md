@@ -53,7 +53,7 @@ optional ceremony:
    integration test, proving the relay path handles what the SSH path
    handles today: all 6 providers, all 3 OSes, long-running tasks,
    output-spill-to-file for oversized output, and credential/network-egress
-   policy enforcement (execute-command.ts's `resolveSecureTokens`/
+   policy enforcement (execute-command.ts's `resolveSecretTokens`/
    `redactOutput`/network-tool regex, none of which relay-executor.ts
    currently applies -- it is a thinner wrapper than the full
    execute-command.ts tool, matching only its LocalStrategy.execCommand

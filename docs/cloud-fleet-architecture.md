@@ -1158,7 +1158,7 @@ Secret entry surfaces:
   server-side generation. The dashboard can trigger a GitHub App authorization flow
   for organization-wide VCS access.
 - Custom secrets: any named key-value pair stored in the vault and referenced by name
-  in execute_command calls using the {{secure.NAME}} syntax.
+  in execute_command calls using the {{secret.NAME}} syntax.
 
 Security invariants for the dashboard secret UI:
 - All secret input fields are write-only: once submitted, the value is never shown again.

@@ -79,7 +79,7 @@ describe('execute-command.ts: credential-token substitution shell matrix', () =>
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `echo {{secure.${name}}}`,
+      command: `echo {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
@@ -88,7 +88,7 @@ describe('execute-command.ts: credential-token substitution shell matrix', () =>
     expect(result).toContain(`[REDACTED:${name}]`);
 
     const calledCmd = mockExecCommand1.mock.calls[0][0] as string;
-    expect(calledCmd).not.toContain(`{{secure.${name}}}`);
+    expect(calledCmd).not.toContain(`{{secret.${name}}}`);
 
     if (isPosixRow(shell)) {
       // POSIX single-quote escaping: internal single quote doubled via
@@ -115,7 +115,7 @@ describe('execute-command.ts: credential-token substitution shell matrix', () =>
       mockExecCommand1.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
       const member = makeTestAgent({ friendlyName: `same-${shell ?? 'unset'}`, os: 'windows', shell } as any);
       addAgent(member);
-      await executeCommand({ member_id: member.id, command: `echo {{secure.${name}}}`, timeout_s: 5 });
+      await executeCommand({ member_id: member.id, command: `echo {{secret.${name}}}`, timeout_s: 5 });
       const cmd = (mockExecCommand1.mock.calls[0][0] as string).replace(member.id, ''); // strip nothing member-specific present
       calls.push(cmd);
       credentialDelete(name);

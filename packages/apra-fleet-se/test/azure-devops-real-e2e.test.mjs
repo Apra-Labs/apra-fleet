@@ -34,7 +34,7 @@ import { buildCredentialReadCommand } from '../fleet-sprint/runner.js';
 // criterion" sections against a REAL Azure DevOps org:
 //
 //   1. provision_vcs_auth for azure-devops (derived org URL, PAT resolved
-//      from the fleet credential store via a {{secure.<name>}} placeholder
+//      from the fleet credential store via a {{secret.<name>}} placeholder
 //      -- this file never reads or logs the PAT's plaintext value itself);
 //   2. `git ls-remote` against the designated test repo, to prove the
 //      provisioned credential actually authenticates;
@@ -184,13 +184,13 @@ test(
             memberRegistered = true;
 
             // --- 1. provision_vcs_auth for azure-devops, PAT resolved from
-            // the fleet credential store via the secure placeholder -- the
+            // the fleet credential store via the secret placeholder -- the
             // plaintext never appears in this file. ---
             const provisionText = toolText(await apraFleet.provisionVcsAuth({
                 member_name: memberName,
                 provider: 'azure-devops',
                 org_url: cfg.orgUrl,
-                pat: `{{secure.${cfg.secretName}}}`,
+                pat: `{{secret.${cfg.secretName}}}`,
                 git_access: 'push+pr',
             }));
             assertNotFailureText(provisionText, 'provision_vcs_auth');

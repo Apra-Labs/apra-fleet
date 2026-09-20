@@ -102,7 +102,7 @@
  *                                          // and self-heal paths, where an
  *                                          // out-of-band prompt stalls a
  *                                          // sprint. MUST pass a secret as a
- *                                          // {{secure.NAME}} placeholder,
+ *                                          // {{secret.NAME}} placeholder,
  *                                          // never a value -- resolution is
  *                                          // hub-side (see ./azure-devops.mjs).
  *     defaultAuthMode: string|null        // OPTIONAL, but declaring it (even

@@ -450,10 +450,10 @@ describe('provisionVcsAuth', () => {
     expect(execCmds.some(cmd => cmd.includes('--replace-all') && cmd.includes('--add'))).toBe(true);
   });
 
-  // --- {{secure.NAME}} token resolution ---
+  // --- {{secret.NAME}} token resolution ---
 
-  it('resolves {{secure.NAME}} token in github pat token field', async () => {
-    const member = makeTestAgent({ friendlyName: 'gh-secure-token' });
+  it('resolves {{secret.NAME}} token in github pat token field', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-secret-token' });
     addAgent(member);
     credentialSet('GH_PAT', 'ghp_resolved_token', { network_policy: 'allow' });
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
@@ -461,42 +461,42 @@ describe('provisionVcsAuth', () => {
 
     const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'github',
-      github_mode: 'pat', token: '{{secure.GH_PAT}}',
+      github_mode: 'pat', token: '{{secret.GH_PAT}}',
     });
     expect(result).toContain('[OK]');
     credentialDelete('GH_PAT');
   });
 
-  it('returns error when {{secure.NAME}} token is missing in github pat field', async () => {
-    const member = makeTestAgent({ friendlyName: 'gh-missing-secure' });
+  it('returns error when {{secret.NAME}} token is missing in github pat field', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-missing-secret' });
     addAgent(member);
 
     const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'github',
-      github_mode: 'pat', token: '{{secure.MISSING_CRED}}',
+      github_mode: 'pat', token: '{{secret.MISSING_CRED}}',
     });
     expect(result).toContain('[FAIL]');
     expect(result).toContain('MISSING_CRED');
     expect(result).toContain('not found');
   });
 
-  it('resolves {{secure.NAME}} token in bitbucket api_token field', async () => {
-    const member = makeTestAgent({ friendlyName: 'bb-secure-token' });
+  it('resolves {{secret.NAME}} token in bitbucket api_token field', async () => {
+    const member = makeTestAgent({ friendlyName: 'bb-secret-token' });
     addAgent(member);
-    credentialSet('BB_TOKEN', 'ATBB_secure_value', { network_policy: 'allow' });
+    credentialSet('BB_TOKEN', 'ATBB_secret_value', { network_policy: 'allow' });
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'bitbucket',
-      email: 'dev@co.com', api_token: '{{secure.BB_TOKEN}}', workspace: 'ws',
+      email: 'dev@co.com', api_token: '{{secret.BB_TOKEN}}', workspace: 'ws',
     });
     expect(result).toContain('[OK]');
     credentialDelete('BB_TOKEN');
   });
 
-  it('resolves {{secure.NAME}} token in azure-devops pat field', async () => {
-    const member = makeTestAgent({ friendlyName: 'az-secure-token' });
+  it('resolves {{secret.NAME}} token in azure-devops pat field', async () => {
+    const member = makeTestAgent({ friendlyName: 'az-secret-token' });
     addAgent(member);
     credentialSet('AZ_PAT', 'az_resolved_pat', { network_policy: 'allow' });
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
@@ -504,10 +504,28 @@ describe('provisionVcsAuth', () => {
 
     const { text: result } = await provisionVcsAuth({
       member_id: member.id, provider: 'azure-devops',
-      org_url: 'https://dev.azure.com/myorg', pat: '{{secure.AZ_PAT}}',
+      org_url: 'https://dev.azure.com/myorg', pat: '{{secret.AZ_PAT}}',
     });
     expect(result).toContain('[OK]');
     credentialDelete('AZ_PAT');
+  });
+
+  it('resolves a legacy {{secure.NAME}} token in github pat field and appends a deprecation warning', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-legacy-token' });
+    addAgent(member);
+    credentialSet('GH_LEGACY_PAT', 'ghp_legacy_token', { network_policy: 'allow' });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const { text: result } = await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+      github_mode: 'pat', token: '{{secure.GH_LEGACY_PAT}}',
+    });
+    expect(result).toContain('[OK]');
+    expect(result).toContain('[deprecated]');
+    expect(result).toContain('secure.GH_LEGACY_PAT');
+    expect(result).toContain('secret.GH_LEGACY_PAT');
+    credentialDelete('GH_LEGACY_PAT');
   });
 
   // --- OOB fallback tests ---

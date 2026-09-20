@@ -316,7 +316,7 @@ const REPO_REF_HINT = 'https://dev.azure.com/ORG/PROJECT/_git/REPO';
  * meaningless. Expressing that as a descriptor hook keeps the difference in
  * this file instead of adding a provider branch to the shared caller.
  *
- * SECRET TRANSPORT: the PAT is passed as a `{{secure.NAME}}` PLACEHOLDER, never
+ * SECRET TRANSPORT: the PAT is passed as a `{{secret.NAME}}` PLACEHOLDER, never
  * a value. Resolution happens hub-side inside the fleet server; the orchestrator
  * process that calls this hook never holds, logs or transports the plaintext,
  * and a remote member (which has no secret store of its own) never has to.
@@ -360,7 +360,7 @@ function buildProvisionArgs(ctx) {
             // surfaces as.
             org_url: `https://dev.azure.com/${org}`,
             // Placeholder, NOT a value. See SECRET TRANSPORT above.
-            pat: `{{secure.${name}}}`,
+            pat: `{{secret.${name}}}`,
         },
     };
 }

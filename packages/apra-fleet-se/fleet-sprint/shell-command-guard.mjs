@@ -47,8 +47,8 @@ import path from 'path';
 //      this guard pure noise. A reader should take away that a backtick-
 //      wrapped substitution written inside ordinary '...'/"..." quotes in a
 //      member-bound command string is UNGUARDED by this rule.
-//   3. Secure token references. execute_command replaces each secure.NAME
-//      token with a value that has ALREADY been quoted for the target
+//   3. Secret token references. execute_command replaces each secret.NAME
+//      (or legacy secure.NAME) token with a value that has ALREADY been quoted for the target
 //      member's shell (escapePowerShellArg for windows members,
 //      escapeShellArg otherwise -- src/tools/execute-command.ts). Those
 //      tokens carry no `$`, `~/` or backtick, so they never match a rule

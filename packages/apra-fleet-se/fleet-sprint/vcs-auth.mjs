@@ -82,7 +82,7 @@ export function parseRepoScopeFromRemoteUrl(url) {
 /**
  * Read the credential-store entry NAMES (never values) currently registered on
  * the hub, for a provider hook that needs to fail fast when the secret it
- * intends to reference as a {{secure.NAME}} placeholder does not exist
+ * intends to reference as a {{secret.NAME}} placeholder does not exist
  * (apra-fleet-5co8.2.1).
  *
  * Returns null -- not an empty list -- when the store cannot be read or its

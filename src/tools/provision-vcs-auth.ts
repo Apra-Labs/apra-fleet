@@ -12,34 +12,33 @@ import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import { scheduleCredentialCleanup, cancelCredentialCleanup } from '../services/credential-cleanup.js';
 import { PROVIDER_HOSTS } from '../services/vcs/constants.js';
-import { logLine } from '../utils/log-helpers.js';
+import { logLine, logWarn } from '../utils/log-helpers.js';
+import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
 
-const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
-
 /**
- * The three distinct {{secure.NAME}} resolution failures. Previously all three
+ * The three distinct {{secret.NAME}} resolution failures. Previously all three
  * collapsed into one emoji-prefixed prose string, so a caller could not tell
  * "no such credential" from "this member may not use it" from "it expired"
  * without matching the wording (apra-fleet-3swo.7.2).
  */
-type SecureFieldFailure = 'secure_credential_not_found' | 'secure_credential_denied' | 'secure_credential_expired';
+type SecretFieldFailure = 'secret_variable_not_found' | 'secret_variable_denied' | 'secret_variable_expired';
 
-function resolveSecureField(value: string, callingMember: string): { resolved: string } | { error: string; code: SecureFieldFailure } {
-  const tokenNames = new Set<string>();
-  let match: RegExpExecArray | null;
-  TOKEN_RE.lastIndex = 0;
-  while ((match = TOKEN_RE.exec(value)) !== null) tokenNames.add(match[1]);
+function resolveSecretField(value: string, callingMember: string): { resolved: string; legacyNames: string[] } | { error: string; code: SecretFieldFailure } {
+  const tokens = findSecretTokens(value);
+  const tokenNames = new Set(tokens.map((t) => t.name));
+  const legacyNames = tokens.filter((t) => t.legacy).map((t) => t.name);
   let resolved = value;
   for (const name of tokenNames) {
     const entry = credentialResolve(name, callingMember);
-    if (!entry) return { error: `Credential "${name}" not found. Run credential_store_set first.`, code: 'secure_credential_not_found' };
-    if ('denied' in entry) return { error: entry.denied, code: 'secure_credential_denied' };
-    if ('expired' in entry) return { error: entry.expired, code: 'secure_credential_expired' };
-    resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+    if (!entry) return { error: `Credential "${name}" not found. Run credential_store_set first.`, code: 'secret_variable_not_found' };
+    if ('denied' in entry) return { error: entry.denied, code: 'secret_variable_denied' };
+    if ('expired' in entry) return { error: entry.expired, code: 'secret_variable_expired' };
+    resolved = resolved.replaceAll(`{{secret.${name}}}`, entry.plaintext);
+    resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext); // legacy spelling
   }
-  return { resolved };
+  return { resolved, legacyNames };
 }
 
 const providers: Record<string, VcsProviderService> = {
@@ -94,18 +93,18 @@ export const provisionVcsAuthSchema = z.object({
 
   // GitHub fields
   github_mode: z.enum(['github-app', 'pat']).optional().describe('GitHub auth mode: github-app (mint via configured app) or pat (personal access token)'),
-  token: z.string().optional().describe('Personal access token (GitHub PAT or Azure DevOps PAT). Supports {{secure.NAME}} token -- value is resolved from the credential store before use.'),
+  token: z.string().optional().describe('Personal access token (GitHub PAT or Azure DevOps PAT). Supports {{secret.NAME}} token -- value is resolved from the credential store before use.'),
   git_access: z.enum(['read', 'push', 'push+pr', 'admin', 'issues', 'full']).optional().describe('GitHub App access level override'),
   repos: z.array(z.string()).optional().describe('GitHub App repository list override'),
 
   // Bitbucket fields
   email: z.string().optional().describe('Bitbucket account email'),
-  api_token: z.string().optional().describe('Bitbucket API token. Supports {{secure.NAME}} token -- value is resolved from the credential store before use.'),
+  api_token: z.string().optional().describe('Bitbucket API token. Supports {{secret.NAME}} token -- value is resolved from the credential store before use.'),
   workspace: z.string().optional().describe('Bitbucket workspace slug'),
 
   // Azure DevOps fields
   org_url: z.string().optional().describe('Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)'),
-  pat: z.string().optional().describe('Azure DevOps personal access token. Supports {{secure.NAME}} token -- value is resolved from the credential store before use.'),
+  pat: z.string().optional().describe('Azure DevOps personal access token. Supports {{secret.NAME}} token -- value is resolved from the credential store before use.'),
   // apra-fleet-5co8.5.1: OPTIONAL, caller-supplied -- Azure DevOps exposes no
   // API to query a PAT's expiry back, so this must come from the operator
   // (the date they picked in the "Set expiration" step when creating the
@@ -146,12 +145,12 @@ export type ProvisionVcsAuthReason =
   | 'member_not_found'
   /** The member is unreachable. */
   | 'member_offline'
-  /** A {{secure.NAME}} token names no stored credential. */
-  | 'secure_credential_not_found'
-  /** A {{secure.NAME}} token resolved to a credential this member may not use. */
-  | 'secure_credential_denied'
-  /** A {{secure.NAME}} token resolved to an expired credential. */
-  | 'secure_credential_expired'
+  /** A {{secret.NAME}} token names no stored credential. */
+  | 'secret_variable_not_found'
+  /** A {{secret.NAME}} token resolved to a credential this member may not use. */
+  | 'secret_variable_denied'
+  /** A {{secret.NAME}} token resolved to an expired credential. */
+  | 'secret_variable_expired'
   /** Out-of-band credential collection was cancelled or returned nothing. */
   | 'oob_cancelled'
   /** The resolved provider implements no buildCredentials hook (a wiring bug). */
@@ -250,23 +249,28 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
 
   const service = providers[input.provider];
 
-  // Resolve {{secure.NAME}} tokens in credential fields
+  // Resolve {{secret.NAME}} / legacy {{secure.NAME}} tokens in credential fields
   const resolvedInput = { ...input };
+  const legacyNames: string[] = [];
   for (const field of ['token', 'api_token', 'pat'] as const) {
     if (resolvedInput[field]) {
-      const r = resolveSecureField(resolvedInput[field]!, agent.friendlyName);
+      const r = resolveSecretField(resolvedInput[field]!, agent.friendlyName);
       if ('error' in r) return vcsResult(`[FAIL] ${r.error}`, { ...who, reason: r.code });
       resolvedInput[field] = r.resolved;
+      legacyNames.push(...r.legacyNames);
     }
+  }
+  if (legacyNames.length > 0) {
+    logWarn('provision_vcs_auth', legacyTokenWarning(legacyNames), agent);
   }
 
   // OOB fallback for an absent credential field, dispatched through the
   // resolved provider (apra-fleet-5co8.3.2). The provider owns which field its
   // secret lives in, when it counts as missing and what the operator is asked
   // -- no provider name and no auth-mode knowledge is left at this call site.
-  // Order is unchanged: {{secure.NAME}} resolution first, then OOB collection
+  // Order is unchanged: {{secret.NAME}} resolution first, then OOB collection
   // (an OOB-collected secret is deliberately NOT re-run through
-  // resolveSecureField), then credential assembly.
+  // resolveSecretField), then credential assembly.
   const missing = service.missingCredential;
   if (missing && missing.isMissing(resolvedInput)) {
     const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
@@ -441,7 +445,8 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
     `[OK] ${deployResult.message} on "${agent.friendlyName}"\n`
     + (meta ? meta + '\n' : '')
     + `  Verification: ${verificationLine}`
-    + (expiryWarning ? `\n  ${expiryWarning}` : ''),
+    + (expiryWarning ? `\n  ${expiryWarning}` : '')
+    + (legacyNames.length > 0 ? `\n${legacyTokenWarning(legacyNames)}` : ''),
     {
       ...who,
       reason,

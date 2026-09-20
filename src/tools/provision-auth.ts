@@ -13,7 +13,8 @@ import { credentialResolve } from '../services/credential-store.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { updateAgent } from '../services/registry.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
-import { logLine } from '../utils/log-helpers.js';
+import { logLine, logWarn } from '../utils/log-helpers.js';
+import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
 import type { Agent } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -21,7 +22,7 @@ import type { ProviderAdapter } from '../providers/index.js';
 export const provisionAuthSchema = z.object({
   ...memberIdentifier,
   api_key: z.string().optional().describe(
-    `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead. Supports {{secure.NAME}} token -- value is resolved from the credential store before use.`
+    `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead. Supports {{secret.NAME}} token -- value is resolved from the credential store before use.`
   ),
 });
 
@@ -46,12 +47,12 @@ export type ProvisionAuthReason =
   | 'member_not_found'
   /** The member is unreachable. */
   | 'member_offline'
-  /** A {{secure.NAME}} token in api_key names no stored credential. */
-  | 'secure_credential_not_found'
-  /** A {{secure.NAME}} token resolved to a credential this member may not use. */
-  | 'secure_credential_denied'
-  /** A {{secure.NAME}} token resolved to an expired credential. */
-  | 'secure_credential_expired'
+  /** A {{secret.NAME}} token in api_key names no stored credential. */
+  | 'secret_variable_not_found'
+  /** A {{secret.NAME}} token resolved to a credential this member may not use. */
+  | 'secret_variable_denied'
+  /** A {{secret.NAME}} token resolved to an expired credential. */
+  | 'secret_variable_expired'
   /** This provider exposes no OAuth credential files to copy. */
   | 'oauth_not_supported'
   /** The local OAuth token is expired and carries no refresh token. */
@@ -433,27 +434,34 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<Provisio
 
   // Flow B: API key is provided directly
   if (input.api_key) {
-    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
-    const tokenNames = new Set<string>();
-    let match: RegExpExecArray | null;
-    while ((match = TOKEN_RE.exec(input.api_key)) !== null) tokenNames.add(match[1]);
+    const tokens = findSecretTokens(input.api_key);
+    const tokenNames = new Set(tokens.map((t) => t.name));
+    const legacyNames = tokens.filter((t) => t.legacy).map((t) => t.name);
     let resolvedKey = input.api_key;
     for (const name of tokenNames) {
       const entry = credentialResolve(name, agent.friendlyName);
-      const secureFailure = { ...who, provider: provider.name };
+      const secretFailure = { ...who, provider: provider.name };
       if (!entry) {
         return authResult(`[FAIL] Credential "${name}" not found. Run credential_store_set first.`,
-          { ...secureFailure, reason: 'secure_credential_not_found' });
+          { ...secretFailure, reason: 'secret_variable_not_found' });
       }
       if ('denied' in entry) {
-        return authResult(`[FAIL] ${entry.denied}`, { ...secureFailure, reason: 'secure_credential_denied' });
+        return authResult(`[FAIL] ${entry.denied}`, { ...secretFailure, reason: 'secret_variable_denied' });
       }
       if ('expired' in entry) {
-        return authResult(`[FAIL] ${entry.expired}`, { ...secureFailure, reason: 'secure_credential_expired' });
+        return authResult(`[FAIL] ${entry.expired}`, { ...secretFailure, reason: 'secret_variable_expired' });
       }
-      resolvedKey = resolvedKey.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+      resolvedKey = resolvedKey.replaceAll(`{{secret.${name}}}`, entry.plaintext);
+      resolvedKey = resolvedKey.replaceAll(`{{secure.${name}}}`, entry.plaintext); // legacy spelling
     }
-    return onSuccess(await provisionApiKey(agent, resolvedKey, provider));
+    if (legacyNames.length > 0) {
+      logWarn('provision_llm_auth', legacyTokenWarning(legacyNames), agent);
+    }
+    const apiKeyResult = await provisionApiKey(agent, resolvedKey, provider);
+    if (legacyNames.length > 0) {
+      apiKeyResult.text += `\n${legacyTokenWarning(legacyNames)}`;
+    }
+    return onSuccess(apiKeyResult);
   }
 
   // Flow A: OAuth credentials copy

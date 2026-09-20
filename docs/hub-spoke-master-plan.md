@@ -369,7 +369,7 @@ relayed instruction:
    (the SSH model's "host unreachable" error becomes "spoke offline" -- clearer,
    but the timeout/queueing semantics must be designed, not inherited).
 3. Target apra-fleet.exe executes via the existing LocalStrategy code --
-   `{{secure.NAME}}` resolution, network-egress policy, redaction, long_running
+   `{{secret.NAME}}` resolution, network-egress policy, redaction, long_running
    task wrapper (execute-command.ts:114-265) all run ON THE TARGET, where the
    credential store lives. This is a deliberate improvement: today, secrets are
    resolved on the orchestrator machine and substituted into the command line

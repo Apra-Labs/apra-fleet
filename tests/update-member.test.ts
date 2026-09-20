@@ -144,7 +144,7 @@ describe('updateMember', () => {
     expect(result).toContain('Member "new-name" updated.');
   });
 
-  it('resolves {{secure.NAME}} token in password field', async () => {
+  it('resolves {{secret.NAME}} token in password field', async () => {
     const member = makeTestAgent({ authType: 'password' });
     addAgent(member);
 
@@ -153,7 +153,7 @@ describe('updateMember', () => {
     try {
       const result = await updateMember({
         member_id: member.id,
-        password: `{{secure.${credName}}}`,
+        password: `{{secret.${credName}}}`,
       });
       expect(result).toContain('Member "test-agent" updated.');
     } finally {
@@ -161,16 +161,36 @@ describe('updateMember', () => {
     }
   });
 
-  it('returns error when {{secure.NAME}} token references missing credential', async () => {
+  it('returns error when {{secret.NAME}} token references missing credential', async () => {
     const member = makeTestAgent({ authType: 'password' });
     addAgent(member);
 
     const result = await updateMember({
       member_id: member.id,
-      password: '{{secure.nonexistent_cred}}',
+      password: '{{secret.nonexistent_cred}}',
     });
     expect(result).toContain('❌ Credential "nonexistent_cred" not found.');
     expect(result).toContain('Member was NOT updated.');
+  });
+
+  it('resolves a legacy {{secure.NAME}} token in password field and appends a deprecation warning', async () => {
+    const member = makeTestAgent({ authType: 'password' });
+    addAgent(member);
+
+    const credName = `test-legacy-cred-${Date.now()}`;
+    credentialSet(credName, 'mysecretpass');
+    try {
+      const result = await updateMember({
+        member_id: member.id,
+        password: `{{secure.${credName}}}`,
+      });
+      expect(result).toContain('Member "test-agent" updated.');
+      expect(result).toContain('[deprecated]');
+      expect(result).toContain(`secure.${credName}`);
+      expect(result).toContain(`secret.${credName}`);
+    } finally {
+      credentialDelete(credName);
+    }
   });
 
   it('stores a valid category', async () => {
