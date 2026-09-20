@@ -186,8 +186,8 @@ describe('updateMember', () => {
       });
       expect(result).toContain('Member "test-agent" updated.');
       expect(result).toContain('[deprecated]');
-      expect(result).toContain(`{{secure.${credName}}}`);
-      expect(result).toContain(`{{secret.${credName}}}`);
+      expect(result).toContain(`secure.${credName}`);
+      expect(result).toContain(`secret.${credName}`);
     } finally {
       credentialDelete(credName);
     }

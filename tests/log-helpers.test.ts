@@ -92,7 +92,7 @@ describe('log-helpers', () => {
     expect(lines[0].mem).toBe('MyMember');
   });
 
-  it('applies maskSecrets() — {{secret.MY_KEY}} is written as [REDACTED]', async () => {
+  it('applies maskSecrets() -- {{secret.MY_KEY}} is written as [REDACTED]', async () => {
     const { logLine } = await import('../src/utils/log-helpers.js');
     logLine('tag', 'use {{secret.MY_KEY}} here');
 
@@ -100,7 +100,7 @@ describe('log-helpers', () => {
     expect(lines[0].msg).toBe('use [REDACTED] here');
   });
 
-  it('applies maskSecrets() — legacy {{secure.MY_KEY}} is also written as [REDACTED]', async () => {
+  it('applies maskSecrets() -- legacy {{secure.MY_KEY}} is also written as [REDACTED]', async () => {
     const { logLine } = await import('../src/utils/log-helpers.js');
     logLine('tag', 'use {{secure.MY_KEY}} here');
 
@@ -108,7 +108,7 @@ describe('log-helpers', () => {
     expect(lines[0].msg).toBe('use [REDACTED] here');
   });
 
-  it('applies maskSecrets() — a mix of {{secret.X}} and {{secure.Y}} are both redacted', async () => {
+  it('applies maskSecrets() -- a mix of {{secret.X}} and {{secure.Y}} are both redacted', async () => {
     const { logLine } = await import('../src/utils/log-helpers.js');
     logLine('tag', 'use {{secret.X}} and {{secure.Y}} here');
 

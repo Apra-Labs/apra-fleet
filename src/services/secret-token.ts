@@ -54,10 +54,12 @@ export function formatSecretToken(name: string): string {
  * names (deduplicated). Callers append this to a tool's text result and log
  * it whenever resolveSecretTokens-style resolution sees at least one legacy
  * spelling, so operators see the nudge without a hard failure.
+ * Deliberately unbraced: the log masker redacts any braced token, and a
+ * braced form here would render as "[REDACTED] is deprecated" in fleet logs.
  */
 export function legacyTokenWarning(names: string[]): string {
   const unique = [...new Set(names)];
   return unique
-    .map((n) => `[deprecated] {{secure.${n}}} is deprecated -- use {{secret.${n}}} (still accepted for now)`)
+    .map((n) => `[deprecated] secure.${n} is the legacy spelling -- write secret.${n} instead (still accepted for now)`)
     .join('; ');
 }

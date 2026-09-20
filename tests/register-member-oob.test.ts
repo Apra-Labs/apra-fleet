@@ -180,8 +180,8 @@ describe('register_member: named credential auto-create (Test 4)', () => {
     expect(result).toContain('✅ Member registered successfully');
     expect(mockCollectOobApiKey).not.toHaveBeenCalled();
     expect(result).toContain('[deprecated]');
-    expect(result).toContain('{{secure.SessionCred}}');
-    expect(result).toContain('{{secret.SessionCred}}');
+    expect(result).toContain('secure.SessionCred');
+    expect(result).toContain('secret.SessionCred');
   });
 
   it('stores credential as persistent when user confirms', async () => {

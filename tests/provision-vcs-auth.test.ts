@@ -523,8 +523,8 @@ describe('provisionVcsAuth', () => {
     });
     expect(result).toContain('[OK]');
     expect(result).toContain('[deprecated]');
-    expect(result).toContain('{{secure.GH_LEGACY_PAT}}');
-    expect(result).toContain('{{secret.GH_LEGACY_PAT}}');
+    expect(result).toContain('secure.GH_LEGACY_PAT');
+    expect(result).toContain('secret.GH_LEGACY_PAT');
     credentialDelete('GH_LEGACY_PAT');
   });
 

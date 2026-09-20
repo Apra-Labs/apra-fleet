@@ -194,8 +194,8 @@ describe('provisionAuth', () => {
     const { text: result } = await provisionAuth({ member_id: member.id, api_key: '{{secure.LEGACY_API_KEY}}' });
     expect(result).toContain('API key provisioned');
     expect(result).toContain('[deprecated]');
-    expect(result).toContain('{{secure.LEGACY_API_KEY}}');
-    expect(result).toContain('{{secret.LEGACY_API_KEY}}');
+    expect(result).toContain('secure.LEGACY_API_KEY');
+    expect(result).toContain('secret.LEGACY_API_KEY');
     credentialDelete('LEGACY_API_KEY');
   });
 

@@ -205,7 +205,7 @@ describe('setupGitApp', () => {
 
     expect(result).toContain('✅');
     expect(result).toContain('[deprecated]');
-    expect(result).toContain('{{secure.LEGACY_PEM}}');
-    expect(result).toContain('{{secret.LEGACY_PEM}}');
+    expect(result).toContain('secure.LEGACY_PEM');
+    expect(result).toContain('secret.LEGACY_PEM');
   });
 });

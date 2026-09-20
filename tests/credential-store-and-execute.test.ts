@@ -209,8 +209,8 @@ describe('execute_command: {{secret.NAME}} token resolution', () => {
     expect(calledCmd).toContain('legacypassword');
     expect(calledCmd).not.toContain(`{{secure.${name}}}`);
     expect(result).toContain('[deprecated]');
-    expect(result).toContain(`{{secure.${name}}}`);
-    expect(result).toContain(`{{secret.${name}}}`);
+    expect(result).toContain(`secure.${name}`);
+    expect(result).toContain(`secret.${name}`);
 
     credentialDelete(name);
   });
@@ -237,7 +237,7 @@ describe('execute_command: {{secret.NAME}} token resolution', () => {
     expect(calledCmd).toContain('valueB');
     // Only the legacy token triggers the deprecation warning
     expect(result).toContain('[deprecated]');
-    expect(result).toContain(`{{secure.${nameB}}}`);
+    expect(result).toContain(`secure.${nameB}`);
 
     credentialDelete(nameA);
     credentialDelete(nameB);
