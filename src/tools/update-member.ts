@@ -6,7 +6,8 @@ import { collectOobPassword } from '../services/auth-socket.js';
 import { credentialResolve } from '../services/credential-store.js';
 import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
-import { logLine } from '../utils/log-helpers.js';
+import { logLine, logWarn } from '../utils/log-helpers.js';
+import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
 import type { Agent } from '../types.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
@@ -30,9 +31,9 @@ export const updateMemberSchema = z.object({
   port: z.number().optional().describe('New SSH port (remote members only)'),
   username: z.string().optional().describe('New SSH username (remote members only)'),
   auth_type: z.enum(['password', 'key']).optional().describe('New auth method (remote members only)'),
-  password: z.string().optional().describe('New SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
+  password: z.string().optional().describe('New SSH password. Omit for out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secret.NAME}} token — value is resolved from the credential store before use.'),
   rotate_password: z.boolean().optional().describe(
-    'Trigger secure out-of-band password re-entry for a member already using password auth. '
+    'Trigger out-of-band password re-entry for a member already using password auth. '
     + 'A password prompt will open in a separate terminal window. Ignored if auth_type is not password.'
   ),
   key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
@@ -131,24 +132,26 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     return `❌ Invalid icon "${input.icon}". Use a named alias (e.g., blue-circle, red-square, green-square) or a valid emoji.`;
   }
 
-  // Resolve {{secure.NAME}} tokens in password field
+  // Resolve {{secret.NAME}} / {{secure.NAME}} tokens in password field
   let resolvedPassword = input.password;
+  let passwordLegacyNames: string[] = [];
   if (resolvedPassword) {
-    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
-    let match: RegExpExecArray | null;
+    const tokens = findSecretTokens(resolvedPassword);
     let resolved = resolvedPassword;
-    const tokenNames = new Set<string>();
-    while ((match = TOKEN_RE.exec(resolvedPassword)) !== null) {
-      tokenNames.add(match[1]);
-    }
+    const tokenNames = new Set(tokens.map((t) => t.name));
+    passwordLegacyNames = tokens.filter((t) => t.legacy).map((t) => t.name);
     for (const name of tokenNames) {
       const entry = credentialResolve(name, existing.friendlyName);
       if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first. Member was NOT updated.`;
       if ('denied' in entry) return `❌ ${entry.denied} Member was NOT updated.`;
       if ('expired' in entry) return `❌ ${entry.expired} Member was NOT updated.`;
+      resolved = resolved.replaceAll(`{{secret.${name}}}`, entry.plaintext);
       resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
     }
     resolvedPassword = resolved;
+    if (passwordLegacyNames.length > 0) {
+      logWarn('update_member', legacyTokenWarning(passwordLegacyNames), { id: existing.id, friendlyName: existing.friendlyName });
+    }
   }
 
   // Out-of-band password collection:
@@ -165,6 +168,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
 
   const updates: Record<string, unknown> = {};
   const warnings: string[] = [];
+  if (passwordLegacyNames.length > 0) warnings.push(legacyTokenWarning(passwordLegacyNames));
 
   // --- model_tiers normalization ---
   if (input.model_tiers !== undefined) {

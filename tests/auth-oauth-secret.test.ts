@@ -400,15 +400,37 @@ describe('handleOAuth --member env-var provisioning (apra-fleet-eft.48.8)', () =
     expect(decryptPassword(stored!)).toBe('sk-test-json-access');
   });
 
-  it('resolves a secure.<name> credential-store reference rather than accepting plaintext on the command line', async () => {
+  it('resolves a secret.<name> credential-store reference rather than accepting plaintext on the command line', async () => {
     const member = makeTestLocalAgent({ friendlyName: 'toy-doer-2' });
     addAgent(member);
-    credentialSet('INTEG-TOY-DOER-TOKEN-TEST', 'sk-test-secure-ref-token', true, 'deny');
+    credentialSet('INTEG-TOY-DOER-TOKEN-TEST', 'sk-test-secret-ref-token', true, 'deny');
 
-    await runAuth(['--oauth', '--member', 'toy-doer-2', 'secure.INTEG-TOY-DOER-TOKEN-TEST']);
+    await runAuth(['--oauth', '--member', 'toy-doer-2', 'secret.INTEG-TOY-DOER-TOKEN-TEST']);
 
     const updated = getAllAgents().find(a => a.friendlyName === 'toy-doer-2');
-    expect(decryptPassword(updated!.encryptedEnvVars!.CLAUDE_CODE_OAUTH_TOKEN)).toBe('sk-test-secure-ref-token');
+    expect(decryptPassword(updated!.encryptedEnvVars!.CLAUDE_CODE_OAUTH_TOKEN)).toBe('sk-test-secret-ref-token');
+  });
+
+  it('resolves a legacy secure.<name> credential-store reference the same way', async () => {
+    const member = makeTestLocalAgent({ friendlyName: 'toy-doer-2-legacy' });
+    addAgent(member);
+    credentialSet('INTEG-TOY-DOER-LEGACY-TOKEN-TEST', 'sk-test-legacy-ref-token', true, 'deny');
+
+    await runAuth(['--oauth', '--member', 'toy-doer-2-legacy', 'secure.INTEG-TOY-DOER-LEGACY-TOKEN-TEST']);
+
+    const updated = getAllAgents().find(a => a.friendlyName === 'toy-doer-2-legacy');
+    expect(decryptPassword(updated!.encryptedEnvVars!.CLAUDE_CODE_OAUTH_TOKEN)).toBe('sk-test-legacy-ref-token');
+  });
+
+  it('resolves a legacy --secure <name> flag the same way as --secret <name>', async () => {
+    const member = makeTestLocalAgent({ friendlyName: 'toy-doer-2-flag' });
+    addAgent(member);
+    credentialSet('INTEG-TOY-DOER-FLAG-TOKEN-TEST', 'sk-test-flag-ref-token', true, 'deny');
+
+    await runAuth(['--oauth', '--member', 'toy-doer-2-flag', '--secure', 'INTEG-TOY-DOER-FLAG-TOKEN-TEST']);
+
+    const updated = getAllAgents().find(a => a.friendlyName === 'toy-doer-2-flag');
+    expect(decryptPassword(updated!.encryptedEnvVars!.CLAUDE_CODE_OAUTH_TOKEN)).toBe('sk-test-flag-ref-token');
   });
 
   it('does NOT write any provider credentials file -- registry-only', async () => {

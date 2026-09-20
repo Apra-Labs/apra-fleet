@@ -23,6 +23,7 @@ import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid, isPidAlive } from '../utils/pid-helpers.js';
 import { recoverOrphanedDispatch, isRemoteProcessAlive } from '../services/orphan-recovery.js';
+import { hasSecretToken } from '../services/secret-token.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { durableOutputPath } from '../os/linux.js';
 import { LogScope, logLine, logWarn, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
@@ -290,8 +291,6 @@ export function resolveModelForTier(agent: Agent, tier: string, provider: Provid
  */
 export { knownRepoRemoteUrl };
 
-const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
-
 /**
  * The sprint id this server process dispatches on behalf of, or undefined when
  * run outside a sprint (e.g. a manual cli.mjs invocation). Sourced from
@@ -532,8 +531,8 @@ async function executePromptInteractive(
 }
 
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
-  if (SECURE_TOKEN_RE.test(input.prompt)) {
-    return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
+  if (hasSecretToken(input.prompt)) {
+    return 'error: execute_prompt prompt contains {{secret.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secret.NAME}} instead.';
   }
 
   // apra-fleet-3swo.42: normalise `fork` ONCE, here, before any predicate is

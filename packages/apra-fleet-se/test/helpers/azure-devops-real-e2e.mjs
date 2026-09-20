@@ -40,7 +40,7 @@ export const REAL_ADO_E2E_REMOTE_URL_ENV = 'APRA_FLEET_ADO_E2E_REMOTE_URL';
 
 /** Default org/remote -- see "E4 CONCRETE TARGET" on apra-fleet-5co8 and
  *  the runbook's TARGET section. Never a secret; org_url is always a plain
- *  provision_vcs_auth argument, never `{{secure.*}}`. */
+ *  provision_vcs_auth argument, never `{{secret.*}}`. */
 const DEFAULT_ORG_URL = 'https://dev.azure.com/apralabs';
 const DEFAULT_REMOTE_URL = 'https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e2e-toy';
 const DEFAULT_BASE_BRANCH = 'main';

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { backupAndResetRegistry, restoreRegistry, makeConfigAwareExec } from './test-helpers.js';
 import { registerMember } from '../src/tools/register-member.js';
 import { encryptPassword } from '../src/utils/crypto.js';
-import { credentialResolve, credentialDelete } from '../src/services/credential-store.js';
+import { credentialResolve, credentialDelete, credentialSet } from '../src/services/credential-store.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -141,7 +141,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
     restoreRegistry();
   });
 
-  it('opens OOB when {{secure.NAME}} credential does not exist', async () => {
+  it('opens OOB when {{secret.NAME}} credential does not exist', async () => {
     const encPw = encryptPassword('collected-value');
     mockCollectOobApiKey.mockResolvedValueOnce({ password: encPw, persist: false });
 
@@ -152,7 +152,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       username: 'akhil',
       work_folder: '/home/testuser/git/test5',
       auth_type: 'password',
-      password: '{{secure.MyLinPass}}',
+      password: '{{secret.MyLinPass}}',
     });
 
     expect(result).toContain('✅ Member registered successfully');
@@ -162,6 +162,26 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       'register_member',
       expect.objectContaining({ askPersist: true }),
     );
+  });
+
+  it('resolves an existing credential via legacy {{secure.NAME}} spelling and warns', async () => {
+    credentialSet('SessionCred', 'legacy-value', false, 'deny');
+
+    const result = await registerMember({
+      friendly_name: 'legacy-secure-test',
+      member_type: 'remote',
+      host: '192.168.1.102',
+      username: 'akhil',
+      work_folder: '/home/testuser/git/test6b',
+      auth_type: 'password',
+      password: '{{secure.SessionCred}}',
+    });
+
+    expect(result).toContain('✅ Member registered successfully');
+    expect(mockCollectOobApiKey).not.toHaveBeenCalled();
+    expect(result).toContain('[deprecated]');
+    expect(result).toContain('{{secure.SessionCred}}');
+    expect(result).toContain('{{secret.SessionCred}}');
   });
 
   it('stores credential as persistent when user confirms', async () => {
@@ -175,7 +195,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       username: 'akhil',
       work_folder: '/home/testuser/git/test6',
       auth_type: 'password',
-      password: '{{secure.PersistCred}}',
+      password: '{{secret.PersistCred}}',
     });
 
     expect(result).toContain('✅ Member registered successfully');
@@ -197,7 +217,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       username: 'akhil',
       work_folder: '/home/testuser/git/test7',
       auth_type: 'password',
-      password: '{{secure.SessionCred}}',
+      password: '{{secret.SessionCred}}',
     });
 
     expect(result).toContain('✅ Member registered successfully');
@@ -217,7 +237,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       username: 'akhil',
       work_folder: '/home/testuser/git/test8',
       auth_type: 'password',
-      password: '{{secure.FailCred}}',
+      password: '{{secret.FailCred}}',
     });
 
     expect(result).toContain('Terminal unavailable');

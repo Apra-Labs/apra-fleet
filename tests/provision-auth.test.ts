@@ -159,29 +159,44 @@ describe('provisionAuth', () => {
     expect(result).toContain('auto-refresh');
   });
 
-  // --- {{secure.NAME}} token resolution ---
+  // --- {{secret.NAME}} token resolution ---
 
-  it('resolves {{secure.NAME}} token in api_key field', async () => {
-    const member = makeTestAgent({ friendlyName: 'secure-key-member' });
+  it('resolves {{secret.NAME}} token in api_key field', async () => {
+    const member = makeTestAgent({ friendlyName: 'secret-key-member' });
     addAgent(member);
     credentialSet('MY_API_KEY', 'sk-ant-api03-RESOLVED', { network_policy: 'allow' });
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const { text: result } = await provisionAuth({ member_id: member.id, api_key: '{{secure.MY_API_KEY}}' });
+    const { text: result } = await provisionAuth({ member_id: member.id, api_key: '{{secret.MY_API_KEY}}' });
     expect(result).toContain('API key provisioned');
     credentialDelete('MY_API_KEY');
   });
 
-  it('returns error when {{secure.NAME}} token is missing in api_key field', async () => {
-    const member = makeTestAgent({ friendlyName: 'missing-secure-member' });
+  it('returns error when {{secret.NAME}} token is missing in api_key field', async () => {
+    const member = makeTestAgent({ friendlyName: 'missing-secret-member' });
     addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
 
-    const { text: result } = await provisionAuth({ member_id: member.id, api_key: '{{secure.NONEXISTENT_KEY}}' });
+    const { text: result } = await provisionAuth({ member_id: member.id, api_key: '{{secret.NONEXISTENT_KEY}}' });
     expect(result).toContain('[FAIL]');
     expect(result).toContain('NONEXISTENT_KEY');
     expect(result).toContain('not found');
+  });
+
+  it('resolves a legacy {{secure.NAME}} token in api_key field and appends a deprecation warning', async () => {
+    const member = makeTestAgent({ friendlyName: 'legacy-key-member' });
+    addAgent(member);
+    credentialSet('LEGACY_API_KEY', 'sk-ant-api03-LEGACY', { network_policy: 'allow' });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const { text: result } = await provisionAuth({ member_id: member.id, api_key: '{{secure.LEGACY_API_KEY}}' });
+    expect(result).toContain('API key provisioned');
+    expect(result).toContain('[deprecated]');
+    expect(result).toContain('{{secure.LEGACY_API_KEY}}');
+    expect(result).toContain('{{secret.LEGACY_API_KEY}}');
+    credentialDelete('LEGACY_API_KEY');
   });
 
   it('prompts OOB when api_key is absent for non-OAuth provider', async () => {

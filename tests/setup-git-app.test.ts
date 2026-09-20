@@ -155,9 +155,9 @@ describe('setupGitApp', () => {
     }
   });
 
-  // --- {{secure.NAME}} token resolution ---
+  // --- {{secret.NAME}} token resolution ---
 
-  it('resolves {{secure.NAME}} in private_key_path to PEM content and deletes temp file', async () => {
+  it('resolves {{secret.NAME}} in private_key_path to PEM content and deletes temp file', async () => {
     credentialSet('TEST_PEM', testPrivateKey, false, 'allow');
     mockVerify.mockResolvedValue({ ok: true, appName: 'fleet-app', orgName: 'TestOrg' });
 
@@ -167,7 +167,7 @@ describe('setupGitApp', () => {
 
     const result = await setupGitApp({
       app_id: '12345',
-      private_key_path: '{{secure.TEST_PEM}}',
+      private_key_path: '{{secret.TEST_PEM}}',
       installation_id: 99999,
     });
 
@@ -183,13 +183,29 @@ describe('setupGitApp', () => {
     credentialDelete('TEST_PEM');
   });
 
-  it('returns error when {{secure.NAME}} credential is not found for private_key_path', async () => {
+  it('returns error when {{secret.NAME}} credential is not found for private_key_path', async () => {
     const result = await setupGitApp({
       app_id: '12345',
-      private_key_path: '{{secure.NONEXISTENT_PEM}}',
+      private_key_path: '{{secret.NONEXISTENT_PEM}}',
       installation_id: 99999,
     });
     expect(result).toContain('❌');
     expect(result).toContain('NONEXISTENT_PEM');
+  });
+
+  it('resolves a legacy {{secure.NAME}} token in private_key_path and appends a deprecation warning', async () => {
+    credentialSet('LEGACY_PEM', testPrivateKey, false, 'allow');
+    mockVerify.mockResolvedValue({ ok: true, appName: 'fleet-app', orgName: 'TestOrg' });
+
+    const result = await setupGitApp({
+      app_id: '12345',
+      private_key_path: '{{secure.LEGACY_PEM}}',
+      installation_id: 99999,
+    });
+
+    expect(result).toContain('✅');
+    expect(result).toContain('[deprecated]');
+    expect(result).toContain('{{secure.LEGACY_PEM}}');
+    expect(result).toContain('{{secret.LEGACY_PEM}}');
   });
 });

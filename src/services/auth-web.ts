@@ -57,7 +57,7 @@ function escapeHtml(s: string): string {
 
 function formPage(prompt: string, isApiKey: boolean, token: string, error?: string): string {
   const errHtml = error ? `<p class="err">${escapeHtml(error)}</p>` : '';
-  const placeholder = isApiKey ? 'Secure value' : 'Password';
+  const placeholder = isApiKey ? 'Secret value' : 'Password';
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">

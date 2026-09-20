@@ -123,11 +123,11 @@ describe('send_files -- substitution surface tests (p, p2)', () => {
     const result = await sendFiles({
       member_id: member.id,
       local_paths: [f1],
-      substitutions: { 'secure.github_pat': 'value' },
+      substitutions: { 'secret.github_pat': 'value' },
     });
 
     expect(result).toContain('invalid substitutions');
-    expect(result).toContain('secure.github_pat');
+    expect(result).toContain('secret.github_pat');
     expect(mockTransferFiles).not.toHaveBeenCalled();
     // readFileSync should not have been called for our source file
     const readCallsForOurFile = readSpy.mock.calls.filter(
@@ -217,10 +217,10 @@ Instructions: review {{phase}} changes.`;
     expect(rendered).not.toContain('{{'); // no unresolved tokens
   });
 
-  // (p2) {{secure.NAME}} in template passes through verbatim
-  it('(p2) {{secure.NAME}} in template passes through verbatim to member', async () => {
-    const template = 'Run: execute_command with {{secure.github_pat}} on branch {{branch}}';
-    const f1 = makeTempFile(template, 'tpl-with-secure.md');
+  // (p2) {{secret.NAME}} in template passes through verbatim
+  it('(p2) {{secret.NAME}} in template passes through verbatim to member', async () => {
+    const template = 'Run: execute_command with {{secret.github_pat}} on branch {{branch}}';
+    const f1 = makeTempFile(template, 'tpl-with-secret.md');
     tempFiles.push(f1);
 
     const capturedContent: Map<string, string> = new Map();
@@ -238,9 +238,9 @@ Instructions: review {{phase}} changes.`;
     });
 
     expect(result).toContain('Successfully uploaded 1');
-    const rendered = capturedContent.get('tpl-with-secure.md');
-    // {{branch}} is substituted; {{secure.github_pat}} is preserved verbatim
-    expect(rendered).toBe('Run: execute_command with {{secure.github_pat}} on branch feat/x');
+    const rendered = capturedContent.get('tpl-with-secret.md');
+    // {{branch}} is substituted; {{secret.github_pat}} is preserved verbatim
+    expect(rendered).toBe('Run: execute_command with {{secret.github_pat}} on branch feat/x');
   });
 
   // Heuristic warning fires when no substitutions given and file has tokens

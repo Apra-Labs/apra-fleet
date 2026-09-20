@@ -1,7 +1,7 @@
 /**
  * M4 tests:
  *  - credential_store_set / credential_store_list / credential_store_delete round-trip
- *  - {{secure.NAME}} token resolution in execute_command
+ *  - {{secret.NAME}} token resolution in execute_command
  *  - Output redaction
  *  - Network egress policy (allow / confirm / deny)
  */
@@ -112,10 +112,10 @@ describe('credential store round-trip', () => {
 });
 
 // ---------------------------------------------------------------------------
-// {{secure.NAME}} token resolution in execute_command
+// {{secret.NAME}} token resolution in execute_command
 // ---------------------------------------------------------------------------
 
-describe('execute_command: {{secure.NAME}} token resolution', () => {
+describe('execute_command: {{secret.NAME}} token resolution', () => {
   beforeEach(() => {
     backupAndResetRegistry();
     vi.clearAllMocks();
@@ -125,7 +125,7 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     restoreRegistry();
   });
 
-  it('substitutes a {{secure.NAME}} token in the command', async () => {
+  it('substitutes a {{secret.NAME}} token in the command', async () => {
     const name = `tok${Date.now()}`;
     credentialSet(name, 'mypassword', false, 'allow');
 
@@ -135,7 +135,7 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `echo {{secure.${name}}}`,
+      command: `echo {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
@@ -143,18 +143,18 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     // The actual command sent must contain the plaintext (shell-escaped), not the token
     const calledCmd = mockExecCommand.mock.calls[0][0] as string;
     expect(calledCmd).toContain('mypassword');
-    expect(calledCmd).not.toContain(`{{secure.${name}}}`);
+    expect(calledCmd).not.toContain(`{{secret.${name}}}`);
 
     credentialDelete(name);
   });
 
-  it('returns error when {{secure.NAME}} token is not found (nonexistent_cred)', async () => {
+  it('returns error when {{secret.NAME}} token is not found (nonexistent_cred)', async () => {
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: 'echo {{secure.nonexistent_cred}}',
+      command: 'echo {{secret.nonexistent_cred}}',
       timeout_s: 5,
     }));
 
@@ -175,7 +175,7 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
       member_id: member.id,
       command: 'python train.py',
       long_running: true,
-      restart_command: `python resume.py --token {{secure.${name}}}`,
+      restart_command: `python resume.py --token {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
@@ -188,6 +188,59 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     expect(calledCmd).toContain('base64');
 
     credentialDelete(name);
+  });
+
+  it('resolves a legacy {{secure.NAME}} token and appends a deprecation warning', async () => {
+    const name = `legacytok${Date.now()}`;
+    credentialSet(name, 'legacypassword', false, 'allow');
+
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
+
+    const result = resultText(await executeCommand({
+      member_id: member.id,
+      command: `echo {{secure.${name}}}`,
+      timeout_s: 5,
+    }));
+
+    expect(result).toContain('Exit code: 0');
+    const calledCmd = mockExecCommand.mock.calls[0][0] as string;
+    expect(calledCmd).toContain('legacypassword');
+    expect(calledCmd).not.toContain(`{{secure.${name}}}`);
+    expect(result).toContain('[deprecated]');
+    expect(result).toContain(`{{secure.${name}}}`);
+    expect(result).toContain(`{{secret.${name}}}`);
+
+    credentialDelete(name);
+  });
+
+  it('resolves a command mixing {{secret.NAME}} and {{secure.NAME}} tokens', async () => {
+    const nameA = `mixa${Date.now()}`;
+    const nameB = `mixb${Date.now()}`;
+    credentialSet(nameA, 'valueA', false, 'allow');
+    credentialSet(nameB, 'valueB', false, 'allow');
+
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
+
+    const result = resultText(await executeCommand({
+      member_id: member.id,
+      command: `echo {{secret.${nameA}}} {{secure.${nameB}}}`,
+      timeout_s: 5,
+    }));
+
+    expect(result).toContain('Exit code: 0');
+    const calledCmd = mockExecCommand.mock.calls[0][0] as string;
+    expect(calledCmd).toContain('valueA');
+    expect(calledCmd).toContain('valueB');
+    // Only the legacy token triggers the deprecation warning
+    expect(result).toContain('[deprecated]');
+    expect(result).toContain(`{{secure.${nameB}}}`);
+
+    credentialDelete(nameA);
+    credentialDelete(nameB);
   });
 });
 
@@ -217,7 +270,7 @@ describe('execute_command: output redaction', () => {
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `echo {{secure.${name}}}`,
+      command: `echo {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
@@ -239,7 +292,7 @@ describe('execute_command: output redaction', () => {
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `cmd {{secure.${name}}}`,
+      command: `cmd {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
@@ -307,7 +360,7 @@ describe('execute_command: network egress policy', () => {
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `curl https://example.com --header {{secure.${name}}}`,
+      command: `curl https://example.com --header {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
@@ -326,7 +379,7 @@ describe('execute_command: network egress policy', () => {
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `curl https://example.com --header {{secure.${name}}}`,
+      command: `curl https://example.com --header {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
@@ -349,7 +402,7 @@ describe('execute_command: network egress policy', () => {
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `curl https://example.com --header {{secure.${name}}}`,
+      command: `curl https://example.com --header {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
@@ -370,7 +423,7 @@ describe('execute_command: network egress policy', () => {
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `wget https://example.com --header {{secure.${name}}}`,
+      command: `wget https://example.com --header {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
@@ -391,7 +444,7 @@ describe('execute_command: network egress policy', () => {
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `ssh user@host --key {{secure.${name}}}`,
+      command: `ssh user@host --key {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
@@ -412,7 +465,7 @@ describe('execute_command: network egress policy', () => {
     // Command does not contain any network tool pattern
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `echo {{secure.${name}}}`,
+      command: `echo {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
