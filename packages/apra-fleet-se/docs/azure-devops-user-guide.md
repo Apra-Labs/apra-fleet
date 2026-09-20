@@ -41,14 +41,14 @@ provision_vcs_auth(
   member_name: "my-dev",
   provider: "azure-devops",
   org_url: "https://dev.azure.com/<your-org>",
-  pat: "{{secure.azdevops_pat}}",
+  pat: "{{secret.azdevops_pat}}",
   git_access: "push+pr"
 )
 ```
 
 Store the PAT via `credential_store_set` first (name it `azdevops_pat`, or
 anything -- see `auth-azdevops.md`'s "Secret-Name Convention" section) so
-it's referenced as a `{{secure.NAME}}` placeholder here, never typed
+it's referenced as a `{{secret.NAME}}` placeholder here, never typed
 directly into a tool call. The fleet resolves it server-side; the plaintext
 never enters your conversation with the agent.
 

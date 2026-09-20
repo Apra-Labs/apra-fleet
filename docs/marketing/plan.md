@@ -71,7 +71,7 @@ Target audiences: VCs, ProductHunt, YC, high-profile people in agentic AI.
    orchestration: supervisor, member reservations, watchdogs, atomic
    state, live dashboard. Temporal-class rigor applied to agents, not a
    prompt chain.
-4. **The unsexy 20% moat**: OOB credential store ({{secure.NAME}}, TTL,
+4. **The unsexy 20% moat**: OOB credential store ({{secret.NAME}}, TTL,
    egress policy allow/deny/confirm), per-provider permission
    composition, VCS auth provisioning/revocation, session liveness,
    dispatch locks. Boring in a feature list, decisive in diligence.

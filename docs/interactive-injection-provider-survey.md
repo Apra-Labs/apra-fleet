@@ -117,7 +117,7 @@ just redirects to this hosted doc set now) and
   and a discouraged `experimental_bearer_token` literal-value escape hatch.
   MCP OAuth credential storage (keyring/file/auto) is also schema-native.
 - This is a strong fit for `registerMcpEndpoint()`: `env_http_headers` in
-  particular maps naturally onto the fleet's `{{secure.NAME}}` placeholder
+  particular maps naturally onto the fleet's `{{secret.NAME}}` placeholder
   convention (resolve to an env var name, never write the raw secret into the
   provider's own config file).
 

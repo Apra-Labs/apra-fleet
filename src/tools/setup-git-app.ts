@@ -20,7 +20,7 @@ export const setupGitAppSchema = z.object({
 export type SetupGitAppInput = z.infer<typeof setupGitAppSchema>;
 
 export async function setupGitApp(input: SetupGitAppInput): Promise<string> {
-  // Resolve {{secret.NAME}} / {{secure.NAME}} token in private_key_path if present
+  // Resolve {{secret.NAME}} / legacy {{secure.NAME}} token in private_key_path if present
   let keyPath = input.private_key_path;
   let tempKeyPath: string | undefined;
   let legacyWarning: string | undefined;

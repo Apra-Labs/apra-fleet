@@ -36,7 +36,7 @@ function resolveSecretField(value: string, callingMember: string): { resolved: s
     if ('denied' in entry) return { error: entry.denied, code: 'secret_variable_denied' };
     if ('expired' in entry) return { error: entry.expired, code: 'secret_variable_expired' };
     resolved = resolved.replaceAll(`{{secret.${name}}}`, entry.plaintext);
-    resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+    resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext); // legacy spelling
   }
   return { resolved, legacyNames };
 }
@@ -249,7 +249,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
 
   const service = providers[input.provider];
 
-  // Resolve {{secret.NAME}} / {{secure.NAME}} tokens in credential fields
+  // Resolve {{secret.NAME}} / legacy {{secure.NAME}} tokens in credential fields
   const resolvedInput = { ...input };
   const legacyNames: string[] = [];
   for (const field of ['token', 'api_token', 'pat'] as const) {

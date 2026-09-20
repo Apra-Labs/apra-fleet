@@ -363,7 +363,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `port` | `number?` | SSH port (default: 22). |
 | `username` | `string?` | SSH username. |
 | `auth_type` | `"password" \| "key"?` | SSH authentication method. |
-| `password` | `string?` | SSH password. Omit for out-of-band secure entry via terminal prompt. Supports secure credential tokens. |
+| `password` | `string?` | SSH password. Omit for out-of-band entry via terminal prompt. Supports secret variable tokens. |
 | `key_path` | `string?` | Path to SSH private key file. |
 | `git_access` | `"read" \| "push" \| "admin" \| "issues" \| "full"?` | Git access level for this member. |
 | `git_repos` | `string[]?` | Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"]). |
@@ -403,7 +403,7 @@ and means "new value for this field". Identifies the target member via
 | `port` | `number?` | New SSH port (remote members only). |
 | `username` | `string?` | New SSH username (remote members only). |
 | `auth_type` | `"password" \| "key"?` | New SSH authentication method (remote members only). |
-| `password` | `string?` | New SSH password. Omit for out-of-band secure entry via terminal prompt. Supports secure credential tokens. |
+| `password` | `string?` | New SSH password. Omit for out-of-band entry via terminal prompt. Supports secret variable tokens. |
 | `rotate_password` | `boolean?` | Trigger secure out-of-band password re-entry for a member already using password auth. Ignored if `auth_type` is not password. |
 | `key_path` | `string?` | New SSH private key path. Used for both regular SSH connections and cloud instance lifecycle. |
 | `git_access` | `"read" \| "push" \| "admin" \| "issues" \| "full"?` | Git access level for this member. |
@@ -448,7 +448,7 @@ client-side cost tracker can price a dispatch. Options: `member_id?`,
 Calls `provision_llm_auth` -- puts LLM auth on a member. Options:
 `member_id?`, `member_name?`, and `api_key?`. Omitting `api_key` copies the
 local OAuth session to the member instead. `api_key` supports a
-`{{secure.NAME}}` token, resolved from the credential store server-side.
+`{{secret.NAME}}` token, resolved from the credential store server-side.
 
 #### `provisionVcsAuth(options: ProvisionVcsAuthOptions)`
 
@@ -458,7 +458,7 @@ PAT, Bitbucket API token, or Azure DevOps PAT) on a member. `provider`
 optional and provider-specific: `member_id`, `member_name`, `label`,
 `scope_url`, `github_mode` (`"github-app" | "pat"`), `token`, `git_access`,
 `repos`, `email`, `api_token`, `workspace`, `org_url`, `pat`, and
-`pat_expires_at`. Every secret-bearing field supports a `{{secure.NAME}}`
+`pat_expires_at`. Every secret-bearing field supports a `{{secret.NAME}}`
 token. `pat_expires_at` must be parseable by `Date.parse` -- the server
 rejects an unparseable value rather than storing it, because a `NaN` expiry
 silences the near-expiry warning and makes the credential-cleanup timer

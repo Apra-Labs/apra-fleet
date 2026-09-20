@@ -107,8 +107,8 @@ Use member_detail -> llmProvider to determine the target filename:
 
 Never pass raw secrets in execute_prompt prompts -- reference the credential by
 name only (e.g. "authenticate using credential github_pat"). The member then
-uses {{secure.github_pat}} in its own execute_command calls. The
-{{secure.NAME}} token is substituted at launch time -- reference it bare in
+uses {{secret.github_pat}} in its own execute_command calls. The
+{{secret.NAME}} token is substituted at launch time -- reference it bare in
 execute_command, not inside your own quotes (it is already single-quote-escaped
 by the fleet).
 

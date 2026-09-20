@@ -21,7 +21,7 @@ The fleet server creates a socket at `~/.apra-fleet/data/auth.sock` (Linux/macOS
 3. It calls `launchAuthTerminal()` to open a terminal window running `apra-fleet secret --set <memberName>`.
 4. The launched process prompts the user, reads input with masked display (LLM cannot see it), and sends the value over the UDS as a JSON message.
 5. `collectOobInput` **blocks** -- `waitForPassword()` awaits a Promise that resolves only when the credential arrives over the socket (or a cancellation/timeout fires). The call does not return early with a "Waiting..." status.
-6. On receipt, the credential is consumed from the pending store and returned to the caller. The tool call then completes with a success message of the form `[OK] NAME stored [session/persistent]. Use {{secure.NAME}} in commands.`
+6. On receipt, the credential is consumed from the pending store and returned to the caller. The tool call then completes with a success message of the form `[OK] NAME stored [session/persistent]. Use {{secret.NAME}} in commands.`
 
 **Key property:** The UDS socket is a filesystem object -- no GUI or display server is required to write to it. Any process on the machine, including one launched in a second SSH terminal, can deliver credentials.
 
@@ -91,7 +91,7 @@ fallback:No graphical display detected (SSH or headless session).
 Run this in a separate terminal to provide the credential:
   ! apra-fleet secret --set <memberName>
 
-Alternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.
+Alternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.
 ```
 
 **Full fallback message text (Linux headless, egress-confirm mode):**
@@ -101,7 +101,7 @@ fallback:No graphical display detected (SSH or headless session).
 Run this in a separate terminal to confirm:
   ! apra-fleet secret --confirm <memberName>
 
-Alternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.
+Alternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.
 ```
 
 The `fallback:` prefix is a protocol marker consumed by `collectOobInput` to distinguish the fallback path from a successful terminal launch. It is stripped before the message reaches the user.

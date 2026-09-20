@@ -215,7 +215,7 @@ registration with `opencode agent list`.
 - [OK] Installed doer, planner, plan-reviewer, reviewer; all four appear in
   `opencode agent list` as `(subagent)`.
 - [TBD] Not yet RUN: actually invoking one of these agents against a local model. The
-  prompt bodies reference fleet concepts (progress.json, {{secure.NAME}}, fleet
+  prompt bodies reference fleet concepts (progress.json, {{secret.NAME}}, fleet
   dispatch) that won't apply outside apra-fleet - faithful copy, runtime fidelity
   against a 30-106B local model unverified.
 - INTEGRATION NOTE: this is exactly how an apra-fleet `opencode` provider would install

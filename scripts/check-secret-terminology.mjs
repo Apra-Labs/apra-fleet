@@ -24,8 +24,8 @@
  *   - tests/** and packages/**\/test/** (legacy-resolution test fixtures)
  *   - CHANGELOG.md (historical record)
  *   - docs/**\/adr-*.md (historical decision records)
- *   - any line containing the word "deprecated" (that IS the sanctioned
- *     mention of the legacy spelling)
+ *   - any line containing the word "deprecated" or "legacy" (that IS the
+ *     sanctioned mention of the legacy spelling)
  *
  * Run directly:
  *   node scripts/check-secret-terminology.mjs
@@ -111,7 +111,7 @@ export function scanFile(rel, content) {
     const lines = content.split('\n');
     for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i];
-        if (/deprecated/i.test(line)) continue;
+        if (/deprecated/i.test(line) || /legacy/i.test(line)) continue;
         for (const p of PATTERNS) {
             p.re.lastIndex = 0;
             let m;

@@ -158,7 +158,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     return workFolderNotAbsoluteError(input.work_folder, 'Member was NOT registered.');
   }
 
-  // Resolve {{secret.NAME}} / {{secure.NAME}} tokens in password field
+  // Resolve {{secret.NAME}} / legacy {{secure.NAME}} tokens in password field
   let resolvedPassword = input.password;
   let passwordLegacyNames: string[] = [];
   if (resolvedPassword) {
@@ -172,7 +172,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       if (entry && 'expired' in entry) return `❌ ${entry.expired} Member was NOT registered.`;
       if (entry) {
         resolved = resolved.replaceAll(`{{secret.${name}}}`, entry.plaintext);
-        resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+        resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext); // legacy spelling
         continue;
       }
       // Credential not found — auto-create via OOB
@@ -182,7 +182,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       const plaintext = decryptPassword(oob.password);
       credentialSet(name, plaintext, !!oob.persist, 'deny');
       resolved = resolved.replaceAll(`{{secret.${name}}}`, plaintext);
-      resolved = resolved.replaceAll(`{{secure.${name}}}`, plaintext);
+      resolved = resolved.replaceAll(`{{secure.${name}}}`, plaintext); // legacy spelling
     }
     resolvedPassword = resolved;
     if (passwordLegacyNames.length > 0) {

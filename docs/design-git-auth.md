@@ -231,7 +231,7 @@ credential `label` and `scope_url`, and a per-provider credential group:
 - **Bitbucket**: `email`, `api_token`, `workspace`.
 - **Azure DevOps**: `org_url`, `pat`, `pat_expires_at`.
 
-Secret-bearing fields accept a `{{secure.NAME}}` token, resolved from the
+Secret-bearing fields accept a `{{secret.NAME}}` token, resolved from the
 credential store server-side so no secret passes through a model's context.
 
 ### Structured provisioning responses
@@ -269,7 +269,7 @@ whole handoff in one call:
 - `{{vcs_token}}` -- a **bare** reference, never inside the caller's own
   quotes. The substituted value arrives already shell-escaped and fully
   quoted for the member's shell, the same convention `execute_command`'s
-  `{{secure.NAME}}` tokens use.
+  `{{secret.NAME}}` tokens use.
 - `{{vcs_token_inline}}` -- for a placement **inside the caller's own single
   quotes** (e.g. `'Authorization: Bearer {{vcs_token_inline}}'`). The
   substituted value here is the bare interior escaping only, not the fully

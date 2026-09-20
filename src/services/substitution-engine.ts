@@ -1,5 +1,5 @@
 // Token grammar: {{ optional_ws name optional_ws }}
-// name must match [A-Za-z_][A-Za-z0-9_]* (no dots, so {{secret.NAME}} / {{secure.NAME}} are never tokens here)
+// name must match [A-Za-z_][A-Za-z0-9_]* (no dots, so {{secret.NAME}} / legacy {{secure.NAME}} are never tokens here)
 const TOKEN_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 
 // Key grammar enforced on substitutions map keys

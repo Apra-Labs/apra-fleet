@@ -703,7 +703,7 @@ ENGINE's maintainers without silent uploads -- and its flow is adopted whole:
 
 - **Sanitize FIRST, locally, always** -- before the report is even written to disk: absolute
   paths -> stable placeholders (`<work-folder>/...`, `<home>/...`); hostnames/usernames/IPs/
-  emails -> redacted tokens; anything matching secret patterns (keys, tokens, `{{secure.*}}`
+  emails -> redacted tokens; anything matching secret patterns (keys, tokens, `{{secret.*}}`
   values, env dumps) -> stripped outright, never placeholdered; target-repo identifiers (repo
   name, branch names, bead titles) -> anonymized to `<target-repo>`/`<sprint-branch>` by
   default, with an opt-in tier for internal users to keep them; code snippets excluded by

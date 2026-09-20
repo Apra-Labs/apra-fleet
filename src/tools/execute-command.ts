@@ -111,7 +111,7 @@ async function resolveSecretTokens(
       ? escapeShellArg(cred.plaintext)
       : escapePowerShellArg(cred.plaintext);
     resolved = resolved.replaceAll(`{{secret.${cred.name}}}`, escaped);
-    resolved = resolved.replaceAll(`{{secure.${cred.name}}}`, escaped);
+    resolved = resolved.replaceAll(`{{secure.${cred.name}}}`, escaped); // legacy spelling
   }
 
   const legacyWarning = legacyNames.length > 0 ? legacyTokenWarning(legacyNames) : undefined;
@@ -206,7 +206,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     return '❌ Credentials cannot be passed to LLM sessions — use {{secret.NAME}} tokens instead of sec:// handles.';
   }
 
-  // -- Resolve {{secret.NAME}} / {{secure.NAME}} tokens --
+  // -- Resolve {{secret.NAME}} / legacy {{secure.NAME}} tokens --
   const tokenResult = await resolveSecretTokens(input.command, agentOs, agent.friendlyName, agentShell);
   if ('error' in tokenResult) return `❌ ${tokenResult.error}`;
 

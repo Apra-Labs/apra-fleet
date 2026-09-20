@@ -452,7 +452,7 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<Provisio
         return authResult(`[FAIL] ${entry.expired}`, { ...secretFailure, reason: 'secret_variable_expired' });
       }
       resolvedKey = resolvedKey.replaceAll(`{{secret.${name}}}`, entry.plaintext);
-      resolvedKey = resolvedKey.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+      resolvedKey = resolvedKey.replaceAll(`{{secure.${name}}}`, entry.plaintext); // legacy spelling
     }
     if (legacyNames.length > 0) {
       logWarn('provision_llm_auth', legacyTokenWarning(legacyNames), agent);

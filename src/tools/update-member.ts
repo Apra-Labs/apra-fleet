@@ -132,7 +132,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     return `❌ Invalid icon "${input.icon}". Use a named alias (e.g., blue-circle, red-square, green-square) or a valid emoji.`;
   }
 
-  // Resolve {{secret.NAME}} / {{secure.NAME}} tokens in password field
+  // Resolve {{secret.NAME}} / legacy {{secure.NAME}} tokens in password field
   let resolvedPassword = input.password;
   let passwordLegacyNames: string[] = [];
   if (resolvedPassword) {
@@ -146,7 +146,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       if ('denied' in entry) return `❌ ${entry.denied} Member was NOT updated.`;
       if ('expired' in entry) return `❌ ${entry.expired} Member was NOT updated.`;
       resolved = resolved.replaceAll(`{{secret.${name}}}`, entry.plaintext);
-      resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+      resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext); // legacy spelling
     }
     resolvedPassword = resolved;
     if (passwordLegacyNames.length > 0) {
