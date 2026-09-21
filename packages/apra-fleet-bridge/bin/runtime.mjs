@@ -196,15 +196,37 @@ export function createClock() {
 /**
  * `fs.createWriteStream(path, { flags: 'a' })` for `createJsonlFileSink`
  * (`src/sinks/jsonl-file.mjs`). Confirmed against that sink's exact usage:
- * it only ever calls `.write(chunk)` (in `emit()`) and `.end()` (in
- * `stop()`, guarded by `typeof stream.end === 'function'`) on whatever this
- * returns -- both of which a real `fs.WriteStream` provides natively (it is
- * also a full `EventEmitter`, so `.on(...)` is available if a future caller
- * needs it, but nothing in this package currently does).
+ * it calls `.write(chunk)` (in `emit()`), `.end()` (in `stop()`, guarded by
+ * `typeof stream.end === 'function'`) and, when present, `.on('finish'|
+ * 'close'|'error', ...)` to await the flush -- all of which a real
+ * `fs.WriteStream` provides natively as a full `EventEmitter`.
  *
  * @param {string} path
+ * @param {(err: Error) => void} [onError] - called on the stream's 'error'
+ *   event. Optional only so an existing one-argument caller keeps working;
+ *   `createJsonlFileSink` always passes one.
  * @returns {import('node:fs').WriteStream}
  */
-export function openAppendStream(path) {
-  return createWriteStream(path, { flags: 'a' });
+export function openAppendStream(path, onError) {
+  const stream = createWriteStream(path, { flags: 'a' });
+  // WHY THIS LISTENER IS NOT OPTIONAL: a WriteStream reports ENOSPC/EACCES/
+  // EBADF as an 'error' EVENT on a later tick -- it is never thrown from
+  // write(), so neither the sink's own try/catch nor the fan's per-sink
+  // isolation (src/sinks/index.mjs) can ever see it. An 'error' event with
+  // no listener is re-thrown by Node as an uncaught exception, and there is
+  // no process-level handler in this package, so a full disk would kill a
+  // two-day sprint over its LOG file. Attaching the listener here (rather
+  // than in src/) keeps node:fs knowledge in bin/ per the injected-I/O
+  // rule, while `onError` hands the failure back to the sink so it can
+  // degrade and report it instead of dying.
+  stream.on('error', (err) => {
+    if (typeof onError !== 'function') return;
+    try {
+      onError(err);
+    } catch {
+      // The sink's own bookkeeping must never become a second failure on
+      // top of the one being reported.
+    }
+  });
+  return stream;
 }

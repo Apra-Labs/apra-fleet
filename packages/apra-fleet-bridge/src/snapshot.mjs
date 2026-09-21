@@ -202,6 +202,37 @@ export function buildTerminalFromEvidence(sprintId, { outcome, reason, updatedAt
 }
 
 /**
+ * THE single reading of a raw log tail for the whole package: classify it for
+ * the engine's own terminal markers first, and only fall back to the blind
+ * `health: 'unknown'` snapshot when the text is genuinely undecided.
+ *
+ * WHY THIS IS A SHARED HELPER AND NOT TWO CALL SITES. status.mjs and
+ * watch.mjs both reach the same fork -- `getSprint()` found nothing, `getLog()`
+ * answered -- and both must answer it the same way. status.mjs was fixed for
+ * the observed incident (a decisive 'Sprint failed:' line reported as
+ * `health: 'unknown'`); watch.mjs independently kept the unfixed version, so
+ * a daemon watching a sprint that died this way polled forever: its snapshot
+ * never went terminal, the loop's only exit was `sprint.terminal`, and a
+ * reachable-but-empty `getLog()` kept resetting the give-up clock so
+ * WATCH_LOST was unreachable too. One rule, one function, so a third
+ * occurrence cannot be written.
+ *
+ * @param {string} sprintId
+ * @param {string|null|undefined} logTail
+ * @param {number} updatedAt - epoch ms, from the caller's injected `now()`.
+ * @returns {object} a frozen snapshot: `health: 'terminal'` with a verdict and
+ *   the engine's verbatim reason when the tail is decisive, else the
+ *   `health: 'unknown'` fallback carrying the tail.
+ */
+export function snapshotFromLogTail(sprintId, logTail, updatedAt) {
+  const classified = classifyTerminalLog(logTail);
+  if (classified) {
+    return buildTerminalFromEvidence(sprintId, { ...classified, updatedAt, logTail });
+  }
+  return buildFallbackSnapshot(sprintId, logTail ?? null, updatedAt);
+}
+
+/**
  * Parse a leading cycle number out of a free-text phase title, e.g.
  * 'Plan C1 R1' -> 1, 'Develop C2 R1' -> 2, 'Publish PR C1' -> 1. Returns
  * `null` -- never throws -- for a title with no recognisable `C<N>` token,

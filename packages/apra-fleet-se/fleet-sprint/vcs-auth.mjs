@@ -928,7 +928,7 @@ export function createMemberVcsProviderResolver(opts = {}) {
             cache.set(member, provider);
             return provider;
         } catch (err) {
-            log(`[Sync] could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for GitHub members): ${err.message}`);
+            log(`[Sync] could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for members already on it): ${err.message}`);
             cache.set(member, undefined);
             return undefined;
         }

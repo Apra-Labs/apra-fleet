@@ -277,7 +277,7 @@ function validateLaunchDeps(deps) {
  *   requirementsFile | `request.requirementsFile` (pass through unchanged)
  *   overrideRelaunchGate | `overrideRelaunchGate` -- ONLY when exactly
  *                    | `true` (see below), never implicit
- *   azdevops_pat_secret_name | `request.patSecretName` -- ONLY when present
+ *   vcs_pat_secret_name | `request.patSecretName` -- ONLY when present
  *                    | (unchanged from before this fix; see below)
  *
  * `issue` <- `syntheticRootId`, NOT `request.workItems`: `workItems` are
@@ -308,7 +308,7 @@ function validateLaunchDeps(deps) {
  * `request.patSecretName` (contracts.mjs's platform-neutral SprintRequest
  * field -- see KNOWN_REQUEST_KEYS' doc comment there for why it is neutral,
  * not `adoPatSecretName`) is renamed onto the sprint engine's own
- * `azdevops_pat_secret_name` launch arg (fleet-sprint/sprint-args.mjs's
+ * `vcs_pat_secret_name` launch field (fleet-sprint/sprint-args.mjs's
  * KNOWN_ARG_KEYS) ONLY when present -- omitted entirely otherwise, so the
  * engine falls back to ITS OWN default (`azdevops_pat`) rather than ever
  * receiving an explicit `undefined`. This is the fix for the two-PAT-
@@ -359,7 +359,15 @@ export function buildPostSprintBody(request, syntheticRootId, overrideRelaunchGa
     body.overrideRelaunchGate = true;
   }
   if (request.patSecretName !== undefined) {
-    body.azdevops_pat_secret_name = request.patSecretName;
+    // `vcs_pat_secret_name`, not `azdevops_pat_secret_name`: the engine's
+    // public launch contract dropped the provider brand, because naming one
+    // provider in a generic engine's public surface forces either a misnomer
+    // or a breaking rename the day a second PAT-based provider appears. The
+    // supervisor still accepts the old spelling for one release and answers
+    // with a deprecation warning -- we send the canonical name so we never
+    // trigger it. The engine's INTERNAL args key keeps its original name;
+    // that is not a public surface and renaming it would be churn.
+    body.vcs_pat_secret_name = request.patSecretName;
   }
   return body;
 }

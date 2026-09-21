@@ -413,11 +413,15 @@ Azure DevOps footgun to encode in the template: secret variables are **not**
 automatically exposed to scripts. They must be mapped explicitly in the step's `env:`
 block; omitting it yields an empty string, not an error.
 
-The engine already supports per-sprint credential names via
-`azdevops_pat_secret_name` (default `azdevops_pat`), so different projects on one
-runner use different stored credentials. The bridge forwards this as a parameter
-rather than relying on the default - that is what makes a single runner safe for more
-than one Azure DevOps organisation.
+The engine already supports per-sprint credential names via its own internal
+`azdevops_pat_secret_name` arg (default `azdevops_pat`), so different projects on
+one runner use different stored credentials. That internal key name is
+engine-internal surface and stays as-is; the supervisor's public HTTP field for
+it is the provider-neutral `vcs_pat_secret_name` (a deprecated
+`azdevops_pat_secret_name` alias is also accepted for one release -- see
+`docs/cli-reference.md`). The bridge forwards `vcs_pat_secret_name` as a
+parameter rather than relying on the default - that is what makes a single
+runner safe for more than one Azure DevOps organisation.
 
 ---
 

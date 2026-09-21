@@ -378,6 +378,11 @@ export const GUARDED_MODULES = [
     'beads-identity-check.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
+    // GENERIC-BOUNDARY-EXCEPTION: these basenames are this facade-pin list
+    // NAMING the provider module files it registers, the same way every
+    // other entry in this array names a module file -- not a leak (no sprint
+    // agent reads this list). Dated 2026-09-21 (the fleet-bridge PR that
+    // added the generic-boundary provider-branding check).
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

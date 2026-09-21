@@ -307,7 +307,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         try {
             ({ provider } = await resolveProvider(member, { fleetApi }));
         } catch (err) {
-            log(`finalizeAbort: could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for GitHub members): ${err.message}`);
+            log(`finalizeAbort: could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for members already on it): ${err.message}`);
         }
     }
 

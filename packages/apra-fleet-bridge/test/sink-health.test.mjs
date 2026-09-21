@@ -327,4 +327,49 @@ describe('createArchivePublisher', () => {
     assert.match(result.error, /could not build the bundle/);
     assert.equal(http.calls.length, 0);
   });
+
+  // -------------------------------------------------------------------------
+  // ok / indexUrl / partial -- indexUrl must be keyed on index.html's OWN
+  // outcome, and a single failed auxiliary asset must not suppress an
+  // otherwise-usable link. See archive-publisher.mjs's header for the
+  // three-field split this fixes.
+  // -------------------------------------------------------------------------
+
+  test('index.html failing (even with other files succeeding) yields indexUrl: null and ok: false', async () => {
+    const http = makeFakeBlobHttp((args) => (args.blobName.endsWith('index.html') ? 503 : 201));
+    const publisher = createArchivePublisher({ accountUrl: 'https://acct.invalid', containerName: 'logs', sas: ARCHIVE_SAS, http });
+
+    const result = await publisher.publish({ sprintId: 'spr-1', state: TERMINAL_STATE });
+
+    assert.equal(result.indexUrl, null, 'a dead link must never be reported when index.html itself failed');
+    assert.equal(result.ok, false);
+    assert.equal(result.partial, false, 'a failed index is not "partial" -- it is unusable');
+    assert.ok(result.uploaded > 0, 'the OTHER files still uploaded');
+    assert.ok(result.failures.some((f) => f.path === 'index.html'));
+  });
+
+  test('an auxiliary asset failing while index.html succeeds still yields a usable indexUrl', async () => {
+    const http = makeFakeBlobHttp((args) => (args.blobName.endsWith('activities/act-1.json') ? 500 : 201));
+    const publisher = createArchivePublisher({ accountUrl: 'https://acct.invalid', containerName: 'logs', sas: ARCHIVE_SAS, http });
+
+    const result = await publisher.publish({ sprintId: 'spr-1', state: TERMINAL_STATE });
+
+    assert.equal(result.indexUrl, 'https://acct.invalid/logs/sprints/spr-1/index.html',
+      'a dropped auxiliary asset must not withhold an otherwise-good archive link');
+    assert.equal(result.ok, true, 'ok answers "is there a working link", not "did every file upload"');
+    assert.equal(result.partial, true, 'the gap is real and must still be visible as partial, not hidden');
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].path, 'activities/act-1.json');
+  });
+
+  test('a fully clean publish is ok and not partial', async () => {
+    const http = makeFakeBlobHttp();
+    const publisher = createArchivePublisher({ accountUrl: 'https://acct.invalid', containerName: 'logs', sas: ARCHIVE_SAS, http });
+
+    const result = await publisher.publish({ sprintId: 'spr-1', state: TERMINAL_STATE });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.partial, false);
+    assert.equal(result.failures.length, 0);
+  });
 });

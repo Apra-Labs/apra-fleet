@@ -29,6 +29,18 @@
 // did not, and the caller is required to surface it. Nothing here decides
 // it is acceptable; it only refuses to decide it is fatal.
 //
+// `ok` / `indexUrl` / `partial`, and why they are three separate facts, not
+// one: `indexUrl` is set if and only if index.html ITSELF uploaded
+// successfully (never inferred from the overall upload count -- a transient
+// 5xx on index.html plus every other file succeeding must never report a
+// link to a page that was never written). `ok` is exactly `indexUrl !==
+// null`: an operator's real question is "do I have a working archive link",
+// and a single dropped auxiliary asset (a screenshot, an activity blob) must
+// not withhold an otherwise-good link over that question. `partial` is the
+// narrower fact "the link is good, but something else did not make it" --
+// `ok && failures.length > 0` -- for a consumer that wants to say so without
+// treating it as the same failure as a missing index.
+//
 // SECRETS: the SAS lives only in this closure, is handed to the injected
 // http layer on every call, and never appears in a returned field, a log
 // message, or the `baseUrl` this module reports. `baseUrl` is deliberately
@@ -99,11 +111,11 @@ export function createArchivePublisher(deps = {}) {
      * @returns {Promise<{
      *   attempted: number, uploaded: number,
      *   failures: Array<{ path: string, reason: string }>,
-     *   indexUrl: string|null, ok: boolean, error: string|null,
+     *   indexUrl: string|null, ok: boolean, partial: boolean, error: string|null,
      * }>}
      */
     async publish({ sprintId, state } = {}) {
-      const empty = { attempted: 0, uploaded: 0, failures: [], indexUrl: null, ok: false, error: null };
+      const empty = { attempted: 0, uploaded: 0, failures: [], indexUrl: null, ok: false, partial: false, error: null };
       if (typeof sprintId !== 'string' || sprintId.length === 0) {
         return { ...empty, error: 'archive: no sprintId was supplied; nothing was uploaded' };
       }
@@ -120,6 +132,7 @@ export function createArchivePublisher(deps = {}) {
       const prefix = `${ARCHIVE_PREFIX}/${encodeURIComponent(sprintId)}`;
       const failures = [];
       let uploaded = 0;
+      let indexPublished = false;
 
       for (const file of files) {
         const blobName = `${prefix}/${file.path}`;
@@ -133,6 +146,12 @@ export function createArchivePublisher(deps = {}) {
           status = res && res.status;
           if (typeof status === 'number' && status >= 200 && status < 300) {
             uploaded += 1;
+            // Track index.html's OWN outcome, not just that SOMETHING
+            // uploaded -- see this module's header and the reviewer note
+            // this fixes: a transient failure on index.html plus every
+            // other file succeeding must never report a link to a page
+            // that was never written.
+            if (file.path === 'index.html') indexPublished = true;
             continue;
           }
           reason = `status ${status}`;
@@ -142,11 +161,27 @@ export function createArchivePublisher(deps = {}) {
         failures.push({ path: file.path, reason });
       }
 
-      // The unsigned URL, on purpose -- see this module's header.
-      const indexUrl = uploaded > 0 ? `${base}/${containerName}/${prefix}/index.html` : null;
-      const ok = failures.length === 0 && uploaded > 0;
+      // The unsigned URL, on purpose -- see this module's header. Keyed on
+      // indexPublished (index.html's own upload outcome), never on the
+      // overall file count.
+      const indexUrl = indexPublished ? `${base}/${containerName}/${prefix}/index.html` : null;
+
+      // `ok` answers the question an operator actually has: "is there a
+      // working archive link". It is deliberately NOT "did every last
+      // auxiliary asset also upload" -- a dropped screenshot or activity
+      // blob is a real, worth-logging gap, but it must not suppress a
+      // perfectly good index link (the inverse of the bug above: previously
+      // `ok` required `failures.length === 0`, so one missing auxiliary
+      // file silently withheld an otherwise-usable link). `partial` carries
+      // the narrower "index is fine, but something else is missing" fact
+      // for any consumer that wants to say so explicitly.
+      const ok = indexPublished;
+      const partial = ok && failures.length > 0;
+
       if (!ok) {
-        log.error(`archive: ${uploaded}/${files.length} file(s) uploaded for sprint ${sprintId}; ${failures.length} failed`);
+        log.error(`archive: index.html failed to upload for sprint ${sprintId} (${uploaded}/${files.length} other file(s) uploaded, ${failures.length} failure(s)) -- no archive link is available`);
+      } else if (partial) {
+        log.warn(`archive: index published for sprint ${sprintId}, but ${failures.length} of ${files.length} file(s) failed to upload (index itself succeeded): ${failures.map((f) => f.path).join(', ')}`);
       } else {
         log.info(`archive: published ${uploaded} file(s) for sprint ${sprintId}`);
       }
@@ -157,6 +192,7 @@ export function createArchivePublisher(deps = {}) {
         failures,
         indexUrl,
         ok,
+        partial,
         error: null,
       };
     },

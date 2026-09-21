@@ -1010,3 +1010,271 @@ describe('FIX 1: runIngest -> selectCarryOver, producer and consumer wired for r
     assert.ok(skipped.some((s) => s.beadId === result.rootBeadId && s.reason === 'external_ref'));
   });
 });
+
+// -- reparent guard + closed-root visibility ----------------------------------
+//
+// Both of these cover the SECOND run of a pipeline, which is where ingest's
+// re-run behaviour actually bites: the first run is always a clean create.
+
+/**
+ * A stateful fake that, unlike makeStatefulFakeBeads above, models the two
+ * things these tests turn on: bd's OPEN-ONLY list default (honoured unless
+ * the caller passes `all`), and `show()` reporting a bead's CURRENT parent
+ * (which may have been set by a previous ingest, not by the tracker).
+ */
+function makeStatusAwareBeads(seedRows = []) {
+  const rows = seedRows.map((r) => ({ ...r }));
+  const createCalls = [];
+  const setParentCalls = [];
+  const listCalls = [];
+  let seq = 1000;
+  return {
+    rows,
+    createCalls,
+    setParentCalls,
+    listCalls,
+    async create({ title, issueType, metadata } = {}) {
+      createCalls.push({ title, issueType, metadata });
+      seq += 1;
+      const row = {
+        id: `epic-${seq}`,
+        title,
+        issue_type: issueType || 'task',
+        status: 'open',
+        metadata,
+        parent: null,
+        created_at: new Date(2026, 0, 1, 0, 0, seq).toISOString(),
+      };
+      rows.push(row);
+      return { id: row.id, title: row.title };
+    },
+    async setParent(childId, parentId) {
+      setParentCalls.push({ childId, parentId });
+      const row = rows.find((r) => r.id === childId);
+      if (row) row.parent = parentId;
+      else rows.push({ id: childId, issue_type: 'task', status: 'open', parent: parentId });
+      return { id: childId, parent: parentId };
+    },
+    async show(id) {
+      return rows.find((r) => r.id === id) || null;
+    },
+    async list(opts = {}) {
+      listCalls.push(opts);
+      return rows
+        // this is the whole point: without `all`, closed rows are INVISIBLE,
+        // exactly as `bd list` behaves.
+        .filter((r) => (opts.all ? true : r.status !== 'closed'))
+        .filter((r) => !opts.type || r.issue_type === opts.type)
+        .map((r) => ({ ...r }));
+    },
+  };
+}
+
+function makeFakeSupervisor(sprints, { fail } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async listSprints() {
+      calls.push('listSprints');
+      if (fail) throw fail;
+      return { sprints };
+    },
+  };
+}
+
+describe('resolveRoot reparent guard (live-sprint scope protection)', () => {
+  test('a bead parented on a LIVE sprint issue root is never reparented, and the refusal names everything', async () => {
+    const beads = makeStatusAwareBeads([
+      { id: 'live-root', issue_type: 'epic', status: 'open', parent: null, created_at: '2026-01-01T00:00:00.000Z' },
+      { id: 'task-a', issue_type: 'task', status: 'open', parent: 'live-root' },
+      { id: 'task-b', issue_type: 'task', status: 'open', parent: null },
+    ]);
+    const supervisorClient = makeFakeSupervisor([
+      { sprintId: 'sprint-42', members: ['m1'], issueRoots: ['live-root'] },
+    ]);
+    const pulled = [
+      { beadId: 'task-a', externalRef: '2', parent: null },
+      { beadId: 'task-b', externalRef: '3', parent: null },
+    ];
+
+    let caught;
+    try {
+      await resolveRoot(pulled, { beads, supervisorClient, log: () => {} }, { refs: ['2', '3'] });
+    } catch (e) { caught = e; }
+    assert.ok(caught instanceof BridgeError, 'the hijack must be refused, not performed');
+    assert.strictEqual(caught.code, BRIDGE_ERROR_CODES.LAUNCH_CONFLICT);
+    assert.match(caught.message, /task-a/);
+    assert.match(caught.message, /live-root/);
+    assert.match(caught.message, /sprint-42/);
+
+    // and, critically, NOTHING was moved -- the guard runs before any write.
+    assert.strictEqual(beads.setParentCalls.length, 0, 'no bead may be reparented once the batch is refused');
+    assert.strictEqual(beads.rows.find((r) => r.id === 'task-a').parent, 'live-root');
+  });
+
+  test('a bead whose current parent is NOT reserved reparents exactly as before', async () => {
+    const beads = makeStatusAwareBeads([
+      { id: 'stale-root', issue_type: 'epic', status: 'open', parent: null, created_at: '2026-01-01T00:00:00.000Z' },
+      { id: 'task-a', issue_type: 'task', status: 'open', parent: 'stale-root' },
+      { id: 'task-b', issue_type: 'task', status: 'open', parent: null },
+    ]);
+    const supervisorClient = makeFakeSupervisor([
+      { sprintId: 'sprint-42', issueRoots: ['some-other-root'] },
+    ]);
+    const pulled = [
+      { beadId: 'task-a', externalRef: '2', parent: null },
+      { beadId: 'task-b', externalRef: '3', parent: null },
+    ];
+
+    const result = await resolveRoot(pulled, { beads, supervisorClient, log: () => {} }, { refs: ['2', '3'] });
+
+    assert.strictEqual(result.syntheticRoot, true);
+    assert.deepStrictEqual(
+      beads.setParentCalls.map((c) => c.childId).sort(),
+      ['task-a', 'task-b'],
+      'both beads still get reparented -- the guard only blocks RESERVED parents'
+    );
+    assert.strictEqual(beads.rows.find((r) => r.id === 'task-a').parent, result.rootBeadId);
+  });
+
+  test('an idempotent re-run (no bead changes parent) never asks the supervisor at all', async () => {
+    const beads = makeStatusAwareBeads();
+    const supervisorClient = makeFakeSupervisor([]);
+    const pulled = [
+      { beadId: 'task-a', externalRef: '2', parent: null },
+      { beadId: 'task-b', externalRef: '3', parent: null },
+    ];
+
+    const first = await resolveRoot(pulled, { beads, supervisorClient, log: () => {} }, { refs: ['2', '3'] });
+    const second = await resolveRoot(pulled, { beads, supervisorClient, log: () => {} }, { refs: ['2', '3'] });
+
+    assert.strictEqual(second.rootBeadId, first.rootBeadId);
+    assert.strictEqual(supervisorClient.calls.length, 0, 'a no-op reparent is not a hijack -- no reservation lookup is needed');
+  });
+
+  test('an UNREACHABLE supervisor stops the run -- it is not the same answer as "no reservations"', async () => {
+    const seed = () => makeStatusAwareBeads([
+      { id: 'other-root', issue_type: 'epic', status: 'open', parent: null, created_at: '2026-01-01T00:00:00.000Z' },
+      { id: 'task-a', issue_type: 'task', status: 'open', parent: 'other-root' },
+      { id: 'task-b', issue_type: 'task', status: 'open', parent: null },
+    ]);
+    const pulled = [
+      { beadId: 'task-a', externalRef: '2', parent: null },
+      { beadId: 'task-b', externalRef: '3', parent: null },
+    ];
+
+    // unreachable: the client WAS wired, and it failed.
+    const down = makeFakeSupervisor([], { fail: new Error('connect ECONNREFUSED 127.0.0.1:8787') });
+    const beadsDown = seed();
+    let caught;
+    try {
+      await resolveRoot(pulled, { beads: beadsDown, supervisorClient: down, log: () => {} }, { refs: ['2', '3'] });
+    } catch (e) { caught = e; }
+    assert.ok(caught instanceof BridgeError);
+    assert.strictEqual(caught.code, BRIDGE_ERROR_CODES.SUPERVISOR_UNAVAILABLE);
+    assert.match(caught.message, /ECONNREFUSED/);
+    assert.strictEqual(beadsDown.setParentCalls.length, 0);
+
+    // distinguishable from an EMPTY ledger, which proceeds normally.
+    const empty = makeFakeSupervisor([]);
+    const beadsEmpty = seed();
+    const ok = await resolveRoot(pulled, { beads: beadsEmpty, supervisorClient: empty, log: () => {} }, { refs: ['2', '3'] });
+    assert.strictEqual(beadsEmpty.setParentCalls.length, 2);
+    assert.strictEqual(beadsEmpty.rows.find((r) => r.id === 'task-a').parent, ok.rootBeadId);
+  });
+
+  test('no supervisor client wired at all: proceeds, but warns per moved bead', async () => {
+    const beads = makeStatusAwareBeads([
+      { id: 'other-root', issue_type: 'epic', status: 'open', parent: null, created_at: '2026-01-01T00:00:00.000Z' },
+      { id: 'task-a', issue_type: 'task', status: 'open', parent: 'other-root' },
+      { id: 'task-b', issue_type: 'task', status: 'open', parent: null },
+    ]);
+    const logs = [];
+    const pulled = [
+      { beadId: 'task-a', externalRef: '2', parent: null },
+      { beadId: 'task-b', externalRef: '3', parent: null },
+    ];
+
+    const result = await resolveRoot(pulled, { beads, log: (m) => logs.push(m) }, { refs: ['2', '3'] });
+
+    assert.strictEqual(beads.setParentCalls.length, 2, 'ingest still works with no supervisor in the deployment');
+    assert.strictEqual(beads.rows.find((r) => r.id === 'task-a').parent, result.rootBeadId);
+    const warning = logs.find((m) => m.includes('WARNING'));
+    assert.ok(warning, 'the skipped check must be announced, not silent');
+    assert.match(warning, /task-a from other-root/);
+  });
+
+  test('runIngest refuses CONFIG_INVALID for a supervisorClient with no listSprints()', async () => {
+    await assert.rejects(
+      () => runIngest(
+        { refs: ['2'], secretName: 'tok' },
+        { beads: makeStatusAwareBeads(), adapter: makeFakeAdapter([]), supervisorClient: {} }
+      ),
+      (e) => e instanceof BridgeError && e.code === BRIDGE_ERROR_CODES.CONFIG_INVALID
+    );
+  });
+});
+
+describe('findReusableRoot closed-root visibility', () => {
+  test('the reuse scan asks for ALL statuses, not just open', async () => {
+    const beads = makeStatusAwareBeads();
+    await resolveRoot(
+      [{ beadId: 'a', parent: null }, { beadId: 'b', parent: null }],
+      { beads, log: () => {} },
+      { refs: ['2', '3'] }
+    );
+    assert.strictEqual(beads.listCalls.length, 1);
+    assert.strictEqual(beads.listCalls[0].all, true, 'a closed root must be visible to the lookup');
+  });
+
+  test('a CLOSED root matching the refsKey is found and refused -- never silently duplicated or revived', async () => {
+    const beads = makeStatusAwareBeads([
+      {
+        id: 'epic-closed-root',
+        issue_type: 'epic',
+        status: 'closed',
+        closed_at: '2026-02-01T00:00:00.000Z',
+        metadata: { fleetBridgeIngestRoot: true, fleetBridgeIngestRefsKey: '2,3' },
+        created_at: '2026-01-01T00:00:00.000Z',
+      },
+    ]);
+    const pulled = [{ beadId: 'a', parent: null }, { beadId: 'b', parent: null }];
+
+    let caught;
+    try {
+      await resolveRoot(pulled, { beads, log: () => {} }, { refs: ['2', '3'] });
+    } catch (e) { caught = e; }
+
+    assert.ok(caught instanceof BridgeError);
+    assert.strictEqual(caught.code, BRIDGE_ERROR_CODES.INGEST_REF_AMBIGUOUS);
+    assert.match(caught.message, /epic-closed-root/);
+    assert.deepStrictEqual(caught.details.closedRoots, ['epic-closed-root']);
+    assert.strictEqual(beads.createCalls.length, 0, 'no duplicate root may be created behind the operator back');
+    assert.strictEqual(beads.rows.find((r) => r.id === 'epic-closed-root').status, 'closed', 'and the closed root stays closed');
+  });
+
+  test('an OPEN match still wins even when a closed match also exists', async () => {
+    const beads = makeStatusAwareBeads([
+      {
+        id: 'epic-closed-root',
+        issue_type: 'epic',
+        status: 'closed',
+        metadata: { fleetBridgeIngestRoot: true, fleetBridgeIngestRefsKey: '2,3' },
+        created_at: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        id: 'epic-open-root',
+        issue_type: 'epic',
+        status: 'open',
+        metadata: { fleetBridgeIngestRoot: true, fleetBridgeIngestRefsKey: '2,3' },
+        created_at: '2026-01-02T00:00:00.000Z',
+      },
+    ]);
+    const pulled = [{ beadId: 'a', parent: null }, { beadId: 'b', parent: null }];
+
+    const result = await resolveRoot(pulled, { beads, log: () => {} }, { refs: ['2', '3'] });
+
+    assert.strictEqual(result.rootBeadId, 'epic-open-root');
+    assert.strictEqual(beads.createCalls.length, 0);
+  });
+});

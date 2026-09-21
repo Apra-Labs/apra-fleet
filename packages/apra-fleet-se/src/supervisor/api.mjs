@@ -68,6 +68,36 @@ export class ApiError extends Error {
 }
 
 /**
+ * Resolves the launch request's VCS PAT/token secret-name override, accepting
+ * both the canonical `vcs_pat_secret_name` field and the deprecated
+ * `azdevops_pat_secret_name` alias. This HTTP field is public engine surface
+ * and must stay provider-neutral (docs/generic-engine-boundary.md); the alias
+ * exists only so a caller built against the pre-rename field name (e.g. an
+ * older fleet-bridge) keeps working for one release without a coordinated
+ * simultaneous update. `vcs_pat_secret_name` wins when a request sends both
+ * (not an error -- a caller mid-migration may send both defensively).
+ * @param {object} body
+ * @returns {{ value: string|undefined, field: string, deprecationWarning: string|null }}
+ *   `field` names whichever field actually supplied `value` (used to name the
+ *   offending field in a validation error); `deprecationWarning` is a
+ *   one-line notice to surface to the caller when the legacy spelling was the
+ *   one used, else null.
+ */
+function resolveVcsPatSecretName(body) {
+    if (body.vcs_pat_secret_name !== undefined) {
+        return { value: body.vcs_pat_secret_name, field: 'vcs_pat_secret_name', deprecationWarning: null };
+    }
+    if (body.azdevops_pat_secret_name !== undefined) {
+        return {
+            value: body.azdevops_pat_secret_name,
+            field: 'azdevops_pat_secret_name',
+            deprecationWarning: '[deprecated] azdevops_pat_secret_name is the legacy spelling -- send vcs_pat_secret_name instead (still accepted for now)',
+        };
+    }
+    return { value: undefined, field: 'vcs_pat_secret_name', deprecationWarning: null };
+}
+
+/**
  * apra-fleet-ymf.1: split a request's `issue` field into individual ids,
  * mirroring bin/cli.mjs:468's `values.issue.split(',').map(s =>
  * s.trim()).filter(Boolean)` exactly -- so a comma-separated multi-root
@@ -442,23 +472,26 @@ export function createSprintController(deps = {}) {
         if (members.length === 0) {
             throw new ApiError(400, 'members must be a non-empty list of member names', 'members');
         }
-        // azdevops_pat_secret_name is optional and forwarded straight through
-        // to spawnOpts (see launch() below) without living in this function's
-        // narrow return -- same pass-through shape as goal/maxCycles/budget.
-        // But unlike those, an un-type-checked value here used to reach
-        // spawner.spawnSprint()'s args.push(...) and fail INSIDE
-        // child_process.spawn as an opaque 500, instead of a clear 400 naming
-        // the field -- there is no injection risk either way (the child's own
-        // sprint-args.mjs validates the charset before use), this is purely a
-        // bad error surface on a newly-added input. Validated with the SAME
+        // vcs_pat_secret_name (or its deprecated azdevops_pat_secret_name
+        // alias, see resolveVcsPatSecretName() above) is optional and
+        // forwarded straight through to spawnOpts (see launch() below)
+        // without living in this function's narrow return -- same
+        // pass-through shape as goal/maxCycles/budget. But unlike those, an
+        // un-type-checked value here used to reach spawner.spawnSprint()'s
+        // args.push(...) and fail INSIDE child_process.spawn as an opaque
+        // 500, instead of a clear 400 naming the field -- there is no
+        // injection risk either way (the child's own sprint-args.mjs
+        // validates the charset before use), this is purely a bad error
+        // surface on a newly-added input. Validated with the SAME
         // credential-store-name rule the child enforces (fleet-sprint/
         // contracts.mjs's validateCredentialStoreName, shared with
         // credential_store_set) rather than a bare typeof check, so a launch
         // request with a malformed name fails fast here with the identical
         // charset rule it would otherwise fail deep in the child process.
-        if (body.azdevops_pat_secret_name !== undefined) {
-            try { validateCredentialStoreName(body.azdevops_pat_secret_name, 'azdevops_pat_secret_name'); }
-            catch (err) { throw new ApiError(400, err.message, 'azdevops_pat_secret_name'); }
+        const vcsPatSecretName = resolveVcsPatSecretName(body);
+        if (vcsPatSecretName.value !== undefined) {
+            try { validateCredentialStoreName(vcsPatSecretName.value, vcsPatSecretName.field); }
+            catch (err) { throw new ApiError(400, err.message, vcsPatSecretName.field); }
         }
         // `issue` stays a single comma-joined string (the exact shape
         // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
@@ -597,18 +630,19 @@ export function createSprintController(deps = {}) {
             roleMap,
             budget: body.budget,
             runId: sprintId,
-            // Forwarded straight from the request body, the same way goal/
-            // maxCycles/requirementsFile/budget are (validateLaunchRequest's
-            // return stays narrow -- it only validates issue/branch/base/
-            // members, so this reads directly off `body` like those other
-            // optional pass-through fields do). An operator whose Azure
-            // DevOps PAT for this project lives under a non-default secret
-            // name (their default name already being committed to a
-            // different project) needs this to reach the child; without it,
-            // provisioning silently falls back to the provider's default
-            // secret name and can install the WRONG PAT onto the member,
-            // clobbering a working credential.
-            azdevopsPatSecretName: body.azdevops_pat_secret_name,
+            // Forwarded straight from the request body (via the same
+            // resolveVcsPatSecretName() precedence used to validate it
+            // above), the same way goal/maxCycles/requirementsFile/budget are
+            // (validateLaunchRequest's return stays narrow -- it only
+            // validates issue/branch/base/members, so this reads directly off
+            // `body` like those other optional pass-through fields do). An
+            // operator whose VCS credential for this project lives under a
+            // non-default secret name (their default name already being
+            // committed to a different project) needs this to reach the
+            // child; without it, provisioning silently falls back to the
+            // provider's default secret name and can install the WRONG
+            // credential onto the member, clobbering a working one.
+            vcsPatSecretName: resolveVcsPatSecretName(body).value,
         };
         const spawned = await spawner.spawnSprint(spawnOpts);
         // apra-fleet-gey.2: best-effort stale-process detection -- compare
@@ -660,6 +694,12 @@ export function createSprintController(deps = {}) {
             members: union,
             goal: body.goal ?? null,
             buildVersionWarning,
+            // null unless this request used the deprecated
+            // azdevops_pat_secret_name spelling (see resolveVcsPatSecretName()
+            // above) -- surfaced here so a caller still on the legacy field
+            // name sees the migration notice on every launch, not just in a
+            // log line it may not be watching.
+            vcsPatSecretNameDeprecationWarning: resolveVcsPatSecretName(body).deprecationWarning,
         };
     }
 

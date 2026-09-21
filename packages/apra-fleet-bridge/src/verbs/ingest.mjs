@@ -29,7 +29,11 @@
 // SUPERVISOR_UNAVAILABLE or a retryable code); a genuine adapter/tracker
 // failure is INGEST_PULL_FAILED; a `bd create`/`bd update` that does not do
 // what beads-client.mjs promised is BEADS_FAILED; the two ingest-specific
-// policy refusals are INGEST_NO_CHILDREN and INGEST_MISSING_CRITERIA.
+// policy refusals are INGEST_NO_CHILDREN and INGEST_MISSING_CRITERIA. Two
+// more refusals guard re-runs: a root that already exists for these refs but
+// is CLOSED is INGEST_REF_AMBIGUOUS, and a reparent that would take a bead
+// out of a live sprint's scope is LAUNCH_CONFLICT (SUPERVISOR_UNAVAILABLE
+// when the supervisor that could have answered that question did not).
 //
 // Nothing here reaches for `process.env`, `node:fs`, or a real `fetch` --
 // injected I/O only.
@@ -106,9 +110,16 @@ export function validateIngestOpts(opts) {
  * connectivity code -- see the error-rule corollary in the build log: "a
  * missing injected dependency is never SUPERVISOR_UNAVAILABLE".
  *
- * @param {{ beads?: object, adapter?: object, log?: Function }} deps
- * @returns {{ beads: object, adapter: object, log: Function }}
- * @throws {BridgeError} CONFIG_MISSING
+ * `supervisorClient` is OPTIONAL and the only dependency here that is: see
+ * the "REPARENT GUARD" block below `findReusableRoot` for why ingest now
+ * knows about the supervisor at all, and why its absence is a deployment
+ * fact rather than a defect. Present-but-wrong-shape IS a defect, though,
+ * and fails CONFIG_INVALID -- a caller that wired something up meant the
+ * check to run, and must not get the no-supervisor degradation by accident.
+ *
+ * @param {{ beads?: object, adapter?: object, supervisorClient?: object, log?: Function }} deps
+ * @returns {{ beads: object, adapter: object, supervisorClient: object|null, log: Function }}
+ * @throws {BridgeError} CONFIG_MISSING, CONFIG_INVALID
  */
 function validateIngestDeps(deps) {
   const d = deps && typeof deps === 'object' ? deps : {};
@@ -128,7 +139,21 @@ function validateIngestDeps(deps) {
     );
   }
 
-  return { beads: d.beads, adapter: d.adapter, log: typeof d.log === 'function' ? d.log : () => {} };
+  if (d.supervisorClient !== undefined && d.supervisorClient !== null
+    && (typeof d.supervisorClient !== 'object' || typeof d.supervisorClient.listSprints !== 'function')) {
+    throw new BridgeError(
+      BRIDGE_ERROR_CODES.CONFIG_INVALID,
+      'ingest: deps.supervisorClient, when provided, must expose listSprints() -- ingest reads the live reservation ledger through it to refuse reparenting a bead out of a running sprint',
+      { param: 'deps.supervisorClient' }
+    );
+  }
+
+  return {
+    beads: d.beads,
+    adapter: d.adapter,
+    supervisorClient: d.supervisorClient || null,
+    log: typeof d.log === 'function' ? d.log : () => {},
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +354,22 @@ function canonicalRefsKey(refs) {
 }
 
 /**
+ * Is this `bd list` row a closed bead? Two independent signals are checked
+ * because neither is guaranteed alone: `status` is what `bd list --json`
+ * reports, `closed_at` is what survives on a row whose status field a caller
+ * (or a fake) omitted. Either one being present means closed -- erring
+ * toward "closed" is the safe direction here, since the consequence is a
+ * surfaced refusal rather than a silent duplicate root.
+ * @param {any} row
+ * @returns {boolean}
+ */
+function isClosedRow(row) {
+  if (!row || typeof row !== 'object') return false;
+  if (typeof row.status === 'string' && row.status.toLowerCase() === 'closed') return true;
+  return Boolean(row.closed_at);
+}
+
+/**
  * Looks for an existing synthetic root this module created for the exact
  * same `refsKey`. Returns its bead id, or `null` when none exists (fresh
  * refs, first-ever run, or the injected `beads` cannot be queried at all).
@@ -339,25 +380,45 @@ function canonicalRefsKey(refs) {
  * picked up `list()` is a capability gap, not a defect worth failing the
  * whole ingest over -- it just means this run degrades to the pre-fix
  * behavior (always create) for that one call, same as a `list()` call that
- * itself throws.
+ * itself throws. (That fall-through is still exactly "create a new root",
+ * which the NON-HIJACK RULE above already sanctions as the safe answer
+ * whenever identity cannot be established.)
+ *
+ * CLOSED ROOTS ARE PART OF THE SEARCH SPACE. `bd list` defaults to OPEN
+ * issues only, so before this the lookup could not see a root an operator
+ * had closed -- and "invisible" is indistinguishable from "absent", which
+ * silently re-armed the duplicate-root creation this whole scheme exists to
+ * prevent. The scan therefore runs with `all: true` (`bd list --all`, see
+ * beads-client.mjs's `list`) and classifies the matches itself:
+ *   - any OPEN match wins, exactly as before -- the idempotent re-run path
+ *     is untouched, and a closed sibling never outranks a live root.
+ *   - only-closed matches are a REFUSAL (INGEST_REF_AMBIGUOUS), not a
+ *     revival and not a new root. Reviving is wrong because the operator
+ *     closed that root deliberately; ingest cannot know whether they retired
+ *     the scope or merely tidied a stale artifact, and re-opening a retired
+ *     sprint scope from a pipeline retry is the more damaging guess. Quietly
+ *     creating a second root is the bug this module already refuses to
+ *     commit. So the only honest move is to stop and make the human choose,
+ *     with the closed root named so the choice is one command away.
  * @param {object} beads
  * @param {string} refsKey
  * @param {Function} log
  * @returns {Promise<string|null>}
+ * @throws {BridgeError} INGEST_REF_AMBIGUOUS when the only match is closed
  */
 async function findReusableRoot(beads, refsKey, log) {
   if (typeof beads.list !== 'function') return null;
 
   let candidates;
   try {
-    candidates = await beads.list({ type: 'epic', limit: 0 });
+    candidates = await beads.list({ type: 'epic', limit: 0, all: true });
   } catch (err) {
     log(`[ingest] root-reuse lookup failed (${err && err.message ? err.message : String(err)}) -- falling back to creating a new synthetic epic`);
     return null;
   }
   if (!Array.isArray(candidates)) return null;
 
-  const matches = candidates.filter((c) => (
+  let matches = candidates.filter((c) => (
     c && typeof c === 'object'
     && c.issue_type === 'epic'
     && c.metadata && typeof c.metadata === 'object'
@@ -366,6 +427,19 @@ async function findReusableRoot(beads, refsKey, log) {
     && typeof c.id === 'string' && c.id.length > 0
   ));
   if (matches.length === 0) return null;
+
+  const closed = matches.filter(isClosedRow);
+  matches = matches.filter((c) => !isClosedRow(c));
+  if (matches.length === 0) {
+    throw new BridgeError(
+      BRIDGE_ERROR_CODES.INGEST_REF_AMBIGUOUS,
+      `ingest: refs [${refsKey}] already have a synthetic root (${closed.map((c) => c.id).join(', ')}), but it is CLOSED. `
+      + 'Refusing to silently revive a root an operator closed on purpose, and refusing to create a second root for the same refs '
+      + '(that is the duplicate-root bug this identity scheme exists to prevent). Either reopen that root '
+      + `(bd update ${closed[0].id} --status open) and re-run, or ingest a different ref set.`,
+      { refsKey, closedRoots: closed.map((c) => c.id) }
+    );
+  }
 
   if (matches.length > 1) {
     // Should never happen once this fix is in place -- its entire purpose is
@@ -391,6 +465,152 @@ async function findReusableRoot(beads, refsKey, log) {
   return matches[0].id;
 }
 
+// ---------------------------------------------------------------------------
+// REPARENT GUARD -- WHY INGEST NOW KNOWS ABOUT THE SUPERVISOR:
+//
+// Step 2 ends by `--parent`-ing every pulled bead onto the resolved root.
+// That loop predates the reuse feature and was only ever reasoned about as a
+// no-op on the reuse path. It is not a no-op on the OTHER path. Re-running
+// `ingest` with a changed ref list resolves a DIFFERENT root (the NON-HIJACK
+// RULE above, deliberately), and then MOVES beads off whatever parent they
+// already had onto it.
+//
+// That move is not local. The supervisor resolves a live sprint's scope by
+// re-expanding its `issueRoots` with a BFS at EVERY check
+// (apra-fleet-se/src/supervisor/scope-overlap.mjs -- deliberately never a
+// launch-time snapshot, so that planners can grow a subtree mid-run). So
+// reparenting a bead out from under a reserved root silently SHRINKS a
+// running sprint's scope. The subtree-overlap guard cannot catch it: that
+// guard is keyed on roots, and reparenting is precisely the operation that
+// relocates beads between roots.
+//
+// SCOPE OF THE CHECK: only beads that would actually CHANGE parent. A bead
+// already sitting under the resolved root, or with no parent at all, is not
+// being taken from anyone -- the idempotent re-run path therefore never
+// consults the supervisor at all, and costs nothing.
+//
+// THE DEPENDENCY, AND WHAT AN UNREACHABLE SUPERVISOR MEANS. Three states,
+// deliberately kept distinguishable:
+//   1. `deps.supervisorClient` injected and answering -> enforce: a move off
+//      a reserved root is refused (LAUNCH_CONFLICT -- this is a conflict
+//      with a RUNNING sprint, the same family as the launch-time overlap
+//      refusal, and it carries that family's exit code).
+//   2. injected but the call FAILS -> refuse the whole ingest
+//      (SUPERVISOR_UNAVAILABLE). This is the case the fix exists for: an
+//      unreachable supervisor must never collapse into "no reservations
+//      exist". The operator wired a supervisor; ingest will not quietly
+//      decide it does not matter because a socket was refused.
+//   3. NOT injected at all -> proceed, with a loud per-bead WARNING naming
+//      every bead being moved and stating that no reservation check ran.
+//      Refusing here was considered and rejected: ingest is a standalone
+//      verb that legitimately runs against a plain beads DB with no
+//      supervisor in the deployment, and a hard failure would make the
+//      no-supervisor setup unusable to buy nothing. The distinction that
+//      matters is the one the brief demands -- "nobody told me where the
+//      supervisor is" is a deployment fact that is announced, whereas
+//      "the supervisor I was told about did not answer" is a stop.
+// ---------------------------------------------------------------------------
+
+/**
+ * The bead's parent AS THE DB HAS IT RIGHT NOW, which is not necessarily the
+ * `parent` the tracker pull reported: a previous ingest may have reparented
+ * it locally since. `beads.show` is feature-detected for the same reason
+ * `beads.list` is (the pinned `deps.beads` contract only guarantees
+ * `create`/`setParent`), and a failing `show` falls back to the pulled
+ * record's own `parent` rather than failing the run -- a worse signal, but a
+ * signal, and the guard below only ever uses it to ask for MORE scrutiny.
+ * @param {object} beads
+ * @param {{ beadId: string, parent: string|null }} item
+ * @returns {Promise<string|null>}
+ */
+async function currentParentOf(beads, item) {
+  if (typeof beads.show === 'function') {
+    try {
+      const row = await beads.show(item.beadId);
+      if (row && typeof row === 'object') {
+        return typeof row.parent === 'string' && row.parent.length > 0 ? row.parent : null;
+      }
+    } catch {
+      // fall through to the pulled record's own view
+    }
+  }
+  return item.parent || null;
+}
+
+/**
+ * Flattens a `GET /api/sprints` body into `rootBeadId -> sprintId`. The
+ * supervisor's own shape is `{ sprints: [{ sprintId, issueRoots, ... }] }`
+ * (apra-fleet-se/src/supervisor/api.mjs `listSprints`); anything unexpected
+ * yields an empty map rather than throwing, because the CALLER decides what
+ * an unusable answer means -- see `assertReparentAllowed`.
+ * @param {any} body
+ * @returns {Map<string, string>}
+ */
+export function reservedRootsFrom(body) {
+  const out = new Map();
+  const sprints = body && Array.isArray(body.sprints) ? body.sprints : [];
+  for (const s of sprints) {
+    if (!s || typeof s !== 'object') continue;
+    const roots = Array.isArray(s.issueRoots) ? s.issueRoots : [];
+    for (const root of roots) {
+      if (typeof root === 'string' && root.length > 0 && !out.has(root)) {
+        out.set(root, typeof s.sprintId === 'string' ? s.sprintId : '<unnamed sprint>');
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The guard itself -- see the REPARENT GUARD block above for the full
+ * rationale behind each of the three supervisor states.
+ *
+ * @param {Array<{ beadId: string, from: string }>} moves beads that would change parent
+ * @param {string} rootBeadId the root they would be moved ONTO
+ * @param {{ supervisorClient: object|null, log: Function }} deps
+ * @throws {BridgeError} LAUNCH_CONFLICT, SUPERVISOR_UNAVAILABLE
+ */
+export async function assertReparentAllowed(moves, rootBeadId, deps) {
+  if (!Array.isArray(moves) || moves.length === 0) return;
+
+  const { supervisorClient, log } = deps;
+  if (!supervisorClient) {
+    log(
+      `[ingest] WARNING: ${moves.length} bead(s) will be moved onto ${rootBeadId} `
+      + `(${moves.map((m) => `${m.beadId} from ${m.from}`).join('; ')}) and NO supervisor client was injected, `
+      + 'so no live-sprint reservation check ran -- if one of those parents is a running sprint\'s issue root, '
+      + 'this shrinks that sprint\'s scope. Wire deps.supervisorClient to have this checked.'
+    );
+    return;
+  }
+
+  let reserved;
+  try {
+    reserved = reservedRootsFrom(await supervisorClient.listSprints());
+  } catch (err) {
+    throw new BridgeError(
+      BRIDGE_ERROR_CODES.SUPERVISOR_UNAVAILABLE,
+      `ingest: ${moves.length} bead(s) would be reparented onto ${rootBeadId}, but the supervisor could not be asked which issue roots are reserved by live sprints `
+      + `(${err && err.message ? err.message : String(err)}). Refusing: an unreachable supervisor is NOT the same answer as "no sprint holds these beads". `
+      + 'Restore the supervisor and re-run, or re-run with the same refs as the sprint that owns them.',
+      { rootBeadId, moves: moves.map((m) => m.beadId), cause: err }
+    );
+  }
+
+  for (const move of moves) {
+    const sprintId = reserved.get(move.from);
+    if (sprintId) {
+      throw new BridgeError(
+        BRIDGE_ERROR_CODES.LAUNCH_CONFLICT,
+        `ingest: refusing to reparent bead ${move.beadId} from ${move.from} onto ${rootBeadId} -- ${move.from} is a reserved issue root of the live sprint ${sprintId}, `
+        + 'and that sprint resolves its scope by re-expanding its roots on every check, so the move would silently shrink a running sprint. '
+        + 'Wait for that sprint to finish (or stop it) before re-ingesting these refs under a different root.',
+        { beadId: move.beadId, fromRoot: move.from, toRoot: rootBeadId, sprintId }
+      );
+    }
+  }
+}
+
 /**
  * Step 2 -- "Resolve a root with at least one child." If exactly one pulled
  * bead is a natural parent of the others, it becomes the root untouched.
@@ -411,7 +631,7 @@ async function findReusableRoot(beads, refsKey, log) {
  * REUSE" block above `defaultEpicTitle` for the full identity scheme and
  * why re-running with different refs never hijacks an unrelated root). A
  * match is reused -- children are still (re-)`--parent`-ed onto it below,
- * which is a harmless no-op when they are already there -- so re-running
+ * which is a no-op when they are already there -- so re-running
  * `ingest` with the same refs converges instead of creating another orphan.
  * `opts.refs` is optional precisely so every pre-existing caller/test that
  * never passed it keeps the old always-create behavior unchanged.
@@ -426,10 +646,17 @@ async function findReusableRoot(beads, refsKey, log) {
  * field from `syntheticRoot` and `rootBeadId` together.
  *
  * @param {Array<{ beadId: string, externalRef: any, parent: string|null }>} pulled
- * @param {{ beads: { create: Function, setParent: Function, list?: Function }, log: Function }} deps
+ * REPARENT GUARD: beads that would be MOVED off a different existing parent
+ * are checked against the supervisor's live reservation ledger first -- see
+ * the REPARENT GUARD block above `currentParentOf` for the full rationale
+ * and for what an absent vs unreachable supervisor each mean.
+ *
+ * @param {{ beads: { create: Function, setParent: Function, list?: Function, show?: Function }, supervisorClient?: object|null, log: Function }} deps
  * @param {{ epicTitle?: string, refs?: string[] }} [opts]
  * @returns {Promise<{ rootBeadId: string|null, syntheticRoot: boolean, childCount: number }>}
- * @throws {BridgeError} BEADS_FAILED if `bd create` does not return a usable id
+ * @throws {BridgeError} BEADS_FAILED if `bd create` does not return a usable
+ *   id; INGEST_REF_AMBIGUOUS if the only matching root is closed;
+ *   LAUNCH_CONFLICT / SUPERVISOR_UNAVAILABLE from the reparent guard
  */
 export async function resolveRoot(pulled, deps, opts = {}) {
   const { beads, log } = deps;
@@ -469,6 +696,19 @@ export async function resolveRoot(pulled, deps, opts = {}) {
     }
     log(`[ingest] no natural parent -- created synthetic epic ${epicId} ("${title}")`);
   }
+
+  // Which beads would actually CHANGE parent -- computed BEFORE any write,
+  // so the guard below can refuse the whole batch rather than discover the
+  // problem half way through it (a partially-reparented sprint scope is
+  // strictly worse than either outcome). See the REPARENT GUARD block above.
+  const moves = [];
+  for (const item of pulled) {
+    // eslint-disable-next-line no-await-in-loop -- same ordered-local-reads
+    // reasoning as the setParent loop below.
+    const from = await currentParentOf(beads, item);
+    if (from && from !== epicId) moves.push({ beadId: item.beadId, from });
+  }
+  await assertReparentAllowed(moves, epicId, deps);
 
   for (const item of pulled) {
     // eslint-disable-next-line no-await-in-loop -- these are ordered `bd
@@ -555,7 +795,7 @@ export function assertCriteriaComplete(audit, requireCriteria) {
  * See the file-level doc comment for why this verb is load-bearing.
  *
  * @param {{ refs: string[], secretName: string, requireCriteria?: boolean, allowMissingCriteria?: boolean, epicTitle?: string }} opts
- * @param {{ beads: object, adapter: object, log?: Function }} deps
+ * @param {{ beads: object, adapter: object, supervisorClient?: object, log?: Function }} deps
  * @returns {Promise<{
  *   rootBeadId: string,
  *   syntheticRoot: boolean,
@@ -571,7 +811,8 @@ export function assertCriteriaComplete(audit, requireCriteria) {
  *   not-yet-written `launch.mjs`). `syntheticRoot` is kept alongside it
  *   purely for readability at call sites that only need the boolean.
  * @throws {BridgeError} CONFIG_MISSING, CONFIG_INVALID, INGEST_PULL_FAILED,
- *   INGEST_NO_CHILDREN, INGEST_MISSING_CRITERIA, BEADS_FAILED
+ *   INGEST_NO_CHILDREN, INGEST_MISSING_CRITERIA, INGEST_REF_AMBIGUOUS,
+ *   LAUNCH_CONFLICT, SUPERVISOR_UNAVAILABLE, BEADS_FAILED
  */
 export async function runIngest(opts, deps) {
   const validated = validateIngestOpts(opts);

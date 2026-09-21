@@ -125,7 +125,13 @@
 // ASCII only.
 
 import { BridgeError, BRIDGE_ERROR_CODES } from '../errors.mjs';
-import { toProgressSnapshot, buildFallbackSnapshot, classifyTerminalLog, buildTerminalFromEvidence } from '../snapshot.mjs';
+import {
+  toProgressSnapshot,
+  snapshotFromLogTail,
+  buildFallbackSnapshot,
+  classifyTerminalLog,
+  buildTerminalFromEvidence,
+} from '../snapshot.mjs';
 import { DEFAULT_LOG_TAIL_LINES } from './watch.mjs';
 
 const noopLog = () => {};
@@ -260,13 +266,16 @@ export async function runStatus(opts, deps) {
     // exactly the spot the observed incident's `health: 'unknown'` was
     // manufactured while a decisive "Sprint failed:" line was sitting right
     // there in the text.
-    const classified = classifyTerminalLog(logTail);
-    if (classified) {
-      d.log(`[status] sprint "${sprintId}" not found via getSprint, but its log tail shows a terminal outcome (${classified.outcome}) -- reporting terminal, not unknown`);
-      return buildTerminalFromEvidence(sprintId, { ...classified, updatedAt: d.now(), logTail });
+    // snapshotFromLogTail() owns this classification for the whole package
+    // (see its doc comment): watch.mjs had an independent, unfixed copy of
+    // the same fork, so the rule now lives in exactly one place.
+    const snapshot = snapshotFromLogTail(sprintId, logTail, d.now());
+    if (snapshot.health === 'terminal') {
+      d.log(`[status] sprint "${sprintId}" not found via getSprint, but its log tail shows a terminal outcome (${snapshot.verdict}) -- reporting terminal, not unknown`);
+    } else {
+      d.log(`[status] sprint "${sprintId}" not found via getSprint -- falling back to the log tail (health: unknown; no terminal marker in it)`);
     }
-    d.log(`[status] sprint "${sprintId}" not found via getSprint -- falling back to the log tail (health: unknown; no terminal marker in it)`);
-    return buildFallbackSnapshot(sprintId, logTail, d.now());
+    return snapshot;
   }
 
   // Both getSprint's 404 and getLog's own "no log file" answer say "not

@@ -573,7 +573,14 @@ export function buildFinalCommentBody({ verdict, prUrl, analysisDocPath, spendUs
   }
   if (archive) {
     if (archive.ok && archive.indexUrl) {
-      lines.push(`Archive: ${archive.indexUrl}`);
+      // A partial export still yields a usable link, so it belongs on the
+      // Archive line rather than in the failure branch -- but say so, or an
+      // operator opening a page with missing content has no way to know the
+      // gap was known about.
+      const missing = archive.partial && Array.isArray(archive.failures) ? archive.failures.length : 0;
+      lines.push(missing > 0
+        ? `Archive: ${archive.indexUrl} (incomplete -- ${missing} file(s) failed to upload)`
+        : `Archive: ${archive.indexUrl}`);
     } else {
       const detail = archive.error || (Array.isArray(archive.failures) && archive.failures.length > 0
         ? `${archive.failures.length} of ${archive.attempted} file(s) failed: ${archive.failures[0].reason}`
@@ -739,6 +746,21 @@ async function runArchiveExport(sprintId, sprint, d) {
     result = { attempted: 0, uploaded: 0, failures: [], indexUrl: null, ok: false, error: describeError(err) };
   }
   if (result && result.ok) {
+    // `ok` now means "the index uploaded, so the link works" -- NOT "every
+    // file uploaded". `partial` carries the difference. Reporting a partial
+    // export with the same line as a clean one would hide a real gap behind
+    // a success message, which is the failure shape this package keeps
+    // hitting; name the missing files instead.
+    if (result.partial) {
+      const missing = Array.isArray(result.failures) ? result.failures : [];
+      const first = missing.length > 0 ? ` first: ${missing[0].path} (${missing[0].reason})` : '';
+      d.log(
+        `[finalize] archive published WITH GAPS: ${result.uploaded} of ${result.attempted} file(s) -> `
+        + `${result.indexUrl} -- ${missing.length} file(s) failed to upload, so the page will be `
+        + `missing content.${first}`,
+      );
+      return result;
+    }
     d.log(`[finalize] archive published: ${result.uploaded} file(s) -> ${result.indexUrl}`);
     return result;
   }

@@ -20,14 +20,14 @@
  * The one deliberate exception is `DEFAULT_ADO_PAT_SECRET_NAME`: a stored
  * CREDENTIAL NAME, not an organisation/project/storage value. It is
  * deliberately NOT the same name as the engine's own default
- * (`azdevops_pat_secret_name`, default `azdevops_pat` --
+ * (`vcs_pat_secret_name`, default `azdevops_pat` --
  * implementation-plan.md Part C, "Remaining credentials") -- this operator's
  * `azdevops_pat` credential name is already taken by an unrelated system, so
  * this bridge's own default is `fleet_bridge_azdevops_pat` instead. The two
  * consumers (this adapter's own `bd ado pull/push`/REST comments, and the
  * sprint engine's `provision_vcs_auth`) are configured SEPARATELY: see
  * contracts.mjs's `patSecretName` SprintRequest field, which threads this
- * bridge's own choice through to the engine's `azdevops_pat_secret_name` arg
+ * bridge's own choice through to the engine's `vcs_pat_secret_name` launch field
  * so the two can never silently diverge. The pipeline may still override this
  * adapter's own name via `adoPatSecretName`; this adapter never resolves the
  * secret's VALUE, only ever forwards its NAME.

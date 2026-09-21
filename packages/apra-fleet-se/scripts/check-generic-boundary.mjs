@@ -37,17 +37,45 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PACKAGE_ROOT = path.resolve(__dirname, '..');
 export const REPO_ROOT = path.resolve(PACKAGE_ROOT, '..', '..');
-export const DESIGN_DOC = 'docs/generic-engine-boundary.md';
+// The doc lives at the REPO root (docs/generic-engine-boundary.md), not under
+// this package -- this constant used to be the bare string
+// 'docs/generic-engine-boundary.md', which only resolves correctly when the
+// reader's shell cwd happens to be the repo root; printed from this script
+// (which documents running it from packages/apra-fleet-se) that path 404s.
+// Anchored on REPO_ROOT so it is correct regardless of invocation cwd.
+export const DESIGN_DOC = path.join(REPO_ROOT, 'docs/generic-engine-boundary.md');
 
 /**
  * The generic engine file set, relative to packages/apra-fleet-se. Everything
  * here ships to EVERY fleet-sprint target, so nothing in its LLM-facing text
  * may assume the target is apra-fleet.
+ *
+ * Also covers the engine's PUBLIC entry-point surface -- bin/cli.mjs and
+ * bin/serve.mjs (this package's two declared `bin` targets, package.json)
+ * plus the supervisor's own wire contract, src/supervisor/api.mjs (the POST
+ * /api/sprints request/response field names) and src/supervisor/spawner.mjs
+ * (what turns an accepted request into the spawned child's CLI argv). A PR
+ * promoted a provider-branded --azdevops-pat-secret-name flag/field onto
+ * exactly this surface undetected, because none of it was scanned before.
+ * Deliberately NOT the rest of src/supervisor/** (ledger.mjs, server.mjs,
+ * dashboard.mjs, watchdog.mjs, etc.) -- those are internal supervisor
+ * machinery with no caller-visible flag/field vocabulary of their own.
  */
 export const ENGINE_FILE_SET = [
     { dir: 'fleet-sprint', match: /\.(?:js|mjs|cjs)$/, kind: 'js' },
     { dir: 'apra-pm/agents', match: /\.md$/, kind: 'md' },
+    // `scope: 'entry-point'` restricts the scan to `vcs-provider-branding`
+    // only (no heading rule) -- see scanSource()'s doc comment for why the
+    // four apra-fleet-as-target patterns don't apply to these operator-facing
+    // files.
+    { dir: 'bin', match: /\.(?:js|mjs|cjs)$/, kind: 'js', scope: 'entry-point' },
+    { dir: 'src/supervisor', match: /^(?:api|spawner)\.mjs$/, kind: 'js', scope: 'entry-point' },
 ];
+
+/** Pattern ids each ENGINE_FILE_SET `scope` value restricts a file's scan to. */
+const FILE_SET_SCOPE_PATTERN_IDS = {
+    'entry-point': ['vcs-provider-branding'],
+};
 
 /**
  * Target-owned files: the engine may name them (their existence is the
@@ -114,6 +142,19 @@ export const SIGNAL_PATTERNS = [
         re: /\bapra-fleet-(?:[a-z0-9]*[0-9][a-z0-9]*|[a-z]{3,4})(?:\.[0-9]+)*\b(?!-)/g,
         why: "cites an apra-fleet tracker id -- meaningless (and confusing) to an agent working on another target, and forbidden in LLM-facing text by this repo's CLAUDE.md",
         belongs: 'a code comment next to the logic (provenance) or docs/; never the string itself',
+    },
+    {
+        id: 'vcs-provider-branding',
+        // apra-fleet: the engine is VCS-provider-pluggable
+        // (fleet-sprint/vcs-providers/**) -- exactly the same leak class as
+        // apra-fleet-the-target, one level down: a PUBLIC flag/field/prompt
+        // that names one provider assumes every operator/target uses that
+        // provider. Matches azdevops, azure-devops/Azure DevOps, github,
+        // bitbucket, gitlab as whole words (case-insensitive) so "GitHub" in
+        // prose and "azure-devops" in a hyphenated flag both trip it.
+        re: /\b(?:azdevops|azure[- ]?devops|github|bitbucket|gitlab)\b/gi,
+        why: 'names a specific VCS provider on the engine\'s public/LLM-facing surface -- the engine supports more than one provider (fleet-sprint/vcs-providers/**), so a CLI flag, --help text, an HTTP field, or a dispatch/role prompt must stay provider-neutral',
+        belongs: "a provider's OWN implementation module (fleet-sprint/vcs-providers/<provider>.mjs) may name itself freely -- that is provider-local, not a leak. Anywhere else (a flag/field name, --help or doc text, a prompt an agent reads), phrase it generically ('the VCS provider', 'the configured provider') and let the provider module supply its own default/behavior",
     },
 ];
 
@@ -274,27 +315,55 @@ export function extractMarkdownText(src) {
  * @param {string} relFile  file path for reporting
  * @param {string} src      file content
  * @param {'js'|'md'} kind
+ * @param {{ patternIds?: string[], checkHeadings?: boolean }} [scope] -- limits which
+ *   checks apply to this file. Omitted (or `patternIds` omitted): every
+ *   SIGNAL_PATTERNS id applies, plus the heading rule -- the original,
+ *   full-strength scan used for fleet-sprint/** and apra-pm/agents/**, where
+ *   LLM-facing text can leak either an apra-fleet-as-target assumption OR a
+ *   provider-branding one.
+ *
+ *   A restricted `patternIds` (see ENGINE_FILE_SET's `scope: 'entry-point'`
+ *   below) is for files like bin/cli.mjs and src/supervisor/{api,spawner}.mjs:
+ *   these are the engine's public CLI-flag/HTTP-field surface, but they are
+ *   OPERATOR-facing (a human running the CLI, or an HTTP caller), never
+ *   agent-dispatch text -- they build no sprint prompts. The four
+ *   apra-fleet-as-target patterns (build-artifact, env-var, service-endpoint,
+ *   repo-internals) and the heading rule exist to catch a dispatch/role
+ *   prompt assuming its TARGET is apra-fleet; none of that applies to a CLI's
+ *   own --help text describing apra-fleet's OWN supervisor (e.g. its real
+ *   default port, or the real env vars its own process reads) -- that is
+ *   accurate self-documentation, not a target leak, and flagging it would be
+ *   pure noise. Only `vcs-provider-branding` -- the actual class of leak this
+ *   surface is prone to (a provider-branded flag/field name) -- applies there.
  * @returns {Array<{file,line,id,match,excerpt,why,belongs}>}
  */
-export function scanSource(relFile, src, kind) {
+export function scanSource(relFile, src, kind, scope = {}) {
     const segments = kind === 'js' ? extractStringLiterals(src) : extractMarkdownText(src);
     const findings = [];
     const excerptOf = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 140);
+    const applicablePatterns = scope.patternIds
+        ? SIGNAL_PATTERNS.filter((p) => scope.patternIds.includes(p.id))
+        : SIGNAL_PATTERNS;
+    const checkHeadings = scope.checkHeadings !== false && !scope.patternIds;
 
     // Lines (1-based) on which a target-owned file is named in LLM-facing text.
     const targetFileLines = [];
-    for (const seg of segments) {
-        if (TARGET_FILE_NAMES.some((f) => seg.text.includes(f))) targetFileLines.push(seg.line);
+    if (checkHeadings) {
+        for (const seg of segments) {
+            if (TARGET_FILE_NAMES.some((f) => seg.text.includes(f))) targetFileLines.push(seg.line);
+        }
     }
 
     for (const seg of segments) {
-        for (const p of SIGNAL_PATTERNS) {
+        for (const p of applicablePatterns) {
             p.re.lastIndex = 0;
             let m;
             while ((m = p.re.exec(seg.text)) !== null) {
                 findings.push({ file: relFile, line: seg.line, id: p.id, match: m[0], excerpt: excerptOf(seg.text), why: p.why, belongs: p.belongs });
             }
         }
+
+        if (!checkHeadings) continue;
 
         // Heading rule: the engine may only rely on the documented sections of
         // a target-owned file. A whole-literal heading (engine-authored report
@@ -324,7 +393,7 @@ export function scanSource(relFile, src, kind) {
     return findings;
 }
 
-/** Enumerate the engine file set. Returns [{abs, rel, kind}]. */
+/** Enumerate the engine file set. Returns [{abs, rel, kind, scope}]. */
 export function listEngineFiles(packageRoot = PACKAGE_ROOT) {
     const files = [];
     for (const entry of ENGINE_FILE_SET) {
@@ -335,7 +404,7 @@ export function listEngineFiles(packageRoot = PACKAGE_ROOT) {
                 const full = path.join(dir, d.name);
                 if (d.isDirectory()) { if (d.name !== 'node_modules') walk(full); continue; }
                 if (entry.match.test(d.name)) {
-                    files.push({ abs: full, rel: path.relative(packageRoot, full).split(path.sep).join('/'), kind: entry.kind });
+                    files.push({ abs: full, rel: path.relative(packageRoot, full).split(path.sep).join('/'), kind: entry.kind, scope: entry.scope });
                 }
             }
         };
@@ -361,6 +430,72 @@ export const ALLOWED_EXCEPTIONS = [
         anchorRe: /developer-facing Error about this product's own vendored schema/,
         window: 8,
         reason: 'a thrown Error read by an apra-fleet DEVELOPER (never dispatched to a sprint agent) that must name the package whose vendored schema drifted; it describes the product, not a target',
+    },
+    // -------------------------------------------------------------------
+    // vcs-provider-branding: pre-existing debt uncovered by adding the
+    // pattern (2026-09-21, the fleet-bridge PR that renamed the newly-public
+    // --azdevops-pat-secret-name flag/field to a provider-neutral name and,
+    // in fixing why the checker never caught that leak, added this pattern).
+    // Each entry below is a provider's OWN implementation/registry module
+    // naming itself, or an unrelated use of a provider's domain name -- never
+    // a dispatch/role prompt assuming a sprint agent's target uses that
+    // provider. See each file's own GENERIC-BOUNDARY-EXCEPTION anchor.
+    // -------------------------------------------------------------------
+    {
+        name: 'azure-devops.mjs is the Azure DevOps provider\'s own module',
+        file: 'fleet-sprint/vcs-providers/azure-devops.mjs',
+        ids: ['vcs-provider-branding'],
+        anchorRe: /this file IS the Azure DevOps provider's own/,
+        window: 650,
+        reason: "a provider's own implementation module may name itself freely throughout its own error/log text, registration string and doc-skill reference",
+    },
+    {
+        name: 'github.mjs is the GitHub provider\'s own module',
+        file: 'fleet-sprint/vcs-providers/github.mjs',
+        ids: ['vcs-provider-branding'],
+        anchorRe: /this file IS the GitHub provider's own/,
+        window: 260,
+        reason: "a provider's own implementation module may name itself freely throughout its own API host, headers, registration string and error text",
+    },
+    {
+        name: 'bitbucket.mjs is the Bitbucket provider\'s own module',
+        file: 'fleet-sprint/vcs-providers/bitbucket.mjs',
+        ids: ['vcs-provider-branding'],
+        anchorRe: /this file IS the Bitbucket provider's own/,
+        window: 60,
+        reason: "a provider's own implementation module may name itself freely in its own registration string",
+    },
+    {
+        name: 'vcs-providers/index.mjs is the provider registry',
+        file: 'fleet-sprint/vcs-providers/index.mjs',
+        ids: ['vcs-provider-branding'],
+        anchorRe: /this is the provider REGISTRY/,
+        window: 25,
+        reason: 'the registry necessarily imports and names every built-in provider to register them, and documents its own default provider',
+    },
+    {
+        name: 'guarded-modules.mjs facade-pin list names provider module files',
+        file: 'fleet-sprint/guarded-modules.mjs',
+        ids: ['vcs-provider-branding'],
+        anchorRe: /these basenames are this facade-pin list/,
+        window: 15,
+        reason: 'this array names module FILE PATHS it registers for guard coverage, the same way every other entry in it does -- not a leak',
+    },
+    {
+        name: 'dolt-settle.mjs github.com is the Dolt release download host, not a VCS provider',
+        file: 'fleet-sprint/dolt-settle.mjs',
+        ids: ['vcs-provider-branding'],
+        anchorRe: /github\.com here names the hosting domain of the/,
+        window: 8,
+        reason: "names the hosting domain of the upstream Dolt binary release this script downloads -- unrelated to the sprint's own VCS provider selection",
+    },
+    {
+        name: 'ci-watcher.md discloses its GitHub-only CI-check limitation rather than assuming it',
+        file: 'apra-pm/agents/ci-watcher.md',
+        ids: ['vcs-provider-branding'],
+        anchorRe: /this role currently checks CI only via the `gh` CLI/,
+        window: 10,
+        reason: 'names GitHub only as the disclaimed limit of `gh`-based CI checking; the same sentence is the explicit non-GitHub fallback (not_configured, never a guess) -- the opposite of an assumption',
     },
 ];
 
@@ -419,7 +554,8 @@ export function scanFiles(files) {
     for (const f of files) {
         const src = fs.readFileSync(f.abs, 'utf8');
         contentsByRel[f.rel] = src;
-        findings.push(...scanSource(f.rel, src, f.kind));
+        const patternIds = f.scope ? FILE_SET_SCOPE_PATTERN_IDS[f.scope] : undefined;
+        findings.push(...scanSource(f.rel, src, f.kind, { patternIds }));
     }
     return { findings, contentsByRel };
 }

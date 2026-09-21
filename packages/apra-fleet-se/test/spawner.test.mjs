@@ -245,24 +245,24 @@ describe('buildSprintArgv', () => {
         assert.ok(!args.includes('--expect-beads'));
     });
 
-    // An operator's Azure DevOps PAT for the sprint's target project is not
-    // always stored under the provider's default secret name -- commonly it
-    // is not, once that default name is already committed to a different
+    // An operator's VCS provider credential for the sprint's target project is
+    // not always stored under the provider's default secret name -- commonly
+    // it is not, once that default name is already committed to a different
     // project. Forwarded only when the launch supplied it.
-    test('appends --azdevops-pat-secret-name when azdevopsPatSecretName is provided', () => {
+    test('appends --vcs-pat-secret-name when vcsPatSecretName is provided', () => {
         const args = buildSprintArgv({
             issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080,
-            azdevopsPatSecretName: 'fleet_bridge_azdevops_pat',
+            vcsPatSecretName: 'fleet_bridge_azdevops_pat',
         });
         assert.deepEqual(args, [
             '--issue', 'i', '--members', 'm', '--branch', 'b', '--base', 'main',
-            '--viewer-port', '8080', '--azdevops-pat-secret-name', 'fleet_bridge_azdevops_pat',
+            '--viewer-port', '8080', '--vcs-pat-secret-name', 'fleet_bridge_azdevops_pat',
         ]);
     });
 
-    test('omits --azdevops-pat-secret-name entirely when azdevopsPatSecretName is not provided (unchanged fallback behavior)', () => {
+    test('omits --vcs-pat-secret-name entirely when vcsPatSecretName is not provided (unchanged fallback behavior)', () => {
         const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080 });
-        assert.ok(!args.includes('--azdevops-pat-secret-name'));
+        assert.ok(!args.includes('--vcs-pat-secret-name'));
     });
 
     test('throws when a required flag is missing', () => {

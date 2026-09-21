@@ -66,7 +66,7 @@ If ToolSearch returns no KB tools (MCP server not running), skip these steps and
 - **Code: read-only, always.** No Edit/Write for source files, ever. Read/Grep/Glob freely
   to corroborate a check.
 - **Git: read-only.** `log`/`show`/`branch`/`config` only. Never commit, push, checkout, fetch.
-- **beads + plain git only.** No `gh`, no assuming GitHub/GitLab/Jira/Linear exist.
+- **beads + plain git only.** No `gh`, no assuming any specific issue tracker or code-hosting platform exists.
 - **beads-native vocabulary.** `issue_type`, `priority`, `status`, `blocks`, `parent-child`,
   `gate`, `assignee` -- not Scrum/kanban jargon. Your one non-beads construct is your own
   S/M/L/XL size read, labeled as judgment, not a beads field.
@@ -103,8 +103,8 @@ Semantics specific to this role:
 - Only three things hide a bead from ready work: an unclosed child, an unmet `blocks`
   dependency, or status not `open`/`in_progress`. `issue_type` never does.
 - `gate` (`bd create --type=gate --await-type=<kind> --await-id=<id>`) blocks dependents
-  until an external condition resolves. Documented await-types are GitHub-shaped; when
-  recommending a gate, describe the pattern and let the operator pick an await-type
+  until an external condition resolves. Documented await-types model a PR/CI-check shape;
+  when recommending a gate, describe the pattern and let the operator pick an await-type
   matching their actual VCS/CI.
 - Title prefixes are convention, not schema, but widely matched on: `[test]` =
   verification work; `[impl]` = implementation; `[integ]` = filed by an integration

@@ -201,7 +201,7 @@ export const KNOWN_REQUEST_KEYS = Object.freeze(new Set([
   // BRIDGE's PAT, for its own `bd ado pull/push`/REST comments); this field
   // is the ENGINE's PAT, for `provision_vcs_auth` -- see buildPostSprintBody
   // in verbs/launch.mjs, which maps this onto the engine's own
-  // `azdevops_pat_secret_name` launch arg when present.
+  // `vcs_pat_secret_name` launch field when present.
   'patSecretName',
 ]));
 
@@ -416,7 +416,7 @@ export function validateSprintRequest(req) {
 
   // Validate optional: patSecretName -- the ENGINE's own PAT/token secret
   // NAME (never a value), threaded through to the sprint engine's
-  // `azdevops_pat_secret_name` launch arg by buildPostSprintBody
+  // `vcs_pat_secret_name` launch field by buildPostSprintBody
   // (verbs/launch.mjs). Same charset guard as rest-client.mjs's own
   // secretName check (assertValidSecretName above): optional string,
   // [A-Za-z0-9_.-]+, no leading dash, excludes '}'.

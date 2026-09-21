@@ -793,3 +793,46 @@ describe('bin/fleet-bridge.mjs end-to-end', () => {
     assert.match(result.stderr, /unknown verb/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// memberDialectFor() must never answer a NAMED member with a POSIX guess.
+//
+// getSeCommands normalises a null targetOs straight into its POSIX branch
+// (packages/apra-fleet-se/fleet-sprint/se-os-commands.mjs), so the old
+// `catch { return { targetOs: null, shell: null } }` turned one transient
+// member_detail failure into POSIX quoting and {{secret.NAME}} placement
+// dispatched at what may well be a PowerShell member -- a mangled command,
+// or a mangled credential, reported as success. These two tests pin the
+// asymmetry the fix depends on: a NAMED member whose dialect cannot be
+// established is fatal; a member-LESS call (local `bd` via execBdSync with a
+// cwd, no remote shell anywhere) still legitimately answers nulls.
+//
+// APRA_FLEET_TRANSPORT=stdio makes the lookup fail deterministically and
+// offline: server-resolution.mjs honours the override and returns
+// `{mode:'stdio'}`, which mcp() refuses outright (this bridge never
+// self-spawns a stdio server), so no network, no live fleet server and no
+// dependence on whether one happens to be running on the test machine.
+// ---------------------------------------------------------------------------
+
+describe('createRealContext(): member dialect lookup failures are fatal, not a POSIX guess', () => {
+  test('a NAMED member whose os/shell cannot be resolved rejects with a BridgeError naming it', async () => {
+    const ctx = createRealContext({ env: { APRA_FLEET_TRANSPORT: 'stdio' } });
+
+    await assert.rejects(
+      () => ctx.beadsClientFor({ memberName: 'some-windows-member', callTool: null }),
+      (err) => {
+        assert.ok(err instanceof BridgeError, 'must be a BridgeError, not a raw throw');
+        assert.strictEqual(err.code, BRIDGE_ERROR_CODES.CONFIG_INVALID);
+        assert.match(err.message, /some-windows-member/);
+        assert.strictEqual(err.details.memberName, 'some-windows-member');
+        return true;
+      },
+    );
+  });
+
+  test('a member-LESS call still returns nulls and builds a local beads client', async () => {
+    const ctx = createRealContext({ env: { APRA_FLEET_TRANSPORT: 'stdio' } });
+    const beads = await ctx.beadsClientFor({ memberName: null, callTool: null });
+    assert.strictEqual(typeof beads.doltPullProbe, 'function');
+  });
+});

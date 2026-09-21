@@ -404,12 +404,23 @@ export function createBeadsClient({
 
   /**
    * `bd list --json`, scoped by the given filters.
-   * @param {{ status?: string, createdAfter?: string, labels?: string|string[], limit?: number, parent?: string, type?: string }} [opts]
+   * @param {{ all?: boolean, status?: string, createdAfter?: string, labels?: string|string[], limit?: number, parent?: string, type?: string }} [opts]
    * @returns {Promise<any[]>}
    */
-  async function list({ status, createdAfter, labels, limit, parent, type } = {}) {
+  async function list({ all, status, createdAfter, labels, limit, parent, type } = {}) {
     const args = ['list', '--json'];
-    if (status) args.push('--status', status);
+    // WHY `all` exists: `bd list` defaults to OPEN issues only -- a closed
+    // bead is simply absent from an unfiltered result, which reads
+    // identically to "no such bead". `--all` is bd's own documented flag for
+    // "show all issues including closed (overrides default filter)"; it is
+    // preferred over enumerating every status by name in `--status` because
+    // that enumeration silently goes stale the day beads gains a new status.
+    // Added for ingest.mjs's synthetic-root reuse lookup, which must SEE a
+    // closed root in order to refuse rather than silently create a duplicate.
+    // `--all` overrides bd's default filter, so an explicit `status` alongside
+    // it would be contradictory: `all` wins and `status` is not sent.
+    if (all) args.push('--all');
+    else if (status) args.push('--status', status);
     if (parent) args.push('--parent', parent);
     // `type` (bug|feature|task|epic|chore|decision) is safe-charset, added
     // for ingest.mjs's synthetic-root reuse lookup (resolveRoot), which needs

@@ -657,3 +657,161 @@ describe('runWatch: the blob-sink gate (single-writer enforcement)', () => {
     assert.strictEqual(shared.received.length, 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The blob-sink gate must compare CLAIM IDENTITY, not merely "a claim exists".
+//
+// daemon.mjs self-claims a sprint immediately before calling runWatch, so
+// under the old gate the doc ALWAYS carried the daemon's own claim and the
+// daemon dropped its append-blob sink on every single sprint -- the durable
+// remote log was dead code in the only long-lived deployment. The first test
+// below is the one that fails against that version.
+// ---------------------------------------------------------------------------
+
+describe('runWatch: the blob-sink gate compares claim identity', () => {
+  test('KEEPS the shared sink when the live claim is this caller own', async () => {
+    const supervisorClient = makeFakeSupervisorClient({
+      getSprintResponses: [terminalSprint(stateWithPhase('Done'))],
+    });
+    const shared = makeRecordingSink('blob');
+    const local = makeRecordingSink('local');
+    const spool = makeFakeSpool({
+      sprintId: 'sprint-1',
+      claim: { pid: 4242, host: 'daemon-host', claimedAt: 'now' },
+    });
+    const deps = {
+      supervisorClient,
+      spool,
+      pid: 4242,
+      host: 'daemon-host',
+      sinks: [
+        { name: 'local', sink: local },
+        { name: 'blob', sink: shared, shared: true },
+      ],
+      ...baseDeps(),
+    };
+
+    await runWatch({ sprintId: 'sprint-1' }, deps);
+
+    assert.strictEqual(local.received.length, 1);
+    assert.strictEqual(
+      shared.received.length, 1,
+      'the claim HOLDER must keep its own shared sink -- it IS the single writer',
+    );
+  });
+
+  test('DROPS the shared sink when the claim is a different pid on the same host', async () => {
+    const supervisorClient = makeFakeSupervisorClient({
+      getSprintResponses: [terminalSprint(stateWithPhase('Done'))],
+    });
+    const shared = makeRecordingSink('blob');
+    const local = makeRecordingSink('local');
+    const spool = makeFakeSpool({
+      sprintId: 'sprint-1',
+      claim: { pid: 111, host: 'daemon-host', claimedAt: 'now' },
+    });
+    const deps = {
+      supervisorClient,
+      spool,
+      pid: 999,
+      host: 'daemon-host',
+      sinks: [
+        { name: 'local', sink: local },
+        { name: 'blob', sink: shared, shared: true },
+      ],
+      ...baseDeps(),
+    };
+
+    await runWatch({ sprintId: 'sprint-1' }, deps);
+
+    assert.strictEqual(local.received.length, 1, 'local-only sink stays enabled');
+    assert.strictEqual(shared.received.length, 0, 'a foreign claim still gates the shared sink');
+  });
+
+  test('DROPS the shared sink when the caller supplies no identity at all (fail safe)', async () => {
+    const supervisorClient = makeFakeSupervisorClient({
+      getSprintResponses: [terminalSprint(stateWithPhase('Done'))],
+    });
+    const shared = makeRecordingSink('blob');
+    const spool = makeFakeSpool({
+      sprintId: 'sprint-1',
+      claim: { pid: 4242, host: 'daemon-host', claimedAt: 'now' },
+    });
+    const deps = {
+      supervisorClient,
+      spool,
+      sinks: [{ name: 'local', sink: makeRecordingSink('local') }, { name: 'blob', sink: shared, shared: true }],
+      ...baseDeps(),
+    };
+
+    await runWatch({ sprintId: 'sprint-1' }, deps);
+
+    assert.strictEqual(
+      shared.received.length, 0,
+      'no identity means no proof of ownership -- every claim is treated as foreign',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The getLog fallback must CLASSIFY a terminal log, not hardcode 'unknown'.
+//
+// With health pinned to 'unknown', a reachable getLog set gotData on every
+// tick and reset the failure clock, so the WATCH_LOST give-up was
+// unreachable and this loop polled forever on a sprint that had plainly
+// died -- and daemon.mjs's runWorker then skipped finalize entirely because
+// reachedTerminal was false. The first test below hangs (never returns)
+// against that version; the second pins that an UNDECIDED tail must still
+// keep polling, so the fix cannot overshoot into "any log ends the watch".
+// ---------------------------------------------------------------------------
+
+describe('runWatch: the getLog fallback classifies a terminal log', () => {
+  test('a tail carrying "Sprint failed:" ends the loop with a terminal verdict', async () => {
+    const supervisorClient = makeFakeSupervisorClient({
+      getSprintResponses: [null],
+      getLogResponses: ['... engine output ...\nSprint failed: Error: goal beads never closed\n    at run (x.mjs:1:1)\n'],
+    });
+    const local = makeRecordingSink('local');
+    const deps = { supervisorClient, sinks: [{ name: 'local', sink: local }], ...baseDeps() };
+
+    const result = await runWatch({ sprintId: 'sprint-1' }, deps);
+
+    assert.strictEqual(result.health, 'terminal', 'a decisive log marker is terminal, never unknown');
+    assert.strictEqual(result.verdict, 'failed');
+    assert.strictEqual(result.reason, 'Error: goal beads never closed');
+    assert.strictEqual(
+      supervisorClient.getLogCalls.length, 1,
+      'the loop must exit on the first decisive tail, not keep polling',
+    );
+  });
+
+  test('a tail carrying "Sprint finished:" also ends the loop', async () => {
+    const supervisorClient = makeFakeSupervisorClient({
+      getSprintResponses: [null],
+      getLogResponses: ['Sprint finished: { verdict: "APPROVED" }\n'],
+    });
+    const deps = { supervisorClient, sinks: [{ name: 'local', sink: makeRecordingSink('local') }], ...baseDeps() };
+
+    const result = await runWatch({ sprintId: 'sprint-1' }, deps);
+
+    assert.strictEqual(result.health, 'terminal');
+    assert.strictEqual(result.verdict, 'completed');
+  });
+
+  test('an UNDECIDED tail keeps polling and still reports health unknown', async () => {
+    // getSprint answers null twice, then a real terminal sprint -- so the
+    // undecided tail must NOT have ended the run on tick 1 or 2.
+    const supervisorClient = makeFakeSupervisorClient({
+      getSprintResponses: [null, null, terminalSprint(stateWithPhase('Done'))],
+      getLogResponses: ['still running, nothing decisive here'],
+    });
+    const local = makeRecordingSink('local');
+    const deps = { supervisorClient, sinks: [{ name: 'local', sink: local }], ...baseDeps() };
+
+    const result = await runWatch({ sprintId: 'sprint-1' }, deps);
+
+    assert.strictEqual(supervisorClient.getLogCalls.length, 2, 'both undecided ticks kept polling');
+    assert.strictEqual(local.received[0].health, 'unknown');
+    assert.strictEqual(result.health, 'terminal');
+  });
+});

@@ -20,10 +20,12 @@
 //   working perfectly -- every record "succeeded" the moment it was buffered.
 //
 // The reconciliation: failures stay non-fatal, but they stop being quiet.
-// A sink that chooses to publish a `health()` surface (today
-// `append-blob.mjs`) gets watched; once it has failed `unhealthyAfter`
-// consecutive flushes it is escalated through two channels that a human
-// actually sees:
+// A sink that chooses to publish a `health()` surface (`append-blob.mjs`
+// and `jsonl-file.mjs`) gets watched; once it has failed `unhealthyAfter`
+// consecutive flushes -- or ONCE, if it reports `terminal: true`, meaning
+// the failure cannot self-heal (a dead file descriptor, as opposed to a
+// 500 the next flush retries) -- it is escalated through two channels that
+// a human actually sees:
 //
 //   1. A MULTI-LINE BANNER on the injected log. Deliberately a banner and
 //      not a one-liner: `watch` runs for days and logs on every tick, and a
@@ -85,8 +87,8 @@ function since(from, to) {
 /**
  * Read one entry's `health()` without letting a malformed sink break the
  * monitor. A sink with no `health()` is not a failure -- it has simply not
- * opted in (the local JSONL sink has no remote to fail against), and is
- * skipped.
+ * opted in, and is skipped. (Both shipped sinks publish one: `append-blob`
+ * for a failing remote, `jsonl-file` for a dead local append stream.)
  * @param {{name: string, sink: object}} entry
  * @returns {object|null}
  */
@@ -185,7 +187,14 @@ export function createSinkHealthMonitor({
         const st = stateFor(h.name);
         const t = now();
         const failures = typeof h.consecutiveFailures === 'number' ? h.consecutiveFailures : 0;
-        const isDown = h.healthy === false && failures >= unhealthyAfter;
+        // `terminal` (published by `jsonl-file.mjs`) means the failure
+        // CANNOT self-heal: the sink's file descriptor is dead, so there is
+        // no "next flush" that might succeed. `unhealthyAfter` exists to
+        // ride out a transient 500 on a retrying remote sink; applying it to
+        // a terminal failure would mean a local mirror that has stopped
+        // writing entirely is escalated only if it happens to fail three
+        // more times -- which it never will, because it never tries again.
+        const isDown = h.healthy === false && (h.terminal === true || failures >= unhealthyAfter);
 
         if (isDown) {
           const firstTime = !st.degraded;
@@ -199,27 +208,40 @@ export function createSinkHealthMonitor({
           if (!firstTime && !dueForRepeat) continue;
 
           const peers = peerNames(list, h.name);
+          const terminal = h.terminal === true;
           log(banner(firstTime ? `PROGRESS SINK DEGRADED: ${h.name}` : `PROGRESS SINK STILL DEGRADED: ${h.name}`, [
-            `Sink "${h.name}" has failed ${failures} consecutive flush attempt(s).`,
+            terminal
+              ? `Sink "${h.name}" has FAILED PERMANENTLY (${failures} write error(s)); it will not retry by itself.`
+              : `Sink "${h.name}" has failed ${failures} consecutive flush attempt(s).`,
             `Down for: ${since(st.degradedSince, t)}.`,
             `Records waiting in memory and NOT yet remote: ${describePending(h.pendingRecords)}.`,
+            ...(typeof h.droppedRecords === 'number'
+              ? [`Records DROPPED and unrecoverable since the failure: ${h.droppedRecords}.`]
+              : []),
             `Last failure: ${h.lastFailure || 'not reported'}.`,
             h.target ? `Target: ${h.target}.` : 'Target: not reported.',
             peers.length > 0
-              ? `Still writing normally: ${peers.join(', ')} -- the sprint log is NOT lost, only its remote copy is stale.`
+              ? `Still writing normally: ${peers.join(', ')} -- the sprint log is NOT lost, only this copy of it is.`
               : 'NO other sink is running -- progress for this sprint is being recorded nowhere.',
             'The sprint itself is unaffected and continues. This is an observability failure, not a sprint failure.',
-            'Fix: check the SAS expiry, the container name, and this machine\'s network egress, then restart watch/daemon',
-            '(the sink resumes from its cursor, so a restart does not duplicate records).',
+            terminal
+              ? 'Fix: check free disk space and write permission on the path above, then restart watch/daemon'
+              : 'Fix: check the SAS expiry, the container name, and this machine\'s network egress, then restart watch/daemon',
+            terminal
+              ? '(a restart reopens the file in append mode; records dropped while it was down are gone).'
+              : '(the sink resumes from its cursor, so a restart does not duplicate records).',
           ]));
           st.lastAlertAt = t;
           // eslint-disable-next-line no-await-in-loop
           await fire([
-            `**Remote progress sink "${h.name}" is failing.**`,
+            terminal
+              ? `**Progress sink "${h.name}" has failed permanently and is writing nothing.**`
+              : `**Remote progress sink "${h.name}" is failing.**`,
             '',
-            `- Consecutive failed flushes: ${failures}`,
+            terminal ? `- Write errors: ${failures} (the sink does not retry by itself)` : `- Consecutive failed flushes: ${failures}`,
             `- Down for: ${since(st.degradedSince, t)}`,
             `- Records not yet remote: ${describePending(h.pendingRecords)}`,
+            ...(typeof h.droppedRecords === 'number' ? [`- Records dropped and unrecoverable: ${h.droppedRecords}`] : []),
             `- Last failure: ${h.lastFailure || 'not reported'}`,
             peers.length > 0 ? `- Still writing normally: ${peers.join(', ')}` : '- No other sink is running.',
             '',
@@ -260,8 +282,13 @@ export function createSinkHealthMonitor({
           log(banner(`PROGRESS SINK ENDED DEGRADED: ${h.name}`, [
             `Sink "${h.name}" was still failing when this run ended (${h.consecutiveFailures} consecutive failure(s)).`,
             `Records never written remotely: ${describePending(h.pendingRecords)}.`,
+            ...(typeof h.droppedRecords === 'number'
+              ? [`Records dropped and unrecoverable: ${h.droppedRecords}.`]
+              : []),
             `Last failure: ${h.lastFailure || 'not reported'}.`,
-            'The remote log for this sprint is INCOMPLETE. Use the local JSONL mirror as the record of what happened.',
+            h.terminal === true
+              ? 'This sink\'s copy of the sprint log is INCOMPLETE. Check whether any OTHER sink above ended healthy.'
+              : 'The remote log for this sprint is INCOMPLETE. Use the local JSONL mirror as the record of what happened.',
           ]));
         } else if (st.everDegraded) {
           log(`[sink-health] sink "${h.name}" recovered before the end of this run; ${h.successfulFlushes ?? 'some'} flush(es) landed in total.`);

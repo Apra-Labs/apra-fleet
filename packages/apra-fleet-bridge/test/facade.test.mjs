@@ -164,6 +164,98 @@ describe('createAdapterFacade: contract test against the REAL registry adapter',
 });
 
 // ---------------------------------------------------------------------------
+// A non-2xx result is DATA, not a throw (rest-client.mjs / azure-devops.mjs)
+// -- so the try/catch above never fires for a 401/403/404. Before this fix
+// that made every such failure completely invisible: no log line at all.
+// These tests drive the REAL registry adapter (same rationale as the
+// contract-test block above) so the exact `{ status, body }` shape a real
+// REST failure resolves to is what is under test, not a fake's guess at it.
+// ---------------------------------------------------------------------------
+
+describe('createAdapterFacade: a non-2xx response is logged, not swallowed', () => {
+  test('comment() logs a 403, naming the operation, the work item, and the status', async () => {
+    const AzureDevOpsBridgeAdapter = getBridgeAdapter('azure-devops');
+    const resolved = AzureDevOpsBridgeAdapter.resolveRequest(validAdoEnv());
+    const restClient = makeFakeRestClient({ status: 403, body: '{"message":"Access Denied: no permission to comment"}' });
+    const log = makeLog();
+    const facade = createAdapterFacade({ adapter: AzureDevOpsBridgeAdapter, resolved, restClient, log });
+
+    await facade.comment('hello');
+
+    const line = log.lines.find((l) => /comment\(\)/.test(l) && /status=403/.test(l));
+    assert.ok(line, `expected a logged non-2xx line naming comment() and status=403; got: ${JSON.stringify(log.lines)}`);
+    assert.match(line, /workItemId=WI-1/);
+    assert.match(line, /Access Denied/);
+  });
+
+  test('comment() logs a 404 distinctly from a 403 -- permission vs wrong id must read differently', async () => {
+    const AzureDevOpsBridgeAdapter = getBridgeAdapter('azure-devops');
+    const resolved = AzureDevOpsBridgeAdapter.resolveRequest(validAdoEnv());
+    const restClient = makeFakeRestClient({ status: 404, body: 'work item WI-1 does not exist' });
+    const log = makeLog();
+    const facade = createAdapterFacade({ adapter: AzureDevOpsBridgeAdapter, resolved, restClient, log });
+
+    await facade.comment('hello');
+
+    const line = log.lines.find((l) => /comment\(\)/.test(l) && /status=404/.test(l));
+    assert.ok(line, `expected a logged non-2xx line naming comment() and status=404; got: ${JSON.stringify(log.lines)}`);
+    assert.ok(!log.lines.some((l) => /status=403/.test(l)), 'a 404 must never be reported as a 403');
+  });
+
+  test('a 2xx comment() response stays quiet -- no non-2xx line is logged', async () => {
+    const AzureDevOpsBridgeAdapter = getBridgeAdapter('azure-devops');
+    const resolved = AzureDevOpsBridgeAdapter.resolveRequest(validAdoEnv());
+    const restClient = makeFakeRestClient({ status: 201, body: '{"id":1}' });
+    const log = makeLog();
+    const facade = createAdapterFacade({ adapter: AzureDevOpsBridgeAdapter, resolved, restClient, log });
+
+    await facade.comment('hello');
+
+    assert.ok(!log.lines.some((l) => /non-2xx/.test(l)), `expected no non-2xx log line for a 2xx result; got: ${JSON.stringify(log.lines)}`);
+  });
+
+  test('setBuildStatus() is covered symmetrically -- a 403 is logged naming the operation and status', async () => {
+    const AzureDevOpsBridgeAdapter = getBridgeAdapter('azure-devops');
+    const resolved = AzureDevOpsBridgeAdapter.resolveRequest(validAdoEnv());
+    const restClient = makeFakeRestClient({ status: 403, body: 'Access Denied' });
+    const log = makeLog();
+    const facade = createAdapterFacade({ adapter: AzureDevOpsBridgeAdapter, resolved, restClient, log });
+
+    await facade.setBuildStatus('succeeded', 'https://example.invalid/build/1');
+
+    const line = log.lines.find((l) => /setBuildStatus\(\)/.test(l) && /status=403/.test(l));
+    assert.ok(line, `expected a logged non-2xx line naming setBuildStatus() and status=403; got: ${JSON.stringify(log.lines)}`);
+  });
+
+  test('a 2xx setBuildStatus() response stays quiet too', async () => {
+    const AzureDevOpsBridgeAdapter = getBridgeAdapter('azure-devops');
+    const resolved = AzureDevOpsBridgeAdapter.resolveRequest(validAdoEnv());
+    const restClient = makeFakeRestClient({ status: 200, body: '' });
+    const log = makeLog();
+    const facade = createAdapterFacade({ adapter: AzureDevOpsBridgeAdapter, resolved, restClient, log });
+
+    await facade.setBuildStatus('succeeded');
+
+    assert.ok(!log.lines.some((l) => /non-2xx/.test(l)), `expected no non-2xx log line for a 2xx result; got: ${JSON.stringify(log.lines)}`);
+  });
+
+  test('a non-2xx body is redacted before it reaches the log -- a SAS signature must never leak', async () => {
+    const AzureDevOpsBridgeAdapter = getBridgeAdapter('azure-devops');
+    const resolved = AzureDevOpsBridgeAdapter.resolveRequest(validAdoEnv());
+    const leakedBody = 'see https://acct.blob.core.windows.net/c/b?sv=2025-01-01&sig=super-secret-signature for details';
+    const restClient = makeFakeRestClient({ status: 500, body: leakedBody });
+    const log = makeLog();
+    const facade = createAdapterFacade({ adapter: AzureDevOpsBridgeAdapter, resolved, restClient, log });
+
+    await facade.comment('hello');
+
+    const all = log.lines.join('\n');
+    assert.ok(!all.includes('super-secret-signature'), `a SAS signature leaked into the log: ${all}`);
+    assert.match(all, /sig=\[REDACTED\]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // capabilities().canComment: false -- comment() must degrade to a no-op.
 // ---------------------------------------------------------------------------
 

@@ -396,27 +396,31 @@ describe('--service-url flag (apra-fleet-f34.1)', () => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// --azdevops-pat-secret-name flag: lets an operator override the Azure
-// DevOps provider's default PAT secret name when their PAT for THIS project
-// is not stored under it (e.g. that default name is already committed to a
-// different project). Forwarded straight through to args.azdevops_pat_secret_name,
-// which sprint-args.mjs already validates and threads into
-// provisionVcsAuthForMember()'s secretName. Absent, provisioning falls back
-// to the provider's own DEFAULT_PAT_SECRET, unchanged from before this flag
-// existed.
+// --vcs-pat-secret-name flag: lets an operator override the VCS provider's
+// default PAT/token secret name when their credential for THIS project is
+// not stored under it (e.g. that default name is already committed to a
+// different project). This CLI flag is public engine surface and must stay
+// provider-neutral (docs/generic-engine-boundary.md), so it maps onto
+// buildRunnerArgs' `vcsPatSecretName` option -- but the produced runner arg
+// stays `args.azdevops_pat_secret_name`, sprint-args.mjs's own pre-existing
+// internal key (unrelated to this rename, deliberately left as-is; see
+// buildRunnerArgs()'s comment in bin/cli.mjs). sprint-args.mjs already
+// validates and threads it into provisionVcsAuthForMember()'s secretName.
+// Absent, provisioning falls back to the provider's own DEFAULT_PAT_SECRET,
+// unchanged from before this flag existed.
 // ---------------------------------------------------------------------------
 
-describe('--azdevops-pat-secret-name flag', () => {
-    test('parseCliArgs accepts --azdevops-pat-secret-name', () => {
-        const { values } = parseCliArgs([...BASE_ARGV, '--azdevops-pat-secret-name', 'fleet_bridge_azdevops_pat']);
-        assert.strictEqual(values['azdevops-pat-secret-name'], 'fleet_bridge_azdevops_pat');
+describe('--vcs-pat-secret-name flag', () => {
+    test('parseCliArgs accepts --vcs-pat-secret-name', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--vcs-pat-secret-name', 'fleet_bridge_azdevops_pat']);
+        assert.strictEqual(values['vcs-pat-secret-name'], 'fleet_bridge_azdevops_pat');
     });
 
-    test('buildRunnerArgs threads --azdevops-pat-secret-name through as args.azdevops_pat_secret_name', () => {
+    test('buildRunnerArgs threads --vcs-pat-secret-name through as args.azdevops_pat_secret_name', () => {
         const args = buildRunnerArgs({
             targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
             goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
-            azdevopsPatSecretName: 'fleet_bridge_azdevops_pat',
+            vcsPatSecretName: 'fleet_bridge_azdevops_pat',
         });
         assert.strictEqual(args.azdevops_pat_secret_name, 'fleet_bridge_azdevops_pat');
 
@@ -429,7 +433,7 @@ describe('--azdevops-pat-secret-name flag', () => {
         const args = buildRunnerArgs({
             targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
             goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
-            azdevopsPatSecretName: undefined,
+            vcsPatSecretName: undefined,
         });
         assert.strictEqual('azdevops_pat_secret_name' in args, false);
 

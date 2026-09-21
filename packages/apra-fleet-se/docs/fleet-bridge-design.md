@@ -77,7 +77,15 @@ rejects unknown keys loudly:
 | `run_id` | no | branch | the ledger's sprintId |
 
 Note `azdevops_pat_secret_name`: a per-sprint credential-name override already
-exists, so multi-tenant use needs no engine change.
+exists, so multi-tenant use needs no engine change. This is the ENGINE's own
+internal arg key (`sprint-args.mjs`'s `KNOWN_ARG_KEYS`), left unrenamed as
+engine-internal surface. The supervisor's public `POST /api/sprints` HTTP
+field the bridge actually sends is `vcs_pat_secret_name` (provider-neutral;
+the supervisor maps it onto this internal key -- see
+`docs/cli-reference.md` and `src/supervisor/api.mjs`'s
+`resolveVcsPatSecretName()`). The supervisor also still accepts the bridge's
+prior `azdevops_pat_secret_name` spelling as a deprecated alias for one
+release, so an unmigrated bridge keeps working.
 
 Other routes the bridge uses:
 

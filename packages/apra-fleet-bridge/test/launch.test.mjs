@@ -241,14 +241,14 @@ describe('buildPostSprintBody', () => {
     assert.strictEqual(body.overrideRelaunchGate, true);
   });
 
-  test('maps patSecretName onto the engine\'s azdevops_pat_secret_name arg when present', () => {
+  test('maps patSecretName onto the engine\'s vcs_pat_secret_name arg when present', () => {
     const body = buildPostSprintBody(makeRequest({ patSecretName: 'fleet_bridge_azdevops_pat' }), 'ado_toy-e3z', false);
-    assert.strictEqual(body.azdevops_pat_secret_name, 'fleet_bridge_azdevops_pat');
+    assert.strictEqual(body.vcs_pat_secret_name, 'fleet_bridge_azdevops_pat');
   });
 
-  test('omits azdevops_pat_secret_name entirely when patSecretName is not configured -- never forwards undefined', () => {
+  test('omits vcs_pat_secret_name entirely when patSecretName is not configured -- never forwards undefined', () => {
     const body = buildPostSprintBody(makeRequest(), 'ado_toy-e3z', false);
-    assert.strictEqual(Object.prototype.hasOwnProperty.call(body, 'azdevops_pat_secret_name'), false);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(body, 'vcs_pat_secret_name'), false);
   });
 
   test('never forwards patSecretName under its own name', () => {
@@ -276,7 +276,7 @@ describe('buildPostSprintBody', () => {
     assert.deepStrictEqual(
       Object.keys(body).sort(),
       [
-        'azdevops_pat_secret_name',
+        'vcs_pat_secret_name',
         'base',
         'branch',
         'budget',
@@ -372,7 +372,7 @@ describe('runLaunch', () => {
       deps
     );
 
-    assert.strictEqual(supervisorClient.postSprintCalls[0].azdevops_pat_secret_name, 'fleet_bridge_azdevops_pat');
+    assert.strictEqual(supervisorClient.postSprintCalls[0].vcs_pat_secret_name, 'fleet_bridge_azdevops_pat');
     assert.strictEqual(
       Object.prototype.hasOwnProperty.call(supervisorClient.postSprintCalls[0], 'patSecretName'),
       false

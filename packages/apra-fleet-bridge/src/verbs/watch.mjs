@@ -66,7 +66,11 @@
 //    successful `getLog` call (even one that returns no text -- see
 //    supervisor-client.mjs: 404 there means "no log file", not "supervisor
 //    down") still counts as a reachable supervisor and yields a snapshot
-//    carrying the log tail with `health: 'unknown'`.
+//    carrying the log tail. That tail is first classified for the engine's
+//    own terminal markers (snapshot.mjs's `snapshotFromLogTail()`, shared
+//    with status.mjs): a decisive 'Sprint failed:' / 'Sprint finished:'
+//    line ends the loop with a terminal verdict, and only a genuinely
+//    undecided tail yields `health: 'unknown'` and keeps polling.
 //
 // 3. GIVE UP ONLY ON PERSISTENT FAILURE. A tick fails only when BOTH
 //    `getSprint` and its `getLog` fallback fail to produce anything (either
@@ -85,7 +89,7 @@ import { BridgeError, BRIDGE_ERROR_CODES } from '../errors.mjs';
 import { createSinkFan } from '../sinks/index.mjs';
 import { createSinkHealthMonitor } from '../sinks/health.mjs';
 import { createBackoff, createPhaseGate } from '../throttle.mjs';
-import { toProgressSnapshot, buildFallbackSnapshot, UNKNOWN_PHASE } from '../snapshot.mjs';
+import { toProgressSnapshot, snapshotFromLogTail, UNKNOWN_PHASE } from '../snapshot.mjs';
 
 /** Give-up threshold: how long the supervisor may be UNREACHABLE (never
  *  merely "sprint not found yet") before this verb throws WATCH_LOST. */
@@ -152,7 +156,7 @@ export function validateWatchOpts(opts) {
  * `shared: true` entry -- see `applySinkGate()`.
  *
  * @param {object} deps
- * @returns {{ supervisorClient: object, sinkEntries: object[], sleep: Function, now: Function, adapter: object|null, spool: object|null, log: Function, signal: object|null }}
+ * @returns {{ supervisorClient: object, sinkEntries: object[], sleep: Function, now: Function, adapter: object|null, spool: object|null, log: Function, signal: object|null, pid: number|null, host: string|null }}
  * @throws {BridgeError} CONFIG_MISSING
  */
 function validateWatchDeps(deps) {
@@ -201,7 +205,15 @@ function validateWatchDeps(deps) {
   // cancellation existed (see the file header).
   const signal = d.signal && typeof d.signal === 'object' ? d.signal : null;
 
-  return { supervisorClient, sinkEntries: d.sinks, sleep: d.sleep, now: d.now, adapter, spool, log, signal };
+  // The CALLER'S OWN identity, for the blob-sink gate only (see
+  // `applySinkGate()`). Optional and deliberately not required: a caller
+  // that omits it is not misconfigured, it simply cannot prove it owns the
+  // claim, and the gate then treats every claim as foreign -- exactly the
+  // behaviour every caller had before this existed.
+  const pid = typeof d.pid === 'number' && Number.isFinite(d.pid) ? d.pid : null;
+  const host = typeof d.host === 'string' && d.host.length > 0 ? d.host : null;
+
+  return { supervisorClient, sinkEntries: d.sinks, sleep: d.sleep, now: d.now, adapter, spool, log, signal, pid, host };
 }
 
 // ---------------------------------------------------------------------------
@@ -225,13 +237,31 @@ function validateWatchDeps(deps) {
 //
 // The gate: if ANY entry in `deps.sinks` is marked `shared: true`, this verb
 // reads the spool's claim record for this sprint via the injected
-// `deps.spool.read(sprintId)`. If a claim is present (non-null) --
-// interpreted here as "a live watcher/daemon already owns this sprint's
-// remote log", since `watch` itself has no liveness probe to second-guess
-// that claim (spool.mjs's own `claim()` refuses to make that call without
-// one) -- every `shared: true` entry is dropped from the fan BEFORE
-// `createSinkFan()` is ever called, so the shared sink can never be enabled
-// for this run at all. Every other entry (local-only) still runs.
+// `deps.spool.read(sprintId)`. A FOREIGN claim -- one whose `{pid, host}`
+// is not this caller's -- means another live watcher/daemon already owns
+// this sprint's remote log, and every `shared: true` entry is dropped from
+// the fan BEFORE `createSinkFan()` is ever called, so the shared sink can
+// never be enabled for this run at all. Every other entry (local-only)
+// still runs. `watch` has no liveness probe to second-guess a foreign
+// claim (spool.mjs's own `claim()` refuses to make that call without one),
+// so a foreign claim is always believed.
+//
+// WHY IDENTITY, AND NOT MERELY "A CLAIM EXISTS". The gate originally
+// dropped the shared sink whenever ANY claim was present. But daemon.mjs
+// self-claims the sprint immediately before it calls `runWatch` -- so by
+// the time this ran, the doc ALWAYS carried the daemon's own claim, and
+// the daemon therefore dropped its append-blob sink on every single
+// sprint. The durable remote log was dead code in the only long-lived
+// deployment this package has. The gate was not backwards -- an ad hoc
+// terminal `watch` racing a live daemon IS correctly gated, and still is --
+// it was over-broad: it could not tell the owner from a stray.
+//
+// FAIL SAFE WHEN IDENTITY IS ABSENT: `deps.pid`/`deps.host` are optional,
+// and a caller supplying neither cannot prove ownership, so any claim is
+// treated as foreign. That is the pre-identity behaviour exactly, and it is
+// the conservative direction to be wrong in: a needlessly disabled remote
+// sink costs one operator their durable copy, while a wrongly enabled one
+// corrupts the shared `appendpos` cursor for everyone.
 //
 // A `deps.spool` with no `read()` method is only an error if a shared sink
 // actually needs gating; a run with no shared sinks configured never touches
@@ -257,11 +287,19 @@ async function applySinkGate(sinkEntries, opts, deps) {
   }
 
   const doc = await deps.spool.read(opts.sprintId);
-  const liveClaimExists = Boolean(doc && doc.claim);
-  if (!liveClaimExists) return sinkEntries;
+  const claim = doc && doc.claim && typeof doc.claim === 'object' ? doc.claim : null;
+  if (!claim) return sinkEntries;
+
+  const ownClaim = deps.pid !== null && deps.pid !== undefined
+    && deps.host !== null && deps.host !== undefined
+    && claim.pid === deps.pid && claim.host === deps.host;
+  if (ownClaim) {
+    deps.log(`[watch] the live spool claim on sprint "${opts.sprintId}" is this caller's own (pid ${deps.pid} on ${deps.host}) -- keeping shared sink(s) enabled; the single-writer invariant is satisfied by being that single writer`);
+    return sinkEntries;
+  }
 
   const sharedNames = sharedEntries.map((e) => e.name).join(', ');
-  deps.log(`[watch] a live spool claim exists for sprint "${opts.sprintId}" -- disabling shared sink(s) [${sharedNames}] to protect the single-writer invariant; local-only sinks remain enabled`);
+  deps.log(`[watch] a FOREIGN spool claim exists for sprint "${opts.sprintId}" (claim pid ${claim.pid} on ${claim.host}; this caller is pid ${deps.pid ?? 'unknown'} on ${deps.host ?? 'unknown'}) -- disabling shared sink(s) [${sharedNames}] to protect the single-writer invariant; local-only sinks remain enabled`);
   return sinkEntries.filter((e) => !(e && e.shared === true));
 }
 
@@ -359,6 +397,12 @@ async function sleepInterruptible(ms, sleep, signal) {
  *        one that is actually wired in.
  *   sinks: Array<{ name: string, sink: object, shared?: boolean }>,
  *   spool?: { read: (sprintId: string) => Promise<object|undefined> },
+ *   pid?: number,
+ *   host?: string,
+ *     -- this caller's own identity, compared against the spool claim's
+ *        `{pid, host}` by the blob-sink gate so the claim HOLDER keeps its
+ *        shared sink while a stray watcher's is dropped. Omit both and
+ *        every claim is treated as foreign (see `applySinkGate()`).
  *   sleep: (ms: number) => Promise<void>,
  *   now: () => number,
  *   log?: (msg: string) => void,
@@ -376,9 +420,9 @@ async function sleepInterruptible(ms, sleep, signal) {
  */
 export async function runWatch(opts, deps) {
   const { sprintId, giveUpMs, logTailLines } = validateWatchOpts(opts);
-  const { supervisorClient, sinkEntries, sleep, now, adapter, spool, log, signal } = validateWatchDeps(deps);
+  const { supervisorClient, sinkEntries, sleep, now, adapter, spool, log, signal, pid, host } = validateWatchDeps(deps);
 
-  const gatedEntries = await applySinkGate(sinkEntries, { sprintId }, { spool, log });
+  const gatedEntries = await applySinkGate(sinkEntries, { sprintId }, { spool, log, pid, host });
   const sinkFan = createSinkFan({ sinks: gatedEntries, log });
 
   // WHY A HEALTH MONITOR AND NOT JUST THE FAN'S stats(): the fan counts an
@@ -459,7 +503,15 @@ export async function runWatch(opts, deps) {
           // an answer, per supervisor-client.mjs) -- that is reachability,
           // whether or not there is any text to show.
           gotData = true;
-          snapshot = buildFallbackSnapshot(sprintId, logTail ?? null, now());
+          // Classify BEFORE settling for `health: 'unknown'` -- a tail
+          // carrying the engine's own 'Sprint failed:' marker is decisive
+          // terminal evidence. Getting this wrong here does not merely
+          // mislabel a snapshot: a reachable-but-empty getLog() sets
+          // `gotData` and resets the failure clock on every tick, so the
+          // WATCH_LOST give-up below is unreachable and this loop polls
+          // forever. Shared with status.mjs via snapshotFromLogTail(); see
+          // its own doc comment for why it is one function.
+          snapshot = snapshotFromLogTail(sprintId, logTail ?? null, now());
         }
       }
 
@@ -528,7 +580,12 @@ export async function runWatch(opts, deps) {
           }
         }
 
-        if (sprint && sprint.terminal === true) {
+        // Two independent ways this run is over. The supervisor's own
+        // `terminal` flag is the structured one; a snapshot whose health is
+        // already 'terminal' is the evidence-derived one (the log-tail
+        // classification above), and it is the ONLY exit available once
+        // `getSprint` has stopped answering for this sprint at all.
+        if ((sprint && sprint.terminal === true) || snapshot.health === 'terminal') {
           return snapshot;
         }
       }

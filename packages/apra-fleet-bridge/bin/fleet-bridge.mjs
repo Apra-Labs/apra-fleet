@@ -235,9 +235,9 @@ export function createRealContext({ env = process.env } = {}) {
 
   /** `fs.createWriteStream` needs its parent directory to already exist; the
    *  sink itself never creates one (see jsonl-file.mjs). */
-  function openAppendStream(filePath) {
+  function openAppendStream(filePath, onError) {
     mkdirSync(path.dirname(filePath), { recursive: true });
-    return realOpenAppendStream(filePath);
+    return realOpenAppendStream(filePath, onError);
   }
 
   /** The Azure Append Blob REST client, built once per process against the
@@ -289,22 +289,46 @@ export function createRealContext({ env = process.env } = {}) {
    *  rest-client.mjs's dialect selection is never a silent POSIX guess for a
    *  Windows member -- per this repo's CLAUDE.md convention
    *  (isPosixShell(agentOs, shell) / probeCommandFor(targetOs, shell)).
-   *  Returns { targetOs: null, shell: null } (getSeCommands' own POSIX
-   *  default) if the lookup fails or the member record carries neither field
-   *  -- never a hard failure over an optional diagnostic lookup. */
+   *
+   *  WHY A FAILED LOOKUP IS FATAL AND A MISSING MEMBER IS NOT. With NO
+   *  member name there is no remote shell in the picture at all: the beads
+   *  client runs `bd` locally via execBdSync with a cwd, and
+   *  { targetOs: null, shell: null } is the honest answer, not a guess. But
+   *  once a member IS named, the command we are about to build gets
+   *  dispatched at that member's shell, and getSeCommands normalises a null
+   *  OS straight into its POSIX branch (se-os-commands.mjs). So a transient
+   *  member_detail failure -- or a member record carrying neither `os` nor
+   *  `platform` -- used to send POSIX quoting and {{secret.NAME}} placement
+   *  at what may be a PowerShell member: a mangled command, or worse a
+   *  mangled credential, reported as success. Per this repo's CLAUDE.md,
+   *  "an advisory warning that never blocks is a false success", so this
+   *  now fails loudly and names the member.
+   *  @throws {BridgeError} CONFIG_INVALID when a named member's dialect
+   *    cannot be established. */
   async function memberDialectFor(memberName) {
     if (!memberName) return { targetOs: null, shell: null };
+    let detail;
     try {
       const { fleetApi } = await mcp();
       const raw = await fleetApi.memberDetail({ member_name: memberName, format: 'json' });
-      const detail = parseToolJson(raw);
-      const targetOs = (detail && (detail.os || detail.platform)) || null;
-      const shell = (detail && detail.shell) || null;
-      return { targetOs, shell };
+      detail = parseToolJson(raw);
     } catch (err) {
-      log(`[fleet-bridge] could not resolve member "${memberName}"'s os/shell (defaulting to POSIX dialect): ${safeMessage(err)}`);
-      return { targetOs: null, shell: null };
+      throw new BridgeError(
+        BRIDGE_ERROR_CODES.CONFIG_INVALID,
+        `fleet-bridge: could not resolve member "${memberName}"'s os/shell, so the command dialect (POSIX vs PowerShell) cannot be chosen safely: ${safeMessage(err)}`,
+        { memberName, cause: safeMessage(err) },
+      );
     }
+    const targetOs = (detail && (detail.os || detail.platform)) || null;
+    if (!targetOs) {
+      throw new BridgeError(
+        BRIDGE_ERROR_CODES.CONFIG_INVALID,
+        `fleet-bridge: member "${memberName}" was found but its record carries neither "os" nor "platform", so the command dialect (POSIX vs PowerShell) cannot be chosen safely`,
+        { memberName },
+      );
+    }
+    const shell = (detail && detail.shell) || null;
+    return { targetOs, shell };
   }
 
   /** `repoLocalPath` -- when given -- is threaded straight through to
@@ -564,9 +588,14 @@ async function buildObservabilityDeps({ sprintId, handle }, ctx, flags, mcpConn)
   // blob is byte-identical to the local JSONL mirror") only means anything
   // if the mirror is always written. The remote sink is additionally
   // marked `shared: true`, which makes watch.mjs's single-writer gate
-  // disable it -- and ONLY it -- when a daemon already holds a live spool
-  // claim, so a stray terminal `watch` can never corrupt the daemon's
-  // appendpos sequence while still giving that operator their local log.
+  // disable it -- and ONLY it -- when the live spool claim belongs to
+  // SOMEONE ELSE, so a stray terminal `watch` can never corrupt the
+  // daemon's appendpos sequence while still giving that operator their
+  // local log. The claim HOLDER (normally the daemon, which self-claims
+  // just before it watches) keeps the sink: the gate compares the claim's
+  // `{pid, host}` against the `pid`/`host` returned below, because "a
+  // claim exists" alone was true on every daemon-run sprint and silently
+  // killed the remote log everywhere.
   const sinks = [{ name: 'jsonl-file', sink: jsonlSink }];
   if (blob) {
     sinks.push({
@@ -584,6 +613,15 @@ async function buildObservabilityDeps({ sprintId, handle }, ctx, flags, mcpConn)
     sleep: ctx.clock.sleep,
     now: ctx.clock.now,
     log: ctx.log,
+    // THIS process's identity, for watch.mjs's blob-sink gate. Both callers
+    // of this builder (the direct `watch` table entry and the daemon's
+    // runWatch closure) are the same process, and the daemon claims the
+    // sprint with exactly these two values (`daemon`'s buildOpts below), so
+    // the gate can finally tell "I am the claim holder" from "someone else
+    // is". Without them the gate saw only "a claim exists" and disabled the
+    // daemon's own append-blob sink on every sprint.
+    pid: process.pid,
+    host: os.hostname(),
   };
 }
 
@@ -829,7 +867,21 @@ export function buildVerbTable(ctx) {
         // NEXT verb, creates) -- its only source for the repo the beads DB
         // lives in is the same `--repo-local-path` flag preflight reads.
         const beads = await c.beadsClientFor({ memberName: member, callTool, repoLocalPath: repoLocalPathFor(undefined, flags) });
-        return { beads, adapter: c.adapterFor(platform), log: c.log };
+        // The supervisor is wired in so `resolveRoot`'s reparent guard can
+        // ask which issue roots are currently RESERVED. Without it ingest
+        // still runs, but it can only warn -- and a re-ingest with a changed
+        // ref list reparents beads onto a new root, which silently shrinks
+        // the scope of a sprint that is already running (the supervisor
+        // re-expands scope by live BFS from its issue roots, so beads moving
+        // out from under it are simply gone). Injected here rather than
+        // constructed inside the verb because `bin/` is the only place that
+        // builds real I/O.
+        return {
+          beads,
+          adapter: c.adapterFor(platform),
+          supervisorClient: await c.supervisorClient(flags),
+          log: c.log,
+        };
       },
     },
 

@@ -98,14 +98,81 @@
 // the adapter call -- comment() (and setBuildStatus(), and emitProgress())
 // catch and log internally and resolve, never reject.
 //
+// -----------------------------------------------------------------------------
+// A NON-2xx RESULT IS NOT A THROW -- BUT IT MUST NOT BE SILENT EITHER
+// -----------------------------------------------------------------------------
+// adapters/azure-devops.mjs's `comment()`/`setBuildStatus()` end with a bare
+// `return deps.restClient({...})`: rest-client.mjs documents that a non-2xx
+// status is DATA, not a throw (a failed comment must never roll back a
+// successful carry-over). That means the try/catch above this section can
+// never fire for a 401/403/404/etc -- the call resolved normally, it just
+// resolved to a bad status. Before this fix that made every such failure
+// completely invisible: the promised "comment() failed (non-fatal)" log line
+// never appeared, because nothing threw. `logNonOkResponse()` below is what
+// actually inspects the resolved `{ status, body }` and logs when `status`
+// is outside 2xx -- the adapter's never-throw contract stays exactly as it
+// is; this facade is simply the first place anyone reads the numeric result
+// it already returns. A result with no numeric `status` at all (a fake used
+// by a caller/test that never populates one) is treated as "no information",
+// not as a failure, and stays quiet.
+//
 // ASCII only.
 
 import { BridgeError, BRIDGE_ERROR_CODES } from '../errors.mjs';
+import { createRedactor } from '../log-safe.mjs';
 
 const noopLog = () => {};
 
+// No known live secret VALUES are threaded through this facade (it only
+// forwards `restClient`, never a raw PAT/SAS), so this redactor's key-name
+// and URL-pattern masking (log-safe.mjs: SAS `sig=`, `scheme://user:pass@`
+// credential URLs) is what protects a logged response body -- exactly the
+// coverage the response bodies this facade ever sees could contain.
+const redactBody = createRedactor();
+
+// Short, human hints for the statuses an operator hits most often against a
+// work-item tracker -- so "403" and "404" read as different PROBLEMS, not
+// just different numbers, without making the operator go read this file.
+const STATUS_HINTS = Object.freeze({
+  401: 'unauthorized -- check the PAT/secret',
+  403: 'permission denied -- check the PAT/secret scope',
+  404: 'not found -- check the work item/build id',
+  409: 'conflict',
+  429: 'rate limited',
+});
+
 function safeMessage(err) {
   return err && err.message ? err.message : String(err);
+}
+
+function clip(str, max = 300) {
+  return str.length > max ? `${str.slice(0, max)}...` : str;
+}
+
+/**
+ * Logs a non-2xx REST result from `comment()`/`setBuildStatus()` -- the one
+ * outcome the adapter's never-throw contract otherwise leaves unreported
+ * (see "A NON-2xx RESULT IS NOT A THROW" above). Quiet for a 2xx status and
+ * for a result carrying no numeric `status` at all (nothing to report).
+ *
+ * @param {Function} log
+ * @param {string} op - 'comment' or 'setBuildStatus', so an operator can
+ *   grep on the exact call that failed.
+ * @param {string} context - identifies WHICH call, e.g. `workItemId=WI-123`
+ *   or `state=succeeded targetUrl=https://...`.
+ * @param {any} result - the adapter's resolved value; the shape this facade
+ *   understands is `{ status: number, body: any }` (rest-client.mjs).
+ */
+function logNonOkResponse(log, op, context, result) {
+  const status = result && typeof result === 'object' ? result.status : undefined;
+  if (typeof status !== 'number' || (status >= 200 && status < 300)) return;
+  const hint = STATUS_HINTS[status] ? ` (${STATUS_HINTS[status]})` : '';
+  const rawBody = result && typeof result === 'object' && 'body' in result ? result.body : undefined;
+  const bodyText = typeof rawBody === 'string'
+    ? rawBody
+    : (rawBody === undefined || rawBody === null ? '' : JSON.stringify(rawBody));
+  const safeBody = clip(redactBody(bodyText));
+  log(`[facade] ${op}() got a non-2xx response -- ${context} status=${status}${hint} body="${safeBody}"`);
 }
 
 /**
@@ -218,7 +285,9 @@ export function createAdapterFacade(ctx) {
    *   - no target work item could be resolved for this sprint.
    * A REST failure surfacing from the real adapter's comment() call is
    * likewise caught and logged, never rethrown -- see "COMMENT NEVER
-   * THROWS" above.
+   * THROWS" above. A non-2xx result that resolves normally (the adapter's
+   * deliberate contract -- see "A NON-2xx RESULT IS NOT A THROW" above) is
+   * also logged, naming the work item and status, via logNonOkResponse().
    * @param {string} markdown
    * @returns {Promise<void>}
    */
@@ -239,7 +308,8 @@ export function createAdapterFacade(ctx) {
       return;
     }
     try {
-      await adapter.comment({ resolved, workItemId: targetWorkItem, body: markdown }, { restClient });
+      const result = await adapter.comment({ resolved, workItemId: targetWorkItem, body: markdown }, { restClient });
+      logNonOkResponse(log, 'comment', `workItemId=${targetWorkItem}`, result);
     } catch (err) {
       log(`[facade] comment() failed (non-fatal): ${safeMessage(err)}`);
     }
@@ -251,7 +321,8 @@ export function createAdapterFacade(ctx) {
    * described in the build log), so it mirrors comment()'s degrade rules
    * without yet having a caller to prove them against: a missing
    * setBuildStatus() is a logged no-op, and a REST failure is caught and
-   * logged, never rethrown.
+   * logged, never rethrown. A non-2xx result that resolves normally is
+   * logged too, symmetrically with comment() -- see logNonOkResponse().
    * @param {string} state
    * @param {string} [url]
    * @returns {Promise<void>}
@@ -262,7 +333,8 @@ export function createAdapterFacade(ctx) {
       return;
     }
     try {
-      await adapter.setBuildStatus({ resolved, state, targetUrl: url }, { restClient });
+      const result = await adapter.setBuildStatus({ resolved, state, targetUrl: url }, { restClient });
+      logNonOkResponse(log, 'setBuildStatus', `state=${state}${url ? ` targetUrl=${url}` : ''}`, result);
     } catch (err) {
       log(`[facade] setBuildStatus() failed (non-fatal): ${safeMessage(err)}`);
     }
