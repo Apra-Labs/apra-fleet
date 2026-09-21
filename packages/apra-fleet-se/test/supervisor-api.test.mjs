@@ -192,6 +192,92 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    // An operator's Azure DevOps PAT for the sprint's target project is not
+    // always stored under the provider's default secret name -- commonly it
+    // is not, once that default name is already committed to a different
+    // project. Without a way to carry an override from the launch request
+    // through to the spawned child, the engine silently provisions the
+    // wrong PAT and clobbers a working credential. Forwarded the same way
+    // goal/maxCycles/requirementsFile/budget already are: read straight off
+    // `body`, not from validateLaunchRequest's narrow return.
+    test('forwards body.azdevops_pat_secret_name into the child argv (asserted on spawn args)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+            azdevops_pat_secret_name: 'fleet_bridge_azdevops_pat',
+        });
+
+        assert.equal(captured.length, 1);
+        const args = captured[0].args;
+        const si = args.indexOf('--azdevops-pat-secret-name');
+        assert.ok(si >= 0, 'child argv must contain --azdevops-pat-secret-name');
+        assert.equal(args[si + 1], 'fleet_bridge_azdevops_pat');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a launch WITHOUT azdevops_pat_secret_name emits no --azdevops-pat-secret-name flag', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(captured[0].args.includes('--azdevops-pat-secret-name'), false);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // Pre-merge review fix: azdevops_pat_secret_name was forwarded straight
+    // from the request body into spawnOpts with no type check, so a
+    // non-string value reached spawner.spawnSprint()'s args.push(...) and
+    // failed INSIDE child_process.spawn as an opaque 500, instead of a clear
+    // 400 naming the field the way branch/base/members already do.
+    test('a non-string azdevops_pat_secret_name is rejected with a 400 naming the field, never reaching spawn', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({
+                issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+                azdevops_pat_secret_name: 12345,
+            }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'azdevops_pat_secret_name',
+        );
+        assert.equal(captured.length, 0, 'an invalid azdevops_pat_secret_name must be rejected before any child is spawned');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('an azdevops_pat_secret_name with an invalid charset is rejected with a 400, matching the child-side rule', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({
+                issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+                azdevops_pat_secret_name: 'not a valid name!',
+            }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'azdevops_pat_secret_name',
+        );
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('apra-fleet-3i3.2: launch() persists branch/base/goal on the ledger reservation', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);

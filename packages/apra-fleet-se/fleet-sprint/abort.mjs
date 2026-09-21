@@ -287,7 +287,7 @@ export function isTypedAbortError(err) {
  * }} opts
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
  */
-export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool }) {
+export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool, azdevopsPatSecretName }) {
     // Built up-front (not just at the PR-creation step further down) so the
     // SAME ApraFleet client can also resolve `member`'s VCS provider
     // (apra-fleet-417.7) for the runGitStep calls below -- avoids
@@ -450,6 +450,14 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // by shelling out to `member`, which may be orchestratorMember and
         // have no git checkout of its own to read a remote from.
         remoteUrlOverride: originUrl,
+        // Same operator-chosen Azure DevOps PAT secret name the Publish PR
+        // path threads: the provider default ('azdevops_pat') is not usable
+        // when an operator already has that name committed to an unrelated
+        // project, and minting with the wrong PAT does double damage -- the
+        // [ABORTED] PR 401s AND the bad credential overwrites the member's
+        // working git credential on disk. Undefined when unset -- provisioning
+        // falls back to the provider default, unchanged.
+        azdevopsPatSecretName,
     });
 
     if (!prResult.ok) {

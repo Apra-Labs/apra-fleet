@@ -53,7 +53,7 @@ import { getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/ru
 import { withTimestamps } from './log-timestamp.mjs';
 
 /** Hop-by-hop headers that must never be forwarded verbatim across a proxy. */
-const HOP_BY_HOP = Object.freeze([
+export const HOP_BY_HOP = Object.freeze([
     'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
     'te', 'trailer', 'transfer-encoding', 'upgrade',
 ]);
@@ -100,19 +100,25 @@ export function rewriteChildHtml(html, prefix) {
         .split("'/activities/").join("'" + prefix + "/activities/");
 }
 
-/** Copy request headers for the upstream call, dropping host/encoding/hop-by-hop. */
-function upstreamRequestHeaders(req) {
+/**
+ * Copy request headers for the upstream call, dropping host/encoding/hop-by-hop.
+ * `extraHeaders` (fleet-bridge Part A2), when given, is merged in LAST so it wins
+ * over any same-named incoming header -- e.g. injecting `Authorization: Bearer`
+ * for the bridge's viewer proxy, which the child never sends itself.
+ */
+export function upstreamRequestHeaders(req, extraHeaders) {
     const headers = { ...req.headers };
     delete headers.host;
     // SSE passthrough must stay uncompressed and unbuffered -- never let the
     // child gzip a stream we need to flush event-by-event.
     delete headers['accept-encoding'];
     for (const h of HOP_BY_HOP) delete headers[h];
+    if (extraHeaders) Object.assign(headers, extraHeaders);
     return headers;
 }
 
 /** Copy upstream response headers for the client, dropping encoding/hop-by-hop. */
-function downstreamResponseHeaders(upstreamHeaders) {
+export function downstreamResponseHeaders(upstreamHeaders) {
     const out = { ...upstreamHeaders };
     delete out['content-encoding'];
     for (const h of HOP_BY_HOP) delete out[h];
@@ -120,7 +126,7 @@ function downstreamResponseHeaders(upstreamHeaders) {
 }
 
 /** Writes a small text response with an explicit content-length. */
-function sendPlain(res, status, text) {
+export function sendPlain(res, status, text) {
     const body = Buffer.from(String(text), 'utf-8');
     res.writeHead(status, {
         'content-type': 'text/plain; charset=utf-8',
@@ -134,11 +140,13 @@ function sendPlain(res, status, text) {
  * Used for `/events` (SSE), `/state`, `/stop`, `/save_logs`. Each upstream chunk
  * is written to the client as it arrives; a client disconnect destroys the
  * upstream request so the child sees the subscription drop.
+ * `extraHeaders` (fleet-bridge Part A2) is threaded into `upstreamRequestHeaders`
+ * unchanged when omitted, so default behaviour is preserved exactly.
  */
-function proxyStream({ host, port, childPath, req, res, logError }) {
+export function proxyStream({ host, port, childPath, req, res, logError, extraHeaders }) {
     let settled = false;
     const upstream = http.request(
-        { host, port, path: childPath, method: req.method || 'GET', headers: upstreamRequestHeaders(req) },
+        { host, port, path: childPath, method: req.method || 'GET', headers: upstreamRequestHeaders(req, extraHeaders) },
         (up) => {
             settled = true;
             res.writeHead(up.statusCode || 502, downstreamResponseHeaders(up.headers));
@@ -178,8 +186,10 @@ function proxyStream({ host, port, childPath, req, res, logError }) {
  * client-endpoint URLs to the live prefix (the ONE endpoint that needs a body
  * transform -- everything else streams). A pre-response connection failure
  * invokes `onConnectError` so the base handler can fall through to history.
+ * `extraHeaders` (fleet-bridge Part A2) is threaded into `upstreamRequestHeaders`
+ * unchanged when omitted, so default behaviour is preserved exactly.
  */
-function proxyHtml({ host, port, req, res, prefix, logError, onConnectError }) {
+export function proxyHtml({ host, port, req, res, prefix, logError, onConnectError, extraHeaders }) {
     let settled = false;
     const fail = (err) => {
         if (settled) return;
@@ -190,7 +200,7 @@ function proxyHtml({ host, port, req, res, prefix, logError, onConnectError }) {
         try { res.end(); } catch { /* gone */ }
     };
     const upstream = http.request(
-        { host, port, path: '/', method: 'GET', headers: upstreamRequestHeaders(req) },
+        { host, port, path: '/', method: 'GET', headers: upstreamRequestHeaders(req, extraHeaders) },
         (up) => {
             const chunks = [];
             up.on('data', (c) => chunks.push(c));

@@ -1,0 +1,215 @@
+# Azure Pipelines template for fleet-bridge
+# Self-contained and fully parameterized. A single parameters: block at the top
+# is the only region an adopter edits; everything below is logic.
+# ASCII only.
+
+parameters:
+  # Work selection and targeting
+  - name: workItems
+    type: string
+    displayName: Work item IDs (semicolon-separated)
+
+  - name: targetBranch
+    type: string
+    displayName: Target branch (sprint develops here)
+
+  - name: baseBranch
+    type: string
+    displayName: Base branch (PR will target this)
+    default: 'main'
+
+  - name: goal
+    type: string
+    displayName: Sprint goal (title for the run)
+
+  # Deployment topology
+  - name: member
+    type: string
+    displayName: Fleet member name (runner nickname)
+
+  - name: adoOrgUrl
+    type: string
+    displayName: Azure DevOps org URL
+
+  - name: adoProject
+    type: string
+    displayName: Azure DevOps project name
+
+  - name: repoPath
+    type: string
+    displayName: Local path to the git repo
+    default: '.'
+
+  - name: agentPool
+    type: string
+    displayName: Agent pool name
+
+  # Tuning and optional features
+  - name: maxCycles
+    type: number
+    displayName: Maximum development cycles (0 for unbounded)
+    default: 0
+
+  - name: budget
+    type: number
+    displayName: Budget in USD (0 for no limit)
+    default: 0
+
+  - name: requirementsFile
+    type: string
+    displayName: Requirements file path (optional)
+    default: ''
+
+  - name: awaitUntil
+    type: string
+    displayName: Pipeline milestone
+    default: 'plan-approved'
+    values:
+      - launch
+      - plan-round
+      - plan-approved
+      - plan-settled
+
+  - name: awaitTimeoutMinutes
+    type: number
+    displayName: Timeout for milestone in minutes
+    default: 20
+
+  - name: maxCarryOver
+    type: number
+    displayName: Maximum carry-over items
+    default: 0
+
+  - name: viewerPort
+    type: number
+    displayName: LAN viewer port
+    default: 8787
+
+  # Credentials by name (not value)
+  - name: adoPatSecretName
+    type: string
+    displayName: Azure DevOps PAT secret name
+    default: 'fleet_bridge_azdevops_pat'
+
+  # Optional blob sink and archive page (set BOTH, or neither -- setting one
+  # alone is a startup error, never a silent downgrade to local-only).
+  # The SAS itself is NEVER a parameter or a flag: it is a live credential,
+  # and it reaches the bridge only as the FLEET_BRIDGE_BLOB_SAS environment
+  # variable on whichever process watches and finalizes the sprint (the
+  # long-lived `fleet-bridge daemon` on the agent, in this template).
+  # See packages/apra-fleet-bridge/docs/setup.md, "Remote observability".
+  - name: blobAccountUrl
+    type: string
+    displayName: Blob storage account URL (optional)
+    default: ''
+
+  - name: blobContainer
+    type: string
+    displayName: Blob container name (optional)
+    default: ''
+
+---
+
+trigger: none
+
+pool:
+  name: ${{ parameters.agentPool }}
+
+jobs:
+  - job: FleetBridgeRun
+    displayName: Sprint via fleet-bridge
+    timeoutInMinutes: ${{ add(parameters.awaitTimeoutMinutes, 15) }}
+    # NOTE: timeoutInMinutes must accommodate the await window plus a buffer.
+    # The job exits after reaching the milestone, while the sprint continues as
+    # a detached child. This timeout bounds the AWAIT phase, not the total sprint.
+
+    variables:
+      AZURE_DEVOPS_TOKEN: $(System.AccessToken)
+
+    steps:
+      - script: |
+          cd "${{ parameters.repoPath }}"
+          npm exec --yes fleet-bridge preflight \
+            --work-items "${{ parameters.workItems }}" \
+            --target-branch "${{ parameters.targetBranch }}" \
+            --base-branch "${{ parameters.baseBranch }}" \
+            --goal "${{ parameters.goal }}" \
+            --member "${{ parameters.member }}" \
+            --ado-org-url "${{ parameters.adoOrgUrl }}" \
+            --ado-project "${{ parameters.adoProject }}" \
+            --agent-pool "${{ parameters.agentPool }}" \
+            --ado-pat-secret-name "${{ parameters.adoPatSecretName }}"
+        displayName: Preflight checks
+        env:
+          # CRITICAL: Secret variables must be explicitly mapped in env: block.
+          # Omitting this yields an empty string, not an error. The name is
+          # checked; the value is never logged or persisted.
+          FLEET_PAT_SECRET: $(adoPatSecret)
+
+      - script: |
+          cd "${{ parameters.repoPath }}"
+          npm exec --yes fleet-bridge ingest \
+            --work-items "${{ parameters.workItems }}" \
+            --target-branch "${{ parameters.targetBranch }}" \
+            --member "${{ parameters.member }}" \
+            --ado-org-url "${{ parameters.adoOrgUrl }}" \
+            --ado-project "${{ parameters.adoProject }}"
+        displayName: Ingest work items
+        env:
+          FLEET_PAT_SECRET: $(adoPatSecret)
+
+      - ${{ if ne(parameters.requirementsFile, '') }}:
+        - script: |
+            cd "${{ parameters.repoPath }}"
+            npm exec --yes fleet-bridge ingest \
+              --work-items "${{ parameters.workItems }}" \
+              --target-branch "${{ parameters.targetBranch }}" \
+              --member "${{ parameters.member }}" \
+              --ado-org-url "${{ parameters.adoOrgUrl }}" \
+              --ado-project "${{ parameters.adoProject }}" \
+              --requirements-file "${{ parameters.requirementsFile }}"
+          displayName: Ingest with requirements file
+          env:
+            FLEET_PAT_SECRET: $(adoPatSecret)
+
+      - script: |
+          cd "${{ parameters.repoPath }}"
+          npm exec --yes fleet-bridge launch \
+            --work-items "${{ parameters.workItems }}" \
+            --target-branch "${{ parameters.targetBranch }}" \
+            --goal "${{ parameters.goal }}" \
+            --member "${{ parameters.member }}" \
+            --ado-org-url "${{ parameters.adoOrgUrl }}" \
+            --ado-project "${{ parameters.adoProject }}" \
+            --viewer-port "${{ parameters.viewerPort }}" \
+            --ado-pat-secret-name "${{ parameters.adoPatSecretName }}" \
+            --await-until "${{ parameters.awaitUntil }}" \
+            --await-timeout-minutes "${{ parameters.awaitTimeoutMinutes }}" \
+            --max-cycles "${{ parameters.maxCycles }}" \
+            --budget "${{ parameters.budget }}" \
+            --max-carry-over "${{ parameters.maxCarryOver }}" \
+            --blob-account-url "${{ parameters.blobAccountUrl }}" \
+            --blob-container "${{ parameters.blobContainer }}" 2>&1 | tee bridge-output.log
+          SPRINT_ID=$(cat bridge-output.log | grep -i sprint-id | head -1 | awk '{print $NF}' || echo '')
+          VIEWER_URL=$(cat bridge-output.log | grep -i viewer | head -1 | awk '{print $NF}' || echo '')
+          LOG_PATH=$(cat bridge-output.log | grep -i "log:" | head -1 | awk '{print $NF}' || echo '')
+          echo "##vso[task.setvariable variable=SprintId]$SPRINT_ID"
+          echo "##vso[task.setvariable variable=ViewerUrl]$VIEWER_URL"
+          echo "##vso[task.setvariable variable=LogPath]$LOG_PATH"
+        displayName: Launch sprint and await milestone
+        env:
+          FLEET_PAT_SECRET: $(adoPatSecret)
+
+      - task: PublishBuildArtifacts@1
+        displayName: Publish sprint handle
+        inputs:
+          PathtoPublish: $(LogPath)
+          ArtifactName: sprint-handle
+        condition: and(succeeded(), ne(variables['LogPath'], ''))
+
+      - script: |
+          echo "Sprint ID: $(SprintId)"
+          echo "Viewer URL: $(ViewerUrl)"
+          echo "Log Path: $(LogPath)"
+        displayName: Report sprint details
+        condition: succeeded()

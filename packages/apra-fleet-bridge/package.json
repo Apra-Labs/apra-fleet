@@ -1,0 +1,30 @@
+{
+  "name": "@apralabs/apra-fleet-bridge",
+  "version": "1.0.0",
+  "description": "Bridge between DevOps platforms (Azure DevOps, GitHub, Bitbucket) and fleet-sprint",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "main": "src/contracts.mjs",
+  "exports": {
+    ".": "./src/contracts.mjs",
+    "./errors": "./src/errors.mjs",
+    "./supervisor-client": "./src/supervisor-client.mjs",
+    "./beads-client": "./src/beads-client.mjs"
+  },
+  "bin": {
+    "fleet-bridge": "bin/fleet-bridge.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "type": "module",
+  "author": "Apra Labs",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@apralabs/apra-fleet-client": "*",
+    "@apralabs/apra-fleet-se": "*",
+    "@apralabs/apra-fleet-workflow": "*"
+  }
+}

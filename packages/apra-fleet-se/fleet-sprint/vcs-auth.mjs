@@ -447,12 +447,24 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
 // scope the mint) -- reusing it here means the PR-raising call sites never
 // need a SECOND `git remote get-url origin` dispatch of their own just to
 // learn the repo VCSModule needs to build the PR-creation command.
+//
+// `azdevopsPatSecretName` is forwarded for exactly the same reason the
+// self-heal and preflight paths already forward it: the provider default
+// secret name (DEFAULT_PAT_SECRET, 'azdevops_pat') is not usable on an
+// operator machine where that name is already committed to an unrelated
+// project, so the sprint must be able to name the PAT it actually owns.
+// Omitting it here is not a cosmetic miss -- provisioning with the WRONG PAT
+// does double damage: the PR creation 401s AND the bad credential is written
+// over the member's working git credential on disk, breaking plain `git
+// fetch` on that member until it is re-provisioned by hand. Absent, this
+// stays undefined and provisioning falls back to the provider default
+// exactly as before.
 /**
- * @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string }} opts
+ * @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, azdevopsPatSecretName?: string }} opts
  * @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
  */
-async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, remoteUrlOverride }) {
-    return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr', remoteUrlOverride });
+async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, remoteUrlOverride, azdevopsPatSecretName }) {
+    return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr', remoteUrlOverride, azdevopsPatSecretName });
 }
 
 // Default credential label provision_vcs_auth deploys under when no explicit
@@ -659,13 +671,13 @@ function isPrAuthFailure(status, errorText) {
 // returned as-is; the raw token is never logged (and is never even held
 // here), only `built.logSafeCommand`.
 /**
- * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string }} opts
+ * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string, azdevopsPatSecretName?: string }} opts
  * @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean }>}
  */
-export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride }) {
+export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride, azdevopsPatSecretName }) {
     let repo;
     try {
-        ({ repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride }));
+        ({ repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride, azdevopsPatSecretName }));
     } catch (provisionErr) {
         // apra-fleet-5co8.15: provisionPrCapableAuthForMember has no failSoft
         // of its own (by design -- see its doc comment above), so a
@@ -861,7 +873,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             authHealAttempted = true;
             log(`${logPrefix}: PR creation returned an auth-classified failure (HTTP ${status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${built.logSafeCommand}): ${errorText}`);
             try {
-                const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
+                const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride, azdevopsPatSecretName });
                 if (reprov.repo) repo = reprov.repo;
                 // No token re-read here any more: `built.command` still
                 // carries the placeholder, so the retry's own

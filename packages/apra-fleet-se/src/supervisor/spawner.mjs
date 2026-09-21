@@ -195,13 +195,14 @@ export async function allocateFreePort(opts = {}) {
  *   goal?: string, maxCycles?: number|string, allowMissingMembers?: boolean,
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
  *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
- *   extraArgs?: string[],
+ *   extraArgs?: string[], azdevopsPatSecretName?: string,
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs,
+        azdevopsPatSecretName } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -249,6 +250,16 @@ export function buildSprintArgv(opts = {}) {
     // database this supervisor reads. Omitted when the caller has none (a
     // direct/test spawner) -- the engine then skips the verification.
     if (expectBeads !== undefined) args.push('--expect-beads', expectBeads);
+    // An operator's Azure DevOps PAT for the sprint's target project is not
+    // always stored under the provider's default secret name -- it commonly
+    // is not, once the operator already has that default name committed to a
+    // different project. Forwarded only when the launch request supplied it;
+    // omitted, cli.mjs/sprint-args.mjs fall back to the provider's own
+    // default secret name exactly as before, so provisioning silently
+    // installs whatever PAT lives under that default (which may belong to a
+    // different project and clobber a working credential) rather than
+    // failing loudly.
+    if (azdevopsPatSecretName !== undefined) args.push('--azdevops-pat-secret-name', azdevopsPatSecretName);
     if (Array.isArray(extraArgs)) args.push(...extraArgs);
     return args;
 }

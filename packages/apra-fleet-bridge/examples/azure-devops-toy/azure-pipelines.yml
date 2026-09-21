@@ -1,0 +1,37 @@
+# Concrete instantiation for the Azure DevOps toy project
+# This file extends the template from templates/azure-pipelines.yml
+# with real parameter values. Copy this pattern and change the values for your
+# own Azure DevOps project.
+# ASCII only.
+
+resources:
+  repositories:
+    - repository: fleet-templates
+      type: git
+      name: fleet/apra-fleet
+      ref: worktree-fleet-bridge-plan
+
+extends:
+  template: packages/apra-fleet-bridge/templates/azure-pipelines.yml
+  repository: fleet-templates
+
+parameters:
+  workItems: '1;2;3'
+  targetBranch: 'sprint/auto-$(System.JobId)'
+  baseBranch: 'main'
+  goal: 'Auto-sprint from Azure Pipelines'
+  member: 'toy-member-1'
+  adoOrgUrl: 'https://dev.azure.com/YOUR-ORG'
+  adoProject: 'YOUR-PROJECT'
+  repoPath: '.'
+  agentPool: 'fleet-sprints'
+  maxCycles: 0
+  budget: 50
+  requirementsFile: ''
+  awaitUntil: 'plan-approved'
+  awaitTimeoutMinutes: 20
+  maxCarryOver: 10
+  viewerPort: 8787
+  adoPatSecretName: 'fleet_bridge_azdevops_pat'
+  blobAccountUrl: 'https://YOUR-ACCOUNT.blob.core.windows.net'
+  blobContainer: 'sprint-logs'

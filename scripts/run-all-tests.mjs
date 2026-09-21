@@ -16,6 +16,7 @@ const suites = [
     // it is otherwise reached only by CI's explicit --prefix invocation.
     // Mirror that here so local runs get the same signal as CI.
     { name: 'apra-pm', cmd: npmCmd, args: ['test', '--prefix', 'packages/apra-fleet-se/apra-pm'] },
+    { name: 'apra-fleet-bridge', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-bridge'] },
 ];
 
 let failed = false;

@@ -174,6 +174,17 @@ export function buildOptionsSpec() {
         // dolt-probe precondition, differing HEADs allowed). Omitted => legacy
         // shared-workspace mode (same-HEAD). Mode is never inferred silently.
         sync: { type: 'boolean' },
+        // The VCS provider's DEFAULT_PAT_SECRET name (e.g. azure-devops.mjs's
+        // 'azdevops_pat') is just one convention, not a guarantee -- an
+        // operator running sprints against more than one Azure DevOps project
+        // may already have that name committed to an unrelated project's PAT.
+        // Without a way to override it, the engine silently provisions THAT
+        // PAT onto the member for this sprint too, clobbering a working
+        // credential and failing every git operation with an auth error that
+        // gives no hint the wrong secret was ever provisioned. Optional --
+        // omitted, provisioning falls back to the provider's own default
+        // exactly as before this flag existed.
+        'azdevops-pat-secret-name': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -223,6 +234,11 @@ Options:
                                 members may sit on differing HEADs but must share the same
                                 origin URL and pass a 'bd dolt pull' probe. Omitted (default)
                                 uses legacy shared-workspace mode (all members on the same HEAD).
+      --azdevops-pat-secret-name <name>  Credential-store secret name holding the Azure DevOps
+                                PAT to provision, for operators whose PAT for this project is not
+                                stored under the provider's default secret name (e.g. because that
+                                name is already committed to a different project). Optional; omitted
+                                falls back to the provider's own default secret name.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -319,11 +335,11 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * @param {{
  *   targetIssues: string[], members: string[], branch: string, baseBranch: string,
  *   goal: string, maxCycles: number, requirementsFile: string|undefined, roleMap: object|undefined,
- *   budget: number|undefined,
+ *   budget: number|undefined, azdevopsPatSecretName: string|undefined,
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, azdevopsPatSecretName }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -355,6 +371,16 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
+    // --azdevops-pat-secret-name forwarded straight through to runner.js's
+    // validateArgs() (args.azdevops_pat_secret_name), which sprint-args.mjs
+    // already threads into provisionVcsAuthForMember()'s secretName. Without
+    // it, an operator whose Azure DevOps PAT for THIS project lives under a
+    // non-default secret name (because the provider's default name is
+    // already committed to another project) has no way to tell the engine,
+    // and it silently provisions the wrong PAT. Omitted here means
+    // sprint-args.mjs's field is simply absent -- the provider falls back to
+    // its own DEFAULT_PAT_SECRET, unchanged from before this flag existed.
+    if (azdevopsPatSecretName !== undefined) args.azdevops_pat_secret_name = azdevopsPatSecretName;
     return args;
 }
 
@@ -597,6 +623,7 @@ async function main() {
     const viewerPort = values['viewer-port'] !== undefined ? Number(values['viewer-port']) : DEFAULT_VIEWER_PORT;
     const serviceUrl = values['service-url'];
     const budget = values.budget !== undefined ? Number(values.budget) : undefined;
+    const azdevopsPatSecretName = values['azdevops-pat-secret-name'];
     // apra-fleet-k7b.1: prefer the supervisor-forwarded --run-id (this
     // launch's incarnation-unique identity); fall back to the branch name
     // for a direct/standalone CLI launch, which has no supervisor sprintId
@@ -1030,6 +1057,7 @@ async function main() {
                 serviceUrl,
                 runId: effectiveRunId,
                 expectBeads,
+                azdevopsPatSecretName,
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

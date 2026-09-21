@@ -43,6 +43,7 @@ import { fileURLToPath } from 'node:url';
 
 import { readJsonBody, sendJson } from './server.mjs';
 import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.js';
+import { validateCredentialStoreName } from '../../fleet-sprint/contracts.mjs';
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
@@ -441,6 +442,24 @@ export function createSprintController(deps = {}) {
         if (members.length === 0) {
             throw new ApiError(400, 'members must be a non-empty list of member names', 'members');
         }
+        // azdevops_pat_secret_name is optional and forwarded straight through
+        // to spawnOpts (see launch() below) without living in this function's
+        // narrow return -- same pass-through shape as goal/maxCycles/budget.
+        // But unlike those, an un-type-checked value here used to reach
+        // spawner.spawnSprint()'s args.push(...) and fail INSIDE
+        // child_process.spawn as an opaque 500, instead of a clear 400 naming
+        // the field -- there is no injection risk either way (the child's own
+        // sprint-args.mjs validates the charset before use), this is purely a
+        // bad error surface on a newly-added input. Validated with the SAME
+        // credential-store-name rule the child enforces (fleet-sprint/
+        // contracts.mjs's validateCredentialStoreName, shared with
+        // credential_store_set) rather than a bare typeof check, so a launch
+        // request with a malformed name fails fast here with the identical
+        // charset rule it would otherwise fail deep in the child process.
+        if (body.azdevops_pat_secret_name !== undefined) {
+            try { validateCredentialStoreName(body.azdevops_pat_secret_name, 'azdevops_pat_secret_name'); }
+            catch (err) { throw new ApiError(400, err.message, 'azdevops_pat_secret_name'); }
+        }
         // `issue` stays a single comma-joined string (the exact shape
         // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
         // to the input for the single-id case); `issueIds` is the split array
@@ -578,6 +597,18 @@ export function createSprintController(deps = {}) {
             roleMap,
             budget: body.budget,
             runId: sprintId,
+            // Forwarded straight from the request body, the same way goal/
+            // maxCycles/requirementsFile/budget are (validateLaunchRequest's
+            // return stays narrow -- it only validates issue/branch/base/
+            // members, so this reads directly off `body` like those other
+            // optional pass-through fields do). An operator whose Azure
+            // DevOps PAT for this project lives under a non-default secret
+            // name (their default name already being committed to a
+            // different project) needs this to reach the child; without it,
+            // provisioning silently falls back to the provider's default
+            // secret name and can install the WRONG PAT onto the member,
+            // clobbering a working credential.
+            azdevopsPatSecretName: body.azdevops_pat_secret_name,
         };
         const spawned = await spawner.spawnSprint(spawnOpts);
         // apra-fleet-gey.2: best-effort stale-process detection -- compare
