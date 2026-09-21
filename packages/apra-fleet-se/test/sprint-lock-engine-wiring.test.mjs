@@ -52,6 +52,12 @@ function buildGatedFleetApi({ onFirstCommand } = {}) {
                 fired = true;
                 if (onFirstCommand) await onFirstCommand();
             }
+            // The beads identity precondition's `bd where --json` probe
+            // (mirrored from runner-arg-contract.test.mjs's spy): answer a
+            // consistent database so the check passes.
+            if (/^bd where --json$/.test(opts.command)) {
+                return mockCmdResult(0, JSON.stringify({ database_path: '/spy/.beads/dolt', path: '/spy/.beads', prefix: 'bd', schema_version: 1 }));
+            }
             if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
                 return mockCmdResult(0, ONE_BEAD_JSON);
             }

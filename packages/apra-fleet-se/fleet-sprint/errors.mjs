@@ -873,3 +873,51 @@ export class PreSprintValidationError extends WorkflowError {
         if (deadlockedIds) this.deadlockedIds = deadlockedIds;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Beads identity (which .beads a member's bd actually resolves to)
+// ---------------------------------------------------------------------------
+
+export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
+    PROBE_FAILED: 'PROBE_FAILED',
+    MISMATCH: 'MISMATCH',
+});
+
+/**
+ * Thrown by verifyBeadsIdentity (beads-identity-check.mjs) BEFORE any
+ * mutating bd command when a member's `bd where` / `bd config get
+ * sync.remote` / `git remote get-url origin` probe fails, or when the probed
+ * identity does not match the expected one (the supervisor's expectation, or
+ * the orchestrator member's own identity).
+ *
+ * A WorkflowError so main()'s terminal record names the reason, but
+ * deliberately NOT a typed abort: nothing has been dispatched or mutated, so
+ * there is no partial work for finalizeAbort() to push or open a PR for.
+ *
+ * @property {string} reason - one of BEADS_IDENTITY_FAILURE_REASONS
+ * @property {string} member - the member whose probe failed / mismatched
+ * @property {Array<{field: string, expected: string, actual: string}>} [mismatches]
+ */
+export class BeadsIdentityError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ reason: string, member: string, mismatches?: Array<{field: string, expected: string, actual: string}>, details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { reason, member, mismatches, details, cause } = opts;
+        if (!Object.prototype.hasOwnProperty.call(BEADS_IDENTITY_FAILURE_REASONS, String(reason))) {
+            throw new TypeError(
+                `BeadsIdentityError requires a reason from BEADS_IDENTITY_FAILURE_REASONS ` +
+                `(${Object.keys(BEADS_IDENTITY_FAILURE_REASONS).join(', ')}); got ${JSON.stringify(reason)}`
+            );
+        }
+        super(message, {
+            code: 'BEADS_IDENTITY',
+            details: { reason, member, mismatches, ...details },
+            cause,
+        });
+        this.reason = reason;
+        this.member = member;
+        if (mismatches) this.mismatches = mismatches;
+    }
+}

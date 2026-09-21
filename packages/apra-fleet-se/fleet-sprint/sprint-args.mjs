@@ -6,6 +6,7 @@
 // unchanged. This is a move-only extraction: behaviour, validation order and
 // error message text are all deliberately unchanged from the pre-move code.
 import { normalizeRole, validateCredentialStoreName } from './contracts.mjs';
+import { parseExpectedIdentity } from './beads-identity.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI -> runner argument contract
@@ -139,7 +140,35 @@ const KNOWN_ARG_KEYS = new Set([
     // (azdevops_pat). No CLI flag sets this today; only test/programmatic callers
     // pass it.
     'azdevops_pat_secret_name',
+    // The beads identity every member must resolve to (JSON string from
+    // `--expect-beads`, env fallback FLEET_SPRINT_EXPECT_BEADS, or an already
+    // parsed record from a programmatic caller). Consumed by the
+    // verifyBeadsIdentity precondition (beads-identity-check.mjs); absent, the
+    // orchestrator member's own probed identity becomes the expectation.
+    'expect_beads',
 ]);
+
+/**
+ * Validates the raw `--expect-beads` value: a JSON string (the supervisor's
+ * serializeExpectedIdentity output) or a plain record. Malformed JSON is a
+ * hard arg error; undefined/empty means "no expectation".
+ * @param {unknown} raw
+ * @returns {object|undefined}
+ */
+export function validateExpectBeads(raw) {
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    if (typeof raw !== 'string' && (typeof raw !== 'object' || Array.isArray(raw))) {
+        throw new Error('[Arg Contract] Invalid expect_beads: must be a JSON string or an object ({ beadsDir, prefix, syncRemote, repoRemote }).');
+    }
+    const parsed = parseExpectedIdentity(raw);
+    if (!parsed) {
+        throw new Error(`[Arg Contract] Invalid expect_beads: not valid JSON (${JSON.stringify(String(raw)).slice(0, 200)}).`);
+    }
+    if (!parsed.prefix && !parsed.syncRemote && !parsed.repoRemote) {
+        throw new Error('[Arg Contract] Invalid expect_beads: must carry at least one of prefix, syncRemote, repoRemote.');
+    }
+    return parsed;
+}
 
 /**
  * Validates a single issue id against the shell-injection-safe pattern.
@@ -397,6 +426,9 @@ export function validateArgs(args) {
         validateCredentialStoreName(args.azdevops_pat_secret_name, 'azdevops_pat_secret_name');
     }
 
+    // --- expect_beads (optional) ------------------------------------------
+    const expectBeads = validateExpectBeads(args.expect_beads);
+
     return {
         targetIssues,
         members: args.members,
@@ -417,5 +449,6 @@ export function validateArgs(args) {
         worklistEffortBudget: args.worklist_effort_budget,
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,
+        expectBeads,
     };
 }

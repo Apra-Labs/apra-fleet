@@ -92,6 +92,7 @@ import {
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateArgs } from './sprint-args.mjs';
+import { verifyBeadsIdentity } from './beads-identity-check.mjs';
 import {
     buildPlannerPrompt, buildPlanReviewerPrompt, buildStreakAssignmentPrompt, buildDoerPrompt,
     buildReviewerPrompt, buildFinalVerdictPrompt, buildHarvesterPrompt,
@@ -1321,6 +1322,26 @@ async function runSprintCycle(context) {
     // the implicit fallback (including this file's own test harness) breaks.
     // Land 6.2, update callers, THEN make this throw.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
+
+    // Beads identity precondition: prove which .beads every member's bd
+    // resolves to BEFORE the first mutating bd command (the earliest bd
+    // dispatch is the beads-health gate further down). Probes the
+    // orchestrator first, then every other physical member, and throws
+    // BeadsIdentityError on a probe failure or a mismatch against
+    // `args.expect_beads` (or, absent that, the orchestrator's own identity).
+    // Sits here rather than next to wrapCommand() above because the
+    // orchestrator member is only resolved at this point; nothing between
+    // the two spots issues a command(). `context.verifyBeadsIdentity` is the
+    // test-harness seam (same shape as the other injected preconditions);
+    // there is deliberately no CLI flag to skip it.
+    await (context.verifyBeadsIdentity ?? verifyBeadsIdentity)({
+        command,
+        log,
+        publishState,
+        orchestratorMember,
+        members: physicalMembers,
+        expected: validated.expectBeads ?? null,
+    });
 
     // Self-heals deploy.md's declared Permissions onto the deployer /
     // integ-test-runner / regression-test-runner member before each of

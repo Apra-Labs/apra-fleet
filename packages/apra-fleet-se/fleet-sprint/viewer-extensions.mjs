@@ -753,6 +753,56 @@ export function renderResultExtrasHtml(result) {
     return verdictHtml + prHtml;
 }
 
+/**
+ * Pure HTML-string builder for the "Beads database" block: which .beads
+ * (dir | prefix | remote) every member's bd resolved to at sprint start, as
+ * published by the runner's beads identity precondition under the
+ * `beadsIdentity` state namespace ({ expected, expectedFrom, members: {
+ * name: { beadsDir, prefix, syncRemote, repoRemote } } }). Returns '' when
+ * nothing has been published yet so the caller can omit the block. Same
+ * embed rules as renderBeadsHtml: concatenation only, every value through
+ * escapeHtml.
+ *
+ * @param {{ expected?: object|null, expectedFrom?: string, members?: Record<string, object> }|null|undefined} identity
+ * @returns {string}
+ */
+export function renderBeadsIdentityHtml(identity) {
+    if (!identity || typeof identity !== 'object') return '';
+    const members = identity.members && typeof identity.members === 'object' ? identity.members : {};
+    const names = Object.keys(members);
+    if (names.length === 0 && !identity.expected) return '';
+
+    function cell(value) {
+        return '<td style="padding: 2px 8px; font-size: 11px; font-family: monospace; white-space: nowrap;">' + escapeHtml(String(value || '')) + '</td>';
+    }
+    function row(label, id) {
+        const rec = id && typeof id === 'object' ? id : {};
+        return '<tr>' +
+            '<td style="padding: 2px 8px; font-size: 11px; color: #a1a1aa; white-space: nowrap;">' + escapeHtml(String(label)) + '</td>' +
+            cell(rec.beadsDir || '(no .beads)') +
+            cell(rec.prefix || '?') +
+            cell(rec.syncRemote || '(unset)') +
+            '</tr>';
+    }
+
+    let rows = '';
+    if (identity.expected) {
+        const from = identity.expectedFrom === 'orchestrator' ? 'expected (from orchestrator)' : 'expected';
+        rows += row(from, identity.expected);
+    }
+    for (const name of names) rows += row(name, members[name]);
+
+    return '<div data-beads-identity="true" style="margin: 4px 0 8px 0;">' +
+        '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 2px 8px;">Beads database</div>' +
+        '<table style="border-collapse: collapse;">' +
+        '<tr>' +
+        '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">member</th>' +
+        '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">dir</th>' +
+        '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">prefix</th>' +
+        '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">remote</th>' +
+        '</tr>' + rows + '</table></div>';
+}
+
 // apra-fleet-eft.37.4 (M3, docs/workflow-core-boundary-refactoring.md):
 // relocated verbatim from packages/apra-fleet-workflow/src/viewer/index.mjs's
 // former findBeadById() -- that was the one place core reached into
@@ -799,6 +849,7 @@ export const beadsExtension = {
         ${escapeHtml.toString()}
         ${renderBeadsHtml.toString()}
         ${renderResultExtrasHtml.toString()}
+        ${renderBeadsIdentityHtml.toString()}
         ${computeSprintProgress.toString()}
         ${renderProgressBarHtml.toString()}
 
@@ -923,6 +974,10 @@ export const beadsExtension = {
         // without waiting on (or synthesizing) a new server payload.
         const collapsedBeadIds = new Set();
         let lastBeadsData = { sprintTasks: [], backlogTasks: [] };
+        // The runner's beads identity precondition publishes under its own
+        // 'beadsIdentity' namespace (workflow:state:beadsIdentity); cached
+        // here and rendered at the top of the Tasks panel on every rebuild.
+        let lastBeadsIdentity = null;
 
         function renderBeadsPanel() {
             const container = document.getElementById('extension-beads');
@@ -950,14 +1005,21 @@ export const beadsExtension = {
             // hook is absent (an older/mismatched core template), rather
             // than silently dropping the widget.
             const headerExtra = document.getElementById('panel-header-beads-extra');
+            const identityHtml = renderBeadsIdentityHtml(lastBeadsIdentity);
             if (headerExtra) {
                 headerExtra.innerHTML = progressHtml;
-                container.innerHTML = renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+                container.innerHTML = identityHtml
+                    + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
             } else {
-                container.innerHTML = progressHtml
+                container.innerHTML = progressHtml + identityHtml
                     + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
             }
         }
+
+        document.addEventListener('workflow:state:beadsIdentity', (e) => {
+            lastBeadsIdentity = e.detail || null;
+            renderBeadsPanel();
+        });
 
         // Single document-level click-delegation listener (same rationale
         // as the capture-phase 'toggle' listener above) catches every

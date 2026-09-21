@@ -18,6 +18,7 @@ import {
 import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
+import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -155,6 +156,11 @@ export function buildOptionsSpec() {
         // a direct/standalone CLI launch (no supervisor) falls back to
         // --branch for this identity, exactly as before this flag existed.
         'run-id': { type: 'string' },
+        // The beads identity (JSON, serializeExpectedIdentity output) every
+        // member's bd must resolve to, injected by the supervisor's spawner;
+        // env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted (direct launch):
+        // the runner takes the expectation from the orchestrator member.
+        'expect-beads': { type: 'string' },
         budget: { type: 'string' },
         // Stabilization Issue 32: per-dispatch time budget in seconds
         // (timeout_s == max_total_s at every dispatch; integ ceiling 2x).
@@ -197,6 +203,11 @@ Options:
                                 Normally set automatically to the supervisor's sprintId when this
                                 sprint is supervisor-spawned; omitted (direct/standalone launch)
                                 falls back to --branch, exactly as before this flag existed.
+      --expect-beads <json>    Beads identity every member must resolve to, as JSON
+                                ({"beadsDir","prefix","syncRemote","repoRemote"}). Normally injected by
+                                the supervisor; env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted: the
+                                orchestrator member's own 'bd where' becomes the expectation and every
+                                other member must match it. A mismatch aborts before any bd mutation.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
       --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 3600). Applied as both
@@ -312,7 +323,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -341,7 +352,62 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // dispatch so deploy.md's active-sprints gate can recognize this sprint's
     // OWN reservation instead of stopping on it.
     if (runId !== undefined) args.run_id = runId;
+    // The raw --expect-beads JSON, forwarded verbatim; runner.js's
+    // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
+    if (expectBeads !== undefined) args.expect_beads = expectBeads;
     return args;
+}
+
+/**
+ * Resolves the `--expect-beads` value: the flag wins, else the
+ * FLEET_SPRINT_EXPECT_BEADS env var, else undefined (no expectation).
+ * @param {string|undefined} flagValue
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string|undefined}
+ */
+export function resolveExpectBeads(flagValue, env = process.env) {
+    if (typeof flagValue === 'string' && flagValue.trim()) return flagValue;
+    const fromEnv = env.FLEET_SPRINT_EXPECT_BEADS;
+    if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv;
+    return undefined;
+}
+
+/**
+ * Runs `bd where --json` on the ORCHESTRATOR MEMBER (never locally -- the
+ * sprint's bd commands run in that member's workFolder, see
+ * checkIssuesExistOnMember below) so the startup banner can show which
+ * .beads the sprint is about to mutate, and so a member with no beads
+ * database fails with a clear message instead of a bare bd error from the
+ * first `bd show`. The runner re-probes every member and does the hard
+ * expected-vs-actual comparison; this is display plus fail-fast only.
+ * @param {{ member: string, runCommand: (cmd: string, member: string) => Promise<string> }} opts
+ * @returns {Promise<{ ok: boolean, identity: object|null, message: string }>}
+ */
+export async function probeBeadsIdentityOnMember({ member, runCommand }) {
+    const raw = {};
+    for (const [key, cmd] of Object.entries(BEADS_IDENTITY_PROBES)) {
+        try {
+            raw[key] = await runCommand(cmd, member);
+        } catch (err) {
+            if (key === 'where') {
+                return {
+                    ok: false,
+                    identity: null,
+                    message: `Error: no beads database found at member '${member}'s workFolder ('${cmd}' failed: ${err && err.message ? err.message : String(err)}). Run 'bd init' there or point the member at the project checkout.`,
+                };
+            }
+            raw[key] = '';
+        }
+    }
+    const identity = parseBeadsIdentity(raw);
+    if (!identity.beadsDir) {
+        return {
+            ok: false,
+            identity: null,
+            message: `Error: no beads database found at member '${member}'s workFolder ('${BEADS_IDENTITY_PROBES.where}' returned no database path: ${String(raw.where || '').trim() || '(no output)'}).`,
+        };
+    }
+    return { ok: true, identity, message: formatBeadsIdentity(identity, { label: `[Precondition] member '${member}'` }) };
 }
 
 /**
@@ -538,6 +604,15 @@ async function main() {
     // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets.
     const usageLimitMaxWaitS = values['usage-limit-max-wait-s'] !== undefined ? Number(values['usage-limit-max-wait-s']) : undefined;
     const usageLimitMaxReprobes = values['usage-limit-max-reprobes'] !== undefined ? Number(values['usage-limit-max-reprobes']) : undefined;
+    // --expect-beads (flag, else FLEET_SPRINT_EXPECT_BEADS). Parsed here too
+    // so malformed JSON fails before any fleet connection; the runner's
+    // validateArgs() re-validates the raw string it is handed.
+    const expectBeads = resolveExpectBeads(values['expect-beads']);
+    const expectedBeads = expectBeads !== undefined ? parseExpectedIdentity(expectBeads) : null;
+    if (expectBeads !== undefined && !expectedBeads) {
+        console.error(`Error: --expect-beads is not valid JSON: ${expectBeads}`);
+        process.exit(1);
+    }
 
     // --- A7 defense-in-depth: reject shell-unsafe issue ids / branch names
     // BEFORE any bd/fleet dispatch happens. runner.js re-validates these
@@ -677,6 +752,25 @@ async function main() {
     // N15 finding: that stray casing silently never matched a roleMap
     // author's natural lowercase key).
     const orchestratorMember = (roleMap && roleMap.orchestrator && roleMap.orchestrator[0]) || validMembers[0];
+    const runProbe = async (cmd, member) => {
+        const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
+        const text = res && res.content && res.content[0] ? res.content[0].text : '';
+        if (res && res.isError) throw new Error(text || 'unknown error');
+        const exitCode = res && res.structuredContent && typeof res.structuredContent.exitCode === 'number' ? res.structuredContent.exitCode : 0;
+        if (exitCode !== 0) throw new Error(text || `exit code ${exitCode}`);
+        return res && res.structuredContent && typeof res.structuredContent.stdout === 'string' ? res.structuredContent.stdout : text;
+    };
+    // Which .beads the orchestrator member's bd resolves to -- checked BEFORE
+    // the `bd show` precondition below so a member with no beads database
+    // reports that plainly instead of a bare bd error, and shown in the
+    // banner. The runner repeats this for every member and hard-fails a
+    // mismatch against --expect-beads.
+    const beadsProbe = await probeBeadsIdentityOnMember({ member: orchestratorMember, runCommand: runProbe });
+    if (!beadsProbe.ok) {
+        console.error(beadsProbe.message);
+        transport.stop();
+        process.exit(1);
+    }
     const issueCheck = await checkIssuesExistOnMember({
         targetIssues,
         member: orchestratorMember,
@@ -758,6 +852,10 @@ async function main() {
     console.log(`Goal Constraint: ${goal}`);
     console.log(`Max Cycles: ${maxCycles}`);
     console.log(`Active Members (${validMembers.length}): ${validMembers.join(', ')}`);
+    console.log(`Beads: ${formatBeadsIdentity(beadsProbe.identity, { label: `orchestrator '${orchestratorMember}'` })}`);
+    if (expectedBeads) {
+        console.log(`Beads: ${formatBeadsIdentity(expectedBeads, { label: 'expected (--expect-beads)' })}`);
+    }
 
     const workflow = new FleetWorkflow(fleetApi);
     const engine = new WorkflowEngine(workflow);
@@ -929,6 +1027,7 @@ async function main() {
                 usageLimitMaxReprobes,
                 serviceUrl,
                 runId: effectiveRunId,
+                expectBeads,
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

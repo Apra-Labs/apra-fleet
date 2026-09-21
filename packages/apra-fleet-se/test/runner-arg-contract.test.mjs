@@ -226,6 +226,42 @@ describe('validateArgs', () => {
         assert.throws(() => validateArgs('nope'), /args must be an object/);
         assert.throws(() => validateArgs(['a']), /args must be an object/);
     });
+
+    // -------------------------------------------------------------------
+    // expect_beads: the beads identity every member must resolve to
+    // (--expect-beads JSON / FLEET_SPRINT_EXPECT_BEADS), consumed by the
+    // beads identity precondition.
+    // -------------------------------------------------------------------
+
+    test('expect_beads omitted -> expectBeads undefined (expectation comes from the orchestrator)', () => {
+        const result = validateArgs(VALID_ARGS);
+        assert.strictEqual(result.expectBeads, undefined);
+    });
+
+    test('expect_beads as a JSON string is parsed into a normalized identity record', () => {
+        const json = JSON.stringify({ beadsDir: '/w/.beads', prefix: 'proj', syncRemote: 'https://example.com/o/r.git', repoRemote: 'https://example.com/o/r.git' });
+        const result = validateArgs({ ...VALID_ARGS, expect_beads: json });
+        assert.deepStrictEqual(result.expectBeads, {
+            beadsDir: '/w/.beads',
+            prefix: 'proj',
+            syncRemote: 'https://example.com/o/r.git',
+            repoRemote: 'https://example.com/o/r.git',
+        });
+    });
+
+    test('expect_beads as an object (programmatic caller) is accepted and normalized', () => {
+        const result = validateArgs({ ...VALID_ARGS, expect_beads: { prefix: ' proj ', extra: 'ignored' } });
+        assert.deepStrictEqual(result.expectBeads, { beadsDir: '', prefix: 'proj', syncRemote: '', repoRemote: '' });
+    });
+
+    test('expect_beads with invalid JSON is a hard arg error', () => {
+        assert.throws(() => validateArgs({ ...VALID_ARGS, expect_beads: '{not json' }), /Invalid expect_beads: not valid JSON/);
+    });
+
+    test('expect_beads that names no compared field is rejected', () => {
+        assert.throws(() => validateArgs({ ...VALID_ARGS, expect_beads: '{"beadsDir":"/x/.beads"}' }), /at least one of prefix, syncRemote, repoRemote/);
+        assert.throws(() => validateArgs({ ...VALID_ARGS, expect_beads: 42 }), /must be a JSON string or an object/);
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -352,6 +388,14 @@ function buildSpyFleetApi(overrides = {}) {
             // canned bead must be a CHILD of 'bd-1' (the target used by
             // every test in this suite), not 'bd-1' itself, or it falls
             // outside scope and every downstream call sees nothing.
+            // The beads identity precondition's `bd where --json` probe
+            // (fleet-sprint/beads-identity-check.mjs) runs on every member
+            // before the first bd read; answer a consistent database so the
+            // check passes (sync.remote and origin fall through to the
+            // existing default answers below).
+            if (/^bd where --json$/.test(opts.command)) {
+                return mockCmdResult(0, JSON.stringify({ database_path: '/spy/.beads/dolt', path: '/spy/.beads', prefix: 'bd', schema_version: 1 }));
+            }
             if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
                 return mockCmdResult(0, allBeadsJson);
             }
@@ -519,9 +563,16 @@ describe('runner.js mock-level execution', () => {
         // + 'bd dolt pull'). Pin that ordering contract (only bd commands may
         // precede the first git command) and anchor the git triplet at the
         // first git index instead of hardcoding index 0.
-        const firstGitIdx = spy.commandLog.findIndex((c) => /^git /.test(c));
+        // The beads identity precondition's three per-member probes (`bd
+        // where --json`, `bd config get sync.remote --json`, `git remote
+        // get-url origin`) precede even that gate; skip them first.
+        // Exactly three: this is a single-member sprint.
+        const IDENTITY_PROBES = ['bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
+        const identityEnd = IDENTITY_PROBES.length;
+        assert.deepStrictEqual(spy.commandLog.slice(0, identityEnd), IDENTITY_PROBES, 'the beads identity probes must open the command log');
+        const firstGitIdx = spy.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c));
         assert.ok(firstGitIdx >= 0, 'expected at least one git command in the log');
-        for (const pre of spy.commandLog.slice(0, firstGitIdx)) {
+        for (const pre of spy.commandLog.slice(identityEnd, firstGitIdx)) {
             assert.match(
                 pre,
                 /^bd /,
@@ -700,8 +751,11 @@ describe('runner.js mock-level execution', () => {
         // bracket (the Issue 31 pre-gate reads the BRACKET member's own
         // sync.remote before deciding whether to push), so it is excluded
         // alongside `bd dolt *` for the same reason.
+        // `bd where` is the beads identity precondition's per-member probe
+        // (it deliberately runs on EVERY physical member, not just the
+        // orchestrator), excluded for the same reason.
         const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
-            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote'));
+            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote') && !d.command.startsWith('bd where'));
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-x', `expected command "${command}" to dispatch to 'member-x', got '${member_name}'`);
@@ -731,8 +785,9 @@ describe('runner.js mock-level execution', () => {
         // member rather than `orchestratorMember`.
         // `bd config get sync.remote` excluded like `bd dolt *` -- part of
         // the per-member D-push bracket (Issue 31 pre-gate), see above.
+        // `bd where` (per-member beads identity probe) excluded, see above.
         const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
-            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote'));
+            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote') && !d.command.startsWith('bd where'));
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-y', `expected command "${command}" to dispatch to 'member-y', got '${member_name}'`);
