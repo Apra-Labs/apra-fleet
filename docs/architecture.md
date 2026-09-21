@@ -185,6 +185,8 @@ Guards enforcing whichever mode is selected:
 
 See `packages/apra-fleet-se/docs/architecture.md` for the full internals of both modes, including the escalation ladders and the always-on supervisor service that launches and tracks sprints.
 
+**Beads identity is verified, not overridden.** The supervisor discovers its own `.beads` by walking up from its cwd (exactly like `bd`) and passes that identity to every sprint it launches (`--expect-beads`, env `FLEET_SPRINT_EXPECT_BEADS`); the engine then probes each member's own `bd where`/`sync.remote`/git origin and aborts before any `bd` mutation on a mismatch. `BEADS_DIR` is deliberately never set on a member: `bd` ignores an invalid `BEADS_DIR` silently and falls back to cwd discovery, so setting it would look authoritative while doing nothing -- verification against the member's real, independently-discovered identity is the only way to catch a member pointed at the wrong project.
+
 ## Workflow Subsystem (SEA-embedded workflow runner)
 
 `apra-fleet workflow <name>` runs a self-contained script (an ESM entry point

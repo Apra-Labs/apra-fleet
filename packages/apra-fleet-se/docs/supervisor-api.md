@@ -246,6 +246,30 @@ only uses it as a lookup key into the ledger's/history's already-recorded
 from the safety check, or 404 from no match), never escape the log
 directory.
 
+## GET /api/health: `beads` (which tracker this supervisor runs against)
+
+The supervisor runs `bd` itself (backlog listing, launch-time scope-overlap
+checks) from its own working directory, so bd's walk-up discovery decides
+which `.beads` those reads hit -- and every sprint child inherits that
+choice. `bin/serve.mjs` therefore resolves it ONCE at startup (walk up from
+cwd, or from `--beads-dir`; no reachable `.beads` = exit non-zero before the
+port is bound), probes `bd where --json`, `bd config get sync.remote --json`
+and `git remote get-url origin` in that project root, and reports:
+
+```json
+"beads": { "dir": "<.beads path as bd resolved it>", "prefix": "<bead id prefix>",
+           "syncRemote": "<sync.remote or empty>", "repoRemote": "<git origin URL or empty>" }
+```
+
+`beads` is `null` only for a bare `createSupervisor()` with no identity
+wired (tests). `?refresh=1` re-runs the probes first; if that re-probe
+fails the last good identity is still returned and `beadsRefreshError`
+carries the message -- the liveness answer itself never fails on it. The
+same four fields are recorded as `beads` on each launched sprint's ledger
+entry (and the engine receives them as `--expect-beads`, so a member whose
+own `bd where` disagrees is refused rather than dispatched at the wrong
+tracker). `dir` is display-only: it is a path on the supervisor's host.
+
 ## Status-code summary (cross-endpoint)
 
 - **400** -- always paired with a `field` name (for `POST /api/sprints`) or

@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-se supervisor: resolves, displays and enforces its beads tracker identity
+
+- **The supervisor now knows which `.beads` it runs against.** `bin/serve.mjs`
+  walks up from its cwd (or the new `--beads-dir <path>` flag, which accepts
+  the project folder or its `.beads` dir) to the project's `.beads` before
+  binding its port, and refuses to start when none is reachable or `bd
+  where` cannot resolve a database there. The resolved identity (`.beads`
+  dir, prefix, `sync.remote`, git origin) is logged once at startup, exposed
+  as `beads` on `GET /api/health` (`?refresh=1` re-probes), shown as a header
+  line on the dashboard, and recorded as `beads` on every launched sprint's
+  ledger entry (its prefix shows on the sprint card).
+- **Every sprint the supervisor launches is told what to expect.** Sprint
+  children now run from the resolved project root and receive
+  `--expect-beads <json>` (`beadsDir`/`prefix`/`syncRemote`/`repoRemote`), so
+  the engine can verify each member's own `bd where` against the same
+  tracker instead of silently dispatching at whatever a member's cwd
+  happens to resolve. Nothing sets `BEADS_DIR`; nothing is persisted.
+
 ## [Unreleased] -- fleet-sprint: child-bead creation refuses an id collision instead of silently overwriting
 
 Sprint goal: close the hole where creating a child bead at an id that

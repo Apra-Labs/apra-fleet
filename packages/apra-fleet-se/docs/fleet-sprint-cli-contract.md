@@ -76,7 +76,19 @@ Required:
 
 Optional (defaults applied inside `validateArgs()`):
 - `goal` -- default `'P1/P2'`; must match `GOAL_PATTERN`.
-- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `usage_limit_max_wait_s`, `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only. `usage_limit_max_wait_s` (integer >= 60) and `usage_limit_max_reprobes` (integer >= 1) are the CLI-overridable usage-limit pause budgets (`--usage-limit-max-wait-s` / `--usage-limit-max-reprobes`); omitted, they fall back to `role-policies.mjs`'s `USAGE_LIMIT_BUDGET_DEFAULTS`.
+- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `usage_limit_max_wait_s`, `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `expect_beads`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only. `usage_limit_max_wait_s` (integer >= 60) and `usage_limit_max_reprobes` (integer >= 1) are the CLI-overridable usage-limit pause budgets (`--usage-limit-max-wait-s` / `--usage-limit-max-reprobes`); omitted, they fall back to `role-policies.mjs`'s `USAGE_LIMIT_BUDGET_DEFAULTS`.
+
+`expect_beads` (raw `--expect-beads` JSON, forwarded verbatim) is parsed by
+`validateArgs()` via `validateExpectBeads` -- bad JSON is rejected at
+validation, before any dispatch. Argv resolution order: `--expect-beads`
+flag, then env `FLEET_SPRINT_EXPECT_BEADS`, then unset (the orchestrator
+member's own `bd where` becomes the expectation). Before any `bd` mutation,
+`verifyBeadsIdentity()` probes the orchestrator member then every other
+member (`bd where --json`, `bd config get sync.remote --json`, `git remote
+get-url origin`) and throws `BeadsIdentityError` -- text: `Beads identity
+check failed: member '<member>' resolves to a different beads database than
+expected (...) -- <field>: expected '<x>', actual '<y>'. Refusing to mutate
+beads on it.` -- on the first mismatch or probe failure. No bypass flag.
 
 An unknown key throws `[Arg Contract] Unknown arg(s): <keys>. Known args: <allowlist>.` immediately -- this is the fastest way to discover whether a given engine feature (e.g. `assignee`, `doer_worklist_mode`) is wired to a CLI flag yet: if `bin/cli.mjs` never sets it, it stays at its default forever for CLI-launched sprints.
 

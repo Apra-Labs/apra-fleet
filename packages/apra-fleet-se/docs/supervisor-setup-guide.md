@@ -123,14 +123,31 @@ defeats the point of this setup. Double-check your launch payload.
 
 ## Step 4 -- Launch the supervisor
 
-From wherever you copied `apra-fleet-se` into the target project:
+From INSIDE the target project (its root, or any folder under it):
 ```bash
 node packages/apra-fleet-se/bin/serve.mjs   # detached/background; runs indefinitely
 ```
+The supervisor resolves which `.beads` tracker it runs against by walking
+up from its own working directory, exactly like `bd` does, and it refuses
+to start ("no .beads directory found walking up from ...") if none is
+reachable -- the same rule applies to the sprints it launches, which run
+from that project root. If you must start it from elsewhere (a service
+manager, a scheduler, another checkout), pass the project explicitly:
+```bash
+node /path/to/packages/apra-fleet-se/bin/serve.mjs --beads-dir /path/to/target-project
+```
+(`--beads-dir` accepts the project folder or its `.beads` directory; a
+nonexistent path is a startup error.) Nothing sets `BEADS_DIR` and nothing
+is persisted: the resolved identity (`.beads` dir, prefix, `sync.remote`,
+git origin) is logged once at startup, reported by `GET /api/health` as
+`beads`, shown at the top of the dashboard, and handed to every sprint it
+launches so the engine can verify each member's own `bd where` against it.
+
 Default port 8787. Smoke test:
 ```bash
 curl -s http://localhost:8787/api/sprints    # expect {"sprints":[],...}
 curl -s http://localhost:8787/api/members    # expect your registered fleet, non-empty
+curl -s http://localhost:8787/api/health     # expect beads.prefix = your project's prefix
 ```
 See the `fleet-supervisor` skill for the full
 start/stop/restart/auto-start-on-login procedures, and `docs/supervisor-api.md`

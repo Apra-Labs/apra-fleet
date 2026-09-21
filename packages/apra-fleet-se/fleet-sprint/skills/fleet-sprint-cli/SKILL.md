@@ -80,6 +80,12 @@ on this list -- flags evolve and this skill can drift.
 4. If a member's LLM session is stale or unauthenticated (dispatch fails
    with `empty_response`, or "member CLI likely died"), re-run
    `provision_llm_auth` for that member before retrying.
+5. Beads identity: before any `bd` mutation, the sprint probes every
+   member's `bd where`/`sync.remote`/git origin and prints a `Beads:`
+   banner plus one `beads ok: <member> ...` line per member. A mismatch
+   aborts with `BeadsIdentityError` naming the member and field before
+   anything is mutated. Fix by correcting that member's `workFolder` (wrong
+   `.beads`) or its `sync.remote` -- there is no bypass flag.
 
 ## Launching it
 

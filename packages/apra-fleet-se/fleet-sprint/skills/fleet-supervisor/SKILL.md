@@ -21,16 +21,26 @@ Start it detached (it runs indefinitely -- exits only on `POST
 node packages/apra-fleet-se/bin/serve.mjs   # background/detached, from repo root
 ```
 
-`--port <n>` overrides the default (8787). Self-logs to
+Start it from INSIDE the target project (any folder under it): the
+supervisor resolves the project's `.beads` by walking up from its cwd,
+exactly like `bd`, and refuses to start if none is found. Starting from
+elsewhere: pass `--beads-dir <project folder or its .beads>`. It logs one
+`supervisor beads: <dir> | prefix=<p> | remote=<sync.remote>` line at
+startup; the same identity is on `GET /api/health` (`beads`) and at the top
+of the dashboard, and every sprint it launches is told to verify its
+members against it. `--port <n>` overrides the default (8787). Self-logs to
 `<dataDir>/logs/supervisor.log` in addition to stdout.
 
 Smoke test (a few seconds after launch -- give it time to bind):
 ```bash
 curl -s -m 5 http://localhost:8787/api/sprints   # expect {"sprints":[],...}
 curl -s -m 5 http://localhost:8787/api/members   # expect the registered fleet, non-empty
+curl -s -m 5 http://localhost:8787/api/health    # check `beads.dir`/`beads.prefix` is the intended tracker
 ```
 Both must succeed before treating the supervisor as up -- a bound port with
-a 500 on `/api/members` still means something is broken.
+a 500 on `/api/members` still means something is broken. A wrong
+`beads.prefix` means it was started from the wrong folder: stop it and
+restart with `--beads-dir`.
 
 ## Stop the supervisor
 
