@@ -86,11 +86,21 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // no-remote skip), so this asserts on the first GIT command's
         // position rather than a fixed index, and that everything before it
         // is exactly this gate's own bd command(s).
-        const firstGitIdx = run1.commandLog.findIndex((c) => /^git /.test(c));
-        check(firstGitIdx > 0, `Expected at least one pre-flight beads-health-gate command before the first git command, got commandLog: ${JSON.stringify(run1.commandLog)}`);
+        // The beads identity precondition (fleet-sprint/beads-identity-
+        // check.mjs) now runs FIRST of all: its three read-only probes per
+        // member (`bd where --json`, `bd config get sync.remote --json`,
+        // `git remote get-url origin`) precede even the beads-health gate,
+        // so they are skipped here before locating the first REAL git
+        // command (the branch-ensure fetch).
+        // Exactly three here: run1 is a single-member sprint.
+        const IDENTITY_PROBES = ['bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
+        const identityEnd = IDENTITY_PROBES.length;
+        assert.deepEqual(run1.commandLog.slice(0, identityEnd), IDENTITY_PROBES, `Expected the beads identity probes to open the commandLog, got: ${JSON.stringify(run1.commandLog.slice(0, 4))}`);
+        const firstGitIdx = run1.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c));
+        check(firstGitIdx > identityEnd, `Expected at least one pre-flight beads-health-gate command before the first git command, got commandLog: ${JSON.stringify(run1.commandLog)}`);
         check(
-            run1.commandLog.slice(0, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull'),
-            `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(0, firstGitIdx))}`
+            run1.commandLog.slice(identityEnd, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull'),
+            `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(identityEnd, firstGitIdx))}`
         );
         // apra-fleet-co4: the branch-fetch succeeded (this mock's git/gh
         // interceptor succeeds by default), so Ensure Sprint Branch now also

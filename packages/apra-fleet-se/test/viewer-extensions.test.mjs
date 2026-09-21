@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml, renderProgressBarHtml } from '../fleet-sprint/viewer-extensions.mjs';
+import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml, renderProgressBarHtml, renderBeadsIdentityHtml } from '../fleet-sprint/viewer-extensions.mjs';
 import { computeSprintProgress } from '../fleet-sprint/sprint-progress.mjs';
 
 // apra-fleet-x8r.1: closed/required progress-bar widget. computeSprintProgress
@@ -137,6 +137,72 @@ describe('renderProgressBarHtml', () => {
     test('is embedded into the browser-side beadsExtension.js script', () => {
         assert.ok(beadsExtension.js.includes('computeSprintProgress'));
         assert.ok(beadsExtension.js.includes('renderProgressBarHtml'));
+    });
+});
+
+// The "Beads database" block: which .beads every member's bd resolved to at
+// sprint start, published by the runner's beads identity precondition under
+// the `beadsIdentity` state namespace.
+describe('renderBeadsIdentityHtml', () => {
+    const IDENTITY = {
+        expected: { beadsDir: '/w/.beads', prefix: 'proj', syncRemote: 'https://example.com/o/r.git', repoRemote: 'https://example.com/o/r.git' },
+        expectedFrom: 'orchestrator',
+        members: {
+            orch: { beadsDir: '/w/.beads', prefix: 'proj', syncRemote: 'https://example.com/o/r.git', repoRemote: 'https://example.com/o/r.git' },
+            m2: { beadsDir: '/m2/.beads', prefix: 'proj', syncRemote: '', repoRemote: 'https://example.com/o/r.git' },
+        },
+    };
+
+    test('renders one row per member plus the expectation row (dir | prefix | remote)', () => {
+        const html = renderBeadsIdentityHtml(IDENTITY);
+        assert.ok(html.includes('Beads database'));
+        assert.ok(html.includes('expected (from orchestrator)'));
+        assert.ok(html.includes('>orch<') && html.includes('>m2<'));
+        assert.ok(html.includes('/m2/.beads') && html.includes('>proj<'));
+        assert.ok(html.includes('(unset)'), 'an empty sync.remote renders as (unset)');
+        assert.strictEqual((html.match(/<tr>/g) || []).length, 4, 'header + expected + 2 members');
+    });
+
+    test('returns an empty string when nothing has been published yet', () => {
+        assert.strictEqual(renderBeadsIdentityHtml(null), '');
+        assert.strictEqual(renderBeadsIdentityHtml(undefined), '');
+        assert.strictEqual(renderBeadsIdentityHtml({}), '');
+        assert.strictEqual(renderBeadsIdentityHtml({ members: {} }), '');
+    });
+
+    test('escapes member names and identity values', () => {
+        const html = renderBeadsIdentityHtml({ members: { '<script>x</script>': { beadsDir: '/w/.beads"><img src=x onerror=alert(1)>', prefix: '<b>', syncRemote: '' } } });
+        assert.ok(!html.includes('<script>'));
+        assert.ok(!html.includes('<img'));
+        assert.ok(html.includes('&lt;script&gt;'));
+        assert.ok(html.includes('&lt;b&gt;'));
+    });
+
+    test('an unresolved field renders as an amber "?" cell, and every published warning as an amber row', () => {
+        const html = renderBeadsIdentityHtml({
+            ...IDENTITY,
+            members: { ...IDENTITY.members, m2: { ...IDENTITY.members.m2, unresolved: ['syncRemote', 'prefix'] } },
+            warnings: ["member 'm2' could not report syncRemote ('bd config get sync.remote --json' -> sync.remote is unset); not compared. To fix: set it on that member with 'bd config set sync.remote <url>' in its workFolder."],
+        });
+        assert.strictEqual((html.match(/data-unresolved="true"/g) || []).length, 2, 'two "?" cells for m2');
+        assert.ok(html.includes('color: #f59e0b; white-space: nowrap;">?</td>'));
+        assert.ok(!html.includes('(unset)'), 'an unresolved sync.remote shows "?" rather than (unset)');
+        const warnRows = html.match(/data-beads-identity-warning="true"[^>]*>WARNING: [^<]*/g) || [];
+        assert.strictEqual(warnRows.length, 1);
+        assert.ok(warnRows[0].includes('member &#039;m2&#039; could not report syncRemote'), warnRows[0]);
+        assert.ok(warnRows[0].includes('To fix: set it on that member with &#039;bd config set sync.remote &lt;url&gt;&#039; in its workFolder.'), `guidance escaped and present: ${warnRows[0]}`);
+        assert.ok(!html.includes('<url>'), 'warning text is HTML-escaped');
+    });
+
+    test('warnings alone (no members, no expectation) still render the block', () => {
+        const html = renderBeadsIdentityHtml({ expected: null, expectedFrom: 'none', members: {}, warnings: ['no expected beads identity was supplied'] });
+        assert.ok(html.includes('data-beads-identity="true"'));
+        assert.ok(html.includes('WARNING: no expected beads identity was supplied'));
+    });
+
+    test('is embedded into the browser-side beadsExtension.js script and wired to its state namespace', () => {
+        assert.ok(beadsExtension.js.includes('renderBeadsIdentityHtml'));
+        assert.ok(beadsExtension.js.includes("'workflow:state:beadsIdentity'"));
     });
 });
 

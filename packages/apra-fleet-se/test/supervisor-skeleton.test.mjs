@@ -185,6 +185,13 @@ describe('parseServeArgs', () => {
         assert.throws(() => parseServeArgs(['--nope']), /Invalid command-line arguments/);
     });
 
+    test('accepts --beads-dir <path> (the explicit project-folder override for beads discovery)', () => {
+        assert.equal(parseServeArgs(['--beads-dir', '/some/project']).values['beads-dir'], '/some/project');
+        assert.equal(parseServeArgs(['--port', '9000', '--beads-dir', '/p/.beads']).values['beads-dir'], '/p/.beads');
+        assert.equal(parseServeArgs([]).values['beads-dir'], undefined);
+        assert.throws(() => parseServeArgs(['--beads-dir']), /Invalid command-line arguments/);
+    });
+
     test('DEFAULT_SERVICE_PORT is a valid port', () => {
         assert.ok(Number.isInteger(DEFAULT_SERVICE_PORT) && DEFAULT_SERVICE_PORT > 0 && DEFAULT_SERVICE_PORT < 65536);
     });
@@ -310,6 +317,25 @@ describe('serveMain', () => {
         try {
             const { exitCode } = await serveMain(['--port', 'notaport']);
             assert.equal(exitCode, 1);
+        } finally {
+            console.error = origErr;
+        }
+    });
+
+    // A --beads-dir that does not exist is an operator typo: still a startup
+    // ERROR (exit 1 before any port is bound). Contrast: NO .beads reachable
+    // from cwd is an environment condition and only a warning (the server
+    // starts with the identity unknown) -- covered at the unit level by
+    // supervisor-beads-identity / supervisor-api / spawner tests, since which
+    // tracker an arbitrary cwd walks up to is host-dependent.
+    test('--beads-dir pointing at a nonexistent path returns exit 1 with a clear error', async () => {
+        const origErr = console.error;
+        const errors = [];
+        console.error = (...a) => errors.push(a.join(' '));
+        try {
+            const { exitCode } = await serveMain(['--beads-dir', '/definitely/not/here/.beads']);
+            assert.equal(exitCode, 1);
+            assert.ok(errors.some((e) => /--beads-dir '.*not.here.*' does not exist or is not a directory/.test(e)), JSON.stringify(errors));
         } finally {
             console.error = origErr;
         }

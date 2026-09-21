@@ -41,7 +41,17 @@ paths:
       description: >
         Confirms the supervisor process is up and reports which collaborator
         seams are still inert stubs (a seam whose name ends in ":stub" was
-        never wired with a real implementation).
+        never wired with a real implementation), plus the beads identity
+        (which .beads tracker) this supervisor resolved at startup.
+      parameters:
+        - name: refresh
+          in: query
+          required: false
+          schema: { type: string, enum: ["1"] }
+          description: >
+            Re-run the beads identity probes (bd where / sync.remote / git
+            origin) before answering. A failed re-probe keeps the last good
+            `beads` and adds `beadsRefreshError`; the response is still 200.
       responses:
         "200":
           description: OK
@@ -49,7 +59,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [status, uptimeSeconds, pid, seams]
+                required: [status, uptimeSeconds, pid, seams, beads]
                 properties:
                   status: { type: string, enum: [ok] }
                   uptimeSeconds: { type: integer }
@@ -58,6 +68,33 @@ paths:
                     type: object
                     description: seam name -> collaborator name ("<name>:stub" if unwired, else "wired" or the collaborator's own name)
                     additionalProperties: { type: string }
+                  beads:
+                    description: >
+                      The .beads tracker this supervisor process runs against
+                      (resolved once at startup from its cwd or --beads-dir).
+                      null when no identity was wired (bare createSupervisor())
+                      or when the identity is UNKNOWN -- no .beads reachable
+                      from cwd, or its probe failed; beadsWarning then says
+                      why and what to do. ?refresh=1 can recover it.
+                    nullable: true
+                    type: object
+                    required: [dir, prefix, syncRemote, repoRemote]
+                    properties:
+                      dir: { type: string, description: "the .beads directory as `bd where` resolved it (a path on the supervisor's host; display only)" }
+                      prefix: { type: string, description: "bead id prefix of that tracker" }
+                      syncRemote: { type: string, description: "`bd config get sync.remote`; empty when unset" }
+                      repoRemote: { type: string, description: "`git remote get-url origin` of the project; empty when unavailable" }
+                  beadsWarning:
+                    type: string
+                    description: >
+                      present only while beads is null because the identity is
+                      unknown (no .beads found walking up from the supervisor's
+                      cwd, or the identity probe failed). States what was found
+                      and the fix (restart from inside the project or pass
+                      --beads-dir, then GET /api/health?refresh=1).
+                  beadsRefreshError:
+                    type: string
+                    description: present only when ?refresh=1 was requested and the re-probe failed (beads then holds the last good identity, or stays null with an updated beadsWarning)
 
   /api/shutdown:
     post:

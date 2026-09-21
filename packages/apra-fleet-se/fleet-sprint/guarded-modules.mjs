@@ -369,6 +369,13 @@ export const GUARDED_MODULES = [
     // scans clean under itself and every other guard rather than needing a
     // GUARD_REGISTRATION_EXEMPT carve-out.
     'explicit-id-create-guard.mjs',
+    // The beads identity contract (pure parse/compare helpers, no command()
+    // or agent() site -- zero baseline) and the precondition that runs its
+    // three read-only probes: beads-identity-check.mjs carries ONE
+    // member_name-bearing command() call site (the probe loop), which is
+    // exactly what dispatch-safety-guard must keep scanning.
+    'beads-identity.mjs',
+    'beads-identity-check.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
     'vcs-providers/azure-devops.mjs',

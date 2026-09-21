@@ -51,6 +51,11 @@ import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-o
 import { listFleetMembers, executeFleetCommand } from '../src/supervisor/fleet-members.mjs';
 import { createDoltOrphanSweep, normalizeMsysPathForPlatform } from '../src/supervisor/dolt-orphan-sweep.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
+import {
+    discoverBeadsDir, resolveBeadsDirArg, probeBeadsIdentity, createBeadsIdentityState,
+    formatNoBeadsWarning, formatProbeFailedWarning,
+} from '../src/supervisor/beads-identity.mjs';
+import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const SERVE_USAGE = `
 Usage: fleet-se serve [options]
@@ -59,8 +64,15 @@ Starts the always-on fleet-sprint supervisor. Runs until POST /api/shutdown or a
 termination signal (Ctrl-C / SIGTERM).
 
 Options:
-      --port <port>   HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
-  -h, --help          Show this help message.
+      --port <port>         HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
+      --beads-dir <path>    Project folder (or its .beads dir) whose beads tracker
+                            this supervisor runs against. Default: discovered by
+                            walking up from the current directory, exactly like
+                            bd does. None found: the supervisor still starts,
+                            logs a WARNING and reports beads as unknown until
+                            GET /api/health?refresh=1 finds one. A path that
+                            does not exist is an error.
+  -h, --help                Show this help message.
 
 Environment:
   FLEET_SE_DATA_DIR                 Service data dir (ledger/history/logs).
@@ -112,6 +124,7 @@ export function parseServeArgs(argv) {
             args: argv,
             options: {
                 port: { type: 'string' },
+                'beads-dir': { type: 'string' },
                 help: { type: 'boolean', short: 'h' },
             },
             strict: true,
@@ -148,6 +161,53 @@ export async function serveMain(argv = process.argv.slice(2)) {
             console.error(`Error: --port must be a valid TCP port number, got "${values.port}".`);
             return { exitCode: 1 };
         }
+    }
+
+    // Which .beads this supervisor runs against -- resolved ONCE, up front,
+    // BEFORE any seam is built or the port is bound, so a supervisor started
+    // from the wrong folder says so loudly instead of silently serving an
+    // empty backlog or dispatching sprints at an unrelated tracker. Every bd
+    // the supervisor itself runs (backlog/scope-overlap) resolves by walking
+    // up from process.cwd(), so `--beads-dir` is honored by chdir'ing there
+    // (nothing sets BEADS_DIR, nothing is persisted); the sprint children
+    // below then get repoRoot as their cwd and the resolved identity as
+    // --expect-beads.
+    //
+    // Severity: a `--beads-dir` that does not exist is an operator typo and
+    // still a startup ERROR. No .beads reachable from cwd, or a failing
+    // identity probe, is an environment condition: a WARNING (with the fix),
+    // the identity stays "unknown" (health `beads: null` + `beadsWarning`,
+    // amber dashboard header, no --expect-beads handed to sprints -- the
+    // engine then verifies members against the orchestrator's own beads),
+    // and GET /api/health?refresh=1 can recover it without a restart.
+    if (values['beads-dir'] !== undefined) {
+        let target;
+        try {
+            target = resolveBeadsDirArg(values['beads-dir']);
+            process.chdir(target);
+        } catch (err) {
+            console.error(`Error: ${err && err.message ? err.message : err}`);
+            return { exitCode: 1 };
+        }
+    }
+    const discovered = discoverBeadsDir({ cwd: process.cwd() });
+    const repoRoot = discovered ? discovered.repoRoot : process.cwd();
+    let beadsIdentityRecord = null;
+    let beadsWarning = null;
+    if (!discovered) {
+        beadsWarning = formatNoBeadsWarning(process.cwd());
+    } else {
+        try {
+            beadsIdentityRecord = await probeBeadsIdentity({ cwd: repoRoot });
+        } catch (err) {
+            beadsWarning = formatProbeFailedWarning(repoRoot, err);
+        }
+    }
+    const beadsIdentity = createBeadsIdentityState({ cwd: repoRoot, initial: beadsIdentityRecord, warning: beadsWarning });
+    if (beadsIdentityRecord) {
+        console.log(`[supervisor] ${formatBeadsIdentity(beadsIdentityRecord, { label: 'supervisor' })}`);
+    } else {
+        console.warn(`[supervisor] WARNING: ${beadsWarning}`);
     }
 
     // The durable reservation ledger (eft.5.1) and its terminal-event history
@@ -191,6 +251,19 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // discoverable even after the reservation is eventually released.
     const spawner = createSpawner({
         serviceUrl: `http://localhost:${port}`,
+        // Sprint children run from the project root (the folder holding the
+        // discovered .beads, not whatever subfolder the operator started in)
+        // and carry the resolved identity so the engine can verify every
+        // member's own `bd where` against it (see beads-identity.mjs). Read
+        // at each spawn (not captured at startup) so an identity recovered
+        // by GET /api/health?refresh=1 reaches later sprints; while it is
+        // unknown, --expect-beads is omitted and the engine falls back to
+        // the orchestrator member's own identity.
+        cwd: repoRoot,
+        expectBeads: () => {
+            const id = beadsIdentity.get();
+            return id ? serializeExpectedIdentity(id) : undefined;
+        },
         onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
             if (!runId) return;
             try {
@@ -261,7 +334,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // Backlog, then the Launch Sprint form (launch-form.mjs attaches itself
     // via dashboard.mjs's renderIndexPageHtml default; see the import comment
     // above for why no separate launch-form seam is constructed here).
-    const dashboard = createDashboard({ ledger, watchdog, backlog });
+    const dashboard = createDashboard({ ledger, watchdog, backlog, beadsIdentity });
 
     // docs/dolt-sync-redesign.md Part 3.3: kill any orphaned ephemeral
     // `dolt sql-server` a mid-settle orchestrator death left behind on a
@@ -299,7 +372,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
         ownerDataDirPrefix: sweepOwnerDataDir,
     });
 
-    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep });
+    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep, beadsIdentity });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
 
@@ -346,6 +419,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
         listMembers: listMembersForLaunch,
         getBacklog: async () => ({ tree: await backlog.buildTree() }),
         beforeLaunch,
+        beadsIdentity,
     });
     registerSprintRoutes(supervisor, sprintController);
 

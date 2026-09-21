@@ -866,6 +866,36 @@ export function checkHarvesterContract(prompt) {
     return missing;
 }
 
+// The three beads identity probes (fleet-sprint/beads-identity.mjs's
+// BEADS_IDENTITY_PROBES), keyed by the override field a scenario names.
+const BEADS_IDENTITY_PROBE_KEYS = [
+    ['where', /^bd where( --json)?$/],
+    ['syncRemote', /^bd config get sync\.remote( --json)?$/],
+    ['repoRemote', /^git remote get-url origin$/],
+];
+
+/**
+ * Answers one beads identity probe from a per-member override map (the
+ * `beadsIdentity` option of buildMockFleetApi), or returns null when the
+ * member/probe has no override so the caller falls through to its default.
+ * Exported so a scenario with its own executeCommand can reuse it.
+ */
+export function answerBeadsIdentityProbe(overrides, member, command) {
+    if (!overrides || !member) return null;
+    const perMember = overrides[member];
+    if (!perMember) return null;
+    const cmd = String(command || '').trim();
+    for (const [key, re] of BEADS_IDENTITY_PROBE_KEYS) {
+        if (!re.test(cmd) || perMember[key] === undefined) continue;
+        const value = perMember[key];
+        if (value && typeof value === 'object' && value.fail !== undefined) {
+            return mockCmdResult(1, '', String(value.fail));
+        }
+        return mockCmdResult(0, String(value), '');
+    }
+    return null;
+}
+
 export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = {}) {
     const {
         planReviewerMode = 'reject-then-approve',
@@ -988,6 +1018,18 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // default simulation when provided; omitted (the default), the
         // existing 201/already-exists-422 behavior is completely unchanged.
         prCurlResponseQueue = null,
+        // Per-member beads identity overrides for the runner's beads identity
+        // precondition (fleet-sprint/beads-identity-check.mjs), which probes
+        // every member with `bd where --json`, `bd config get sync.remote
+        // --json` and `git remote get-url origin` before the first mutating
+        // bd command. DEFAULT (omitted): every member answers consistently --
+        // `bd where` is synthesized from the shared tempDir by bd-replay.mjs,
+        // sync.remote is unset, and origin is `originUrl` above -- so the
+        // check passes. Shape: `{ [member]: { where?, syncRemote?,
+        // repoRemote? } }`, each value either the raw stdout to answer with or
+        // `{ fail: '<stderr>' }` for a nonzero exit. Only the members/probes
+        // named are intercepted; everything else keeps the default answer.
+        beadsIdentity = null,
     } = options;
     const prCurlResponseQueueLocal = prCurlResponseQueue ? [...prCurlResponseQueue] : null;
 
@@ -1088,6 +1130,15 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     const coMatch = opts.command.match(/^git checkout (\S+)\s*$/);
                     if (coMatch) st.checkedOut = coMatch[1];
                 }
+            }
+
+            // Beads identity probe overrides (see the `beadsIdentity` option
+            // comment above). Checked first so a scenario can make ONE member
+            // answer differently (or fail) while every other member keeps
+            // the consistent default.
+            if (beadsIdentity) {
+                const override = answerBeadsIdentityProbe(beadsIdentity, opts.member_name, opts.command);
+                if (override) return override;
             }
 
             // apra-fleet-9te.4.1: Ensure Sprint Branch probes for a
@@ -1971,6 +2022,11 @@ export async function runDevelopLoopScenario(tag, {
     // pushCode gating) against a member that provably never receives a
     // code-writing dispatch.
     roleMap,
+    // Beads identity precondition passthroughs: `beadsIdentity` is
+    // buildMockFleetApi's per-member probe override map (see its option
+    // comment); `expectBeads` is the raw `args.expect_beads` value (a JSON
+    // string or record) the supervisor would pass as `--expect-beads`.
+    beadsIdentity, expectBeads,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -2039,6 +2095,7 @@ export async function runDevelopLoopScenario(tag, {
             prExistsState,
             ...(originUrl !== undefined ? { originUrl } : {}),
             ...(prCurlResponseQueue !== undefined ? { prCurlResponseQueue } : {}),
+            ...(beadsIdentity !== undefined ? { beadsIdentity } : {}),
         });
         // apra-fleet-20i.1.2: see runOnce() above -- same tag-as-logPrefix
         // threading, real single-sprint CLI path unaffected.
@@ -2076,6 +2133,7 @@ export async function runDevelopLoopScenario(tag, {
                 ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
                 ...(roleMap !== undefined ? { roleMap } : {}),
+                ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
             }, true);
         } catch (err) {
             error = err;

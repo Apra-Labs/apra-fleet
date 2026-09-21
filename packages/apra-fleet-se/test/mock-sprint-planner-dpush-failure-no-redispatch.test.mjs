@@ -54,7 +54,18 @@ test('mock sprint: a D-push failure after a SUCCESSFUL Planner turn does not red
             // to "configured" on an unreadable probe) -- i.e. the push is
             // genuinely attempted and genuinely fails, exactly like the live
             // missing-VCS-credentials case.
-            commandFailurePattern: /^bd config get sync\.remote|^bd dolt push\b/,
+            //
+            // The beads identity precondition issues its own `bd config get
+            // sync.remote --json` FIRST (one per member, before any bracket)
+            // and treats a failed probe as a hard abort, so that first read
+            // is let through; every later one (the brackets' pre-gate) fails.
+            commandFailurePattern: (() => {
+                let syncRemoteReads = 0;
+                return {
+                    test: (cmd) => /^bd dolt push\b/.test(cmd)
+                        || (/^bd config get sync\.remote/.test(cmd) && ++syncRemoteReads > 1),
+                };
+            })(),
             plannerHandler: async () => {
                 plannerCalls += 1;
                 // A NORMAL, successful planning turn: the LLM did its job.

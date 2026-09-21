@@ -13,6 +13,8 @@ import {
     checkIssuesExistOnMember,
     formatViewerListenError,
     attachViewerErrorHandler,
+    resolveExpectBeads,
+    probeBeadsIdentityOnMember,
 } from '../bin/cli.mjs';
 import { validateArgs } from '../fleet-sprint/runner.js';
 
@@ -409,6 +411,89 @@ describe('--run-id flag (apra-fleet-k7b.1)', () => {
         const { values } = parseCliArgs(BASE_ARGV);
         const effectiveRunId = values['run-id'] || values.branch;
         assert.strictEqual(effectiveRunId, 'auto-sprint/x');
+    });
+});
+
+describe('--expect-beads flag (beads identity precondition)', () => {
+    const EXPECT_JSON = JSON.stringify({ beadsDir: '/w/.beads', prefix: 'proj', syncRemote: 'https://example.com/o/r.git', repoRemote: 'https://example.com/o/r.git' });
+
+    test('parseCliArgs accepts --expect-beads <json>', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--expect-beads', EXPECT_JSON]);
+        assert.strictEqual(values['expect-beads'], EXPECT_JSON);
+    });
+
+    test('resolveExpectBeads: the flag wins, else FLEET_SPRINT_EXPECT_BEADS, else undefined', () => {
+        assert.strictEqual(resolveExpectBeads(EXPECT_JSON, { FLEET_SPRINT_EXPECT_BEADS: '{"prefix":"env"}' }), EXPECT_JSON);
+        assert.strictEqual(resolveExpectBeads(undefined, { FLEET_SPRINT_EXPECT_BEADS: '{"prefix":"env"}' }), '{"prefix":"env"}');
+        assert.strictEqual(resolveExpectBeads('   ', {}), undefined);
+        assert.strictEqual(resolveExpectBeads(undefined, {}), undefined);
+    });
+
+    test('buildRunnerArgs forwards the raw JSON as expect_beads and validateArgs parses it', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, expectBeads: EXPECT_JSON,
+        });
+        assert.strictEqual(args.expect_beads, EXPECT_JSON);
+        const validated = validateArgs(args);
+        assert.strictEqual(validated.expectBeads.prefix, 'proj');
+        assert.strictEqual(validated.expectBeads.syncRemote, 'https://example.com/o/r.git');
+    });
+
+    test('buildRunnerArgs omits expect_beads when not supplied', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5,
+        });
+        assert.ok(!('expect_beads' in args));
+        assert.strictEqual(validateArgs(args).expectBeads, undefined);
+    });
+
+    test('invalid --expect-beads JSON is a hard arg error at the runner contract', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, expectBeads: '{oops',
+        });
+        assert.throws(() => validateArgs(args), /Invalid expect_beads: not valid JSON/);
+    });
+
+    test('probeBeadsIdentityOnMember: a member with no beads database reports it plainly as a WARNING with the fix (never an error)', async () => {
+        const res = await probeBeadsIdentityOnMember({
+            member: 'orch',
+            runCommand: async (cmd) => {
+                if (cmd.startsWith('bd where')) throw new Error('Error: no beads database found');
+                return '';
+            },
+        });
+        assert.strictEqual(res.ok, false);
+        assert.strictEqual(res.identity, null);
+        assert.match(res.message, /^Warning: no beads database found at member 'orch'/);
+        assert.match(res.message, /'bd where --json' failed: Error: no beads database found/);
+        assert.match(res.message, /not verified for this member/);
+        assert.match(res.message, /To fix: run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's \.beads\./);
+        assert.doesNotMatch(res.message, /^Error/);
+    });
+
+    test('probeBeadsIdentityOnMember: bd where answering without a database path is the same WARNING', async () => {
+        const res = await probeBeadsIdentityOnMember({ member: 'orch', runCommand: async () => 'nothing useful' });
+        assert.strictEqual(res.ok, false);
+        assert.match(res.message, /^Warning: no beads database found at member 'orch'/);
+        assert.match(res.message, /returned no database path: nothing useful/);
+        assert.match(res.message, /To fix: run 'bd where'/);
+    });
+
+    test('probeBeadsIdentityOnMember: a healthy member yields a formatted banner line', async () => {
+        const res = await probeBeadsIdentityOnMember({
+            member: 'orch',
+            runCommand: async (cmd) => {
+                if (cmd.startsWith('bd where')) return JSON.stringify({ database_path: '/w/.beads/dolt', path: '/w/.beads', prefix: 'proj', schema_version: 1 });
+                if (cmd.startsWith('bd config get')) return JSON.stringify({ key: 'sync.remote', value: 'https://example.com/o/r.git' });
+                return 'https://example.com/o/r.git\n';
+            },
+        });
+        assert.strictEqual(res.ok, true);
+        assert.strictEqual(res.identity.prefix, 'proj');
+        assert.match(res.message, /member 'orch' beads: \/w\/\.beads \| prefix=proj \| remote=https:\/\/example\.com\/o\/r\.git/);
     });
 });
 

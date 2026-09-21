@@ -21,16 +21,35 @@ Start it detached (it runs indefinitely -- exits only on `POST
 node packages/apra-fleet-se/bin/serve.mjs   # background/detached, from repo root
 ```
 
-`--port <n>` overrides the default (8787). Self-logs to
+Start it from INSIDE the target project (any folder under it): the
+supervisor resolves the project's `.beads` by walking up from its cwd,
+exactly like `bd`. Starting from elsewhere: pass `--beads-dir <project
+folder or its .beads>` (a path that does not exist is a startup error). It
+logs one `supervisor beads: <dir> | prefix=<p> | remote=<sync.remote>` line
+at startup; the same identity is on `GET /api/health` (`beads`) and at the
+top of the dashboard, and every sprint it launches is told to verify its
+members against it. If NO `.beads` is found (or its probe fails) it still
+starts, but logs `[supervisor] WARNING: no beads database found walking up
+from <cwd> ... To fix: ...`, reports `beads: null` plus `beadsWarning` on
+`/api/health`, shows an amber `Beads: NOT RESOLVED -- ...` header on the
+dashboard, and launches sprints WITHOUT `--expect-beads` (they then verify
+members against the orchestrator member's own beads). Treat that as
+"restart from the right folder / with `--beads-dir`", or fix the
+environment and hit `GET /api/health?refresh=1` to recover without a
+restart. `--port <n>` overrides the default (8787). Self-logs to
 `<dataDir>/logs/supervisor.log` in addition to stdout.
 
 Smoke test (a few seconds after launch -- give it time to bind):
 ```bash
 curl -s -m 5 http://localhost:8787/api/sprints   # expect {"sprints":[],...}
 curl -s -m 5 http://localhost:8787/api/members   # expect the registered fleet, non-empty
+curl -s -m 5 http://localhost:8787/api/health    # check `beads.dir`/`beads.prefix` is the intended tracker
 ```
 Both must succeed before treating the supervisor as up -- a bound port with
-a 500 on `/api/members` still means something is broken.
+a 500 on `/api/members` still means something is broken. A wrong
+`beads.prefix` means it was started from the wrong folder: stop it and
+restart with `--beads-dir`. `beads: null` with a `beadsWarning` means no
+tracker was resolved at all: the warning text says what to do.
 
 ## Stop the supervisor
 

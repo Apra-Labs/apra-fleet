@@ -56,6 +56,7 @@ allowed.
 | `--sync` | | no | boolean flag | off | Selects `synced` topology mode (orchestrator-bracketed git + Dolt sync brackets) instead of the default shared-workspace/`legacy` mode. See `docs/architecture.md` "Multi-member topology". |
 | `--service-url <url>` | | no | string | -- | Base HTTP URL of the supervisor that launched this sprint. Forwarded as `serviceUrl`, which switches the dolt-push mutex and the child-id allocator over to their HTTP clients. Set by the supervisor's spawner; not normally passed by hand. |
 | `--run-id <id>` | | no | string | `--branch`'s value | Identifier used for this run's state/viewer keying. Defaults to the branch name when omitted. |
+| `--expect-beads <json>` | | no | JSON string | -- | Beads identity (`{"beadsDir","prefix","syncRemote","repoRemote"}`) every member must resolve to. Set by the supervisor's spawner; falls back to env `FLEET_SPRINT_EXPECT_BEADS` when omitted, and to the orchestrator member's own `bd where` when neither is set. A mismatched member aborts the sprint before any `bd` mutation; an unprobeable member/field is a logged warning (with the fix) and is not compared. |
 | `--help` | `-h` | no | boolean flag | -- | Prints usage text and exits 0. |
 
 All four of `--issue`, `--members`, `--branch`, `--base` are required; if any
@@ -85,6 +86,17 @@ argument audit" section specifically for the productize-or-prune decision on
   `APRA_FLEET_DATA_DIR` -- fleet-server connection resolution, see below.
 - `APRA_FLEET_SE_SCHEMAS_DIR` -- role-schema directory override, see
   "Role schema resolution" below.
+- `FLEET_SPRINT_EXPECT_BEADS` -- env fallback for `--expect-beads`.
+
+Before any `bd` mutation, the CLI prints a `Beads:` banner naming the expected
+identity, then logs `beads ok: <member> ...` per member as each one's probe
+passes. Severity: a MISMATCH (a field that resolved on both sides and
+differs) raises `BeadsIdentityError` and aborts; a probe that fails or
+resolves nothing is a `[beads-identity] WARNING: ...` line naming the member,
+the field, the probe, the error and the fix -- that field is simply not
+compared and the sprint proceeds. The banner's own pre-flight probe of the
+orchestrator member prints `Warning: ...` (with the fix) on failure instead of
+exiting.
 
 ### Exit codes
 

@@ -1244,3 +1244,106 @@ describe('api -- apra-fleet-gey.2 build-version staleness warning', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 });
+
+// GET /api/health `beads` (src/supervisor/beads-identity.mjs): the .beads
+// identity this supervisor resolved at startup, `?refresh=1` re-probing it,
+// and the identity recorded on every launched sprint's ledger entry.
+describe('api -- /api/health beads identity', () => {
+    const identity = { beadsDir: '/p/.beads', prefix: 'proj', databasePath: '/p/.beads/db', syncRemote: 'git+https://x/y.git', repoRemote: 'https://x/y.git' };
+
+    test('reports { dir, prefix, syncRemote, repoRemote } from the wired beadsIdentity, null when none is wired', async () => {
+        let res = mockRes();
+        await createSupervisor({ port: 0 }).handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(payloadOf(res).beads, null);
+
+        const beadsIdentity = { get: () => identity, refresh: async () => identity };
+        res = mockRes();
+        await createSupervisor({ port: 0, beadsIdentity }).handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(res.statusCode, 200);
+        assert.deepEqual(payloadOf(res).beads, { dir: '/p/.beads', prefix: 'proj', syncRemote: 'git+https://x/y.git', repoRemote: 'https://x/y.git' });
+        assert.equal('beadsRefreshError' in payloadOf(res), false);
+    });
+
+    test('identity unknown: beads is null and beadsWarning carries the reason + fix; once refresh() recovers it the warning is gone', async () => {
+        let current = null;
+        let warning = "no beads database found walking up from /x. Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.";
+        const beadsIdentity = {
+            get: () => current,
+            getWarning: () => (current ? null : warning),
+            refresh: async () => { current = identity; warning = null; return current; },
+        };
+        const supervisor = createSupervisor({ port: 0, beadsIdentity, logger: { log() {}, error() {} } });
+        let res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(payloadOf(res).status, 'ok', 'liveness is unaffected');
+        assert.equal(payloadOf(res).beads, null);
+        assert.match(payloadOf(res).beadsWarning, /^no beads database found walking up from \/x\./);
+        assert.match(payloadOf(res).beadsWarning, /To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-\.beads-path>, then GET \/api\/health\?refresh=1\./);
+
+        res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health?refresh=1'), res);
+        assert.equal(payloadOf(res).beads.prefix, 'proj');
+        assert.equal('beadsWarning' in payloadOf(res), false);
+        assert.equal('beadsRefreshError' in payloadOf(res), false);
+    });
+
+    test('?refresh=1 re-probes before answering; a failed re-probe keeps the last identity and reports beadsRefreshError', async () => {
+        let current = identity;
+        let refreshes = 0;
+        let fail = false;
+        const beadsIdentity = {
+            get: () => current,
+            refresh: async () => {
+                refreshes += 1;
+                if (fail) throw new Error('bd where exploded');
+                current = { ...identity, prefix: 'proj2' };
+                return current;
+            },
+        };
+        const supervisor = createSupervisor({ port: 0, beadsIdentity, logger: { log() {}, error() {} } });
+
+        let res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(refreshes, 0);
+
+        res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health?refresh=1'), res);
+        assert.equal(refreshes, 1);
+        assert.equal(payloadOf(res).beads.prefix, 'proj2');
+
+        fail = true;
+        res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health?refresh=1'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(payloadOf(res).status, 'ok');
+        assert.equal(payloadOf(res).beads.prefix, 'proj2');
+        assert.match(payloadOf(res).beadsRefreshError, /bd where exploded/);
+    });
+
+    test('launch() records the supervisor beads identity on the ledger entry (null when no beadsIdentity dep)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+            beadsIdentity: { get: () => identity },
+        });
+        const { sprintId } = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.deepEqual(ledger.get(sprintId).beads, { dir: '/p/.beads', prefix: 'proj', syncRemote: 'git+https://x/y.git', repoRemote: 'https://x/y.git' });
+
+        // Survives a reload from disk.
+        const reloaded = createLedger({ filePath: path.join(dir, LEDGER_FILENAME) });
+        await reloaded.start();
+        assert.equal(reloaded.get(sprintId).beads.prefix, 'proj');
+
+        const bare = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+        const second = await bare.launch({ issue: 'PROJ-2', members: ['bob'], branch: 'feat/y', base: 'main' });
+        assert.equal(ledger.get(second.sprintId).beads, null);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
