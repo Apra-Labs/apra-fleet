@@ -3,12 +3,12 @@ name: CI - Build & Test
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, v0.5_dashboard]
     tags: ['v*']
     paths-ignore:
       - '.github/e2e/**'
   pull_request:
-    branches: [main]
+    branches: [main, v0.5_dashboard]
     paths-ignore:
       - '.github/e2e/**'
 
