@@ -59,6 +59,7 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
             exitCode: null,
             signal: null,
             exitedAt: null,
+            beads: null,
             // apra-fleet-ou7.1: null unless claim() is given a logPath.
             logPath: null,
         });

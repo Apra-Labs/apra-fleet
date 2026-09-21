@@ -51,6 +51,8 @@ import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-o
 import { listFleetMembers, executeFleetCommand } from '../src/supervisor/fleet-members.mjs';
 import { createDoltOrphanSweep, normalizeMsysPathForPlatform } from '../src/supervisor/dolt-orphan-sweep.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
+import { discoverBeadsDir, resolveBeadsDirArg, probeBeadsIdentity, createBeadsIdentityState } from '../src/supervisor/beads-identity.mjs';
+import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const SERVE_USAGE = `
 Usage: fleet-se serve [options]
@@ -59,8 +61,12 @@ Starts the always-on fleet-sprint supervisor. Runs until POST /api/shutdown or a
 termination signal (Ctrl-C / SIGTERM).
 
 Options:
-      --port <port>   HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
-  -h, --help          Show this help message.
+      --port <port>         HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
+      --beads-dir <path>    Project folder (or its .beads dir) whose beads tracker
+                            this supervisor runs against. Default: discovered by
+                            walking up from the current directory, exactly like
+                            bd does; startup fails if none is found either way.
+  -h, --help                Show this help message.
 
 Environment:
   FLEET_SE_DATA_DIR                 Service data dir (ledger/history/logs).
@@ -112,6 +118,7 @@ export function parseServeArgs(argv) {
             args: argv,
             options: {
                 port: { type: 'string' },
+                'beads-dir': { type: 'string' },
                 help: { type: 'boolean', short: 'h' },
             },
             strict: true,
@@ -149,6 +156,41 @@ export async function serveMain(argv = process.argv.slice(2)) {
             return { exitCode: 1 };
         }
     }
+
+    // Which .beads this supervisor runs against -- resolved ONCE, up front,
+    // BEFORE any seam is built or the port is bound, so a supervisor started
+    // from the wrong folder fails loudly instead of serving an empty backlog
+    // or dispatching sprints at an unrelated tracker. Every bd the supervisor
+    // itself runs (backlog/scope-overlap) resolves by walking up from
+    // process.cwd(), so `--beads-dir` is honored by chdir'ing there (nothing
+    // sets BEADS_DIR, nothing is persisted); the sprint children below then
+    // get repoRoot as their cwd and the resolved identity as --expect-beads.
+    if (values['beads-dir'] !== undefined) {
+        let target;
+        try {
+            target = resolveBeadsDirArg(values['beads-dir']);
+            process.chdir(target);
+        } catch (err) {
+            console.error(`Error: ${err && err.message ? err.message : err}`);
+            return { exitCode: 1 };
+        }
+    }
+    const discovered = discoverBeadsDir({ cwd: process.cwd() });
+    if (!discovered) {
+        console.error(`Error: no .beads directory found walking up from ${process.cwd()}; start fleet-se from inside the project or pass --beads-dir <path>`);
+        return { exitCode: 1 };
+    }
+    const repoRoot = discovered.repoRoot;
+    let beadsIdentityRecord;
+    try {
+        beadsIdentityRecord = await probeBeadsIdentity({ cwd: repoRoot });
+    } catch (err) {
+        console.error(`Error: could not resolve the beads identity for ${discovered.beadsDir}: ${err && err.message ? err.message : err}\n` +
+            'Start fleet-se from inside an initialized beads project (bd installed, `bd where` succeeds there) or pass --beads-dir <path>.');
+        return { exitCode: 1 };
+    }
+    const beadsIdentity = createBeadsIdentityState({ cwd: repoRoot, initial: beadsIdentityRecord });
+    console.log(`[supervisor] ${formatBeadsIdentity(beadsIdentityRecord, { label: 'supervisor' })}`);
 
     // The durable reservation ledger (eft.5.1) and its terminal-event history
     // (eft.5.4) are the restart-surviving source of truth. Wire them as real
@@ -191,6 +233,12 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // discoverable even after the reservation is eventually released.
     const spawner = createSpawner({
         serviceUrl: `http://localhost:${port}`,
+        // Sprint children run from the project root (the folder holding the
+        // discovered .beads, not whatever subfolder the operator started in)
+        // and carry the resolved identity so the engine can verify every
+        // member's own `bd where` against it (see beads-identity.mjs).
+        cwd: repoRoot,
+        expectBeads: serializeExpectedIdentity(beadsIdentityRecord),
         onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
             if (!runId) return;
             try {
@@ -261,7 +309,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // Backlog, then the Launch Sprint form (launch-form.mjs attaches itself
     // via dashboard.mjs's renderIndexPageHtml default; see the import comment
     // above for why no separate launch-form seam is constructed here).
-    const dashboard = createDashboard({ ledger, watchdog, backlog });
+    const dashboard = createDashboard({ ledger, watchdog, backlog, beadsIdentity });
 
     // docs/dolt-sync-redesign.md Part 3.3: kill any orphaned ephemeral
     // `dolt sql-server` a mid-settle orchestrator death left behind on a
@@ -299,7 +347,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
         ownerDataDirPrefix: sweepOwnerDataDir,
     });
 
-    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep });
+    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep, beadsIdentity });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
 
@@ -346,6 +394,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
         listMembers: listMembersForLaunch,
         getBacklog: async () => ({ tree: await backlog.buildTree() }),
         beforeLaunch,
+        beadsIdentity,
     });
     registerSprintRoutes(supervisor, sprintController);
 

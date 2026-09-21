@@ -223,6 +223,28 @@ describe('buildSprintArgv', () => {
         assert.ok(!args.includes('--run-id'));
     });
 
+    // --expect-beads carries the supervisor's resolved beads identity
+    // (fleet-sprint/beads-identity.mjs serializeExpectedIdentity() JSON) so
+    // the engine can verify every member's `bd where` against it. Appended
+    // AFTER --run-id, BEFORE extraArgs, so existing argv ordering is intact.
+    test('appends --expect-beads <json> when expectBeads is provided, after --run-id', () => {
+        const json = JSON.stringify({ beadsDir: '/p/.beads', prefix: 'proj', syncRemote: 'git+https://x/y.git', repoRemote: 'https://x/y.git' });
+        const args = buildSprintArgv({
+            issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080,
+            runId: 'PROJ-1-abc123', expectBeads: json, extraArgs: ['--tail'],
+        });
+        assert.deepEqual(args, [
+            '--issue', 'i', '--members', 'm', '--branch', 'b', '--base', 'main',
+            '--viewer-port', '8080', '--run-id', 'PROJ-1-abc123', '--expect-beads', json, '--tail',
+        ]);
+        assert.deepEqual(JSON.parse(args[args.indexOf('--expect-beads') + 1]).prefix, 'proj');
+    });
+
+    test('omits --expect-beads entirely when expectBeads is not provided', () => {
+        const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080 });
+        assert.ok(!args.includes('--expect-beads'));
+    });
+
     test('throws when a required flag is missing', () => {
         assert.throws(() => buildSprintArgv({ members: 'm', branch: 'b', base: 'main', viewerPort: 8080 }), /issue, members, branch, and base/);
     });
@@ -363,6 +385,39 @@ describe('createSpawner -- unit behavior (fake spawn)', () => {
         await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
 
         assert.ok(!calls[0].args.includes('--service-url'));
+    });
+
+    // deps.expectBeads (bin/serve.mjs's resolved identity) reaches every
+    // child as --expect-beads exactly like serviceUrl; deps.cwd (the project
+    // root holding the discovered .beads) is forwarded to spawn() so the
+    // child's own bd walk-up resolves the SAME tracker.
+    test('spawnSprint threads deps.expectBeads through as --expect-beads and forwards deps.cwd to spawn()', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([224]);
+        const json = JSON.stringify({ beadsDir: '/p/.beads', prefix: 'proj', syncRemote: 'r', repoRemote: 'o' });
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            basePort: 9070,
+            isPortAvailable: async () => true,
+            expectBeads: json,
+            cwd: '/p',
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.equal(calls[0].args[calls[0].args.indexOf('--expect-beads') + 1], json);
+        assert.equal(calls[0].opts.cwd, '/p');
+    });
+
+    test('spawnSprint omits --expect-beads when neither deps.expectBeads nor opts.expectBeads is set, and passes no cwd', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([225]);
+        const spawner = createSpawner({ spawn: spawnFn, basePort: 9080, isPortAvailable: async () => true, dataDir: FAKE_DATA_DIR, fs: makeFakeFs().fs });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.ok(!calls[0].args.includes('--expect-beads'));
+        assert.equal('cwd' in calls[0].opts, false);
     });
 
     // apra-fleet-k7b.3: the optional onChildExit callback is invoked with the

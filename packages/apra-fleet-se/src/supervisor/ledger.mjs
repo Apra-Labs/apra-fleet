@@ -251,7 +251,26 @@ function normalizeReservation(input, now) {
         throw new TypeError('logPath must be a string or null');
     }
 
-    return { members, issueRoots, childPid, reservedAt, branch, base, goal, exitCode, signal, exitedAt, logPath };
+    // The beads identity the supervisor resolved when it launched this sprint
+    // (src/supervisor/beads-identity.mjs's toBeadsSummary() shape: dir,
+    // prefix, syncRemote, repoRemote -- all strings). null for a reservation
+    // predating this field, same convention as above.
+    const beads = normalizeBeadsSummary(input.beads);
+
+    return { members, issueRoots, childPid, reservedAt, branch, base, goal, exitCode, signal, exitedAt, logPath, beads };
+}
+
+/** @param {unknown} v @returns {{ dir: string, prefix: string, syncRemote: string, repoRemote: string }|null} */
+function normalizeBeadsSummary(v) {
+    if (v === undefined || v === null) return null;
+    if (typeof v !== 'object' || Array.isArray(v)) throw new TypeError('beads must be an object or null');
+    const out = {};
+    for (const k of ['dir', 'prefix', 'syncRemote', 'repoRemote']) {
+        const f = v[k];
+        if (f !== undefined && f !== null && typeof f !== 'string') throw new TypeError(`beads.${k} must be a string`);
+        out[k] = f ?? '';
+    }
+    return out;
 }
 
 /** Deep-clone a reservation so callers can never mutate ledger-internal state. */
@@ -268,6 +287,7 @@ function cloneReservation(r) {
         signal: r.signal ?? null,
         logPath: r.logPath ?? null,
         exitedAt: r.exitedAt ?? null,
+        beads: r.beads ? { ...r.beads } : null,
     };
 }
 

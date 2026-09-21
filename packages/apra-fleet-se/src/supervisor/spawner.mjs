@@ -194,13 +194,14 @@ export async function allocateFreePort(opts = {}) {
  *   issue: string, members: string, branch: string, base: string,
  *   goal?: string, maxCycles?: number|string, allowMissingMembers?: boolean,
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
- *   viewerPort: number, serviceUrl?: string, runId?: string, extraArgs?: string[],
+ *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
+ *   extraArgs?: string[],
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, extraArgs } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -241,6 +242,13 @@ export function buildSprintArgv(opts = {}) {
     // direct/standalone CLI launch never goes through this spawner) means
     // cli.mjs falls back to the branch name itself.
     if (runId !== undefined) args.push('--run-id', runId);
+    // The beads identity this supervisor resolved at startup (see
+    // beads-identity.mjs / bin/serve.mjs), serialized by the shared
+    // fleet-sprint/beads-identity.mjs serializeExpectedIdentity(), forwarded
+    // so the engine can verify every member's `bd where` against the SAME
+    // database this supervisor reads. Omitted when the caller has none (a
+    // direct/test spawner) -- the engine then skips the verification.
+    if (expectBeads !== undefined) args.push('--expect-beads', expectBeads);
     if (Array.isArray(extraArgs)) args.push(...extraArgs);
     return args;
 }
@@ -261,6 +269,7 @@ export function buildSprintArgv(opts = {}) {
  *   isPortAvailable?: (port: number) => Promise<boolean>,
  *   logger?: { log?: Function, error?: Function },
  *   serviceUrl?: string,
+ *   expectBeads?: string,
  *   onChildExit?: (info: { pid: number, runId: string|null, exitCode: number|null, signal: string|null, at: string, logPath: string }) => void,
  *   now?: () => string,
  *   dataDir?: string,
@@ -302,6 +311,11 @@ export function createSpawner(deps = {}) {
     // one, spawned children simply omit --service-url and fall back exactly
     // as before -- no crash, unchanged behavior.
     const serviceUrl = deps.serviceUrl;
+    // The serialized beads identity (fleet-sprint/beads-identity.mjs's
+    // serializeExpectedIdentity() JSON) every child receives as
+    // `--expect-beads`; threaded exactly like serviceUrl above -- optional,
+    // and a per-call opts.expectBeads wins over the instance default.
+    const expectBeads = deps.expectBeads;
     // apra-fleet-k7b.3: optional same-instance child-exit notification (see
     // the 'exit' listener below) and its injectable clock (test determinism,
     // matching ledger.mjs/history.mjs's own `now` seam convention).
@@ -339,7 +353,12 @@ export function createSpawner(deps = {}) {
      */
     async function spawnSprint(opts = {}) {
         const port = await allocateFreePort({ startPort: basePort, excludedPorts: livePortSet(), isAvailable });
-        const args = [cliPath, ...buildSprintArgv({ ...opts, viewerPort: port, serviceUrl: opts.serviceUrl ?? serviceUrl })];
+        const args = [cliPath, ...buildSprintArgv({
+            ...opts,
+            viewerPort: port,
+            serviceUrl: opts.serviceUrl ?? serviceUrl,
+            expectBeads: opts.expectBeads ?? expectBeads,
+        })];
 
         // apra-fleet-ou7.1: opts.runId is the SAME sprintId createSprintController
         // generates and claims in the ledger BEFORE spawning (apra-fleet-k7b.1) --

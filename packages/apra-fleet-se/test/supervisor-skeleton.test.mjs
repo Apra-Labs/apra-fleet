@@ -185,6 +185,13 @@ describe('parseServeArgs', () => {
         assert.throws(() => parseServeArgs(['--nope']), /Invalid command-line arguments/);
     });
 
+    test('accepts --beads-dir <path> (the explicit project-folder override for beads discovery)', () => {
+        assert.equal(parseServeArgs(['--beads-dir', '/some/project']).values['beads-dir'], '/some/project');
+        assert.equal(parseServeArgs(['--port', '9000', '--beads-dir', '/p/.beads']).values['beads-dir'], '/p/.beads');
+        assert.equal(parseServeArgs([]).values['beads-dir'], undefined);
+        assert.throws(() => parseServeArgs(['--beads-dir']), /Invalid command-line arguments/);
+    });
+
     test('DEFAULT_SERVICE_PORT is a valid port', () => {
         assert.ok(Number.isInteger(DEFAULT_SERVICE_PORT) && DEFAULT_SERVICE_PORT > 0 && DEFAULT_SERVICE_PORT < 65536);
     });

@@ -959,6 +959,7 @@ describe('dashboard -- buildStatePayload', () => {
             members: [{ name: 'alice', role: 'orchestrator' }],
             base: 'main',
             baseDrift: 0,
+            beadsPrefix: 'proj',
         }];
         const payload = buildStatePayload(views);
         assert.equal(payload.runningCount, 1);
@@ -973,6 +974,7 @@ describe('dashboard -- buildStatePayload', () => {
             members: [{ name: 'alice', role: 'orchestrator' }],
             base: 'main',
             baseDrift: 0,
+            beadsPrefix: 'proj',
         }]);
     });
 });

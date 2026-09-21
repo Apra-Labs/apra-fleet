@@ -69,6 +69,7 @@ import { renderProgressBarHtml } from '../../fleet-sprint/viewer-extensions.mjs'
 // reused here rather than a second parser, so the supervisor's progress bar
 // excludes below-goal beads the identical way the per-sprint viewer's does.
 import { goalPriorityMax } from '../../fleet-sprint/runner.js';
+import { toBeadsSummary } from './beads-identity.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -287,6 +288,12 @@ export function renderSprintSection(view) {
         // (apra-fleet-p2to.3.1) base-drift indicator -- see baseDriftIndicator()'s
         // doc comment for the "unknown" vs "0 drift" distinction.
         '<div>' + baseDriftIndicator(view.baseDrift ?? null, view.base ?? null) + '</div>' +
+        // The beads prefix the supervisor resolved when it launched this
+        // sprint (ledger entry `beads`, see beads-identity.mjs); omitted for
+        // a reservation predating that field.
+        (view.beadsPrefix
+            ? '<div><span style="color:#a1a1aa;">Beads prefix:</span> ' + escapeHtml(view.beadsPrefix) + '</div>'
+            : '') +
         '</div>' +
         '<div style="margin-top: 8px;">' +
         '<span style="color:#a1a1aa; font-size: 12px;">Members:</span><br/>' +
@@ -825,6 +832,24 @@ const SPRINT_STACK_LIVE_SCRIPT = `
 `;
 
 /**
+ * The single "which .beads is this supervisor running against" line shown
+ * above the Sprint Stack: "Beads: <dir> | prefix <p> | <syncRemote>", every
+ * field HTML-escaped, styled like the Supervisor-log link line in the header.
+ * Renders nothing when no identity was supplied (tests, inert skeleton).
+ * @param {{ dir?: string, prefix?: string, syncRemote?: string }|null|undefined} beads
+ * @returns {string}
+ */
+export function renderBeadsHeaderHtml(beads) {
+    if (!beads || typeof beads !== 'object') return '';
+    const dir = escapeHtml(beads.dir || '(unknown)');
+    const prefix = escapeHtml(beads.prefix || '?');
+    const remote = escapeHtml(beads.syncRemote || '(sync.remote unset)');
+    return '<div class="beads-identity" style="font-size: 12px; color: #a1a1aa; padding: 4px 16px;">' +
+        'Beads: <span style="color:#d4d4d8;">' + dir + '</span> | prefix <span style="color:#d4d4d8;">' + prefix + '</span>' +
+        ' | <span style="color:#d4d4d8;">' + remote + '</span></div>\n';
+}
+
+/**
  * Renders the full index page (`GET /` document): a header, then a Sprints
  * tab (Sprint Stack alone) and a separate Backlog tab (eft.6.2's cross-sprint
  * free-set view, followed by the Launch Sprint form -- launching starts from
@@ -838,9 +863,12 @@ const SPRINT_STACK_LIVE_SCRIPT = `
  * @param {SprintView[]} [views]
  * @param {string} [backlogHtml] - pre-rendered Backlog tab content (eft.6.2 / renderBacklogPanelHtml())
  * @param {string} [launchFormHtml] - pre-rendered Launch Sprint form HTML (eft.6.3)
+ * @param {{ beads?: { dir?: string, prefix?: string, syncRemote?: string, repoRemote?: string }|null }} [opts]
+ *   `beads`: the supervisor's resolved .beads identity (beads-identity.mjs's
+ *   toBeadsSummary()), rendered as one header line above the Sprint Stack.
  * @returns {string}
  */
-export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
+export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {}) {
     const backlogSection = typeof backlogHtml === 'string'
         ? backlogHtml
         : '<p style="color:var(--text-muted); font-style: italic;">No unclaimed work in the backlog.</p>';
@@ -861,6 +889,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
         '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div>' +
         '<a href="/supervisor/log" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
         '</div>\n' +
+        renderBeadsHeaderHtml(opts && opts.beads) +
         '<div class="main-content"><div class="content-area">' +
         '<div class="tab-bar" id="tab-bar">' +
         '<button class="tab-btn active" onclick="switchTab(\'sprints\')">Sprints</button>' +
@@ -912,6 +941,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  * @property {Array<{ name: string, role: string|null }>} members
  * @property {string|null} base - (apra-fleet-p2to.3.1) the sprint's launch `--base` branch, as recorded on the ledger entry
  * @property {number|null} baseDrift - (apra-fleet-p2to.3.1) commits on `base` not yet reachable from `branch`; `null` when unknown (see computeBaseDrift())
+ * @property {string|null} beadsPrefix - the beads prefix recorded on the ledger entry at launch (`beads.prefix`, beads-identity.mjs); null when absent
  */
 
 /**
@@ -944,6 +974,7 @@ export function buildStatePayload(views) {
             members: v.members ?? [],
             base: v.base ?? null,
             baseDrift: v.baseDrift ?? null,
+            beadsPrefix: v.beadsPrefix ?? null,
         })),
     };
 }
@@ -985,6 +1016,7 @@ const DEFAULT_EVENTS_INTERVAL_MS = 5000;
  *   backlog?: { renderHtml: () => Promise<string>|string },
  *   logger?: { log?: Function, error?: Function },
  *   eventsIntervalMs?: number, // (apra-fleet-siqi.1.1) GET /events signal cadence; defaults to DEFAULT_EVENTS_INTERVAL_MS
+ *   beadsIdentity?: { get: () => object|null }, // beads-identity.mjs handle; drives the "Beads: ..." header line
  * }} [deps]
  * @returns {{
  *   name: string,
@@ -1006,6 +1038,10 @@ export function createDashboard(deps = {}) {
     }
     const logger = deps.logger ?? console;
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
+    // Optional beads-identity handle (beads-identity.mjs's
+    // createBeadsIdentityState(); bin/serve.mjs wires the real one) -- read
+    // on every renderIndexPage() for the header line. Absent -> no line.
+    const beadsIdentity = deps.beadsIdentity && typeof deps.beadsIdentity.get === 'function' ? deps.beadsIdentity : null;
     // apra-fleet-c4s.1: `deps.expandScope`, when injected, is called verbatim
     // (the pre-existing test seam -- see the module doc comment above). When
     // absent (production default, bin/serve.mjs), buildSprintViews() below
@@ -1178,6 +1214,7 @@ export function createDashboard(deps = {}) {
                 members: (entry.members ?? []).map((name) => ({ name, role: roles[name] ?? null })),
                 base,
                 baseDrift,
+                beadsPrefix: entry.beads && entry.beads.prefix ? entry.beads.prefix : null,
             };
         }));
         return built.filter((v) => v.status !== WATCHDOG_STATUS.FINISHED);
@@ -1241,7 +1278,15 @@ export function createDashboard(deps = {}) {
                     logError('[dashboard] backlog render failed:', err);
                 }
             }
-            return renderIndexPageHtml(await buildSprintViews(), backlogHtml);
+            let beads = null;
+            if (beadsIdentity) {
+                try {
+                    beads = toBeadsSummary(beadsIdentity.get());
+                } catch (err) {
+                    logError('[dashboard] beads identity read failed:', err);
+                }
+            }
+            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads });
         },
     };
 }
