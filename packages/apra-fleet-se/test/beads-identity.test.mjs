@@ -184,7 +184,7 @@ describe('compareIdentity', () => {
             repoRemote: 'git' + '@github.com:' + 'org/repo.git',
         };
         const r = compareIdentity(base, actual);
-        assert.deepEqual(r, { ok: true, mismatches: [] });
+        assert.deepEqual(r, { ok: true, mismatches: [], unresolved: [] });
     });
 
     test('reports a prefix mismatch', () => {
@@ -228,7 +228,41 @@ describe('compareIdentity', () => {
     test('beadsDir difference alone is not a mismatch', () => {
         const actual = { ...base, beadsDir: '/totally/different/.beads' };
         const r = compareIdentity(base, actual);
-        assert.deepEqual(r, { ok: true, mismatches: [] });
+        assert.deepEqual(r, { ok: true, mismatches: [], unresolved: [] });
+    });
+
+    // { skipUnresolved: true }: the engine precondition's mode -- a field
+    // empty on either side is listed, not compared; a field set on both
+    // sides and different is still a mismatch.
+    describe('skipUnresolved', () => {
+        test('an empty actual field is unresolved, not a mismatch, and does not affect ok', () => {
+            const actual = { ...base, syncRemote: '', repoRemote: '' };
+            const r = compareIdentity(base, actual, { skipUnresolved: true });
+            assert.equal(r.ok, true);
+            assert.deepEqual(r.mismatches, []);
+            assert.deepEqual(r.unresolved.map((u) => u.field), ['syncRemote', 'repoRemote']);
+            assert.deepEqual(r.unresolved[0], { field: 'syncRemote', expected: base.syncRemote, actual: '' });
+        });
+
+        test('an empty EXPECTED field is unresolved too (nothing to compare against)', () => {
+            const r = compareIdentity({ ...base, syncRemote: '' }, base, { skipUnresolved: true });
+            assert.equal(r.ok, true);
+            assert.deepEqual(r.unresolved.map((u) => u.field), ['syncRemote']);
+        });
+
+        test('a field set on both sides and different is still a mismatch', () => {
+            const actual = { ...base, prefix: 'other', repoRemote: '' };
+            const r = compareIdentity(base, actual, { skipUnresolved: true });
+            assert.equal(r.ok, false);
+            assert.deepEqual(r.mismatches, [{ field: 'prefix', expected: 'proj', actual: 'other' }]);
+            assert.deepEqual(r.unresolved.map((u) => u.field), ['repoRemote']);
+        });
+
+        test('the strict default still counts an empty actual as a mismatch', () => {
+            const r = compareIdentity(base, { ...base, syncRemote: '' });
+            assert.equal(r.ok, false);
+            assert.deepEqual(r.unresolved, []);
+        });
     });
 });
 

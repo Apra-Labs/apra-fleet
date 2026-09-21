@@ -15,8 +15,10 @@
 // ../../fleet-sprint/beads-identity.mjs (the pure parse/compare/format
 // helpers both sides use):
 //   - discoverBeadsDir(): the same walk-up bd performs, done here so serve
-//     can hard-fail BEFORE binding its port when no .beads is reachable, and
-//     so the sprint children get the project root (not a subfolder) as cwd.
+//     can WARN loudly at startup when no .beads is reachable (the server
+//     still starts, with the identity "unknown" -- see
+//     createBeadsIdentityState), and so the sprint children get the project
+//     root (not a subfolder) as cwd.
 //   - probeBeadsIdentity(): the three read-only probes (`bd where --json`,
 //     `bd config get sync.remote --json`, `git remote get-url origin`) run in
 //     that cwd and parsed into one { beadsDir, prefix, syncRemote,
@@ -165,28 +167,63 @@ export async function probeBeadsIdentity(opts = {}) {
     return identity;
 }
 
+// The operator-facing warning texts for an UNKNOWN identity. Each one says
+// what was found and what to do; the same string goes to the startup log
+// (`[supervisor] WARNING: ...`), GET /api/health (`beadsWarning`) and the
+// dashboard header. Generic on purpose: no product paths.
+const FIX_TAIL = 'then GET /api/health?refresh=1.';
+
+/** No `.beads` reachable by walking up from `cwd`. */
+export function formatNoBeadsWarning(cwd) {
+    return `no beads database found walking up from ${cwd}. ` +
+        "Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. " +
+        `To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, ${FIX_TAIL}`;
+}
+
+/** A `.beads` was found under `repoRoot` but the identity probe failed. */
+export function formatProbeFailedWarning(repoRoot, error) {
+    const detail = error && error.message ? error.message : String(error);
+    return `could not resolve the beads identity under ${repoRoot}: ${detail}. ` +
+        "Backlog and scope-overlap checks may fail and sprints will verify against the orchestrator member's beads instead. " +
+        `To fix: run 'bd where' in ${repoRoot} to see the error, ensure bd is on PATH and the project is initialised (bd init / sync.remote set), ${FIX_TAIL}`;
+}
+
 /**
- * Holds the supervisor's resolved identity. `refresh()` re-runs the probes
- * (GET /api/health?refresh=1) and REPLACES the held record only on success --
- * a transient probe failure leaves the last good identity in place and
- * rethrows, so a reader never sees a half-updated record.
+ * Holds the supervisor's resolved identity, or the warning explaining why
+ * it is unknown. `refresh()` re-runs the probes (GET /api/health?refresh=1)
+ * and REPLACES the held record only on success -- a transient probe failure
+ * leaves the last good identity in place and rethrows, so a reader never
+ * sees a half-updated record. When there is NO last good identity (startup
+ * found no .beads, or its probe failed) a successful refresh recovers it
+ * and clears the warning; a failed one refreshes the warning text so the
+ * health route and dashboard show the current reason.
  * @param {{
  *   cwd?: string,
  *   probe?: (opts: { cwd: string }) => Promise<object>,
  *   initial?: object|null,
+ *   warning?: string|null,
  * }} [deps]
- * @returns {{ get(): object|null, refresh(): Promise<object>, cwd: string }}
+ * @returns {{ get(): object|null, getWarning(): string|null, refresh(): Promise<object>, cwd: string }}
  */
 export function createBeadsIdentityState(deps = {}) {
     const cwd = path.resolve(deps.cwd ?? process.cwd());
     const probe = deps.probe ?? probeBeadsIdentity;
     let current = deps.initial ?? null;
+    let warning = current ? null : (deps.warning ?? null);
     return {
         cwd,
         get() { return current; },
+        getWarning() { return current ? null : warning; },
         async refresh() {
-            const next = await probe({ cwd });
+            let next;
+            try {
+                next = await probe({ cwd });
+            } catch (err) {
+                if (!current) warning = formatProbeFailedWarning(cwd, err);
+                throw err;
+            }
             current = next;
+            warning = null;
             return next;
         },
     };

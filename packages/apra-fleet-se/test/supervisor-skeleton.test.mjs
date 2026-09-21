@@ -321,6 +321,25 @@ describe('serveMain', () => {
             console.error = origErr;
         }
     });
+
+    // A --beads-dir that does not exist is an operator typo: still a startup
+    // ERROR (exit 1 before any port is bound). Contrast: NO .beads reachable
+    // from cwd is an environment condition and only a warning (the server
+    // starts with the identity unknown) -- covered at the unit level by
+    // supervisor-beads-identity / supervisor-api / spawner tests, since which
+    // tracker an arbitrary cwd walks up to is host-dependent.
+    test('--beads-dir pointing at a nonexistent path returns exit 1 with a clear error', async () => {
+        const origErr = console.error;
+        const errors = [];
+        console.error = (...a) => errors.push(a.join(' '));
+        try {
+            const { exitCode } = await serveMain(['--beads-dir', '/definitely/not/here/.beads']);
+            assert.equal(exitCode, 1);
+            assert.ok(errors.some((e) => /--beads-dir '.*not.here.*' does not exist or is not a directory/.test(e)), JSON.stringify(errors));
+        } finally {
+            console.error = origErr;
+        }
+    });
 });
 
 // -- minimal fake IncomingMessage for readJsonBody --------------------------

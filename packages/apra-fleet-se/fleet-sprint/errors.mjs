@@ -879,23 +879,24 @@ export class PreSprintValidationError extends WorkflowError {
 // ---------------------------------------------------------------------------
 
 export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
-    PROBE_FAILED: 'PROBE_FAILED',
     MISMATCH: 'MISMATCH',
 });
 
 /**
  * Thrown by verifyBeadsIdentity (beads-identity-check.mjs) BEFORE any
- * mutating bd command when a member's `bd where` / `bd config get
- * sync.remote` / `git remote get-url origin` probe fails, or when the probed
- * identity does not match the expected one (the supervisor's expectation, or
- * the orchestrator member's own identity).
+ * mutating bd command when a member's probed identity (`bd where` / `bd
+ * config get sync.remote` / `git remote get-url origin`) DIFFERS from the
+ * expected one (the supervisor's expectation, or the orchestrator member's
+ * own identity) on a field that resolved on both sides. A probe that fails
+ * or cannot be parsed is a logged warning, never this error: only a proven
+ * mismatch is a data-corruption risk worth refusing the sprint for.
  *
  * A WorkflowError so main()'s terminal record names the reason, but
  * deliberately NOT a typed abort: nothing has been dispatched or mutated, so
  * there is no partial work for finalizeAbort() to push or open a PR for.
  *
  * @property {string} reason - one of BEADS_IDENTITY_FAILURE_REASONS
- * @property {string} member - the member whose probe failed / mismatched
+ * @property {string} member - the member whose identity mismatched
  * @property {Array<{field: string, expected: string, actual: string}>} [mismatches]
  */
 export class BeadsIdentityError extends WorkflowError {

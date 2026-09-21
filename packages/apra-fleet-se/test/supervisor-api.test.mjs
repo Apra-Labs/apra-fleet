@@ -1264,6 +1264,30 @@ describe('api -- /api/health beads identity', () => {
         assert.equal('beadsRefreshError' in payloadOf(res), false);
     });
 
+    test('identity unknown: beads is null and beadsWarning carries the reason + fix; once refresh() recovers it the warning is gone', async () => {
+        let current = null;
+        let warning = "no beads database found walking up from /x. Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.";
+        const beadsIdentity = {
+            get: () => current,
+            getWarning: () => (current ? null : warning),
+            refresh: async () => { current = identity; warning = null; return current; },
+        };
+        const supervisor = createSupervisor({ port: 0, beadsIdentity, logger: { log() {}, error() {} } });
+        let res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(payloadOf(res).status, 'ok', 'liveness is unaffected');
+        assert.equal(payloadOf(res).beads, null);
+        assert.match(payloadOf(res).beadsWarning, /^no beads database found walking up from \/x\./);
+        assert.match(payloadOf(res).beadsWarning, /To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-\.beads-path>, then GET \/api\/health\?refresh=1\./);
+
+        res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health?refresh=1'), res);
+        assert.equal(payloadOf(res).beads.prefix, 'proj');
+        assert.equal('beadsWarning' in payloadOf(res), false);
+        assert.equal('beadsRefreshError' in payloadOf(res), false);
+    });
+
     test('?refresh=1 re-probes before answering; a failed re-probe keeps the last identity and reports beadsRefreshError', async () => {
         let current = identity;
         let refreshes = 0;

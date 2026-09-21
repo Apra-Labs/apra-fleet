@@ -14,7 +14,8 @@
 //     repoRemote } record,
 //   - comparison of two records. beadsDir is DISPLAYED, never compared: it is
 //     a path on whichever box ran the probe. prefix, syncRemote and repoRemote
-//     are the project identity and must all match.
+//     are the project identity; every field that resolved on both sides must
+//     match (a field a probe could not resolve is reported, not compared).
 //
 // No I/O here: callers run the commands and hand the stdout in.
 // =============================================================================
@@ -107,9 +108,10 @@ export function normalizeRemoteUrl(url) {
 }
 
 // Builds one identity record from the three probe outputs. Any probe that
-// could not be parsed leaves its field '' -- compareIdentity treats '' as a
-// mismatch against a non-empty expectation (a member with no sync.remote is
-// not "unknown", it is misconfigured: dolt push/pull would fail later anyway).
+// could not be parsed leaves its field '' -- an UNRESOLVED field. Strict
+// compareIdentity (the default) treats '' against a non-empty expectation
+// as a mismatch; the engine's precondition passes { skipUnresolved: true }
+// so an unresolved field is reported (warned about) rather than compared.
 export function parseBeadsIdentity({ where, syncRemote, repoRemote }) {
     const w = parseBdWhere(where);
     return {
@@ -127,18 +129,33 @@ export function isCompleteIdentity(id) {
 
 // Compares `actual` against `expected` on COMPARED_FIELDS. Remote URLs are
 // compared in normalized form; prefix is compared exactly. Returns
-// { ok, mismatches: [{ field, expected, actual }] }.
-export function compareIdentity(expected, actual) {
+// { ok, mismatches: [{ field, expected, actual }], unresolved: [{ field,
+// expected, actual }] }.
+//
+// A field that is empty on EITHER side is "unresolved". By default (strict)
+// it is compared like any other value, so '' against a non-empty
+// expectation is a mismatch. With `{ skipUnresolved: true }` such a field is
+// listed under `unresolved` instead and never counts against `ok` -- the
+// caller decides how loudly to report it. A field that is non-empty on both
+// sides and differs is ALWAYS a mismatch, whichever option is set.
+export function compareIdentity(expected, actual, { skipUnresolved = false } = {}) {
     const mismatches = [];
+    const unresolved = [];
     for (const field of COMPARED_FIELDS) {
         const e = expected ? expected[field] ?? '' : '';
         const a = actual ? actual[field] ?? '' : '';
+        const eText = String(e).trim();
+        const aText = String(a).trim();
+        if (skipUnresolved && (!eText || !aText)) {
+            unresolved.push({ field, expected: e, actual: a });
+            continue;
+        }
         const same = field === 'prefix'
-            ? String(e).trim() === String(a).trim()
+            ? eText === aText
             : normalizeRemoteUrl(e) === normalizeRemoteUrl(a);
         if (!same) mismatches.push({ field, expected: e, actual: a });
     }
-    return { ok: mismatches.length === 0, mismatches };
+    return { ok: mismatches.length === 0, mismatches, unresolved };
 }
 
 // One-line human form, used by the supervisor header, the CLI banner and the

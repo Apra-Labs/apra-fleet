@@ -128,11 +128,10 @@ From INSIDE the target project (its root, or any folder under it):
 node packages/apra-fleet-se/bin/serve.mjs   # detached/background; runs indefinitely
 ```
 The supervisor resolves which `.beads` tracker it runs against by walking
-up from its own working directory, exactly like `bd` does, and it refuses
-to start ("no .beads directory found walking up from ...") if none is
-reachable -- the same rule applies to the sprints it launches, which run
-from that project root. If you must start it from elsewhere (a service
-manager, a scheduler, another checkout), pass the project explicitly:
+up from its own working directory, exactly like `bd` does -- the same rule
+applies to the sprints it launches, which run from that project root. If
+you must start it from elsewhere (a service manager, a scheduler, another
+checkout), pass the project explicitly:
 ```bash
 node /path/to/packages/apra-fleet-se/bin/serve.mjs --beads-dir /path/to/target-project
 ```
@@ -142,6 +141,23 @@ is persisted: the resolved identity (`.beads` dir, prefix, `sync.remote`,
 git origin) is logged once at startup, reported by `GET /api/health` as
 `beads`, shown at the top of the dashboard, and handed to every sprint it
 launches so the engine can verify each member's own `bd where` against it.
+
+If no `.beads` is reachable from the working directory (or the identity
+probe fails: `bd` not on PATH, project not initialised), the supervisor
+STILL STARTS but warns loudly and runs with its beads identity unknown:
+
+```
+[supervisor] WARNING: no beads database found walking up from <cwd>. Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.
+```
+
+In that state `GET /api/health` returns `beads: null` plus `beadsWarning`
+(the same text), the dashboard header shows an amber `Beads: NOT RESOLVED
+-- ...` line in place of the identity line, launched sprints receive no
+`--expect-beads` (the engine then takes the expectation from the
+orchestrator member's own `bd where`), and the ledger records `beads: null`
+for them. Fix the environment and call `GET /api/health?refresh=1` to
+recover the identity without a restart, or restart from the right folder /
+with `--beads-dir`.
 
 Default port 8787. Smoke test:
 ```bash

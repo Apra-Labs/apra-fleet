@@ -420,6 +420,28 @@ describe('createSpawner -- unit behavior (fake spawn)', () => {
         assert.equal('cwd' in calls[0].opts, false);
     });
 
+    // deps.expectBeads may be a getter (bin/serve.mjs passes one that reads
+    // the live beads-identity state): read at EACH spawn, so a supervisor
+    // whose identity was unknown at startup omits --expect-beads (the
+    // engine then falls back to the orchestrator member's own identity) and
+    // starts passing it once GET /api/health?refresh=1 recovered it.
+    test('spawnSprint reads a deps.expectBeads getter per spawn: undefined omits --expect-beads, a later value adds it', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([226, 227]);
+        let current;
+        const spawner = createSpawner({
+            spawn: spawnFn, basePort: 9090, isPortAvailable: async () => true,
+            expectBeads: () => current,
+            dataDir: FAKE_DATA_DIR, fs: makeFakeFs().fs,
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+        assert.ok(!calls[0].args.includes('--expect-beads'), `identity unknown: argv must carry no --expect-beads, got ${JSON.stringify(calls[0].args)}`);
+
+        current = JSON.stringify({ beadsDir: '/p/.beads', prefix: 'proj', syncRemote: 'r', repoRemote: 'o' });
+        await spawner.spawnSprint({ issue: 'i2', members: 'm1', branch: 'b2', base: 'main' });
+        assert.equal(calls[1].args[calls[1].args.indexOf('--expect-beads') + 1], current);
+    });
+
     // apra-fleet-k7b.3: the optional onChildExit callback is invoked with the
     // Node 'exit' event's own (code, signal) args, this launch's runId, and
     // an injectable clock -- so bin/serve.mjs's wiring can persist them into

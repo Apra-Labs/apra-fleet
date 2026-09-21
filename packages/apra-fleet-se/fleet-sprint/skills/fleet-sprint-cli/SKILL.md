@@ -82,10 +82,15 @@ on this list -- flags evolve and this skill can drift.
    `provision_llm_auth` for that member before retrying.
 5. Beads identity: before any `bd` mutation, the sprint probes every
    member's `bd where`/`sync.remote`/git origin and prints a `Beads:`
-   banner plus one `beads ok: <member> ...` line per member. A mismatch
-   aborts with `BeadsIdentityError` naming the member and field before
-   anything is mutated. Fix by correcting that member's `workFolder` (wrong
-   `.beads`) or its `sync.remote` -- there is no bypass flag.
+   banner plus one `beads ok: <member> ...` line per member. A MISMATCH
+   (a field that resolved on both sides and differs) aborts with
+   `BeadsIdentityError` naming the member and field before anything is
+   mutated; fix by correcting that member's `workFolder` (wrong `.beads`)
+   or its `sync.remote` -- there is no bypass flag. A probe that fails or
+   resolves nothing is only a `[beads-identity] WARNING:` line (naming the
+   member, field, probe, error and the fix): that field is not compared and
+   the sprint proceeds -- read the warning and fix the member, but do not
+   treat it as an abort.
 
 ## Launching it
 

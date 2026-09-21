@@ -8,6 +8,8 @@ import {
     probeBeadsIdentity,
     createBeadsIdentityState,
     toBeadsSummary,
+    formatNoBeadsWarning,
+    formatProbeFailedWarning,
     BEADS_DIR_NAME,
 } from '../src/supervisor/beads-identity.mjs';
 import { renderIndexPageHtml, renderBeadsHeaderHtml, renderSprintSection, buildStatePayload } from '../src/supervisor/dashboard.mjs';
@@ -169,6 +171,42 @@ describe('createBeadsIdentityState', () => {
         assert.equal(state.get().prefix, 'p0');
     });
 
+    test('unknown at startup: get() is null, getWarning() carries the reason + fix; a later successful refresh() recovers it and clears the warning', async () => {
+        const warning = formatNoBeadsWarning(ROOT);
+        let ok = false;
+        const probe = async () => {
+            if (!ok) throw new Error('bd where --json failed: no beads');
+            return { beadsDir: '/p/.beads', prefix: 'p1', syncRemote: '', repoRemote: '' };
+        };
+        const state = createBeadsIdentityState({ cwd: ROOT, initial: null, warning, probe });
+        assert.equal(state.get(), null);
+        assert.equal(state.getWarning(), warning);
+        // A failed refresh while still unknown refreshes the warning to the current probe error (+ fix) and rethrows.
+        await assert.rejects(() => state.refresh(), /no beads/);
+        assert.equal(state.get(), null);
+        assert.match(state.getWarning(), /could not resolve the beads identity under .*: bd where --json failed: no beads/);
+        assert.match(state.getWarning(), /To fix: run 'bd where' in .* to see the error, ensure bd is on PATH and the project is initialised \(bd init \/ sync\.remote set\), then GET \/api\/health\?refresh=1\./);
+        ok = true;
+        assert.equal((await state.refresh()).prefix, 'p1');
+        assert.equal(state.get().prefix, 'p1');
+        assert.equal(state.getWarning(), null);
+    });
+
+    test('a resolved state never reports a warning, even when one was passed', () => {
+        const state = createBeadsIdentityState({ cwd: ROOT, initial: { beadsDir: ROOT, prefix: 'p0' }, warning: 'stale' });
+        assert.equal(state.getWarning(), null);
+    });
+
+    test('the warning texts say what was found AND what to do', () => {
+        const none = formatNoBeadsWarning('C:\\somewhere\\else');
+        assert.match(none, /^no beads database found walking up from C:\\somewhere\\else\./);
+        assert.match(none, /Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead\./);
+        assert.match(none, /To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-\.beads-path>, then GET \/api\/health\?refresh=1\./);
+        const failed = formatProbeFailedWarning('/proj', new Error('bd: command not found'));
+        assert.match(failed, /^could not resolve the beads identity under \/proj: bd: command not found\./);
+        assert.match(failed, /To fix: run 'bd where' in \/proj to see the error, ensure bd is on PATH and the project is initialised \(bd init \/ sync\.remote set\), then GET \/api\/health\?refresh=1\./);
+    });
+
     test('toBeadsSummary picks the four display fields and never databasePath', () => {
         assert.deepEqual(toBeadsSummary({ beadsDir: '/p/.beads', prefix: 'x', databasePath: '/p/.beads/db', syncRemote: 'r', repoRemote: 'o' }),
             { dir: '/p/.beads', prefix: 'x', syncRemote: 'r', repoRemote: 'o' });
@@ -193,6 +231,27 @@ describe('dashboard -- beads identity rendering', () => {
         assert.ok(!renderIndexPageHtml([]).includes('class="beads-identity"'));
         assert.ok(!renderIndexPageHtml([], undefined, undefined, { beads: null }).includes('class="beads-identity"'));
         assert.equal(renderBeadsHeaderHtml(undefined), '');
+        assert.equal(renderBeadsHeaderHtml(null, ''), '');
+    });
+
+    test('identity unknown + warning: an amber "Beads: NOT RESOLVED -- <warning>" line with the guidance, HTML-escaped, in place of the identity line', () => {
+        const warning = formatNoBeadsWarning('C:\\some\\dir<x>');
+        const html = renderIndexPageHtml([], undefined, undefined, { beads: null, beadsWarning: warning });
+        const line = html.indexOf('class="beads-identity beads-identity-warning"');
+        assert.ok(line > 0, 'warning header line rendered');
+        assert.ok(line < html.indexOf('Sprint Stack'), 'rendered above the Sprint Stack');
+        assert.ok(html.includes('color: #f59e0b'), 'visibly styled (amber)');
+        assert.ok(html.includes('<strong>Beads: NOT RESOLVED</strong> -- no beads database found walking up from C:\\some\\dir&lt;x&gt;.'));
+        assert.ok(html.includes('Backlog and scope-overlap checks are disabled'));
+        assert.ok(html.includes('To fix: restart fleet-se from inside the project folder, or pass --beads-dir &lt;project-or-.beads-path&gt;, then GET /api/health?refresh=1.'));
+        assert.ok(!html.includes('dir<x>'), 'raw cwd must be escaped');
+        assert.ok(!html.includes('| prefix '), 'no identity line alongside the warning');
+    });
+
+    test('a resolved identity wins over a stale warning', () => {
+        const html = renderBeadsHeaderHtml({ dir: '/p/.beads', prefix: 'proj', syncRemote: '' }, 'ignored');
+        assert.ok(html.includes('| prefix '));
+        assert.ok(!html.includes('NOT RESOLVED'));
     });
 
     test('a sprint card shows its recorded beads prefix (small, optional) and /state carries it', () => {

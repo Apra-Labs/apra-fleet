@@ -145,6 +145,9 @@ export function createSupervisor(deps = {}) {
     // Optional beads-identity handle (bin/serve.mjs wires the real one);
     // read by GET /api/health below. Not a seam: it has no start()/stop().
     const beadsIdentity = deps.beadsIdentity && typeof deps.beadsIdentity.get === 'function' ? deps.beadsIdentity : null;
+    // The "identity unknown" warning (getWarning() is optional on the handle
+    // so an older/test-only { get, refresh } stub still works).
+    const beadsWarningOf = (h) => (h && typeof h.getWarning === 'function' && !h.get() ? (h.getWarning() || null) : null);
 
     // Module seams -- inert stubs unless a real collaborator was injected.
     const seams = {
@@ -267,9 +270,11 @@ export function createSupervisor(deps = {}) {
     // `beads` is the .beads identity this process resolved at startup
     // (src/supervisor/beads-identity.mjs; { dir, prefix, syncRemote,
     // repoRemote }, or null when no beadsIdentity dep was wired -- tests,
-    // the inert skeleton). `?refresh=1` re-runs the probes first; a probe
-    // failure keeps the last good identity and is reported as
-    // `beadsRefreshError` rather than failing the liveness answer.
+    // the inert skeleton -- or when the identity is UNKNOWN: no .beads was
+    // found, or its probe failed; then `beadsWarning` carries the reason
+    // and the fix). `?refresh=1` re-runs the probes first; a probe failure
+    // keeps the last good identity and is reported as `beadsRefreshError`
+    // rather than failing the liveness answer.
     route('GET', '/api/health', async (req, res, ctx) => {
         let beadsRefreshError;
         const refresh = ctx && ctx.url ? ctx.url.searchParams.get('refresh') : null;
@@ -289,6 +294,7 @@ export function createSupervisor(deps = {}) {
                 Object.entries(seams).map(([k, v]) => [k, v.name ?? 'wired']),
             ),
             beads: beadsIdentity ? toBeadsSummary(beadsIdentity.get()) : null,
+            ...(beadsWarningOf(beadsIdentity) ? { beadsWarning: beadsWarningOf(beadsIdentity) } : {}),
             ...(beadsRefreshError !== undefined ? { beadsRefreshError } : {}),
         });
     });

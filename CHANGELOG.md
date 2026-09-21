@@ -7,8 +7,13 @@ All notable changes to this project will be documented in this file.
 - **The supervisor now knows which `.beads` it runs against.** `bin/serve.mjs`
   walks up from its cwd (or the new `--beads-dir <path>` flag, which accepts
   the project folder or its `.beads` dir) to the project's `.beads` before
-  binding its port, and refuses to start when none is reachable or `bd
-  where` cannot resolve a database there. The resolved identity (`.beads`
+  binding its port. No reachable `.beads` (or a failing `bd where` there)
+  is a loud startup WARNING that names the fix, not an exit: the supervisor
+  runs with its identity unknown (`beads: null` + `beadsWarning` on
+  `/api/health`, an amber `Beads: NOT RESOLVED` dashboard line, sprints
+  launched without `--expect-beads`) until `GET /api/health?refresh=1`
+  recovers it; only a nonexistent `--beads-dir` is a startup error. The
+  resolved identity (`.beads`
   dir, prefix, `sync.remote`, git origin) is logged once at startup, exposed
   as `beads` on `GET /api/health` (`?refresh=1` re-probes), shown as a header
   line on the dashboard, and recorded as `beads` on every launched sprint's
@@ -19,6 +24,15 @@ All notable changes to this project will be documented in this file.
   the engine can verify each member's own `bd where` against the same
   tracker instead of silently dispatching at whatever a member's cwd
   happens to resolve. Nothing sets `BEADS_DIR`; nothing is persisted.
+- **Engine: identity MISMATCH is fatal, an unresolved probe is a warning.**
+  `verifyBeadsIdentity` aborts (`BeadsIdentityError`, reason `MISMATCH`)
+  only on a field that resolved on both sides and differs. A member whose
+  `bd where` fails, whose `sync.remote` is unset or whose git `origin` is
+  missing gets a `[beads-identity] WARNING:` line naming the member, field,
+  probe, error and the fix; that field is not compared and the sprint
+  proceeds. The published `beadsIdentity` state carries `warnings` and a
+  per-member `unresolved` list (rendered as "?" cells and warning rows in
+  the viewer); the CLI banner's pre-flight probe warns instead of exiting.
 
 ## [Unreleased] -- fleet-sprint: child-bead creation refuses an id collision instead of silently overwriting
 

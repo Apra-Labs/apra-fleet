@@ -269,7 +269,7 @@ export function buildSprintArgv(opts = {}) {
  *   isPortAvailable?: (port: number) => Promise<boolean>,
  *   logger?: { log?: Function, error?: Function },
  *   serviceUrl?: string,
- *   expectBeads?: string,
+ *   expectBeads?: string|(() => string|undefined),
  *   onChildExit?: (info: { pid: number, runId: string|null, exitCode: number|null, signal: string|null, at: string, logPath: string }) => void,
  *   now?: () => string,
  *   dataDir?: string,
@@ -314,8 +314,12 @@ export function createSpawner(deps = {}) {
     // The serialized beads identity (fleet-sprint/beads-identity.mjs's
     // serializeExpectedIdentity() JSON) every child receives as
     // `--expect-beads`; threaded exactly like serviceUrl above -- optional,
-    // and a per-call opts.expectBeads wins over the instance default.
-    const expectBeads = deps.expectBeads;
+    // and a per-call opts.expectBeads wins over the instance default. May be
+    // a function (bin/serve.mjs passes one) so it is read at each spawn:
+    // the supervisor's identity can start out unknown and be recovered
+    // later by GET /api/health?refresh=1. undefined -> the flag is omitted.
+    const expectBeadsDep = deps.expectBeads;
+    const resolveExpectBeads = () => (typeof expectBeadsDep === 'function' ? expectBeadsDep() : expectBeadsDep);
     // apra-fleet-k7b.3: optional same-instance child-exit notification (see
     // the 'exit' listener below) and its injectable clock (test determinism,
     // matching ledger.mjs/history.mjs's own `now` seam convention).
@@ -357,7 +361,7 @@ export function createSpawner(deps = {}) {
             ...opts,
             viewerPort: port,
             serviceUrl: opts.serviceUrl ?? serviceUrl,
-            expectBeads: opts.expectBeads ?? expectBeads,
+            expectBeads: opts.expectBeads ?? resolveExpectBeads(),
         })];
 
         // apra-fleet-ou7.1: opts.runId is the SAME sprintId createSprintController

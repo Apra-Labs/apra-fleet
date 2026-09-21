@@ -71,9 +71,11 @@ paths:
                   beads:
                     description: >
                       The .beads tracker this supervisor process runs against
-                      (resolved once at startup from its cwd or --beads-dir;
-                      startup fails if none is reachable). null only when no
-                      identity was wired (bare createSupervisor()).
+                      (resolved once at startup from its cwd or --beads-dir).
+                      null when no identity was wired (bare createSupervisor())
+                      or when the identity is UNKNOWN -- no .beads reachable
+                      from cwd, or its probe failed; beadsWarning then says
+                      why and what to do. ?refresh=1 can recover it.
                     nullable: true
                     type: object
                     required: [dir, prefix, syncRemote, repoRemote]
@@ -82,9 +84,17 @@ paths:
                       prefix: { type: string, description: "bead id prefix of that tracker" }
                       syncRemote: { type: string, description: "`bd config get sync.remote`; empty when unset" }
                       repoRemote: { type: string, description: "`git remote get-url origin` of the project; empty when unavailable" }
+                  beadsWarning:
+                    type: string
+                    description: >
+                      present only while beads is null because the identity is
+                      unknown (no .beads found walking up from the supervisor's
+                      cwd, or the identity probe failed). States what was found
+                      and the fix (restart from inside the project or pass
+                      --beads-dir, then GET /api/health?refresh=1).
                   beadsRefreshError:
                     type: string
-                    description: present only when ?refresh=1 was requested and the re-probe failed (beads then holds the last good identity)
+                    description: present only when ?refresh=1 was requested and the re-probe failed (beads then holds the last good identity, or stays null with an updated beadsWarning)
 
   /api/shutdown:
     post:

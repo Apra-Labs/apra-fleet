@@ -85,10 +85,20 @@ flag, then env `FLEET_SPRINT_EXPECT_BEADS`, then unset (the orchestrator
 member's own `bd where` becomes the expectation). Before any `bd` mutation,
 `verifyBeadsIdentity()` probes the orchestrator member then every other
 member (`bd where --json`, `bd config get sync.remote --json`, `git remote
-get-url origin`) and throws `BeadsIdentityError` -- text: `Beads identity
-check failed: member '<member>' resolves to a different beads database than
-expected (...) -- <field>: expected '<x>', actual '<y>'. Refusing to mutate
-beads on it.` -- on the first mismatch or probe failure. No bypass flag.
+get-url origin`) and throws `BeadsIdentityError` (reason `MISMATCH`) -- text:
+`Beads identity check failed: member '<member>' resolves to a different beads
+database than expected (...) -- <field>: expected '<x>', actual '<y>'.
+Refusing to mutate beads on it.` -- on the first field that resolved on BOTH
+sides and differs. No bypass flag. A probe that fails or resolves nothing is
+NOT fatal: it logs `[beads-identity] WARNING: member '<m>' could not report
+<field> ('<probe>' -> <error>); not compared. To fix: ...` (or `... reports
+no beads database in its workFolder ...` when `bd where` itself fails, in
+which case that member has no identity entry at all), leaves that field out
+of the comparison, and the sprint proceeds. When no expectation was supplied
+and the orchestrator's own probe resolved nothing, one warning says no
+cross-member check happens this sprint and how to restore it. The published
+`beadsIdentity` state carries `warnings: string[]` plus a per-member
+`unresolved: string[]`.
 
 An unknown key throws `[Arg Contract] Unknown arg(s): <keys>. Known args: <allowlist>.` immediately -- this is the fastest way to discover whether a given engine feature (e.g. `assignee`, `doer_worklist_mode`) is wired to a CLI flag yet: if `bin/cli.mjs` never sets it, it stays at its default forever for CLI-launched sprints.
 

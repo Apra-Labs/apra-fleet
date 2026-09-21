@@ -758,30 +758,38 @@ export function renderResultExtrasHtml(result) {
  * (dir | prefix | remote) every member's bd resolved to at sprint start, as
  * published by the runner's beads identity precondition under the
  * `beadsIdentity` state namespace ({ expected, expectedFrom, members: {
- * name: { beadsDir, prefix, syncRemote, repoRemote } } }). Returns '' when
- * nothing has been published yet so the caller can omit the block. Same
- * embed rules as renderBeadsHtml: concatenation only, every value through
- * escapeHtml.
+ * name: { beadsDir, prefix, syncRemote, repoRemote, unresolved?: string[] }
+ * }, warnings?: string[] }). A field named in a member's `unresolved` list
+ * renders as an amber "?" cell (the probe could not report it, so it was
+ * not compared); every published warning renders as one amber row under
+ * the table. Returns '' when nothing has been published yet so the caller
+ * can omit the block. Same embed rules as renderBeadsHtml: concatenation
+ * only, every value through escapeHtml.
  *
- * @param {{ expected?: object|null, expectedFrom?: string, members?: Record<string, object> }|null|undefined} identity
+ * @param {{ expected?: object|null, expectedFrom?: string, members?: Record<string, object>, warnings?: string[] }|null|undefined} identity
  * @returns {string}
  */
 export function renderBeadsIdentityHtml(identity) {
     if (!identity || typeof identity !== 'object') return '';
     const members = identity.members && typeof identity.members === 'object' ? identity.members : {};
     const names = Object.keys(members);
-    if (names.length === 0 && !identity.expected) return '';
+    const warnings = Array.isArray(identity.warnings) ? identity.warnings : [];
+    if (names.length === 0 && !identity.expected && warnings.length === 0) return '';
 
-    function cell(value) {
+    function cell(value, unresolved) {
+        if (unresolved) {
+            return '<td data-unresolved="true" title="not reported by this member; not compared" style="padding: 2px 8px; font-size: 11px; font-family: monospace; color: #f59e0b; white-space: nowrap;">?</td>';
+        }
         return '<td style="padding: 2px 8px; font-size: 11px; font-family: monospace; white-space: nowrap;">' + escapeHtml(String(value || '')) + '</td>';
     }
     function row(label, id) {
         const rec = id && typeof id === 'object' ? id : {};
+        const unresolved = new Set(Array.isArray(rec.unresolved) ? rec.unresolved : []);
         return '<tr>' +
             '<td style="padding: 2px 8px; font-size: 11px; color: #a1a1aa; white-space: nowrap;">' + escapeHtml(String(label)) + '</td>' +
-            cell(rec.beadsDir || '(no .beads)') +
-            cell(rec.prefix || '?') +
-            cell(rec.syncRemote || '(unset)') +
+            cell(rec.beadsDir || '(no .beads)', false) +
+            cell(rec.prefix || '?', unresolved.has('prefix')) +
+            cell(rec.syncRemote || '(unset)', unresolved.has('syncRemote')) +
             '</tr>';
     }
 
@@ -792,6 +800,11 @@ export function renderBeadsIdentityHtml(identity) {
     }
     for (const name of names) rows += row(name, members[name]);
 
+    let warningsHtml = '';
+    for (const w of warnings) {
+        warningsHtml += '<div data-beads-identity-warning="true" style="font-size: 11px; color: #f59e0b; padding: 2px 8px;">WARNING: ' + escapeHtml(String(w)) + '</div>';
+    }
+
     return '<div data-beads-identity="true" style="margin: 4px 0 8px 0;">' +
         '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 2px 8px;">Beads database</div>' +
         '<table style="border-collapse: collapse;">' +
@@ -800,7 +813,7 @@ export function renderBeadsIdentityHtml(identity) {
         '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">dir</th>' +
         '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">prefix</th>' +
         '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">remote</th>' +
-        '</tr>' + rows + '</table></div>';
+        '</tr>' + rows + '</table>' + warningsHtml + '</div>';
 }
 
 // apra-fleet-eft.37.4 (M3, docs/workflow-core-boundary-refactoring.md):

@@ -10,7 +10,9 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // every member is asked `bd where --json` / `bd config get sync.remote
 // --json` / `git remote get-url origin` BEFORE the first mutating bd
 // command, and the sprint aborts (with no bd mutation at all) when a member
-// resolves to a different beads database than expected.
+// resolves to a DIFFERENT beads database than expected. A member whose
+// probe fails is a logged warning instead: the sprint proceeds and the
+// first real bd on that member surfaces the problem.
 //
 // Default harness answers: `bd where` is synthesized from the shared tempDir
 // (bd-replay.mjs), sync.remote is unset, origin is the harness's originUrl --
@@ -78,7 +80,7 @@ test('mock sprint: one member with a different repoRemote -> sprint aborts befor
     });
 });
 
-test('mock sprint: bd where failing on a member -> abort naming that member, no mutating bd command', async () => {
+test('mock sprint: bd where failing on a member -> a WARNING naming that member and the fix; the sprint PROCEEDS with no identity entry for it', async () => {
     await withScenarioMarkers('beadsid-nowhere', async () => {
         const r = await runDevelopLoopScenario('beadsid-nowhere', {
             members: ['orch', 'm2'],
@@ -86,11 +88,20 @@ test('mock sprint: bd where failing on a member -> abort naming that member, no 
             reviewerHandler: approvedReviewer,
             beadsIdentity: { m2: { where: { fail: 'Error: no beads database found. Hint: run bd init' } } },
         });
-        check(r.error instanceof BeadsIdentityError, `expected a BeadsIdentityError abort, got: ${r.error && (r.error.constructor.name + ': ' + r.error.message)}`);
-        check(r.error.reason === 'PROBE_FAILED' && r.error.member === 'm2', `expected PROBE_FAILED on m2, got reason=${r.error.reason} member=${r.error.member}`);
-        check(/member 'm2'/.test(r.error.message) && /no beads database found/.test(r.error.message), `expected the member and raw output in the message, got: ${r.error.message}`);
-        check(r.commandLog.filter((c) => MUTATING_BD.test(c)).length === 0, 'expected NO mutating bd command');
-        check(r.dispatched.length === 0, 'expected no agent dispatch');
+        check(r.error === null, `expected the sprint to proceed past the beads identity check, got error: ${r.error && (r.error.constructor.name + ': ' + r.error.message)}`);
+        check(r.result && r.result.status === 'success', `expected a successful run, got ${JSON.stringify(r.result)}`);
+        const warn = r.logs.find((l) => l.startsWith('[beads-identity] WARNING: ') && l.includes("member 'm2' reports no beads database in its workFolder"));
+        check(warn, `expected a no-database warning for m2 in the log, got: ${JSON.stringify(r.logs.filter((l) => l.includes('beads')))}`);
+        check(/'bd where --json' -> .*no beads database found\. Hint: run bd init/.test(warn), `expected the probe and raw error in the warning, got: ${warn}`);
+        check(/To fix: run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's \.beads/.test(warn), `expected the fix in the warning, got: ${warn}`);
+        // The orchestrator still passed; m2 is never reported ok and has no identity entry.
+        check(r.logs.some((l) => l.startsWith('beads ok: orch ')), 'expected the orchestrator "beads ok:" line');
+        check(!r.logs.some((l) => l.startsWith('beads ok: m2 ')), 'm2 must not be reported ok');
+        const published = r.states.find((s) => s.namespace === 'beadsIdentity' || (s.payload && s.payload.namespace === 'beadsIdentity'));
+        check(published, 'expected a beadsIdentity state publish');
+        const data = published.data || (published.payload && published.payload.data);
+        check(data.members.orch && !data.members.m2, `expected an orch entry and no m2 entry, got: ${JSON.stringify(Object.keys(data.members))}`);
+        check(Array.isArray(data.warnings) && data.warnings.some((w) => w.includes("member 'm2' reports no beads database")), `expected the warning in the published state, got: ${JSON.stringify(data.warnings)}`);
     });
 });
 

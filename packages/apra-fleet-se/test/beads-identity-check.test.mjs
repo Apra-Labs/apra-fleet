@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_IDENTITY_PROBE_TIMEOUT_S } from '../fleet-sprint/beads-identity-check.mjs';
+import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_IDENTITY_PROBE_TIMEOUT_S, BEADS_IDENTITY_WARNING_PREFIX } from '../fleet-sprint/beads-identity-check.mjs';
 import { BEADS_IDENTITY_PROBES } from '../fleet-sprint/beads-identity.mjs';
 import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS } from '../fleet-sprint/errors.mjs';
 
@@ -117,46 +117,135 @@ describe('verifyBeadsIdentity', () => {
         assert.equal(calls.length, 3);
     });
 
-    test('an empty sync.remote on a member when the expectation has one is a mismatch, not unknown', async () => {
+    // ---- unresolved probes are WARNINGS, never fatal --------------------
+    // Only a field that resolved on BOTH sides and differs aborts. A probe
+    // that fails or answers nothing leaves that field out of the comparison,
+    // logs `[beads-identity] WARNING: ...` with the fix, and is published
+    // (state `warnings` + per-member `unresolved`) for the viewer.
+
+    test('an empty sync.remote on a member is a WARNING naming the member, field, probe and fix -- the sprint proceeds', async () => {
         const { command } = fakeCommand({ orch: identityAnswers(), m1: identityAnswers({ sync: '' }) });
-        await assert.rejects(
-            verifyBeadsIdentity({ command, orchestratorMember: 'orch', members: ['m1'] }),
-            (err) => err instanceof BeadsIdentityError && err.mismatches.length === 1 && err.mismatches[0].field === 'syncRemote' && err.mismatches[0].actual === ''
-        );
+        const logs = [];
+        const published = [];
+        const res = await verifyBeadsIdentity({ command, log: (l) => logs.push(l), publishState: (ns, d) => published.push(d), orchestratorMember: 'orch', members: ['m1'] });
+        const warn = logs.find((l) => l.startsWith(BEADS_IDENTITY_WARNING_PREFIX) && l.includes("member 'm1' could not report syncRemote"));
+        assert.ok(warn, `expected a syncRemote warning for m1, got: ${JSON.stringify(logs)}`);
+        assert.match(warn, /'bd config get sync\.remote --json' -> sync\.remote is unset/);
+        assert.match(warn, /not compared/);
+        assert.match(warn, /To fix: set it on that member with 'bd config set sync\.remote <url>' in its workFolder/);
+        // Still reported ok (nothing mismatched), with its unresolved field listed.
+        assert.ok(logs.some((l) => l.startsWith('beads ok: m1 ')));
+        assert.deepEqual(res.members.m1.unresolved, ['syncRemote']);
+        assert.deepEqual(res.members.orch.unresolved, []);
+        assert.deepEqual(res.warnings, [warn.slice(BEADS_IDENTITY_WARNING_PREFIX.length)]);
+        assert.deepEqual(published[0].warnings, res.warnings);
+        assert.deepEqual(published[0].members.m1.unresolved, ['syncRemote']);
     });
 
-    test('bd where failing on a member aborts with PROBE_FAILED naming the member and the raw error', async () => {
+    test('a missing git origin on a member is a WARNING with the re-register/add-remote fix', async () => {
+        const { command } = fakeCommand({
+            orch: identityAnswers(),
+            m1: { ...identityAnswers(), [BEADS_IDENTITY_PROBES.repoRemote]: { fail: "fatal: No such remote 'origin'" } },
+        });
+        const logs = [];
+        const res = await verifyBeadsIdentity({ command, log: (l) => logs.push(l), orchestratorMember: 'orch', members: ['m1'] });
+        const warn = logs.find((l) => l.includes("member 'm1' could not report repoRemote"));
+        assert.ok(warn, JSON.stringify(logs));
+        assert.match(warn, /'git remote get-url origin' -> fatal: No such remote 'origin'/);
+        assert.match(warn, /To fix: the member's workFolder is not a git clone with an 'origin' remote; re-register the member with a real clone or add the remote/);
+        assert.deepEqual(res.members.m1.unresolved, ['repoRemote']);
+    });
+
+    test('bd where failing on a member is a WARNING naming the member, the raw error and the fix; the member gets no identity entry', async () => {
         const { command } = fakeCommand({
             orch: identityAnswers(),
             m1: { ...identityAnswers(), [BEADS_IDENTITY_PROBES.where]: { fail: 'Error: no beads database found (run bd init)' } },
+            m2: identityAnswers({ dir: '/m2/.beads' }),
         });
-        await assert.rejects(
-            verifyBeadsIdentity({ command, orchestratorMember: 'orch', members: ['m1'] }),
-            (err) => {
-                assert.ok(err instanceof BeadsIdentityError);
-                assert.equal(err.reason, BEADS_IDENTITY_FAILURE_REASONS.PROBE_FAILED);
-                assert.equal(err.member, 'm1');
-                assert.match(err.message, /no beads database found in the member's workFolder/);
-                assert.match(err.message, /run bd init/);
-                return true;
-            }
-        );
+        const logs = [];
+        const res = await verifyBeadsIdentity({ command, log: (l) => logs.push(l), orchestratorMember: 'orch', members: ['m1', 'm2'] });
+        const warn = logs.find((l) => l.startsWith(BEADS_IDENTITY_WARNING_PREFIX) && l.includes("member 'm1' reports no beads database in its workFolder"));
+        assert.ok(warn, JSON.stringify(logs));
+        assert.match(warn, /'bd where --json' -> Error: no beads database found \(run bd init\)/);
+        assert.match(warn, /nothing to compare/);
+        assert.match(warn, /To fix: run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's \.beads/);
+        assert.ok(!('m1' in res.members), 'a member with no database has no identity entry');
+        assert.ok(!logs.some((l) => l.startsWith('beads ok: m1 ')));
+        // The other members are still probed and checked.
+        assert.equal(res.members.m2.beadsDir, '/m2/.beads');
+        assert.ok(logs.some((l) => l.startsWith('beads ok: m2 ')));
+        assert.equal(res.warnings.length, 1);
     });
 
-    test('bd where succeeding with unparseable output is a PROBE_FAILED too', async () => {
-        const { command } = fakeCommand({ orch: { ...identityAnswers(), [BEADS_IDENTITY_PROBES.where]: 'not a beads dir' } });
-        await assert.rejects(
-            verifyBeadsIdentity({ command, orchestratorMember: 'orch', members: [] }),
-            (err) => err instanceof BeadsIdentityError && err.reason === 'PROBE_FAILED' && /not a beads dir/.test(err.message)
-        );
+    test('bd where succeeding with unparseable output is the same no-database WARNING', async () => {
+        const { command } = fakeCommand({ orch: identityAnswers(), m1: { ...identityAnswers(), [BEADS_IDENTITY_PROBES.where]: 'not a beads dir' } });
+        const logs = [];
+        await verifyBeadsIdentity({ command, log: (l) => logs.push(l), orchestratorMember: 'orch', members: ['m1'] });
+        const warn = logs.find((l) => l.includes("member 'm1' reports no beads database"));
+        assert.ok(warn, JSON.stringify(logs));
+        assert.match(warn, /unparseable output: not a beads dir/);
     });
 
-    test('a command() that throws is treated as a failed probe, never an unhandled crash', async () => {
+    test('a command() that throws is treated as a failed probe (warning), never an unhandled crash', async () => {
         const command = async () => { throw new Error('transport down'); };
+        const logs = [];
+        const res = await verifyBeadsIdentity({ command, log: (l) => logs.push(l), orchestratorMember: 'orch', members: [] });
+        assert.ok(logs.some((l) => l.startsWith(BEADS_IDENTITY_WARNING_PREFIX) && /transport down/.test(l)), JSON.stringify(logs));
+        assert.equal(res.expectedFrom, 'none');
+    });
+
+    test('no expectation AND the orchestrator resolves nothing: one warning says no cross-member check happens and how to restore it; other members are displayed, not compared', async () => {
+        const { command } = fakeCommand({
+            orch: { [BEADS_IDENTITY_PROBES.where]: { fail: 'Error: no beads database found' } },
+            m1: identityAnswers({ dir: '/m1/.beads' }),
+            m2: identityAnswers({ dir: '/m2/.beads', prefix: 'unrelated', origin: 'https://example.com/x/y.git' }),
+        });
+        const logs = [];
+        const published = [];
+        const res = await verifyBeadsIdentity({ command, log: (l) => logs.push(l), publishState: (ns, d) => published.push(d), orchestratorMember: 'orch', members: ['m1', 'm2'] });
+        assert.equal(res.expectedFrom, 'none');
+        assert.equal(res.expected, null);
+        const warn = logs.find((l) => l.includes("no expected beads identity was supplied and the orchestrator member 'orch' could not report its beads database"));
+        assert.ok(warn, JSON.stringify(logs));
+        assert.match(warn, /no cross-member beads identity check will happen this sprint/);
+        assert.match(warn, /To restore it: fix the orchestrator member's beads \(run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's \.beads\), or launch via the supervisor so --expect-beads is supplied/);
+        // m2 differs from m1 on prefix and origin, but with no expectation nothing is compared.
+        assert.deepEqual(Object.keys(res.members), ['m1', 'm2']);
+        assert.equal(res.members.m2.prefix, 'unrelated');
+        assert.ok(logs.some((l) => l.startsWith('beads ok: m2 ')));
+        assert.equal(published[0].expectedFrom, 'none');
+        assert.ok(published[0].warnings.length >= 2, 'the orchestrator no-database warning plus the no-expectation warning');
+    });
+
+    test('expectation derived from an orchestrator missing sync.remote: warned once (not per member), that field skipped everywhere, others still compared', async () => {
+        const other = 'https://example.com/org/other.git';
+        const { command } = fakeCommand({ orch: identityAnswers({ sync: '' }), m1: identityAnswers({ sync: REMOTE }), m2: identityAnswers({ origin: other }) });
+        const logs = [];
         await assert.rejects(
-            verifyBeadsIdentity({ command, orchestratorMember: 'orch', members: [] }),
-            (err) => err instanceof BeadsIdentityError && /transport down/.test(err.message)
+            verifyBeadsIdentity({ command, log: (l) => logs.push(l), orchestratorMember: 'orch', members: ['m1', 'm2'] }),
+            (err) => err instanceof BeadsIdentityError && err.member === 'm2' && err.mismatches[0].field === 'repoRemote'
         );
+        const derived = logs.filter((l) => l.includes("the orchestrator member 'orch' it was derived from could not report syncRemote"));
+        assert.equal(derived.length, 1, JSON.stringify(logs));
+        assert.match(derived[0], /syncRemote is not compared on any member this sprint/);
+        assert.match(derived[0], /To fix: set it on that member with 'bd config set sync\.remote <url>' in its workFolder \(on the orchestrator member\), or launch via the supervisor so --expect-beads is supplied/);
+        assert.ok(!logs.some((l) => l.includes("member 'orch' could not report syncRemote")), 'the orchestrator gap is not reported twice');
+        // m1 HAS a sync.remote; the expectation lacks one, so it is skipped rather than mismatched.
+        assert.ok(logs.some((l) => l.startsWith('beads ok: m1 ')));
+    });
+
+    test('a supplied expectation lacking a field: that field is warned about once and skipped; a real mismatch on another field still aborts', async () => {
+        const { command } = fakeCommand({ orch: identityAnswers({ prefix: 'other' }) });
+        const logs = [];
+        await assert.rejects(
+            verifyBeadsIdentity({ command, log: (l) => logs.push(l), orchestratorMember: 'orch', members: [], expected: { prefix: 'proj', syncRemote: '', repoRemote: REMOTE } }),
+            (err) => err instanceof BeadsIdentityError && err.reason === BEADS_IDENTITY_FAILURE_REASONS.MISMATCH && err.mismatches.length === 1 && err.mismatches[0].field === 'prefix'
+        );
+        assert.ok(logs.some((l) => l.includes('the supplied expected beads identity carries no syncRemote; syncRemote is not compared on any member this sprint')), JSON.stringify(logs));
+    });
+
+    test('BEADS_IDENTITY_FAILURE_REASONS has no probe-failure reason any more: only MISMATCH is fatal', () => {
+        assert.deepEqual(Object.keys(BEADS_IDENTITY_FAILURE_REASONS), ['MISMATCH']);
     });
 
     test('rejects a missing orchestrator member up front', async () => {

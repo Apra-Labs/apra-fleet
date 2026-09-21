@@ -51,7 +51,10 @@ import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-o
 import { listFleetMembers, executeFleetCommand } from '../src/supervisor/fleet-members.mjs';
 import { createDoltOrphanSweep, normalizeMsysPathForPlatform } from '../src/supervisor/dolt-orphan-sweep.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
-import { discoverBeadsDir, resolveBeadsDirArg, probeBeadsIdentity, createBeadsIdentityState } from '../src/supervisor/beads-identity.mjs';
+import {
+    discoverBeadsDir, resolveBeadsDirArg, probeBeadsIdentity, createBeadsIdentityState,
+    formatNoBeadsWarning, formatProbeFailedWarning,
+} from '../src/supervisor/beads-identity.mjs';
 import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const SERVE_USAGE = `
@@ -65,7 +68,10 @@ Options:
       --beads-dir <path>    Project folder (or its .beads dir) whose beads tracker
                             this supervisor runs against. Default: discovered by
                             walking up from the current directory, exactly like
-                            bd does; startup fails if none is found either way.
+                            bd does. None found: the supervisor still starts,
+                            logs a WARNING and reports beads as unknown until
+                            GET /api/health?refresh=1 finds one. A path that
+                            does not exist is an error.
   -h, --help                Show this help message.
 
 Environment:
@@ -159,12 +165,21 @@ export async function serveMain(argv = process.argv.slice(2)) {
 
     // Which .beads this supervisor runs against -- resolved ONCE, up front,
     // BEFORE any seam is built or the port is bound, so a supervisor started
-    // from the wrong folder fails loudly instead of serving an empty backlog
-    // or dispatching sprints at an unrelated tracker. Every bd the supervisor
-    // itself runs (backlog/scope-overlap) resolves by walking up from
-    // process.cwd(), so `--beads-dir` is honored by chdir'ing there (nothing
-    // sets BEADS_DIR, nothing is persisted); the sprint children below then
-    // get repoRoot as their cwd and the resolved identity as --expect-beads.
+    // from the wrong folder says so loudly instead of silently serving an
+    // empty backlog or dispatching sprints at an unrelated tracker. Every bd
+    // the supervisor itself runs (backlog/scope-overlap) resolves by walking
+    // up from process.cwd(), so `--beads-dir` is honored by chdir'ing there
+    // (nothing sets BEADS_DIR, nothing is persisted); the sprint children
+    // below then get repoRoot as their cwd and the resolved identity as
+    // --expect-beads.
+    //
+    // Severity: a `--beads-dir` that does not exist is an operator typo and
+    // still a startup ERROR. No .beads reachable from cwd, or a failing
+    // identity probe, is an environment condition: a WARNING (with the fix),
+    // the identity stays "unknown" (health `beads: null` + `beadsWarning`,
+    // amber dashboard header, no --expect-beads handed to sprints -- the
+    // engine then verifies members against the orchestrator's own beads),
+    // and GET /api/health?refresh=1 can recover it without a restart.
     if (values['beads-dir'] !== undefined) {
         let target;
         try {
@@ -176,21 +191,24 @@ export async function serveMain(argv = process.argv.slice(2)) {
         }
     }
     const discovered = discoverBeadsDir({ cwd: process.cwd() });
+    const repoRoot = discovered ? discovered.repoRoot : process.cwd();
+    let beadsIdentityRecord = null;
+    let beadsWarning = null;
     if (!discovered) {
-        console.error(`Error: no .beads directory found walking up from ${process.cwd()}; start fleet-se from inside the project or pass --beads-dir <path>`);
-        return { exitCode: 1 };
+        beadsWarning = formatNoBeadsWarning(process.cwd());
+    } else {
+        try {
+            beadsIdentityRecord = await probeBeadsIdentity({ cwd: repoRoot });
+        } catch (err) {
+            beadsWarning = formatProbeFailedWarning(repoRoot, err);
+        }
     }
-    const repoRoot = discovered.repoRoot;
-    let beadsIdentityRecord;
-    try {
-        beadsIdentityRecord = await probeBeadsIdentity({ cwd: repoRoot });
-    } catch (err) {
-        console.error(`Error: could not resolve the beads identity for ${discovered.beadsDir}: ${err && err.message ? err.message : err}\n` +
-            'Start fleet-se from inside an initialized beads project (bd installed, `bd where` succeeds there) or pass --beads-dir <path>.');
-        return { exitCode: 1 };
+    const beadsIdentity = createBeadsIdentityState({ cwd: repoRoot, initial: beadsIdentityRecord, warning: beadsWarning });
+    if (beadsIdentityRecord) {
+        console.log(`[supervisor] ${formatBeadsIdentity(beadsIdentityRecord, { label: 'supervisor' })}`);
+    } else {
+        console.warn(`[supervisor] WARNING: ${beadsWarning}`);
     }
-    const beadsIdentity = createBeadsIdentityState({ cwd: repoRoot, initial: beadsIdentityRecord });
-    console.log(`[supervisor] ${formatBeadsIdentity(beadsIdentityRecord, { label: 'supervisor' })}`);
 
     // The durable reservation ledger (eft.5.1) and its terminal-event history
     // (eft.5.4) are the restart-surviving source of truth. Wire them as real
@@ -236,9 +254,16 @@ export async function serveMain(argv = process.argv.slice(2)) {
         // Sprint children run from the project root (the folder holding the
         // discovered .beads, not whatever subfolder the operator started in)
         // and carry the resolved identity so the engine can verify every
-        // member's own `bd where` against it (see beads-identity.mjs).
+        // member's own `bd where` against it (see beads-identity.mjs). Read
+        // at each spawn (not captured at startup) so an identity recovered
+        // by GET /api/health?refresh=1 reaches later sprints; while it is
+        // unknown, --expect-beads is omitted and the engine falls back to
+        // the orchestrator member's own identity.
         cwd: repoRoot,
-        expectBeads: serializeExpectedIdentity(beadsIdentityRecord),
+        expectBeads: () => {
+            const id = beadsIdentity.get();
+            return id ? serializeExpectedIdentity(id) : undefined;
+        },
         onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
             if (!runId) return;
             try {

@@ -835,12 +835,20 @@ const SPRINT_STACK_LIVE_SCRIPT = `
  * The single "which .beads is this supervisor running against" line shown
  * above the Sprint Stack: "Beads: <dir> | prefix <p> | <syncRemote>", every
  * field HTML-escaped, styled like the Supervisor-log link line in the header.
- * Renders nothing when no identity was supplied (tests, inert skeleton).
+ * When the identity is UNKNOWN (no .beads found / probe failed) and
+ * `warning` carries the reason, renders an amber "Beads: NOT RESOLVED --
+ * <warning>" line instead (the warning text already says what to do).
+ * Renders nothing when neither was supplied (tests, inert skeleton).
  * @param {{ dir?: string, prefix?: string, syncRemote?: string }|null|undefined} beads
+ * @param {string|null|undefined} [warning]
  * @returns {string}
  */
-export function renderBeadsHeaderHtml(beads) {
-    if (!beads || typeof beads !== 'object') return '';
+export function renderBeadsHeaderHtml(beads, warning) {
+    if (!beads || typeof beads !== 'object') {
+        if (typeof warning !== 'string' || !warning.trim()) return '';
+        return '<div class="beads-identity beads-identity-warning" style="font-size: 12px; color: #f59e0b; padding: 4px 16px;">' +
+            '<strong>Beads: NOT RESOLVED</strong> -- ' + escapeHtml(warning) + '</div>\n';
+    }
     const dir = escapeHtml(beads.dir || '(unknown)');
     const prefix = escapeHtml(beads.prefix || '?');
     const remote = escapeHtml(beads.syncRemote || '(sync.remote unset)');
@@ -863,9 +871,11 @@ export function renderBeadsHeaderHtml(beads) {
  * @param {SprintView[]} [views]
  * @param {string} [backlogHtml] - pre-rendered Backlog tab content (eft.6.2 / renderBacklogPanelHtml())
  * @param {string} [launchFormHtml] - pre-rendered Launch Sprint form HTML (eft.6.3)
- * @param {{ beads?: { dir?: string, prefix?: string, syncRemote?: string, repoRemote?: string }|null }} [opts]
+ * @param {{ beads?: { dir?: string, prefix?: string, syncRemote?: string, repoRemote?: string }|null, beadsWarning?: string|null }} [opts]
  *   `beads`: the supervisor's resolved .beads identity (beads-identity.mjs's
- *   toBeadsSummary()), rendered as one header line above the Sprint Stack.
+ *   toBeadsSummary()), rendered as one header line above the Sprint Stack;
+ *   `beadsWarning`: when `beads` is null, why it is unknown (rendered as an
+ *   amber warning line in its place).
  * @returns {string}
  */
 export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {}) {
@@ -889,7 +899,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div>' +
         '<a href="/supervisor/log" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
         '</div>\n' +
-        renderBeadsHeaderHtml(opts && opts.beads) +
+        renderBeadsHeaderHtml(opts && opts.beads, opts && opts.beadsWarning) +
         '<div class="main-content"><div class="content-area">' +
         '<div class="tab-bar" id="tab-bar">' +
         '<button class="tab-btn active" onclick="switchTab(\'sprints\')">Sprints</button>' +
@@ -1016,7 +1026,7 @@ const DEFAULT_EVENTS_INTERVAL_MS = 5000;
  *   backlog?: { renderHtml: () => Promise<string>|string },
  *   logger?: { log?: Function, error?: Function },
  *   eventsIntervalMs?: number, // (apra-fleet-siqi.1.1) GET /events signal cadence; defaults to DEFAULT_EVENTS_INTERVAL_MS
- *   beadsIdentity?: { get: () => object|null }, // beads-identity.mjs handle; drives the "Beads: ..." header line
+ *   beadsIdentity?: { get: () => object|null, getWarning?: () => string|null }, // beads-identity.mjs handle; drives the "Beads: ..." header line (or its warning form)
  * }} [deps]
  * @returns {{
  *   name: string,
@@ -1279,14 +1289,16 @@ export function createDashboard(deps = {}) {
                 }
             }
             let beads = null;
+            let beadsWarning = null;
             if (beadsIdentity) {
                 try {
                     beads = toBeadsSummary(beadsIdentity.get());
+                    if (!beads && typeof beadsIdentity.getWarning === 'function') beadsWarning = beadsIdentity.getWarning() || null;
                 } catch (err) {
                     logError('[dashboard] beads identity read failed:', err);
                 }
             }
-            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads });
+            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads, beadsWarning });
         },
     };
 }

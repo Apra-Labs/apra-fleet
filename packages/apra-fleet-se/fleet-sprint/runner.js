@@ -1327,8 +1327,11 @@ async function runSprintCycle(context) {
     // resolves to BEFORE the first mutating bd command (the earliest bd
     // dispatch is the beads-health gate further down). Probes the
     // orchestrator first, then every other physical member, and throws
-    // BeadsIdentityError on a probe failure or a mismatch against
-    // `args.expect_beads` (or, absent that, the orchestrator's own identity).
+    // BeadsIdentityError on a mismatch against `args.expect_beads` (or,
+    // absent that, the orchestrator's own identity). A probe that fails or
+    // resolves nothing is a logged `[beads-identity] WARNING:` (with the
+    // fix) and that field is left out of the comparison -- only a proven
+    // mismatch is fatal.
     // Sits here rather than next to wrapCommand() above because the
     // orchestrator member is only resolved at this point; nothing between
     // the two spots issues a command(). `context.verifyBeadsIdentity` is the

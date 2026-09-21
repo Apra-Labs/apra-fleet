@@ -377,14 +377,16 @@ export function resolveExpectBeads(flagValue, env = process.env) {
  * sprint's bd commands run in that member's workFolder, see
  * checkIssuesExistOnMember below) so the startup banner can show which
  * .beads the sprint is about to mutate, and so a member with no beads
- * database fails with a clear message instead of a bare bd error from the
- * first `bd show`. The runner re-probes every member and does the hard
- * expected-vs-actual comparison; this is display plus fail-fast only.
+ * database is reported plainly (as a WARNING with the fix -- the `bd show`
+ * precondition right after it is what actually fails a member whose bd
+ * cannot answer). The runner re-probes every member and does the hard
+ * expected-vs-actual comparison; this is display only.
  * @param {{ member: string, runCommand: (cmd: string, member: string) => Promise<string> }} opts
  * @returns {Promise<{ ok: boolean, identity: object|null, message: string }>}
  */
 export async function probeBeadsIdentityOnMember({ member, runCommand }) {
     const raw = {};
+    const fix = `To fix: run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's .beads.`;
     for (const [key, cmd] of Object.entries(BEADS_IDENTITY_PROBES)) {
         try {
             raw[key] = await runCommand(cmd, member);
@@ -393,7 +395,7 @@ export async function probeBeadsIdentityOnMember({ member, runCommand }) {
                 return {
                     ok: false,
                     identity: null,
-                    message: `Error: no beads database found at member '${member}'s workFolder ('${cmd}' failed: ${err && err.message ? err.message : String(err)}). Run 'bd init' there or point the member at the project checkout.`,
+                    message: `Warning: no beads database found at member '${member}'s workFolder ('${cmd}' failed: ${err && err.message ? err.message : String(err)}); the beads identity cannot be shown and is not verified for this member. ${fix}`,
                 };
             }
             raw[key] = '';
@@ -404,7 +406,7 @@ export async function probeBeadsIdentityOnMember({ member, runCommand }) {
         return {
             ok: false,
             identity: null,
-            message: `Error: no beads database found at member '${member}'s workFolder ('${BEADS_IDENTITY_PROBES.where}' returned no database path: ${String(raw.where || '').trim() || '(no output)'}).`,
+            message: `Warning: no beads database found at member '${member}'s workFolder ('${BEADS_IDENTITY_PROBES.where}' returned no database path: ${String(raw.where || '').trim() || '(no output)'}); the beads identity cannot be shown and is not verified for this member. ${fix}`,
         };
     }
     return { ok: true, identity, message: formatBeadsIdentity(identity, { label: `[Precondition] member '${member}'` }) };
@@ -760,16 +762,16 @@ async function main() {
         if (exitCode !== 0) throw new Error(text || `exit code ${exitCode}`);
         return res && res.structuredContent && typeof res.structuredContent.stdout === 'string' ? res.structuredContent.stdout : text;
     };
-    // Which .beads the orchestrator member's bd resolves to -- checked BEFORE
+    // Which .beads the orchestrator member's bd resolves to -- probed BEFORE
     // the `bd show` precondition below so a member with no beads database
-    // reports that plainly instead of a bare bd error, and shown in the
-    // banner. The runner repeats this for every member and hard-fails a
-    // mismatch against --expect-beads.
+    // is reported plainly (a warning with the fix) ahead of the bare bd
+    // error that precondition would otherwise be the first to show, and
+    // shown in the banner. A failed probe is a warning, not an exit: the
+    // existing preconditions decide. The runner repeats this for every
+    // member and hard-fails only a mismatch against --expect-beads.
     const beadsProbe = await probeBeadsIdentityOnMember({ member: orchestratorMember, runCommand: runProbe });
     if (!beadsProbe.ok) {
-        console.error(beadsProbe.message);
-        transport.stop();
-        process.exit(1);
+        console.warn(beadsProbe.message);
     }
     const issueCheck = await checkIssuesExistOnMember({
         targetIssues,

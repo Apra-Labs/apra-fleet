@@ -178,6 +178,28 @@ describe('renderBeadsIdentityHtml', () => {
         assert.ok(html.includes('&lt;b&gt;'));
     });
 
+    test('an unresolved field renders as an amber "?" cell, and every published warning as an amber row', () => {
+        const html = renderBeadsIdentityHtml({
+            ...IDENTITY,
+            members: { ...IDENTITY.members, m2: { ...IDENTITY.members.m2, unresolved: ['syncRemote', 'prefix'] } },
+            warnings: ["member 'm2' could not report syncRemote ('bd config get sync.remote --json' -> sync.remote is unset); not compared. To fix: set it on that member with 'bd config set sync.remote <url>' in its workFolder."],
+        });
+        assert.strictEqual((html.match(/data-unresolved="true"/g) || []).length, 2, 'two "?" cells for m2');
+        assert.ok(html.includes('color: #f59e0b; white-space: nowrap;">?</td>'));
+        assert.ok(!html.includes('(unset)'), 'an unresolved sync.remote shows "?" rather than (unset)');
+        const warnRows = html.match(/data-beads-identity-warning="true"[^>]*>WARNING: [^<]*/g) || [];
+        assert.strictEqual(warnRows.length, 1);
+        assert.ok(warnRows[0].includes('member &#039;m2&#039; could not report syncRemote'), warnRows[0]);
+        assert.ok(warnRows[0].includes('To fix: set it on that member with &#039;bd config set sync.remote &lt;url&gt;&#039; in its workFolder.'), `guidance escaped and present: ${warnRows[0]}`);
+        assert.ok(!html.includes('<url>'), 'warning text is HTML-escaped');
+    });
+
+    test('warnings alone (no members, no expectation) still render the block', () => {
+        const html = renderBeadsIdentityHtml({ expected: null, expectedFrom: 'none', members: {}, warnings: ['no expected beads identity was supplied'] });
+        assert.ok(html.includes('data-beads-identity="true"'));
+        assert.ok(html.includes('WARNING: no expected beads identity was supplied'));
+    });
+
     test('is embedded into the browser-side beadsExtension.js script and wired to its state namespace', () => {
         assert.ok(beadsExtension.js.includes('renderBeadsIdentityHtml'));
         assert.ok(beadsExtension.js.includes("'workflow:state:beadsIdentity'"));

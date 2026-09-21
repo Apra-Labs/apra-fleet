@@ -457,7 +457,7 @@ describe('--expect-beads flag (beads identity precondition)', () => {
         assert.throws(() => validateArgs(args), /Invalid expect_beads: not valid JSON/);
     });
 
-    test('probeBeadsIdentityOnMember: a member with no beads database reports it plainly', async () => {
+    test('probeBeadsIdentityOnMember: a member with no beads database reports it plainly as a WARNING with the fix (never an error)', async () => {
         const res = await probeBeadsIdentityOnMember({
             member: 'orch',
             runCommand: async (cmd) => {
@@ -466,7 +466,20 @@ describe('--expect-beads flag (beads identity precondition)', () => {
             },
         });
         assert.strictEqual(res.ok, false);
-        assert.match(res.message, /no beads database found at member 'orch'/);
+        assert.strictEqual(res.identity, null);
+        assert.match(res.message, /^Warning: no beads database found at member 'orch'/);
+        assert.match(res.message, /'bd where --json' failed: Error: no beads database found/);
+        assert.match(res.message, /not verified for this member/);
+        assert.match(res.message, /To fix: run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's \.beads\./);
+        assert.doesNotMatch(res.message, /^Error/);
+    });
+
+    test('probeBeadsIdentityOnMember: bd where answering without a database path is the same WARNING', async () => {
+        const res = await probeBeadsIdentityOnMember({ member: 'orch', runCommand: async () => 'nothing useful' });
+        assert.strictEqual(res.ok, false);
+        assert.match(res.message, /^Warning: no beads database found at member 'orch'/);
+        assert.match(res.message, /returned no database path: nothing useful/);
+        assert.match(res.message, /To fix: run 'bd where'/);
     });
 
     test('probeBeadsIdentityOnMember: a healthy member yields a formatted banner line', async () => {
