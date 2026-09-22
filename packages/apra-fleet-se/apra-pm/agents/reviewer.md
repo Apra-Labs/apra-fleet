@@ -39,9 +39,9 @@ stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
    tool it wants directly. Confirm your environment exposes those tools, then call
    them as written.
 <!-- end-tool: ToolSearch -->
-   (`kb_list`/`kb_promote`/`kb_capture` are deliberately NOT here -- captures and
+   Do not call `kb_list`/`kb_promote`/`kb_capture` directly -- captures and
    promotions both go through your structured output, not a direct tool call; see
-   Step 5 for promotions and item 3 below for captures.)
+   Step 5 for promotions and item 3 below for captures.
    The `code_*` tools answer what the KB cannot: what the changed code actually connects
    to. Use `code_impact` on each changed file to judge blast radius, and
    `code_context`/`code_graph`/`code_query` to trace callers before accepting a signature
