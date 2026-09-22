@@ -455,6 +455,29 @@ describe('wrapTool output sequence (integration)', () => {
     expect(getOnboardingState().bannerShown).toBe(true);
   });
 
+  it('list_members json result on an empty registry is treated as JSON -- no <apra-fleet-display> preamble prepended (apra-fleet-ky2l.7.2)', async () => {
+    const { loadOnboardingState, isJsonResponse, isActiveTool, getFirstRunPreamble } = await import('../src/services/onboarding.js');
+    const { listMembers } = await import('../src/tools/list-members.js');
+    loadOnboardingState();
+
+    // Empty registry (no agents added, registry.json removed by beforeEach):
+    // before apra-fleet-ky2l.7.1's fix, listMembers({format:'json'}) returned
+    // the plain 'No members registered.' string here, which isJsonResponse()
+    // does NOT recognize as JSON -- wrapTool would then prepend an
+    // <apra-fleet-display> onboarding preamble ahead of it, corrupting the
+    // payload for a machine caller that JSON.parse()s content[0] (e.g.
+    // auto-sprint's fleet-members.mjs/cli.mjs listMembers({format:'json'})
+    // callers). Confirm the real result now starts with '{' and is treated
+    // as JSON, so wrapTool's preamble stays suppressed.
+    const result = await listMembers({ format: 'json' });
+    const isJson = isJsonResponse(result);
+    const preamble = (!isJson && isActiveTool('list_members')) ? getFirstRunPreamble() : null;
+
+    expect(result.startsWith('{')).toBe(true);
+    expect(isJson).toBe(true);
+    expect(preamble).toBeNull();
+  });
+
   it('passive tool (version) does NOT consume the banner', async () => {
     const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingState } = await import('../src/services/onboarding.js');
     loadOnboardingState();
