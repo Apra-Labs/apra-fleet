@@ -8,12 +8,21 @@ import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
-import { launchAuthWeb } from './auth-web.js';
+import { launchAuthWeb, TTL_MS as AUTH_WEB_TTL_MS, type AuthWebMode } from './auth-web.js';
 import { fleetEvents } from './event-bus.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const MAX_BUFFER_SIZE = 64 * 1024; // 64KB — reject oversized messages
+const MAX_BUFFER_SIZE = 64 * 1024; // 64KB -- reject oversized messages
+
+// Bounds how long collectOobUrl waits for launchAuthWeb's openUrl callback
+// before treating the listen as failed (apra-fleet-972p.7). launchAuthWeb
+// returns {kind:'launched'} synchronously right after calling
+// server.listen(), BEFORE listen has actually succeeded -- on a listen
+// failure server.on('error') tears the server down without ever invoking
+// openUrl. In practice a successful listen() fires within the same tick or
+// two, so this only ever trips on a genuine failure, never the happy path.
+export const OOB_URL_LISTEN_TIMEOUT_MS = 5000;
 
 interface PendingAuth {
   encryptedPassword?: string;
@@ -74,7 +83,7 @@ export async function ensureAuthSocket(): Promise<void> {
     fs.mkdirSync(sockDir, { recursive: true, mode: 0o700 });
   }
 
-  // Unlink stale socket (Unix only — named pipes don't leave stale files)
+  // Unlink stale socket (Unix only -- named pipes don't leave stale files)
   if (process.platform !== 'win32') {
     try { fs.unlinkSync(sockPath); } catch { /* not present */ }
   }
@@ -118,7 +127,7 @@ export async function ensureAuthSocket(): Promise<void> {
       // On Windows, named pipes may not be released immediately after close.
       // Retry a few times with increasing delays before giving up.
       if (err.code === 'EADDRINUSE' && process.platform === 'win32' && retriesLeft > 0) {
-        // Increase delay for later retries — earlier retries happen faster
+        // Increase delay for later retries -- earlier retries happen faster
         const totalRetries = process.env.NODE_ENV === 'test' ? 15 : 5;
         const delayBase = process.env.NODE_ENV === 'test' ? 100 : 250;
         const delay = delayBase * (totalRetries - retriesLeft + 1);
@@ -301,6 +310,73 @@ type OobLaunchFn = (
 
 
 /**
+ * Launch the local browser credential-entry UI (auth-web.ts's `launchAuthWeb`,
+ * UNCHANGED -- same single-use form, same POST-to-store flow) and return its
+ * URL + expiry as soon as the server is listening, WITHOUT waiting for the
+ * user to submit. Used when the caller cannot (or does not want to) block on
+ * `waitForPassword()` -- no TTY attached, or `return_url: true` was passed
+ * (apra-fleet-972p.2.1, F3).
+ *
+ * `onSubmit` is wired directly into `launchAuthWeb`'s POST handler (secret
+ * stored on form submit, per that module's existing contract) -- callers that
+ * need bespoke storage logic (e.g. `credential_store_set` needs to call
+ * `credentialSet()` with persist/policy/members/ttl, none of which this
+ * service layer knows about) pass their own `onOobSubmit`; the default falls
+ * back to the same `submitPassword()` the blocking/terminal path uses.
+ */
+function collectOobUrl(
+  mode: 'password' | 'api-key' | 'confirm',
+  memberName: string,
+  _opts?: { prompt?: string; onOobSubmit?: (value: string) => { ok: boolean; error?: string } },
+): Promise<{ fallback?: string; url?: string; expiresAt?: string }> {
+  if (mode === 'confirm') {
+    // No caller opts a confirm prompt into return_url today (collectOobConfirm
+    // never sets it) -- a yes/no confirmation has nothing meaningful to link to.
+    return Promise.resolve({ fallback: '[FAIL] return_url is not supported for confirmation prompts.' });
+  }
+
+  const webMode: AuthWebMode = mode;
+  const webPrompt = _opts?.prompt
+    ?? (mode === 'api-key' ? `Enter API key for ${memberName}` : `Enter SSH password for ${memberName}`);
+  const onSubmit = _opts?.onOobSubmit ?? ((value: string) => submitPassword(memberName, value));
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let listenTimer: ReturnType<typeof setTimeout> | undefined;
+    const settleFallback = () => {
+      if (settled) return;
+      settled = true;
+      if (listenTimer) clearTimeout(listenTimer);
+      resolve({ fallback: `[FAIL] Could not start the local credential-entry web server for ${memberName}.` });
+    };
+
+    const outcome = launchAuthWeb(memberName, webMode, webPrompt, onSubmit, {
+      openUrl: (url) => {
+        if (settled) return;
+        settled = true;
+        if (listenTimer) clearTimeout(listenTimer);
+        resolve({ url, expiresAt: new Date(Date.now() + AUTH_WEB_TTL_MS).toISOString() });
+      },
+    });
+
+    if (outcome.kind !== 'launched') {
+      settleFallback();
+      return;
+    }
+
+    // Backstop for a listen failure that happens after launchAuthWeb already
+    // returned {kind:'launched'} synchronously (see OOB_URL_LISTEN_TIMEOUT_MS
+    // above) -- without this, a failed listen() leaves this promise unsettled
+    // forever, which is the exact blocking behaviour return_url/F3 exists to
+    // eliminate.
+    listenTimer = setTimeout(() => {
+      outcome.close();
+      settleFallback();
+    }, OOB_URL_LISTEN_TIMEOUT_MS);
+  });
+}
+
+/**
  * Core logic for out-of-band credential collection.
  * Launches a terminal, then races a password waiter against a cancellation signal.
  */
@@ -308,8 +384,19 @@ async function collectOobInput(
   mode: 'password' | 'api-key' | 'confirm',
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; additionalArgs?: string[] },
-): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
+  _opts?: {
+    waitTimeoutMs?: number;
+    launchFn?: OobLaunchFn;
+    prompt?: string;
+    additionalArgs?: string[];
+    returnUrl?: boolean;
+    onOobSubmit?: (value: string) => { ok: boolean; error?: string };
+  },
+): Promise<{ password?: string; fallback?: string; persist?: boolean; url?: string; expiresAt?: string }> {
+  if (_opts?.returnUrl) {
+    return collectOobUrl(mode, memberName, { prompt: _opts.prompt, onOobSubmit: _opts.onOobSubmit });
+  }
+
   const launch = _opts?.launchFn ?? launchAuthTerminal;
   const waitTimeoutMs = _opts?.waitTimeoutMs;
 
@@ -318,8 +405,8 @@ async function collectOobInput(
   const extraArgs = [...modeArgs, ...promptArgs, ...(_opts?.additionalArgs ?? [])];
   const inputType = mode === 'api-key' ? 'API key' : mode === 'confirm' ? 'confirmation' : 'Password';
 
-  const timeoutMessage = `❌ Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
-  const cancelledMessage = `❌ Password entry cancelled. Call ${toolName} again to retry.`;
+  const timeoutMessage = `[FAIL] Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
+  const cancelledMessage = `[FAIL] Password entry cancelled. Call ${toolName} again to retry.`;
 
   // Re-entrant case
   if (hasPendingAuth(memberName)) {
@@ -371,7 +458,7 @@ async function collectOobInput(
           }
         }
         const manualMsg = result.slice('fallback:'.length);
-        resolve({ fallback: `🔐 ${manualMsg}\n\nOnce the user has entered the ${inputType}, call ${toolName} again with the same parameters.` });
+        resolve({ fallback: `${manualMsg}\n\nOnce the user has entered the ${inputType}, call ${toolName} again with the same parameters.` });
       }
     });
 
@@ -379,7 +466,7 @@ async function collectOobInput(
 
     if (raceResult === null) {
       // The terminal exited with code 0 (Windows `start /wait` always exits 0, even
-      // on user-close). Wait briefly for any in-flight socket message — if the user
+      // on user-close). Wait briefly for any in-flight socket message -- if the user
       // genuinely submitted, the password arrives within milliseconds of process exit.
       // If nothing arrives in 500 ms, treat it as a user cancellation.
       try {
@@ -446,19 +533,35 @@ export async function collectOobPassword(
   memberName: string,
   toolName: string,
   _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string },
-): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
+): Promise<{ password?: string; fallback?: string; persist?: boolean; url?: string; expiresAt?: string }> {
   return collectOobInput('password', memberName, toolName, _opts);
 }
 
 /**
  * Collect an API key out-of-band.
+ *
+ * `returnUrl` (apra-fleet-972p.2.1, F3): when true, skips the terminal/socket
+ * blocking flow entirely and resolves as soon as the local credential-entry
+ * web server is listening, with `{ url, expiresAt }` set instead of
+ * `password` -- the secret itself arrives later via `onOobSubmit` (or
+ * `submitPassword()` if no `onOobSubmit` is given) when the user submits the
+ * form. Callers should pass `true` here whenever they cannot block on a
+ * human being present at a TTY (`credential_store_set` does this whenever
+ * `process.stdin.isTTY` is falsy, or the caller explicitly asked for it).
  * @see collectOobInput
  */
 export async function collectOobApiKey(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; askPersist?: boolean },
-): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
+  _opts?: {
+    waitTimeoutMs?: number;
+    launchFn?: OobLaunchFn;
+    prompt?: string;
+    askPersist?: boolean;
+    returnUrl?: boolean;
+    onOobSubmit?: (value: string) => { ok: boolean; error?: string };
+  },
+): Promise<{ password?: string; fallback?: string; persist?: boolean; url?: string; expiresAt?: string }> {
   const additionalArgs = _opts?.askPersist ? ['--ask-persist'] : [];
   return collectOobInput('api-key', memberName, toolName, { ...(_opts ?? {}), additionalArgs });
 }

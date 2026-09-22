@@ -16,7 +16,11 @@ export type AuthWebOutcome =
 
 export type AuthWebMode = 'password' | 'api-key';
 
-const TTL_MS = 2 * 60 * 1000; // single-use window before the server tears down
+// Exported so callers that need to compute an expiry timestamp for the URL
+// this module hands back (apra-fleet-972p.2.1, F3) use the SAME value this
+// module actually tears down at, instead of a second hardcoded constant that
+// could silently drift from it.
+export const TTL_MS = 2 * 60 * 1000; // single-use window before the server tears down
 const MAX_BODY = 64 * 1024;   // reject oversized POST bodies
 
 /**

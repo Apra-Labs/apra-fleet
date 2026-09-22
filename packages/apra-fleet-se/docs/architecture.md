@@ -1279,6 +1279,19 @@ builds a real installed tree and walks the full static import graph from the
 installed `bin/serve.mjs`, so it is also the authoritative, always-current
 enumeration of which modules the supervisor reaches.
 
+## Supervisor: project store (fleet-supervisor console)
+
+Alongside the reservation ledger described above, the supervisor is gaining
+a second durable-state layer: a `node:sqlite`-backed store
+(`src/projects/store/`) holding console projects and their per-member git
+probe cache, plus an HTTP route module (`src/projects/routes/`) over it.
+This is a separate data model from the reservation ledger and from the
+`/api/sprints`/`/api/members` API in `docs/supervisor-api.md` -- it reasons
+about which projects exist and what their members' checkouts look like, not
+about in-flight sprints. See `docs/project-store.md` in this folder for the
+full schema, the migration-runner invariants, and the DQ-12 (probe-never-
+create) rule the route layer enforces on writes to a project's beads remote.
+
 ## Dashboard
 
 The supervisor serves exactly one index page. It renders, in order: one

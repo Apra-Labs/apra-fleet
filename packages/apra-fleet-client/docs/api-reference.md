@@ -436,6 +436,30 @@ Calls `remove_member` -- removes a member from the fleet.
 | `member_name` | `string?` | Friendly name of the member. |
 | `force` | `boolean?` | Remove even if the member is currently busy. |
 
+#### `memberReservation(options: MemberReservationOptions)`
+
+Calls `member_reservation` -- reserves, releases, or force-releases exclusive
+ownership of a member for a sprint. The MCP result carries both halves:
+`content[0].text` is the unchanged human-readable summary, and
+`structuredContent` is a `MemberReservationStructured`. Programmatic callers
+must branch on `structuredContent.outcome` rather than string-matching the
+prose.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `action` | `"reserve" \| "release" \| "force_release"` | `"reserve"` claims the member for `sprint_id` (fails if already reserved by someone else); `"release"` clears it only if `sprint_id` matches the current holder; `"force_release"` clears it regardless of owner. |
+| `sprint_id` | `string?` | Sprint/session id claiming or releasing the reservation. Required for `"reserve"` and `"release"`, ignored for `"force_release"`. |
+
+`MemberReservationStructured` fields: `outcome` (one of `"reserved"`,
+`"reservation_refreshed"`, `"released"`, `"force_released"`,
+`"already_reserved_by_other"`, `"not_reserved"`, `"unreservable"`,
+`"invalid_input"`, `"member_not_found"`, `"failed"`), `ok`, `action`,
+`memberId`, `memberName`, `sprintId`, `ownerSprintId` (the sprint that held
+the reservation when the call arrived, or the blocking owner on
+`"already_reserved_by_other"`).
+
 #### `getMemberModelPricing(options)`
 
 Calls `get_member_model_pricing` -- returns a member's cheap/standard/premium
@@ -463,6 +487,28 @@ token. `pat_expires_at` must be parseable by `Date.parse` -- the server
 rejects an unparseable value rather than storing it, because a `NaN` expiry
 silences the near-expiry warning and makes the credential-cleanup timer
 fall back to its default.
+
+#### `vcsCredentialExec(options: VcsCredentialExecOptions)`
+
+Calls `vcs_credential_exec` -- runs a credential-requiring git/VCS command on
+a member WITHOUT the caller ever learning the credential. The server reads
+the credential in-process, substitutes whichever placeholder(s) `command`
+contains, dispatches it, and redacts the value from the returned
+stdout/stderr. The plaintext appears in no field of the result.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `command` | `string` | The credential-requiring command to run. Must contain at least one of `{{vcs_token}}` (bare, referenced outside your own quotes -- the server substitutes an already-quoted-for-the-shell value) or `{{vcs_token_inline}}` (referenced inside your own single quotes -- substituted with no quotes of its own). |
+| `label` | `string?` | Credential label `provision_vcs_auth` deployed the helper under (defaults to the provider name). Omit for the unlabelled helper. |
+| `timeout_s` | `number?` | Timeout in seconds for the command (default: 120). |
+
+`VcsCredentialExecStructured` fields: `ok`, `reason` (one of `"ok"`,
+`"member_not_found"`, `"placeholder_missing"`, `"unsupported_member_os"`,
+`"credential_read_failed"`, `"credential_empty"`, `"dispatch_failed"`),
+`exitCode`, `stdout`/`stderr` (credential redacted), `tokenRedactions`,
+`credentialLabel`, `memberId`, `memberName`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 
@@ -498,13 +544,24 @@ and `attachments` (`{ filename, content, contentType? }[]`, base64 content).
 #### `credentialStoreSet(options)` / `credentialStoreList()` / `credentialStoreDelete(options)` / `credentialStoreUpdate(options)`
 
 The fleet credential store. `credentialStoreSet({ name, prompt, persist?,
-network_policy?, members?, ttl_seconds? })` collects a secret from the user
-out-of-band and stores it -- the value never passes through the caller.
-`credentialStoreList()` takes no arguments and returns names and metadata
-only, never values (a JSON array of `{ name, scope, ... }` entries; extract
-it with `parseToolJson()`). `credentialStoreDelete({ name })` removes one.
-`credentialStoreUpdate({ name, members?, ttl_seconds?, network_policy? })`
+network_policy?, members?, ttl_seconds?, return_url? })` collects a secret
+from the user out-of-band and stores it -- the value never passes through
+the caller. `credentialStoreList()` takes no arguments and returns names and
+metadata only, never values (a JSON array of `{ name, scope, ... }` entries;
+extract it with `parseToolJson()`). `credentialStoreDelete({ name })` removes
+one. `credentialStoreUpdate({ name, members?, ttl_seconds?, network_policy? })`
 changes metadata without re-entering the secret.
+
+**`credentialStoreSet`'s out-of-band URL result** (apra-fleet-972p.2.1, F3):
+when the server has no TTY attached, or `return_url: true` is passed
+explicitly, the call returns immediately (never blocking on the secret being
+entered) with `result.structuredContent` set to a `CredentialStoreSetResult`
+-- `{ url, expiresAt }` -- instead of the usual plain-text confirmation.
+`url` is a one-time, loopback-only link; opening it and submitting the form
+encrypts and stores the secret server-side at that moment, with no further
+tool call needed. `expiresAt` is an ISO-8601 timestamp after which the URL
+stops accepting submissions. Read `structuredContent`, never scrape it out of
+the display text.
 
 #### `doltPushMutex(options)`
 
@@ -528,6 +585,83 @@ sprints launched without a supervisor, so two sprints creating children
 under the same parent never derive the same id. `action` is one of
 `'allocate'`, `'confirm'`, `'release'`, `'status'`; the rest are optional:
 `parent_id`, `token`, `sprint_id`, `pid`, `floor`.
+
+#### `revokeVcsAuth(options: RevokeVcsAuthOptions)`
+
+Calls `revoke_vcs_auth` -- removes VCS credentials from a member.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `provider` | `"github" \| "bitbucket" \| "azure-devops"` | VCS provider whose credentials to revoke. |
+| `label` | `string?` | Credential label to revoke (e.g. "work-github"). If omitted, revokes the default (provider-named) credential. |
+| `scope_url` | `string?` | Git credential scope URL used when the credential was provisioned (e.g. "https://github.com/my-org"). Defaults to "https://<host>". |
+
+#### `setupGitApp(options: SetupGitAppOptions)`
+
+Calls `setup_git_app` -- one-time setup registering a GitHub App for git
+token minting. The app must already be created at
+`github.com/organizations/{org}/settings/apps`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `app_id` | `string` | The GitHub App ID (numeric string). |
+| `private_key_path` | `string` | Path to the GitHub App private key (.pem) file. Supports a `{{secret.NAME}}` token -- if the resolved value starts with `-----BEGIN` it is treated as PEM key content directly (no file needed). |
+| `installation_id` | `number` | The GitHub App installation ID for your organization. |
+
+#### `updateLlmCli(options: UpdateLlmCliOptions = {})`
+
+Calls `update_llm_cli` -- updates or installs the AI provider CLI on
+members. Omit `member_id`/`member_name` to update all online members at
+once; `options` defaults to `{}` if omitted entirely.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `install_if_missing` | `boolean?` | Install the LLM agent CLI on the member if not already installed (default: `false`). |
+
+#### `monitorTask(options: MonitorTaskOptions)`
+
+Calls `monitor_task` -- checks the status of a long-running background task
+on a cloud member. Optionally stops the cloud instance automatically when
+the task completes.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `task_id` | `string` | Task ID returned by `execute_command` with `long_running: true`. Must match the pattern `task-[a-z0-9]{4,20}`. |
+| `auto_stop` | `boolean?` | Stop the cloud instance when the task completes (default: `false`). |
+
+#### `stopPrompt(options: StopPromptOptions)`
+
+Calls `stop_prompt` -- kills the active LLM process on a member. Always
+call `TaskStop` on the dispatching background agent after calling this.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+
+#### `version()`
+
+Calls `version` with an empty payload -- returns the installed apra-fleet
+server version.
+
+#### `kbSetup(options: KbSetupOptions = {})`
+
+Calls `kb_setup` -- sets up KB: installs the git post-commit hook, writes
+the provider config, and stores remote credentials encrypted. Run once per
+repo; `options` defaults to `{}` if omitted entirely.
+
+| Field | Type | Notes |
+|---|---|---|
+| `repo_path` | `string?` | Path to the git repository for post-commit hook installation (default: current directory). |
+| `provider` | `"sqlite" \| "http"?` | KB provider type (default: `"sqlite"`). |
+| `remote` | `string?` | Remote KB server URL (required when `provider` is `"http"`). |
+| `token` | `string?` | Authentication token for the remote KB server (stored encrypted, never logged). |
 
 #### `shutdownServer(opts = {})`
 

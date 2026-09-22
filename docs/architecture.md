@@ -320,6 +320,46 @@ it never had bundled alongside it. Any future dependency added to
 against the production/packaged-binary install path, since the two paths
 build the manifest differently.
 
+**`@apralabs/apra-fleet-client`'s subpath exports are per-concern, not one
+barrel file.** `package.json`'s `exports` map grows a new `./<dir>/*`
+mapping (resolving to `./src/<dir>/*.mjs`) as each concern gets its own
+importable module, alongside the package's top-level `.`/`client`/
+`factory`/`transport`/`server-resolution` entries. `./beads/*` is the first
+of these to ship a real module: `src/beads/normalize.mjs`, a pure,
+dependency-free copy of the bead-normalization and parent-child tree
+helpers that `packages/apra-fleet-se/src/supervisor/backlog.mjs` already
+implements. It is a deliberate verbatim copy rather than an import of the
+supervisor module, because the client package must not depend on
+`apra-fleet-se`'s `bd`-subprocess plumbing just to expose pure functions
+over already-fetched JSON -- any consumer of `@apralabs/apra-fleet-client`
+(not only the supervisor) can pull in the beads-normalization logic without
+that transitive weight. The tradeoff accepted: the supervisor's own
+`backlog.mjs` has not yet been switched to import from this subpath, so the
+two implementations can drift out of sync until that swap happens; there is
+no automated guard against that today, so a change to one copy's behaviour
+must currently be mirrored into the other by hand. A subpath entry in the
+`exports` map is only meaningful once a module actually exists at the
+target path -- an entry added ahead of the module it names is silently
+broken (`ERR_MODULE_NOT_FOUND` on any import) until the module lands.
+
+**`credential_store_set` has two response shapes, chosen by TTY
+availability, not by a caller-visible mode flag alone.** When the server
+process has a TTY attached and the caller does not opt out, the tool blocks
+synchronously on out-of-band terminal input, exactly as documented in
+[docs/features/oob-auth.md](features/oob-auth.md). When the server has no
+TTY (a headless/service context), or the caller passes `return_url: true`
+explicitly even from an interactive terminal, the tool instead returns
+immediately with `structuredContent: {url, expiresAt}` -- a one-time,
+loopback-only URL the user opens to submit the secret asynchronously; the
+secret is encrypted and stored the moment that form is submitted, with no
+follow-up tool call needed. Both shapes flow through the same
+`{content, structuredContent}` MCP result wrapper the tool registry already
+supports for any tool, so no server-side plumbing change was needed to add
+the second shape -- only the tool's own branch on TTY/`return_url` and a
+bounded backstop timer so a `launchAuthWeb` listen failure that happens
+after the openUrl callback has already fired cannot leave the returned
+promise permanently unsettled.
+
 ## PM Skill
 
 The PM skill and its role agent definitions (planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner, ci-watcher, harvester), plus their shared `agents/schemas/` and `agents/_shared/` assets, live in this monorepo at `packages/apra-fleet-se/apra-pm/`. At build time, `scripts/dist-pm.mjs` copies the skill and agent files into `dist/` (and `scripts/gen-sea-config.mjs` embeds them as SEA assets for the standalone binary), so all three install paths -- dev-mode, npm, and SEA binary -- carry the same set. At install time, agents are written to the provider's agents directory (e.g. `~/.claude/agents/`); `uninstall` removes that directory in the same pass. For OpenCode members, agent frontmatter is transformed from Claude format to OpenCode format during installation. Claude installs additionally get the `auto-sprint-args` skill (the args contract for the `/auto-sprint` workflow), written to `~/.claude/skills/auto-sprint-args`.

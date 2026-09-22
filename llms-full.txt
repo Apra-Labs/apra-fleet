@@ -344,6 +344,13 @@ Or via the MCP tool (the path an LLM agent uses):
 Secrets are encrypted in the fleet credential store. They never appear in
 workflow code, config files, or environment variables.
 
+On a headless server (no terminal attached), or by passing `return_url:
+true` explicitly, `credential_store_set` returns a one-time browser URL
+(`{url, expiresAt}`) instead of blocking on terminal input -- open the URL
+to submit the secret; it is stored automatically, with no follow-up call
+needed. See [docs/secret-variables.md](docs/secret-variables.md) for the
+full behavior.
+
 ### Sending email from a workflow
 
 The workflow passes non-secret config inline and calls `send_email`. Load
@@ -882,6 +889,46 @@ it never had bundled alongside it. Any future dependency added to
 `apra-fleet-client` must be re-verified against this bundling path, not just
 against the production/packaged-binary install path, since the two paths
 build the manifest differently.
+
+**`@apralabs/apra-fleet-client`'s subpath exports are per-concern, not one
+barrel file.** `package.json`'s `exports` map grows a new `./<dir>/*`
+mapping (resolving to `./src/<dir>/*.mjs`) as each concern gets its own
+importable module, alongside the package's top-level `.`/`client`/
+`factory`/`transport`/`server-resolution` entries. `./beads/*` is the first
+of these to ship a real module: `src/beads/normalize.mjs`, a pure,
+dependency-free copy of the bead-normalization and parent-child tree
+helpers that `packages/apra-fleet-se/src/supervisor/backlog.mjs` already
+implements. It is a deliberate verbatim copy rather than an import of the
+supervisor module, because the client package must not depend on
+`apra-fleet-se`'s `bd`-subprocess plumbing just to expose pure functions
+over already-fetched JSON -- any consumer of `@apralabs/apra-fleet-client`
+(not only the supervisor) can pull in the beads-normalization logic without
+that transitive weight. The tradeoff accepted: the supervisor's own
+`backlog.mjs` has not yet been switched to import from this subpath, so the
+two implementations can drift out of sync until that swap happens; there is
+no automated guard against that today, so a change to one copy's behaviour
+must currently be mirrored into the other by hand. A subpath entry in the
+`exports` map is only meaningful once a module actually exists at the
+target path -- an entry added ahead of the module it names is silently
+broken (`ERR_MODULE_NOT_FOUND` on any import) until the module lands.
+
+**`credential_store_set` has two response shapes, chosen by TTY
+availability, not by a caller-visible mode flag alone.** When the server
+process has a TTY attached and the caller does not opt out, the tool blocks
+synchronously on out-of-band terminal input, exactly as documented in
+[docs/features/oob-auth.md](features/oob-auth.md). When the server has no
+TTY (a headless/service context), or the caller passes `return_url: true`
+explicitly even from an interactive terminal, the tool instead returns
+immediately with `structuredContent: {url, expiresAt}` -- a one-time,
+loopback-only URL the user opens to submit the secret asynchronously; the
+secret is encrypted and stored the moment that form is submitted, with no
+follow-up tool call needed. Both shapes flow through the same
+`{content, structuredContent}` MCP result wrapper the tool registry already
+supports for any tool, so no server-side plumbing change was needed to add
+the second shape -- only the tool's own branch on TTY/`return_url` and a
+bounded backstop timer so a `launchAuthWeb` listen failure that happens
+after the openUrl callback has already fired cannot leave the returned
+promise permanently unsettled.
 
 ## PM Skill
 
@@ -1719,6 +1766,38 @@ The `fallback:` prefix is a protocol marker consumed by `collectOobInput` to dis
 ## Fallback: Second Terminal
 
 When the `!` operator isn't available or the user is in a non-Claude Code context, the fallback instruction is to open a second terminal and run `apra-fleet secret --set <memberName>` there. Because the UDS socket is a filesystem object, the second terminal's `apra-fleet secret --set` process connects to the same socket and delivers the credential to the waiting fleet server -- no GUI required.
+
+---
+
+## Non-blocking OOB collection: the return-URL path
+
+`credential_store_set` is the one credential-collection tool with a second,
+non-blocking response shape, used whenever the calling server process has no
+TTY attached (a headless/service context cannot block a tool call on a human
+sitting at a terminal) or the caller passes `return_url: true` explicitly
+even when a TTY is available. Instead of blocking on `waitForPassword()`
+like the terminal flow above, the tool returns immediately with
+`structuredContent: {url, expiresAt}` -- a one-time, loopback-only browser
+URL. The secret is still encrypted and stored server-side, but the moment of
+storage is decoupled from the tool call: it happens when the user submits
+the form at `url`, via the same `auth-web.ts` browser flow this mechanism
+already used for interactive password entry, not through the
+`pendingRequests`/`waitForPassword` machinery the blocking terminal path
+uses (there is no waiter to resolve -- the tool call has already returned by
+the time the form is submitted). No follow-up tool call is needed on
+success; the credential simply becomes available as `{{secret.NAME}}` once
+submitted.
+
+**Bounded listen backstop.** The internal collector that produces the URL
+(`collectOobUrl` in `auth-socket.ts`) resolves as soon as the underlying web
+server's `openUrl` callback fires -- normally within the same tick as
+`server.listen()`. If `listen()` fails asynchronously after that callback
+has already been wired but before it fires, nothing would otherwise ever
+settle the returned promise. A bounded timer (default 5 seconds) backstops
+this: if the callback has not fired by the deadline, the promise rejects and
+the caller (`credential_store_set`) reports a `[FAIL]` result instead of
+hanging indefinitely. The timer is cleared the instant the callback does
+fire, so the common case pays no delay.
 
 ---
 
