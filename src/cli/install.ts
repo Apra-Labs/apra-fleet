@@ -17,6 +17,7 @@ import {
   writeConfig,
   writeInstallConfig,
   PROVIDER_STANDARD_MODELS,
+  INSTALLABLE_LLM_PROVIDERS,
   ProviderInstallConfig
 } from './config.js';
 import { transformAgentForOpenCode, transformAgentForAgy } from './agent-transform.js';
@@ -966,7 +967,7 @@ Options:
     }
   }
 
-  const supported: LlmProvider[] = ['claude', 'codex', 'copilot', 'agy', 'opencode'];
+  const supported = INSTALLABLE_LLM_PROVIDERS;
   if (!supported.includes(llm)) {
     console.error(`Error: Unsupported LLM provider "${llm}". Supported: ${supported.join(', ')}`);
     process.exit(1);

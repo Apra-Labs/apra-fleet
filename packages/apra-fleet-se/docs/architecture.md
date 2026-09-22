@@ -175,6 +175,22 @@ prompt for a streak only includes feedback for the bead(s) that streak
 actually owns -- never a blanket broadcast of the whole verdict to every
 doer.
 
+### A permission-scope publish failure is "work done, publish blocked," not a failed streak
+
+A doer streak can complete and commit its work locally, and then have its
+post-dispatch git-sync push refused for a permission-scope reason (see
+"VCS provider abstraction" above) that no retry or self-heal can fix. Marking
+that streak `FAILED` and re-dispatching the same bead(s) next cycle wastes a
+full dispatch every remaining cycle against a gap that provably cannot close
+without an operator action, and worse, repeatedly re-attempts work that is
+already done and committed. This exact classification instead reports the
+streak as "work done, publish blocked": the operator referral is logged
+prominently, the affected bead ids are recorded for the rest of the sprint,
+and subsequent rounds/cycles exclude them from the ready-work set instead of
+re-dispatching. Every other post-dispatch sync failure classification
+(transient, auth-expired, diverged) is unaffected -- this is a narrow
+carve-out, not a change to the general failure-handling path.
+
 ### Batched bead claiming is a dormant contract, not yet live behavior
 
 `claimBeadsBatched()` exists to replace a per-id claim loop with one `bd
@@ -265,6 +281,36 @@ scope before deciding to exit -- it never trusts a stale `APPROVED` verdict
 left over from an earlier cycle. `lastReviewVerdict`/`reviewedThisCycle` are
 reset at the top of every cycle specifically to make this distinction
 possible.
+
+**Deferred beads are excluded from the "0 beads in scope" count above, using
+the exact same partitioning function the dispatcher's own ready-work query
+is built from.** A `deferred` bead never appears in `bd list --ready`, so the
+dispatcher already treats it as out of scope; if Cycle Evaluation instead
+re-derived "still open" from raw status without excluding deferred beads, a
+sprint whose only remaining beads were deliberately deferred could never
+reach the "0 beads" branch above, no matter how long it ran -- it would
+dispatch nothing every cycle (correctly) while evaluation kept reporting a
+non-zero open count, walking straight into stall detection below despite the
+scope being effectively finished. Sharing one partitioning function between
+the dispatcher's readiness query and this exit check is what keeps the two
+views from drifting apart; a sprint that exits this way names every deferred
+bead id explicitly (exit log line, the sprint analysis artifact, the
+final-verdict prompt) rather than silently dropping them from the record.
+
+A second, independent short-circuit exits the cycle loop as soon as every
+configured sprint root/target bead id is already closed, regardless of
+`lastReviewVerdict`. This covers the case where the root closes as a side
+effect of something other than the review path (for example, an
+integration-test pass verifying and force-closing the epic on its own) --
+once nothing remains in scope to route through review, the verdict can never
+reach `APPROVED` again through the ordinary path above, so without this
+second check the loop would grind forward every remaining cycle until stall
+detection (mis)reads the standstill as a stall. This check runs *after* the
+cycle's own review/re-review dispatch has already had its chance to run, so
+a root that closes via a side effect in the same cycle a genuinely fresh
+re-review would otherwise run does not skip that re-review; and it only
+applies when the sprint has an actual configured root/target scope, so a
+whole-database-fallback sprint (no configured root) is unaffected.
 
 ## Stall detection
 
@@ -470,6 +516,23 @@ VCSModule replaces that with a provider-agnostic seam:
   provider's real auth-failure text (not just the generic OpenSSH/git text
   that happens to port across hosts), because the cost of a miss is a false
   sprint-fatal abort on what is usually a routine, recoverable token expiry.
+- **A provider can declare a separate "permission-scope" classification
+  axis**, distinct from its ordinary auth-failure patterns, for the case
+  where the credential's *identity* is understood and valid but the
+  *principal* was never granted the specific permission the operation needs
+  (a fine-grained repo permission gating a specific path prefix, for
+  example). A permission-scope match wins outright, ahead of the provider's
+  normal failure-kind precedence -- because the host's permission-refusal
+  text commonly arrives wrapped inside the same generic rejection tail an
+  unrelated failure kind also matches, and reordering the whole precedence
+  table to fix one rule would re-read every other ambiguous pattern too --
+  and it is explicitly excluded from self-heal: re-minting the same
+  principal's credential reproduces the identical permission set, so the
+  self-heal-and-retry step is skipped entirely and the failure (with its own
+  operator-facing referral text, supplied by the provider) is returned
+  immediately. This is a strict narrowing carved out of what used to fall
+  through to the ordinary re-mintable auth-failure path; every other auth
+  classification a provider produces is unaffected by declaring this axis.
 - **Reading whether the self-heal callback itself succeeded must prefer the
   structured result over any prose fallback.** `provision_vcs_auth` (like
   the other provisioning tools) returns a structured `ok`/`reason` result
@@ -517,6 +580,21 @@ than a single mechanism:
 
 A member with no genuine content conflict never leaves Tier 0; Tier 2 is a
 rare, explicitly-logged escalation, not the common path.
+
+**A brand-new sprint branch's first sync is a distinct precondition, not a
+Tier 1 conflict.** A sprint branch created only locally (never yet pushed)
+has nothing on the remote to fetch or rebase against; a pull-rebase attempted
+before that first push fails with git's exact, unambiguous "couldn't find
+remote ref" message. That message is recognized by one shared predicate used
+by both the pre-dispatch and post-dispatch sync steps (rather than each
+carrying its own copy of the same check), and on a match the escalation
+ladder above is bypassed entirely: no `git rebase --abort`, no Tier 2 agent
+dispatch -- the push is retried directly, which creates the branch on the
+remote. If that direct retry is itself rejected because a concurrent writer
+published the branch first, that is treated as a genuine divergence and
+raises the same typed diverged-sync error Tier 2's own failure path raises --
+this bypass only ever short-circuits the *conflict-resolution machinery* for
+one unambiguous precondition, never the divergence detection itself.
 
 ### Crossing-bracket mutual exclusion
 

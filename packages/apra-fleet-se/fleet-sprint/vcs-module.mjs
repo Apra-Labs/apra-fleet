@@ -254,6 +254,19 @@ export function buildCommentCommand(params) {
 // the least dangerous to under-match. A provider may override the order with
 // its own `precedence` array (dolt's classifier, for example, promotes
 // no-remote to first) without any change here.
+//
+// PERMISSION SCOPE (a REFINEMENT of AUTH_DENIED, not a new kind). A provider
+// may declare `permissionScope.rules` for the texts that mean "the identity
+// was understood and the PRINCIPAL lacks the granted permission" (see
+// ./vcs-providers/index.mjs's descriptor contract and ./vcs-providers/
+// github.mjs's workflow-file refusal). Those rules are checked BEFORE the
+// precedence loop and their match is the verdict outright -- because such a
+// refusal typically arrives wrapped in the host's generic rejection tail,
+// which a higher-precedence kind (DIVERGED) already claims. The match also
+// travels on the result as `permissionScope: true`, which is what lets the
+// self-heal gate (git-topology.mjs's runGitStep) tell "re-minting cannot
+// possibly help" apart from every other AUTH_DENIED, WITHOUT re-reading
+// stderr at the call site.
 
 const KIND_PRECEDENCE = Object.freeze([
     VCS_FAILURE_KINDS.DIVERGED,
@@ -284,30 +297,76 @@ const KIND_PRECEDENCE = Object.freeze([
  * @param {{ provider?: string }} [opts] - provider selects the rule chain;
  *   defaults to DEFAULT_VCS_PROVIDER ('github'), which reproduces runner.js's
  *   full auth pattern set exactly.
- * @returns {{ kind: string, providerCode: string|null, retryable: boolean, raw: string }}
- *   `kind` is the ONLY field control flow may branch on. `providerCode` is the
+ * @returns {{ kind: string, providerCode: string|null, retryable: boolean, permissionScope: boolean, operatorReferral: string|null, raw: string }}
+ *   `kind` is the ONLY field control flow may branch on, with ONE declared
+ *   exception: `permissionScope` (see below), which is a REFINEMENT of
+ *   AUTH_DENIED, not a parallel vocabulary. `providerCode` is the
  *   provider-specific token (e.g. an HTTP status, or an Azure DevOps
- *   'TF401019') carried as a DIAGNOSTIC detail. `raw` is the input, normalized
- *   to a string, so a caller can log the evidence behind the verdict.
+ *   'TF401019') carried as a DIAGNOSTIC detail. `permissionScope` is true when
+ *   a provider's `permissionScope.rules` matched: the identity was understood
+ *   and the PRINCIPAL lacks the granted permission, so re-minting the same
+ *   credential cannot help and the caller must NOT self-heal or retry.
+ *   `operatorReferral` is the provider's own operator-facing remedy text for
+ *   that case (null otherwise), so a shared caller can surface WHICH resource
+ *   and WHICH missing permission without carrying a vendor wording itself.
+ *   `raw` is the input, normalized to a string, so a caller can log the
+ *   evidence behind the verdict.
  */
 export function classifyFailure(rawStderr, opts = {}) {
     const raw = String(rawStderr == null ? '' : rawStderr);
     const providerName = (opts && opts.provider) || DEFAULT_VCS_PROVIDER;
     const chain = resolveVcsProviderChain(providerName);
 
+    // PERMISSION-SCOPE RULES ARE CHECKED FIRST, ahead of KIND_PRECEDENCE.
+    //
+    // A host's permission refusal almost always arrives wrapped in that host's
+    // GENERIC rejection tail -- for git, "error: failed to push some refs to
+    // ...", which is emitted for EVERY rejected push and which GenericGitVCS
+    // matches as DIVERGED, the highest-precedence kind. Running the normal
+    // precedence loop first would therefore read a permission refusal as a
+    // divergence and send the caller into a doomed pull --rebase. The
+    // alternative -- reordering the provider's whole `precedence` array to put
+    // AUTH_DENIED first -- would silently re-read every OTHER ambiguous text
+    // for that provider too (a publickey refusal that also mentions a
+    // non-fast-forward, a GitLab "Access denied" that also carries git's
+    // generic "Authentication failed" tail), which is exactly the kind of
+    // collateral verdict change this taxonomy exists to prevent. So the
+    // override is per-RULE and opt-in per provider, not per provider-wide
+    // ordering. Most-derived provider first, same as the precedence loop.
+    let permissionScope = false;
+    let operatorReferral = null;
+    for (const provider of chain) {
+        const scope = provider.permissionScope;
+        if (!scope || !Array.isArray(scope.rules)) continue;
+        if (!scope.rules.some((re) => re.test(raw))) continue;
+        permissionScope = true;
+        if (typeof scope.describe === 'function') {
+            const described = scope.describe(raw);
+            operatorReferral = typeof described === 'string' && described.trim() ? described : null;
+        }
+        break;
+    }
+
     const precedence = chain.find((p) => Array.isArray(p.precedence))?.precedence || KIND_PRECEDENCE;
 
-    let kind = VCS_FAILURE_KINDS.UNKNOWN;
-    outer:
-    for (const candidate of precedence) {
-        // Most-derived provider first within each kind, so a provider can
-        // sharpen a base verdict without editing the base.
-        for (const provider of chain) {
-            const patterns = (provider.rules && provider.rules[candidate]) || [];
-            for (const re of patterns) {
-                if (re.test(raw)) {
-                    kind = candidate;
-                    break outer;
+    // A permission-scope match IS the verdict: identity understood, principal
+    // refused (errors.mjs's AUTH_DENIED, word for word). The precedence loop
+    // is skipped entirely in that case -- running it could only re-read the
+    // host's generic rejection tail as something else.
+    let kind = VCS_FAILURE_KINDS.AUTH_DENIED;
+    if (!permissionScope) {
+        kind = VCS_FAILURE_KINDS.UNKNOWN;
+        outer:
+        for (const candidate of precedence) {
+            // Most-derived provider first within each kind, so a provider can
+            // sharpen a base verdict without editing the base.
+            for (const provider of chain) {
+                const patterns = (provider.rules && provider.rules[candidate]) || [];
+                for (const re of patterns) {
+                    if (re.test(raw)) {
+                        kind = candidate;
+                        break outer;
+                    }
                 }
             }
         }
@@ -321,7 +380,7 @@ export function classifyFailure(rawStderr, opts = {}) {
         }
     }
 
-    return { kind, providerCode, retryable: VCS_RETRYABLE_KINDS.has(kind), raw };
+    return { kind, providerCode, retryable: VCS_RETRYABLE_KINDS.has(kind), permissionScope, operatorReferral, raw };
 }
 
 /**

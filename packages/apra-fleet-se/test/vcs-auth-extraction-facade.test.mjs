@@ -91,6 +91,21 @@ const MOVED_PRIVATE_SYMBOLS = [
     'isPrAuthFailure',
     'raiseVcsPrForMember',
     'VCS_AUTH_EXPIRY_PREFLIGHT_MS',
+    // apra-fleet-2wdc.6: the Sync-step workflows-permission preflight, added
+    // long after the move-only extraction -- like 'provisionOutcome' above,
+    // not one of the ORIGINALLY-moved symbols, but module-private to
+    // vcs-auth.mjs (runner.js imports createWorkflowsPermissionPreflightCallback
+    // for its own internal use but does not re-export it), so these belong in
+    // this list rather than a third bucket.
+    'DEFAULT_SYNC_GIT_ACCESS',
+    'GITHUB_ACCESS_LEVELS_WITH_WORKFLOWS',
+    'accessLevelGrantsWorkflowsPermission',
+    'createWorkflowsPermissionPreflightCallback',
+    // apra-fleet-rp7a.4: the registry read that makes that preflight's
+    // access-level check reachable (it now judges the member's REGISTERED
+    // level, not a constant). Module-private for the same reason as the rest
+    // of this group -- only the preflight above consumes it.
+    'readRegisteredGitAccess',
 ];
 
 const declaresTopLevel = (src, name) =>
@@ -136,7 +151,7 @@ describe('(1) the runner.js facade re-exports every symbol the vcs-auth extracti
         });
     }
 
-    test('every moved symbol is accounted for: the two lists cover all 21 top-level declarations in vcs-auth.mjs', () => {
+    test('every moved symbol is accounted for: the two lists cover all 26 top-level declarations in vcs-auth.mjs', () => {
         const declared = [...VCS_AUTH_SRC.matchAll(/^(?:export )?(?:async )?(?:function|const) ([A-Za-z_][A-Za-z0-9_]*)/gm)]
             .map((m) => m[1]);
         const enumerated = new Set([...MOVED_PUBLIC_SYMBOLS, ...MOVED_PRIVATE_SYMBOLS]);

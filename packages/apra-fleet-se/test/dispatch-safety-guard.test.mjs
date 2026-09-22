@@ -582,7 +582,12 @@ const VCS_AUTH_PATH = path.join(__dirname, '../fleet-sprint/vcs-auth.mjs');
 // helper entirely, taking its command() call site with it. Only
 // provisionVcsAuthForMember()'s git-remote read remains, so the count drops
 // to 1 as predicted above.
-const EXPECTED_VCS_AUTH_COMMAND_COUNT = 1;
+//
+// apra-fleet-2wdc.6 added two more: createWorkflowsPermissionPreflightCallback()'s
+// `git rev-list --count` (commits-ahead-of-base check) and `git diff --name-only`
+// (workflow-path diff) call sites, both carrying member_name -- raising the
+// count to 3.
+const EXPECTED_VCS_AUTH_COMMAND_COUNT = 3;
 
 test('every command() call site in vcs-auth.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(VCS_AUTH_PATH);

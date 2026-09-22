@@ -32,7 +32,25 @@ describe('parseRepoScopeFromRemoteUrl (apra-fleet-5co8.1.2)', () => {
         assert.equal(scope.repo, null);
         assert.match(scope.error, /^ERROR: /);
         assert.match(scope.error, /https:\/\/dev\.azure\.com\/ORG\/PROJECT\/_git\/REPO/);
+        assert.match(scope.error, /ORG\.visualstudio\.com/);
         assert.match(scope.error, /azure-devops/);
+    });
+
+    // GitHub issue #502 evidence: the legacy host was ALREADY parsed to an org
+    // by this dispatch before the fix (the reporter's "no organization could
+    // be derived" arose from an unreadable remote, not from this parser).
+    // Pinned so the org derivation for every legacy form stays that way.
+    test('the legacy visualstudio.com forms (https, with/without collection, ssh) all yield an org (issue #502)', () => {
+        for (const url of [
+            'https://apralabs.visualstudio.com/DefaultCollection/e2e-fleet-testing/_git/fleet-e2e-toy',
+            'https://apralabs.visualstudio.com/e2e-fleet-testing/_git/fleet-e2e-toy',
+            'apralabs@vs-ssh.visualstudio.com:v3/apralabs/e2e-fleet-testing/fleet-e2e-toy',
+        ]) {
+            const scope = parseRepoScopeFromRemoteUrl(url);
+            assert.equal(scope.error, null, url);
+            assert.equal(scope.repo, 'apralabs/e2e-fleet-testing/fleet-e2e-toy', url);
+            assert.equal(scope.ref.org, 'apralabs', url);
+        }
     });
 
     test('GitHub and generic remotes parse exactly as the generic parse did', () => {

@@ -181,6 +181,101 @@ const AUTH_EXPIRED = [
 // self-heal. Widening the taxonomy is a real behavior change and belongs in its
 // own bead with its own tests, not smuggled in under a no-verdict-change
 // consolidation.
+//
+// The ONE exception, added deliberately and with its own tests: the
+// workflow-file permission refusal below. It is not merely "unknown today" --
+// it is actively MISREAD today (see the block comment on
+// WORKFLOW_PERMISSION_REFUSAL), which is a different situation from the
+// under-matched texts listed above.
+
+// ---------------------------------------------------------------------------
+// Workflow-file permission refusal (the permission-scope axis)
+// ---------------------------------------------------------------------------
+//
+// git's stderr for a push that touches .github/workflows/** with a credential
+// that was never granted the Workflows permission looks like:
+//
+//   ! [remote rejected] feat/x -> feat/x (refusing to allow a GitHub App to
+//       create or update workflow .github/workflows/ci.yml without workflows
+//       permission)
+//   error: failed to push some refs to 'https://github.com/owner/repo.git'
+//
+// Two things about that text matter, and both are why this rule needs the
+// `permissionScope` hook below rather than a plain entry in `rules`:
+//
+//  1. The trailing "error: failed to push some refs to ..." line is git's
+//     UNIVERSAL reaction to ANY rejected push -- a non-fast-forward, a
+//     protected-branch refusal, a hook rejection, this. GenericGitVCS's
+//     DIVERGED table matches it, and DIVERGED outranks both AUTH kinds in
+//     KIND_PRECEDENCE, so precedence alone reads this as a divergence and the
+//     caller answers a permission refusal with a doomed `pull --rebase`.
+//  2. The identity was understood perfectly; the PRINCIPAL simply was never
+//     granted the permission. Re-minting the SAME credential (which is all the
+//     provision_vcs_auth self-heal does) produces a token with the SAME
+//     permission set and the SAME refusal, forever.
+//
+// So this is AUTH_DENIED ("identity understood, access refused" -- errors.mjs)
+// and it must WIN over the DIVERGED tail, and it must NOT be self-healed. Both
+// of those follow from declaring it under `permissionScope` (see
+// ./index.mjs's descriptor contract); the SAME array is also listed under
+// rules[AUTH_DENIED] so the kind is discoverable by pattern-table readers and
+// by any caller that walks `rules` directly.
+//
+// Wordings: GitHub emits a different subject noun per credential type. The
+// GitHub App and Personal Access Token wordings are the two the fleet can
+// actually produce (fleet-minted installation tokens, and an operator-supplied
+// PAT); the OAuth App wording is the same refusal from a credential type the
+// fleet does not mint but a member may nonetheless be configured with, and
+// leaving it out would silently return it to the DIVERGED misreading above.
+// The trailing noun differs too ("without workflows permission" for an App,
+// "without workflow scope" for a PAT/OAuth App), so the patterns stop at the
+// stable "to create or update workflow" stem rather than pinning the tail.
+const WORKFLOW_PERMISSION_REFUSAL = [
+    /refusing to allow a GitHub App to create or update workflow/i,
+    /refusing to allow a Personal Access Token to create or update workflow/i,
+    /refusing to allow an? OAuth App to create or update workflow/i,
+];
+
+/** The operator referral for a workflow-permission refusal: WHICH workflow
+ *  file(s) were refused, WHAT the credential is missing, and the remedy --
+ *  stated as an operator action, never as "it will retry", because nothing
+ *  here retries.
+ *
+ *  Stateless: the /g regex is constructed fresh on every call (a hoisted /g
+ *  regex would carry `lastIndex` between classifyFailure calls and make the
+ *  same input describe differently on a second call -- see the PURITY note in
+ *  this file's header and in ./generic-git.mjs).
+ *
+ *  @param {string} raw - the raw stderr the refusal was classified from
+ *  @returns {string} an ASCII operator-facing referral
+ */
+function describeWorkflowPermissionRefusal(raw) {
+    const text = String(raw == null ? '' : raw);
+    const matched = text.match(/\.github\/workflows\/[A-Za-z0-9._/-]+/g) || [];
+    // Strip punctuation git/GitHub wraps the path in (a quote, a closing
+    // paren's neighbouring period, ...) and de-duplicate while preserving the
+    // order the refusal listed them in.
+    const paths = [...new Set(matched.map((p) => p.replace(/[.,'"]+$/, '')))];
+    const which = paths.length > 0
+        ? `workflow file(s) ${paths.join(', ')}`
+        : 'one or more files under .github/workflows/';
+    return (
+        `GitHub refused this push because the credential the member is pushing with was never granted the 'workflows' permission, ` +
+        `so it may not create or update ${which}. This is a permission-scope refusal, not a stale credential and not a divergence: ` +
+        `re-minting the same credential yields the same permission set and the same refusal, so no self-heal, no retry and no pull --rebase is attempted. ` +
+        'OPERATOR REMEDY (required before this push can ever succeed): grant the fleet GitHub App the "Workflows" repository permission ' +
+        '(Read and write) in its App settings, accept the updated permission request on the repository installation, then re-register/re-provision ' +
+        'the member with a git_access level that requests that permission. Until an operator does that, re-running the sprint will not help.'
+    );
+}
+
+/** The permission-scope axis for GitHub (see ./index.mjs's descriptor
+ *  contract). Declared as the SAME array that rules[AUTH_DENIED] carries, so
+ *  the two can never drift apart. */
+const permissionScope = Object.freeze({
+    rules: Object.freeze(WORKFLOW_PERMISSION_REFUSAL),
+    describe: describeWorkflowPermissionRefusal,
+});
 
 /** Best-effort GitHub provider code, purely DIAGNOSTIC: never branch on it --
  *  branch on `kind`. Returns the HTTP status git/curl surfaced (e.g. '403'
@@ -255,7 +350,14 @@ export const GitHubVCS = Object.freeze({
     extends: 'generic-git',
     rules: Object.freeze({
         [K.AUTH_EXPIRED]: AUTH_EXPIRED,
+        // apra-fleet: the workflow-file permission refusal. AUTH_DENIED
+        // because the identity was understood and the PRINCIPAL lacks the
+        // permission -- see WORKFLOW_PERMISSION_REFUSAL above. The same array
+        // is declared under `permissionScope` below, which is what makes it
+        // outrank git's generic DIVERGED tail and skip the auth self-heal.
+        [K.AUTH_DENIED]: WORKFLOW_PERMISSION_REFUSAL,
     }),
+    permissionScope,
     extractProviderCode,
     matchesHost,
     matchesHostForAuth,

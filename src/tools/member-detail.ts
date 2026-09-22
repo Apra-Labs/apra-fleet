@@ -49,6 +49,19 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     // knowledge collapses into the shared 'default' KB.
     repo_remote_url: knownRepoRemoteUrl(agent),
     vcsProvider: agent.vcsProvider ?? undefined,
+    // The git access level this member's VCS credentials are minted at
+    // (register_member/update_member's git_access, stored as Agent.gitAccess).
+    // Surfaced for the same reason as repo_remote_url above: the fleet-sprint
+    // engine has no registry of its own, so member_detail is its ONLY source
+    // for member facts. Its Sync-step workflows-permission preflight needs the
+    // level ACTUALLY registered for this member -- a member registered 'read'
+    // or 'issues' gets a token with no 'workflows' permission (see
+    // mapAccessLevel in src/services/github-app.ts) and every push touching
+    // .github/workflows/** will be rejected by GitHub. Without this field the
+    // engine can only assume its own default level and the warning is
+    // unreachable. Absent when the member was registered without an explicit
+    // git_access (the engine then falls back to its provisioning default).
+    gitAccess: agent.gitAccess ?? undefined,
   };
 
   // -- Cloud Info (parallel with connectivity check) --

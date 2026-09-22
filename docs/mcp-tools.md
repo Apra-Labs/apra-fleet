@@ -502,3 +502,4 @@ Assembles a multi-section report covering:
 - **System Resources:** CPU load, memory usage, and working folder disk space.
 - **Git:** Current branch in the member's working folder.
 - **Token Usage:** Accumulated lifetime token totals.
+- **Registry facts** (`"json"` format): the member's recorded VCS provider (`vcsProvider`), repo origin URL (`repo_remote_url`), and git access level (`gitAccess`, from `register_member`/`update_member`'s `git_access`). `member_detail` is the only MCP surface exposing these, and fleet-sprint -- which keeps no registry of its own -- reads them from here to scope credentials and to warn before a push its credential level cannot carry (e.g. a `.github/workflows/**` change on a level without GitHub's `workflows` permission).

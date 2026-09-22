@@ -319,7 +319,7 @@ session (`session.id`, the current session ID or `null`), work folder
 Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
 `id`, `type`, `host`, `username?`, `os`, `shell?`, `folder`,
-`repo_remote_url?`, `vcsProvider?`, `connectivity`, `offline?`,
+`repo_remote_url?`, `vcsProvider?`, `gitAccess?`, `connectivity`, `offline?`,
 `llmProvider`, `llm_cli?`, `tokenUsage?`, `session?`, `resources?`,
 `branch?`, `cloud?`. `MemberDetailResult`, like `RegisterMemberOptions` and
 `UpdateMemberOptions`, is pinned against the server by
@@ -513,7 +513,10 @@ stdout/stderr. The plaintext appears in no field of the result.
 #### `composePermissions(options: ComposePermissionsOptions)`
 
 Calls `compose_permissions` -- composes and delivers a scoped permission
-profile to a member. Options: `member_id?`, `member_name?`, `role?`
+profile to a member. On the server host, complete profile directories (with
+both `base-dev.json` and `base-reviewer.json`) are checked by most recent
+installation date, then by the remaining supported providers in deterministic
+order. Options: `member_id?`, `member_name?`, `role?`
 (`"doer" | "reviewer"`), `tags?`, `project_folder?`, `grant?`,
 `grant_reason?`. Provide at least one of `role` or `tags`; `tags` containing
 `"doer"`/`"reviewer"` sets the primary mode and wins over `role`. Each

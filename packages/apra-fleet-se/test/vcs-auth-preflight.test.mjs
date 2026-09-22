@@ -9,6 +9,21 @@ import {
     createVcsAuthSelfHealCallback,
     syncMemberAfter,
 } from '../fleet-sprint/runner.js';
+// createWorkflowsPermissionPreflightCallback (apra-fleet-2wdc.6) is NOT
+// re-exported from runner.js -- it is imported there only to be wired into
+// withGitSync's warnWorkflowsPermissionMissing precedence, never re-exported
+// for external importers (see runner.js's own comment just above that call
+// site). Tests import it directly off its real home, vcs-auth.mjs.
+import { createWorkflowsPermissionPreflightCallback } from '../fleet-sprint/vcs-auth.mjs';
+// apra-fleet-rp7a.5 (case 5, PAT mode): registerVcsProvider/GitHubVCS let a
+// test temporarily replace the 'github' descriptor's hardcoded
+// defaultAuthMode: 'github-app' with a non-github-app value -- the ONLY way
+// to make resolveProvider() ever answer {provider: 'github', authMode: !==
+// 'github-app'}, since nothing member_detail reports varies that field
+// (vcs-providers/github.mjs). Restored via GitHubVCS itself in a `finally`,
+// same pattern as vcs-synthetic-provider-e2e.test.mjs's throwaway providers.
+import { registerVcsProvider } from '../fleet-sprint/vcs-module.mjs';
+import { GitHubVCS } from '../fleet-sprint/vcs-providers/github.mjs';
 import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -669,5 +684,293 @@ describe('withGitSync needsVcsAuth default: pinned to the source, OR semantics u
 
     test('an explicit needsVcsAuth:false override suppresses the preflight even when the default alone would have computed true (pushBeads:true)', () => {
         assert.equal(computeNeedsVcsAuth(false, { pushBeads: true, needsVcsAuth: false }), false);
+    });
+});
+
+// =============================================================================
+// apra-fleet-2wdc.7: coverage for createWorkflowsPermissionPreflightCallback
+// (vcs-auth.mjs, apra-fleet-2wdc.6) -- the Sync-step "will this push be
+// rejected for missing the 'workflows' permission?" warning. Four cases, per
+// the bead:
+//
+//   1. warn: a branch diff touching .github/workflows + a gitAccess level
+//      that does NOT carry 'workflows' -> logs a referral naming the member,
+//      branch and workflow path(s); never throws (advisory only).
+//   2. no-warn: the SAME diff with a gitAccess level that DOES carry
+//      'workflows' -> no warning, and -- per the function's own
+//      cheap-exit contract -- no git command is even attempted. (The
+//      member_detail reads that establish the member's provider and effective
+//      level are NOT skippable: apra-fleet-rp7a.4 moved the level's source
+//      from the caller-supplied constant to the member registry, so the
+//      lookup is what the access-level decision is made FROM. They do not
+//      repeat per dispatch -- a "nothing to warn about" verdict is cached per
+//      member. The paired [test] bead covers the registered-vs-default level
+//      behaviour itself.)
+//   3. no-op: zero commits ahead of base skips the diff command entirely
+//      (asserted on the recorded command list); a nonzero-ahead diff with NO
+//      workflow paths runs the diff but still logs no warning.
+//   4. degrade-on-error: the underlying lookup (provider resolution or a git
+//      command) throwing is swallowed -- logged as a degraded-check line,
+//      never rethrown.
+//
+// `gitAccess` is now the FALLBACK level, used when the member record carries
+// none (MEMBER_DETAIL_GITHUB below deliberately carries none), and defaults to
+// DEFAULT_SYNC_GIT_ACCESS ('push'), which apra-fleet-2wdc.1 already grants
+// 'workflows' -- every case below that wants to reach the warning path passes
+// an explicit non-carrying level ('read') so it does not trip the
+// grants-workflows short-circuit before ever reaching the git commands under
+// test.
+// =============================================================================
+describe('createWorkflowsPermissionPreflightCallback', () => {
+    const memberDetailGithub = async (name) => (name === 'member_detail' ? MEMBER_DETAIL_GITHUB : null);
+
+    test('(case 1: warn) a branch diff touching .github/workflows with a gitAccess level lacking "workflows" logs a referral naming the member, branch and workflow path(s), and never throws', async () => {
+        const { command, calls } = makeCommandMock({
+            'git rev-list --count': [{ ok: true, output: '3', error: null }],
+            'git diff --name-only': [{ ok: true, output: '.github/workflows/ci.yml\n.github/workflows/release.yml', error: null }],
+        });
+        const logs = [];
+        const warn = createWorkflowsPermissionPreflightCallback({
+            callTool: memberDetailGithub, command, log: (m) => logs.push(m), gitAccess: 'read',
+        });
+
+        await assert.doesNotReject(() => warn('fleet-mac', 'feat/touches-workflows', 'main'));
+
+        assert.ok(
+            logs.some((l) => l.includes('OPERATOR REFERRAL')
+                && l.includes("branch 'feat/touches-workflows'")
+                && l.includes("member 'fleet-mac'")
+                && l.includes('.github/workflows/ci.yml')
+                && l.includes('.github/workflows/release.yml')),
+            `expected an operator-referral log naming the member, branch and workflow path(s), got: ${JSON.stringify(logs)}`,
+        );
+        assert.ok(calls.some((c) => c.cmd.includes('git rev-list --count')), 'expected the local ahead-count check to run');
+        assert.ok(calls.some((c) => c.cmd.includes('git diff --name-only')), 'expected the local workflow-path diff to run');
+    });
+
+    test('(case 2: no-warn) the SAME diff with a gitAccess level that already carries "workflows" (the default) logs no warning and skips every git command entirely, after a single member_detail read', async () => {
+        const { command, calls } = makeCommandMock({
+            'git rev-list --count': [{ ok: true, output: '3', error: null }],
+            'git diff --name-only': [{ ok: true, output: '.github/workflows/ci.yml', error: null }],
+        });
+        const providerCalls = [];
+        const callTool = async (name, args) => {
+            providerCalls.push(name);
+            return memberDetailGithub(name, args);
+        };
+        const logs = [];
+        // gitAccess omitted and the member record carries no level of its own
+        // -> falls back to DEFAULT_SYNC_GIT_ACCESS ('push'), which
+        // apra-fleet-2wdc.1 grants 'workflows' -- so the access-level check
+        // short-circuits before any git command. The member_detail read that
+        // ESTABLISHES that level still happens (apra-fleet-rp7a.4): it is the
+        // input to the decision, not something the decision can skip.
+        const warn = createWorkflowsPermissionPreflightCallback({ callTool, command, log: (m) => logs.push(m) });
+
+        await warn('fleet-mac', 'feat/touches-workflows', 'main');
+        // Second dispatch for the same member: the "nothing to warn about"
+        // verdict is cached, so no further member_detail read at all.
+        await warn('fleet-mac', 'feat/touches-workflows', 'main');
+
+        assert.equal(logs.length, 0, `expected no warning log at all, got: ${JSON.stringify(logs)}`);
+        assert.deepStrictEqual(providerCalls, ['member_detail', 'member_detail'], `expected the member_detail reads (provider, then registered level) to happen once for the FIRST dispatch only -- the silent verdict is cached for the second, got: ${JSON.stringify(providerCalls)}`);
+        assert.equal(calls.length, 0, `expected NO git command at all (no rev-list, no diff), got: ${JSON.stringify(calls.map((c) => c.cmd))}`);
+    });
+
+    // apra-fleet-rp7a.5 -- paired [test] bead for apra-fleet-rp7a.4's fix.
+    // Cases 1b/2b below are the ones that actually exercise WHICH level gets
+    // judged (the member's REGISTERED gitAccess off member_detail, not the
+    // caller-supplied fallback) -- the whole point of that fix. Case 1 above
+    // already reaches the warn path, but only via the fallback (member_detail
+    // in that case carries no gitAccess at all), so it would still pass
+    // against a callback that never read the registry -- 1b is the one that
+    // would NOT.
+    test('(case 1b: registered-level warn) the referral fires off the member\'s REGISTERED gitAccess, not the caller-supplied fallback -- fails against the pre-fix callback, which only ever consulted the fallback default and never read member_detail\'s gitAccess field at all', async () => {
+        const { command, calls } = makeCommandMock({
+            'git rev-list --count': [{ ok: true, output: '1', error: null }],
+            'git diff --name-only': [{ ok: true, output: '.github/workflows/deploy.yml', error: null }],
+        });
+        const memberDetailRegisteredIssues = async (name) => (name === 'member_detail'
+            ? { content: [{ text: JSON.stringify({ vcsProvider: 'github', gitAccess: 'issues' }) }] }
+            : null);
+        const logs = [];
+        // NO gitAccess opt supplied here: the caller-supplied fallback
+        // defaults to DEFAULT_SYNC_GIT_ACCESS ('push'), which DOES carry
+        // 'workflows'. The pre-fix callback tested only that fallback
+        // (`accessLevelGrantsWorkflowsPermission(gitAccess)` with `gitAccess`
+        // defaulting to 'push') and would short-circuit silently before any
+        // lookup at all. Post-fix, the member's REGISTERED level ('issues',
+        // which does NOT carry 'workflows') is what actually gets checked.
+        const warn = createWorkflowsPermissionPreflightCallback({
+            callTool: memberDetailRegisteredIssues, command, log: (m) => logs.push(m),
+        });
+
+        await assert.doesNotReject(() => warn('fleet-mac', 'feat/touches-workflows', 'main'));
+
+        assert.ok(
+            logs.some((l) => l.includes('OPERATOR REFERRAL')
+                && l.includes("branch 'feat/touches-workflows'")
+                && l.includes("member 'fleet-mac'")
+                && l.includes('.github/workflows/deploy.yml')
+                && l.includes("git_access 'issues', registered")
+                && l.includes("'workflows' permission")),
+            `expected an operator-referral log driven by the member's REGISTERED 'issues' level, got: ${JSON.stringify(logs)}`,
+        );
+        assert.ok(calls.some((c) => c.cmd.includes('git rev-list --count')), 'expected the local ahead-count check to run');
+        assert.ok(calls.some((c) => c.cmd.includes('git diff --name-only')), 'expected the local workflow-path diff to run');
+    });
+
+    test('(case 2b: registered-level silent) a member registered at a level that DOES carry "workflows" stays silent even when the caller-supplied fallback level does not -- proves the registered level wins over the fallback in the OTHER direction too', async () => {
+        const { command, calls } = makeCommandMock({
+            'git rev-list --count': [{ ok: true, output: '3', error: null }],
+            'git diff --name-only': [{ ok: true, output: '.github/workflows/ci.yml', error: null }],
+        });
+        const memberDetailRegisteredAdmin = async (name) => (name === 'member_detail'
+            ? { content: [{ text: JSON.stringify({ vcsProvider: 'github', gitAccess: 'admin' }) }] }
+            : null);
+        const logs = [];
+        // gitAccess: 'read' fallback would warn if IT were what got checked --
+        // silence here can only come from the registered 'admin' level.
+        const warn = createWorkflowsPermissionPreflightCallback({
+            callTool: memberDetailRegisteredAdmin, command, log: (m) => logs.push(m), gitAccess: 'read',
+        });
+
+        await warn('fleet-mac', 'feat/touches-workflows', 'main');
+
+        assert.equal(logs.length, 0, `expected no warning log, got: ${JSON.stringify(logs)}`);
+        assert.equal(calls.length, 0, `expected no git command at all, got: ${JSON.stringify(calls.map((c) => c.cmd))}`);
+    });
+
+    test('(case 3a: no-op, zero-ahead) a branch with zero commits ahead of base skips the diff command entirely', async () => {
+        const { command, calls } = makeCommandMock({
+            'git rev-list --count': [{ ok: true, output: '0', error: null }],
+        });
+        const logs = [];
+        const warn = createWorkflowsPermissionPreflightCallback({
+            callTool: memberDetailGithub, command, log: (m) => logs.push(m), gitAccess: 'read',
+        });
+
+        await warn('fleet-mac', 'feat/no-commits-yet', 'main');
+
+        assert.equal(logs.length, 0, `expected no warning log, got: ${JSON.stringify(logs)}`);
+        assert.ok(calls.some((c) => c.cmd.includes('git rev-list --count')), 'expected the ahead-count check to run');
+        assert.ok(!calls.some((c) => c.cmd.includes('git diff --name-only')), `expected NO diff command when the branch has zero commits ahead of base, got: ${JSON.stringify(calls.map((c) => c.cmd))}`);
+    });
+
+    test('(case 3b: no-op, no workflow paths touched) a nonzero-ahead diff that touches no .github/workflows path runs the diff but logs no warning', async () => {
+        const { command, calls } = makeCommandMock({
+            'git rev-list --count': [{ ok: true, output: '2', error: null }],
+            'git diff --name-only': [{ ok: true, output: '', error: null }],
+        });
+        const logs = [];
+        const warn = createWorkflowsPermissionPreflightCallback({
+            callTool: memberDetailGithub, command, log: (m) => logs.push(m), gitAccess: 'read',
+        });
+
+        await warn('fleet-mac', 'feat/no-workflow-touch', 'main');
+
+        assert.equal(logs.length, 0, `expected no warning log when no workflow path is touched, got: ${JSON.stringify(logs)}`);
+        assert.ok(calls.some((c) => c.cmd.includes('git diff --name-only')), 'expected the diff command to have actually run (branch was ahead)');
+    });
+
+    test('(case 3c: no-op, same branch/missing branch info) an absent baseBranch, absent branch, or branch === baseBranch is a pure no-op with no command issued at all', async () => {
+        for (const [branch, baseBranch] of [[null, 'main'], ['feat/x', null], ['main', 'main']]) {
+            const { command, calls } = makeCommandMock({});
+            const logs = [];
+            const warn = createWorkflowsPermissionPreflightCallback({
+                callTool: memberDetailGithub, command, log: (m) => logs.push(m), gitAccess: 'read',
+            });
+            await warn('fleet-mac', branch, baseBranch);
+            assert.equal(logs.length, 0, `expected no warning for branch=${JSON.stringify(branch)} baseBranch=${JSON.stringify(baseBranch)}`);
+            assert.equal(calls.length, 0, `expected no command issued for branch=${JSON.stringify(branch)} baseBranch=${JSON.stringify(baseBranch)}`);
+        }
+    });
+
+    test('(case 3d: no-op, non-GitHub provider) a member registered to a non-GitHub provider is silently skipped before any level is read, and no git command is issued', async () => {
+        const { command, calls } = makeCommandMock({});
+        const memberDetailBitbucket = async (name) => (name === 'member_detail'
+            ? { content: [{ text: JSON.stringify({ vcsProvider: 'bitbucket' }) }] }
+            : null);
+        const logs = [];
+        const warn = createWorkflowsPermissionPreflightCallback({
+            callTool: memberDetailBitbucket, command, log: (m) => logs.push(m), gitAccess: 'read',
+        });
+
+        await warn('fleet-mac', 'feat/touches-workflows', 'main');
+
+        assert.equal(logs.length, 0, `expected no warning for a non-GitHub provider, got: ${JSON.stringify(logs)}`);
+        assert.equal(calls.length, 0, `expected no git command for a non-GitHub provider, got: ${JSON.stringify(calls.map((c) => c.cmd))}`);
+    });
+
+    test('(case 4: degrade-on-error) the underlying provider-resolution lookup throwing is swallowed -- logs a degraded-check line and never rethrows', async () => {
+        const { command } = makeCommandMock({});
+        const callTool = async () => { throw new Error('member_detail: fleet server unreachable (injected)'); };
+        const logs = [];
+        const warn = createWorkflowsPermissionPreflightCallback({
+            callTool, command, log: (m) => logs.push(m), gitAccess: 'read',
+        });
+
+        await assert.doesNotReject(() => warn('fleet-mac', 'feat/touches-workflows', 'main'));
+
+        assert.ok(
+            logs.some((l) => l.includes("preflight: workflows-permission check failed for member 'fleet-mac'")
+                && l.includes("branch 'feat/touches-workflows'")
+                && l.includes('continuing -- advisory only, never blocks dispatch')
+                && l.includes('fleet server unreachable (injected)')),
+            `expected a swallowed degraded-check log entry, got: ${JSON.stringify(logs)}`,
+        );
+    });
+
+    test('(case 4: degrade-on-error) the underlying git rev-list/diff command throwing is swallowed -- logs a degraded-check line and never rethrows', async () => {
+        const command = async (cmd) => {
+            if (cmd.includes('git rev-list --count')) throw new Error('command: ENOENT (injected)');
+            return { ok: true, output: '', error: null };
+        };
+        const logs = [];
+        const warn = createWorkflowsPermissionPreflightCallback({
+            callTool: memberDetailGithub, command, log: (m) => logs.push(m), gitAccess: 'read',
+        });
+
+        await assert.doesNotReject(() => warn('fleet-mac', 'feat/touches-workflows', 'main'));
+
+        assert.ok(
+            logs.some((l) => l.includes("preflight: workflows-permission check failed for member 'fleet-mac'")
+                && l.includes('command: ENOENT (injected)')),
+            `expected a swallowed degraded-check log entry for the git-command failure, got: ${JSON.stringify(logs)}`,
+        );
+    });
+
+    // apra-fleet-rp7a.4 deliberately left PAT mode out of scope: a PAT's
+    // granted scopes are not derivable from the member registry (see the
+    // callback's own long comment at its `authMode !== 'github-app'` branch
+    // in vcs-auth.mjs), so a github member in a non-github-app auth mode is
+    // silently skipped rather than warned off a fabricated verdict. Pinning
+    // that decision here per apra-fleet-rp7a.5 item 5. Reaching this branch
+    // for a REAL 'github'-provider member requires forcing resolveProvider()
+    // to answer a non-'github-app' authMode for it -- GitHubVCS's own
+    // defaultAuthMode is a hardcoded literal ('github-app') that member_detail
+    // can never influence (vcs-providers/github.mjs), so the test temporarily
+    // replaces the registered 'github' provider descriptor with one identical
+    // except for that field, and restores the real one in `finally` no matter
+    // the outcome so no other test in this process ever observes the swap.
+    test('(case 5: PAT mode, deliberately out of scope) a github member NOT in github-app auth mode is silently skipped -- no warning, no git command', async () => {
+        registerVcsProvider({ ...GitHubVCS, defaultAuthMode: 'pat' });
+        try {
+            const { command, calls } = makeCommandMock({});
+            const memberDetailGithubPat = async (name) => (name === 'member_detail'
+                ? { content: [{ text: JSON.stringify({ vcsProvider: 'github', gitAccess: 'read' }) }] }
+                : null);
+            const logs = [];
+            const warn = createWorkflowsPermissionPreflightCallback({
+                callTool: memberDetailGithubPat, command, log: (m) => logs.push(m),
+            });
+
+            await assert.doesNotReject(() => warn('fleet-mac', 'feat/touches-workflows', 'main'));
+
+            assert.equal(logs.length, 0, `expected no warning for a github member in a non-github-app auth mode (PAT), got: ${JSON.stringify(logs)}`);
+            assert.equal(calls.length, 0, `expected no git command for PAT mode, got: ${JSON.stringify(calls.map((c) => c.cmd))}`);
+        } finally {
+            registerVcsProvider(GitHubVCS);
+        }
     });
 });

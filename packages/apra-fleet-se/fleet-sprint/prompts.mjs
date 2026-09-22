@@ -421,10 +421,11 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
  *   integFailures: Array<{cycle: number, notes: string, bugsFiled: string[]}>,
  *   rejectedNewTasks: Array<{cycle: number, reason: string, raw: object}>,
  *   unclosedVerifyIds?: string[],
+ *   deferredAtGoalIds?: string[],
  * }} opts
  * @returns {string}
  */
-export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], kbCandidates, kbKnowledge }) {
+export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], deferredAtGoalIds = [], kbCandidates, kbKnowledge }) {
     const lines = [
         `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}). Goal priority: ${goal}. The sprint ran ${cyclesRun} cycle(s).`,
@@ -464,6 +465,21 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
             `attempt them): ${unclosedVerifyIds.join(', ')}. These do NOT count toward openAtGoalCount above ` +
             `(decomposed-parent beads are excluded from that count), so do not treat 0 open-at-goal as ` +
             `evidence these are done -- treat each one as an open, unverified target when deciding PASS/FAIL.`
+        );
+    }
+    if (deferredAtGoalIds.length > 0) {
+        // apra-fleet-rp7a.1: deferred beads at/above goal priority are excluded
+        // from `openAtGoalCount` above, because the Develop loop dispatches from
+        // `bd --ready`, which never offers a deferred bead -- so no cycle could
+        // have advanced them and counting them as open made completion
+        // unreachable. They are still a DECISION a human made about this
+        // sprint's scope, so state them rather than letting them vanish behind
+        // a count of zero.
+        lines.push(
+            `${deferredAtGoalIds.length} bead(s) at/above goal priority ${goal} are DEFERRED and were treated as out of ` +
+            `scope for this sprint: ${deferredAtGoalIds.join(', ')}. These do NOT count toward openAtGoalCount above ` +
+            `(a deferred bead is never dispatchable, so the sprint could not have worked it). Judge PASS/FAIL on what was ` +
+            `actually in scope, but say so in your notes if deferring any of these means the sprint's stated goal was not really met.`
         );
     }
     lines.push(

@@ -161,6 +161,40 @@ test('parseRepoRef: the legacy visualstudio.com host takes org from the HOSTNAME
     });
 });
 
+// GitHub issue #502: the reporter's exact remote shapes. Pinned as a matrix
+// so a regression on any one legacy form (collection segment, userinfo, a
+// percent-encoded project name, mixed-case org label, the legacy ssh host)
+// names the form that broke.
+test('parseRepoRef: the legacy host matrix (issue #502) -- collection segment, userinfo, spaces, case, legacy ssh', () => {
+    for (const url of [
+        'https://apralabs.visualstudio.com/DefaultCollection/e2e-fleet-testing/_git/fleet-e2e-toy',
+        'https://apralabs@apralabs.visualstudio.com/DefaultCollection/e2e-fleet-testing/_git/fleet-e2e-toy',
+        'https://ApraLabs.visualstudio.com/DefaultCollection/e2e-fleet-testing/_git/fleet-e2e-toy/',
+        'apralabs@vs-ssh.visualstudio.com:v3/apralabs/e2e-fleet-testing/fleet-e2e-toy',
+        'ssh://apralabs@vs-ssh.visualstudio.com:22/v3/apralabs/e2e-fleet-testing/fleet-e2e-toy',
+    ]) {
+        assert.deepEqual(AzureDevOpsVCS.parseRepoRef(url), CANONICAL, `unexpected parse for ${url}`);
+    }
+    assert.deepEqual(AzureDevOpsVCS.parseRepoRef('https://apralabs.visualstudio.com/DefaultCollection/My%20Project/_git/fleet-e2e-toy'), {
+        org: 'apralabs',
+        project: 'My Project',
+        repo: 'fleet-e2e-toy',
+        canonical: 'apralabs/My Project/fleet-e2e-toy',
+    });
+    // Negative: a second path segment before _git on the legacy host that is
+    // NOT the collection is not a project path -- there is no such shape.
+    assert.equal(AzureDevOpsVCS.parseRepoRef('https://apralabs.visualstudio.com/Other/e2e-fleet-testing/_git/fleet-e2e-toy'), null);
+    // Negative: the bare service host carries no org label.
+    assert.equal(AzureDevOpsVCS.parseRepoRef('https://visualstudio.com/e2e-fleet-testing/_git/fleet-e2e-toy'), null);
+    // Negative: the legacy ssh host still needs all four v3 segments.
+    assert.equal(AzureDevOpsVCS.parseRepoRef('apralabs@vs-ssh.visualstudio.com:v3/apralabs/fleet-e2e-toy'), null);
+});
+
+test('repoRefHint names BOTH the modern and the legacy https host (issue #502)', () => {
+    assert.match(AzureDevOpsVCS.repoRefHint, /https:\/\/dev\.azure\.com\/ORG\/PROJECT\/_git\/REPO/);
+    assert.match(AzureDevOpsVCS.repoRefHint, /https:\/\/ORG\.visualstudio\.com\/\[DefaultCollection\/\]PROJECT\/_git\/REPO/);
+});
+
 test('parseRepoRef: unparseable or non-Azure input returns null and never throws', () => {
     for (const url of [
         null,

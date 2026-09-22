@@ -79,6 +79,11 @@ export function buildAnalysisText({
     closedCountHistory, highWaterClosedCount,
     deployFailures, integFailures, rejectedNewTasks,
     finalVerdictResult, finalClosedCount, finalOpenAtGoalCount,
+    // apra-fleet-rp7a.1: the ids excluded from finalOpenAtGoalCount because
+    // they are DEFERRED. Reported as their own line rather than folded into
+    // the count, so "Final open-at-goal-priority count: 0" can never be read
+    // as "nothing was skipped".
+    finalDeferredAtGoalIds = [],
     regressionResult = null,
 }) {
     // The once-per-sprint Regression Test phase runs after the final verdict
@@ -109,6 +114,10 @@ export function buildAnalysisText({
         `High-water-mark closed count this sprint: ${highWaterClosedCount}.`,
         `Final closed count: ${finalClosedCount}.`,
         `Final open-at-goal-priority count: ${finalOpenAtGoalCount}.`,
+        finalDeferredAtGoalIds.length > 0
+            ? `Deferred bead(s) at/above goal priority, excluded from that count and treated as out of scope `
+              + `(a deferred bead is never dispatchable, so no cycle could advance it): ${finalDeferredAtGoalIds.join(', ')}.`
+            : 'No beads were deferred out of scope at/above goal priority this sprint.',
         '',
         '## Deploy/Integration outcomes',
         '',

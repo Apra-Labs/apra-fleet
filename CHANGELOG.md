@@ -192,6 +192,86 @@ Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.4806 across 4 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
 Pricing source: all 47 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 
+## [Unreleased] -- fleet-sprint: a finished sprint with deferred beads no longer aborts as stalled, and a permission-scope git rejection stops spinning the sprint
+
+Sprint goal: three independent reliability fixes to the fleet-sprint
+orchestrator, all triggered by real observed sprints that either aborted or
+spun despite the underlying work already being complete.
+
+What shipped:
+
+- **A sprint whose only remaining beads are deliberately deferred now exits
+  PASS instead of aborting stalled.** The cycle-evaluation/stall-detection
+  logic now shares the exact same deferred-bead partitioning the dispatcher's
+  ready-work query already used, so the two views of "is there still work to
+  do" cannot drift apart. Deferred beads are named explicitly on every
+  terminal surface (exit line, typed error, final-verdict prompt, sprint
+  analysis artifact) instead of silently inflating an "open" count. A second,
+  independent short-circuit exits the cycle loop as soon as every configured
+  sprint root/target bead is already closed -- covering the case where the
+  root closes as a side effect of something other than the review verdict --
+  while still guaranteeing a genuinely fresh re-review gets its chance first.
+- **Pushing a change under a repo's workflow-automation path no longer
+  permanently fails a sprint.** The GitHub credential-minting path now
+  requests the fine-grained permission that gates pushes to
+  workflow-automation files on every access level that can push, and a
+  mint-time rejection because the broader installation was never granted
+  that permission now surfaces as a named, actionable operator referral
+  instead of the raw API error or a silent downgrade. A push rejected for
+  lacking that permission is now classified as a distinct, non-retryable
+  permission-scope failure -- ahead of the generic failure-pattern
+  precedence, so it can no longer be misread as a routine divergence -- and
+  the orchestrator no longer wastes a self-heal-and-retry cycle attempting to
+  re-mint the identical doomed credential. A completed dispatch whose work is
+  committed locally but whose publish push hits this exact wall is now
+  reported as "work done, publish blocked" and excluded from re-dispatch for
+  the rest of the sprint, rather than being marked failed and re-dispatched
+  every remaining cycle against a gap no retry can close. A pre-dispatch
+  preflight warns before dispatch when a branch touches a workflow-automation
+  path and the credential in effect won't carry the push, so the operator
+  referral surfaces before the wasted work, not just after.
+- **A brand-new sprint branch no longer fails its first sync on a doomed
+  pull-rebase.** The post-dispatch sync step previously assumed the remote
+  already had the sprint branch and ran a pull-rebase that always failed with
+  a "remote ref not found"-shaped error on a branch that had never been
+  pushed yet. That exact, unambiguous error is now recognized and shared
+  between the pre- and post-dispatch sync steps: it skips the conflict-
+  resolution ladder entirely and retries the push directly (which creates the
+  branch on the remote), while a genuine divergence -- caught by the same
+  retry being rejected because a concurrent writer already published the
+  branch -- still raises the typed divergence error exactly as before.
+
+Filed as follow-up (deliberately left open, not closed by this pass -- none
+block this sprint's own acceptance criteria):
+
+- The permission-scope "publish blocked" state is recorded internally but not
+  yet surfaced anywhere a human/dashboard/report actually reads it beyond the
+  log line, so a sprint that is entirely publish-blocked still ends as a
+  generic stalled verdict with the referral visible only in the log.
+- The dispatch-outcome path that classifies and carries over a
+  permission-scope-blocked streak has no direct test coverage of its own
+  (only the underlying predicate it calls is tested), so this remains an open
+  gap rather than a verified behavior.
+- The real GitHub.com verification of a live workflow-permission push (as
+  opposed to the local-bare-repo equivalent this pass verified against) is
+  still an outstanding manual/operator step.
+- Personal-access-token-mode members are deliberately excluded from the new
+  workflow-permission preflight (a PAT's granted scopes aren't derivable from
+  the registry today), so they still only learn about a missing scope from
+  the rejection itself, not a warning beforehand.
+- Regression carry-over (informational only -- does not gate this sprint's
+  verdict): the real-bd regression suite and smoke test could not run this
+  pass because the sandbox permissions required to drive them were not
+  granted; no carry-over bead beyond the existing permissions gap was filed.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $28.7423.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3375 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 32 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
 ## [Unreleased] -- apra-fleet-client catch-up and fleet-supervisor project-store skeleton
 
 Sprint goal: catch `@apralabs/apra-fleet-client` up with tool-registry

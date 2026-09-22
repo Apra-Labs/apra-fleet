@@ -192,6 +192,23 @@ export function createGitRepoFixture(opts = {}) {
         return git(['rev-parse', 'HEAD'], dir).stdout;
     }
 
+    /**
+     * A code mutation at an ARBITRARY relative path (creating parent
+     * directories as needed), rather than the flat "<label>.txt" commitIn()
+     * always writes. Exists for apra-fleet-2wdc.8: proving the sync bracket
+     * itself neither rejects nor mangles a path like
+     * ".github/workflows/ci.yml" needs the fixture to actually commit
+     * something nested -- flat-file commitIn() cannot exercise that.
+     */
+    function commitFileAt(dir, relPath, body, message) {
+        const abs = path.join(dir, relPath);
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, `${body == null ? relPath : body}\n`, 'utf-8');
+        gitOrThrow(['add', '--', relPath], dir);
+        gitOrThrow(['commit', '-m', message || relPath], dir);
+        return git(['rev-parse', 'HEAD'], dir).stdout;
+    }
+
     function revParse(dir, ref) {
         const res = git(['rev-parse', ref], dir);
         return res.ok ? res.stdout : null;
@@ -256,6 +273,14 @@ export function createGitRepoFixture(opts = {}) {
             return commitIn(clonePath, label, body);
         },
 
+        /** A code mutation in the MEMBER's clone at an arbitrary relative
+         *  path (e.g. "'.github/workflows/ci.yml'") -- committed, NOT
+         *  published. See commitFileAt() for why this differs from
+         *  memberCommit(). */
+        memberCommitFile(relPath, body, message) {
+            return commitFileAt(clonePath, relPath, body, message);
+        },
+
         /** A code mutation in the PEER's clone, published to the shared origin. */
         peerPublish(label, body) {
             const sha = commitIn(peerPath, label, body);
@@ -276,6 +301,13 @@ export function createGitRepoFixture(opts = {}) {
         originMergeSubjects() {
             const res = git(['rev-list', '--merges', '--format=%s', `refs/heads/${branch}`], originDir);
             return res.ok ? res.stdout.split('\n').filter((l) => l && !l.startsWith('commit ')) : [];
+        },
+        /** The content of `relPath` as it landed on origin's branch tip, read
+         *  straight from the bare repo (never through the injected
+         *  command()), or null if the path does not exist there. */
+        originFileAt(relPath) {
+            const res = git(['show', `refs/heads/${branch}:${relPath}`], originDir);
+            return res.ok ? res.stdout : null;
         },
 
         localTip() {

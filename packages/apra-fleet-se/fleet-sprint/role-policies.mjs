@@ -649,7 +649,14 @@ const planner = policy('planner', {
     }),
     // The planner is the ONLY role whose exhausted ladder is fatal: there is
     // no sprint without a plan, so it rethrows rather than synthesizing one.
-    degrade: degrade({ kind: 'fatal', abortsSprint: true }),
+    // A 'fatal' degrade ACCUMULATES every attempt's error and rethrows after
+    // the ladder is spent -- which used to include a run cancellation: once
+    // the run's AbortSignal fires, the client rejects every later tools/call
+    // synchronously ("aborted before a response was received"), so the five
+    // attempts and ~110s of backoff could never succeed. Name the run-level
+    // signals so they escape on the first attempt, as they do on every
+    // non-fatal row.
+    degrade: degrade({ kind: 'fatal', abortsSprint: true, rethrowsRunControlSignals: ['CancelledError', 'BudgetExceededError'] }),
     preDispatch: [],
     postResult: ['invalidate-beads-cache'],
 });
