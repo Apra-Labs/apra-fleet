@@ -34,6 +34,62 @@ const SANDBOX_LOCK_CLI = path.join(REPO_ROOT, 'scripts', 'sandbox-lock.mjs');
 const KILL_PORT_CLI = path.join(REPO_ROOT, 'scripts', 'kill-port.mjs');
 const REAP_SANDBOX_DOLT_CLI = path.join(REPO_ROOT, 'scripts', 'reap-sandbox-dolt.mjs');
 const PLAYBOOK_PATH = path.join(REPO_ROOT, 'regression-test-playbook.md');
+const DEPLOY_PATH = path.join(REPO_ROOT, 'deploy.md');
+const INTEG_PLAYBOOK_PATH = path.join(REPO_ROOT, 'integ-test-playbook.md');
+
+// apra-fleet-ky2l.20: shared scanner for supervisor-port curl invocations that
+// are missing an Authorization: Bearer header. Used by the it.each scan below
+// over all three playbook/runbook docs (deploy.md, integ-test-playbook.md,
+// regression-test-playbook.md) -- apra-fleet-ky2l.2's acceptance criterion
+// names all three, not just regression-test-playbook.md.
+//
+// Only fenced ```bash blocks are scanned, mirroring the original
+// regression-test-playbook.md-only scan this generalizes. Permissions-list
+// allow-pattern entries (e.g. `Bash(curl * localhost:8787/api/sprints*)`) are
+// exempt even when they appear inside a fenced block, since they are
+// allow-patterns, not invocations.
+function findSupervisorCurlsWithoutBearer(text: string): { withBearerCount: number; withoutBearer: string[] } {
+  const bashBlockRegex = /```bash\n([\s\S]*?)\n```/g;
+  let withBearerCount = 0;
+  const withoutBearer: string[] = [];
+  let match;
+
+  while ((match = bashBlockRegex.exec(text)) !== null) {
+    const code = match[1];
+    const lines = code.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // Skip comments and empty lines
+      if (line.trim().startsWith('#') || !line.trim()) continue;
+      // Skip lines that aren't curl commands
+      if (!line.includes('curl ')) continue;
+      // Skip lines that don't target supervisor/api
+      if (!/\$SUPERVISOR_PORT|:8787|\/api\//.test(line)) continue;
+      // Permissions-list allow-pattern entries are allow-patterns, not
+      // invocations -- exempt explicitly.
+      if (/Bash\(curl/.test(line)) continue;
+
+      // Build full curl command including continuation lines (identified by
+      // leading whitespace and - or \)
+      let fullCmd = line;
+      let j = i + 1;
+      while (j < lines.length && /^\s*(-|\\)/.test(lines[j])) {
+        fullCmd += ' ' + lines[j].trim();
+        j++;
+      }
+
+      // Check for Authorization header
+      if (/Authorization:\s*Bearer/.test(fullCmd)) {
+        withBearerCount++;
+      } else {
+        withoutBearer.push(fullCmd.substring(0, 120));
+      }
+    }
+  }
+
+  return { withBearerCount, withoutBearer };
+}
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -445,50 +501,52 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
   // the post-shutdown liveness check treats 401 as alive.
   // -----------------------------------------------------------------------
   describe('supervisor bearer auth: curls carry the bearer header, pre-mint runs first, 401 treated as alive', () => {
-    it('every curl targeting $SUPERVISOR_PORT, 8787 or /api/ in Setup/Reset/Teardown/Test scenario carries an Authorization: Bearer header', () => {
-      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
+    // apra-fleet-ky2l.2's acceptance criterion is "grep finds no unauthenticated
+    // curl against the supervisor port in the three playbooks" -- deploy.md and
+    // integ-test-playbook.md must be scanned too, not just this doc.
+    //
+    // Falsifiability: reverting apra-fleet-ky2l.22's deploy.md edit (stripping
+    // the ` -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")"`
+    // suffix back off the line-123 force-release curl and the line-166
+    // /api/sprints curl) makes the 'deploy.md' row below fail with an
+    // expect.fail listing both bare curls. Confirmed locally via
+    // `git stash push -- deploy.md` / restore; see this task's closing note
+    // for the observed failing message.
+    const AUTH_CURL_DOCS: Array<{ name: string; path: string }> = [
+      { name: 'deploy.md', path: DEPLOY_PATH },
+      { name: 'integ-test-playbook.md', path: INTEG_PLAYBOOK_PATH },
+      { name: 'regression-test-playbook.md (Setup/Reset/Teardown/Test scenario)', path: PLAYBOOK_PATH },
+    ];
 
-      // Extract all bash code blocks and check for supervisor/api curls with bearer tokens
-      const bashBlockRegex = /```bash\n([\s\S]*?)\n```/g;
-      let currlsWithBearer = 0;
-      let curlsWithoutBearer: string[] = [];
-      let match;
-
-      while ((match = bashBlockRegex.exec(text)) !== null) {
-        const code = match[1];
-        const lines = code.split('\n');
-
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          // Skip comments and empty lines
-          if (line.trim().startsWith('#') || !line.trim()) continue;
-          // Skip lines that aren't curl commands
-          if (!line.includes('curl ')) continue;
-          // Skip lines that don't target supervisor/api
-          if (!/\$SUPERVISOR_PORT|:8787|\/api\//.test(line)) continue;
-
-          // Build full curl command including continuation lines (identified by leading whitespace and - or \)
-          let fullCmd = line;
-          let j = i + 1;
-          while (j < lines.length && /^\s*(-|\\)/.test(lines[j])) {
-            fullCmd += ' ' + lines[j].trim();
-            j++;
-          }
-
-          // Check for Authorization header
-          if (/Authorization:\s*Bearer/.test(fullCmd)) {
-            currlsWithBearer++;
-          } else {
-            curlsWithoutBearer.push(fullCmd.substring(0, 120));
-          }
+    it.each(AUTH_CURL_DOCS)(
+      '$name: every curl targeting the supervisor port (SUPERVISOR_PORT/8787//api/) carries an Authorization: Bearer header (Permissions allow-pattern lines exempt)',
+      ({ name, path: docPath }) => {
+        const text = fs.readFileSync(docPath, 'utf-8');
+        const { withoutBearer } = findSupervisorCurlsWithoutBearer(text);
+        if (withoutBearer.length > 0) {
+          expect.fail(`${name}: found ${withoutBearer.length} supervisor/api curls without Bearer tokens:\n${withoutBearer.join('\n')}`);
         }
+        expect(withoutBearer).toHaveLength(0);
       }
+    );
 
-      // There should be some curls with bearer and none without
-      expect(currlsWithBearer).toBeGreaterThan(0);
-      if (curlsWithoutBearer.length > 0) {
-        expect.fail(`Found ${curlsWithoutBearer.length} supervisor/api curls without Bearer tokens:\n${curlsWithoutBearer.join('\n')}`);
-      }
+    // The "at least one bearer curl found" sanity check must hold across the
+    // three docs COMBINED, never per doc: integ-test-playbook.md has no
+    // supervisor curl invocation of its own (verified by the next case), so a
+    // per-doc version of this assertion would always fail for it.
+    it('at least one bearer-carrying supervisor curl is found across the three playbooks combined', () => {
+      const totalWithBearer = AUTH_CURL_DOCS.reduce((sum, doc) => {
+        const text = fs.readFileSync(doc.path, 'utf-8');
+        return sum + findSupervisorCurlsWithoutBearer(text).withBearerCount;
+      }, 0);
+      expect(totalWithBearer).toBeGreaterThan(0);
+    });
+
+    it('integ-test-playbook.md has no supervisor-port curl invocation at all (only its Permissions bullet, which is exempt)', () => {
+      const text = fs.readFileSync(INTEG_PLAYBOOK_PATH, 'utf-8');
+      const { withBearerCount, withoutBearer } = findSupervisorCurlsWithoutBearer(text);
+      expect(withBearerCount).toBe(0);
+      expect(withoutBearer).toHaveLength(0);
     });
 
     it('the pre-mint node -e import call appears BEFORE the serve.mjs boot line in both Setup and Reset', () => {
@@ -566,8 +624,8 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
   // are present in deploy.md, playbooks, and CLAUDE.md
   // -----------------------------------------------------------------------
   describe('console groundwork doc sections present and correct', () => {
-    const DEPLOY_PATH = path.join(path.dirname(PLAYBOOK_PATH), 'deploy.md');
-    const INTEG_PLAYBOOK_PATH = path.join(path.dirname(PLAYBOOK_PATH), 'integ-test-playbook.md');
+    // DEPLOY_PATH / INTEG_PLAYBOOK_PATH are the shared top-level constants
+    // (also used by the supervisor bearer auth scan above).
     const CLAUDE_PATH = path.join(path.dirname(PLAYBOOK_PATH), 'CLAUDE.md');
 
     it('deploy.md Deploy section contains npm run build:ui and Staging pointer', () => {
