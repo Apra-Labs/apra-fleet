@@ -487,6 +487,88 @@ describe.skipIf(isWindows)('run-all-tests.mjs does not launch the next suite aft
     expect(survivorsSuite1).toBe(0); // suite 1's tree was reaped by the SIGTERM cascade
     expect(survivorsSuite2).toBe(0); // suite 2 must NEVER have been launched
   }, 9_000);
+
+  /**
+   * apra-fleet-qe83.3.5.2: the case immediately above exercises ordering (a)
+   * -- suite 1 has no SIGTERM trap of its own, so the group SIGTERM broadcast
+   * in handleTerminatingSignal() reaps it almost immediately, well before the
+   * deferred hard-kill timer (SOFT_KILL_GRACE_MS) ever fires. That leaves
+   * ordering (b) -- the deferred timer firing FIRST because suite 1 ignores
+   * the SIGTERM broadcast -- entirely uncovered by this file: the timer's own
+   * setTimeout callback (scripts/run-all-tests.mjs, inside
+   * handleTerminatingSignal) calls process.exit(1) directly, so this ordering
+   * never reaches the trailing `process.exit(failed || terminating ? 1 : 0)`
+   * line that apra-fleet-qe83.3.5.1 fixed -- but nothing was proving that
+   * path exits non-zero, tree-kills suite 1, and still never launches suite 2
+   * either. Suite 1 here traps and swallows SIGTERM (SIGKILL, sent by the
+   * hard-kill path, cannot be ignored), which forces this ordering.
+   */
+  it('a SIGTERM sent to the runner while suite 1 ignores it is reaped by the deferred hard-kill timer, and suite 2 is never started', async () => {
+    const marker1 = `APRA_QE83_3_5_2_TIMERFIRST_S1_${process.pid}_${Date.now()}`;
+    const marker2 = `APRA_QE83_3_5_2_TIMERFIRST_S2_${process.pid}_${Date.now()}`;
+    hangScriptDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'qe83-3-5-2-timerfirst-'));
+    const file1 = path.join(hangScriptDir, `ignore-sigterm-${marker1}.mjs`);
+    const file2 = path.join(hangScriptDir, `hang-forever-${marker2}.mjs`);
+    // Ignoring SIGTERM (instead of letting the default action terminate it)
+    // means the group SIGTERM broadcast below cannot reap suite 1 -- only
+    // the deferred hard-kill timer's SIGKILL can.
+    fs.writeFileSync(file1, "process.on('SIGTERM', () => {});\nsetInterval(function () {}, 1000);\n");
+    fs.writeFileSync(file2, 'setInterval(function () {}, 1000);\n');
+
+    // A short soft-kill grace window so the timer-fires-first path resolves
+    // quickly, and a per-suite timeout generous enough that the runner's own
+    // timeout never fires during this test -- only the externally-delivered
+    // SIGTERM should end suite 1.
+    const suites = JSON.stringify([
+      { name: 'suite-1', cmd: 'node', args: [file1] },
+      { name: 'suite-2', cmd: 'node', args: [file2] },
+    ]);
+
+    const child = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'run-all-tests.mjs')], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        APRA_TEST_SUITES_JSON: suites,
+        APRA_TEST_TIMEOUT_MS: '30000',
+        APRA_TEST_SOFT_KILL_GRACE_MS: '800',
+      },
+    });
+    if (child.pid) spawnedPids.push(child.pid);
+
+    let exitCode: number | null = null;
+    const exitPromise = new Promise<void>(resolve => {
+      child.on('exit', (code) => { exitCode = code; resolve(); });
+    });
+
+    // Suite 1 really is alive (and has installed its SIGTERM trap) before
+    // the signal is sent.
+    await new Promise(resolve => setTimeout(resolve, 500));
+    expect(countMarkerProcesses(marker1)).toBeGreaterThan(0);
+
+    child.kill('SIGTERM');
+
+    const timedOut = await Promise.race([
+      exitPromise.then(() => false),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(true), 6_000)),
+    ]);
+
+    // A short extra wait past the runner's own exit: if the suite loop ever
+    // regressed to launch suite 2 before the deferred timer's tree-kill
+    // reached suite 1, suite 2 could still be starting up right around when
+    // the runner process itself exits.
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    const survivorsSuite1 = countMarkerProcesses(marker1);
+    const survivorsSuite2 = countMarkerProcesses(marker2);
+    if (timedOut && child.pid) killTree(child.pid);
+    killMarkerProcesses(marker1);
+    killMarkerProcesses(marker2);
+
+    expect(timedOut).toBe(false); // run-all-tests.mjs must have exited on its own
+    expect(exitCode).not.toBe(0);
+    expect(survivorsSuite1).toBe(0); // suite 1's tree was reaped by the deferred hard-kill timer
+    expect(survivorsSuite2).toBe(0); // suite 2 must NEVER have been launched
+  }, 9_000);
 });
 
 /**
