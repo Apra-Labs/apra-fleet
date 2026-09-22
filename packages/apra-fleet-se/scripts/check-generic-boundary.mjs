@@ -462,8 +462,20 @@ export const ALLOWED_EXCEPTIONS = [
         file: 'fleet-sprint/vcs-providers/github.mjs',
         ids: ['vcs-provider-branding'],
         anchorRe: /this file IS the GitHub provider's own/,
-        window: 260,
+        // Was 260. Main's workflows-permission work grew the file to 390
+        // lines, pushing the GithubVCS registration object (`name`,
+        // `defaultAuthMode`) outside coverage. Sized past the current length
+        // so ordinary growth doesn't re-break it (same as azure-devops.mjs).
+        window: 600,
         reason: "a provider's own implementation module may name itself freely throughout its own API host, headers, registration string and error text",
+    },
+    {
+        name: 'vcs-auth.mjs workflows-permission preflight is GitHub-App-scoped by design',
+        file: 'fleet-sprint/vcs-auth.mjs',
+        ids: ['vcs-provider-branding'],
+        anchorRe: /workflows-permission preflight is GitHub-App-only/,
+        window: 75,
+        reason: "operator-log text and provider/auth-mode checks of a preflight that returns early for every provider except GitHub App members; no sprint agent reads it",
     },
     {
         name: 'bitbucket.mjs is the Bitbucket provider\'s own module',

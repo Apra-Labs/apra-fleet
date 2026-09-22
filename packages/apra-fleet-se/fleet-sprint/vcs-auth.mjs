@@ -1161,6 +1161,9 @@ export function createWorkflowsPermissionPreflightCallback(opts = {}) {
      */
     const silentMembers = new Set();
 
+    // GENERIC-BOUNDARY-EXCEPTION: workflows-permission preflight is GitHub-App-only
+    // (it returns early for every other provider and auth mode), so its
+    // provider checks and operator-referral log name GitHub. Not agent-dispatch text.
     return async function warnIfWorkflowsPermissionMissing(member, branch, baseBranch) {
         try {
             if (!branch || !baseBranch || branch === baseBranch) return;
