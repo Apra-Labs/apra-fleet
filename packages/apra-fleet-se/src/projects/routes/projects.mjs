@@ -184,8 +184,31 @@ export function registerProjectRoutes(supervisor, deps = {}) {
     });
 
     // -- PUT /api/projects/:id : patch, 404 if unknown, 400 on bad fields ------
+    // DQ-12 (972p.5): a patch that CHANGES beads.remote to a new non-empty
+    // value is probed the same way create is, via the shared checkBeadsRemote
+    // gate -- an absent or unchanged remote skips the probe (no network round
+    // trip for an unrelated rename), and a failed probe 400s before
+    // updateProject() ever runs, so the stored row is left untouched.
     supervisor.route('PUT', '/api/projects/:id', async (req, res, ctx) => {
         const body = (await readJsonBody(req)) ?? {};
+        const existing = getProject(db, ctx.params.id);
+        if (existing) {
+            const beadsPatch = body?.beads ?? {};
+            const hasRemote = Object.prototype.hasOwnProperty.call(beadsPatch, 'remote');
+            const nextRemote = beadsPatch.remote;
+            const remoteChanged = hasRemote
+                && typeof nextRemote === 'string' && nextRemote.trim().length > 0
+                && nextRemote !== existing.beads.remote;
+            if (remoteChanged) {
+                const backlogMember = Object.prototype.hasOwnProperty.call(body, 'backlogMember')
+                    ? body.backlogMember : existing.backlogMember;
+                const remoteCheck = await checkBeadsRemote(client, { remote: nextRemote, backlogMember });
+                if (!remoteCheck.ok) {
+                    sendJson(res, remoteCheck.status, remoteCheck.payload);
+                    return;
+                }
+            }
+        }
         try {
             const project = updateProject(db, ctx.params.id, body);
             sendJson(res, 200, project);

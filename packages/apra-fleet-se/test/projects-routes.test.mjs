@@ -283,6 +283,93 @@ describe('PUT /api/projects/:id -- round-trip', { skip }, () => {
     });
 });
 
+describe('PUT /api/projects/:id -- beads.remote probe (DQ-12, 972p.5)', { skip }, () => {
+    test('a patch that omits beads.remote performs no probe and returns 200', async () => {
+        const { supervisor, client } = await setup('ok');
+        await supervisor.handleRequest(
+            mockReq('POST', '/api/projects', validBody({ beads: { kind: 'clone', dir: '/repo/.beads', remote: 'https://example.invalid/o/beads.git' } })),
+            mockRes(),
+        );
+        assert.equal(client.calls.length, 1, 'create probed once');
+
+        const putRes = mockRes();
+        await supervisor.handleRequest(mockReq('PUT', '/api/projects/proj-1', { name: 'Renamed' }), putRes);
+        assert.equal(putRes.statusCode, 200);
+        assert.equal(client.calls.length, 1, 'PUT omitting beads.remote must not probe again');
+    });
+
+    test('a patch that repeats the stored beads.remote value performs no probe and returns 200', async () => {
+        const { supervisor, client } = await setup('ok');
+        await supervisor.handleRequest(
+            mockReq('POST', '/api/projects', validBody({ beads: { kind: 'clone', dir: '/repo/.beads', remote: 'https://example.invalid/o/beads.git' } })),
+            mockRes(),
+        );
+        assert.equal(client.calls.length, 1, 'create probed once');
+
+        const putRes = mockRes();
+        await supervisor.handleRequest(
+            mockReq('PUT', '/api/projects/proj-1', { beads: { remote: 'https://example.invalid/o/beads.git' } }),
+            putRes,
+        );
+        assert.equal(putRes.statusCode, 200);
+        assert.equal(client.calls.length, 1, 'PUT repeating the stored value must not probe again');
+    });
+
+    test('a patch with a NEW non-empty beads.remote whose probe succeeds returns 200 with the new remote', async () => {
+        const { supervisor, client } = await setup('ok');
+        await supervisor.handleRequest(mockReq('POST', '/api/projects', validBody()), mockRes());
+        assert.equal(client.calls.length, 0, 'create had no remote -> no probe');
+
+        const putRes = mockRes();
+        await supervisor.handleRequest(
+            mockReq('PUT', '/api/projects/proj-1', { beads: { remote: 'https://example.invalid/new/beads.git' } }),
+            putRes,
+        );
+        assert.equal(putRes.statusCode, 200);
+        assert.equal(payloadOf(putRes).beads.remote, 'https://example.invalid/new/beads.git');
+        assert.equal(client.calls.length, 1, 'the changed remote was probed exactly once');
+        assert.equal(client.calls[0].command, 'git ls-remote https://example.invalid/new/beads.git refs/dolt/data');
+        assert.equal(client.calls[0].member_name, 'alice');
+        assert.doesNotMatch(client.calls[0].command, /remote add/, 'DQ-12: never creates a remote');
+
+        const getRes = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/projects/proj-1'), getRes);
+        assert.equal(payloadOf(getRes).beads.remote, 'https://example.invalid/new/beads.git');
+    });
+
+    test('a patch with a NEW non-empty beads.remote whose probe fails 400s and leaves the stored row untouched', async () => {
+        const { supervisor, client } = await setup('error');
+        await supervisor.handleRequest(mockReq('POST', '/api/projects', validBody()), mockRes());
+        assert.equal(client.calls.length, 0, 'create had no remote -> no probe');
+
+        const putRes = mockRes();
+        await supervisor.handleRequest(
+            mockReq('PUT', '/api/projects/proj-1', { beads: { remote: 'https://example.invalid/bad/beads.git' } }),
+            putRes,
+        );
+        assert.equal(putRes.statusCode, 400);
+        const payload = payloadOf(putRes);
+        assert.equal(payload.field, 'beads.remote');
+        assert.ok(payload.reason, 'expects a human-readable reason');
+        assert.equal(client.calls.length, 1, 'the probe was genuinely attempted');
+
+        const getRes = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/projects/proj-1'), getRes);
+        assert.equal(getRes.statusCode, 200);
+        assert.equal(payloadOf(getRes).beads.remote, null, 'the failed probe left the stored row untouched');
+        assert.equal(payloadOf(getRes).name, 'Project One', 'no partial write of other patched fields either');
+    });
+});
+
+describe('PUT /api/projects/:id probe reuses the single checkBeadsRemote gate', () => {
+    test('projects.mjs contains exactly one call site of probeBeadsRemote (inside checkBeadsRemote, not per-handler)', async () => {
+        const modulePath = path.join(import.meta.dirname, '..', 'src', 'projects', 'routes', 'projects.mjs');
+        const contents = await fsp.readFile(modulePath, 'utf8');
+        const matches = contents.match(/await probeBeadsRemote\(client/g) ?? [];
+        assert.equal(matches.length, 1, 'expected exactly one probeBeadsRemote(client...) call site, inside checkBeadsRemote');
+    });
+});
+
 describe('DELETE /api/projects/:id -- round-trip', { skip }, () => {
     test('deleting an existing project returns 200 {deleted:true, id}, then GET 404s', async () => {
         const { supervisor } = await setup();
