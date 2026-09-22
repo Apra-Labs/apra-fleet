@@ -141,23 +141,45 @@ describe('CI build:ui step', () => {
       }
     });
 
-    it('should exit 0 when no build:ui script exists', () => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-build-ui-test-'));
-      const tempPackageJsonPath = path.join(tempDir, 'package.json');
-
-      // Create a minimal package.json without build:ui script
-      const minimalPkg = {
+    // Shared helper for the temp npm project used by the subprocess/falsifiability
+    // cases below (and by the path-free pin test). When withBuildUi is true, the
+    // build:ui script runs a *separate* build-ui.cjs file that locates the marker
+    // via __dirname, rather than embedding the temp dir's absolute path directly
+    // in an inline `node -e "..."` string.
+    //
+    // Why: interpolating an absolute path into a double-quoted JS string literal
+    // is NOT safe cross-platform. On Windows, os.tmpdir() paths use backslashes
+    // (e.g. C:\Users\RUNNER~1\AppData\Local\Temp\...); when that string is placed
+    // inside a JS string literal, sequences like \U, \A, \L, \T are interpreted
+    // as escape sequences and silently dropped, turning the path into something
+    // like "C:UsersRUNNER~1AppDataLocalTemp...". node then writes the marker file
+    // to that (wrong, relative-ish) location instead of the expected absolute
+    // path, so the marker never appears where the test looks for it -- a failure
+    // that only reproduces on Windows CI, not on Linux/macOS. Keeping the script
+    // string free of any absolute/temp-dir path (and using __dirname inside the
+    // script file itself) avoids the hazard entirely.
+    function writeTempProject(dir: string, opts: { withBuildUi: boolean }): void {
+      const pkg: { name: string; version: string; scripts: Record<string, string> } = {
         name: 'test-package',
         version: '1.0.0',
         scripts: {
           test: 'echo test',
         },
       };
-      fs.writeFileSync(tempPackageJsonPath, JSON.stringify(minimalPkg, null, 2));
+
+      if (opts.withBuildUi) {
+        fs.writeFileSync(
+          path.join(dir, 'build-ui.cjs'),
+          "require('fs').writeFileSync(require('path').join(__dirname, 'marker.txt'), 'executed');\n"
+        );
+        pkg.scripts['build:ui'] = 'node build-ui.cjs';
+      }
+
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg, null, 2));
 
       // Create a temporary package-lock.json to satisfy npm ci
       fs.writeFileSync(
-        path.join(tempDir, 'package-lock.json'),
+        path.join(dir, 'package-lock.json'),
         JSON.stringify({
           name: 'test-package',
           version: '1.0.0',
@@ -166,6 +188,11 @@ describe('CI build:ui step', () => {
           packages: {},
         })
       );
+    }
+
+    it('should exit 0 when no build:ui script exists', () => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-build-ui-test-'));
+      writeTempProject(tempDir, { withBuildUi: false });
 
       try {
         const result = execSync('npm run build:ui --if-present', {
@@ -182,30 +209,8 @@ describe('CI build:ui step', () => {
 
     it('should execute a present build:ui script', () => {
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-build-ui-test-'));
-      const tempPackageJsonPath = path.join(tempDir, 'package.json');
       const markerFile = path.join(tempDir, 'marker.txt');
-
-      // Create a package.json with a build:ui script that creates a marker file
-      const pkg = {
-        name: 'test-package',
-        version: '1.0.0',
-        scripts: {
-          'build:ui': `node -e "require('fs').writeFileSync('${markerFile}', 'executed')"`,
-        },
-      };
-      fs.writeFileSync(tempPackageJsonPath, JSON.stringify(pkg, null, 2));
-
-      // Create a temporary package-lock.json
-      fs.writeFileSync(
-        path.join(tempDir, 'package-lock.json'),
-        JSON.stringify({
-          name: 'test-package',
-          version: '1.0.0',
-          lockfileVersion: 3,
-          requires: true,
-          packages: {},
-        })
-      );
+      writeTempProject(tempDir, { withBuildUi: true });
 
       try {
         execSync('npm run build:ui --if-present', {
