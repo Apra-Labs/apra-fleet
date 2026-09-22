@@ -125,3 +125,25 @@ test('CLI exits 1 on invalid arguments (missing required flags)', () => {
     const result = spawnSync(process.execPath, [SCRIPT, '--repo', 'example-owner/example-repo'], { encoding: 'utf8' });
     assert.strictEqual(result.status, 1);
 });
+
+// Source-level pin for the win32 main-guard regression: on Windows
+// process.argv[1] is a backslash drive path (D:\a\...\x.mjs) while
+// import.meta.url is a file:///D:/a/... URL, so the old template-literal guard
+// `file://` + argv[1] never matched, main() never ran, and the process printed
+// nothing and exited 0 -- which is exactly how the two spawn-based CLI cases
+// above fail on the windows-latest leg. Those two cases are the behavioural
+// proof on Windows; this pin fails on EVERY platform if the malformed guard
+// is ever restored. A win32 argv shape cannot be simulated on POSIX (node
+// resolves argv[1] itself), hence the text-level check.
+test('main-guard uses pathToFileURL(process.argv[1]) rather than the malformed file:// template literal', () => {
+    const source = fs.readFileSync(SCRIPT, 'utf8');
+    const malformed = 'file://${process.argv[1]}';
+    assert.ok(
+        !source.includes(malformed),
+        `script must not guard main() with the literal ${malformed} comparison (breaks on win32)`,
+    );
+    assert.ok(
+        source.includes('pathToFileURL(process.argv[1])'),
+        'script must guard main() with import.meta.url === pathToFileURL(process.argv[1]).href',
+    );
+});

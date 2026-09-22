@@ -27,6 +27,7 @@
 // =============================================================================
 
 import { parseArgs } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
@@ -221,6 +222,11 @@ export async function main(argv) {
     return 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Main-module guard. On win32 process.argv[1] is a backslash drive path
+// (D:\a\...\integration-gate-status.mjs) while import.meta.url is
+// file:///D:/a/..., so a template-literal `file://` + argv[1] comparison never
+// matches there and main() silently never runs (exit 0, no output). Normalise
+// through pathToFileURL -- the same form bin/serve.mjs and bin/cli.mjs use.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     main(process.argv.slice(2)).then((code) => process.exit(code));
 }
