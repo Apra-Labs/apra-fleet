@@ -67,6 +67,7 @@ import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from 
 // member-sync.mjs imports it back from here.
 import {
     syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, resyncReacquiredMember,
+    isMissingRemoteRefError,
 } from './member-sync.mjs';
 // apra-fleet-3swo.6.12: createMemberSessionGuard, createUnattendedAutoProvisioner,
 // createDeployPermissionsProvisioner and stageCommandBodyMemberSide, moved
@@ -424,6 +425,12 @@ export { checkMemberTopology, classifyGitFailure, runGitStep, commandResultToSof
 // implementation (apra-fleet-3swo.6.10). Every symbol that region exported
 // before the move is listed here, under its original name.
 export { syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, resyncReacquiredMember };
+// apra-fleet-ta3.3: the missing-remote-ref predicate factored out of
+// syncMemberBefore/syncMemberAfter's inline regexes, re-exported for the
+// same reason as its siblings just above -- unit suites (test/git-sync-
+// brackets.test.mjs and its sibling test bead, apra-fleet-ta3.4) import it
+// straight from runner.js like every other member-sync.mjs symbol.
+export { isMissingRemoteRefError };
 // Re-exported so importers of the member-provisioning helpers from runner.js
 // keep working; member-provisioning.mjs is the single source of truth for
 // their implementation (apra-fleet-3swo.6.12). Every symbol that region
