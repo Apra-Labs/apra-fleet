@@ -12,27 +12,66 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // =============================================================================
 // apra-fleet-qeq1.6.1 -- End-to-end verification: a Bitbucket remote reaches
 // a real create-pull-request call. Modelled on
-// test/mock-sprint-azure-devops-vcs-publish.test.mjs but tests the full
-// chain through the VCS provider integration (capabilities, parseProviderRepoRef,
-// buildCreatePrCommand, pullRequestResponse mapping, and logSafeCommand redaction).
+// test/mock-sprint-azure-devops-vcs-publish.test.mjs: the chain test below
+// drives finalizeAbort() directly -- the SAME real, exported publish path
+// both PR-raising call sites (Publish PR, finalizeAbort) share via
+// raiseVcsPrForMember -- through a hand-rolled command mock and no live
+// fleet/network, reusing the SAME production entry points VCSModule exposes
+// (capabilities, parseProviderRepoRef, buildCreatePrCommand, getVcsProvider)
+// rather than re-implementing them.
 //
-// Steps 1-4 (default suite): VCSModule-level assertions covering the builder,
-// response mapping, and credentials. Steps 1-4 plus live (opt-in, gated behind
-// environment variable and real network): actual Bitbucket remote.
+// Steps 1-4 (default suite, no network/credentials):
+//   1. capabilities() reports canOpenPullRequest:true for bitbucket.org, so
+//      the Publish PR / abort-path gate does not skip -- proved BOTH as a
+//      direct assertion and, more strongly, by construction: the chain test
+//      below only reaches its dispatched curl at all if this gate passed.
+//   2. parseProviderRepoRef yields workspace/repo coordinates.
+//   3. buildCreatePrCommand's URL, method, body and -u argument are pinned
+//      EXACTLY (full string equality, not substring checks), with both
+//      credential halves carried as the server placeholders
+//      {{vcs_username_inline}}/{{vcs_token_inline}} in that exact order --
+//      this is the one assertion that proves the bb-cred lane (the
+//      {{vcs_username}} placeholder pair) and the bb-provider lane (this
+//      builder) actually meet.
+//   4. logSafeCommand redacts both credential halves.
+//   Plus a chain test driving finalizeAbort() end to end: the mock-sprint
+//   harness's vcs_credential_exec simulator (mock-sprint-harness.mjs)
+//   substitutes the SAME placeholders with mock username/token values, and
+//   the dispatched curl is asserted to carry both, in order, in its -u
+//   argument -- proving steps 1-3 compose all the way to a real REST
+//   dispatch, not just at the VCSModule level in isolation.
 //
-// OUTSTANDING LIVE CHECK: The opt-in live test scenario (step 5, opening a
-// real Bitbucket PR against apra-analytics) has not been run in this dispatch.
-// It requires APRA_FLEET_ALLOW_REAL_BITBUCKET_E2E=1 and
-// APRA_FLEET_BITBUCKET_E2E_SECRET_NAME set to an existing fleet credential
-// store secret holding a Bitbucket workspace member app password with pull
-// request creation permissions. See helpers/bitbucket-real-e2e.mjs for the
-// configuration contract. Once run, the resulting PR URL should be recorded in
-// the bead notes and the test extended to verify it.
+// FALSIFICATION (run manually, not automated -- see bead notes): reverting
+// bitbucket.mjs's capabilitiesForHost to return canOpenPullRequest:false made
+// the "capabilities" test below AND the finalizeAbort chain test fail (the
+// chain test fails because the abort-path gate then reports
+// reason:'non-hosted-remote' and never dispatches the curl at all).
+// Reverting the 'create-pull-request' entry out of bitbucket.mjs's builders
+// made the "buildCreatePrCommand" step-3 test AND the finalizeAbort chain
+// test fail (buildCreatePrCommand throws a typed ERROR naming the provider
+// and action with no builder registered). Both reverts were restored
+// immediately after confirming the failure; `git status --porcelain` was
+// clean before and after.
+//
+// OUTSTANDING LIVE CHECK: the opt-in live scenario (opening a real Bitbucket
+// PR against apra-analytics) has not been run in this dispatch -- see
+// helpers/bitbucket-real-e2e.mjs and bitbucket-real-e2e.test.mjs for the
+// gated scenario and helpers/bitbucket-real-e2e-runbook.md for the
+// configuration contract. Recorded as outstanding on this bead's notes and
+// on the epic apra-fleet-qeq1's notes.
 // =============================================================================
 
 const BB_ORIGIN = 'git@bitbucket.org:kumaakh/apra-analytics.git';
 const BB_REPO_REF = { workspace: 'kumaakh', repo: 'apra-analytics' };
 
+// Mirrors mock-sprint-azure-devops-vcs-publish.test.mjs's buildMockCommand
+// byte-for-byte (git fetch/rev-list/push/remote-get-url, plus the
+// create-pull-request curl). `credentialFiles` is passed through unchanged
+// for parity with that file's signature, but the finalizeAbort() chain never
+// reads a `$HOME/.fleet-git-credential-*` file directly any more -- the
+// create-PR command goes out through vcs_credential_exec instead (see
+// mockCallTool below) -- so a credential-file read reaching this mock at all
+// would itself be a regression; the chain test below asserts none occurs.
 function buildMockCommand({ originUrl, credentialFiles, prResponder }) {
     const log = [];
     const command = async (cmd, opts = {}) => {
@@ -61,6 +100,12 @@ function buildMockCommand({ originUrl, credentialFiles, prResponder }) {
     return { command, log };
 }
 
+// Mirrors mock-sprint-azure-devops-vcs-publish.test.mjs's mockCallTool:
+// `command` threads into legacyCommandExecuteCommandAdapter so
+// vcs_credential_exec delegates to the SHARED defaultMockCallTool()
+// simulator (reusing its placeholder substitution and redaction, now taught
+// the {{vcs_username}}/{{vcs_username_inline}} pair for the 'bitbucket'
+// label -- see mock-sprint-harness.mjs's MOCK_VCS_CREDENTIAL_USERNAMES).
 function mockCallTool(vcsProvider, { availableSecrets = [] } = {}, command) {
     const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     return async (name, toolArgs) => {
@@ -75,9 +120,6 @@ function mockCallTool(vcsProvider, { availableSecrets = [] } = {}, command) {
         return base(name, toolArgs);
     };
 }
-
-const BB_CREDENTIAL_LINE = 'protocol=https\nhost=bitbucket.org\nusername=kumaakh\npassword=mock-bb-app-password\n';
-const BB_ONLY_FILES = Object.freeze({ bitbucket: BB_CREDENTIAL_LINE });
 
 // =============================================================================
 // DEFAULT SUITE (no network, no live Bitbucket): Steps 1-4 in separate
@@ -107,9 +149,12 @@ test('vcs-bitbucket-publish-e2e: parseProviderRepoRef - yields workspace/repo co
     check(httpsRef.ref.repo === 'apra-analytics', `Expected repo 'apra-analytics' from HTTPS, got: ${httpsRef.ref.repo}`);
 });
 
-// (3) buildCreatePrCommand: produces command with {{vcs_username_inline}} and
-// {{vcs_token_inline}} placeholders carried as the server placeholders.
-test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - produces command with server placeholders and redacted logSafeCommand', () => {
+// (3) buildCreatePrCommand: the URL, method, body and -u argument are pinned
+// EXACTLY (full string equality), not by substring checks -- a substring
+// check cannot catch the two credential halves being swapped or reordered,
+// which is exactly the property this assertion exists to pin (see the
+// module doc comment above).
+test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - URL, method, body and -u argument are pinned EXACTLY with server placeholders in order', () => {
     const built = buildCreatePrCommand({
         provider: 'bitbucket',
         repoRef: BB_REPO_REF,
@@ -125,17 +170,35 @@ test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - produces command with se
 
     check(built.provider === 'bitbucket', `Expected provider 'bitbucket', got: ${built.provider}`);
     check(built.action === 'create-pull-request', `Expected action 'create-pull-request', got: ${built.action}`);
-    check(built.command.includes('{{vcs_username_inline}}'), `Expected command to carry {{vcs_username_inline}} placeholder, got: ${built.command}`);
-    check(built.command.includes('{{vcs_token_inline}}'), `Expected command to carry {{vcs_token_inline}} placeholder, got: ${built.command}`);
-    check(built.command.includes('-u'), `Expected command to include -u flag for Basic auth, got: ${built.command}`);
-    check(/\/pullrequests\b/.test(built.command), `Expected command to target /pullrequests endpoint, got: ${built.command}`);
-    check(built.logSafeCommand.includes('***REDACTED***'), `Expected logSafeCommand to carry redaction marker, got: ${built.logSafeCommand}`);
-    check(!built.logSafeCommand.includes('{{vcs_username_inline}}'), `Expected logSafeCommand to NOT carry username placeholder, got: ${built.logSafeCommand}`);
-    check(!built.logSafeCommand.includes('{{vcs_token_inline}}'), `Expected logSafeCommand to NOT carry token placeholder, got: ${built.logSafeCommand}`);
+
+    const expectedPayload = '{"title":"Test PR","source":{"branch":{"name":"auto-sprint/feat-x"}},"destination":{"branch":{"name":"main"}},"description":"Test body"}';
+    const expectedCommand = [
+        'curl -sS -X POST',
+        "-u '{{vcs_username_inline}}:{{vcs_token_inline}}'",
+        "-H 'Content-Type: application/json'",
+        "-H 'Accept: application/json'",
+        `-d '${expectedPayload}'`,
+        "-w '\n%{http_code}'",
+        'https://api.bitbucket.org/2.0/repositories/kumaakh/apra-analytics/pullrequests',
+    ].join(' ');
+
+    check(
+        built.command === expectedCommand,
+        `Expected the EXACT pinned command (server placeholders in username:token order), got:\n${built.command}\nexpected:\n${expectedCommand}`,
+    );
+
+    const expectedLogSafeCommand = expectedCommand
+        .replace('{{vcs_username_inline}}', '***REDACTED***')
+        .replace('{{vcs_token_inline}}', '***REDACTED***');
+    check(
+        built.logSafeCommand === expectedLogSafeCommand,
+        `Expected the EXACT pinned logSafeCommand, got:\n${built.logSafeCommand}\nexpected:\n${expectedLogSafeCommand}`,
+    );
 });
 
-// (4) logSafeCommand redaction: contains neither placeholder's substituted value
-// when real credentials are passed through a mock (proves the redaction layer).
+// (4) logSafeCommand redaction: contains neither placeholder's substituted
+// value when real credentials are passed through a mock (proves the
+// redaction layer independently of step 3's placeholder-shape pin).
 test('vcs-bitbucket-publish-e2e: logSafeCommand - redacts both username and token', () => {
     const built = buildCreatePrCommand({
         provider: 'bitbucket',
@@ -156,17 +219,12 @@ test('vcs-bitbucket-publish-e2e: logSafeCommand - redacts both username and toke
     check(!built.logSafeCommand.includes('bbuser@example.com'), `Expected logSafeCommand to NOT contain username, got: ${built.logSafeCommand}`);
 });
 
-// =============================================================================
-// Response mapping: the provider's pullRequestResponse.map works correctly.
-// Proves that steps 1-4 work together at the VCSModule level (no credential
-// handling, no finalizeAbort machinery).
-// =============================================================================
-
+// Response mapping: the provider's pullRequestResponse.map works correctly
+// in isolation (the chain test below proves the SAME mapping is what
+// finalizeAbort() actually reports).
 test('vcs-bitbucket-publish-e2e: response mapping - a Bitbucket 201 body maps to a PR URL via the provider', () => {
-    // Simulate a real Bitbucket 201 response body
     const respBody = { id: 42, links: { html: { href: 'https://bitbucket.org/kumaakh/apra-analytics/pull-requests/42' } } };
 
-    // Use the provider's OWN mapping, the same function runner.js calls
     const impl = getVcsProvider('bitbucket');
     const mapped = impl.pullRequestResponse.map(respBody, { repoRef: BB_REPO_REF });
 
@@ -177,36 +235,74 @@ test('vcs-bitbucket-publish-e2e: response mapping - a Bitbucket 201 body maps to
     );
 });
 
-// Falsification test 1: reverting the capabilitiesForHost flip makes the gate
-// fail (PR creation is not attempted).
-test('vcs-bitbucket-publish-e2e: falsification - capabilitiesForHost controls the gate', () => {
-    // Query the LIVE capabilitiesForHost from the provider, proving it is true
-    const caps = vcsCapabilities(BB_ORIGIN);
+// =============================================================================
+// CHAIN TEST: finalizeAbort() end to end -- the property the epic opened on.
+// Drives the SAME real publish path (raiseVcsPrForMember) a Bitbucket member
+// hitting the abort-path or Publish PR gate would, through the mock-sprint
+// harness's vcs_credential_exec simulator (now taught the bitbucket
+// username/token pair -- see mock-sprint-harness.mjs). Proves steps 1-3
+// compose: capabilities() does not skip the gate, parseProviderRepoRef
+// resolves the coordinates raiseVcsPrForMember passes to the builder, and
+// the substituted curl actually dispatched carries BOTH credential halves,
+// in order, exactly as the unit-level step-3 test pins them in placeholder
+// form.
+// =============================================================================
+test('finalizeAbort (Bitbucket): a canned 201 body maps to a PR URL constructed from the provider-owned response mapping, with both credential halves substituted in order', async () => {
+    const branch = 'auto-sprint/abort-bb-201';
+    const { command, log } = buildMockCommand({
+        originUrl: BB_ORIGIN,
+        credentialFiles: {},
+        prResponder: () => `${JSON.stringify({ id: 777, links: { html: { href: 'https://bitbucket.org/kumaakh/apra-analytics/pull-requests/777' } } } )}\n201`,
+    });
+    const logs = [];
+    const error = new SprintPlanRejectedError('Plan rejected after 3 rounds', { notes: null });
+
+    const result = await finalizeAbort({
+        error,
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        log: (m) => logs.push(m),
+        callTool: mockCallTool('bitbucket', {}, command),
+    });
+
+    check(result.reason === 'aborted-pr-created', `Expected reason 'aborted-pr-created', got: ${JSON.stringify(result)} (logs: ${JSON.stringify(logs)})`);
+    check(result.pushed === true, `Expected pushed:true, got: ${JSON.stringify(result)}`);
+
+    // The provider's OWN mapping, computed independently here, is the source
+    // of truth this assertion pins runner.js against -- never a hardcoded
+    // URL literal that could silently drift from the real hook.
+    const expected = BitbucketVCS.pullRequestResponse.map({ id: 777, links: { html: { href: 'https://bitbucket.org/kumaakh/apra-analytics/pull-requests/777' } } }, { repoRef: BB_REPO_REF });
+    check(!!expected.url, 'sanity: the provider mapping itself must produce a URL for this canned body');
     check(
-        caps.canOpenPullRequest === true,
-        `Test setup: expected capabilitiesForHost to report true (flip present), but it reports: ${JSON.stringify(caps)}`,
+        result.prUrl === expected.url,
+        `Expected the reported PR URL to equal the provider mapping's own output (${expected.url}), got: ${result.prUrl}`,
+    );
+    check(
+        result.prUrl === 'https://bitbucket.org/kumaakh/apra-analytics/pull-requests/777',
+        `Expected the exact Bitbucket browsable PR URL, got: ${result.prUrl}`,
     );
 
-    // If capabilitiesForHost were absent/false, this would fail the gate check
-    // in the publish path, and the curl command would never be dispatched.
-    // We cannot easily test the false case without modifying the provider, but
-    // this assertion proves the gate IS consulted (capabilities() is called
-    // before the publish path dispatches the builder).
-});
+    // Revert-proofing for the gate being ENTERED (not skipped): reachable
+    // only if capabilities() reported canOpenPullRequest:true for this
+    // bitbucket.org remote AND the builder actually produced a command.
+    const prCmd = log.find((c) => c.startsWith('curl') && /\/pullrequests\b/.test(c));
+    check(!!prCmd, `Expected a VCSModule Bitbucket 'curl .../pullrequests' command to be dispatched, command log: ${JSON.stringify(log)}`);
 
-// Falsification test 2: reverting the builder makes step 3 fail (the command
-// cannot be built).
-test('vcs-bitbucket-publish-e2e: falsification - builder presence enables the command', () => {
-    // Prove the builder is reachable and produces valid output
-    const impl = getVcsProvider('bitbucket');
-    check(impl && typeof impl.builders === 'object', `Expected bitbucket provider to have builders, got: ${JSON.stringify(impl)}`);
+    // No credential-helper file read: the create-PR command goes out
+    // entirely through vcs_credential_exec now (same property the Azure
+    // DevOps analogue pins).
+    check(!log.some((c) => /^\$HOME\/\.fleet-git-credential-/.test(c)), `The orchestrator must dispatch NO credential-helper read of its own; the handoff reads it server-side. Command log: ${JSON.stringify(log)}`);
+
+    // The property no single-lane test can show: the DISPATCHED curl (after
+    // server-side substitution) carries BOTH credential halves in the exact
+    // 'username:token' order buildBitbucketCreatePrCommand's -u argument
+    // requires -- proving the bb-cred lane's placeholder substitution and
+    // the bb-provider lane's builder actually meet.
     check(
-        typeof impl.builders['create-pull-request'] === 'function',
-        `Expected bitbucket provider to have create-pull-request builder, got: ${JSON.stringify(impl.builders)}`,
+        prCmd.includes("-u 'mock-bitbucket-username:mock-bitbucket-app-password'"),
+        `Expected the curl -u argument to carry 'username:token' in that exact order after substitution, got: ${prCmd}`,
     );
-
-    // If the builder were absent, buildCreatePrCommand would throw a typed ERROR
-    // naming the provider and action. We cannot easily test that without
-    // removing the builder, but this assertion proves the builder IS present
-    // and callable (required to reach the publish step).
+    check(!prCmd.includes('{{vcs_username_inline}}') && !prCmd.includes('{{vcs_token_inline}}'), `Expected no unsubstituted placeholder in the dispatched command, got: ${prCmd}`);
 });

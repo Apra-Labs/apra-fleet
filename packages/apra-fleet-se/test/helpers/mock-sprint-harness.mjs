@@ -332,6 +332,17 @@ export function redactNetworkCommandForLog(command) {
 const MOCK_VCS_CREDENTIAL_TOKENS = {
     github: 'mock-vcs-module-token',
     'azure-devops': 'mock-azure-devops-pat',
+    bitbucket: 'mock-bitbucket-app-password',
+};
+
+// apra-fleet-qeq1.6.1: the basic-auth USERNAME half of a label's credential,
+// mirroring the `username=` line src/tools/vcs-credential-exec.ts reads from
+// the same credential-helper stdout the token comes from. Only a label whose
+// builder actually references {{vcs_username}}/{{vcs_username_inline}} needs
+// an entry here -- github/azure-devops never do (see mockVcsCredentialExec's
+// needsUsername check below), so they intentionally have none.
+const MOCK_VCS_CREDENTIAL_USERNAMES = {
+    bitbucket: 'mock-bitbucket-username',
 };
 
 // Minimal reimplementation of src/utils/shell-escape.ts's
@@ -351,12 +362,24 @@ function mockEscapeShellArg(s) {
 }
 
 const VCS_CREDENTIAL_EXEC_REDACTION = '[REDACTED:vcs_token]';
+// Distinct marker for the username half, mirroring
+// src/tools/vcs-credential-exec.ts's USERNAME_REDACTION -- a reader of a
+// redacted stream needs to know WHICH half of the basic-auth pair was
+// scrubbed out of it.
+const VCS_USERNAME_EXEC_REDACTION = '[REDACTED:vcs_username]';
 
 /** Replace every occurrence of `secret` in `output`, and report how many. */
 function redactVcsCredentialToken(output, secret) {
     if (!secret) return { text: output, count: 0 };
     const parts = output.split(secret);
     return { text: parts.join(VCS_CREDENTIAL_EXEC_REDACTION), count: parts.length - 1 };
+}
+
+/** Same shape as redactVcsCredentialToken, under the username's own marker. */
+function redactVcsCredentialUsername(output, secret) {
+    if (!secret) return { text: output, count: 0 };
+    const parts = output.split(secret);
+    return { text: parts.join(VCS_USERNAME_EXEC_REDACTION), count: parts.length - 1 };
 }
 
 /**
@@ -386,6 +409,11 @@ function vcsCredentialExecResult(text, fields) {
 
 const VCS_TOKEN_PLACEHOLDER = '{{vcs_token}}';
 const VCS_TOKEN_INLINE_PLACEHOLDER = '{{vcs_token_inline}}';
+// apra-fleet-qeq1.6.1: the basic-auth username pair (see MOCK_VCS_CREDENTIAL_
+// USERNAMES above and src/tools/vcs-credential-exec.ts's
+// VCS_USERNAME_PLACEHOLDER/VCS_USERNAME_INLINE_PLACEHOLDER doc comments).
+const VCS_USERNAME_PLACEHOLDER = '{{vcs_username}}';
+const VCS_USERNAME_INLINE_PLACEHOLDER = '{{vcs_username_inline}}';
 
 async function mockVcsCredentialExec(toolArgs, executeCommand) {
     const label = toolArgs && toolArgs.label;
@@ -411,6 +439,18 @@ async function mockVcsCredentialExec(toolArgs, executeCommand) {
         );
     }
 
+    // Only a command that actually references a username placeholder needs
+    // one -- mirrors vcs-credential-exec.ts's needsUsername check so a
+    // token-only label (github, azure-devops) is completely unaffected.
+    const needsUsername = command.includes(VCS_USERNAME_PLACEHOLDER) || command.includes(VCS_USERNAME_INLINE_PLACEHOLDER);
+    const username = needsUsername ? (MOCK_VCS_CREDENTIAL_USERNAMES[label] || '') : '';
+    if (needsUsername && !username) {
+        return vcsCredentialExecResult(
+            `[FAIL] Cannot read a VCS username for label "${label}" (no mock credential-helper username registered for this label in the mock-sprint harness), but the command references ${VCS_USERNAME_PLACEHOLDER}.`,
+            { ...who, reason: 'username_empty' },
+        );
+    }
+
     if (!executeCommand) {
         throw new Error(
             'mock-sprint-harness: vcs_credential_exec was called but no `executeCommand` was threaded into ' +
@@ -421,13 +461,25 @@ async function mockVcsCredentialExec(toolArgs, executeCommand) {
 
     const finalCommand = command
         .replaceAll(VCS_TOKEN_PLACEHOLDER, mockEscapeShellArg(token))
-        .replaceAll(VCS_TOKEN_INLINE_PLACEHOLDER, mockEscapeShellArgInner(token));
+        .replaceAll(VCS_TOKEN_INLINE_PLACEHOLDER, mockEscapeShellArgInner(token))
+        .replaceAll(VCS_USERNAME_PLACEHOLDER, mockEscapeShellArg(username))
+        .replaceAll(VCS_USERNAME_INLINE_PLACEHOLDER, mockEscapeShellArgInner(username));
 
     const res = await executeCommand({ command: finalCommand, member_id: toolArgs && toolArgs.member_id, member_name: memberName });
     const structured = res.structuredContent || {};
     const exitCode = typeof structured.exitCode === 'number' ? structured.exitCode : null;
-    const outRedacted = redactVcsCredentialToken(structured.stdout ?? '', token);
-    const errRedacted = redactVcsCredentialToken(structured.stderr ?? '', token);
+    let outRedacted = redactVcsCredentialToken(structured.stdout ?? '', token);
+    let errRedacted = redactVcsCredentialToken(structured.stderr ?? '', token);
+    // The username is only scrubbed when this command actually substituted
+    // one -- a token-only command must not start redacting an unrelated
+    // string out of its own output (mirrors vcs-credential-exec.ts's
+    // redactCredentials()).
+    if (needsUsername) {
+        const outU = redactVcsCredentialUsername(outRedacted.text, username);
+        const errU = redactVcsCredentialUsername(errRedacted.text, username);
+        outRedacted = { text: outU.text, count: outRedacted.count + outU.count };
+        errRedacted = { text: errU.text, count: errRedacted.count + errU.count };
+    }
 
     return vcsCredentialExecResult(
         `[OK] Ran credential-requiring command on "${memberName ?? memberId ?? '(unknown)'}" (exit ${exitCode}).`,
