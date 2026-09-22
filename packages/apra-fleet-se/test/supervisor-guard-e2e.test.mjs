@@ -10,6 +10,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { TOKEN_BYTES } from '../src/supervisor/auth.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
 
 // =============================================================================
 // apra-fleet-ky2l.1.3 -- end-to-end verification of the guarded supervisor
@@ -36,6 +38,20 @@ import { TOKEN_BYTES } from '../src/supervisor/auth.mjs';
 // This was verified by hand during authoring: stashing the ky2l.1.2 change
 // to auth.mjs/bin/serve.mjs and re-running this file reproduces exactly that
 // failure, restored immediately after.
+//
+// CONTENTION HARDENING (apra-fleet-ky2l.18.1): the windows-latest CI leg
+// failed this file with a bare 'request timeout' after the child HAD logged
+// its listening line -- one HTTP request against 127.0.0.1 got no response
+// inside a FIXED 5 s budget while ubuntu/macos passed the same file. That is
+// the documented contention class serve-wiring-integration.test.mjs already
+// handles (apra-fleet-ryk / apra-fleet-33c.1): under --test-concurrency the
+// first accept on a slow hosted runner can exceed a fixed budget. So every
+// per-request / TCP-connect timeout here is scaledTimeout()-derived, the boot
+// deadline is concurrency-scaled, the FIRST loopback probe (which only needs
+// ANY HTTP status back) retries until a scaled deadline, and every timeout
+// names its request (method, path, elapsed ms) with the child's stdout/stderr
+// so far attached to any request-phase failure. No assertion is loosened and
+// nothing is skipped on win32 -- the guarded supervisor is not POSIX-only.
 // =============================================================================
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -89,18 +105,62 @@ function getFreePort() {
     });
 }
 
-/** Tiny promise-based HTTP client. */
-function request(port, method, urlPath, { headers, host = '127.0.0.1' } = {}) {
+// Per-request budget. Plain `npm test` invokes `node --test` without
+// exporting APRA_FLEET_TEST_CONCURRENCY (only scripts/run-tests.mjs does),
+// so pass the package's concurrency constant explicitly -- otherwise
+// scaledTimeout() silently falls back to its unscaled baseMs while the file
+// genuinely runs TEST_CONCURRENCY-wide (the apra-fleet-ryk lesson).
+const REQUEST_TIMEOUT_MS = scaledTimeout(5000, { concurrency: TEST_CONCURRENCY });
+const CONNECT_TIMEOUT_MS = scaledTimeout(5000, { concurrency: TEST_CONCURRENCY });
+const BOOT_DEADLINE_MS = scaledTimeout(20000, { concurrency: TEST_CONCURRENCY, multiplier: 6 });
+const FIRST_PROBE_DEADLINE_MS = scaledTimeout(15000, { concurrency: TEST_CONCURRENCY, multiplier: 6 });
+
+/** Tiny promise-based HTTP client. A timeout rejects with an error that
+ *  names the request (method, path, elapsed ms) so a CI log is actionable. */
+function request(port, method, urlPath, { headers, host = '127.0.0.1', timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
     return new Promise((resolve, reject) => {
-        const req = http.request({ host, port, method, path: urlPath, headers: headers ?? {}, timeout: 5000 }, (res) => {
+        const startedAt = Date.now();
+        const req = http.request({ host, port, method, path: urlPath, headers: headers ?? {}, timeout: timeoutMs }, (res) => {
             const chunks = [];
             res.on('data', (c) => chunks.push(c));
             res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf-8') }));
         });
-        req.on('timeout', () => { req.destroy(new Error('request timeout')); });
-        req.on('error', reject);
+        req.on('timeout', () => {
+            req.destroy(new Error(`request timeout after ${Date.now() - startedAt} ms (budget ${timeoutMs} ms): ${method} ${urlPath}`));
+        });
+        req.on('error', (err) => {
+            reject(new Error(`${method} ${urlPath} failed after ${Date.now() - startedAt} ms: ${err?.message ?? err}`, { cause: err }));
+        });
         req.end();
     });
+}
+
+/**
+ * Retry `request()` until ANY HTTP status arrives or the deadline passes.
+ * Only used for the very first loopback probe, which asserts nothing about
+ * the status -- it exists to prove the listener is reachable at all, so a
+ * slow first accept on a contended runner must not fail the suite. Every
+ * later request keeps its single-shot budget and exact assertion.
+ */
+async function requestWithRetry(port, method, urlPath, { deadlineMs, isAlive, label }) {
+    const deadline = Date.now() + deadlineMs;
+    const errors = [];
+    for (;;) {
+        if (isAlive && !isAlive()) {
+            throw new Error(`${label}: serve.mjs exited before answering.\nattempts:\n${errors.join('\n')}`);
+        }
+        try {
+            // eslint-disable-next-line no-await-in-loop
+            return await request(port, method, urlPath);
+        } catch (err) {
+            errors.push(String(err?.message ?? err));
+        }
+        if (Date.now() > deadline) {
+            throw new Error(`${label}: no HTTP status within ${deadlineMs} ms (${errors.length} attempt(s)).\nattempts:\n${errors.join('\n')}`);
+        }
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(100);
+    }
 }
 
 /** First non-internal IPv4 address on this host, or null if there is none. */
@@ -117,7 +177,7 @@ function firstNonInternalIPv4() {
 /** Attempt a raw TCP connect; resolves with the connect error's `code`, or null if it connected. */
 function tryConnect(host, port) {
     return new Promise((resolve) => {
-        const socket = net.createConnection({ host, port, timeout: 2000 });
+        const socket = net.createConnection({ host, port, timeout: CONNECT_TIMEOUT_MS });
         socket.once('connect', () => { socket.destroy(); resolve(null); });
         socket.once('timeout', () => { socket.destroy(); resolve('TIMEOUT'); });
         socket.once('error', (err) => { resolve(err.code); });
@@ -184,14 +244,14 @@ describe('supervisor-guard-e2e (apra-fleet-ky2l.1.3): real bin/serve.mjs, fleet-
 
         try {
             // Wait for the listening log line (server.mjs's own startup log).
-            const deadline = Date.now() + 20000;
+            const deadline = Date.now() + BOOT_DEADLINE_MS;
             for (;;) {
                 if (exited) {
                     assert.fail(`serve.mjs exited (code=${serve.exitCode}, signal=${serve.signalCode}) before listening.\nstdout:\n${stdoutBuf}\nstderr:\n${stderrBuf}`);
                 }
                 if (/listening on http:\/\/localhost:\d+/.test(stdoutBuf)) break;
                 if (Date.now() > deadline) {
-                    assert.fail(`timed out waiting for the supervisor to log its listening line.\nstdout so far:\n${stdoutBuf}\nstderr so far:\n${stderrBuf}`);
+                    assert.fail(`timed out after ${BOOT_DEADLINE_MS} ms waiting for the supervisor to log its listening line.\nstdout so far:\n${stdoutBuf}\nstderr so far:\n${stderrBuf}`);
                 }
                 // eslint-disable-next-line no-await-in-loop
                 await sleep(100);
@@ -207,7 +267,14 @@ describe('supervisor-guard-e2e (apra-fleet-ky2l.1.3): real bin/serve.mjs, fleet-
                     `expected ECONNREFUSED (or a firewall TIMEOUT), got: ${code}`,
                 );
             }
-            const loopbackOk = await request(port, 'GET', '/api/health');
+            // First loopback probe: retried until ANY status arrives (see
+            // requestWithRetry) -- the listening line proves bind, not that a
+            // contended runner has accepted its first connection yet.
+            const loopbackOk = await requestWithRetry(port, 'GET', '/api/health', {
+                deadlineMs: FIRST_PROBE_DEADLINE_MS,
+                isAlive: () => !exited,
+                label: 'first loopback GET /api/health',
+            });
             assert.notEqual(loopbackOk.status, undefined, 'loopback must be reachable at all');
 
             // 3. Guard: every /api/* route and POST .../live/... 401s without
@@ -243,6 +310,16 @@ describe('supervisor-guard-e2e (apra-fleet-ky2l.1.3): real bin/serve.mjs, fleet-
             assert.match(stdoutBuf, /\[supervisor\] service token source: fleet-key/, 'startup log must name the fleet-key source');
             assert.ok(!stdoutBuf.includes(VALID_FLEET_KEY), 'the token value must never appear in stdout');
             assert.ok(!stderrBuf.includes(VALID_FLEET_KEY), 'the token value must never appear in stderr');
+        } catch (err) {
+            // Any request-phase failure carries the child's output so far, so
+            // a CI log names the request AND shows what the supervisor was
+            // doing (the boot-deadline branch above already does this).
+            const context = `\n--- serve.mjs stdout so far ---\n${stdoutBuf}\n--- serve.mjs stderr so far ---\n${stderrBuf}`;
+            if (err instanceof Error) {
+                err.message = `${err.message}${context}`;
+                throw err;
+            }
+            throw new Error(`${String(err)}${context}`);
         } finally {
             // 6. Kill the child.
             forceKill(serve.pid);
