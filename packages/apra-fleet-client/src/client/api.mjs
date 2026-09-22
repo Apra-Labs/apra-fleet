@@ -375,7 +375,8 @@
  * @property {"github" | "bitbucket" | "azure-devops"} provider - VCS provider to configure
  * @property {string} [label] - Credential label (slug, e.g. "work-github"). Defaults to provider name.
  * @property {string} [scope_url] - Git credential scope URL (e.g. "https://github.com/my-org").
- *   Defaults to "https://<host>".
+ *   Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass
+ *   "https://ORG.visualstudio.com" so the PAT is bound to the host the member pushes to.
  * @property {"github-app" | "pat"} [github_mode] - GitHub auth mode: github-app (mint via
  *   configured app) or pat (personal access token)
  * @property {string} [token] - Personal access token (GitHub PAT or Azure DevOps PAT).
@@ -387,7 +388,8 @@
  * @property {string} [api_token] - Bitbucket API token. Supports {{secret.NAME}} token --
  *   resolved from the credential store server-side before use.
  * @property {string} [workspace] - Bitbucket workspace slug
- * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)
+ * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg,
+ *   or the legacy https://myorg.visualstudio.com)
  * @property {string} [pat] - Azure DevOps personal access token. Supports {{secret.NAME}}
  *   token -- resolved from the credential store server-side before use.
  * @property {string} [pat_expires_at] - ISO 8601 date/time the Azure DevOps PAT expires, as

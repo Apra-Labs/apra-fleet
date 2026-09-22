@@ -207,18 +207,19 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
             `expected a Publish PR log to carry the Azure DevOps provider's authRemedy guidance, got logs: ${JSON.stringify(publishPrLogs)}`,
         );
 
-        // apra-fleet-5co8.19: the Publish PR phase must degrade to the
-        // provider's clean authRemedy guidance ONLY -- it must never also
-        // leak the raw provision_vcs_auth failure text ("the credential
-        // store has no entry named") that raiseVcsPrForMember's catch
-        // (apra-fleet-5co8.15) is supposed to have replaced with
-        // remedyHint. This is deliberately scoped to the Publish-PR-tagged
-        // logs, not the whole log stream: that raw text legitimately still
-        // appears in the PREFLIGHT's own swallowed log (asserted above),
-        // which is a different, non-Publish-PR code path.
+        // apra-fleet-5co8.19 originally required the Publish PR log to carry
+        // the provider's authRemedy guidance ONLY. GitHub issue #502 showed
+        // why that hides the real problem: an unreadable remote, a missing
+        // credential-store entry and a dead PAT all printed the identical
+        // "PATs cannot be re-minted" paragraph, and the operator could not
+        // tell which one to fix. The contract is now: the ACTUAL cause first
+        // (here the missing secret), then the remedy hint -- both in the
+        // same [Publish PR Skipped] line, still without aborting the sprint.
         check(
-            !publishPrLogs.some((l) => /the credential store has no entry named/.test(l)),
-            `expected no Publish PR log to leak the raw provision_vcs_auth failure text, got logs: ${JSON.stringify(publishPrLogs)}`,
+            publishPrLogs.some((l) => /\[Publish PR Skipped\]/.test(l)
+                && /the credential store has no entry named 'azdevops_pat'/.test(l)
+                && /PATs cannot be re-minted server-side/.test(l)),
+            `expected the Publish PR Skipped log to lead with the actual provisioning cause before the remedy hint, got logs: ${JSON.stringify(publishPrLogs)}`,
         );
     });
 });

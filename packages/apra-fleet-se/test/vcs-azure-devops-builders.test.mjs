@@ -148,6 +148,23 @@ test('azure-devops create-pull-request: each coordinate is percent-encoded per U
     );
 });
 
+// GitHub issue #502: a repoRef parsed from a LEGACY visualstudio.com remote
+// must still drive the REST call at the modern host -- the REST API serves
+// every org at dev.azure.com and the legacy host is only a git/web alias.
+test('azure-devops create-pull-request: a repoRef derived from a legacy visualstudio.com remote calls the modern REST host', async () => {
+    const { AzureDevOpsVCS } = await import('../fleet-sprint/vcs-providers/azure-devops.mjs');
+    for (const url of [
+        'https://apralabs.visualstudio.com/DefaultCollection/e2e-fleet-testing/_git/fleet-e2e-toy',
+        'apralabs@vs-ssh.visualstudio.com:v3/apralabs/e2e-fleet-testing/fleet-e2e-toy',
+    ]) {
+        const repoRef = AzureDevOpsVCS.parseRepoRef(url);
+        assert.ok(repoRef, `expected ${url} to parse`);
+        const built = buildCreatePrCommand({ ...PR_PARAMS, repoRef, os: 'linux' });
+        assert.equal(built.command, POSIX_CREATE_PR, `unexpected command for ${url}`);
+        assert.ok(!/visualstudio\.com/.test(built.command), 'the legacy host must never appear in a REST call');
+    }
+});
+
 const COMMENT_PARAMS = Object.freeze({
     provider: 'azure-devops',
     repoRef: REPO_REF,

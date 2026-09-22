@@ -118,18 +118,30 @@ async function listCredentialStoreNames(fleetApi) {
  * it references and what remedy text a missing one prints. No provider name,
  * no auth-mode knowledge and no raw credential value appears here.
  *
- * @param {{ provider: string, base: object, repoRef: object|null, fleetApi: object }} ctx
+ * `remoteUrl` / `remoteReadError` are passed through so a hook can (a) bind
+ * the credential to the host the member actually pushes to and (b) word an
+ * underivable-org error by its real cause -- an unreadable remote is not a
+ * malformed one. A hook may also return a `note`, logged verbatim: an
+ * advisory the operator should see (e.g. an ssh remote the PAT cannot
+ * serve) that is NOT a failure.
+ *
+ * @param {{ provider: string, base: object, repoRef: object|null, fleetApi: object,
+ *           secretName?: string, remoteUrl?: string, remoteReadError?: string|null,
+ *           log?: Function, logPrefix?: string }} ctx
  * @returns {Promise<object>} the arguments to send
  */
-async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi, secretName }) {
+async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi, secretName, remoteUrl, remoteReadError, log = () => {}, logPrefix = '' }) {
     const impl = getVcsProvider(provider);
     if (!impl || typeof impl.buildProvisionArgs !== 'function') return base;
 
     const availableSecrets = await listCredentialStoreNames(fleetApi);
-    const built = impl.buildProvisionArgs({ base, repoRef, availableSecrets, secretName });
+    const built = impl.buildProvisionArgs({ base, repoRef, availableSecrets, secretName, remoteUrl, remoteReadError });
     if (built && typeof built.error === 'string') throw new Error(built.error);
     if (!built || !built.args || typeof built.args !== 'object') {
         throw new Error(`ERROR: VCS provider '${provider}' returned no provision arguments for member '${base.member_name}'.`);
+    }
+    if (typeof built.note === 'string' && built.note.trim()) {
+        log(`${logPrefix}: note: ${built.note.trim()}`);
     }
     return built.args;
 }
@@ -221,6 +233,7 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // outside the try. See parseRepoScopeFromRemoteUrl (apra-fleet-5co8.1.2).
     let remoteUrl = '';
     let remoteReadFailed = false;
+    let remoteReadError = null;
     // apra-fleet-8zr3-adjacent: a caller that already resolved the sprint's
     // origin remote via a real git-capable member (e.g. Publish PR's
     // publishGitMember) passes it here instead of making THIS function shell
@@ -234,8 +247,18 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         try {
             const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
             remoteUrl = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
+            if (!remoteUrl) {
+                // A non-ok / empty read is not a parse failure either: keep
+                // the reason so a provider hook that needs the remote can
+                // say "could not be read" instead of "not a recognized URL".
+                const detail = remoteRes && !remoteRes.ok
+                    ? String(remoteRes.error || remoteRes.output || 'git remote get-url origin failed').trim()
+                    : 'git remote get-url origin printed nothing';
+                remoteReadError = detail || 'git remote get-url origin printed nothing';
+            }
         } catch (remoteErr) {
             remoteReadFailed = true;
+            remoteReadError = remoteErr.message;
             log(`${logPrefix}: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
         }
     }
@@ -329,6 +352,10 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         repoRef: derivedRef,
         fleetApi,
         secretName: azdevopsPatSecretName,
+        remoteUrl,
+        remoteReadError,
+        log,
+        logPrefix,
     });
     const provisionRes = await fleetApi.provisionVcsAuth(provisionArgs);
     const provisionText = resultText(provisionRes);
@@ -624,8 +651,13 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         } catch (resolveErr) {
             log(`${logPrefix}: could not resolve member '${member}'s VCS provider to look up an auth remedy hint (falling back to the raw provisioning error): ${resolveErr.message}`);
         }
+        // The provider's remedy text is generic ("PATs cannot be re-minted
+        // server-side ..."); on its own it hid WHY provisioning failed --
+        // an unreadable remote, a missing credential-store entry and a dead
+        // PAT all printed the same paragraph. Keep the hint, but lead with
+        // the actual cause so the operator fixes the right thing.
         const message = remedyHint
-            ? `Could not provision a push+pr credential for member '${member}': ${remedyHint}`
+            ? `Could not provision a push+pr credential for member '${member}': ${provisionErr.message} -- ${remedyHint}`
             : provisionErr.message;
         log(`${logPrefix}: PR-capable credential provisioning failed for member '${member}'; degrading (not throwing): ${message}`);
         return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true };
