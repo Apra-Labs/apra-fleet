@@ -319,7 +319,7 @@ session (`session.id`, the current session ID or `null`), work folder
 Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
 `id`, `type`, `host`, `username?`, `os`, `shell?`, `folder`,
-`repo_remote_url?`, `vcsProvider?`, `connectivity`, `offline?`,
+`repo_remote_url?`, `vcsProvider?`, `gitAccess?`, `connectivity`, `offline?`,
 `llmProvider`, `llm_cli?`, `tokenUsage?`, `session?`, `resources?`,
 `branch?`, `cloud?`. `MemberDetailResult`, like `RegisterMemberOptions` and
 `UpdateMemberOptions`, is pinned against the server by

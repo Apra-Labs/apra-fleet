@@ -94,7 +94,15 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
     // below plus the A/B mock sprint in
     // mock-sprint-regression-failure-never-gates.test.mjs; the Final Review
     // destructuring only documents the intended order for a reader.
-    const finalVerdictIdx = runnerSource.indexOf('const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount } = await runFinalReviewPhase({');
+    // apra-fleet-rp7a.1: RE-ANCHORED (per this pin's own instruction below --
+    // "re-anchor this pin if the destructuring drifted, never delete it"). The
+    // anchor used to spell out the full destructuring list, so adding a field
+    // to the phase's return value broke an ordering pin that has nothing to do
+    // with which fields come back. It now anchors on the CALL SITE itself,
+    // exactly like harvestIdx below -- that is the statement whose position
+    // this test is actually asserting about, and it cannot drift when the
+    // returned fields change.
+    const finalVerdictIdx = runnerSource.indexOf('await runFinalReviewPhase({');
     // apra-fleet-3swo.6.9: Harvest moved into phases/harvest.mjs, taking its
     // phase(`Harvest C...`) literal with it, so the old runner.js anchor no
     // longer resolves. Re-anchored onto the Harvest CALL SITE -- the same

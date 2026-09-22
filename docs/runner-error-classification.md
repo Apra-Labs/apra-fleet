@@ -100,6 +100,66 @@ instructions match what the runner enforces.
   turning a real verdict into a run failure -- the sprint's work product
   (the verdict) and its publish step are treated as separable outcomes.
 
+## Stall/cycle-evaluation and dispatch eligibility must share one predicate
+
+The cycle-evaluation loop asks "is there still work to do?" and the dispatcher
+asks "what's ready to dispatch right now?" -- and if those two questions are
+answered by two independently-written eligibility checks, they can disagree
+about a bead's status, and reconciling that disagreement (a bead the
+dispatcher will never touch, but the stall detector still counts as "open")
+is a stalled sprint that has actually already finished. Concretely: a
+deferred bead is invisible to the dispatcher (it never appears in the
+ready-work query), but if the cycle-evaluation / stall-detector logic
+separately re-derives "still open" from raw status rather than from the same
+partitioning the dispatcher used, deferred beads sit forever in the "open"
+bucket. Every cycle then dispatches nothing (correctly -- there's nothing
+ready), evaluation reports the same non-zero open count every time, the
+closed-count high-water mark never advances, and the run aborts as a false
+`SPRINT_STALLED` even though every bead the dispatcher considers in scope is
+actually closed or deliberately deferred.
+
+The fix is structural, not a threshold tweak: cycle evaluation and the
+stall/closing-count logic must call the *same* deferred-partitioning function
+the dispatcher's ready-work query is built from, so the two views of
+"eligible work" cannot drift apart by construction. A deferred bead is not
+silently dropped from every report, either -- it is named explicitly on
+every terminal path (the exit log line, a typed error's own deferred-ids
+field, the final-verdict prompt, and the sprint analysis artifact) so a human
+reading any one of those surfaces can see exactly which beads were skipped
+and why, rather than a bare "N still open" count with no way to tell deferred
+from genuinely blocked.
+
+## A closed sprint root must short-circuit the cycle loop, independent of the review-verdict exit
+
+The existing "exit the cycle loop" condition keys off the review verdict
+reaching an approved state with nothing left open. That condition can become
+permanently unreachable in one specific case: the sprint's root/target
+bead(s) get closed as a side effect of something other than the reviewer's
+own verdict path (e.g. an integration-test pass force-closing the epic once
+it verifies the work independently) -- and once nothing remains in scope to
+route through review, the review step that would normally flip the verdict
+to "approved" never runs again, so the verdict-based exit condition can never
+become true. Without a second, independent exit check, the loop grinds
+forward every remaining cycle until stall detection eventually (mis)reads the
+standstill as a stall, even though the sprint's own configured scope is
+already fully closed.
+
+The fix adds a second, narrower short-circuit: after any review dispatch that
+would have had a fair chance to run this cycle, check directly whether every
+configured root/target bead id is already closed, and if so exit straight
+into the finish phases -- independent of whatever the review-verdict state
+happens to be. Two ordering details make this safe rather than a
+race-prone shortcut:
+- It must run *after* the cycle's own review/re-review dispatch has already
+  had its chance, so a root that closes via a side effect in the same cycle
+  a genuinely fresh re-review would otherwise run doesn't skip that
+  re-review -- a stale "approved" verdict from an earlier cycle must never be
+  allowed to ride through on this shortcut.
+- It must be guarded on the sprint actually having a configured root/target
+  scope in the first place; a whole-database fallback sprint (no configured
+  root) has no "root bead" to check and always falls through to the ordinary
+  goal-priority/stall logic unaffected.
+
 ## A max_turns/timeout streak is not automatically a failure
 
 A doer streak that exhausts `max_turns` or times out is not, by itself,

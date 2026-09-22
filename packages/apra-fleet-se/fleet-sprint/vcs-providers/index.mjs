@@ -206,6 +206,51 @@
  *                                          //   re-mintable" -- the
  *                                          //   pre-existing GitHub/generic
  *                                          //   behavior, unchanged.
+ *     permissionScope: {                  // OPTIONAL; permission-scope axis.
+ *       rules: RegExp[],                  //   Patterns whose match means "the
+ *       describe?: (raw) => string        //   identity was understood and the
+ *     }                                   //   PRINCIPAL lacks the granted
+ *                                          //   permission/scope for this
+ *                                          //   operation". Two things follow
+ *                                          //   from a match, and neither is
+ *                                          //   expressible through `rules` +
+ *                                          //   `precedence` alone:
+ *                                          //   (1) the verdict is AUTH_DENIED
+ *                                          //   OUTRIGHT, ahead of every kind
+ *                                          //   in KIND_PRECEDENCE -- because
+ *                                          //   a host's permission refusal
+ *                                          //   usually arrives wrapped in the
+ *                                          //   host's GENERIC rejection tail
+ *                                          //   (for git: "failed to push some
+ *                                          //   refs", which DIVERGED matches
+ *                                          //   and which outranks AUTH), and
+ *                                          //   reordering a whole provider's
+ *                                          //   `precedence` to fix one rule
+ *                                          //   would re-read every other
+ *                                          //   ambiguous text too;
+ *                                          //   (2) the failure is NOT
+ *                                          //   self-healable -- re-minting the
+ *                                          //   same principal's credential
+ *                                          //   reproduces the same permission
+ *                                          //   set, so runGitStep returns it
+ *                                          //   immediately with no
+ *                                          //   onAuthFailure call and no
+ *                                          //   retry.
+ *                                          //   `describe(raw)` returns the
+ *                                          //   operator-facing referral
+ *                                          //   (which resource, which missing
+ *                                          //   permission, what an operator
+ *                                          //   must grant) that travels on
+ *                                          //   classifyFailure()'s
+ *                                          //   `operatorReferral`, so the
+ *                                          //   provider-specific wording never
+ *                                          //   leaks into a shared caller.
+ *                                          //   Omitting this hook means "this
+ *                                          //   provider has no
+ *                                          //   permission-scope rules" --
+ *                                          //   every AUTH_DENIED it produces
+ *                                          //   keeps today's self-heal
+ *                                          //   treatment.
  *   }
  *
  * The manifest is an explicit import list rather than a directory scan on
@@ -321,6 +366,32 @@ export function registerVcsProvider(impl) {
         }
         if (typeof remedy.hint !== 'string' || !remedy.hint.trim()) {
             throw new Error(`ERROR: VCSModule: provider "${impl.name}" has an \`authRemedy\` with no non-empty string \`hint\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
+        }
+    }
+    // The permission-scope axis. OPTIONAL (omitting it means "this provider
+    // declares no permission-scope rules", i.e. today's behavior for every
+    // AUTH_DENIED it produces), but validated up front for the same reason as
+    // the hooks above: a malformed hook must fail at registration, not inside
+    // classifyFailure() where the error would mask the very failure being
+    // classified.
+    if (impl.permissionScope != null) {
+        const scope = impl.permissionScope;
+        if (typeof scope !== 'object') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`permissionScope\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
+        }
+        if (!Array.isArray(scope.rules) || scope.rules.length === 0) {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`permissionScope\` with no non-empty \`rules\` array.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
+        }
+        for (const re of scope.rules) {
+            if (!(re instanceof RegExp)) {
+                throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-RegExp entry in \`permissionScope.rules\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
+            }
+            if (re.global) {
+                throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a global (/g) entry in \`permissionScope.rules\` -- a /g regex carries lastIndex between calls and would make classifyFailure non-deterministic.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
+            }
+        }
+        if (scope.describe != null && typeof scope.describe !== 'function') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a \`permissionScope\` with a non-function \`describe\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
         }
     }
     if (impl.builders != null) {

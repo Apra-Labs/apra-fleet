@@ -182,15 +182,50 @@ function provisionOutcome(result, text) {
 // when the response carries no expiry metadata -- PAT-mode credentials never
 // expire) so a caller can cache it and skip a future redundant call.
 //
-// `gitAccess` defaults to 'push' -- the shared self-heal/preflight callers
-// below NEVER override it. The only callers permitted to pass a higher
-// level ('push+pr') are the two PR-raising call sites (Publish PR,
-// finalizeAbort), each via provisionPrCapableAuthForMember, invoked
-// immediately before their PR-creation dispatch -- never at sprint setup,
-// never from this shared self-heal/preflight path. See apra-fleet-tfx.8 and
-// the just-in-time credential-scoping ADR (docs/adr-server-never-acts-on-repo.md)
-// for the rogue-dispatch blast-radius rationale: widening this default would
-// give every member standing pull_requests:write for the whole sprint.
+// `gitAccess` defaults to DEFAULT_SYNC_GIT_ACCESS ('push') -- the shared
+// self-heal/preflight callers below NEVER override it. The only callers
+// permitted to pass a higher level ('push+pr') are the two PR-raising call
+// sites (Publish PR, finalizeAbort), each via provisionPrCapableAuthForMember,
+// invoked immediately before their PR-creation dispatch -- never at sprint
+// setup, never from this shared self-heal/preflight path. See
+// apra-fleet-tfx.8 and the just-in-time credential-scoping ADR
+// (docs/adr-server-never-acts-on-repo.md) for the rogue-dispatch blast-radius
+// rationale: widening this default would give every member standing
+// pull_requests:write for the whole sprint.
+//
+// DEFAULT_SYNC_GIT_ACCESS is exported (not just a bare literal) so the Sync-
+// step workflows-permission preflight below (apra-fleet-2wdc.6) can assert
+// against the SAME value this function actually requests, rather than
+// duplicating the 'push' literal and risking the two silently drifting apart.
+export const DEFAULT_SYNC_GIT_ACCESS = 'push';
+
+// GitHub App access levels that request the 'workflows' permission -- mirrors
+// src/services/github-app.ts's mapAccessLevel() table (apra-fleet-2wdc.1):
+// push, push+pr, admin and full carry it; read and issues do not. Duplicated
+// here, not imported, because fleet-sprint is the GENERIC engine
+// (docs/generic-engine-boundary.md) and a sprint run can target ANY fleet
+// server, not necessarily one built from this same checkout.
+//
+// Being a hand-maintained copy, this set cannot by itself catch a regression
+// in mapAccessLevel(): a change there would just leave this stale and silently
+// wrong. The guard is therefore on the SERVER side, where both halves are
+// readable at once -- tests/workflows-access-level-table-parity.test.ts parses
+// this literal out of this file and asserts it matches mapAccessLevel()'s
+// table exactly, so editing one without the other fails the server suite.
+// That test is the reason this copy is safe to keep; do not delete it.
+const GITHUB_ACCESS_LEVELS_WITH_WORKFLOWS = new Set(['push', 'push+pr', 'admin', 'full']);
+
+/**
+ * Pure lookup: does GitHub App access level `gitAccess` carry the 'workflows'
+ * permission? See GITHUB_ACCESS_LEVELS_WITH_WORKFLOWS above for the table this
+ * mirrors and why it is a local copy.
+ * @param {string} gitAccess
+ * @returns {boolean}
+ */
+export function accessLevelGrantsWorkflowsPermission(gitAccess) {
+    return GITHUB_ACCESS_LEVELS_WITH_WORKFLOWS.has(gitAccess);
+}
+
 /**
  * @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string, resolvedProvider?: { provider: string, authMode: string|null } }} opts
  * @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
@@ -222,7 +257,7 @@ function detectVcsProviderFromRemote(remoteUrl) {
     return (impl && impl.name) || null;
 }
 
-async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push', azdevopsPatSecretName, remoteUrlOverride, resolvedProvider }) {
+async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = DEFAULT_SYNC_GIT_ACCESS, azdevopsPatSecretName, remoteUrlOverride, resolvedProvider }) {
     let repos;
     let derivedRepo = null;
     let derivedRef = null;
@@ -999,6 +1034,189 @@ export function createVcsAuthPreflightCallback(opts = {}) {
             log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}'${expiresAt ? ` (expires ${expiresAt.toISOString()})` : ''}.`);
         } catch (err) {
             log(`[Sync] preflight: provision_vcs_auth failed for member '${member}' (continuing -- the existing credential may still be valid; the reactive self-heal will fire if a git/dolt command actually fails): ${err.message}`);
+        }
+    };
+}
+
+/**
+ * Sync-step "will this push be rejected for missing the 'workflows'
+ * permission?" preflight (apra-fleet-2wdc.6). Distinct from
+ * createVcsAuthPreflightCallback above: that one keeps a member's credential
+ * FRESH; this one warns, BEFORE dispatch, when the credential that preflight
+ * ensures is fresh was never going to carry a permission this specific push
+ * needs -- so an operator sees a clear, named referral instead of a raw
+ * GitHub 422 (or a misclassified rejection) surfacing mid-dispatch. See the
+ * parent bug apra-fleet-2wdc: the App installation grants 'workflows', but a
+ * minted token that never REQUESTED it gets rejected pushing any
+ * .github/workflows/** change, on every git_access level that lacks it.
+ *
+ * NEVER mints a token to find out: resolves the member's VCS provider via the
+ * same read-only resolveProvider() lookup provisionVcsAuthForMember itself
+ * uses, then reads the access level that member is actually REGISTERED at off
+ * the same tool (readRegisteredGitAccess below) -- both read-only member_detail
+ * calls, no POST /access_tokens -- and checks that level against
+ * accessLevelGrantsWorkflowsPermission()'s local table.
+ *
+ * WHICH level is checked matters, and is the whole point of apra-fleet-rp7a.4.
+ * This used to test `gitAccess` -- an option no caller ever passes, defaulting
+ * to DEFAULT_SYNC_GIT_ACCESS ('push'), which apra-fleet-2wdc.1 made a level
+ * that DOES carry 'workflows'. That made the check a constant `true` and the
+ * referral unreachable in every configuration the engine can produce: inert
+ * defence, not working defence. The level now comes from the member registry
+ * (member_detail's `gitAccess`, set by register_member/update_member's
+ * git_access), so the members genuinely at risk -- registered 'read' or
+ * 'issues', or holding a credential minted before apra-fleet-2wdc.1 and not
+ * yet re-provisioned -- are the ones that get warned. `opts.gitAccess` is kept
+ * ONLY as the fallback for a member whose record carries no explicit level, in
+ * which case the provisioning default really is what will be requested.
+ *
+ * Cost/safety:
+ *   - Reads resolve per MEMBER, not per dispatch: any outcome that
+ *     proves this member can never produce a warning (non-GitHub, PAT mode, or
+ *     a level that carries 'workflows') is cached in `silentMembers` and the
+ *     member is skipped outright from then on -- so the steady state for a
+ *     healthy fleet is zero reads. The provider lookup also short-circuits
+ *     before the level read for any non-GitHub-App member, so no member ever
+ *     pays for a level it cannot be judged on. An AT-RISK outcome is
+ *     deliberately NOT cached -- re-provisioning the member at a carrying
+ *     level is exactly the remediation the referral asks for, and a cached
+ *     verdict would keep crying wolf after the operator did it.
+ *   - The diff check, when reached, is purely LOCAL: `git rev-list --count`
+ *     then `git diff --name-only`, both against refs already present on
+ *     `member`'s checkout (the sprint branch `syncMemberBefore` just synced,
+ *     and `origin/<baseBranch>` from this sprint's own branch setup) -- no
+ *     extra `git fetch`, so no added per-round remote round trip.
+ *   - Skipped entirely (no diff command run at all) when `branch` has no
+ *     commits ahead of `baseBranch`.
+ *   - NEVER throws: any failure (git command error, provider-resolution
+ *     failure, malformed output) is logged and swallowed, exactly like
+ *     createVcsAuthPreflightCallback above -- a preflight hiccup must never
+ *     abort a dispatch that would otherwise succeed.
+ *   - Non-GitHub providers are silently skipped -- never warn.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function, gitAccess?: string }} opts
+ * @returns {(member: string, branch: string, baseBranch: string) => Promise<void>}
+ */
+/**
+ * The git access level `member` is REGISTERED at, straight off member_detail
+ * (register_member/update_member's git_access, surfaced as `gitAccess` --
+ * src/tools/member-detail.ts). Returns null when the member record names no
+ * level, or when the response is anything this cannot read as JSON.
+ *
+ * Deliberately a separate read from resolveProvider()'s, even though both come
+ * off the same tool: resolveProvider()'s return shape is a pinned contract
+ * several suites assert field-for-field, and widening it to carry a field only
+ * this preflight wants would make every one of those callers pay for a
+ * concern none of them have. The cost is one extra member_detail call per
+ * GitHub-App member per sprint (the caller caches its verdict; see
+ * createWorkflowsPermissionPreflightCallback's silentMembers).
+ *
+ * Best-effort by design -- an absent/unparseable level is NOT an error here,
+ * it just means the caller falls back to its provisioning default. A genuinely
+ * failing memberDetail() call still rejects, and the caller's catch turns that
+ * into the same swallowed degraded-check log as any other preflight hiccup.
+ *
+ * @param {string} member
+ * @param {{ memberDetail: (opts: { member_name: string, format?: string }) => Promise<any> }} fleetApi
+ * @returns {Promise<string|null>}
+ */
+async function readRegisteredGitAccess(member, fleetApi) {
+    const res = await fleetApi.memberDetail({ member_name: member, format: 'json' });
+    let parsed;
+    try {
+        parsed = JSON.parse(resultText(res));
+    } catch {
+        // member_detail answers with plain prose (not JSON) when the member
+        // cannot be resolved at all -- but that case has already surfaced as a
+        // typed throw from resolveProvider() before this is ever reached, so
+        // there is nothing left to report here.
+        return null;
+    }
+    const level = parsed && typeof parsed.gitAccess === 'string' ? parsed.gitAccess.trim() : '';
+    return level || null;
+}
+
+export function createWorkflowsPermissionPreflightCallback(opts = {}) {
+    const { callTool, command, log = () => {}, gitAccess: fallbackGitAccess = DEFAULT_SYNC_GIT_ACCESS } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+
+    /**
+     * Members already proven incapable of producing this warning (wrong
+     * provider, wrong auth mode, or an access level that carries 'workflows').
+     * Skipping them avoids re-reading member_detail on every single dispatch;
+     * see the cost note above for why at-risk members are NOT cached here.
+     * @type {Set<string>}
+     */
+    const silentMembers = new Set();
+
+    return async function warnIfWorkflowsPermissionMissing(member, branch, baseBranch) {
+        try {
+            if (!branch || !baseBranch || branch === baseBranch) return;
+            if (silentMembers.has(member)) return;
+
+            const { provider, authMode } = await resolveProvider(member, { fleetApi });
+            if (provider !== 'github') {
+                silentMembers.add(member);
+                return;
+            }
+            if (authMode !== 'github-app') {
+                // PAT mode, DELIBERATELY out of scope (apra-fleet-rp7a.4 item
+                // 3 -- recorded here rather than left silent). A PAT missing
+                // the 'workflow' scope is rejected by exactly the same GitHub
+                // rule, so the failure mode is real; what is missing is any
+                // way to PREDICT it from here. A PAT's granted scopes are not
+                // derivable from anything the fleet registry holds: `git_access`
+                // is a GitHub-App-only mapping onto installation-token
+                // permissions (src/services/github-app.ts mapAccessLevel), and
+                // the PAT itself is an opaque operator-supplied secret whose
+                // scopes are only observable by calling GitHub with it and
+                // reading the X-OAuth-Scopes response header -- a network call
+                // this advisory, never-throwing, never-blocking preflight must
+                // not make on every dispatch, and which would need the secret
+                // VALUE, which the engine never handles. Warning off the
+                // registered level anyway would be a fabricated verdict (the
+                // level says nothing about a PAT), and warning unconditionally
+                // would cry wolf at every correctly-scoped PAT member. So: no
+                // warning. PAT members find out from the push rejection, which
+                // classifyFailure() already recognizes and reports. Revisit
+                // only if the registry ever records a PAT's scopes at
+                // provisioning time -- then check them here the same way.
+                silentMembers.add(member);
+                return;
+            }
+
+            // The level this member's credential is ACTUALLY minted at, per the
+            // registry; the caller-supplied default applies only when the
+            // member record names no level of its own.
+            const registeredGitAccess = await readRegisteredGitAccess(member, fleetApi);
+            const effectiveGitAccess = registeredGitAccess || fallbackGitAccess;
+            const levelSource = registeredGitAccess ? 'registered' : 'default';
+            if (accessLevelGrantsWorkflowsPermission(effectiveGitAccess)) {
+                silentMembers.add(member);
+                return;
+            }
+
+            const countRes = await command(`git rev-list --count origin/${baseBranch}..${branch}`, { member_name: member, silent: true, failSoft: true });
+            const aheadCount = countRes && countRes.ok ? parseInt(String(countRes.output || '').trim(), 10) : NaN;
+            if (!Number.isFinite(aheadCount) || aheadCount <= 0) return;
+
+            const diffRes = await command(`git diff --name-only origin/${baseBranch}...${branch} -- .github/workflows`, { member_name: member, silent: true, failSoft: true });
+            if (!diffRes || !diffRes.ok) return;
+            const touchedPaths = String(diffRes.output || '').split('\n').map((line) => line.trim()).filter(Boolean);
+            if (touchedPaths.length === 0) return;
+
+            log(
+                `[Sync] OPERATOR REFERRAL: branch '${branch}' touches workflow file(s) [${touchedPaths.join(', ')}] but member ` +
+                `'${member}''s minted credential (git_access '${effectiveGitAccess}', ${levelSource}) was not requested with the 'workflows' permission -- ` +
+                `GitHub WILL reject this push ("refusing to allow a GitHub App to create or update workflow ... without ` +
+                `workflows permission"). Re-provision '${member}' with an access level that carries 'workflows' ` +
+                // Listed from the table itself, never spelled out again by
+                // hand: a remedy naming levels that no longer carry the
+                // permission is worse than no remedy at all.
+                `(${[...GITHUB_ACCESS_LEVELS_WITH_WORKFLOWS].join(', ')}) before this dispatch publishes.`,
+            );
+        } catch (err) {
+            log(`[Sync] preflight: workflows-permission check failed for member '${member}' on branch '${branch}' (continuing -- advisory only, never blocks dispatch): ${err.message}`);
         }
     };
 }

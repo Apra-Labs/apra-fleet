@@ -308,4 +308,41 @@ describe('withGitSync against a real git origin (no network, no credentials)', {
         assert.equal(fixture.localStatus(), '', 'the hard reset left a clean working tree');
         assert.equal(gitSync.openBracketCount(), 0, 'the bracket closed');
     });
+
+    // -------------------------------------------------------------------
+    // 5. apra-fleet-2wdc.8 (Track B2): a real push of a .github/workflows
+    //    change through the engine's own Sync bracket. GitHub's own
+    //    "refusing to allow ... without workflows permission" rejection
+    //    (apra-fleet-2wdc's actual bug) is server-side and not reproducible
+    //    against a local bare repo -- that gap is the operator referral
+    //    recorded on the bead. What IS reproducible, and is exactly what
+    //    this pins, is that the bracket's own git plumbing (the composed
+    //    `git add`/`git push`/refspec handling in member-sync.mjs) does not
+    //    itself reject or mangle a path under .github/workflows/ -- e.g. by
+    //    quoting it wrong, truncating the nested directory, or otherwise
+    //    tripping over the embedded '/'.
+    // -------------------------------------------------------------------
+    test('G-push: a change under .github/workflows/ pushes cleanly through the bracket, landing on origin at the exact nested path', async () => {
+        fixture = createGitRepoFixture({ member: 'workflows-member', prefix: 'j918-6-1-wf-' });
+        const gitSync = makeGitSync(fixture);
+
+        const workflowYaml = 'name: ci\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n';
+        let committedSha = null;
+        const result = await gitSync.withGitSync('workflows-member', true, async () => {
+            committedSha = fixture.memberCommitFile('.github/workflows/ci.yml', workflowYaml, 'add workflow change');
+            return 'dispatch-ok';
+        });
+
+        assert.equal(result, 'dispatch-ok', 'the bracket returns the dispatch result untouched');
+
+        // REAL STATE: the workflow-file commit really landed on origin, at
+        // the exact nested path, with its exact content -- not rejected, not
+        // mangled, not silently dropped.
+        assert.equal(fixture.originTip(), committedSha, 'origin now points at the doer commit -- the push of the workflow-file change really landed');
+        assert.equal(fixture.originFileAt('.github/workflows/ci.yml'), workflowYaml.trimEnd(), 'the workflow file landed on origin at the exact nested path with its exact content');
+        assert.deepEqual(fixture.originSubjects(), ['add workflow change', 'seed'], 'linear history: no merge/rebase/rewrite was needed for an uncontested push');
+        assert.equal(fixture.localStatus(), '', 'the working tree is clean after the bracket');
+        assert.equal(fixture.localRebaseInProgress(), false, 'no rebase/merge state left behind');
+        assert.equal(gitSync.openBracketCount(), 0, 'the bracket closed');
+    });
 });

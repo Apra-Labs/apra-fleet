@@ -219,6 +219,12 @@
  * @property {string} folder - Working directory on the target machine
  * @property {string} [repo_remote_url] - Origin URL of the git repo in `folder`, when known
  * @property {string} [vcsProvider] - VCS provider configured for this member
+ * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [gitAccess] - Git access level
+ *   this member's VCS credentials are minted at (register_member/update_member's git_access). Absent
+ *   when the member was registered without an explicit level. Consumers that need to know whether a
+ *   minted token carries a given permission (e.g. GitHub's 'workflows', required to push any
+ *   .github/workflows/** change) must read THIS, not their own provisioning default -- the two differ
+ *   exactly for the members at risk.
  * @property {Object} connectivity - Connectivity check result (status, latencyMs, auth, keyPath, or error)
  * @property {boolean} [offline] - Set when the member could not be reached
  * @property {string} llmProvider - LLM provider for this member (default: "claude")
