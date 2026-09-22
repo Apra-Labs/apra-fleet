@@ -27,8 +27,11 @@ node scripts/sandbox-deploy.mjs teardown --sprint-id "<that id>"   # LAST step, 
 ```
 
 Use the printed `APRA_FLEET_PORT` / `SUPERVISOR_PORT` / `APRA_FLEET_DATA_DIR`
-/ service token path (`<sandbox>/.apra-fleet/fleet.key`) whenever a step talks
-to the deployed instance -- never `7523`/`8787`, never `~/.apra-fleet`.
+whenever a step talks to the deployed instance -- never `7523`/`8787`. The
+service token is the real `~/.apra-fleet/fleet.key` (shared with production
+by design; falls back to `<FLEET_SE_DATA_DIR>/private/token` when absent) --
+unlike the ports and data dirs above, it is NOT rooted under the sandbox's
+own directory tree.
 `env` exiting 1 means no sandbox exists for this id (report it; do not test
 against production). See `deploy.md`'s Teardown for what `teardown` checks
 before it deletes anything.

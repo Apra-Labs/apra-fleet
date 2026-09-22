@@ -364,9 +364,11 @@ own, for diagnosis, with the same `--sprint-id`):
 
 Exit 0 = sandbox up; the values file is printed to stdout. Put its path,
 `APRA_FLEET_PORT`, `SUPERVISOR_PORT`, and the service token path
-(`<sandbox>/.apra-fleet/fleet.key`) in `notes`, return `deployed: true`,
-and LEAVE IT RUNNING. Exit 1 = failed; `up` has already torn down what it
-started -- return `deployed: false` with the stderr.
+(`~/.apra-fleet/fleet.key`, real home, shared with production by design;
+falls back to `<FLEET_SE_DATA_DIR>/private/token` when absent) in `notes`,
+return `deployed: true`, and LEAVE IT RUNNING. Exit 1 = failed; `up` has
+already torn down what it started -- return `deployed: false` with the
+stderr.
 
 Not registered for OS auto-start is guaranteed by construction (consequence 1
 above: both env vars are set), so no `launchctl`/`schtasks` survey is needed.
