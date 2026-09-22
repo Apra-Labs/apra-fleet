@@ -385,3 +385,66 @@ describe('VCSModule.classifyFailure -- purity (AC3)', () => {
         assert.strictEqual(VCSModule.toGitVerdict, toGitVerdict);
     });
 });
+
+// =============================================================================
+// apra-fleet-2wdc.5 -- the GitHub workflow-file permission refusal
+// (vcs-providers/github.mjs's WORKFLOW_PERMISSION_REFUSAL / `permissionScope`
+// hook, added by apra-fleet-2wdc.3). Two wordings the fleet can actually
+// produce: GitHub App (fleet-minted installation tokens) and Personal Access
+// Token (an operator-supplied PAT). Both arrive wrapped in git's universal
+// "error: failed to push some refs" tail -- the DIVERGED trap this whole fix
+// exists to avoid -- so each sample below carries that tail too, exactly as
+// real git would emit it.
+// =============================================================================
+const GITHUB_APP_WORKFLOW_REFUSAL =
+    '! [remote rejected]        feat/x -> feat/x (refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without workflows permission)\n' +
+    "error: failed to push some refs to 'https://github.com/Apra-Labs/apra-fleet.git'";
+const PAT_WORKFLOW_REFUSAL =
+    '! [remote rejected]        feat/x -> feat/x (refusing to allow a Personal Access Token to create or update workflow .github/workflows/ci.yml without workflow scope)\n' +
+    "error: failed to push some refs to 'https://github.com/Apra-Labs/apra-fleet.git'";
+
+describe('VCSModule.classifyFailure -- GitHub workflow-permission refusal (apra-fleet-2wdc.5)', () => {
+    for (const [label, refusalText] of [
+        ['GitHub App', GITHUB_APP_WORKFLOW_REFUSAL],
+        ['Personal Access Token', PAT_WORKFLOW_REFUSAL],
+    ]) {
+        test(`the ${label} wording classifies AUTH_DENIED, non-retryable, permissionScope:true, with an operator referral naming the path and the missing permission`, () => {
+            const result = classifyFailure(refusalText, { provider: 'github' });
+            assert.strictEqual(result.kind, K.AUTH_DENIED, `expected AUTH_DENIED, got ${result.kind}`);
+            assert.strictEqual(result.retryable, false, 'a permission-scope refusal must never be retryable');
+            assert.strictEqual(result.permissionScope, true, 'must be flagged as a permission-scope refusal, not a plain AUTH_DENIED');
+            assert.ok(typeof result.operatorReferral === 'string' && result.operatorReferral.length > 0, 'expected a non-empty operator referral');
+            assert.match(result.operatorReferral, /\.github\/workflows\/ci\.yml/, 'operator referral must name the refused workflow path');
+            assert.match(result.operatorReferral, /workflows.{0,40}permission/is, "operator referral must name the missing 'workflows' permission");
+            assert.match(result.operatorReferral, /no self-heal/i, 'operator referral must state that no self-heal is attempted');
+        });
+    }
+
+    test('the DIVERGED trap: the generic "failed to push some refs" trailer ALONE classifies DIVERGED, but the FULL refusal text is AUTH_DENIED -- the permission-scope match must win over precedence', () => {
+        const trailerOnly = "error: failed to push some refs to 'https://github.com/Apra-Labs/apra-fleet.git'";
+        assert.strictEqual(
+            classifyFailure(trailerOnly, { provider: 'github' }).kind,
+            K.DIVERGED,
+            'sanity check: the bare trailer alone must still read as DIVERGED (this is the bug apra-fleet-2wdc fixes)',
+        );
+        assert.strictEqual(
+            classifyFailure(GITHUB_APP_WORKFLOW_REFUSAL, { provider: 'github' }).kind,
+            K.AUTH_DENIED,
+            'the full refusal (permission text + the same trailer) must classify AUTH_DENIED, never DIVERGED',
+        );
+    });
+
+    test('generic-git does NOT know this wording -- it is GitHub-only, so a portable provider still misreads it as the generic DIVERGED trailer', () => {
+        const result = classifyFailure(GITHUB_APP_WORKFLOW_REFUSAL, { provider: 'generic-git' });
+        assert.strictEqual(result.kind, K.DIVERGED, `expected generic-git to fall through to its DIVERGED trailer match, got ${result.kind}`);
+        assert.strictEqual(result.permissionScope, false, 'generic-git must never report permissionScope:true for a rule it does not own');
+    });
+
+    test('the same array is discoverable under rules[AUTH_DENIED] too (readers that walk `rules` directly still see it)', () => {
+        // Every existing AUTH_DENIED producer keeps its verdict; the workflow
+        // refusal is additionally declared under permissionScope, which is
+        // what changes its self-heal/retry treatment (git-topology.mjs).
+        const denied = classifyFailure(GITHUB_APP_WORKFLOW_REFUSAL, { provider: 'github' });
+        assert.strictEqual(denied.kind, K.AUTH_DENIED);
+    });
+});

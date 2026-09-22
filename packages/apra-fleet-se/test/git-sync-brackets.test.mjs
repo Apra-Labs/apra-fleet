@@ -12,7 +12,8 @@ import {
     parseUnmergedPaths,
     isMissingRemoteRefError,
 } from '../fleet-sprint/runner.js';
-import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
+import { GitDivergedError, GitSyncError, PostDispatchSyncError, isPostDispatchSyncFailure } from '../fleet-sprint/errors.mjs';
+import { isPermissionScopePostDispatchSyncFailure } from '../fleet-sprint/dispatch-failure.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 import { runCmd, sleep, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 import { balancedCallRange } from './helpers/balanced-call-scanner.mjs';
@@ -78,6 +79,24 @@ const REAL_DIVERGED_UNMERGED = stderrText('git/diverged/pull-with-unmerged-files
 const REAL_DIVERGED_CONFLICT = stderrText('git/diverged/merge-conflict');
 const REAL_AUTH_NO_USERNAME = stderrText('git/auth/could-not-read-username-prompts-disabled');
 const REAL_UNKNOWN_BAD_OBJECT = stderrText('git/unknown/not-a-valid-object-name');
+
+// -----------------------------------------------------------------------------
+// apra-fleet-2wdc.5 -- the GitHub workflow-file permission refusal
+// (vcs-providers/github.mjs's WORKFLOW_PERMISSION_REFUSAL / `permissionScope`
+// hook, added by apra-fleet-2wdc.3). Not part of the recorded corpus above (it
+// is a documented, synthesized shape rather than a captured real-git sample --
+// see this file's own header comment on WORKFLOW_PERMISSION_REFUSAL for the
+// exact two-line git stderr shape this reproduces): GitHub's "refusing to
+// allow a <principal> to create or update workflow <path>" rejection wrapped
+// in git's universal "error: failed to push some refs" tail. Two wordings --
+// GitHub App (fleet-minted installation tokens) and Personal Access Token (an
+// operator-supplied PAT) -- are the two the fleet can actually produce.
+const GITHUB_APP_WORKFLOW_REFUSAL =
+    '! [remote rejected]        feat/x -> feat/x (refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without workflows permission)\n' +
+    "error: failed to push some refs to 'https://github.com/Apra-Labs/apra-fleet.git'";
+const PAT_WORKFLOW_REFUSAL =
+    '! [remote rejected]        feat/x -> feat/x (refusing to allow a Personal Access Token to create or update workflow .github/workflows/ci.yml without workflow scope)\n' +
+    "error: failed to push some refs to 'https://github.com/Apra-Labs/apra-fleet.git'";
 
 // A tiny scripted command() mock: pass a map from cmd-substring -> a sequence
 // of results (each { ok } or { ok:false, error }). Records every call with its
@@ -1015,4 +1034,138 @@ test('(ported) syncMemberAfterOrdered: pushBeads:false (read-only bracket) with 
     check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
     const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
     check(doltPushCalls.length === 0, `D-push must not be invoked, saw ${doltPushCalls.length}`);
+});
+
+// =============================================================================
+// apra-fleet-2wdc.5 -- end-to-end coverage for the workflow-permission
+// refusal's syncMemberAfter/dispatch-outcome behavior (apra-fleet-2wdc.3/.4's
+// fixes). classifyFailure()'s own AUTH_DENIED/permissionScope/operatorReferral
+// verdict is pinned separately in test/vcs-classify-failure.test.mjs; this
+// suite pins what a caller (syncMemberAfter, and the dispatch-outcome
+// classifier dispatch-failure.mjs consumes) DOES with that verdict: no
+// rebase, no self-heal, no retry, and a thrown error that names the member,
+// the refused workflow path and the missing permission -- plus a regression
+// guard that the new permission-scope gate in runGitStep does not disturb the
+// pre-existing transient-retry or diverged-rebase-once paths.
+// =============================================================================
+for (const [label, refusalText] of [
+    ['GitHub App', GITHUB_APP_WORKFLOW_REFUSAL],
+    ['Personal Access Token', PAT_WORKFLOW_REFUSAL],
+]) {
+    test(`(2wdc.5) syncMemberAfter: a ${label} workflow-permission refusal is NOT rebased/self-healed/retried, and the thrown error names the member, the refused workflow path and the missing permission`, async () => {
+        const { command, calls } = makeCommandMock({
+            'git push': [fail(refusalText)],
+        });
+        let healCalls = 0;
+        const onAuthFailure = async () => { healCalls += 1; };
+        let err = null;
+        try {
+            await syncMemberAfter('doer-1', { command, branch: 'feat/x', onAuthFailure });
+        } catch (e) {
+            err = e;
+        }
+        check(err instanceof GitSyncError, `expected a typed GitSyncError, got ${err && err.constructor.name}`);
+        check(!(err instanceof GitDivergedError), 'a permission-scope refusal must never be classified as a divergence (the DIVERGED trap this bug fixes)');
+        check(
+            calls.filter((c) => /git pull --rebase/.test(c.cmd)).length === 0,
+            `no pull --rebase may ever be attempted for a permission-scope refusal, saw ${JSON.stringify(calls.map((c) => c.cmd))}`,
+        );
+        check(
+            calls.filter((c) => /^git push/.test(c.cmd)).length === 1,
+            `no second push may be attempted (no retry), saw ${calls.filter((c) => /^git push/.test(c.cmd)).length}`,
+        );
+        check(healCalls === 0, 'the injected onAuthFailure self-heal must never be invoked for a permission-scope refusal');
+        check(err.message.includes('doer-1'), `expected the thrown error to name the member 'doer-1', got: ${err.message}`);
+        check(err.message.includes('.github/workflows/ci.yml'), `expected the thrown error to name the refused workflow path, got: ${err.message}`);
+        check(/workflows.{0,30}permission/is.test(err.message), `expected the thrown error to name the missing 'workflows' permission, got: ${err.message}`);
+    });
+}
+
+test('(2wdc.5) regression guard: a transient G-push failure still retries to success -- the new permission-scope gate does not disturb the transient path', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_TRANSIENT_DNS), OK],
+    });
+    const res = await syncMemberAfter('m1', { command, maxTransientRetries: 1 });
+    check(res.ok === true, `expected the retried push to succeed, got ${JSON.stringify(res)}`);
+    check(
+        calls.filter((c) => /^git push/.test(c.cmd)).length === 2,
+        `expected exactly one retry (2 total push attempts), saw ${calls.filter((c) => /^git push/.test(c.cmd)).length}`,
+    );
+});
+
+test('(2wdc.5) regression guard: a genuine divergence still rebases exactly once then re-pushes -- the new permission-scope gate does not disturb the diverged path', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF), OK],
+        'git pull --rebase': [OK],
+    });
+    const res = await syncMemberAfter('m1', { command, branch: 'feat/x' });
+    check(res.ok === true && res.rebased === true, `expected the rebase-then-repush to succeed, got ${JSON.stringify(res)}`);
+    check(
+        calls.filter((c) => /git pull --rebase/.test(c.cmd)).length === 1,
+        `expected exactly one rebase attempt, saw ${calls.filter((c) => /git pull --rebase/.test(c.cmd)).length}`,
+    );
+    check(
+        calls.filter((c) => /^git push/.test(c.cmd)).length === 2,
+        `expected the initial push plus one re-push after rebase, saw ${calls.filter((c) => /^git push/.test(c.cmd)).length}`,
+    );
+});
+
+test('(2wdc.5) unit: isPermissionScopePostDispatchSyncFailure recognizes the REAL error chain a permission-scope G-push produces, and only that chain', async () => {
+    // Drive the REAL syncMemberAfter failure path (rather than hand-typing a
+    // marker string) so this test fails if github.mjs's permissionScope hook,
+    // vcs-module.mjs's precedence-skip, git-topology.mjs's runGitStep gate, or
+    // dispatch-failure.mjs's marker regex is reverted.
+    const { command: permCommand } = makeCommandMock({
+        'git push': [fail(GITHUB_APP_WORKFLOW_REFUSAL)],
+    });
+    let permissionScopeGitErr = null;
+    try {
+        await syncMemberAfter('doer-1', { command: permCommand, branch: 'feat/x' });
+    } catch (e) {
+        permissionScopeGitErr = e;
+    }
+    check(permissionScopeGitErr instanceof GitSyncError, 'precondition: syncMemberAfter must throw the typed GitSyncError for a permission-scope refusal');
+
+    // Wrapped the same way git-sync.mjs's post-dispatch teardown wraps a
+    // failed syncMemberAfterOrdered call, interpolating the sync error's
+    // message and carrying it as `cause`.
+    const permissionScopePostDispatchErr = new PostDispatchSyncError(
+        `Post-dispatch sync (G-push/D-push) failed for member 'doer-1' AFTER the dispatch completed successfully: ${permissionScopeGitErr.message}. The dispatch's work is already committed locally -- it must NOT be re-dispatched; fix the sync (credentials/remote) and re-run.`,
+        { member: 'doer-1', cause: permissionScopeGitErr },
+    );
+    check(
+        isPermissionScopePostDispatchSyncFailure(permissionScopePostDispatchErr) === true,
+        'the real permission-scope G-push chain must be recognized as a permission-scope post-dispatch sync failure',
+    );
+    check(
+        isPostDispatchSyncFailure(permissionScopePostDispatchErr) === true,
+        'it must still satisfy the broader isPostDispatchSyncFailure() predicate too (regression: the general classifier is unaffected)',
+    );
+
+    // A DIFFERENT (transient-exhausted) G-push failure, wrapped the SAME way,
+    // must never be misread as a permission-scope refusal -- the marker text
+    // is specific to the permission-scope referral, not to "any G-push
+    // failure that became a PostDispatchSyncError".
+    const { command: transientCommand } = makeCommandMock({
+        'git push': [fail(REAL_TRANSIENT_DNS)],
+    });
+    let transientGitErr = null;
+    try {
+        await syncMemberAfter('m1', { command: transientCommand, maxTransientRetries: 0 });
+    } catch (e) {
+        transientGitErr = e;
+    }
+    check(transientGitErr instanceof GitSyncError, 'precondition: an exhausted-transient G-push failure must also throw a typed GitSyncError');
+    const transientPostDispatchErr = new PostDispatchSyncError(
+        `Post-dispatch sync (G-push/D-push) failed for member 'm1' AFTER the dispatch completed successfully: ${transientGitErr.message}.`,
+        { member: 'm1', cause: transientGitErr },
+    );
+    check(
+        isPermissionScopePostDispatchSyncFailure(transientPostDispatchErr) === false,
+        'a transient G-push failure must never be misread as permission-scope',
+    );
+    check(isPostDispatchSyncFailure(transientPostDispatchErr) === true, 'a transient failure is still a generic post-dispatch sync failure');
+
+    check(isPermissionScopePostDispatchSyncFailure(new Error('plain error, not even a PostDispatchSyncError')) === false, 'a non-PostDispatchSyncError is never permission-scope');
+    check(isPermissionScopePostDispatchSyncFailure(undefined) === false, 'undefined input must not throw and must not be permission-scope');
 });
