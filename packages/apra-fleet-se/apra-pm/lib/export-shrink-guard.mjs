@@ -50,24 +50,68 @@ export function computeDroppedIds(committedText, freshText) {
   return [...committed].filter((id) => !fresh.has(id));
 }
 
+// Max bytes read from `git show HEAD:.beads/issues.jsonl`. Node's default maxBuffer is
+// 1 MB; past it the read throws ENOBUFS, and treating that as "nothing committed"
+// silently switched the guard off for any real-sized backlog.
+export const COMMITTED_READ_MAX_BUFFER = 256 * 1024 * 1024;
+
+const EXPORT_PATH = '.beads/issues.jsonl';
+
+function errReason(e) {
+  const raw = (e && (e.stderr || e.code || e.message)) || e;
+  return String(raw).trim().split(/\n/)[0];
+}
+
+function git(repoPath, args, maxBuffer = 16 * 1024 * 1024) {
+  return execFileSync('git', args, {
+    cwd: repoPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer,
+  });
+}
+
+// Is .beads/issues.jsonl tracked at HEAD? Decided by `git ls-tree`, NOT by parsing a
+// `git show` error: only "path absent at HEAD" (incl. an unborn HEAD in a fresh repo,
+// where `rev-parse --verify -q HEAD` exits 1) may mean "nothing committed". Any other
+// failure throws so the caller fails closed.
+export function isExportTrackedAtHead(repoPath) {
+  try {
+    return git(repoPath, ['ls-tree', '--name-only', 'HEAD', '--', EXPORT_PATH]).trim() !== '';
+  } catch (e) {
+    let unborn = false;
+    try {
+      git(repoPath, ['rev-parse', '--verify', '-q', 'HEAD']);
+    } catch (e2) {
+      unborn = !!e2 && e2.status === 1;
+    }
+    if (!unborn) throw new Error(`cannot list HEAD tree: ${errReason(e)}`);
+    return false;
+  }
+}
+
 // Reads the currently committed .beads/issues.jsonl (from HEAD) and the freshly
 // exported one on disk at `${repoPath}/.beads/issues.jsonl`, and stages the fresh file
 // with `git add` ONLY if doing so would not drop any committed id -- unless
 // `allowShrink` is explicitly set. Returns a receipt describing what happened; never
-// throws for a missing HEAD blob or missing export file (both degrade to empty text).
+// throws. FAILS CLOSED: if the export is tracked at HEAD but cannot be read (or HEAD
+// cannot be inspected), nothing is staged and `error` carries the reason -- a read
+// failure is never treated as "nothing was committed". A missing fresh export file
+// degrades to empty text (every committed id counts as dropped -> refused).
 export function runExportShrinkGuard(repoPath, { allowShrink = false } = {}) {
   let committedText = '';
   try {
-    committedText = execFileSync('git', ['show', 'HEAD:.beads/issues.jsonl'], {
-      cwd: repoPath, encoding: 'utf8',
-    });
-  } catch {
-    committedText = ''; // no HEAD blob yet (new repo / first export) -- nothing to drop
+    if (isExportTrackedAtHead(repoPath)) {
+      try {
+        committedText = git(repoPath, ['show', `HEAD:${EXPORT_PATH}`], COMMITTED_READ_MAX_BUFFER);
+      } catch (e) {
+        throw new Error(`cannot read committed HEAD:${EXPORT_PATH}: ${errReason(e)}`);
+      }
+    }
+  } catch (e) {
+    return { staged: false, dropped: [], allowed: false, error: e.message };
   }
 
   let freshText = '';
   try {
-    freshText = readFileSync(`${repoPath}/.beads/issues.jsonl`, 'utf8');
+    freshText = readFileSync(`${repoPath}/${EXPORT_PATH}`, 'utf8');
   } catch {
     freshText = ''; // export did not write a file -- treat as dropping everything
   }
@@ -78,7 +122,11 @@ export function runExportShrinkGuard(repoPath, { allowShrink = false } = {}) {
     return { staged: false, dropped, allowed: false };
   }
 
-  execFileSync('git', ['add', '.beads/issues.jsonl'], { cwd: repoPath });
+  try {
+    git(repoPath, ['add', EXPORT_PATH]);
+  } catch (e) {
+    return { staged: false, dropped, allowed: false, error: `git add failed: ${errReason(e)}` };
+  }
   return { staged: true, dropped, allowed: dropped.length > 0 };
 }
 
@@ -94,7 +142,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
   const repoPath = process.argv[2];
   const allowShrink = process.env.AUTO_SPRINT_ALLOW_EXPORT_SHRINK === '1';
   const result = runExportShrinkGuard(repoPath, { allowShrink });
-  if (!result.staged) {
+  if (result.error) {
+    console.log(
+      `EXPORT_GUARD_ERROR: ${result.error}. .beads/issues.jsonl NOT staged/committed ` +
+      `(guard fails closed).`
+    );
+  } else if (!result.staged) {
     console.log(
       `EXPORT_GUARD_REFUSED: ${result.dropped.length} committed id(s) missing from new ` +
       `export (e.g. ${result.dropped.slice(0, 5).join(', ')}). Written to disk but NOT ` +

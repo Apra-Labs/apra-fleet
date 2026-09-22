@@ -127,7 +127,10 @@ test('buildPlanCommitCmds appends bd export then git add/commit/push after per-t
   // Command at index N+1: the export shrink guard (stages .beads/issues.jsonl only if safe)
   assert.match(cmds[N + 1], /^node -e /,
     `command[${N + 1}] must be the export shrink guard`);
-  assert.match(cmds[N + 1], /git add \.beads\/issues\.jsonl/,
+  // The guard runs git via execFileSync argv arrays: git(['add',P]) with P='.beads/issues.jsonl'.
+  assert.match(cmds[N + 1], /const P='\.beads\/issues\.jsonl'/,
+    `command[${N + 1}] must target .beads\/issues.jsonl`);
+  assert.match(cmds[N + 1], /git\(\['add',P\]\)/,
     `command[${N + 1}] must still stage .beads\/issues.jsonl when safe`);
   assert.match(cmds[N + 1], /AUTO_SPRINT_ALLOW_EXPORT_SHRINK/,
     `command[${N + 1}] must reference the shrink opt-in env var`);
