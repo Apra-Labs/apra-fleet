@@ -13,6 +13,7 @@
 // `add-directive --global` is explicitly out of scope.
 
 import type { KBEntry } from '../services/knowledge/types.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // Minimal structural type -- the four directive primitives on SqliteProvider.
 // Kept structural so tests can pass a real temp SqliteProvider directly.
@@ -145,7 +146,7 @@ function usage(): void {
 export async function runKbDirectives(subCmd: string, rest: string[]): Promise<number> {
   const { getKbProviders } = await import('../services/knowledge/kb-providers.js');
   const providers = await getKbProviders();
-  const provider = providers.project;
+  const provider = requireSqliteProject(providers.project, 'kb_directives');
 
   if (subCmd === 'directives') {
     return listDirectivesCmd(provider);

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T2.1 (F5, D4): kb_stats -- a read-only aggregation tool, following the
 // kb_list no-bump pattern (SqliteProvider.stats() never touches use_count/
@@ -76,7 +77,11 @@ export async function kbStats(input: KbStatsInput): Promise<string> {
   // AND stale = 0 are list()'s hardcoded defaults) without bumping use_count.
   let bible = { present: false, entries: 0, drift: 0 };
   try {
-    const liveConfirmed = await providers.project.list({ confidence: 'CONFIRMED' });
+    // SqliteProvider-only operation. If the provider is not SqliteProvider
+    // (e.g., HttpKbProvider), requireSqliteProject throws and bible drift
+    // remains not computable.
+    const sqliteProvider = requireSqliteProject(providers.project, 'kb_stats');
+    const liveConfirmed = await sqliteProvider.list({ confidence: 'CONFIRMED' });
     const liveUpdatedAts = liveConfirmed.map(e => e.promoted_at || e.created_at);
     // Degraded-safe fallback shared by every "can't use the bible file" path
     // below (absent, unreadable, malformed JSON, non-array shape): drift

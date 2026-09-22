@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T3.3 (F8a, D8): kb_list -- a read-only audit view over the CONFIRMED (or any
 // filtered) set. Distinct from kb_query: no FTS, no L2 expansion, and
@@ -25,8 +26,9 @@ export type KbListInput = z.infer<typeof kbListSchema>;
 
 export async function kbList(input: KbListInput): Promise<string> {
   const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
+  const sqliteProvider = requireSqliteProject(providers.project, 'kb_list');
 
-  const entries = await providers.project.list({
+  const entries = await sqliteProvider.list({
     confidence: input.confidence,
     type: input.type,
     module: input.module,

@@ -6,6 +6,7 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 import { FLEET_DIR } from '../paths.js';
 import { logWarn } from '../utils/log-helpers.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T3.4 (F8b, D8): export half of the shareable, diffable team bible. Writes
 // all CONFIRMED, non-superseded, non-stale project entries to
@@ -333,7 +334,7 @@ export async function kbExport(input: KbExportInput): Promise<string> {
   // source from process cwd while writing to repoPath is how repo A's entries
   // used to end up serialised into repo B's committed bible.
   const providers = await getKbProviders(repoPath, input.repo_remote_url);
-  const source = scope === 'global' ? providers.global : providers.project;
+  const source = scope === 'global' ? providers.global : requireSqliteProject(providers.project, 'kb_export');
   const entries = await source.list({ confidence: 'CONFIRMED' });
 
   // Deterministic ordering by id so re-exports produce meaningful diffs.
