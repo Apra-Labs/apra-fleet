@@ -1187,13 +1187,25 @@ describe('role policy table: pre-dispatch and post-result steps match runner.js'
             'The engine must kill a stale session in exactly ONE generic place -- a second site would be a per-role ' +
             'special case creeping back into the engine.'
         );
+        // The sprint-doctor's action executor owns the ONE session-kill site
+        // in the scanned set that is not a resume: its 'stop_and_kill_session'
+        // remedy (design doc section 2.5's registry remedy for a member whose
+        // CLI session is wedged) is a repair of the member, not a re-dispatch
+        // of a role. It is injected as a remedy verb into
+        // createDoctorActionExecutor, which is exactly why the census must
+        // name it explicitly rather than let the resume arithmetic absorb it:
+        // an unaccounted site is supposed to mean "a resume ladder went
+        // missing from the table", and that signal only survives if every
+        // legitimate non-resume kill is enumerated here.
+        const doctorRemedyKillSites = 1;
         const killSites = (stripComments(SRC).match(/memberSessionGuard\.killIfAlive\(/g) || []).length;
         assert.strictEqual(
             killSites,
-            inlineKillers.length + extraInfraKills + engineKillSites,
+            inlineKillers.length + extraInfraKills + engineKillSites + doctorRemedyKillSites,
             `The scanned module set has ${killSites} session-kill sites; the table accounts for ` +
             `${inlineKillers.length} still-inline resume dispatches plus ${extraInfraKills} infra-recovery resumes ` +
-            `plus the engine's ${engineKillSites} shared site.`
+            `plus the engine's ${engineKillSites} shared site plus the sprint-doctor's ${doctorRemedyKillSites} ` +
+            'stop_and_kill_session remedy site.'
         );
     });
 

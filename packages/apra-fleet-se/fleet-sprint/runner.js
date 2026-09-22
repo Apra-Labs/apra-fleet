@@ -288,7 +288,15 @@ import {
 // child-bead create, the credential provisioning path) and reports back what
 // it actually changed, so the re-dispatch decision below is made from a fact
 // rather than from the verdict's intent.
-import { applyReplanVerdict, isReplanAction } from './doctor-executor.mjs';
+// The GENERAL action executor from the same module answers the other half:
+// an incident verdict (repair/retry/re-lane/swap/defer/abort/pause) becomes
+// engine verbs, under latches and caps counted in ONE place. Its
+// `dispatchPolicy` is the read side the Develop phase consults for the three
+// dispatch decisions a verdict may change (model tier, member, timeout).
+import {
+    applyReplanVerdict, isReplanAction,
+    createDoctorActionExecutor, isIncidentAction,
+} from './doctor-executor.mjs';
 // apra-fleet-iiny.7.2: consent-gated engine-flaw telemetry (design doc
 // section 4.4) -- sanitize a consult verdict's engineFlawReport BEFORE it is
 // held in memory or surfaced anywhere, resolve the fleet-config-driven
@@ -2735,6 +2743,142 @@ async function runSprintCycle(context) {
         artifactPath: resolveDoctorArtifactPath(validated.runId),
         log,
     });
+    // --- sprint-doctor ACTION EXECUTOR (design doc section 2.5) -----------
+    //
+    // The runner -- never the agent -- applies a verdict. Constructed once
+    // per sprint, immediately after the observation layer above, because it
+    // holds the per-sprint latches and caps: a (bead, action.kind) pair
+    // executes at most once, a (member, remedy verb) pair at most once, an
+    // error class at most `doctor_max_per_class` times, and at most
+    // `doctor_max_defers` beads are deferred.
+    //
+    // EVERY VERB IS ONE THE ENGINE ALREADY HAD, injected here rather than
+    // imported by the executor, so the blast radius of a bad verdict equals
+    // the blast radius of the recovery paths the runner already trusted:
+    // the two credential self-heal callbacks, the member session guard's
+    // stop_prompt kill, the fleet's own member_reservation force_release,
+    // and runGitStep() for the one fetch/salvage git surface. The executor
+    // itself opens no transport and builds no git command.
+    //
+    // A remedy that does not VERIFY counts as failed and still consumes its
+    // latch -- see createDoctorActionExecutor's header for why.
+    const doctorActions = createDoctorActionExecutor({
+        log,
+        command,
+        member: orchestratorMember,
+        branch: validated.branch,
+        caps: { maxDefers: validated.doctorMaxDefers, maxPerClass: validated.doctorMaxPerClass },
+        // reprovision_llm_auth / reprovision_vcs_auth: the SAME self-heal
+        // callbacks the dispatch and sync paths already call. Both throw or
+        // resolve false on failure, which the executor reports as a failed
+        // remedy rather than letting it escape into the cycle loop.
+        provisionLlmAuth: typeof onLlmAuthFailure === 'function'
+            ? async ({ member }) => Boolean(await onLlmAuthFailure({
+                member, label: 'Sprint Doctor remedy', error: 'sprint-doctor: reprovision_llm_auth',
+            }))
+            : undefined,
+        provisionVcsAuth: typeof onAuthFailure === 'function'
+            ? async ({ member }) => {
+                await onAuthFailure({
+                    member, label: 'Sprint Doctor remedy', error: 'sprint-doctor: reprovision_vcs_auth',
+                });
+                return true;
+            }
+            : undefined,
+        // force_release_reservation: the fleet's own recovery action for a
+        // reservation whose owner is gone. Never called for a live owner --
+        // that is exactly the case the registry routes to a human instead.
+        forceReleaseReservation: (args && typeof args.callTool === 'function')
+            ? async ({ member }) => {
+                await args.callTool('member_reservation', { member_name: member, action: 'force_release' });
+                return true;
+            }
+            : undefined,
+        // stop_and_kill_session: the existing pre-resume guard, which is a
+        // no-op when nothing is running on that member.
+        stopAndKillSession: async ({ member }) => {
+            await memberSessionGuard.killIfAlive(member);
+            return true;
+        },
+        // refetch_branch: one bounded `git fetch` of the sprint branch for
+        // the benign "another member just pushed this ref" false alarm.
+        refetchBranch: async ({ member }) => {
+            const res = await runGitStep({
+                command, member, cmd: `git fetch origin ${validated.branch}`,
+                label: `Sprint Doctor remedy: refetch branch '${validated.branch}' on '${member}'`,
+                log, maxTransientRetries: 1, onAuthFailure,
+                provider: typeof resolveMemberVcsProvider === 'function' ? await resolveMemberVcsProvider(member) : undefined,
+            });
+            return Boolean(res && res.ok);
+        },
+        // The MANDATORY verification every remedy carries: a trivial probe
+        // that the member answers at all and its workspace is still a repo.
+        // Cheap, read-only and shell-agnostic -- and fail-closed, so a
+        // remedy on an unreachable member is reported as FAILED (and keeps
+        // its latch) instead of being assumed to have worked.
+        verifyRemedy: async ({ verb, member }) => {
+            if (!member) return false;
+            const res = await runGitStep({
+                command, member, cmd: 'git rev-parse --abbrev-ref HEAD',
+                label: `Sprint Doctor: verify remedy ${verb} on '${member}'`,
+                log, maxTransientRetries: 0,
+            });
+            return Boolean(res && res.ok);
+        },
+        // The one post-repair retry: a repaired bead simply becomes
+        // dispatchable again for the next Develop round (the round loop is
+        // the engine's only dispatcher). Exactly one, because the (bead,
+        // kind) latch means this action cannot run for the bead again.
+        retryFailedOperation: async ({ beadIds }) => {
+            for (const id of beadIds || []) doctorBlockedIds.delete(id);
+            log(`${DOCTOR_LOG_PREFIX} environment repaired -- [${(beadIds || []).join(', ')}] will be retried exactly once in the next Develop round.`);
+            return true;
+        },
+        // Salvage pre-step: commit a stuck member's uncommitted WIP to a
+        // NEW rescue branch and push it, so walking away from the attempt
+        // discards nothing a human may want to inspect. Never force-pushes,
+        // never deletes anything, never touches the sprint branch: the
+        // member is returned to whatever branch it was on either way.
+        salvageWip: async ({ member, rescueBranch }) => {
+            if (!member || !rescueBranch) return false;
+            const git = (cmd, label, retries = 0) => runGitStep({
+                command, member, cmd, label, log, maxTransientRetries: retries, onAuthFailure,
+            });
+            const dirty = await git('git status --porcelain', `Sprint Doctor salvage: check '${member}' for uncommitted work`);
+            if (!dirty.ok || !String(dirty.output || '').trim()) return false;
+            const current = await git('git rev-parse --abbrev-ref HEAD', `Sprint Doctor salvage: record current branch on '${member}'`);
+            const back = String((current.ok && current.output) || '').trim() || validated.branch;
+            try {
+                const created = await git(`git checkout -b ${rescueBranch}`, `Sprint Doctor salvage: create rescue branch on '${member}'`);
+                if (!created.ok) return false;
+                const staged = await git('git add -A', `Sprint Doctor salvage: stage WIP on '${member}'`);
+                if (!staged.ok) return false;
+                const committed = await git(
+                    `git commit -m "chore(sprint-doctor): salvage work-in-progress from member ${member}"`,
+                    `Sprint Doctor salvage: commit WIP on '${member}'`
+                );
+                if (!committed.ok) return false;
+                const pushed = await git(`git push origin ${rescueBranch}`, `Sprint Doctor salvage: push rescue branch from '${member}'`, 1);
+                return Boolean(pushed.ok);
+            } finally {
+                await git(`git checkout ${back}`, `Sprint Doctor salvage: return '${member}' to branch '${back}'`);
+            }
+        },
+        // abort_sprint / pause_for_human are DELEGATED: the executor only
+        // validates and routes them. Their owning lanes (terminal abort and
+        // the engine pause primitive) inject the handlers; until they do,
+        // the executor refuses the action loudly instead of pretending to
+        // have acted on it.
+        onPause: (typeof requestPause === 'function')
+            ? async ({ verdict: pauseVerdict }) => {
+                const summary = (pauseVerdict && pauseVerdict.humanActionRequired && pauseVerdict.humanActionRequired.summary)
+                    || (pauseVerdict && pauseVerdict.action && pauseVerdict.action.reason)
+                    || 'the sprint doctor referred this sprint to a human';
+                await requestPause(`[sprint-doctor] ${summary}`);
+            }
+            : undefined,
+    });
+
     // T4 evidence: spend accumulated since the last cycle that set a NEW
     // high-water progress mark. Tracked as a delta against the budget
     // plumbing that already exists (context.budget.spent()) rather than as a
@@ -2778,6 +2922,16 @@ async function runSprintCycle(context) {
     // precisely the bead no test-runner can close, so folding it into that
     // set would trade a false stall for a guaranteed one.
     const doctorCreditIds = new Set();
+
+    // Every bead the sprint-doctor DEFERRED this sprint (defer_bead /
+    // reduce_scope_and_continue). Tracked separately from the credit set
+    // above because the two answer different questions: this one says "the
+    // sprint is no longer trying to do this bead, and Cycle Evaluation must
+    // stop counting it as work outstanding", the credit set says "that
+    // decision was progress". Deferred ids are named in the exit log and in
+    // the sprint summary so an operator can see exactly what the sprint
+    // chose to leave behind.
+    const doctorDeferredIds = new Set();
 
     // apra-fleet-mduk.2: the subset of the above that is waiting on a HUMAN
     // grant. Named separately from doctorCreditIds because the stall-abort
@@ -3181,6 +3335,14 @@ async function runSprintCycle(context) {
                 // used ONLY to record -- see that file's hook comments for why
                 // a parallel branch must never evaluate or dispatch.
                 doctor,
+                // The READ side of the action executor: the three dispatch
+                // decisions a doctor verdict may change (model tier, excluded
+                // member, timeout multiplier). Every accessor is total and
+                // returns the caller's own value until a verdict actually
+                // changed something, so a sprint with the doctor disabled --
+                // or with no incident verdict yet -- dispatches byte-for-byte
+                // as it did before.
+                doctorDispatchPolicy: doctorActions.dispatchPolicy,
             });
 
             // apra-fleet-mduk.1: a doer streak that reported status
@@ -3731,6 +3893,46 @@ async function runSprintCycle(context) {
                             newIssueUrlTemplate: telemetryTrackerUrlTemplate,
                         }));
                     }
+                }
+
+                // THE EXECUTOR CALL SITE (design doc section 2.5), and the
+                // only one: an INCIDENT verdict is applied here, by the
+                // runner, through the verbs injected into
+                // createDoctorActionExecutor above. Re-plan verdicts are NOT
+                // handled here -- they belong to the BLOCKED lane at its own
+                // call site in Develop, which is the only point that knows
+                // which bead a doer refused and why.
+                //
+                // Everything the executor decided comes back as data and is
+                // folded into the runner's own state below. Nothing here can
+                // throw into the cycle loop: applying a verdict either
+                // changes one of these sets or is refused with a reason.
+                const incidentAction = consultVerdict && consultVerdict.action;
+                if (incidentAction && isIncidentAction(incidentAction.kind)) {
+                    const incidentPending = pendingConsults[0];
+                    const incidentRows = incidentPending.evidenceRows || [];
+                    const applied = await doctorActions.apply(consultVerdict, {
+                        beadIds: incidentPending.beadIds || [],
+                        member: incidentPending.member,
+                        // The class the per-class remedy cap is counted on --
+                        // derived exactly as doctor.consult() derives it for
+                        // the per-class CONSULT cap, so the two budgets are
+                        // spoken about in the same terms.
+                        errorSignature: [...incidentRows].reverse().find((r) => r && r.errorSignature)?.errorSignature || null,
+                        cycle,
+                    });
+                    // A deferred bead leaves the sprint's open-at-goal set
+                    // and earns stagnation credit exactly once (monotone
+                    // sets, so oscillation can never re-earn it) -- without
+                    // both halves a legitimate defer would wedge the sprint
+                    // at "can never complete" and read as continued
+                    // stagnation, which is the implementation trap the
+                    // design doc calls out by name.
+                    for (const id of applied.deferredIds) {
+                        doctorDeferredIds.add(id);
+                        doctorBlockedIds.add(id);
+                    }
+                    if (applied.credit) for (const id of applied.deferredIds) doctorCreditIds.add(id);
                 }
             }
         }

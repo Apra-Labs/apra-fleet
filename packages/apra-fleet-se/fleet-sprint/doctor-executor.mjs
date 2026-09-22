@@ -470,3 +470,573 @@ async function applyGrant(beadId, replan, deps, run, result) {
     result.changed = true;
     result.grantAwaiting = !provisioned;
 }
+
+// ===========================================================================
+// THE GENERAL ACTION EXECUTOR (design doc section 2.5)
+// ===========================================================================
+//
+// Everything above this line answers ONE question -- "a doer said BLOCKED,
+// what should the bead become?". Everything below answers the other one: "an
+// incident fired, what should the RUNNER do about it?". Same three invariants
+// (existing verbs only, the doctor never acts, no re-dispatch without a real
+// change), same never-throws posture, one more table.
+//
+// WHY A SECOND TABLE RATHER THAN MORE ROWS IN THE FIRST: the re-plan rows all
+// mutate ONE bead through `bd update` and are done. The incident rows mutate
+// the RUNNER's own dispatch decisions -- which member, which model tier, how
+// long a timeout, whether the bead is dispatched at all -- and half of them
+// touch no bead at all. Keeping them apart is what lets the re-plan lane's
+// `redispatchOnChange`/`credits` booleans stay meaningful instead of being
+// nulled out on eight rows that do not mutate bead content.
+//
+// THE EXECUTOR OWNS NO TRANSPORT. Every remedy is an INJECTED callback named
+// after the verb the engine already had (the credential self-heal callbacks,
+// the member session guard's kill, the reservation force-release tool, a
+// `git fetch` through command()). This module decides WHETHER a verb may run
+// (latches, caps), calls it, insists on a verification, and reports what
+// happened. It never builds a git command, never force-pushes, never deletes
+// a branch or a file, never mutates a reviewer or doer verdict, and never
+// edits code content.
+//
+// THE CAPS ARE THE POINT. A self-healing runner with no ceiling is a runner
+// that spends a whole sprint healing. Four independent bounds, all enforced
+// here in code rather than asked for in a prompt:
+//   1. a (beadId, action.kind) pair executes AT MOST ONCE per sprint;
+//   2. a (member, remedy verb) pair runs AT MOST ONCE per sprint;
+//   3. one error class may be remedied at most `maxPerClass` times
+//      ("healing is a bridge, never a home");
+//   4. at most `maxDefers` beads are deferred per sprint.
+// A remedy whose mandatory verification does not pass counts as FAILED and
+// STILL CONSUMES ITS LATCH -- otherwise a remedy that cannot work would be
+// retried on every future incident of the same shape.
+
+/**
+ * The repair verbs `repair_environment_then_retry` may name, and the ONLY
+ * definition of that vocabulary in the codebase. The symptom/remedy registry
+ * validates its `remedy.verb` entries against THIS array rather than against
+ * a copied literal list, so a registry entry naming a verb no executor
+ * implements is a test failure rather than a silent no-op at 3am.
+ *
+ * Order matches the verdict schema's `action.repairs` enum exactly.
+ */
+export const REMEDY_VERBS = Object.freeze([
+    'reprovision_llm_auth',
+    'reprovision_vcs_auth',
+    'force_release_reservation',
+    'stop_and_kill_session',
+    'refetch_branch',
+]);
+
+/**
+ * remedy verb -> the name of the injected dependency that performs it. The
+ * indirection is what keeps this module free of provider, allocator and
+ * transport wiring: the runner passes the callbacks it already built for its
+ * own recovery paths, and a test passes fakes.
+ */
+const REMEDY_DEPENDENCY = Object.freeze({
+    reprovision_llm_auth: 'provisionLlmAuth',
+    reprovision_vcs_auth: 'provisionVcsAuth',
+    force_release_reservation: 'forceReleaseReservation',
+    stop_and_kill_session: 'stopAndKillSession',
+    refetch_branch: 'refetchBranch',
+});
+
+/**
+ * THE INCIDENT TABLE. action.kind -> the existing verb it maps to, the scope
+ * its once-per-sprint latch is keyed on, and whether it spends the per-class
+ * remedy budget.
+ *
+ * `scope` is the latch key, and it is a correctness statement rather than a
+ * label: 'bead' latches (beadId, kind), 'member' latches the remedy verbs per
+ * member, and 'sprint' actions (abort, pause) are terminal or human-bound and
+ * are never latched at all -- refusing a second abort request would be a bug,
+ * not a safety measure.
+ *
+ * `countsAgainstClassCap` is false for exactly the two delegated actions:
+ * asking a human for help is not "healing the same class again", and a sprint
+ * that has spent its per-class budget must still be ABLE to stop.
+ */
+export const INCIDENT_EXECUTOR_TABLE = Object.freeze({
+    repair_environment_then_retry: Object.freeze({
+        verb: 'registry remedy verbs, then exactly one retry of the failed operation',
+        summary: 'repaired the member environment through an existing recovery verb and retried once',
+        scope: 'member',
+        countsAgainstClassCap: true,
+        delegated: false,
+    }),
+    retry_same: Object.freeze({
+        verb: 'one redispatch with the dispatch timeout scaled by timeoutMultiplier',
+        summary: 'retried the same bead on the same member with a longer clock',
+        scope: 'bead',
+        countsAgainstClassCap: true,
+        delegated: false,
+    }),
+    retry_different_member: Object.freeze({
+        verb: 'existing streak re-lane plus a doctor-set member exclusion',
+        summary: 're-laned the bead away from the implicated member (also the environment-vs-task-shape probe)',
+        scope: 'bead',
+        countsAgainstClassCap: true,
+        delegated: false,
+    }),
+    swap_model_tier: Object.freeze({
+        verb: 'runner-side per-bead tier override (never a stored-metadata write)',
+        summary: 'moved the bead to a different model tier for its next dispatch only',
+        scope: 'bead',
+        countsAgainstClassCap: true,
+        delegated: false,
+    }),
+    defer_bead: Object.freeze({
+        verb: 'bd defer <id> --reason "<evidence + reason>"',
+        summary: 'parked the bead with the doctor evidence as its written reason',
+        scope: 'bead',
+        countsAgainstClassCap: true,
+        delegated: false,
+    }),
+    reduce_scope_and_continue: Object.freeze({
+        verb: 'bd defer <id> --reason "<evidence + reason>"',
+        summary: 'dropped the bead from this sprint scope and continued with the rest',
+        scope: 'bead',
+        countsAgainstClassCap: true,
+        delegated: false,
+    }),
+    abort_sprint: Object.freeze({
+        verb: 'the abort handler injected by the lane that owns sprint termination',
+        summary: 'routed an abort request to its owning lane',
+        scope: 'sprint',
+        countsAgainstClassCap: false,
+        delegated: true,
+    }),
+    pause_for_human: Object.freeze({
+        verb: 'the pause handler injected by the lane that owns the engine pause primitive',
+        summary: 'routed a pause-for-human request to its owning lane',
+        scope: 'sprint',
+        countsAgainstClassCap: false,
+        delegated: true,
+    }),
+});
+
+/** The eight incident kinds, derived from the table so the two cannot disagree. */
+export const INCIDENT_ACTION_KINDS = Object.freeze(Object.keys(INCIDENT_EXECUTOR_TABLE));
+
+/**
+ * EVERY action kind the verdict schema may carry, in the schema's own order:
+ * the eight incident kinds followed by the five re-plan kinds. This is the
+ * single definition of that vocabulary in the codebase -- the schema
+ * literals (the vendored role schema and its in-repo mirror) are pinned
+ * against it by test rather than being re-typed anywhere else, and the
+ * symptom/remedy registry validates against these exports.
+ */
+export const ACTION_KINDS = Object.freeze([...INCIDENT_ACTION_KINDS, ...REPLAN_ACTION_KINDS]);
+
+/**
+ * The hard ceiling on `retry_same`'s timeout scaling. A doctor asking for
+ * "just a bit longer" is plausible; a doctor asking for ten times longer is
+ * asking the sprint to spend its whole clock on one bead.
+ */
+export const MAX_TIMEOUT_MULTIPLIER = 2;
+
+/** The model tiers a swap may name. Anything else is refused, not coerced. */
+const SWAPPABLE_TIERS = Object.freeze(['cheap', 'standard', 'premium']);
+
+/** Defaults matching the engine's own doctor cap arguments. */
+export const DEFAULT_ACTION_CAPS = Object.freeze({ maxDefers: 2, maxPerClass: 2 });
+
+/**
+ * True when `kind` is one of the eight incident actions this executor
+ * implements (as opposed to a re-plan action, which `isReplanAction` owns).
+ * @param {unknown} kind
+ * @returns {boolean}
+ */
+export function isIncidentAction(kind) {
+    return typeof kind === 'string' && Object.prototype.hasOwnProperty.call(INCIDENT_EXECUTOR_TABLE, kind);
+}
+
+/**
+ * The rescue branch a salvage pre-step commits WIP to. Never the sprint
+ * branch, never an existing branch: the timestamp makes the name unique per
+ * attempt, so a salvage can only ever ADD a branch.
+ * @param {string} sprintBranch
+ * @param {string} beadId
+ * @param {string|number} [stamp]
+ * @returns {string}
+ */
+export function rescueBranchName(sprintBranch, beadId, stamp = Date.now()) {
+    const safe = (s) => String(s || '').trim().replace(/[^A-Za-z0-9._/-]+/g, '-').replace(/^-+|-+$/g, '');
+    const iso = new Date(Number(stamp) || Date.now()).toISOString().replace(/[:.]/g, '-');
+    return `rescue/${safe(sprintBranch) || 'sprint'}/${safe(beadId) || 'bead'}-${iso}`;
+}
+
+/**
+ * The per-sprint incident executor: ONE object per run, holding every latch
+ * and cap in one place, exposing (a) `apply()` for the runner's consult point
+ * and (b) `dispatchPolicy`, the read side the dispatch path consults for the
+ * three decisions a verdict can change (tier, member, timeout).
+ *
+ * Deliberately a factory, matching createConsultLimiter/createSprintHealthLedger.
+ *
+ * @param {{
+ *   log?: Function,
+ *   caps?: { maxDefers?: number, maxPerClass?: number },
+ *   command?: Function,
+ *   member?: string,
+ *   branch?: string,
+ *   provisionLlmAuth?: (ctx: object) => Promise<boolean>,
+ *   provisionVcsAuth?: (ctx: object) => Promise<boolean>,
+ *   forceReleaseReservation?: (ctx: object) => Promise<boolean>,
+ *   stopAndKillSession?: (ctx: object) => Promise<boolean>,
+ *   refetchBranch?: (ctx: object) => Promise<boolean>,
+ *   verifyRemedy?: (ctx: object) => Promise<boolean>,
+ *   retryFailedOperation?: (ctx: object) => Promise<boolean>,
+ *   salvageWip?: (ctx: object) => Promise<boolean>,
+ *   onAbort?: (ctx: object) => Promise<any>,
+ *   onPause?: (ctx: object) => Promise<any>,
+ * }} deps
+ */
+export function createDoctorActionExecutor(deps = {}) {
+    const log = deps.log || (() => {});
+    const caps = Object.freeze({
+        maxDefers: (deps.caps && deps.caps.maxDefers) ?? DEFAULT_ACTION_CAPS.maxDefers,
+        maxPerClass: (deps.caps && deps.caps.maxPerClass) ?? DEFAULT_ACTION_CAPS.maxPerClass,
+    });
+
+    /** `${beadId}::${kind}` pairs already executed -- cap 1. */
+    const pairLatch = new Set();
+    /** `${member}::${verb}` remedies already attempted (verified or not) -- cap 2. */
+    const remedyLatch = new Set();
+    /** errorSignature -> remedies spent on it -- cap 3. */
+    const classCounts = new Map();
+    /** How many beads have been deferred this sprint -- cap 4. */
+    let deferCount = 0;
+
+    /** The three dispatch decisions a verdict may change, and the two id sets the runner reads. */
+    const tierOverrides = new Map();
+    const memberExclusions = new Map();
+    const timeoutMultipliers = new Map();
+    const deferredIds = new Set();
+    const creditIds = new Set();
+
+    const pairKey = (beadId, kind) => `${beadId}::${kind}`;
+    const remedyKey = (member, verb) => `${member || '(fleet)'}::${verb}`;
+
+    /**
+     * The READ side of everything this executor decided, consumed by the
+     * dispatch path. Every accessor is total: an unknown bead returns the
+     * caller's own default, so a call site reads the same value it read
+     * before the doctor existed until a verdict actually changes it.
+     */
+    const dispatchPolicy = Object.freeze({
+        /** The tier a bead must dispatch on: the doctor's override, else the declared one. */
+        tierFor(beadId, declaredTier = null) {
+            const override = tierOverrides.get(beadId);
+            return override === undefined ? declaredTier : override;
+        },
+        /** True when the doctor excluded `member` from `beadId` for the rest of the sprint. */
+        isMemberExcluded(beadId, member) {
+            const excluded = memberExclusions.get(beadId);
+            return Boolean(excluded && member && excluded.has(member));
+        },
+        /** Every member excluded from `beadId`, for logging and for member selection. */
+        excludedMembersFor(beadId) {
+            return [...(memberExclusions.get(beadId) || [])];
+        },
+        /**
+         * The timeout multiplier for a dispatch covering `beadIds`: the
+         * largest one the doctor set for any bead in it, always in (0, 2].
+         * 1 when the doctor set none, i.e. the unchanged timeout.
+         */
+        timeoutMultiplierFor(beadIds = []) {
+            let best = 1;
+            for (const id of Array.isArray(beadIds) ? beadIds : [beadIds]) {
+                const m = timeoutMultipliers.get(id);
+                if (typeof m === 'number' && m > best) best = m;
+            }
+            return Math.min(best, MAX_TIMEOUT_MULTIPLIER);
+        },
+        /** True when the doctor deferred this bead (the runner excludes it from open-at-goal). */
+        isDeferred(beadId) {
+            return deferredIds.has(beadId);
+        },
+        /** Every bead the doctor deferred this sprint. */
+        deferredIds() {
+            return [...deferredIds];
+        },
+        /** Every bead that earned stagnation credit through a doctor action. */
+        creditIds() {
+            return [...creditIds];
+        },
+    });
+
+    /** Snapshot of every latch and counter -- for logs, the run record and tests. */
+    function state() {
+        return {
+            caps,
+            pairs: [...pairLatch],
+            remedies: [...remedyLatch],
+            classCounts: Object.fromEntries(classCounts),
+            deferCount,
+            tierOverrides: Object.fromEntries(tierOverrides),
+            memberExclusions: Object.fromEntries([...memberExclusions].map(([k, v]) => [k, [...v]])),
+            timeoutMultipliers: Object.fromEntries(timeoutMultipliers),
+            deferredIds: [...deferredIds],
+            creditIds: [...creditIds],
+        };
+    }
+
+    /** A fresh, fully-populated result so every caller reads the same shape. */
+    function blankResult(kind) {
+        return {
+            applied: false,
+            kind: isIncidentAction(kind) ? kind : null,
+            verb: isIncidentAction(kind) ? INCIDENT_EXECUTOR_TABLE[kind].verb : null,
+            beadIds: [],
+            remedies: [],
+            redispatch: false,
+            credit: false,
+            deferredIds: [],
+            tierOverrides: [],
+            excludedMembers: [],
+            timeoutMultiplier: null,
+            salvageBranch: null,
+            aborted: false,
+            paused: false,
+            refused: false,
+            reason: null,
+            error: null,
+        };
+    }
+
+    /** Refuse, loudly and without throwing: the sprint continues exactly as it was. */
+    function refuse(result, reason) {
+        result.refused = true;
+        result.reason = reason;
+        log(`${LOG_PREFIX} action ${result.kind || '(unknown)'} NOT executed: ${reason}.`);
+        return result;
+    }
+
+    /**
+     * Runs ONE remedy verb through its injected verb, then its MANDATORY
+     * verification. Consumes the (member, verb) latch either way -- a remedy
+     * that did not verify is a remedy that does not work here, and retrying
+     * it on the next incident would only spend the sprint's clock again.
+     */
+    async function runRemedy(verb, ctx) {
+        const key = remedyKey(ctx.member, verb);
+        if (remedyLatch.has(key)) {
+            return { verb, ran: false, verified: false, reason: 'already attempted once for this member this sprint' };
+        }
+        const depName = REMEDY_DEPENDENCY[verb];
+        const fn = deps[depName];
+        if (typeof fn !== 'function') {
+            return { verb, ran: false, verified: false, reason: `no ${depName} verb is wired for this run` };
+        }
+        remedyLatch.add(key);
+        try {
+            const ok = Boolean(await fn({ verb, member: ctx.member, beadIds: ctx.beadIds, branch: deps.branch, reason: ctx.reason }));
+            if (!ok) return { verb, ran: true, verified: false, reason: 'the remedy verb reported failure' };
+            if (typeof deps.verifyRemedy !== 'function') {
+                return { verb, ran: true, verified: false, reason: 'no verification verb is wired, so the remedy cannot be confirmed' };
+            }
+            const verified = Boolean(await deps.verifyRemedy({ verb, member: ctx.member, beadIds: ctx.beadIds }));
+            return { verb, ran: true, verified, reason: verified ? null : 'the remedy ran but did not verify' };
+        } catch (err) {
+            return { verb, ran: true, verified: false, reason: (err && err.message) || String(err) };
+        }
+    }
+
+    /**
+     * Applies ONE incident verdict. Never throws into the cycle loop: a
+     * failure is reported in `error` and the sprint proceeds exactly as it
+     * would have without the doctor.
+     *
+     * @param {object} verdict a schema-valid verdict whose action.kind is an incident kind
+     * @param {{ beadIds?: string[], member?: string, errorSignature?: string|null, cycle?: number|string }} [ctx]
+     */
+    async function apply(verdict, ctx = {}) {
+        const action = (verdict && verdict.action) || {};
+        const kind = action.kind;
+        const result = blankResult(kind);
+
+        if (!isIncidentAction(kind)) {
+            return refuse(result, `action.kind "${kind}" is not an incident action; this executor implements [${INCIDENT_ACTION_KINDS.join(', ')}]`);
+        }
+        const entry = INCIDENT_EXECUTOR_TABLE[kind];
+        const member = action.member || ctx.member || null;
+        const beadIds = [...new Set([
+            ...(Array.isArray(action.beadIds) ? action.beadIds : []),
+            ...(Array.isArray(ctx.beadIds) ? ctx.beadIds : []),
+        ].map((id) => String(id || '').trim()).filter(Boolean))];
+        result.beadIds = beadIds;
+
+        // Cap 3, checked BEFORE anything runs: a class that has already been
+        // healed its allowance must fail loudly and be fixed in the engine.
+        const signature = ctx.errorSignature || null;
+        if (entry.countsAgainstClassCap && signature && (classCounts.get(signature) || 0) >= caps.maxPerClass) {
+            return refuse(result, `error class "${signature}" has already been remedied ${caps.maxPerClass} time(s) this sprint (per-class cap)`);
+        }
+
+        // Cap 1: a (bead, kind) pair executes at most once per sprint. Bead-
+        // scoped kinds drop the beads that already spent their latch; if none
+        // are left the whole action is refused rather than half-run.
+        let targets = beadIds;
+        if (entry.scope === 'bead') {
+            if (targets.length === 0) return refuse(result, 'the verdict named no bead and none was in scope');
+            targets = targets.filter((id) => !pairLatch.has(pairKey(id, kind)));
+            if (targets.length === 0) {
+                return refuse(result, `every bead in scope has already had ${kind} executed once this sprint (per-bead, per-kind cap)`);
+            }
+            result.beadIds = targets;
+        }
+
+        try {
+            // Optional salvage PRE-step: rescue whatever the stuck attempt
+            // left behind before the sprint walks away from it. Only for the
+            // three walk-away actions, only when the verdict asks, only ever
+            // onto a brand-new rescue branch.
+            if (action.salvageWip === true
+                && ['defer_bead', 'reduce_scope_and_continue', 'abort_sprint'].includes(kind)
+                && typeof deps.salvageWip === 'function') {
+                const branch = rescueBranchName(deps.branch, targets[0] || 'sprint');
+                const salvaged = Boolean(await deps.salvageWip({ member, beadIds: targets, rescueBranch: branch, sprintBranch: deps.branch }));
+                result.salvageBranch = salvaged ? branch : null;
+                log(`${LOG_PREFIX} salvage pre-step for ${kind}: ${salvaged ? `WIP committed to ${branch}` : 'nothing to salvage (clean tree or no salvage verb)'}.`);
+            }
+
+            switch (kind) {
+                case 'repair_environment_then_retry': {
+                    const requested = (Array.isArray(action.repairs) ? action.repairs : [])
+                        .filter((v) => REMEDY_VERBS.includes(v));
+                    if (requested.length === 0) {
+                        return refuse(result, 'repair_environment_then_retry named no known remedy verb');
+                    }
+                    for (const verb of requested) {
+                        const outcome = await runRemedy(verb, { member, beadIds: targets, reason: action.reason });
+                        result.remedies.push(outcome);
+                        log(`${LOG_PREFIX} remedy ${verb} on '${member || '(fleet)'}': `
+                            + `${outcome.verified ? 'VERIFIED' : 'FAILED'}${outcome.reason ? ` (${outcome.reason})` : ''}.`);
+                    }
+                    const anyVerified = result.remedies.some((r) => r.verified);
+                    if (anyVerified && typeof deps.retryFailedOperation === 'function') {
+                        // EXACTLY ONE retry of the failed operation, and only
+                        // after something actually verified: retrying after a
+                        // failed repair is just the original failure again.
+                        result.redispatch = Boolean(await deps.retryFailedOperation({ member, beadIds: targets, verdict }));
+                    } else if (anyVerified) {
+                        result.redispatch = true;
+                    }
+                    result.applied = anyVerified;
+                    if (!anyVerified) result.reason = 'no remedy verified, so the failed operation was not retried';
+                    break;
+                }
+                case 'retry_same': {
+                    const raw = typeof action.timeoutMultiplier === 'number' && action.timeoutMultiplier > 0
+                        ? action.timeoutMultiplier
+                        : 1;
+                    const multiplier = Math.min(raw, MAX_TIMEOUT_MULTIPLIER);
+                    for (const id of targets) timeoutMultipliers.set(id, multiplier);
+                    result.timeoutMultiplier = multiplier;
+                    result.redispatch = true;
+                    result.applied = true;
+                    break;
+                }
+                case 'retry_different_member': {
+                    const excluded = member;
+                    if (!excluded) return refuse(result, 'retry_different_member named no member to exclude');
+                    for (const id of targets) {
+                        if (!memberExclusions.has(id)) memberExclusions.set(id, new Set());
+                        memberExclusions.get(id).add(excluded);
+                    }
+                    result.excludedMembers = [excluded];
+                    result.redispatch = true;
+                    result.applied = true;
+                    break;
+                }
+                case 'swap_model_tier': {
+                    const tier = typeof action.tier === 'string' ? action.tier.trim() : '';
+                    if (!SWAPPABLE_TIERS.includes(tier)) {
+                        return refuse(result, `swap_model_tier named tier "${action.tier}", which is not one of [${SWAPPABLE_TIERS.join(', ')}]`);
+                    }
+                    // A RUNNER-SIDE override only: the bead's stored metadata
+                    // is never written, so the tracker keeps reading exactly
+                    // what the planner recorded.
+                    for (const id of targets) tierOverrides.set(id, tier);
+                    result.tierOverrides = targets.map((id) => ({ beadId: id, tier }));
+                    result.redispatch = true;
+                    result.applied = true;
+                    break;
+                }
+                case 'defer_bead':
+                case 'reduce_scope_and_continue': {
+                    if (typeof deps.command !== 'function' || !deps.member) {
+                        return refuse(result, 'no command verb or orchestrator member was provided, so nothing can be deferred');
+                    }
+                    const reason = sanitizePrText([
+                        `[sprint-doctor${ctx.cycle === undefined ? '' : ` C${ctx.cycle}`}] ${kind}:`,
+                        (Array.isArray(verdict.evidence) ? verdict.evidence : []).join(' | '),
+                        action.reason ? `Reason: ${action.reason}` : '',
+                    ].filter(Boolean).join(' '));
+                    for (const id of targets) {
+                        if (deferCount >= caps.maxDefers) {
+                            result.reason = `per-sprint defer cap (${caps.maxDefers}) reached -- ${id} was left as it was`;
+                            log(`${LOG_PREFIX} ${result.reason}.`);
+                            break;
+                        }
+                        await deps.command(`bd defer ${id} --reason "${reason}"`, {
+                            member_name: deps.member,
+                            silent: true,
+                            label: `Sprint Doctor: defer ${id}`,
+                        });
+                        deferCount += 1;
+                        deferredIds.add(id);
+                        creditIds.add(id);
+                        result.deferredIds.push(id);
+                        pairLatch.add(pairKey(id, kind));
+                    }
+                    result.credit = result.deferredIds.length > 0;
+                    result.applied = result.deferredIds.length > 0;
+                    // The per-bead latches were taken inline above, so the
+                    // shared latch pass below must not take them twice.
+                    result.beadIds = result.deferredIds;
+                    break;
+                }
+                case 'abort_sprint':
+                case 'pause_for_human': {
+                    const handler = kind === 'abort_sprint' ? deps.onAbort : deps.onPause;
+                    if (typeof handler !== 'function') {
+                        return refuse(result, `${kind} is delegated to its owning lane, and no handler was injected for this run`);
+                    }
+                    await handler({ verdict, beadIds: targets, member, cycle: ctx.cycle });
+                    if (kind === 'abort_sprint') result.aborted = true;
+                    else result.paused = true;
+                    result.applied = true;
+                    break;
+                }
+                default:
+                    return refuse(result, `no executor row for action.kind "${kind}"`);
+            }
+        } catch (err) {
+            result.error = (err && err.message) || String(err);
+            result.applied = false;
+            result.redispatch = false;
+            log(`${LOG_PREFIX} action ${kind} FAILED to execute: ${result.error}. `
+                + 'Nothing was changed and the sprint proceeds as it would have without the doctor.');
+        }
+
+        // Latches and the class counter are consumed for ATTEMPTS, not for
+        // successes: a verdict whose action ran and did not work must not be
+        // handed the same budget again on the next incident.
+        if (entry.scope === 'bead' && kind !== 'defer_bead' && kind !== 'reduce_scope_and_continue') {
+            for (const id of result.beadIds) pairLatch.add(pairKey(id, kind));
+        }
+        if (entry.countsAgainstClassCap && signature) {
+            classCounts.set(signature, (classCounts.get(signature) || 0) + 1);
+        }
+
+        log(`${LOG_PREFIX} action ${kind}${result.beadIds.length > 0 ? ` on [${result.beadIds.join(', ')}]` : ''}: `
+            + `${result.applied ? 'applied' : 'not applied'} via ${entry.verb} -- ${entry.summary}. `
+            + `redispatch=${result.redispatch}, credit=${result.credit}`
+            + `${result.reason ? `, reason: ${result.reason}` : ''}.`);
+        return result;
+    }
+
+    return { caps, apply, dispatchPolicy, state };
+}

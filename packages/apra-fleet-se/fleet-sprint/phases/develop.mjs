@@ -114,6 +114,20 @@ export async function runDevelopPhase({
     // below carry no enabled-check of their own. Defaulted so a direct
     // caller of this phase that predates the doctor still works unchanged.
     doctor = { enabled: false, record: () => null },
+    // The READ side of the sprint-doctor's action executor
+    // (../doctor-executor.mjs, design doc section 2.5): the three dispatch
+    // decisions an incident verdict may change. The default below is the
+    // identity policy -- it returns the caller's own value for every read --
+    // so this phase behaves EXACTLY as it did before the executor existed
+    // whenever the doctor is disabled, has issued no verdict, or the caller
+    // predates this argument. Nothing here asks whether the doctor is
+    // enabled; the policy object answers that by construction.
+    doctorDispatchPolicy = {
+        tierFor: (_beadId, declaredTier = null) => declaredTier,
+        isMemberExcluded: () => false,
+        excludedMembersFor: () => [],
+        timeoutMultiplierFor: () => 1,
+    },
 }) {
     phase(`Develop C${cycle} R${devRounds}`);
 
@@ -278,7 +292,16 @@ export async function runDevelopPhase({
     // for how a possibly-multi-bead streak's model is picked from this
     // map. normalizeTierToken() guards this single read site -- see its
     // doc comment.
-    const modelByBeadId = new Map(currentReady.map((b) => [b.id, normalizeTierToken(b.metadata && b.metadata.model)]));
+    // The sprint-doctor's swap_model_tier override is consulted HERE, at the
+    // one place the declared tier is read, and nowhere else: the executor
+    // keeps a runner-side per-bead override map rather than writing the
+    // bead's stored metadata, so the tracker keeps reading exactly what the
+    // planner recorded while this dispatch runs on the tier the verdict
+    // asked for. No override => the declared tier, unchanged.
+    const modelByBeadId = new Map(currentReady.map((b) => [
+        b.id,
+        doctorDispatchPolicy.tierFor(b.id, normalizeTierToken(b.metadata && b.metadata.model)),
+    ]));
 
     // --- Doer barrier: serialized turns, isolated failures ---
     // Streak turns are strictly serialized through `globalDoerTurn`: a
@@ -338,7 +361,34 @@ export async function runDevelopPhase({
     // `batchStreaks` (mode 'batch') is the ordered list of sub-streaks a
     // single merged dispatch carries, for per-streak outcome
     // attribution.
-    const runStreakTurn = async ({ streak, doerMember, worklistCtx, worklistPosition = 0, worklistLength = 1, packed = false, batchStreaks = null }) => {
+    /**
+     * The member a streak actually runs on, after the sprint-doctor's
+     * retry_different_member exclusions are honoured. This is the ONE place
+     * an exclusion is applied: the worklist packing above is deterministic
+     * and doctor-unaware on purpose (re-packing a round around an exclusion
+     * would reshuffle every other streak too), so the swap happens at the
+     * last moment, on the one streak it is about.
+     *
+     * Falls back to the originally assigned member -- with a log line saying
+     * so -- when every doer in the pool is excluded for this streak: running
+     * the bead on a suspect member is still better than silently dropping it
+     * from the round, and the doctor can defer it if the retry fails again.
+     */
+    const memberForStreak = (streak, assigned) => {
+        const ids = (streak || []).map((b) => b.id);
+        const excludedFor = (m) => ids.some((id) => doctorDispatchPolicy.isMemberExcluded(id, m));
+        if (!excludedFor(assigned)) return assigned;
+        const alternative = (doerPool || []).find((m) => m !== assigned && !excludedFor(m));
+        if (!alternative) {
+            log(`[sprint-doctor] streak [${ids.join(', ')}] excludes member '${assigned}', but no other doer in the pool is eligible -- dispatching on '${assigned}' anyway.`);
+            return assigned;
+        }
+        log(`[sprint-doctor] streak [${ids.join(', ')}] re-laned off member '${assigned}' onto '${alternative}' (doctor member exclusion).`);
+        return alternative;
+    };
+
+    const runStreakTurn = async ({ streak, doerMember: assignedDoerMember, worklistCtx, worklistPosition = 0, worklistLength = 1, packed = false, batchStreaks = null }) => {
+        const doerMember = memberForStreak(streak, assignedDoerMember);
         const priorTurn = globalDoerTurn;
         let releaseTurn;
         globalDoerTurn = new Promise((resolve) => { releaseTurn = resolve; });
@@ -393,7 +443,25 @@ export async function runDevelopPhase({
         // failed outcome, so it stays here: the row's degrade is
         // 'per-bead-attribution' and fabricates nothing.
         const streakScope = () => `[${actualBeadIds.join(', ')}]`;
-        const doerOutcome = await dispatchRole(dispatchCtx, 'doer', {
+        // retry_same: the ONLY thing that action changes is this dispatch's
+        // clock. The multiplier is already clamped to the 2x ceiling by the
+        // executor; scaling a COPY of the engine context leaves every other
+        // role's budgets (and the next round's) untouched.
+        const doctorTimeoutMultiplier = doctorDispatchPolicy.timeoutMultiplierFor(actualBeadIds);
+        const doerDispatchCtx = doctorTimeoutMultiplier > 1
+            ? {
+                ...dispatchCtx,
+                budgets: {
+                    ...dispatchCtx.budgets,
+                    DISPATCH_TIMEOUT_S: Math.round(dispatchCtx.budgets.DISPATCH_TIMEOUT_S * doctorTimeoutMultiplier),
+                    DISPATCH_INACTIVITY_TIMEOUT_S: Math.round(dispatchCtx.budgets.DISPATCH_INACTIVITY_TIMEOUT_S * doctorTimeoutMultiplier),
+                },
+            }
+            : dispatchCtx;
+        if (doctorTimeoutMultiplier > 1) {
+            log(`[sprint-doctor] streak ${streakScope()} dispatches with its timeout scaled ${doctorTimeoutMultiplier}x (retry_same).`);
+        }
+        const doerOutcome = await dispatchRole(doerDispatchCtx, 'doer', {
             roleLabel: `Doer streak ${streakScope()}`,
             // Never used: `prepare` builds both prompts, because both
             // depend on the streak the claim actually secured.
@@ -514,7 +582,16 @@ export async function runDevelopPhase({
                 // The non-packed (streaks <= doers) path keeps the
                 // first-bead behavior.
                 if (packed) {
-                    const requiredTier = streakRequiredTier(streak);
+                    // Computed over the DOCTOR-ADJUSTED tiers, not the raw
+                    // metadata: a swap_model_tier override must win here too,
+                    // or a packed round would quietly undo it.
+                    const requiredTier = streakRequiredTier(streak.map((b) => ({
+                        ...b,
+                        metadata: {
+                            ...(b.metadata || {}),
+                            model: doctorDispatchPolicy.tierFor(b.id, b.metadata && b.metadata.model),
+                        },
+                    })));
                     if (requiredTier) doerModel = requiredTier;
                 }
                 if (streakModels.length > 1) {
