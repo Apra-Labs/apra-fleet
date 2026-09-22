@@ -48,9 +48,17 @@ const timeoutMs = (() => {
 // contention-aware timeout budgets instead of hardcoding fixed wall-clock
 // bounds that blow up under concurrent load but pass standalone.
 
+// apra-fleet-qe83.4: test-only escape hatch that makes killTree()/child.kill()
+// no-ops, so a test can simulate "taskkill is unavailable/denied, or the
+// POSIX group kill fails for both -pid and pid" without needing a real
+// unkillable process (SIGKILL cannot be ignored on POSIX, so that failure
+// mode can only be reproduced by disabling the kill calls themselves).
+// Unset/unequal to '1' in production -- this branch is never taken there.
+const simulateUnkillable = process.env.APRA_TEST_SIMULATE_KILL_FAILURE === '1';
+
 /** Best-effort kill of the whole descendant tree rooted at `pid`. */
 function killTree(pid) {
-    if (!pid) return;
+    if (!pid || simulateUnkillable) return;
     if (isWindows) {
         spawnSync('taskkill', ['/PID', String(pid), '/T', '/F']);
     } else {
@@ -62,6 +70,14 @@ function killTree(pid) {
     }
 }
 
+// apra-fleet-qe83.4: grace window between the belt-and-braces child.kill()
+// below and the forced process.exit() -- see scripts/run-all-tests.mjs's
+// identical constant for the full rationale.
+const FORCE_EXIT_GRACE_MS = (() => {
+    const raw = Number(process.env.APRA_TEST_FORCE_EXIT_GRACE_MS);
+    return Number.isFinite(raw) && raw > 0 ? raw : 5_000;
+})();
+
 const extraArgs = process.argv.slice(3);
 
 function runBounded(cmd, args, opts) {
@@ -70,15 +86,29 @@ function runBounded(cmd, args, opts) {
 
         let timedOut = false;
         let settled = false;
+        let forceExitTimer = null;
         const timer = setTimeout(() => {
             timedOut = true;
             killTree(child.pid);
+            // Belt-and-braces: see scripts/run-all-tests.mjs's identical
+            // block for the full rationale -- killTree is best-effort, so
+            // also SIGKILL directly and force-exit if the child still has
+            // not gone away after a short grace window.
+            if (!simulateUnkillable) {
+                try { child.kill('SIGKILL'); } catch { /* already gone */ }
+            }
+            forceExitTimer = setTimeout(() => {
+                if (settled) return;
+                console.error(`\n> test run did not exit after being killed -- forcing process exit\n`);
+                process.exit(1);
+            }, FORCE_EXIT_GRACE_MS);
         }, timeoutMs);
 
         const finish = (result) => {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
+            if (forceExitTimer) clearTimeout(forceExitTimer);
             resolve(result);
         };
 
