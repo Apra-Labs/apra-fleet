@@ -8,7 +8,7 @@ import net from 'node:net';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { tokenFilePath } from '../src/supervisor/auth.mjs';
+import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 
 // apra-fleet-7h6n.4 -- merged from n4lu2-packaged-supervisor-boot.test.mjs,
 // qqof-supervisor-selfcontained-audit.test.mjs, and
@@ -466,31 +466,20 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         let exited = false;
         serve.once('exit', () => { exited = true; });
 
-        // apra-fleet-50j6.2.3 criterion (4): read the shared bearer service
-        // token from <FLEET_SE_DATA_DIR>/private/token AFTER the supervisor
-        // has actually minted it -- never pre-mint it ourselves. The
-        // supervisor writes the token file as part of its own boot (server.
-        // mjs -> auth.mjs's loadOrCreateToken(deps.dataDir)), so wait for
-        // that file to exist before reading it, under the same exited/
-        // deadline fail-fast guards used for the /api/health poll below.
-        const tokenFile = tokenFilePath(seDataDir);
-        const tokenDeadline = Date.now() + 20000;
-        for (;;) {
-            if (exited) {
-                assert.fail(
-                    `serve.mjs exited (code=${serve.exitCode}, signal=${serve.signalCode}) before ` +
-                    `writing its token file -- likely a packaging/module-resolution failure.\nstderr:\n${stderrBuf}`
-                );
-            }
-            if (fs.existsSync(tokenFile)) break;
-            if (Date.now() > tokenDeadline) {
-                assert.fail(`timed out waiting for the installed supervisor to write ${tokenFile}.\nstderr so far:\n${stderrBuf}`);
-            }
-            // eslint-disable-next-line no-await-in-loop
-            await sleep(100);
-        }
-        const serviceToken = fs.readFileSync(tokenFile, 'utf-8').trim();
-        assert.ok(serviceToken.length > 0, `token file ${tokenFile} was created but is empty`);
+        // apra-fleet-50j6.2.3 criterion (4) / apra-fleet-ky2l.1.2 (DQ-20):
+        // resolve the SAME shared bearer service token the supervisor itself
+        // resolves, through the SAME resolveServiceToken() seam and with NO
+        // `home` override (the spawned child's env below is `{...process.env,
+        // ...}` with no HOME override, so it resolves against the real
+        // os.homedir() too -- see auth.mjs). Unlike the old direct-file-read
+        // this may resolve to the shared ~/.apra-fleet/fleet.key rather than
+        // ever minting a private/token file at all, so waiting on a
+        // private/token file's existence would hang forever when a fleet.key
+        // is present; resolveServiceToken() is idempotent and safe to call
+        // directly instead (mint-or-reuse for the private/token fallback
+        // case, a plain read for the fleet-key case).
+        const serviceToken = resolveServiceToken(seDataDir).token;
+        assert.ok(serviceToken.length > 0, 'resolveServiceToken() returned an empty token');
 
         // Poll for /api/health, but fail fast (with the captured stderr) if
         // the process exits first -- e.g. on a reintroduced ERR_MODULE_NOT_FOUND

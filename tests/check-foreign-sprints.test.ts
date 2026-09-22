@@ -16,20 +16,38 @@ import {
 // never mistake a 401 (auth failure) for "no live sprints" (its old !res.ok
 // branch treated ALL non-2xx responses, including 401, as a clean proceed).
 //
-// run() takes an injected fetchImpl/dataDir instead of the real network/
-// process.argv/process.exit that main() uses, so these tests drive the exact
-// same logic main() calls without a subprocess or a real socket.
+// apra-fleet-ky2l.1.2 (DQ-20): readServiceToken() now resolves the token via
+// auth.mjs's resolveServiceToken() -- the shared ~/.apra-fleet/fleet.key when
+// present, else a mint-or-reuse of <dataDir>/private/token -- rather than a
+// direct, non-mutating read of <dataDir>/private/token alone. Every test
+// below pins `home` to a fixture with NO fleet.key so it deterministically
+// exercises the private/token fallback and never touches (or depends on) the
+// real ~/.apra-fleet/fleet.key on the machine running this suite.
+//
+// run() takes an injected fetchImpl/dataDir/home instead of the real network/
+// process.argv/process.exit/os.homedir() that main() uses, so these tests
+// drive the exact same logic main() calls without a subprocess or a real
+// socket, and without depending on the real machine's fleet.key.
 
 const VALID_TOKEN = 'a'.repeat(64);
 
-const homes: string[] = [];
+const dirs: string[] = [];
 afterEach(() => {
-  for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
+  for (const h of dirs.splice(0)) fs.rmSync(h, { recursive: true, force: true });
 });
 
 function mkSeDataDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'check-foreign-sprints-test-'));
-  homes.push(dir);
+  dirs.push(dir);
+  return dir;
+}
+
+/** A fixture "home" with no ~/.apra-fleet/fleet.key -- pinned via readServiceToken's
+ *  `home` option so every test in this file is isolated from the real machine's
+ *  fleet.key (apra-fleet-ky2l.1.2). */
+function mkHomeDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'check-foreign-sprints-test-home-'));
+  dirs.push(dir);
   return dir;
 }
 
@@ -79,22 +97,42 @@ describe('defaultSeDataDir', () => {
   });
 });
 
-describe('readServiceToken', () => {
-  it('returns null when the token file does not exist', () => {
+describe('readServiceToken (apra-fleet-ky2l.1.2: resolves via auth.mjs resolveServiceToken)', () => {
+  it('resolves the shared fleet.key when present at the pinned home', () => {
     const dir = mkSeDataDir();
-    expect(readServiceToken(dir)).toBeNull();
+    const home = mkHomeDir();
+    fs.mkdirSync(path.join(home, '.apra-fleet'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.apra-fleet', 'fleet.key'), VALID_TOKEN, 'utf8');
+
+    expect(readServiceToken(dir, { home })).toBe(VALID_TOKEN);
   });
 
-  it('returns the trimmed token when the file exists', () => {
+  it('falls back to the trimmed private/token content when fleet.key is absent', () => {
     const dir = mkSeDataDir();
+    const home = mkHomeDir();
     writeToken(dir, `${VALID_TOKEN}\n`);
-    expect(readServiceToken(dir)).toBe(VALID_TOKEN);
+
+    expect(readServiceToken(dir, { home })).toBe(VALID_TOKEN);
   });
 
-  it('throws when the token file exists but is blank', () => {
+  it('mints a fresh private/token when neither fleet.key nor private/token exist yet', () => {
     const dir = mkSeDataDir();
+    const home = mkHomeDir();
+
+    const token = readServiceToken(dir, { home });
+
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(fs.readFileSync(path.join(dir, 'private', 'token'), 'utf8').trim()).toBe(token);
+  });
+
+  it('heals (re-mints) a blank private/token file rather than throwing', () => {
+    const dir = mkSeDataDir();
+    const home = mkHomeDir();
     writeToken(dir, '   \n');
-    expect(() => readServiceToken(dir)).toThrow(/empty/i);
+
+    const token = readServiceToken(dir, { home });
+
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
@@ -106,13 +144,14 @@ describe('parseArgs (unaffected by the auth change)', () => {
 });
 
 describe('run(): 401 is never silently interpreted as an empty sprint list', () => {
-  it('returns nonzero and reports the auth failure when the token file is missing', async () => {
+  it('returns nonzero and reports the auth failure when neither token source exists yet (a fresh token is minted and still does not match)', async () => {
     const seDataDir = mkSeDataDir(); // no token file written
+    const home = mkHomeDir(); // no fleet.key
     const fetchImpl = fakeAuthedFetch(VALID_TOKEN);
     const errLines: string[] = [];
     const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => { errLines.push(msg); });
     try {
-      const code = await run(['--self-sprint-id', 'self-1', '--url', 'http://fake/api/sprints'], { fetchImpl, dataDir: seDataDir });
+      const code = await run(['--self-sprint-id', 'self-1', '--url', 'http://fake/api/sprints'], { fetchImpl, dataDir: seDataDir, home });
 
       expect(code).not.toBe(0);
       expect(code).not.toBe(3); // not the "foreign sprint" STOP code either -- this is an auth failure
@@ -129,12 +168,13 @@ describe('run(): 401 is never silently interpreted as an empty sprint list', () 
 
   it('returns nonzero and reports the auth failure when the on-disk token is stale', async () => {
     const seDataDir = mkSeDataDir();
+    const home = mkHomeDir();
     writeToken(seDataDir, 'b'.repeat(64)); // wrong token
     const fetchImpl = fakeAuthedFetch(VALID_TOKEN);
     const errLines: string[] = [];
     const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => { errLines.push(msg); });
     try {
-      const code = await run(['--self-sprint-id', 'self-1', '--url', 'http://fake/api/sprints'], { fetchImpl, dataDir: seDataDir });
+      const code = await run(['--self-sprint-id', 'self-1', '--url', 'http://fake/api/sprints'], { fetchImpl, dataDir: seDataDir, home });
 
       expect(code).not.toBe(0);
       expect(code).not.toBe(3);
@@ -148,12 +188,13 @@ describe('run(): 401 is never silently interpreted as an empty sprint list', () 
 
   it('sends the on-disk token and proceeds normally once authorized', async () => {
     const seDataDir = mkSeDataDir();
+    const home = mkHomeDir();
     writeToken(seDataDir, VALID_TOKEN);
     const fetchImpl = fakeAuthedFetch(VALID_TOKEN, [{ sprintId: 'self-1', childPid: 123 }]);
     const outLines: string[] = [];
     const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => { outLines.push(msg); });
     try {
-      const code = await run(['--self-sprint-id', 'self-1', '--url', 'http://fake/api/sprints'], { fetchImpl, dataDir: seDataDir });
+      const code = await run(['--self-sprint-id', 'self-1', '--url', 'http://fake/api/sprints'], { fetchImpl, dataDir: seDataDir, home });
 
       expect(code).toBe(0);
       expect(outLines.join('\n')).toMatch(/own reservation \(not foreign\): self-1/);
@@ -165,11 +206,12 @@ describe('run(): 401 is never silently interpreted as an empty sprint list', () 
 
   it('still proceeds (exit 0) when the supervisor is unreachable at all', async () => {
     const seDataDir = mkSeDataDir();
+    const home = mkHomeDir();
     writeToken(seDataDir, VALID_TOKEN);
     const fetchImpl = fakeUnreachableFetch();
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
-      const code = await run(['--self-sprint-id', 'self-1', '--url', 'http://fake/api/sprints'], { fetchImpl, dataDir: seDataDir });
+      const code = await run(['--self-sprint-id', 'self-1', '--url', 'http://fake/api/sprints'], { fetchImpl, dataDir: seDataDir, home });
       expect(code).toBe(0);
     } finally {
       spy.mockRestore();

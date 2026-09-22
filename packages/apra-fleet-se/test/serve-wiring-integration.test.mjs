@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
-import { loadOrCreateToken } from '../src/supervisor/auth.mjs';
+import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.8.3 -- verification for eft.4.8: boots the REAL
@@ -156,11 +156,15 @@ function httpPostJson(port, urlPath, payload, { host = '127.0.0.1', serviceToken
 describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real supervisor process', () => {
     let serve;
     let port;
-    // apra-fleet-50j6.1.2: the shared bearer service token bin/serve.mjs
-    // mints/loads from FLEET_SE_DATA_DIR -- minted here (before spawn) so
-    // this test process and the spawned subprocess deterministically agree
-    // on it via loadOrCreateToken()'s idempotent create-or-reuse contract,
-    // instead of racing to read a file the child may not have written yet.
+    // apra-fleet-50j6.1.2 / apra-fleet-ky2l.1.2 (DQ-20): the shared bearer
+    // service token bin/serve.mjs resolves via resolveServiceToken() --
+    // resolved here (before spawn) so this test process and the spawned
+    // subprocess deterministically agree on it via that resolver's
+    // idempotent create-or-reuse contract, instead of racing to read a file
+    // the child may not have written yet. Resolved with NO `home` override,
+    // deliberately -- the spawned child's env below is `{...process.env,
+    // ...}` with no HOME override, so it resolves against the REAL
+    // os.homedir() too; this precompute must match or every poll below 401s.
     let serviceToken;
     // apra-fleet-7dir.18: flipped by the spawned `serve` subprocess's own
     // 'exit' event, so the readiness polls below (isAlive) can fail FAST if
@@ -176,7 +180,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         const dataDir = await mkTmp('eft483-serve-data-');
         const seDataDir = await mkTmp('eft483-serve-se-');
         port = await getFreePort();
-        serviceToken = loadOrCreateToken(seDataDir).token;
+        serviceToken = resolveServiceToken(seDataDir).token;
 
         serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
             cwd: SE_PKG_ROOT,

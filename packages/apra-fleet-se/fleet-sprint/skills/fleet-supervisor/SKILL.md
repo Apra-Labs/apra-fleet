@@ -13,25 +13,37 @@ Default port: **8787**. Never invoke `apra-fleet workflow fleet-sprint` or
 
 The supervisor binds loopback-only and guards its whole `/api/` surface (plus
 POST to any `/sprints/:id/live/...` sub-route) with a shared bearer service
-token. The token lives at `<dataDir>/private/token` -- a plain-text file the
-supervisor mints on first boot and reuses on every restart against the same
-`dataDir` -- and is **never printed** to a log, a terminal, or anywhere else;
-read it directly from that file for each request instead of echoing it.
+token. apra-fleet-ky2l.1.2 (DQ-20): the token source is the shared
+`~/.apra-fleet/fleet.key` -- the SAME key `src/services/jwt.ts` signs JWTs
+with -- when that file exists and holds a well-formed 64-hex-char value;
+otherwise the supervisor falls back to `<dataDir>/private/token`, a
+plain-text file it mints on first boot and reuses on every restart against
+the same `dataDir`. The supervisor never mints `fleet.key` itself (only
+`jwt.ts` does); it only ever reads one if already present. Either way the
+token is **never printed** to a log, a terminal, or anywhere else -- the
+supervisor's startup log names which source it resolved
+(`service token source: fleet-key` or `private-token`), never the token
+value itself. Read the token directly from whichever file is in play for
+each request instead of echoing it.
 
 Every `curl` example below carries it as
-`-H "Authorization: Bearer $(cat <dataDir>/private/token)"` (bash) or
-`-H "Authorization: Bearer $(Get-Content <dataDir>\private\token)"`
-(PowerShell) -- substitute the real `dataDir` path on the target member.
+`-H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)"`
+(bash) or
+`-H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })"`
+(PowerShell) -- substitute the real `dataDir` path on the target member. The
+`fleet.key` read is tried first and silently falls through to
+`private/token` when it is absent, matching the supervisor's own resolution
+order.
 
 ## 0. Start the supervisor (if not already running)
 
 Check first (bash):
 ```bash
-curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints
+curl -s -m 5 -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/sprints
 ```
 PowerShell:
 ```powershell
-curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints
+curl -s -m 5 -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/sprints
 ```
 Connection refused/timeout = not running. `{"sprints": [...]}` = already up,
 skip this.
@@ -63,15 +75,15 @@ restart. `--port <n>` overrides the default (8787). Self-logs to
 
 Smoke test (a few seconds after launch -- give it time to bind), bash:
 ```bash
-curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints   # expect {"sprints":[],...}
-curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/members   # expect the registered fleet, non-empty
-curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/health    # check `beads.dir`/`beads.prefix` is the intended tracker
+curl -s -m 5 -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/sprints   # expect {"sprints":[],...}
+curl -s -m 5 -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/members   # expect the registered fleet, non-empty
+curl -s -m 5 -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/health    # check `beads.dir`/`beads.prefix` is the intended tracker
 ```
 PowerShell:
 ```powershell
-curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints
-curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/members
-curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/health
+curl -s -m 5 -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/sprints
+curl -s -m 5 -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/members
+curl -s -m 5 -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/health
 ```
 Both must succeed before treating the supervisor as up -- a bound port with
 a 500 on `/api/members` still means something is broken. A wrong
@@ -91,21 +103,21 @@ members run PowerShell, not POSIX.
 
 Bash:
 ```bash
-curl -s -X POST -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/shutdown
+curl -s -X POST -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/shutdown
 ```
 PowerShell:
 ```powershell
-curl -s -X POST -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/shutdown
+curl -s -X POST -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/shutdown
 ```
 Returns `{"status":"shutting-down"}` immediately; the process then finishes
 tearing down every seam (ledger, watchdog, dashboard, etc) and exits on its
 own a moment later. Confirm it is actually gone, bash:
 ```bash
-curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints   # expect connection refused
+curl -s -m 5 -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/sprints   # expect connection refused
 ```
 PowerShell:
 ```powershell
-curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints
+curl -s -m 5 -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/sprints
 ```
 If that still connects after a few seconds, fall through to hard-stop below.
 
@@ -113,11 +125,11 @@ If that still connects after a few seconds, fall through to hard-stop below.
 
 `GET /api/health` normally reports the running `pid` directly, bash:
 ```bash
-curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/health
+curl -s -m 5 -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/health
 ```
 PowerShell:
 ```powershell
-curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/health
+curl -s -m 5 -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/health
 ```
 but if the API itself is unresponsive that call will hang or refuse -- fall
 back to an OS-level lookup by port (default **8787**) or process name
@@ -171,8 +183,8 @@ taskkill /PID <pid> /F
 ```
 
 After either path, verify the port is free before restarting -- bash:
-`curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints`
-(PowerShell: `curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints`)
+`curl -s -m 5 -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/sprints`
+(PowerShell: `curl -s -m 5 -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/sprints`)
 must refuse the connection (macOS/Linux), or the port-lookup command above
 must return nothing (Windows).
 
@@ -185,8 +197,8 @@ restart command exists:
    (still answering after a few seconds), fall back to the hard-stop path
    above.
 2. **Confirm it is down**: bash
-   `curl -s -m 5 -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints`
-   (PowerShell: `curl -s -m 5 -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints`)
+   `curl -s -m 5 -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/sprints`
+   (PowerShell: `curl -s -m 5 -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/sprints`)
    must refuse the connection (or the per-OS port lookup above returns
    nothing).
 3. **Start** it again: see section 0 ("Start the supervisor") above, then
@@ -336,7 +348,7 @@ Bash:
 ```bash
 curl -s -X POST http://localhost:8787/api/sprints \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat <dataDir>/private/token)" \
+  -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" \
   -d '{
     "issue": "<id[,id2,...]>",
     "branch": "<new-or-existing-branch>",
@@ -349,7 +361,7 @@ PowerShell:
 ```powershell
 curl -s -X POST http://localhost:8787/api/sprints `
   -H "Content-Type: application/json" `
-  -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" `
+  -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" `
   -d '{
     "issue": "<id[,id2,...]>",
     "branch": "<new-or-existing-branch>",
@@ -384,21 +396,21 @@ a few seconds after launch.
 
 All live sprints, bash:
 ```bash
-curl -s -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints
+curl -s -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/sprints
 ```
 PowerShell:
 ```powershell
-curl -s -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints
+curl -s -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/sprints
 ```
 Empty `sprints: []` after a launch = it already died. Check its `logPath`.
 
 One sprint (live state, or its terminal record if it finished/crashed), bash:
 ```bash
-curl -s -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints/<sprintId>
+curl -s -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/sprints/<sprintId>
 ```
 PowerShell:
 ```powershell
-curl -s -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints/<sprintId>
+curl -s -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/sprints/<sprintId>
 ```
 
 Sprint-scoped dashboard (per-role activity, bead DAG, cost, PR link):
@@ -408,11 +420,11 @@ Sprint-scoped dashboard (per-role activity, bead DAG, cost, PR link):
 
 Bash:
 ```bash
-curl -s -X POST -H "Authorization: Bearer $(cat <dataDir>/private/token)" http://localhost:8787/api/sprints/<sprintId>/stop
+curl -s -X POST -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/sprints/<sprintId>/stop
 ```
 PowerShell:
 ```powershell
-curl -s -X POST -H "Authorization: Bearer $(Get-Content <dataDir>\private\token)" http://localhost:8787/api/sprints/<sprintId>/stop
+curl -s -X POST -H "Authorization: Bearer $(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })" http://localhost:8787/api/sprints/<sprintId>/stop
 ```
 
 ## Relaunch gate

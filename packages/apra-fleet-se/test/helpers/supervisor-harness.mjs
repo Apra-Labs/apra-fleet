@@ -17,13 +17,23 @@
 //   supervisor.handleRequest() directly with mock req/res objects (the
 //   pattern the existing supervisor-api.test.mjs suite uses throughout).
 //
-// Both mint the token via auth.mjs's loadOrCreateToken(dataDir) -- never via
-// deps.token directly -- so BOTH constructors always end up with a non-null
-// token and the per-request 401 guard in server.mjs is genuinely exercised
-// (see server.mjs:170-182: a supervisor built with neither deps.token nor
-// deps.dataDir leaves token null and the guard is skipped entirely). A
-// harness that ever built a supervisor with no token would silently disable
-// auth and make every migrated test pass vacuously.
+// Both resolve the token via auth.mjs's resolveServiceToken(dataDir, {home})
+// -- never via deps.token directly -- so BOTH constructors always end up
+// with a non-null token and the per-request 401 guard in server.mjs is
+// genuinely exercised (see server.mjs:170-182: a supervisor built with
+// neither deps.token nor deps.dataDir leaves token null and the guard is
+// skipped entirely). A harness that ever built a supervisor with no token
+// would silently disable auth and make every migrated test pass vacuously.
+//
+// apra-fleet-ky2l.1.2 (DQ-20): resolveServiceToken() prefers the shared
+// ~/.apra-fleet/fleet.key over dataDir's own private/token. This harness
+// ALWAYS pins the lookup to a fresh (or caller-supplied) temp `home` dir --
+// never the real os.homedir() -- so every test built on this harness stays
+// isolated from the developer machine's real fleet.key (a harness that
+// leaked the real home would make every consuming test's outcome depend on
+// whether that machine happens to have one) and, absent a fleet.key at that
+// temp home, deterministically exercises the private-token fallback exactly
+// as this harness always has.
 // =============================================================================
 
 import fsp from 'node:fs/promises';
@@ -31,7 +41,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createSupervisor } from '../../src/supervisor/server.mjs';
-import { loadOrCreateToken } from '../../src/supervisor/auth.mjs';
+import { resolveServiceToken } from '../../src/supervisor/auth.mjs';
 
 /**
  * @param {string} [dataDir]
@@ -40,6 +50,15 @@ import { loadOrCreateToken } from '../../src/supervisor/auth.mjs';
 async function resolveDataDir(dataDir) {
     if (typeof dataDir === 'string' && dataDir.length > 0) return dataDir;
     return fsp.mkdtemp(path.join(os.tmpdir(), 'eft-supervisor-harness-'));
+}
+
+/**
+ * @param {string} [home]
+ * @returns {Promise<string>}
+ */
+async function resolveHomeDir(home) {
+    if (typeof home === 'string' && home.length > 0) return home;
+    return fsp.mkdtemp(path.join(os.tmpdir(), 'eft-supervisor-harness-home-'));
 }
 
 /**
@@ -59,9 +78,10 @@ function headersFor(token) {
  * @returns {Promise<{baseUrl: string, token: string, headers: () => {authorization: string}, stop: () => Promise<void>}>}
  */
 export async function startTestSupervisor(opts = {}) {
-    const { dataDir: dataDirOpt, port = 0, ...deps } = opts;
+    const { dataDir: dataDirOpt, home: homeOpt, port = 0, ...deps } = opts;
     const dataDir = await resolveDataDir(dataDirOpt);
-    const { token } = loadOrCreateToken(dataDir);
+    const home = await resolveHomeDir(homeOpt);
+    const { token } = resolveServiceToken(dataDir, { home });
 
     const supervisor = createSupervisor({ ...deps, port, token });
     const { port: boundPort } = await supervisor.start();
@@ -83,9 +103,10 @@ export async function startTestSupervisor(opts = {}) {
  * @returns {Promise<{supervisor: object, token: string, headers: () => {authorization: string}}>}
  */
 export async function createTestSupervisor(opts = {}) {
-    const { dataDir: dataDirOpt, ...deps } = opts;
+    const { dataDir: dataDirOpt, home: homeOpt, ...deps } = opts;
     const dataDir = await resolveDataDir(dataDirOpt);
-    const { token } = loadOrCreateToken(dataDir);
+    const home = await resolveHomeDir(homeOpt);
+    const { token } = resolveServiceToken(dataDir, { home });
 
     const supervisor = createSupervisor({ ...deps, token });
 

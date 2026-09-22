@@ -38,6 +38,7 @@
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 /** Subdirectory of the supervisor data root that holds operator-private state. */
@@ -221,6 +222,73 @@ export function loadOrCreateToken(dir) {
     if (!windows) enforcePosixTokenMode(file);
 
     return { token, path: file, created, aclVerified: !windows };
+}
+
+/**
+ * Subdirectory of `home` holding the shared fleet key (src/services/jwt.ts's
+ * KEY_PATH, which is hardcoded to `os.homedir()` and does NOT honor
+ * APRA_FLEET_DATA_DIR -- see jwt.ts line 6). `home` is overridable here only
+ * so a test can point it at a fixture; jwt.ts itself has no such override,
+ * so every OTHER reader/writer of this file always uses the real
+ * `os.homedir()`.
+ */
+const FLEET_KEY_DIRNAME = '.apra-fleet';
+
+/** Filename of the shared fleet key inside FLEET_KEY_DIRNAME (jwt.ts's KEY_PATH). */
+const FLEET_KEY_FILENAME = 'fleet.key';
+
+/**
+ * apra-fleet-ky2l.1.2 (DQ-20): resolve the supervisor's service token,
+ * preferring the shared `<home>/.apra-fleet/fleet.key` (the SAME file
+ * src/services/jwt.ts's getOrCreateKey() reads/mints, so the supervisor and
+ * the fleet MCP server's JWT auth share one token) over the private/token
+ * file `loadOrCreateToken()` mints under the supervisor's own data root.
+ *
+ * This supervisor never MINTS fleet.key itself -- jwt.ts owns creation ---
+ * it only reads one if already present and well-formed (a trimmed 64-char
+ * lowercase-hex string, the exact shape jwt.ts's getOrCreateKey() and this
+ * module's own TOKEN_PATTERN both use). A present-but-malformed fleet.key is
+ * REJECTED (never used as the token) and logged as a warning via
+ * `opts.logger` (default `console`); resolution then falls through to the
+ * private/token fallback exactly as if fleet.key were absent.
+ *
+ * @param {string} dir supervisor data root (passed through to
+ *   loadOrCreateToken() for the private/token fallback)
+ * @param {{ home?: string, logger?: { warn?: Function } }} [opts]
+ *   `home` overrides where the fleet-key lookup is rooted -- tests MUST pass
+ *   a temp dir here (jwt.ts's own KEY_PATH has no such override, so
+ *   `loadOrCreateToken`'s fallback is otherwise the only test-isolated path).
+ *   `home` defaults to the real `os.homedir()`, matching production.
+ * @returns {{ token: string, path: string, source: 'fleet-key'|'private-token', aclVerified: boolean, created: boolean }}
+ */
+export function resolveServiceToken(dir, opts = {}) {
+    const home = typeof opts.home === 'string' && opts.home.length > 0 ? opts.home : os.homedir();
+    const logger = opts.logger && typeof opts.logger.warn === 'function' ? opts.logger : console;
+    const fleetKeyPath = path.join(home, FLEET_KEY_DIRNAME, FLEET_KEY_FILENAME);
+
+    let raw = null;
+    try {
+        raw = fs.readFileSync(fleetKeyPath, 'utf8');
+    } catch {
+        // Absent (or unreadable) fleet.key -- fall through to private/token
+        // without comment; only a PRESENT-but-malformed file is worth a
+        // warning (below), since "no fleet.key yet" is the expected steady
+        // state before the operator's first `apra-fleet` CLI use.
+        raw = null;
+    }
+    if (raw !== null) {
+        const trimmed = raw.trim();
+        if (TOKEN_PATTERN.test(trimmed)) {
+            return { token: trimmed, path: fleetKeyPath, source: 'fleet-key', aclVerified: !isWindows(), created: false };
+        }
+        logger.warn(
+            `[supervisor] WARNING: fleet.key at ${fleetKeyPath} is malformed (expected ${TOKEN_BYTES * 2} lowercase-hex chars) -- `
+            + 'never used as the service token; falling back to the private/token source.',
+        );
+    }
+
+    const fallback = loadOrCreateToken(dir);
+    return { ...fallback, source: 'private-token' };
 }
 
 /**

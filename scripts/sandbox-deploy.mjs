@@ -42,7 +42,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { loadOrCreateToken } from '../packages/apra-fleet-se/src/supervisor/auth.mjs';
+import { resolveServiceToken } from '../packages/apra-fleet-se/src/supervisor/auth.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PRODUCTION_FLEET_PORT = 7523;
@@ -279,16 +279,21 @@ async function postJson(url, timeoutMs = 2000, token) {
   }
 }
 
-/** Load (or, for a not-yet-started production instance, mint) the bearer
- *  token for a supervisor's data dir. loadOrCreateToken is idempotent --
- *  reading an existing token file never mutates it -- so this is safe to call
- *  purely for a read against an already-running supervisor. Never throws: a
- *  missing/unreadable dir just means "no snapshot/no auth", handled by the
- *  caller exactly like the pre-auth null/false it used to get from a bare
- *  401. */
+/** Resolve (or, for a not-yet-started production instance, mint) the bearer
+ *  token for a supervisor's data dir, through the SAME resolveServiceToken()
+ *  bin/serve.mjs itself uses (apra-fleet-ky2l.1.2, DQ-20) -- deliberately
+ *  called with NO `home` override, so it resolves against the real
+ *  os.homedir() exactly like the supervisor process(es) this script spawns
+ *  or snapshots (which also never receive a --home override). resolveService
+ *  Token is idempotent for an existing source -- reading an existing
+ *  fleet.key or private/token file never mutates it -- so this is safe to
+ *  call purely for a read against an already-running supervisor. Never
+ *  throws: a missing/unreadable dir just means "no snapshot/no auth",
+ *  handled by the caller exactly like the pre-auth null/false it used to get
+ *  from a bare 401. */
 function tryLoadToken(dir) {
   try {
-    return loadOrCreateToken(dir).token;
+    return resolveServiceToken(dir).token;
   } catch {
     return undefined;
   }
@@ -471,11 +476,16 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
     await stopPid(mcpPid);
     throw portConflictError('supervisor', supervisorPort, `supervisor port ${supervisorPort} is no longer free -- torn down; re-run 'init'`);
   }
-  // Mint (or reuse) the sandbox's own bearer token BEFORE spawning, so the
-  // child's own idempotent loadOrCreateToken() reuses this exact file rather
-  // than racing a concurrent first mint (same pattern as f34/serve-wiring's
-  // fix for this).
-  const supervisorToken = loadOrCreateToken(values.FLEET_SE_DATA_DIR).token;
+  // Resolve (mint-or-reuse) the sandbox's own bearer token BEFORE spawning,
+  // through the SAME resolver (and the SAME real os.homedir(), no --home
+  // override on either side) the about-to-be-spawned child's own
+  // resolveServiceToken() call will use, so the child reuses this exact
+  // source rather than racing a concurrent first mint (same pattern as
+  // f34/serve-wiring's fix for this). apra-fleet-ky2l.1.2 (DQ-20): if a
+  // shared ~/.apra-fleet/fleet.key already exists, both this pre-check and
+  // the spawned child resolve it -- the sandbox supervisor intentionally
+  // shares one token with production, not a bug.
+  const supervisorToken = resolveServiceToken(values.FLEET_SE_DATA_DIR).token;
   const serve = path.join(repoRoot, 'packages', 'apra-fleet-se', 'bin', 'serve.mjs');
   const supPid = spawnDetached([serve, '--port', String(supervisorPort)], env, path.join(root, 'supervisor.log'));
   values.SUPERVISOR_PID = String(supPid);

@@ -14,7 +14,7 @@ import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
 import { createReconciler, isPidAlive } from '../src/supervisor/reconcile.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
-import { loadOrCreateToken } from '../src/supervisor/auth.mjs';
+import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.6 -- supervisor lifecycle end-to-end test.
@@ -369,10 +369,13 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
         const dataDir = await mkTmp('eft46-serve-data-');
         const seDataDir = await mkTmp('eft46-serve-se-');
         const port = await getFreePort();
-        // apra-fleet-50j6.1.2: mint/load the SAME shared bearer service
-        // token the spawned subprocess will (deterministic, idempotent
-        // function of seDataDir -- see auth.mjs's loadOrCreateToken).
-        const serviceToken = loadOrCreateToken(seDataDir).token;
+        // apra-fleet-50j6.1.2 / apra-fleet-ky2l.1.2 (DQ-20): resolve the SAME
+        // shared bearer service token the spawned subprocess will -- via the
+        // SAME resolveServiceToken() seam, with NO `home` override (the
+        // child's env below has no HOME override either, so both resolve
+        // against the real os.homedir(), and thus the SAME fleet.key when
+        // one exists -- see auth.mjs).
+        const serviceToken = resolveServiceToken(seDataDir).token;
 
         const serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
             cwd: SE_PKG_ROOT,

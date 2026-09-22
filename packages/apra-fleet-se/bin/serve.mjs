@@ -22,7 +22,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
-import { loadOrCreateToken } from '../src/supervisor/auth.mjs';
+import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 import { createLedger, defaultDataDir } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
@@ -211,13 +211,18 @@ export async function serveMain(argv = process.argv.slice(2)) {
         console.warn(`[supervisor] WARNING: ${beadsWarning}`);
     }
 
-    // apra-fleet-50j6.1.2: mint-or-reuse the shared bearer service token that
-    // guards the `/api/` surface and the live-sprint mutating routes (see
-    // auth.mjs). Loaded from the SAME data root ledger.mjs/history.mjs/
-    // spawner.mjs already default to (FLEET_SE_DATA_DIR, or ~/.apra-fleet-se)
-    // so a restarted supervisor reuses the same token across restarts.
+    // apra-fleet-50j6.1.2 / apra-fleet-ky2l.1.2 (DQ-20): resolve the shared
+    // bearer service token that guards the `/api/` surface and the
+    // live-sprint mutating routes (see auth.mjs). Prefers the shared
+    // ~/.apra-fleet/fleet.key (the same key src/services/jwt.ts signs JWTs
+    // with) over the private/token file minted under this supervisor's own
+    // data root (FLEET_SE_DATA_DIR, or ~/.apra-fleet-se) -- the latter is a
+    // fallback only, kept so a restarted supervisor with no fleet.key still
+    // reuses the same token across restarts. The resolved source is logged
+    // once at startup; the token value itself is never logged.
     const dataDir = defaultDataDir();
-    const { token: serviceToken } = loadOrCreateToken(dataDir);
+    const { token: serviceToken, source: serviceTokenSource } = resolveServiceToken(dataDir);
+    console.log(`[supervisor] service token source: ${serviceTokenSource}`);
 
     // The durable reservation ledger (eft.5.1) and its terminal-event history
     // (eft.5.4) are the restart-surviving source of truth. Wire them as real

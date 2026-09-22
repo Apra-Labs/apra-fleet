@@ -17,7 +17,7 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { buildSprintArgv } from '../src/supervisor/spawner.mjs';
 import { createDoltMutex } from '../src/supervisor/dolt-mutex.mjs';
 import { createIdAllocator } from '../src/supervisor/id-allocator.mjs';
-import { loadOrCreateToken } from '../src/supervisor/auth.mjs';
+import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 
 // =============================================================================
 // apra-fleet-f34.3 -- proves REAL end-to-end launches engage the HTTP-backed
@@ -267,11 +267,13 @@ async function bootRealSupervisor() {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'f34-3-serve-data-'));
     const seDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'f34-3-serve-se-'));
     const port = await getFreePort();
-    // apra-fleet-50j6.1.2: mint/load the SAME shared bearer service token the
-    // spawned subprocess will (deterministic, idempotent function of
-    // seDataDir -- see auth.mjs's loadOrCreateToken), so this test's own
-    // boot/shutdown checks below can carry it.
-    const serviceToken = loadOrCreateToken(seDataDir).token;
+    // apra-fleet-50j6.1.2 / apra-fleet-ky2l.1.2 (DQ-20): resolve the SAME
+    // shared bearer service token the spawned subprocess will -- via the SAME
+    // resolveServiceToken() seam, with NO `home` override (the child's env
+    // below has no HOME override either, so both resolve against the real
+    // os.homedir() -- see auth.mjs), so this test's own boot/shutdown checks
+    // below can carry it.
+    const serviceToken = resolveServiceToken(seDataDir).token;
     const proc = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
         cwd: SE_PKG_ROOT,
         stdio: ['ignore', 'ignore', 'ignore'],

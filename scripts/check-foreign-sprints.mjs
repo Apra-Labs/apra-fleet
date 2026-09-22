@@ -22,17 +22,18 @@
 //
 // Since the loopback-bearer sprint, every /api/* route requires an
 // Authorization: Bearer <token> header (auth.mjs's requiresAuth/isAuthorized).
-// This script reads that token from <FLEET_SE_DATA_DIR or ~/.apra-fleet-
-// se>/private/token and sends it on every request. A 401 response is a live,
+// This script resolves that token via auth.mjs's resolveServiceToken() (DQ-20,
+// apra-fleet-ky2l.1.2) -- the shared ~/.apra-fleet/fleet.key when present and
+// well-formed, else the <FLEET_SE_DATA_DIR or ~/.apra-fleet-se>/private/token
+// fallback -- and sends it on every request. A 401 response is a live,
 // auth-enforcing supervisor -- NEVER treated as "no live sprints" -- and is a
 // fatal (exit 1) condition distinct from "supervisor unreachable" (exit 0).
 
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { classifyActiveSprints } from '../packages/apra-fleet-se/src/supervisor/sprint-identity.mjs';
-import { tokenFilePath } from '../packages/apra-fleet-se/src/supervisor/auth.mjs';
+import { resolveServiceToken } from '../packages/apra-fleet-se/src/supervisor/auth.mjs';
 
 const DEFAULT_URL = 'http://localhost:8787/api/sprints';
 
@@ -50,22 +51,22 @@ export function defaultSeDataDir() {
 }
 
 /**
- * Read the supervisor's service token from disk, if present.
+ * Resolve the supervisor's service token through the SAME resolver
+ * bin/serve.mjs uses (apra-fleet-ky2l.1.2, DQ-20): prefers the shared
+ * ~/.apra-fleet/fleet.key over the private/token file minted under
+ * `dataDir`. Unlike the old direct-file read this may mint a fresh
+ * private/token as a side effect when neither source exists yet -- harmless
+ * here since it is the exact file a freshly (re)started supervisor would
+ * mint for itself moments later, and it means this preflight always has a
+ * real token to send rather than silently sending none.
  * @param {string} dataDir supervisor data root (see defaultSeDataDir)
- * @returns {string|null} the token, or null when the token file does not exist
+ * @param {{ home?: string }} [opts] `home` overrides the fleet-key lookup
+ *   root -- tests must pass a temp dir; production leaves it unset (real
+ *   os.homedir(), matching what the real supervisor resolves).
+ * @returns {string} the resolved token
  */
-export function readServiceToken(dataDir) {
-    const file = tokenFilePath(dataDir);
-    let raw;
-    try {
-        raw = fs.readFileSync(file, 'utf8');
-    } catch (err) {
-        if (err && err.code === 'ENOENT') return null;
-        throw err;
-    }
-    const token = raw.trim();
-    if (!token) throw new Error(`Service token file is empty: ${file}`);
-    return token;
+export function readServiceToken(dataDir, opts = {}) {
+    return resolveServiceToken(dataDir, opts).token;
 }
 
 /**
@@ -102,7 +103,9 @@ export function parseArgs(argv) {
  * is a deploy pre-flight, not a network-behavior test, and exercising it
  * against a real listener adds subprocess/socket flakiness for no benefit.
  * @param {string[]} argv raw args (process.argv.slice(2))
- * @param {{ fetchImpl?: typeof fetch, dataDir?: string }} [deps]
+ * @param {{ fetchImpl?: typeof fetch, dataDir?: string, home?: string }} [deps]
+ *   `home` overrides the fleet-key lookup root (apra-fleet-ky2l.1.2) --
+ *   tests must pass a temp dir; production leaves it unset (real home).
  * @returns {Promise<number>} the process exit code
  */
 export async function run(argv, deps = {}) {
@@ -123,7 +126,7 @@ export async function run(argv, deps = {}) {
     const seDataDir = deps.dataDir ?? defaultSeDataDir();
     let token;
     try {
-        token = readServiceToken(seDataDir);
+        token = readServiceToken(seDataDir, { home: deps.home });
     } catch (err) {
         console.error(`[foreign-sprints] ${err.message}`);
         return 1;
@@ -137,11 +140,12 @@ export async function run(argv, deps = {}) {
             // A 401 means the supervisor IS live and enforcing auth -- this is
             // never "no live sprints". Silently treating it as an empty list
             // (the old !res.ok branch below) would defeat this whole preflight
-            // gate, so it gets its own fatal branch instead.
-            const hint = token
-                ? 'the token this script read may be stale/rotated'
-                : `no service token file found at ${tokenFilePath(seDataDir)} -- is the supervisor running, or is FLEET_SE_DATA_DIR set to the wrong data root?`;
-            console.error(`[foreign-sprints] ${opts.url} returned HTTP 401 unauthorized -- ${hint}.`);
+            // gate, so it gets its own fatal branch instead. readServiceToken()
+            // (via resolveServiceToken) always resolves SOME token now -- either
+            // the shared fleet.key or a freshly minted private/token -- so a 401
+            // here means that token is stale/rotated relative to whatever the
+            // live supervisor is actually enforcing, never "no token at all".
+            console.error(`[foreign-sprints] ${opts.url} returned HTTP 401 unauthorized -- the token this script read may be stale/rotated.`);
             console.error('[foreign-sprints] refusing to treat an auth failure as "no live sprints".');
             return 1;
         }
