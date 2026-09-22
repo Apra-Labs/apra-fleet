@@ -308,4 +308,13 @@ for (const suite of suites) {
     }
 }
 
-process.exit(failed ? 1 : 0);
+// apra-fleet-qe83.3.5.1: an outer terminating signal must always end this
+// runner with a non-zero exit, even when the group SIGTERM above reaps the
+// running suite fast enough for the suite loop's `if (terminating) break`
+// guards to fire BEFORE the deferred hard-kill timer in
+// handleTerminatingSignal() gets a chance to call its own process.exit(1).
+// Without `|| terminating` here, that race made this line run first with
+// `failed` still false, exiting 0 on a signal-driven shutdown. If the timer
+// wins the race instead, this line never runs at all (the timer's own
+// process.exit(1) already ended the process) -- both orderings now agree.
+process.exit(failed || terminating ? 1 : 0);
