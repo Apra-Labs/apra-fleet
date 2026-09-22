@@ -483,7 +483,10 @@ What shipped:
   tool call site that needs `SqliteProvider`-only capabilities (list,
   feedback, freshness sweep, reconcile/resolve-contradiction, directive
   methods), so those operations refuse loudly and by name when the project
-  provider is remote instead of behaving unpredictably.
+  provider is remote instead of behaving unpredictably. That is eight of the
+  nine SqliteProvider-only call sites; the ninth, `kb_stats`, deliberately
+  degrades instead, using the non-throwing `isSqliteProject` guard to report
+  a not-computable bible block over a remote provider.
 - Test coverage is against real implementations only, including an
   end-to-end test that runs `kb_setup` for real against a live local HTTP
   server -- no mocked provider stubs. See `docs/knowledge-layer-design.md`

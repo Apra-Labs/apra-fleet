@@ -2,6 +2,17 @@ import { SqliteProvider } from './sqlite-provider.js';
 import type { MemoryProvider } from './types.js';
 
 /**
+ * Non-throwing type guard: true when the project KB provider is a
+ * SqliteProvider. For call sites that DEGRADE over a remote provider rather
+ * than refusing (kb_stats) -- they must ask the type question directly, not
+ * catch requireSqliteProject's throw, which would also swallow any other
+ * error raised on that path.
+ */
+export function isSqliteProject(provider: MemoryProvider): provider is SqliteProvider {
+  return provider instanceof SqliteProvider;
+}
+
+/**
  * Narrows a project KB provider to SqliteProvider, for call sites that use
  * SqliteProvider-only capabilities not part of the MemoryProvider interface
  * (list, feedback, freshnessSweep, reconcilePrefilter, resolveContradiction,
@@ -22,7 +33,7 @@ import type { MemoryProvider } from './types.js';
  *   never returns a null/undefined sentinel
  */
 export function requireSqliteProject(provider: MemoryProvider, callerLabel: string): SqliteProvider {
-  if (provider instanceof SqliteProvider) {
+  if (isSqliteProject(provider)) {
     return provider;
   }
   throw new Error(

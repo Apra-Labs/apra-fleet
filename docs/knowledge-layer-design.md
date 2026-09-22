@@ -584,6 +584,16 @@ narrowing point: it throws naming the caller when the project provider is an
 `HttpKbProvider`, so those operations refuse cleanly instead of behaving
 unpredictably against a remote provider that does not support them.
 
+There are nine such call sites, with two distinct behaviours. Eight fail fast
+through `requireSqliteProject`: `kb_list`, `kb_feedback`,
+`kb_freshness_sweep`, `kb_reconcile_prefilter`, `kb_resolve_contradiction`,
+`kb_import`, `kb_export` (project scope), and the `kb directives` CLI.
+`kb_stats` is the ninth and deliberately DEGRADES instead: it asks the type
+question with the non-throwing `isSqliteProject` guard and, over a remote
+provider, reports its bible block as `{ computable: false, reason }` rather
+than failing the whole stats call. It must not catch `requireSqliteProject`'s
+throw as a type test, since that would also swallow any unrelated error.
+
 **Known gap left open:** the `kb_stats` "bible" response is now a union of
 the sqlite and remote-provider shapes, and not every consumer has been audited
 for which shape it actually needs. Tracked as follow-up work, not part of the

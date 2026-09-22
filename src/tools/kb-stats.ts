@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T2.1 (F5, D4): kb_stats -- a read-only aggregation tool, following the
 // kb_list no-bump pattern (SqliteProvider.stats() never touches use_count/
@@ -76,28 +76,27 @@ export async function kbStats(input: KbStatsInput): Promise<string> {
   // already returns exactly the "live CONFIRMED" set (superseded_at IS NULL
   // AND stale = 0 are list()'s hardcoded defaults) without bumping use_count.
   //
-  // my-beads-db-0cd.13: the SqliteProvider-only guard is checked OUTSIDE the
+  // my-beads-db-0cd.13: the SqliteProvider-only check sits OUTSIDE the
   // degraded-safe try block below, on purpose. Previously requireSqliteProject
   // sat INSIDE that try, so its throw over an HttpKbProvider project was
   // swallowed by the same catch that guards a merely-missing/malformed bible
   // file, and the tool returned the ambiguous { present: false, entries: 0,
   // drift: 0 } -- indistinguishable from an up-to-date bible. A remote
   // provider now gets its own distinguishable, non-throwing shape instead.
-  let sqliteProvider;
-  try {
-    sqliteProvider = requireSqliteProject(providers.project, 'kb_stats');
-  } catch {
-    sqliteProvider = null;
-  }
-
+  //
+  // my-beads-db-u00.3: kb_stats is the one SqliteProvider-only call site that
+  // DEGRADES rather than failing fast, so it asks the type question with the
+  // non-throwing isSqliteProject guard. Catching requireSqliteProject's throw
+  // as a type test would also swallow any unrelated error on that path.
   let bible: { present: boolean; entries: number; drift: number } | { computable: false; reason: string };
 
-  if (!sqliteProvider) {
+  const project = providers.project;
+  if (!isSqliteProject(project)) {
     bible = { computable: false, reason: 'bible drift is not computable over a remote HTTP provider' };
   } else {
     bible = { present: false, entries: 0, drift: 0 };
     try {
-      const liveConfirmed = await sqliteProvider.list({ confidence: 'CONFIRMED' });
+      const liveConfirmed = await project.list({ confidence: 'CONFIRMED' });
       const liveUpdatedAts = liveConfirmed.map(e => e.promoted_at || e.created_at);
       // Degraded-safe fallback shared by every "can't use the bible file" path
       // below (absent, unreadable, malformed JSON, non-array shape): drift
