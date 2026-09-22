@@ -165,6 +165,79 @@ describe('getKbProviders project provider selection', () => {
   });
 });
 
+// my-beads-db-u00.4: selectProjectProvider now init()s the HttpKbProvider it
+// returns, which re-inits the already-init'd project SqliteProvider beneath
+// it. These prove that double init is harmless on real instances rather than
+// assuming it: the open db handle survives, stored entries stay queryable,
+// and no extra beforeExit listener appears.
+describe('provider init is idempotent (my-beads-db-u00.4)', () => {
+  function dbOf(provider: SqliteProvider): unknown {
+    return (provider as unknown as { db: unknown }).db;
+  }
+
+  function entryFor(title: string) {
+    return {
+      type: 'knowledge' as const,
+      title,
+      summary: `${title} summary`,
+      content: `${title} content`,
+      source_files: ['fixture.ts'],
+      tags: [],
+      content_hash: '',
+      content_hash_type: 'sha256' as const,
+      flagged_for_review: false,
+      author: 'doer',
+      source: 'session' as const,
+      confidence: 'INFERRED' as const,
+    };
+  }
+
+  function makeRepoWithFixture(): string {
+    const repoPath = makeRepoPath();
+    fs.writeFileSync(path.join(repoPath, 'fixture.ts'), '// init idempotency fixture\n');
+    return repoPath;
+  }
+
+  it('SqliteProvider: a second init keeps the same db handle and the stored entry', async () => {
+    const repoPath = makeRepoWithFixture();
+    const sqlite = new SqliteProvider(path.join(repoPath, 'kb.sqlite'), repoPath);
+    try {
+      await sqlite.init();
+      const handle = dbOf(sqlite);
+      expect(handle).not.toBeNull();
+      const { id } = await sqlite.capture(entryFor('idempotentSqliteInit'));
+
+      await sqlite.init();
+
+      expect(dbOf(sqlite)).toBe(handle);
+      const result = await sqlite.query({ query: 'idempotentSqliteInit' });
+      expect(result.results.some(e => e.id === id)).toBe(true);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it('getKbProviders http mode: the returned provider is init-safe to init again, keeps its fallback handle and data, and adds no listener', async () => {
+    writeHttpConfig();
+    const repoPath = makeRepoWithFixture();
+
+    const providers = await getKbProviders(repoPath, REMOTE_REPO_URL);
+    const httpProvider = providers.project as HttpKbProvider;
+    const fallback = fallbackOf(httpProvider);
+    const handle = dbOf(fallback);
+    expect(handle).not.toBeNull();
+    const { id } = await fallback.capture(entryFor('idempotentHttpInit'));
+    const listenersBefore = process.listenerCount('beforeExit');
+
+    await expect(httpProvider.init()).resolves.toBeUndefined();
+
+    expect(dbOf(fallback)).toBe(handle);
+    expect(process.listenerCount('beforeExit')).toBe(listenersBefore);
+    const result = await fallback.query({ query: 'idempotentHttpInit' });
+    expect(result.results.some(e => e.id === id)).toBe(true);
+  });
+});
+
 describe('resetKbProviders provider disposal', () => {
   it('removes the beforeExit listener an HTTP project provider registered', async () => {
     writeHttpConfig();

@@ -51,7 +51,7 @@ async function createKbProvidersForSlug(slug: string, repoPath: string): Promise
   await projectProvider.init();
   const globalProvider = await getGlobalProvider();
   return {
-    project: selectProjectProvider(projectProvider),
+    project: await selectProjectProvider(projectProvider),
     global: globalProvider,
     projectSlug: slug,
   };
@@ -85,7 +85,7 @@ let _warnedMalformedKbConfig = false;
  * HttpKbProvider's default is a NO-ARG `new SqliteProvider()`, which resolves its
  * database from process.cwd() rather than this repo's path.
  */
-function selectProjectProvider(projectProvider: SqliteProvider): MemoryProvider {
+async function selectProjectProvider(projectProvider: SqliteProvider): Promise<MemoryProvider> {
   let config: KbConfigResult;
   try {
     config = readKbConfigFromDisk();
@@ -101,14 +101,22 @@ function selectProjectProvider(projectProvider: SqliteProvider): MemoryProvider 
   if (config.provider !== 'http') {
     return projectProvider;
   }
-  // INIT OWNERSHIP: createKbProvidersForSlug's `await projectProvider.init()` is
-  // the one and only init call site on this path. HttpKbProvider.init() does
-  // nothing but `await this.fallback.init()`, and that fallback IS this
-  // already-init'd projectProvider -- so init'ing the HTTP provider here would be
-  // a double-init of the same instance. The returned HttpKbProvider is therefore
-  // deliberately not init'd; it is not an un-inited provider.
+  // my-beads-db-u00.4: the HTTP provider is init'd like any other provider,
+  // rather than relying on HttpKbProvider.init() doing nothing beyond
+  // re-init'ing its fallback. That fallback is the already-init'd
+  // projectProvider, and SqliteProvider.init() returns early once its db is
+  // open, so the double init is harmless (pinned in
+  // tests/knowledge/kb-providers-http-selection.test.ts) -- and any setup
+  // HttpKbProvider.init() grows later runs here instead of being skipped.
   // readKbConfigFromDisk throws on http-without-url/token, so both are present here.
   const httpProvider = new HttpKbProvider(config.url!, config.token!, projectProvider);
+  try {
+    await httpProvider.init();
+  } catch (err) {
+    // Not yet tracked in _httpProviders, so release its beforeExit listener here.
+    httpProvider.dispose();
+    throw err;
+  }
   _httpProviders.push(httpProvider);
   return httpProvider;
 }
