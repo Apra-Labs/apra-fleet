@@ -147,6 +147,9 @@ function findProfilesDir(): string {
   // Installed: ~/.claude/skills/fleet/profiles/ (new location after skill split)
   const installedFleet = path.join(os.homedir(), '.claude', 'skills', 'fleet', 'profiles');
   if (fs.existsSync(installedFleet)) return installedFleet;
+  // Installed by `apra-fleet install --llm codex`.
+  const installedCodex = path.join(os.homedir(), '.codex', 'skills', 'fleet', 'profiles');
+  if (fs.existsSync(installedCodex)) return installedCodex;
   // Installed (legacy): ~/.claude/skills/pm/profiles/
   const installedPm = path.join(os.homedir(), '.claude', 'skills', 'pm', 'profiles');
   if (fs.existsSync(installedPm)) return installedPm;

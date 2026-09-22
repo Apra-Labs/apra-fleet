@@ -97,6 +97,24 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('composePermissions -- installed profile discovery', () => {
+  it('loads profiles from the Codex skill directory', async () => {
+    const member = makeTestAgent({ friendlyName: 'codex-doer', llmProvider: 'codex', os: 'windows' });
+    addAgent(member);
+    installFsMock();
+    vi.mocked(os.homedir).mockReturnValue('/codex-test-home');
+
+    const codexProfiles = '/codex-test-home/.codex/skills/fleet/profiles';
+    const realExistsSync = fs.existsSync.bind(fs);
+    const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation(p =>
+      String(p).replace(/\\/g, '/') === codexProfiles || realExistsSync(p)
+    );
+
+    await expect(composePermissions({ member_id: member.id, role: 'doer' })).resolves.toContain('codex-doer');
+    expect(existsSpy).toHaveBeenCalledWith(expect.stringContaining('.codex'));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Claude proactive compose
 // ---------------------------------------------------------------------------

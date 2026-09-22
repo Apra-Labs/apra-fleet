@@ -467,7 +467,8 @@ fall back to its default.
 #### `composePermissions(options: ComposePermissionsOptions)`
 
 Calls `compose_permissions` -- composes and delivers a scoped permission
-profile to a member. Options: `member_id?`, `member_name?`, `role?`
+profile to a member. On a Codex host, installed profiles are resolved from
+`~/.codex/skills/fleet/profiles`. Options: `member_id?`, `member_name?`, `role?`
 (`"doer" | "reviewer"`), `tags?`, `project_folder?`, `grant?`,
 `grant_reason?`. Provide at least one of `role` or `tags`; `tags` containing
 `"doer"`/`"reviewer"` sets the primary mode and wins over `role`. Each
