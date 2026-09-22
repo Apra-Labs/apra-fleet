@@ -13,7 +13,7 @@ import { fleetEvents } from './event-bus.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const MAX_BUFFER_SIZE = 64 * 1024; // 64KB — reject oversized messages
+const MAX_BUFFER_SIZE = 64 * 1024; // 64KB -- reject oversized messages
 
 // Bounds how long collectOobUrl waits for launchAuthWeb's openUrl callback
 // before treating the listen as failed (apra-fleet-972p.7). launchAuthWeb
@@ -83,7 +83,7 @@ export async function ensureAuthSocket(): Promise<void> {
     fs.mkdirSync(sockDir, { recursive: true, mode: 0o700 });
   }
 
-  // Unlink stale socket (Unix only — named pipes don't leave stale files)
+  // Unlink stale socket (Unix only -- named pipes don't leave stale files)
   if (process.platform !== 'win32') {
     try { fs.unlinkSync(sockPath); } catch { /* not present */ }
   }
@@ -127,7 +127,7 @@ export async function ensureAuthSocket(): Promise<void> {
       // On Windows, named pipes may not be released immediately after close.
       // Retry a few times with increasing delays before giving up.
       if (err.code === 'EADDRINUSE' && process.platform === 'win32' && retriesLeft > 0) {
-        // Increase delay for later retries — earlier retries happen faster
+        // Increase delay for later retries -- earlier retries happen faster
         const totalRetries = process.env.NODE_ENV === 'test' ? 15 : 5;
         const delayBase = process.env.NODE_ENV === 'test' ? 100 : 250;
         const delay = delayBase * (totalRetries - retriesLeft + 1);
@@ -466,7 +466,7 @@ async function collectOobInput(
 
     if (raceResult === null) {
       // The terminal exited with code 0 (Windows `start /wait` always exits 0, even
-      // on user-close). Wait briefly for any in-flight socket message — if the user
+      // on user-close). Wait briefly for any in-flight socket message -- if the user
       // genuinely submitted, the password arrives within milliseconds of process exit.
       // If nothing arrives in 500 ms, treat it as a user cancellation.
       try {
