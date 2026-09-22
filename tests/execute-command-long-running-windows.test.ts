@@ -11,6 +11,9 @@
  *
  * Mocks the strategy/exec layer -- no real member connection.
  */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
@@ -21,6 +24,30 @@ import type { SSHExecResult } from '../src/types.js';
 const { mockExecCommand } = vi.hoisted(() => ({
   mockExecCommand: vi.fn<(cmd: string, timeout?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void) => Promise<SSHExecResult>>(),
 }));
+
+/**
+ * apra-fleet-qe83.8: the exit-drain completion path is OS-gated
+ * (completesOnProcessExit() is true only for a Windows member), but the
+ * late-output guarantee it provides is not Windows-specific logic -- it is
+ * plain strategy.ts control flow. Rather than let the assertion silently skip
+ * on a POSIX member (the failure mode this sprint already paid for once), the
+ * predicate is forced on for that one test via this passthrough mock, so the
+ * SAME real strategy.ts exit-drain branch runs on every member OS.
+ *
+ * `force` defaults to false, so every other test in this file still sees the
+ * genuine, unmodified predicate (including the wrapper-shape test below, which
+ * asserts completesOnProcessExit('linux') === false).
+ */
+const drainCtl = vi.hoisted(() => ({ force: false }));
+
+vi.mock('../src/services/exit-drain.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/exit-drain.js')>();
+  return {
+    ...actual,
+    completesOnProcessExit: (agentOs: string | undefined) =>
+      drainCtl.force || actual.completesOnProcessExit(agentOs),
+  };
+});
 
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({
@@ -203,8 +230,56 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
  */
 const isWindows = process.platform === 'win32';
 
+const LATE_MARKER = 'LATE_OUTPUT_MARKER';
+const TEST_DRAIN_MS = 300;
+
+/**
+ * apra-fleet-qe83.8 (local half). A PORTABLE stand-in for the PowerShell
+ * reproduction in scripts/repro/win-orphan-pipe.mjs: a node parent that
+ * spawns a DETACHED grandchild inheriting fd 1/2, prints a burst of output,
+ * and then writes one last marker immediately before exiting.
+ *
+ * Why the detached grandchild matters: it holds the write end of the dispatch
+ * pipe open, so `child.on('close')` (the other -- and much easier -- path to
+ * finalize()) can NEVER fire during the test. The only way the dispatch can
+ * settle at all is the exit-drain timer, which is exactly the code path under
+ * test. Without the grandchild this assertion would be vacuous: `close` would
+ * deliver the marker and the test would pass with the drain branch disabled.
+ *
+ * Why the write callback: writes to a pipe are asynchronous on every platform,
+ * and a bare process.exit() right after write() can truncate them. Exiting
+ * from inside the write callback means the bytes are already handed to the OS
+ * pipe, so "output written immediately before exit" is tested deterministically
+ * instead of racing Node's stdout flush (criterion 5: no sleep-based flake).
+ */
+function buildLateOutputParentScript(): string {
+  return [
+    "import { spawn } from 'node:child_process';",
+    "const g = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], {",
+    '  detached: true,',
+    "  stdio: ['ignore', 1, 2],",
+    '});',
+    'g.unref();',
+    "process.stdout.write('GRANDCHILD_PID:' + g.pid + '\\n');",
+    "for (let i = 0; i < 50; i++) process.stdout.write('filler line ' + i + '\\n');",
+    `process.stdout.write('${LATE_MARKER}\\n', () => { process.exit(0); });`,
+    '',
+  ].join('\n');
+}
+
+/** Shell-correct invocation of a node script for the member's own shell. */
+function nodeScriptCommand(scriptPath: string): string {
+  // getOsCommands().cleanExec() resolves powershell.exe on a Windows member
+  // and /bin/bash on a POSIX one; PowerShell needs the call operator to run a
+  // quoted executable path.
+  return isWindows
+    ? `& "${process.execPath}" "${scriptPath}"`
+    : `"${process.execPath}" "${scriptPath}"`;
+}
+
 describe('grandchild-pins-pipe: a dispatch completes when the process exits, not when the pipe EOFs', () => {
   const survivors: number[] = [];
+  const tempScripts: string[] = [];
   let repro: any;
   const savedDrain = process.env.FLEET_EXIT_DRAIN_MS;
 
@@ -212,10 +287,11 @@ describe('grandchild-pins-pipe: a dispatch completes when the process exits, not
     repro = await import('../scripts/repro/win-orphan-pipe.mjs' as any);
     // Keep the drain window short so the test stays fast; production default
     // (2000 ms) is asserted separately below.
-    process.env.FLEET_EXIT_DRAIN_MS = '300';
+    process.env.FLEET_EXIT_DRAIN_MS = String(TEST_DRAIN_MS);
   });
 
   afterEach(() => {
+    drainCtl.force = false;
     if (savedDrain === undefined) delete process.env.FLEET_EXIT_DRAIN_MS;
     else process.env.FLEET_EXIT_DRAIN_MS = savedDrain;
     // Nothing this test started may survive it (verified with tasklist).
@@ -223,7 +299,65 @@ describe('grandchild-pins-pipe: a dispatch completes when the process exits, not
       repro.killPidTree(pid);
       expect(repro.isPidAlive(pid)).toBe(false);
     }
+    // ...and no temp file either: the scratch scripts are the only filesystem
+    // state these tests create.
+    for (const p of tempScripts.splice(0)) {
+      try { fs.rmSync(p, { force: true }); } catch { /* best-effort */ }
+      expect(fs.existsSync(p)).toBe(false);
+    }
   });
+
+  /**
+   * apra-fleet-qe83.8, criterion 1: output written by the child immediately
+   * before process exit still reaches result.stdout on the local
+   * (src/services/strategy.ts) path.
+   *
+   * Runs -- not skips -- on every member OS: the OS gate is forced via
+   * drainCtl above rather than gating the test on process.platform, while the
+   * spawned command itself stays shell-correct for the host. Reported member
+   * OS is logged below so the run output names it (criterion 4).
+   *
+   * Criterion 3 note (destroy-before-finalize): the recorded hand-check on
+   * this bead found the old ordering does NOT lose the marker -- 13 real
+   * subprocess runs across 0 ms and 300 ms drain windows and a ~229 KB burst,
+   * zero losses -- because finalize() reads stdout/stderr closure variables
+   * the 'data' listeners already populated synchronously, and the
+   * destroy()/unref() calls have no path that mutates them or wins the
+   * settle() race. The ordering in strategy.ts is kept as a consistency
+   * invariant (it matches ssh.ts and guards future drift), not as a fix for a
+   * reproducible loss, and this test deliberately does NOT manufacture that
+   * failure with a mocked destroy() side effect -- that would assert the mock,
+   * not the product.
+   */
+  it('local path: output written immediately before process exit survives the exit-drain window', async () => {
+    const { getStrategy } = await vi.importActual<typeof import('../src/services/strategy.js')>('../src/services/strategy.js');
+    const agent = makeTestLocalAgent({ workFolder: process.cwd() });
+    const scriptPath = path.join(os.tmpdir(), `fleet-late-output-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`);
+    fs.writeFileSync(scriptPath, buildLateOutputParentScript());
+    tempScripts.push(scriptPath);
+
+    drainCtl.force = true;
+    const started = Date.now();
+    const result = await getStrategy(agent).execCommand(nodeScriptCommand(scriptPath), 20_000);
+    const elapsed = Date.now() - started;
+
+    const m = /GRANDCHILD_PID:(\d+)/.exec(result.stdout);
+    expect(m).not.toBeNull();
+    survivors.push(Number(m![1]));
+
+    // The assertion under test.
+    expect(result.stdout).toContain(LATE_MARKER);
+    // ...and nothing before it was dropped either.
+    expect(result.stdout).toContain('filler line 49');
+    expect(result.code).toBe(0);
+    // Evidence that the EXIT-DRAIN path settled this dispatch and not `close`:
+    // the grandchild still holds the pipe, so `close` cannot have fired, and
+    // the result could not appear sooner than the drain window.
+    expect(elapsed).toBeGreaterThanOrEqual(TEST_DRAIN_MS);
+    expect(repro.isPidAlive(Number(m![1]))).toBe(true);
+    // eslint-disable-next-line no-console
+    console.log(`[late-output/local] memberOS=${agent.os} platform=${process.platform} elapsed=${elapsed}ms drain=${TEST_DRAIN_MS}ms marker=present`);
+  }, 60_000);
 
   it.runIf(isWindows)('windows: returns within seconds of the parent exit while the inherited-stdio grandchild keeps running', async () => {
     const { getStrategy } = await vi.importActual<typeof import('../src/services/strategy.js')>('../src/services/strategy.js');
