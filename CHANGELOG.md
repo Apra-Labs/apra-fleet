@@ -487,10 +487,8 @@ What shipped:
 - Test coverage is against real implementations only, including an
   end-to-end test that runs `kb_setup` for real against a live local HTTP
   server -- no mocked provider stubs. See `docs/knowledge-layer-design.md`
-  for the full selection contract and its known follow-up gaps (the
-  user-directive clamp, `kb serve`'s behavior on a remote project provider,
-  and an audit of `kb_stats` consumers now that its response is a union
-  shape).
+  for the full selection contract and its one remaining follow-up gap (an
+  audit of `kb_stats` consumers now that its response is a union shape).
 
 Carried forward as open backlog: auditing `kb_stats` consumers against its
 now-union response shape. The user-directive pending-proposal clamp and

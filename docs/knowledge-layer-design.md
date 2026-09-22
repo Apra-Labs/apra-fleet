@@ -584,13 +584,18 @@ narrowing point: it throws naming the caller when the project provider is an
 `HttpKbProvider`, so those operations refuse cleanly instead of behaving
 unpredictably against a remote provider that does not support them.
 
-**Known gap left open:** the user-directive pending-proposal clamp does not
-yet route through this guard, so it is not correctly enforced when the
-project KB is remote; the `kb serve` local dashboard's behavior on an
-HTTP-selected project provider is likewise undecided; and the `kb_stats`
-"bible" response is now a union of the sqlite and remote-provider shapes
-without every consumer auditing which shape it actually needs. Each is
-tracked as follow-up work, not part of the provider-selection contract above.
+**Known gap left open:** the `kb_stats` "bible" response is now a union of
+the sqlite and remote-provider shapes, and not every consumer has been audited
+for which shape it actually needs. Tracked as follow-up work, not part of the
+provider-selection contract above.
+
+Two gaps previously listed here are now closed. The user-directive
+pending-proposal clamp IS enforced over a remote provider: such a capture is
+quarantined on the HTTP path, and a CONFIRMED user-directive no longer receives
+an INFERRED clamp note while being stored UNVERIFIED (`src/tools/kb-capture.ts`).
+And `kb serve`'s behaviour is decided: it refuses to bind when the project
+provider is remote, rather than silently becoming a self-proxy
+(`src/commands/kb-server.ts`).
 
 ---
 
