@@ -253,3 +253,81 @@ gets the broken version. The regression coverage needs a second leg that
 builds the actual publishable artifact (e.g. `npm pack`), installs it into a
 clean, non-workspace target, and imports the dependency from *that*
 installed copy before the pin can be trusted end to end.
+
+## Windows dispatch completion must key off process exit, not pipe EOF -- and only on Windows
+
+On Windows, a grandchild process started by the dispatched CLI (a sandbox
+server the deployer launched, a runaway file-search helper, a nested test
+runner) can inherit the dispatch's stdout/stderr handles. Those handles stay
+open for as long as the grandchild lives, so the exec side never observes
+EOF on the pipe even though the process actually dispatched exited minutes
+earlier -- `child.on('close')`-style completion (and the equivalent
+channel-close event on a remote transport) waits for that EOF, so a dispatch
+can sit "in flight" for tens of minutes after the LLM process itself already
+finished.
+
+The durable fix has two independent halves, and both matter:
+- **Spawn side:** anything that intentionally starts a long-lived
+  grandchild the fleet does *not* want torn down when the dispatch
+  completes (e.g. a sandbox server pair) must spawn it detached, with its
+  own log-file file descriptors -- never the inherited dispatch pipe -- so
+  it stops pinning that pipe open in the first place.
+  Long-lived helpers than *do* want to keep running past the dispatch
+  boundary are deliberately left running; only the file descriptor
+  inheritance is the bug.
+- **Read side:** completion is keyed off the dispatched process's own EXIT
+  event, not pipe EOF, **gated strictly to Windows** (a string comparison
+  against the resolved agent OS). A short bounded grace window after exit
+  still drains whatever output is already buffered in the pipe before the
+  read side settles, so transcript/last-turn capture isn't truncated by
+  reacting to exit a moment too early.
+
+**This asymmetry is intentional and must not be "simplified" to one
+behavior for both platforms.** On POSIX, the existing process tree reaches a
+real EOF when the dispatched process exits (no equivalent handle-inheritance
+problem exists there), so `close`/EOF is already the strictly more complete
+signal -- settling on bare process exit there would be a behavior change
+with no bug behind it, and could truncate output a POSIX grandchild is still
+actively writing through the same pipe. The OS gate is not a scope-limiting
+convenience; it is the correctness boundary between "exit is a safe proxy
+for done" (Windows, broken handle inheritance) and "exit is not sufficient
+evidence of done" (POSIX, real EOF is reachable and more complete).
+
+## A wall-clock-bounded test runner must kill the whole process tree, not just its immediate child, and must survive a race with its own signal handler
+
+A test-runner wrapper that shells out to a test framework and wants to
+guarantee it can never hang a caller (a CI job, or -- more consequentially
+here -- a fleet dispatch waiting on that CI job) needs more than "spawn with
+a timeout and kill the child on expiry." A framework or its own child
+processes frequently spawn nested (sometimes detached) process groups of
+their own; killing only the immediately-spawned PID leaves those nested
+processes running and the wrapper's own stdio pipes open, defeating the
+timeout's purpose. The durable shape:
+
+- **Kill the process group, not the PID**, so nested children die with
+  their parent.
+- **Two-phase kill on POSIX**: broadcast a graceful terminate signal to the
+  whole group first (giving a nested, detached grandchild's own signal
+  handler a chance to exit cleanly), then escalate to an unconditional hard
+  kill signal (which cannot be caught or ignored) after a short grace
+  window if the group hasn't exited. Skipping straight to the hard kill can
+  leave a nested detached grandchild alive, because a bare hard-kill of the
+  immediate group does not necessarily reach every process it spawned.
+- **A forced-exit backstop** is required even after the hard kill signal is
+  sent: sending a kill signal is not a guarantee of an `exit` event firing
+  promptly (or at all, for a sufficiently wedged process), so the wrapper
+  must independently force its own process to exit after a bounded wait
+  rather than trusting the child's exit event to arrive.
+- **An outer terminating signal (sent to the wrapper itself, e.g. by a CI
+  runner enforcing its own job timeout) must always produce a non-zero
+  wrapper exit, even when the group-kill happens to reap the running test
+  process fast enough that the wrapper's normal suite-loop-break path would
+  otherwise reach its own exit first.** Two code paths -- the signal
+  handler's own explicit exit call, and the wrapper's normal trailing exit
+  at the end of its suite loop -- can race to be the one that actually ends
+  the process. Whichever wins, the exit code must reflect "this run was
+  externally terminated," not "the suite loop merely broke out of its
+  loop cleanly." The reliable way to guarantee this is a persistent flag set
+  the instant the terminating signal is first observed, consulted at every
+  place the wrapper can exit, rather than relying on one specific code path
+  being the one that happens to run first.
