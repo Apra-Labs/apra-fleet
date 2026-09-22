@@ -76,7 +76,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
     agents = agents.filter(a => filterTags.every(tag => a.tags?.includes(tag)));
   }
 
-  if (agents.length === 0) return 'No members registered.';
+  if (agents.length === 0 && format !== 'json') return 'No members registered.';
 
   const authStatusPromises = agents.map(getAuthStatus);
   const authStatuses = await Promise.all(authStatusPromises);

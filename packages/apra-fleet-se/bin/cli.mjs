@@ -724,7 +724,15 @@ async function main() {
     let unreservableNames = new Set();
     try {
         const listRes = await fleetApi.listMembers({ format: 'json' });
-        const text = listRes && listRes.content && listRes.content[0] ? listRes.content[0].text : JSON.stringify(listRes);
+        // Skip any onboarding <apra-fleet-display> preamble text block
+        // wrapTool() prepends when a result isn't recognized as JSON, and
+        // parse the first remaining text block instead of blindly taking
+        // content[0] -- kept in sync with fleet-members.mjs's listFleetMembers(),
+        // the header comment there names this call as the source-of-truth
+        // request shape (apra-fleet-ky2l.7.1).
+        const listBlocks = Array.isArray(listRes && listRes.content) ? listRes.content : [];
+        const listResultBlock = listBlocks.find((b) => b && typeof b.text === 'string' && !b.text.startsWith('<apra-fleet-display>'));
+        const text = listResultBlock ? listResultBlock.text : (listBlocks[0] ? listBlocks[0].text : JSON.stringify(listRes));
         const parsed = JSON.parse(text);
         const registeredNames = new Set((parsed.members || []).map(m => m.name));
         unreservableNames = new Set((parsed.members || []).filter(m => m && m.unreservable).map(m => m.name));

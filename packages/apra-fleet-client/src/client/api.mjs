@@ -109,7 +109,11 @@
 
 /**
  * @typedef {Object} ListMembersOptions
- * @property {"compact" | "json"} [format] - Output format
+ * @property {"compact" | "json"} [format] - Output format. "json" always returns a
+ *   JSON object -- even on an empty (or tag-filtered-to-empty) registry, where it
+ *   returns the same envelope shape as a non-empty registry with `total: 0` and
+ *   `members: []`, rather than the "No members registered." string. That plain
+ *   string is returned only for "compact" format on an empty registry.
  * @property {string[]} [tags] - Filter members by tags (AND semantics)
  */
 
