@@ -209,6 +209,15 @@ MCP tools that ship with the KB:
 | `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
 
+`kb_setup --remote <url> --token <key>` takes effect immediately: every KB
+tool call for that repo resolves its project provider from this config, so a
+stock build points at a remote KB server by configuration alone, with no
+code change and no separate "server mode" build. Omitting `--remote`, or any
+config the reader cannot parse, always falls back to the local SQLite
+provider -- see
+[Client-side provider selection](docs/knowledge-layer-design.md#client-side-provider-selection)
+for the exact selection rule and its fallback-construction invariant.
+
 Every KB tool call is scoped to the repo it is about -- a fleet server
 handling many members across many repos never lets one repo's learnings land
 in another repo's KB. Scope is normally derived from the caller's repo path;
