@@ -155,6 +155,59 @@ export function goalPriorityMax(goal) {
     return `P${worst}`;
 }
 
+// ---------------------------------------------------------------------------
+// Deferred beads are DISPATCH-INELIGIBLE, so they are not "open work"
+// (apra-fleet-rp7a.1)
+// ---------------------------------------------------------------------------
+//
+// 'deferred' is a member of runner.js's NOT_DONE_STATUSES because it is
+// genuinely not CLOSED -- but the Develop loop dispatches from `bd --ready`,
+// which never offers a deferred bead, so nothing in a sprint can ever move one
+// forward. Counting it as still-open at goal priority therefore makes the
+// completion check unsatisfiable AND pins the closed-bead high-water mark,
+// which is how a sprint whose real scope was finished still aborted as
+// SPRINT_STALLED after STALL_CYCLE_LIMIT cycles.
+//
+// This is the ONE status whose meaning changes. 'blocked' and 'in_progress'
+// deliberately KEEP counting as open (they are exactly the states `bd --ready`
+// hides but a human still owes work on -- see NOT_DONE_STATUSES's own comment
+// on why an empty `--ready` list must never be read as "the sprint is done").
+//
+// The deferred ids are RETURNED, not merely dropped, because a bead silently
+// vanishing from the completion math is precisely the failure mode this
+// function exists to fix: every caller is expected to name them in whatever
+// text it emits, so a human can see what was skipped and why the sprint was
+// allowed to finish.
+//
+// Lives here rather than in runner.js so the per-cycle Cycle Evaluation count
+// and the Final Review's closing count cannot drift apart -- two consumers,
+// one rule.
+export const DEFERRED_BEAD_STATUS = 'deferred';
+
+/**
+ * Split a not-done bead list into the beads that still count as open work and
+ * the ids of the deferred ones (dispatch-ineligible, treated as out of scope).
+ *
+ * Tolerant of a missing/odd `status` on purpose: an entry whose status cannot
+ * be read as 'deferred' stays in `active`. Under-matching here leaves today's
+ * behavior (the bead keeps counting as open); over-matching would let real
+ * work disappear from the completion check.
+ *
+ * @param {Array<{id?: (string|number), status?: string}>} beads
+ * @returns {{ active: object[], deferredIds: string[] }}
+ */
+export function partitionDeferredBeads(beads) {
+    const list = Array.isArray(beads) ? beads : [];
+    const active = [];
+    const deferredIds = [];
+    for (const bead of list) {
+        const status = bead && typeof bead.status === 'string' ? bead.status.trim().toLowerCase() : '';
+        if (status === DEFERRED_BEAD_STATUS) deferredIds.push(String(bead.id));
+        else active.push(bead);
+    }
+    return { active, deferredIds };
+}
+
 // apra-fleet-eft.52.1.3: server-side goal-membership placement for the
 // fleet-sprint dashboard's Sprint vs Backlog split. The viewer must NOT
 // decide this itself (no CSS display:none hiding in the browser, no

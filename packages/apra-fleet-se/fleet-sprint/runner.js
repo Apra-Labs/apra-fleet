@@ -232,6 +232,11 @@ import {
     // moved here from runner.js; imported back and re-exported (facade region
     // below) so no importer of runner.js is edited by the move.
     parseBdJson, goalPriorityMax, partitionByGoalMembership,
+    // apra-fleet-rp7a.1: the deferred split the Cycle Evaluation completion
+    // math and phases/final-review.mjs's closing count BOTH apply, so the two
+    // cannot drift apart. See its own doc comment for why 'deferred' -- and
+    // only 'deferred' -- stops counting as open work.
+    partitionDeferredBeads,
 } from './beads-scope.mjs';
 // The child-bead allocation and batched-claim command surface: computeChildFloor,
 // createChildBeadWithAllocatedId, verifyDoerStreakClosed and claimBeadsBatched.
@@ -571,6 +576,21 @@ export const meta = { name: 'fleet-sprint-runner' };
 // deliberately NOT `--ready`, which only reflects "dispatchable right now" and
 // silently excludes blocked and orphaned in_progress beads, so an empty
 // `--ready` list must never be read as "the sprint is done".
+//
+// 'deferred' IS listed here and MUST stay listed: this constant is the `bd
+// list --status=` QUERY, and the deferred beads have to be fetched before
+// anything can decide what to do with them -- including naming them in the
+// exit/summary text (apra-fleet-rp7a.1).
+//
+// What changed in apra-fleet-rp7a.1 is what the COMPLETION/STALL consumers do
+// with a deferred bead once it comes back: they drop it from the open-at-goal
+// set via partitionDeferredBeads() (beads-scope.mjs), because a deferred bead
+// is never offered by `bd --ready` and so can never be dispatched, which made
+// the completion check unsatisfiable and pinned the stall detector's
+// high-water mark. 'blocked' and 'in_progress' are NOT affected -- they still
+// count as open, which is the whole point of not using `--ready` here. Any
+// consumer that needs the literal "not closed" set (the stale-in_progress
+// reclaim reads below, pre-sprint validation) keeps using this list as-is.
 // The value is quoted, not a bare comma list: on Windows commands dispatch via
 // `spawn(command, { shell: 'powershell.exe' })`, and PowerShell's parser treats
 // an unquoted comma-separated value as an array literal, re-stringifying it
@@ -2210,6 +2230,15 @@ async function runSprintCycle(context) {
     // oscillating in and out of eligibility.
     const verifyEverIds = new Set();
 
+    // apra-fleet-rp7a.1: every bead id ever seen DEFERRED at/above goal
+    // priority during Cycle Evaluation, monotone for the same reason
+    // verifyEverIds is. These beads are excluded from the completion/stall
+    // math (the dispatcher can never offer a deferred bead), so the ONLY
+    // record a human gets that they were skipped is the exit/stall/summary
+    // text this set feeds -- it must not be possible for an id to fall out of
+    // it because a later cycle happened to read a different status.
+    const deferredEverIds = new Set();
+
     // apra-fleet-66u.2: separate two different facts the stall-abort message
     // used to conflate -- "closed count did not increase across N cycles"
     // (a progress fact) versus "verify-routed beads were dispatched to Integ
@@ -2716,7 +2745,31 @@ async function runSprintCycle(context) {
             bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
             decomposedParentIds(),
         ]);
-        const openAtGoal = openAtGoalRaw.filter((b) => !openAtGoalParentIds.has(b.id));
+        // apra-fleet-rp7a.1: a DEFERRED bead is dropped here for the same
+        // reason a decomposed parent is -- the dispatcher can never offer it,
+        // so leaving it in the open-at-goal set makes the completion check
+        // unsatisfiable and freezes the stall detector's high-water mark. The
+        // two filters are deliberately applied in this order and kept
+        // separate: the decomposed-parent filter is about STRUCTURE (a parent
+        // closes via its children), the deferred filter is about DISPATCH
+        // ELIGIBILITY (see partitionDeferredBeads in ./beads-scope.mjs, which
+        // phases/final-review.mjs applies to its closing count too). Only
+        // 'deferred' changes meaning: a blocked or orphaned in_progress bead
+        // still counts as open, exactly as NOT_DONE_STATUSES intends.
+        const { active: openAtGoal, deferredIds: deferredAtGoalIds } =
+            partitionDeferredBeads(openAtGoalRaw.filter((b) => !openAtGoalParentIds.has(b.id)));
+        // Monotone across the sprint, like verifyEverIds: a bead that was
+        // deferred in an earlier cycle and then reopened must still be named
+        // in the closing text as something a human was asked to look at, and
+        // a bead cannot drop out of the record by oscillating.
+        for (const id of deferredAtGoalIds) deferredEverIds.add(id);
+        // Named, never silently dropped -- a bead disappearing from the
+        // completion math with no trace is the failure mode this filter exists
+        // to fix. Every terminal path out of this loop enumerates them: the
+        // per-cycle "Cycle N evaluation" line below (loop continues), the
+        // goal-priority exit line (loop completes), the StalledSprintError
+        // message (loop aborts), and the Final Review evidence + sprint
+        // analysis document (phases/final-review.mjs, sprint-report.mjs).
 
         // Stall detection: track the closed-bead count for the WHOLE sprint
         // scope (not just goal-priority) so zero forward progress on ANY bead
@@ -2775,10 +2828,19 @@ async function runSprintCycle(context) {
             // apra-fleet-mjo: counts alone ("history: [9, 14, 14, 14]") do not
             // tell an operator WHAT is holding the sprint open, which is
             // precisely what they need to intervene. Name the blocking beads.
+            // apra-fleet-rp7a.1: `openAtGoal` is already deferred-filtered
+            // above, so a deferred bead can never appear here -- naming one as
+            // a "blocker" told an operator to go unblock something the
+            // dispatcher was never going to offer in the first place. They are
+            // reported separately, as skipped scope, by deferredStallSuffix.
             const blockerIds = openAtGoal.map((b) => b.id);
             const blockerSuffix = blockerIds.length > 0
                 ? ` Still open at/above goal priority ${goalMax}: [${blockerIds.join(', ')}].`
                 : ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.';
+            const deferredStallIds = [...deferredEverIds];
+            const deferredStallSuffix = deferredStallIds.length > 0
+                ? ` Not counted as blockers (deferred, therefore never dispatchable): [${deferredStallIds.join(', ')}].`
+                : '';
             const thrashSuffix = thrashIds.length > 0
                 ? ` Reopen-thrash detected on bead(s) [${thrashIds.join(', ')}] (reopened more than ${REOPEN_THRASH_LIMIT} times) -- ` +
                   `likely cause of the oscillation.`
@@ -2808,9 +2870,9 @@ async function runSprintCycle(context) {
                 `Sprint stalled: ${staleCycles} consecutive cycle(s) made no new high-water-mark progress ` +
                 `(closed beads + verify-routed beads) in scope '${sprintFilter}'. Closed-count history: ` +
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
-                blockerSuffix + thrashSuffix + verifySuffix +
+                blockerSuffix + deferredStallSuffix + thrashSuffix + verifySuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle }
+                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, deferredIds: deferredStallIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle }
             );
         }
 
@@ -2877,7 +2939,19 @@ async function runSprintCycle(context) {
         }
 
         if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0) {
-            log(`Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and last reviewer verdict was APPROVED. Exiting cycle loop.`);
+            // apra-fleet-rp7a.1: the deferred enumeration rides on the EXIT
+            // line specifically, because this is the line that says the sprint
+            // is finished -- a scope whose only remaining not-done beads were
+            // deferred now exits here (PASS) instead of spinning to
+            // SPRINT_STALLED, and a human reading "satisfied" must be able to
+            // see, in the same sentence, exactly what was skipped to get there.
+            const deferredExitIds = [...deferredEverIds];
+            log(
+                `Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and last reviewer verdict was APPROVED. Exiting cycle loop.` +
+                (deferredExitIds.length > 0
+                    ? ` ${deferredExitIds.length} bead(s) were treated as out of scope because they are DEFERRED (never dispatchable, so no cycle could advance them): ${deferredExitIds.join(', ')}. Reopen them and re-run the sprint if that was not intended.`
+                    : '')
+            );
             endGroup();
             break;
         }
@@ -2885,6 +2959,9 @@ async function runSprintCycle(context) {
         log(
             `Cycle ${cycle} evaluation: ${openAtGoal.length} bead(s) still open at/above goal priority ${goalMax}, ` +
             `last reviewer verdict: ${lastReviewVerdict ?? '(none this cycle)'}` +
+            (deferredAtGoalIds.length > 0
+                ? `, ${deferredAtGoalIds.length} deferred bead(s) excluded from that count (${deferredAtGoalIds.join(', ')})`
+                : '') +
             (stillOpenVerifyIds.length > 0
                 ? `, ${stillOpenVerifyIds.length} verify-routed bead(s) still open and unverified ` +
                   `(${stillOpenVerifyIds.join(', ')}) -- not exiting on goal-priority count alone until these ` +
@@ -2921,7 +2998,7 @@ async function runSprintCycle(context) {
     // a reader; the test pin plus the A/B mock sprint in
     // mock-sprint-regression-failure-never-gates.test.mjs are what actually
     // hold the line.
-    const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount } = await runFinalReviewPhase({
+    const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds } = await runFinalReviewPhase({
         phase, log, command, dispatchCtx,
         args, validated, targetIssues, orchestratorMember, finalCycleLabel, sprintState,
         gitSync,
@@ -2996,7 +3073,7 @@ async function runSprintCycle(context) {
         closedCountHistory, highWaterClosedCount,
         deployFailures, integFailures, rejectedNewTasks,
         integTestRunnerSpend, integTestRunnerDispatchCount,
-        finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, regressionResult,
+        finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, regressionResult,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
 
