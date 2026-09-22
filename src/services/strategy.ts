@@ -9,6 +9,7 @@ import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
+import { completesOnProcessExit, exitDrainMs } from './exit-drain.js';
 
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -133,11 +134,13 @@ class LocalStrategy implements AgentStrategy {
       }
 
       let settled = false;
+      let exitDrainTimer: ReturnType<typeof setTimeout> | undefined;
       function settle(fn: () => void) {
         if (settled) return;
         settled = true;
         clearTimeout(inactivityTimer);
         if (maxTotalTimer) clearTimeout(maxTotalTimer);
+        if (exitDrainTimer) clearTimeout(exitDrainTimer);
         fn();
       }
 
@@ -221,7 +224,7 @@ class LocalStrategy implements AgentStrategy {
         }
       });
 
-      child.on('close', (code) => {
+      const finalize = (code: number | null) => {
         clearStoredPid(this.agent.id);
         const stdoutTail = stdoutDecoder.end();
         const stderrTail = stderrDecoder.end();
@@ -242,7 +245,37 @@ class LocalStrategy implements AgentStrategy {
           stderr = `[OUTPUT TRUNCATED — full stderr saved to ${stderrSpillPath}]\n${stderr}`;
         }
         settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
-      });
+      };
+
+      child.on('close', (code) => finalize(code));
+
+      // apra-fleet-qe83.1.2 (READ SIDE of the fix; see src/services/exit-drain.ts
+      // for the full rationale and the spawn-side half). `close` only fires once
+      // EVERY holder of the child's stdio handles is gone -- on Windows a
+      // grandchild that inherited them (sandbox server, orphaned find.exe) keeps
+      // the pipe open long after the dispatched process itself exited, pinning the
+      // dispatch for as long as the grandchild lives. `exit` fires on the process
+      // exit itself, so on Windows we take that as completion, allow a short drain
+      // window for output still buffered in the pipe, then settle. The grandchild
+      // is deliberately NOT killed: the deploy phase's sandbox pair must outlive
+      // the dispatch that started it. POSIX keeps the strictly-more-complete
+      // `close` signal (the nohup path reaches EOF on its own).
+      if (completesOnProcessExit(getAgentOS(this.agent))) {
+        child.on('exit', (code) => {
+          if (settled || exitDrainTimer) return;
+          exitDrainTimer = setTimeout(() => {
+            if (settled) return;
+            // Release OUR ends of the pipes so the still-open handles held by a
+            // surviving grandchild do not keep this process's event loop and fds
+            // alive. Destroying a read end cannot affect the grandchild.
+            try { child.stdout?.destroy(); } catch { /* best-effort */ }
+            try { child.stderr?.destroy(); } catch { /* best-effort */ }
+            try { child.unref(); } catch { /* best-effort */ }
+            finalize(code);
+          }, exitDrainMs());
+          exitDrainTimer.unref();
+        });
+      }
 
       child.on('error', (err) => {
         clearStoredPid(this.agent.id);
