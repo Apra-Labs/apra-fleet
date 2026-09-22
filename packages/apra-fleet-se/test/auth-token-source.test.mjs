@@ -139,6 +139,34 @@ describe('resolveServiceToken (apra-fleet-ky2l.1.2, DQ-20)', () => {
         assert.doesNotThrow(() => resolveServiceToken(dataDir, { home }));
     });
 
+    test('apra-fleet-ky2l.13/16: createIfMissing:false returns null and creates nothing when neither fleet.key nor private/token exists', async () => {
+        const home = await mkTmp('auth-token-source-home-');
+        const dataDir = await mkTmp('auth-token-source-data-');
+
+        const result = resolveServiceToken(dataDir, { home, createIfMissing: false });
+
+        assert.equal(result, null);
+        assert.equal(fs.existsSync(path.join(dataDir, 'private')), false);
+    });
+
+    test('apra-fleet-ky2l.13/16: createIfMissing:false reads an existing well-formed private/token without touching it', async () => {
+        const home = await mkTmp('auth-token-source-home-');
+        const dataDir = await mkTmp('auth-token-source-data-');
+        const privateDir = path.join(dataDir, 'private');
+        await fsp.mkdir(privateDir, { recursive: true });
+        const tokenPath = path.join(privateDir, 'token');
+        await fsp.writeFile(tokenPath, VALID_HEX, { mode: 0o600 });
+        const before = fs.statSync(tokenPath);
+
+        const result = resolveServiceToken(dataDir, { home, createIfMissing: false });
+
+        assert.equal(result.token, VALID_HEX);
+        assert.equal(result.source, 'private-token');
+        assert.equal(result.created, false);
+        const after = fs.statSync(tokenPath);
+        assert.equal(after.mtimeMs, before.mtimeMs, 'read-only lookup must not touch the file (mtime unchanged)');
+    });
+
     test('default `home` (no override) resolves against the real os.homedir() -- verified by comparing against an explicit os.homedir() call, never mutating it', () => {
         const before = snapshotRealApraFleet();
         const withDefault = resolveServiceToken(path.join(os.tmpdir(), 'auth-token-source-unused'), {});

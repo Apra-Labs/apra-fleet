@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,6 +22,8 @@ import {
   lostPortRace,
   RESERVED_PORTS,
   SandboxDeployError,
+  snapshotProduction,
+  checkProductionUnchanged,
   // @ts-expect-error -- plain .mjs helper, no type declarations
 } from '../scripts/sandbox-deploy.mjs';
 // @ts-expect-error -- plain .mjs helper, no type declarations
@@ -596,5 +598,65 @@ describe('smoke: /ui probe gated on shell dist', () => {
     expect(message).toMatch(/404/);
     expect(message).not.toMatch(/did not answer \/health/);
     expect(stub.requests).toContain('/ui/');
+  });
+});
+
+describe('apra-fleet-ky2l.13/16: production token probes are read-only (never mint private/token)', () => {
+  // Mirrors scripts/sandbox-deploy.mjs's own (unexported) productionSeDataDir(home):
+  // FLEET_SE_DATA_DIR is unset in this test process's env, so it always
+  // resolves to <home>/.apra-fleet-se here.
+  function prodSeDataDir(home: string): string {
+    expect(process.env.FLEET_SE_DATA_DIR).toBeUndefined();
+    return path.join(home, '.apra-fleet-se');
+  }
+
+  // tryLoadToken() deliberately never overrides `home` (it must resolve the
+  // SAME real os.homedir() a production supervisor would), so on any machine
+  // that already has a real ~/.apra-fleet/fleet.key (e.g. because this same
+  // suite's own "live:" tests booted a real server earlier and minted one),
+  // resolveServiceToken() would return via the fleet-key branch BEFORE ever
+  // reaching the private/token fallback this test targets -- making the
+  // "creates no private/token" assertion pass for the wrong reason even with
+  // the fix reverted. Force that one real file to read as absent (ENOENT) for
+  // the duration of the call so this test genuinely exercises (and can catch
+  // a regression in) the private/token createIfMissing:false path, without
+  // ever touching the real file's contents on disk.
+  async function withRealFleetKeyForcedAbsent<T>(fn: () => Promise<T>): Promise<T> {
+    const realFleetKeyPath = path.join(os.homedir(), '.apra-fleet', 'fleet.key');
+    const original = fs.readFileSync;
+    const spy = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, opts?: unknown) => {
+      if (file === realFleetKeyPath) {
+        const err = Object.assign(new Error(`ENOENT (forced absent for test): ${realFleetKeyPath}`), { code: 'ENOENT' });
+        throw err;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (original as any)(file, opts);
+    }) as typeof fs.readFileSync);
+    try {
+      return await fn();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('snapshotProduction against a home whose ~/.apra-fleet-se has never been started creates no private/token', async () => {
+    const home = mkHome(); homes.push(home);
+
+    await withRealFleetKeyForcedAbsent(() => snapshotProduction(home));
+
+    expect(fs.existsSync(path.join(prodSeDataDir(home), 'private'))).toBe(false);
+  });
+
+  it('checkProductionUnchanged against the same home creates no private/token (even when it does probe the supervisor)', async () => {
+    const home = mkHome(); homes.push(home);
+
+    // A PROD_SUPERVISOR_PID forces the function down its token-probing branch
+    // (tryLoadToken -> resolveServiceToken) rather than short-circuiting;
+    // nothing is actually listening on the production supervisor port from
+    // this isolated home, so the probe reports the pid as unreachable -- the
+    // assertion that matters is that no credential got minted along the way.
+    await withRealFleetKeyForcedAbsent(() => checkProductionUnchanged({ PROD_SUPERVISOR_PID: '999999' }, home));
+
+    expect(fs.existsSync(path.join(prodSeDataDir(home), 'private'))).toBe(false);
   });
 });
