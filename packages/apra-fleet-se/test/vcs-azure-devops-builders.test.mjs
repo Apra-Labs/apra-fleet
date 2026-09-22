@@ -343,7 +343,7 @@ test('capabilities: non-Azure-DevOps hosts report exactly the values they did be
         { hasRemote: true, canOpenPullRequest: true, host: 'github.acme-corp.internal' },
     );
     assert.deepEqual(capabilities('https://gitlab.com/o/r.git'), { hasRemote: true, canOpenPullRequest: false, host: 'gitlab.com' });
-    assert.deepEqual(capabilities('https://bitbucket.org/o/r.git'), { hasRemote: true, canOpenPullRequest: false, host: 'bitbucket.org' });
+    assert.deepEqual(capabilities('https://bitbucket.org/o/r.git'), { hasRemote: true, canOpenPullRequest: true, host: 'bitbucket.org' }, 'Bitbucket: capabilitiesForHost flip (see qeq1.4)');
     assert.deepEqual(capabilities('file:///path/to/bare.git'), { hasRemote: true, canOpenPullRequest: false, host: null });
     assert.deepEqual(capabilities(''), { hasRemote: false, canOpenPullRequest: false, host: null });
     assert.deepEqual(capabilities(null), { hasRemote: false, canOpenPullRequest: false, host: null });
