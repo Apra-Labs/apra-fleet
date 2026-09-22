@@ -3,12 +3,21 @@
 // -- unlike `vitest run && npm test --workspace=...`, a failure (including a
 // flaky, unrelated one) in the first suite no longer silently skips the
 // second suite entirely. Exits non-zero if either suite failed.
+//
+// apra-fleet-qe83.3.1: the suite list is overridable via APRA_TEST_SUITES_JSON
+// (a JSON array of {name, cmd, args}) purely so
+// tests/run-all-tests-timeout.test.ts can drive this exact runner against a
+// deterministic, fast stub suite instead of the real (multi-minute) suites
+// below -- default behaviour is unchanged when it is unset. This task adds
+// only that injection point; the suite invocation below is still a bare,
+// unbounded spawnSync (no timeout) -- apra-fleet-qe83.3.2 is what actually
+// bounds it, which is exactly what the new test's reproduction pins down.
 
 import { spawnSync } from 'node:child_process';
 
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
-const suites = [
+const defaultSuites = [
     { name: 'vitest', cmd: npmCmd, args: ['exec', '--', 'vitest', 'run'] },
     { name: 'apra-fleet-se', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-se'] },
     // packages/apra-fleet-se/apra-pm is NOT an npm workspace (see ci.yml's
@@ -17,6 +26,10 @@ const suites = [
     // Mirror that here so local runs get the same signal as CI.
     { name: 'apra-pm', cmd: npmCmd, args: ['test', '--prefix', 'packages/apra-fleet-se/apra-pm'] },
 ];
+
+const suites = process.env.APRA_TEST_SUITES_JSON
+    ? JSON.parse(process.env.APRA_TEST_SUITES_JSON)
+    : defaultSuites;
 
 let failed = false;
 for (const suite of suites) {
