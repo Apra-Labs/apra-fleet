@@ -227,6 +227,30 @@ describe('CI build:ui step', () => {
         throw new Error(`npm run build:ui --if-present should execute the script, but got error: ${(e as Error).message}`);
       }
     });
+
+    // Pins the fix for the Windows backslash-escape regression (bug ky2l.17): the
+    // build:ui script string itself must never embed an absolute/temp-dir path,
+    // because interpolating one into a `node -e "..."` string is unsafe on
+    // Windows (backslashes in os.tmpdir() paths get consumed as JS string escape
+    // sequences). Reverting the [impl] fix restores the inline
+    // `node -e "require('fs').writeFileSync('${markerFile}', 'executed')"` form,
+    // which embeds tempDir's absolute path and therefore fails this assertion on
+    // every platform (contains '/' on Linux/macOS, '\\' on Windows) -- confirmed
+    // locally: with the fix reverted, this case fails with
+    // "expected '.../node -e ...".../marker.txt', 'executed')"' not to match /...temp dir substring.../"
+    // (see closing note for the exact recorded assertion text).
+    it('should write a build:ui script string that embeds no absolute path', () => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-build-ui-test-'));
+      writeTempProject(tempDir, { withBuildUi: true });
+
+      const pkgOnDisk = JSON.parse(fs.readFileSync(path.join(tempDir, 'package.json'), 'utf-8'));
+      const buildUiScript: string = pkgOnDisk.scripts['build:ui'];
+
+      expect(buildUiScript).not.toContain('\\');
+      expect(buildUiScript).not.toContain('/');
+      expect(buildUiScript).not.toContain(tempDir);
+      expect(buildUiScript).not.toContain(os.tmpdir());
+    });
   });
 
   describe('falsifiability checks', () => {
