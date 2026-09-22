@@ -10,10 +10,21 @@ Read `README.md` in this repo for the full tool reference, installation, member 
 
 ```bash
 npm install && npm run build   # Build from source
-npm test                       # Unit tests (vitest)
+npm test                       # Unit tests (vitest + apra-fleet-se), wall-clock bounded
 npm run build:binary           # Build single-executable binary
 node dist/index.js install     # Dev-mode install
 ```
+
+Run tests only through `npm test` (`scripts/run-all-tests.mjs`) or the
+apra-fleet-se workspace's own `npm test` (`packages/apra-fleet-se/scripts/run-tests.mjs`)
+-- both are wall-clock bounded (default 15 minutes per suite, override with
+`APRA_TEST_TIMEOUT_MS`) and kill the whole child process tree (not just the
+immediate child) on timeout, so a hung suite can never hold a dispatch open
+indefinitely. Do not invoke `vitest run` or `node --test` directly for a
+tracked task's verification step. `test:slow` in `packages/apra-fleet-se`
+is a deliberate exception: it is a manual/regression-playbook lane invoked
+directly, not part of the `npm test` chain, so it is intentionally left
+unbounded by this rule.
 
 ## Conventions
 

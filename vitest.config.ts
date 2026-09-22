@@ -50,5 +50,27 @@ export default defineConfig({
     globalSetup: ['tests/global-setup.ts'],
     fileParallelism: false,  // Tests share registry.json in temp dir (unique per run, see global-setup.ts)
     teardownTimeout: 1000,
+    // apra-fleet-qe83.3.2: the linked bug is a root `vitest run` on Windows
+    // that never exited (LLM finished, but the dispatch waited on the pipe
+    // for 45+ minutes with no process-level signal). `pool: 'forks'` runs
+    // each test file in an isolated child PROCESS rather than a
+    // worker_thread -- forked child processes are reaped by the OS on the
+    // parent's own exit/kill in a way a lingering worker_thread (which can
+    // keep the whole Node process alive on an unclosed handle inside it)
+    // is not, so this is the more exit-deterministic choice between
+    // Vitest's two pools.
+    //
+    // RESIDUAL RISK: a real capture of `npx vitest run --reporter=
+    // hanging-process` on this Windows machine (apra-fleet-qe83.3.1, see
+    // that bug's linked comment) exited cleanly with no open-handle warning
+    // -- this run did NOT reproduce the specific hang, so `pool: 'forks'`
+    // plus the existing `teardownTimeout` are a deterministic-exit
+    // improvement made without a confirmed root cause, not a verified fix
+    // for the exact handle that caused the recorded bug. The two other
+    // fixes in this bug's parent feature (bounded npm test runners here,
+    // plus the dispatch-side stall detector and completion-on-exit sibling
+    // features) are what actually bound the blast radius if this
+    // particular hang recurs.
+    pool: 'forks',
   },
 });
