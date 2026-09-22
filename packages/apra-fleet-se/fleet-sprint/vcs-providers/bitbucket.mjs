@@ -156,6 +156,161 @@ function parseRepoRef(remoteUrl) {
 const REPO_REF_HINT = 'git@bitbucket.org:WORKSPACE/REPO.git or https://bitbucket.org/WORKSPACE/REPO.git';
 
 // ---------------------------------------------------------------------------
+// Provisioning (apra-fleet-qeq1.9)
+// ---------------------------------------------------------------------------
+//
+// WHY THIS PROVIDER NEEDS A HOOK AT ALL, and why its two git-access levels
+// answer differently. The shared caller's default argument shape
+// (`git_access` + a `repos` allowlist) is GitHub-App vocabulary; Bitbucket
+// has no App/installation model, so provision_vcs_auth's Bitbucket path
+// instead requires THREE fields -- `email`, `api_token` and `workspace` (see
+// src/services/vcs/bitbucket.ts's buildCredentials) -- none of which the
+// default shape sends. Sending the default shape dispatches a call with no
+// `api_token` at all, which trips that path's `missingCredential` hook and
+// opens an OUT-OF-BAND operator prompt in the middle of an unattended
+// sprint. Every branch below exists to make that unreachable.
+//
+// What the orchestrator CAN supply, and what it cannot:
+//   workspace   YES -- parseRepoRef() above derives it from the member's own
+//               remote, so it is free.
+//   api_token   YES, as a `{{secret.NAME}}` PLACEHOLDER, never a value:
+//               provision_vcs_auth resolves that placeholder hub-side for the
+//               `token`/`api_token`/`pat` fields. Same secret transport
+//               ./azure-devops.mjs documents at length; the orchestrator
+//               process never holds, logs or transports the plaintext.
+//   email       NO. It is the Atlassian account identity that OWNS the app
+//               password (it becomes the git-credential-helper username, and
+//               the HTTP Basic username the REST builder below sends). It is
+//               NOT persisted on the member record (src/types.ts keeps only
+//               vcsProvider/expiry/label/scopeUrl), credential_store_list
+//               returns NAMES ONLY -- never values -- and the
+//               `{{secret.NAME}}` placeholder is NOT resolved for `email`,
+//               which is passed through verbatim. A placeholder there would
+//               therefore be DEPLOYED as a literal username and fail
+//               silently, which is strictly worse than not sending one.
+//
+// Hence the split:
+//
+//   git_access 'push+pr' (the JUST-IN-TIME re-provision both PR-raising call
+//       sites run immediately before dispatching create-pull-request) ->
+//       SKIP. That re-provision exists to WIDEN a GitHub App token's scope
+//       for the duration of one PR call. A Bitbucket app password has no
+//       scope axis to widen -- it carries whatever scopes it was minted with
+//       -- and cannot be re-assembled here anyway, so the step is both
+//       impossible and unnecessary. Skipping it leaves the operator-deployed
+//       credential in place, which is exactly what the PR dispatch goes on to
+//       read server-side (vcs_credential_exec's {{vcs_username_inline}}/
+//       {{vcs_token_inline}} pair). Without this the PR is never even
+//       attempted: the re-provision runs FIRST and its failure short-circuits
+//       the whole call.
+//
+//   any other git_access (the shared preflight / reactive self-heal paths) ->
+//       send the fullest argument set this side can honestly build. That call
+//       still fails server-side when no `email` was configured, but it fails
+//       as a typed `[FAIL]` with the assembly error naming the missing field
+//       -- never as an out-of-band prompt -- and the `authRemedy` hint below
+//       tells the operator exactly how to deploy the credential out of band.
+//
+// A remote whose workspace cannot be derived is a typed `error` on every
+// path: that is a real, actionable misconfiguration, not something to guess
+// past. (A MALFORMED bitbucket.org remote is already rejected upstream by
+// parseRepoScopeFromRemoteUrl; the branch below is reached when the remote
+// could not be READ at all, which is a different cause and must be worded as
+// one.)
+
+/** Credential-store entry name this hook references for the `api_token`
+ *  field, mirroring ./azure-devops.mjs's DEFAULT_PAT_SECRET convention of
+ *  naming the entry after the provision_vcs_auth field it feeds. Deliberately
+ *  does NOT honour ctx.secretName: that value is threaded from a sprint
+ *  argument scoped to Azure DevOps' PAT, so consuming it here would point
+ *  Bitbucket at another provider's secret. */
+const DEFAULT_API_TOKEN_SECRET = 'bitbucket_api_token';
+
+/** Remedy text for a Bitbucket auth failure, surfaced through the generic
+ *  `authRemedy` descriptor field (below) so the shared self-heal and the
+ *  PR-raising degrade path print it without a provider-name conditional of
+ *  their own. Names the ONLY fix: deploy the credential out of band, because
+ *  the fleet cannot assemble one. No secret VALUE appears here or anywhere
+ *  else -- the token is always a credential-store name or a placeholder. */
+const AUTH_REMEDY_HINT =
+    'Bitbucket credentials cannot be minted or re-assembled by the fleet: '
+    + 'provision_vcs_auth needs an "email" (the Atlassian account that owns the '
+    + 'app password) alongside the token, and only the token half can be passed '
+    + 'as a secret placeholder -- the email is never derivable from the member '
+    + 'record. Deploy or refresh the credential out of band, once per member: '
+    + `credential_store_set name=${DEFAULT_API_TOKEN_SECRET}, then provision_vcs_auth `
+    + 'member_name=MEMBER provider=bitbucket email=ATLASSIAN_ACCOUNT_EMAIL '
+    + `workspace=WORKSPACE api_token={{secret.${DEFAULT_API_TOKEN_SECRET}}}. `
+    + 'If the app password itself is invalid or expired, mint a replacement at '
+    + 'https://bitbucket.org/account/settings/app-passwords/ with '
+    + 'repository:write and pullrequest:write, store it under the same name and '
+    + 're-run provision_vcs_auth.';
+
+const authRemedy = Object.freeze({
+    // An app password is created by a human against an Atlassian identity;
+    // nothing server-side can re-mint one. Same answer ./azure-devops.mjs
+    // gives for its PATs, and what makes the shared self-heal print the hint
+    // above BEFORE it attempts a re-provision that cannot help.
+    serverSideReMintable: false,
+    hint: AUTH_REMEDY_HINT,
+});
+
+/**
+ * Build the provision_vcs_auth arguments for a Bitbucket member -- the
+ * OPTIONAL descriptor hook described in ./index.mjs's REQUIRED EXPORT SHAPE.
+ * See the section header above for the full reasoning behind each branch.
+ *
+ * @param {{ base: object, repoRef: ({ workspace: string }|null|undefined),
+ *           availableSecrets: string[]|null, remoteUrl?: string,
+ *           remoteReadError?: string|null }} ctx
+ * @returns {{ args: object, note?: string }|{ skip: true, note?: string }|{ error: string }}
+ */
+function buildProvisionArgs(ctx) {
+    const { base = {}, repoRef, availableSecrets, remoteUrl, remoteReadError } = ctx || {};
+    const workspace = repoRef && typeof repoRef.workspace === 'string' ? repoRef.workspace.trim() : '';
+    if (!workspace) {
+        const raw = typeof remoteUrl === 'string' ? remoteUrl.trim() : '';
+        const why = remoteReadError
+            ? `the member's git remote could not be read (${remoteReadError})`
+            : raw
+                ? `the member's git remote '${raw}' is not a recognized Bitbucket repository URL`
+                : "no workspace could be derived from the member's git remote";
+        return {
+            error: `ERROR: cannot provision Bitbucket auth for member '${base.member_name}': ${why}; expected a remote of the shape ${REPO_REF_HINT}`,
+        };
+    }
+
+    if (base.git_access === 'push+pr') {
+        return {
+            skip: true,
+            note: `member '${base.member_name}' is on Bitbucket, whose credential has no just-in-time scope axis to widen and cannot be re-assembled by the fleet; keeping the credential already deployed for workspace '${workspace}' and going straight to the pull-request call`,
+        };
+    }
+
+    const name = DEFAULT_API_TOKEN_SECRET;
+    if (Array.isArray(availableSecrets) && !availableSecrets.includes(name)) {
+        return {
+            error: `ERROR: cannot provision Bitbucket auth for member '${base.member_name}': the credential store has no entry named '${name}'. ${AUTH_REMEDY_HINT}`,
+        };
+    }
+
+    return {
+        args: {
+            member_name: base.member_name,
+            provider: base.provider,
+            git_access: base.git_access,
+            ...(base.repos ? { repos: base.repos } : {}),
+            workspace,
+            // Placeholder, NOT a value -- resolved hub-side. Always present,
+            // so provision_vcs_auth's missing-api_token out-of-band prompt is
+            // unreachable from this path.
+            api_token: `{{secret.${name}}}`,
+        },
+        note: `member '${base.member_name}' is on Bitbucket: the fleet can supply workspace '${workspace}' and the '${name}' credential-store token, but not the Atlassian account email provision_vcs_auth also requires -- if this call reports a missing "email" field, deploy the credential out of band instead. ${AUTH_REMEDY_HINT}`,
+    };
+}
+
+// ---------------------------------------------------------------------------
 // REST command builder (apra-fleet-qeq1.3)
 // ---------------------------------------------------------------------------
 //
@@ -343,6 +498,12 @@ export const BitbucketVCS = Object.freeze({
     // ./azure-devops.mjs's own parseRepoRef axis (apra-fleet-qeq1.2).
     parseRepoRef,
     repoRefHint: REPO_REF_HINT,
+    // apra-fleet-qeq1.9: OPTIONAL descriptor hook -- see ./index.mjs and the
+    // "Provisioning" section above for why the push+pr level skips.
+    buildProvisionArgs,
+    // apra-fleet-qeq1.9: app passwords are never minted server-side -- see
+    // above.
+    authRemedy,
     defaultAuthMode: null,
     // apra-fleet-qeq1.3: the create-pull-request builder. capabilitiesForHost
     // is now available (apra-fleet-qeq1.4), so the Publish PR phase can

@@ -162,18 +162,34 @@ describe('createVcsAuthSelfHealCallback', () => {
 
         await onAuthFailure({ member: 'bb-member', label: 'G-push', error: 'auth failure' });
 
-        assert.equal(calls.length, 1);
-        assert.equal(calls[0].name, 'provision_vcs_auth');
-        assert.deepEqual(calls[0].args, {
+        // apra-fleet-qeq1.9: bitbucket now declares its own buildProvisionArgs
+        // hook, so the call SEQUENCE gained the credential-store lookup every
+        // hook-bearing provider makes (the same extra call
+        // vcs-provider-missing-selfheal.test.mjs already notes for Azure
+        // DevOps), and the argument shape is the provider's own rather than
+        // the shared GitHub-App default. Neither changes what THIS test is
+        // for -- that the registry lookup is plumbed through and no 'github'
+        // literal leaks into a non-GitHub member's call -- so both are
+        // asserted here in their new, provider-owned form rather than
+        // loosened.
+        assert.deepEqual(calls.map((c) => c.name), ['credential_store_list', 'provision_vcs_auth']);
+        const provisionCall = calls.find((c) => c.name === 'provision_vcs_auth');
+        assert.deepEqual(provisionCall.args, {
             member_name: 'bb-member',
             provider: 'bitbucket',
             git_access: 'push',
             repos: ['acme/widgets'],
+            // Derived from the member's own remote by the provider's
+            // parseRepoRef, and a {{secret.NAME}} PLACEHOLDER (never a value)
+            // -- without the token field, provision_vcs_auth's Bitbucket path
+            // opens an out-of-band operator prompt mid-sprint.
+            workspace: 'acme',
+            api_token: '{{secret.bitbucket_api_token}}',
         });
-        assert.ok(!('github_mode' in calls[0].args), `expected no github_mode field for a non-GitHub provider, got: ${JSON.stringify(calls[0].args)}`);
+        assert.ok(!('github_mode' in provisionCall.args), `expected no github_mode field for a non-GitHub provider, got: ${JSON.stringify(provisionCall.args)}`);
         assert.ok(
-            JSON.stringify(calls[0].args).indexOf('github') === -1,
-            `expected no 'github' literal anywhere in a bitbucket member's provision_vcs_auth call, got: ${JSON.stringify(calls[0].args)}`,
+            JSON.stringify(provisionCall.args).indexOf('github') === -1,
+            `expected no 'github' literal anywhere in a bitbucket member's provision_vcs_auth call, got: ${JSON.stringify(provisionCall.args)}`,
         );
     });
 
