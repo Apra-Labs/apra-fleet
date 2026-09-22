@@ -305,6 +305,74 @@ Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
 Pricing source: all 39 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 
+## [Unreleased] -- agent transform: role-prompt body text now follows dropped tools, not just frontmatter (sprint FAILED -- static half verified, end-to-end proof not run)
+
+Sprint goal: fix the half of `apra-fleet-oomh` that the earlier frontmatter-only
+fix (PR #509) left alive -- a role prompt whose frontmatter had a tool dropped
+for a non-Claude provider could still instruct the agent, in prose, to call
+that exact tool by name.
+
+What shipped:
+
+- **A generic provider-conditional body-block mechanism** in the agent
+  transform pipeline: role prompts may wrap tool-specific prose in
+  `<!-- if-tool: X --> ... <!-- else-tool: X --> ... <!-- end-tool: X -->`
+  markers, resolved at install time against the same tool-availability
+  decision that drives the frontmatter rewrite for each provider. Malformed
+  markers (unclosed, unmatched, mismatched, duplicated) are a hard install-time
+  error naming the file, never a silent pass-through. See
+  `docs/features/agent-transform-provider-conditionals.md` for the full
+  mechanism.
+- **All 11 role prompts** now gate their ToolSearch-discovery prose behind
+  these markers, with provider-neutral fallback text for non-Claude providers.
+- **A non-vacuity test** asserts, over every transformed role prompt on a
+  non-Claude provider, that no installed file references a tool its own
+  frontmatter dropped -- deriving the expected drop list from the transform's
+  own warnings rather than re-deriving the tool map, plus an independent
+  line-scanner oracle for the Claude path.
+- **The previously Claude-passthrough install path now also resolves and
+  strips markers**, closing the gap that let provider-specific prose leak
+  through unfiltered before this mechanism existed.
+- **The apra-pm installer's agy path gained its own frontmatter transform**
+  (it previously left `tools:` untouched for agy) and now routes the
+  `agents/schemas/` and `agents/_shared/` asset trees through the same
+  marker-resolution pass as agent files, so a marker added to either tree in
+  the future can never ship unresolved on any `--llm` path.
+- **The root `npm test` now runs the apra-pm test suite**, not only CI, so a
+  regression there is caught locally instead of only on push.
+
+Filed as follow-up (deliberately left open, not closed by this pass):
+
+- **The sprint's own acceptance criterion 2 -- an end-to-end proof that a real
+  toy sprint on the Antigravity provider completes a review cycle with zero
+  executor-construction errors and zero calls to a dropped tool -- was never
+  run or recorded.** This is why the sprint's final verdict is FAIL despite
+  every closed child bead being independently verified correct: static tests
+  proving the string transform is right are necessary but not sufficient,
+  since the exact prior failure mode (PR #509) was also static-only and
+  correct-looking while the bug it left behind was live. The end-to-end proof
+  remains an open, unstarted P2 follow-up.
+- A behavioral cross-implementation guard for the rest of the logic
+  `apra-pm/install.mjs` hand-copies from `src/cli/agent-transform.ts`
+  (`resolveConditionalBody`, `toolAvailability`, `readFrontmatterTools`, the
+  two transform functions themselves) -- today only the two literal tool-map
+  tables are guarded for drift between the files.
+- CI's own test-step comments have not been reconciled with the fact that
+  `npm test` now covers all three suites.
+- `copyDirResolved` in the apra-pm installer still round-trips every file
+  through UTF-8 text handling regardless of extension -- latent corruption
+  risk for a future binary asset under the trees it now covers, not yet
+  guarded by a text-file allowlist.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $13.2742.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0335 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 12 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- fleet-sprint: a finished sprint with deferred beads no longer aborts as stalled, and a permission-scope git rejection stops spinning the sprint
 
 Sprint goal: three independent reliability fixes to the fleet-sprint
