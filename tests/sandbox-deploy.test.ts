@@ -60,7 +60,7 @@ http.createServer((req, res) => {
 }).listen(Number(port), '127.0.0.1', () => process.stdout.write('LISTENING\\n'));
 `;
 
-interface Fake { child: ChildProcess; pid: number; port: number }
+interface Fake { child: ChildProcess; pid: number; port: number; requests?: string[] }
 const fakes: Fake[] = [];
 
 function osPort(): Promise<number> {
@@ -478,17 +478,20 @@ describe.skipIf(!fs.existsSync(DIST))('live: up / env / teardown across separate
 
 describe('smoke: /ui probe gated on shell dist', () => {
   // Stub server that can serve both /health and /ui endpoints
+  // mode 'ui' (default) answers /health and /ui/ on the same port.
+  // mode 'no-ui' still answers /health but 404s /ui/ on that same port,
+  // so a single stub can exercise the "dist present but /ui returns 404" case
+  // without needing to point APRA_FLEET_PORT at a port nothing listens on.
   const UI_STUB_SERVER = `
     const http = require('node:http');
-    const [port, pidToReport] = process.argv.slice(1);
+    const [port, pidToReport, mode] = process.argv.slice(1);
     const pid = pidToReport === 'self' ? process.pid : Number(pidToReport);
-    const requests = [];
     http.createServer((req, res) => {
-      requests.push(req.url);
+      process.stdout.write('REQ ' + req.url + '\\n');
       if (req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', pid, version: 'v0.0.0-test', uptime: 1 }));
-      } else if (req.url === '/ui/') {
+      } else if (req.url === '/ui/' && mode !== 'no-ui') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<html></html>');
       } else {
@@ -498,14 +501,21 @@ describe('smoke: /ui probe gated on shell dist', () => {
     }).listen(Number(port), '127.0.0.1', () => process.stdout.write('LISTENING\\n'));
   `;
 
-  async function spawnUiStub(reportPid: 'self' | number): Promise<Fake> {
+  async function spawnUiStub(reportPid: 'self' | number, mode: 'ui' | 'no-ui' = 'ui'): Promise<Fake> {
     const port = await osPort();
-    const child = spawn(process.execPath, ['-e', UI_STUB_SERVER, String(port), String(reportPid)], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const child = spawn(process.execPath, ['-e', UI_STUB_SERVER, String(port), String(reportPid), mode], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const requests: string[] = [];
     await new Promise<void>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error('UI stub server did not start')), 5000);
-      child.stdout!.on('data', (d: Buffer) => { if (d.toString().includes('LISTENING')) { clearTimeout(t); resolve(); } });
+      child.stdout!.on('data', (d: Buffer) => {
+        const text = d.toString();
+        for (const line of text.split('\n')) {
+          if (line.startsWith('REQ ')) requests.push(line.slice(4).trim());
+        }
+        if (text.includes('LISTENING')) { clearTimeout(t); resolve(); }
+      });
     });
-    const fake = { child, pid: child.pid!, port };
+    const fake = { child, pid: child.pid!, port, requests };
     fakes.push(fake);
     return fake;
   }
@@ -557,13 +567,15 @@ describe('smoke: /ui probe gated on shell dist', () => {
   it('smoke with dist but /ui returns 404: throws SandboxDeployError naming /ui', async () => {
     const home = mkHome(); homes.push(home);
     const id = 'test-smoke-ui-404';
-    const stub = await spawnUiStub('self');
+    // Same stub answers /health AND 404s /ui/ on ONE port, so the /health
+    // check passes and the rejection is genuinely from the /ui probe.
+    const stub = await spawnUiStub('self', 'no-ui');
     const tempDist = path.join(home, 'packages', 'apra-fleet-shell-ui', 'dist');
     fs.mkdirSync(tempDist, { recursive: true });
     fs.writeFileSync(path.join(tempDist, 'index.html'), '<html></html>');
 
     const values = {
-      APRA_FLEET_PORT: String(stub.port + 1), // Use a different port so /ui/ returns 404
+      APRA_FLEET_PORT: String(stub.port),
       SUPERVISOR_PORT: '18701',
       MCP_PID: String(stub.pid),
       REPO_ROOT: home,
@@ -572,7 +584,17 @@ describe('smoke: /ui probe gated on shell dist', () => {
       FLEET_SE_DATA_DIR: path.join(home, 'se'),
     };
     writeValues(id, values, home);
-    await expect(smoke(id, { home })).rejects.toThrow(SandboxDeployError);
-    await expect(smoke(id, { home })).rejects.toThrow(/\/ui\//);
+    let caught: unknown;
+    try {
+      await smoke(id, { home });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SandboxDeployError);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/\/ui\//);
+    expect(message).toMatch(/404/);
+    expect(message).not.toMatch(/did not answer \/health/);
+    expect(stub.requests).toContain('/ui/');
   });
 });
