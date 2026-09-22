@@ -13,7 +13,7 @@
 //
 // WHAT THIS DOES
 // ---------------
-// Registers all 57 tools (23 of them memory-contract tools: 16 kb_* + 7
+// Registers all 58 tools (23 of them memory-contract tools: 16 kb_* + 7
 // code_*, INVENTORY.md section 1) with a 4-line fake McpServer -- the exact
 // technique INVENTORY.md section 1 used to verify the tool count at runtime
 // -- then calls each of the 23 wrapped handlers with a scripted request and

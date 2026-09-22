@@ -5,7 +5,9 @@ as it exists in this repository. This document is the ARBITER OF THE TOOL COUNT
 for the v1 contract work: downstream schema generation, binding generation and
 round-trip fixtures cite the number stated here rather than re-deriving it.
 
-Tree inventoried: branch `u1_contract_v1_skeleton`, HEAD `3a19a9d9`.
+Tree inventoried: branch `u1_contract_v1_skeleton`, HEAD `3a19a9d9`; re-verified
+after merging main at `97877f5e` (kb_*/code_* surface unchanged; server total
+57 -> 58 from the non-memory `vcs_credential_exec` tool).
 
 ## 1. Verified tool count
 
@@ -23,7 +25,7 @@ How it was verified (two independent methods, agreeing):
    body of `registerAllTools`.
 2. **Runtime** -- `registerAllTools` was driven with a 4-line fake `McpServer`
    (an object with a `tool()` method and `server.sendLoggingMessage()`) that
-   records every registration. Result: 57 tools registered in total, of which 16
+   records every registration. Result: 58 tools registered in total, of which 16
    carry the `kb_` prefix and 7 carry the `code_` prefix.
 
 The runtime method is the stronger evidence and is reproducible: it exercises the
@@ -104,7 +106,8 @@ Observed facts about the response side of this surface:
 - NO tool in this surface returns `structuredContent`. `wrapTool` forwards
   `structuredContent` only when the handler returns `{text, structuredContent}`;
   all 23 handlers return a bare `string`, so the channel is unused here. (In the
-  wider 57-tool server, `execute_command` is the tool that uses it.)
+  wider 58-tool server, only non-memory tools use it, e.g. `execute_command`
+  and `execute_prompt`.)
 - All 23 handlers return a JSON-stringified value. So every response is
   JSON-parseable in practice, even though none is schema-declared.
 
