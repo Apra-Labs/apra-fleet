@@ -217,9 +217,13 @@ await agent.executeCommand(
 
 ### Backend: Bitbucket
 
-Use a **Bitbucket OAuth Consumer** or **Repository Access Token**:
-- OAuth Consumer: org-level, token minting via client_credentials grant
-- Repository Access Token: per-repo, created via Bitbucket API, scoped permissions
+Bitbucket Cloud is registered as a full VCSModule provider: workspace/repo
+resolution from the member's remote, a `provision_vcs_auth` credential path
+keyed on `email` + `api_token` (an app password) + `workspace`, and a
+pull-request REST builder. See `docs/design-bitbucket-vcs-auth.md` for the
+credential-assembly, basic-auth-username handoff, and PR-response-mapping
+details -- this section predates that work and is superseded where it
+conflicts.
 
 ### Backend: Self-hosted / GitLab
 
