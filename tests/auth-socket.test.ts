@@ -27,7 +27,14 @@ import { TTL_MS as AUTH_WEB_TTL_MS } from '../src/services/auth-web.js';
 // real module -- this lets the return_url:true tests below control exactly
 // when/whether the "browser" opens, and capture the onSubmit callback wired
 // into it, without actually spawning an HTTP server or a real browser.
-const { mockLaunchAuthWeb } = vi.hoisted(() => ({ mockLaunchAuthWeb: vi.fn() }));
+// Default to 'unavailable' so any test that reaches the terminal-fallback
+// browser path (auth-socket.ts collectOobInput, which dereferences
+// web.kind) behaves like a headless environment instead of throwing a
+// TypeError on an undefined return value. Per-test overrides in the
+// return_url describe block still take precedence via mockImplementation.
+const { mockLaunchAuthWeb } = vi.hoisted(() => ({
+  mockLaunchAuthWeb: vi.fn(() => ({ kind: 'unavailable' as const })),
+}));
 
 vi.mock('../src/services/auth-web.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/auth-web.js')>();
