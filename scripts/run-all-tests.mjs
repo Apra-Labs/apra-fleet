@@ -125,6 +125,12 @@ let signalHandled = false;
 // suite later. Both the suite loop and runBounded() check this flag before
 // starting anything new.
 let terminating = false;
+// apra-fleet-qe83.3.5.3.1: true once the POSIX branch of
+// handleTerminatingSignal() has armed its deferred hard-kill timer. That
+// timer owns the process exit from that moment on -- see the trailing
+// process.exit() at the bottom of this file for why letting the suite loop
+// exit first orphans a SIGTERM-ignoring suite process.
+let deferredExitPending = false;
 
 function handleTerminatingSignal(signal) {
     // A second Ctrl-C (or another signal) during the grace window below
@@ -159,19 +165,34 @@ function handleTerminatingSignal(signal) {
     // effect -- an immediate exit would race it exactly like the bare
     // SIGKILL-the-group path this is replacing.
     try { process.kill(-pid, 'SIGTERM'); } catch { /* already gone or no group */ }
+    // apra-fleet-qe83.3.5.3.1: from here on this process must NOT exit
+    // through the trailing `process.exit()` at the bottom of this file --
+    // the deferred timer below owns the exit, because the immediate child
+    // exiting is exactly the case where a SIGTERM-ignoring descendant is
+    // still alive and has not been hard-killed yet.
+    deferredExitPending = true;
     setTimeout(() => {
-        // Re-read currentChild instead of closing over the `pid`/child
-        // captured above: by the time this timer fires, the group SIGTERM
-        // may already have reaped the suite that was running when the
-        // signal arrived (finish() nulls currentChild on exit). The
-        // `terminating` guard above stops the suite loop from starting a
-        // new suite in that window, but if it somehow still did, killing
-        // the stale pid here (possibly already recycled on POSIX) would
-        // silently miss whatever is actually running now.
-        const livePid = currentChild && currentChild.pid;
-        if (livePid) {
-            killTree(livePid);
-            try { currentChild.kill('SIGKILL'); } catch { /* already gone */ }
+        // apra-fleet-qe83.3.5.3.1: kill the group captured AT SIGNAL TIME
+        // (`pid`), not only a still-live `currentChild`. The previous
+        // version re-read currentChild and did its kill solely inside an
+        // `if (livePid)` guard; on ubuntu the IMMEDIATE child (the
+        // shell:true wrapper) takes the default SIGTERM action and dies
+        // while the node suite it wrapped (which traps SIGTERM) survives,
+        // so finish() has already nulled currentChild and that guard
+        // skipped the kill entirely, orphaning the survivor.
+        // Killing `-pid` is still correct after the group LEADER has
+        // exited: a process group outlives its leader as long as any
+        // member remains, so the surviving descendant is still reachable
+        // by that pgid. `terminating` keeps the suite loop from starting a
+        // new suite in this window, so `pid` cannot refer to a suite other
+        // than the one that was running when the signal arrived.
+        killTree(pid);
+        const liveChild = currentChild;
+        if (liveChild && liveChild.pid) {
+            // Still also reap whatever is live right now -- cheap, and it
+            // covers a child that somehow ended up outside `pid`'s group.
+            killTree(liveChild.pid);
+            try { liveChild.kill('SIGKILL'); } catch { /* already gone */ }
         }
         process.exit(1);
     }, SOFT_KILL_GRACE_MS);
@@ -317,4 +338,17 @@ for (const suite of suites) {
 // `failed` still false, exiting 0 on a signal-driven shutdown. If the timer
 // wins the race instead, this line never runs at all (the timer's own
 // process.exit(1) already ended the process) -- both orderings now agree.
-process.exit(failed || terminating ? 1 : 0);
+// apra-fleet-qe83.3.5.3.1: when the POSIX signal path has armed its
+// deferred hard-kill timer, this line must NOT run. The group SIGTERM
+// broadcast in handleTerminatingSignal() reaps the immediate child (the
+// shell:true wrapper) almost immediately even when the node suite it
+// wrapped ignores SIGTERM: child 'exit' fires, finish() resolves
+// runBounded(), the loop's `if (terminating) break` fires, and this line
+// would end the runner within milliseconds of the signal -- before the
+// SOFT_KILL_GRACE_MS timer that carries the only SIGKILL (which cannot be
+// ignored) ever gets to run, leaving that suite process alive and orphaned.
+// Falling through instead keeps the process alive on nothing but that
+// pending timer, which exits 1 as soon as it has hard-killed the tree.
+if (!deferredExitPending) {
+    process.exit(failed || terminating ? 1 : 0);
+}
