@@ -118,6 +118,7 @@ function generateBranchName(member) {
  *   branch: string,
  *   base: string,
  *   overrideRelaunchGate?: boolean,
+ *   sync?: boolean,
  * }} input
  * @returns {{ ok: true, body: object }|{ ok: false, error: string }}
  */
@@ -160,6 +161,14 @@ export function buildLaunchRequestBody(input) {
     // existed.
     if (opts.overrideRelaunchGate === true) {
         body.overrideRelaunchGate = true;
+    }
+    // apra-fleet-ky2l.3.1 (DQ-11): only sent when explicitly checked -- the
+    // server (api.mjs's validateLaunchRequest) treats an absent `sync` the
+    // same as `false` (no --sync forwarded), so omitting the key here when
+    // unchecked changes nothing about the request the server sees versus
+    // before this field existed.
+    if (opts.sync === true) {
+        body.sync = true;
     }
     return { ok: true, body };
 }
@@ -366,6 +375,7 @@ function clientScriptSource() {
             var branch = document.getElementById('launch-branch').value;
             var base = document.getElementById('launch-base').value;
             var overrideGateEl = document.getElementById('launch-override-gate');
+            var syncEl = document.getElementById('launch-sync');
             var result = buildLaunchRequestBody({
                 selectedRoots: selectedRoots,
                 members: members,
@@ -374,6 +384,7 @@ function clientScriptSource() {
                 branch: branch,
                 base: base,
                 overrideRelaunchGate: overrideGateEl ? overrideGateEl.checked : false,
+                sync: syncEl ? syncEl.checked : false,
             });
             if (!result.ok) {
                 resultEl.style.color = '#ef4444';
@@ -435,6 +446,8 @@ export function renderLaunchFormHtml() {
         '<div style="margin-bottom:8px;"><label>Base branch: <input id="launch-base" type="text" placeholder="main" value="main"/></label></div>' +
         '<div style="margin-bottom:8px;"><label><input id="launch-override-gate" type="checkbox"/> ' +
         'Override relaunch gate (the prior incarnation of this issue ended in a reason flagged as unsafe to retry blindly)</label></div>' +
+        '<div style="margin-bottom:8px;"><label><input id="launch-sync" type="checkbox"/> ' +
+        'Synced topology (--sync) -- pass when members are in separate checkouts</label></div>' +
         '<button type="submit">Launch Sprint</button>' +
         '</form>' +
         '<div id="launch-result" style="margin-top: 8px; font-size: 13px;"></div>' +

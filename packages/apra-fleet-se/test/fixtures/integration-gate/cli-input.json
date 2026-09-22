@@ -1,0 +1,44 @@
+[
+  {
+    "number": 201,
+    "title": "Auto-sprint [PASS]: feat/cli-example-a",
+    "headRefName": "feat/cli-example-a",
+    "headRefOid": "iii9999",
+    "baseRefName": "integration",
+    "isDraft": false,
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "statusCheckRollup": [
+      { "name": "check-a", "conclusion": "SUCCESS" },
+      { "name": "check-b", "conclusion": "SUCCESS" }
+    ]
+  },
+  {
+    "number": 202,
+    "title": "Auto-sprint [PASS]: feat/cli-example-b",
+    "headRefName": "feat/cli-example-b",
+    "headRefOid": "jjj0000",
+    "baseRefName": "integration",
+    "isDraft": false,
+    "mergeable": "CONFLICTING",
+    "mergeStateStatus": "DIRTY",
+    "statusCheckRollup": [
+      { "name": "check-a", "conclusion": "SUCCESS" },
+      { "name": "check-b", "conclusion": "SUCCESS" }
+    ]
+  },
+  {
+    "number": 203,
+    "title": "Auto-sprint [FAIL]: feat/cli-example-c",
+    "headRefName": "feat/cli-example-c",
+    "headRefOid": "kkk1234",
+    "baseRefName": "integration",
+    "isDraft": false,
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "statusCheckRollup": [
+      { "name": "check-a", "conclusion": "FAILURE" },
+      { "name": "check-b", "conclusion": "SUCCESS" }
+    ]
+  }
+]

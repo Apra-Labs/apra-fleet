@@ -14,6 +14,7 @@ import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
 import { createReconciler, isPidAlive } from '../src/supervisor/reconcile.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
+import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.6 -- supervisor lifecycle end-to-end test.
@@ -161,10 +162,16 @@ function firstLine(child) {
 
 // -- minimal HTTP client against the supervisor -------------------------------
 
-function httpRequest(port, pathname, method = 'GET') {
+/**
+ * apra-fleet-50j6.1.2: `serviceToken`, when provided, rides as a Bearer
+ * Authorization header -- the whole `/api/` surface (including /api/health)
+ * is guarded now, so every real-subprocess request in this suite needs it.
+ */
+function httpRequest(port, pathname, method = 'GET', serviceToken) {
     return new Promise((resolve, reject) => {
+        const headers = serviceToken ? { authorization: `Bearer ${serviceToken}` } : {};
         const req = http.request(
-            { host: '127.0.0.1', port, path: pathname, method, timeout: 3000 },
+            { host: '127.0.0.1', port, path: pathname, method, timeout: 3000, headers },
             (res) => {
                 let body = '';
                 res.on('data', (c) => { body += c; });
@@ -362,6 +369,13 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
         const dataDir = await mkTmp('eft46-serve-data-');
         const seDataDir = await mkTmp('eft46-serve-se-');
         const port = await getFreePort();
+        // apra-fleet-50j6.1.2 / apra-fleet-ky2l.1.2 (DQ-20): resolve the SAME
+        // shared bearer service token the spawned subprocess will -- via the
+        // SAME resolveServiceToken() seam, with NO `home` override (the
+        // child's env below has no HOME override either, so both resolve
+        // against the real os.homedir(), and thus the SAME fleet.key when
+        // one exists -- see auth.mjs).
+        const serviceToken = resolveServiceToken(seDataDir).token;
 
         const serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
             cwd: SE_PKG_ROOT,
@@ -374,7 +388,7 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
         // Wait for the supervisor to come up.
         await waitFor(async () => {
             try {
-                const res = await httpRequest(port, '/api/health');
+                const res = await httpRequest(port, '/api/health', 'GET', serviceToken);
                 return res.status === 200;
             } catch {
                 return false;
@@ -391,11 +405,11 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
         // Give the supervisor a beat, then confirm it is still up.
         await sleep(300);
         assert.equal(isPidAlive(serve.pid), true, 'supervisor must stay up after a sprint completes');
-        const health = await httpRequest(port, '/api/health');
+        const health = await httpRequest(port, '/api/health', 'GET', serviceToken);
         assert.equal(health.status, 200);
 
         // The ONLY in-band way to stop it.
-        const shutdown = await httpRequest(port, '/api/shutdown', 'POST');
+        const shutdown = await httpRequest(port, '/api/shutdown', 'POST', serviceToken);
         assert.equal(shutdown.status, 200);
 
         // The serve process should exit cleanly (code 0) once shutdown completes.
@@ -406,6 +420,6 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
         assert.equal(serve.exitCode, 0, 'serve exits 0 on /api/shutdown');
 
         // And its port is no longer answering.
-        await assert.rejects(httpRequest(port, '/api/health'));
+        await assert.rejects(httpRequest(port, '/api/health', 'GET', serviceToken));
     });
 });

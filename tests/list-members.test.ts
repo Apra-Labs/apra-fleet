@@ -77,6 +77,29 @@ describe('list_members -- tags filter', () => {
     expect(result).toBe('No members registered.');
   });
 
+  it('json format on an empty registry returns a parseable envelope with total 0 and members [] (apra-fleet-ky2l.7.1/7.2)', async () => {
+    // No agents added -- registry is empty.
+    const result = await listMembers({ format: 'json' });
+    expect(result.startsWith('{')).toBe(true); // isJsonResponse() in src/services/onboarding.ts keys on this leading brace to suppress the onboarding preamble
+    const parsed = JSON.parse(result);
+    expect(parsed.total).toBe(0);
+    expect(parsed.members).toEqual([]);
+
+    // Compact format on an empty registry is unaffected -- stays the plain string.
+    const compact = await listMembers({ format: 'compact' });
+    expect(compact).toBe('No members registered.');
+  });
+
+  it('json format with a tags filter that matches nothing also returns a parseable envelope with total 0 and members []', async () => {
+    addAgent(makeTestAgent({ id: 'member-a', friendlyName: 'alpha', tags: ['doer'] }));
+
+    const result = await listMembers({ format: 'json', tags: ['gpu'] });
+    expect(result.startsWith('{')).toBe(true);
+    const parsed = JSON.parse(result);
+    expect(parsed.total).toBe(0);
+    expect(parsed.members).toEqual([]);
+  });
+
   it('works with json format and applies the same AND filter', async () => {
     addAgent(makeTestAgent({ id: 'member-gpu', friendlyName: 'gpu-worker', tags: ['gpu'] }));
     addAgent(makeTestAgent({ id: 'member-doer', friendlyName: 'doer-worker', tags: ['doer'] }));

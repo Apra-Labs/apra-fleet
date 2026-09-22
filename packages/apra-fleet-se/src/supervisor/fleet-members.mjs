@@ -64,7 +64,14 @@ export async function listFleetMembers(deps = {}) {
         const mcpClient = new McpClient(transport);
         const fleetApi = new ApraFleet(mcpClient);
         const listRes = await fleetApi.listMembers({ format: 'json' });
-        const text = listRes && listRes.content && listRes.content[0] ? listRes.content[0].text : JSON.stringify(listRes);
+        // wrapTool() (src/services/tool-registry.ts) prepends an onboarding
+        // <apra-fleet-display> preamble text block ahead of the real result
+        // whenever the tool result isn't recognized as JSON -- skip any such
+        // block and parse the first remaining text block instead of blindly
+        // taking content[0] (apra-fleet-ky2l.7.1).
+        const blocks = Array.isArray(listRes && listRes.content) ? listRes.content : [];
+        const resultBlock = blocks.find((b) => b && typeof b.text === 'string' && !b.text.startsWith('<apra-fleet-display>'));
+        const text = resultBlock ? resultBlock.text : (blocks[0] ? blocks[0].text : JSON.stringify(listRes));
         const parsed = JSON.parse(text);
         return { members: Array.isArray(parsed.members) ? parsed.members : [] };
     } catch (err) {

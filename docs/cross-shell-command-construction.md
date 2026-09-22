@@ -201,6 +201,45 @@ against real on-disk/process state) rather than trusting a green checkmark
 alone. A suite that can silently no-op is not evidence by itself; the
 positive-execution signal is what makes it evidence.
 
+## Windows pitfalls in local Node tooling (not member-transport, but the same failure shape)
+
+Two more Windows-only silent-failure patterns have recurred in this repo's
+own `scripts/*.mjs` and their tests -- not in commands sent to a remote
+fleet member, but in local Node tooling that runs identically in CI. They
+belong here because the failure shape is the same one this whole document
+warns about: something that works on POSIX and silently no-ops (not crashes)
+on Windows, so it only ever surfaces on windows-latest CI.
+
+- **The ESM "is this module the entry point" guard must use
+  `pathToFileURL`, not string interpolation.** The naive guard
+  `` import.meta.url === `file://${process.argv[1]}` `` works on POSIX but is
+  always false on win32: `process.argv[1]` is a raw OS path
+  (`D:\a\repo\x.mjs`, backslashes, no percent-encoding), while
+  `import.meta.url` is a proper `file://` URL (`file:///D:/a/repo/x.mjs`,
+  forward slashes, percent-encoded where needed). Because the guard is false,
+  `main()` never runs -- the script exits 0 having done nothing, which looks
+  like "it ran and there was nothing to do" rather than a crash, making it
+  easy to miss in CI output. Every entry-point guard in this repo's
+  `scripts/*.mjs` must instead compare against a URL built from the same
+  argv value: `process.argv[1] && import.meta.url ===
+  pathToFileURL(process.argv[1]).href`.
+- **Never interpolate an absolute path into a double-quoted inline JS string**
+  (e.g. a `node -e "..."` command string, or a generated script body built by
+  string concatenation). `os.tmpdir()` paths on Windows use backslashes
+  (`C:\Users\RUNNER~1\AppData\Local\Temp\...`); once that string sits inside
+  a double-quoted JS string literal, sequences like `\U`, `\A`, `\T` are
+  consumed as (invalid, silently-dropped) escape sequences, corrupting the
+  path into something that no longer points at the intended location -- the
+  script still runs and exits 0, it just writes to the wrong place. The fix
+  is to keep the generated script body path-free: write the path-dependent
+  logic to its own file and have it locate what it needs via `__dirname`
+  (or an env var) instead of a value baked into a string literal.
+
+Both classes above pass on Linux and macOS and only fail on windows-latest,
+so a PR that touches `scripts/*.mjs` or spawns an inline Node script from a
+test needs an explicit look for either pattern -- green CI on two of three
+platforms is not evidence the third is fine.
+
 ## Where this pattern must be checked when adding a new member-bound command
 
 Any code that builds a command string for `strategy.execCommand` (directly,

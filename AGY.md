@@ -37,6 +37,16 @@ Always use DeepWiki (MCP server `https://mcp.deepwiki.com/mcp`) while exploring 
 
 `repo` format: `owner/repo`. Use `Apra-Labs/apra-fleet` for this repo; also useful for related repos this project depends on: `Apra-Labs/apra-pm`, `gastownhall/beads`, `Apra-Labs/fleet-e2e-toy`. To claim what a *specific script does*, read the script -- DeepWiki is for architecture/orientation, not a substitute for reading code you're about to modify.
 
+## Integration branch rules
+
+Sprint branches fork from and PR into the integration branch (v0.5_dashboard) via
+squash-only PRs gated on three build-and-test checks: build-and-test (ubuntu-latest),
+build-and-test (macos-latest), build-and-test (windows-latest). Per-track file ownership --
+shared files (deploy.md, integ-test-playbook.md, regression-test-playbook.md,
+scripts/sandbox-deploy.mjs, ci.yml, CLAUDE.md) are edited only by their owner
+track or the groundwork sprint. Tests run through the bounded runner (npm test),
+never raw vitest over the whole tree. Staging ports 7601 and 8801 are reserved.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
 

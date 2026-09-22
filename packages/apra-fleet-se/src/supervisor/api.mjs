@@ -441,6 +441,15 @@ export function createSprintController(deps = {}) {
         if (members.length === 0) {
             throw new ApiError(400, 'members must be a non-empty list of member names', 'members');
         }
+        // apra-fleet-ky2l.3.1 (DQ-11): `sync` is optional, but when present
+        // must be a real boolean -- forwarded (as `--sync`) into the runner
+        // argv below, so a stringly-typed "yes"/"1" would silently never
+        // reach the runner as the flag it looks like. Checked here, BEFORE
+        // any spawn, so a malformed value 400s without ever touching the
+        // spawner.
+        if (body.sync !== undefined && typeof body.sync !== 'boolean') {
+            throw new ApiError(400, `[Arg Contract] sync must be a boolean, got ${typeof body.sync} (${JSON.stringify(body.sync)}).`, 'sync');
+        }
         // `issue` stays a single comma-joined string (the exact shape
         // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
         // to the input for the single-id case); `issueIds` is the split array
@@ -566,6 +575,14 @@ export function createSprintController(deps = {}) {
 
         // Forward the per-request goal straight into the child argv (buildSprintArgv
         // pushes `--goal <goal>` when goal !== undefined).
+        //
+        // apra-fleet-ky2l.3.1 (DQ-11): `extraArgs` is set ONLY when
+        // body.sync === true (validateLaunchRequest above already rejected
+        // any non-boolean value), so an absent or `false` sync produces the
+        // exact same spawnOpts shape as before this field existed -- no
+        // --sync anywhere in the recorded options/argv unless explicitly
+        // requested. buildSprintArgv (spawner.mjs) pushes every entry of
+        // extraArgs verbatim, after the issue/members/etc. flags.
         const spawnOpts = {
             issue,
             members: members.join(','),
@@ -578,6 +595,7 @@ export function createSprintController(deps = {}) {
             roleMap,
             budget: body.budget,
             runId: sprintId,
+            ...(body.sync === true ? { extraArgs: ['--sync'] } : {}),
         };
         const spawned = await spawner.spawnSprint(spawnOpts);
         // apra-fleet-gey.2: best-effort stale-process detection -- compare
@@ -606,6 +624,8 @@ export function createSprintController(deps = {}) {
         // apra-fleet-k7b.2: also record the launch branch on the reservation --
         // hasTerminalState()'s legacy fallback needs it as a lookup key for
         // reservations claimed before k7b.1's run-id plumbing shipped.
+        // apra-fleet-ky2l.3.1: also record `sync` so a future Restart
+        // reproduces the same synced-topology mode, not just branch/base/goal.
         await ledger.claim(sprintId, {
             members: union,
             issueRoots,
@@ -614,6 +634,7 @@ export function createSprintController(deps = {}) {
             branch,
             base,
             goal: body.goal ?? null,
+            sync: body.sync === true,
             // Which .beads this supervisor resolved at launch time (see
             // beads-identity.mjs) -- the same identity the child received as
             // --expect-beads, recorded so the dashboard can show it per row.

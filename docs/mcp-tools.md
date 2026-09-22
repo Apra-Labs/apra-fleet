@@ -133,7 +133,7 @@ Lists all registered fleet members with their details.
 
 Reads the registry and formats every member into a display block showing: ID, type (local/remote), host (remote only), OS, LLM provider, folder, auth type (remote only), session ID, created date, and last used date.
 
-**Output:** Formatted list. Shows "No members registered" if the fleet is empty.
+**Output:** Formatted list. "No members registered" applies to `"compact"` format only when the fleet (or the tag-filtered result) is empty; `"json"` format always returns the structured envelope, with `total: 0` and `members: []` for an empty registry.
 
 ### `update_member`
 

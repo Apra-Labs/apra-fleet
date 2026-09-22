@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +18,42 @@ import {
   checkGitOriginNotHazard,
   HAZARD_REMOTE,
 } from '../scripts/check-sandbox-sync-remote.mjs';
+
+// apra-fleet-50j6.4: shared, non-throwing best-effort teardown helper for
+// every mkdtemp'd scratch directory this suite creates. A spawned bd/dolt/git
+// child (already awaited/killed by the time its execFileSync/execBdSync call
+// returns -- every spawn in this file is synchronous) can still leave a
+// grandchild (e.g. a detached `dolt sql-server`) or a Windows virus scanner
+// holding a brief handle on a just-exited child's files; the retry loop below
+// (unchanged budget: 30 attempts x 200ms = 6s -- see the historical comment
+// at its original call site) already covers that window. What it must NOT do
+// is escalate a still-held handle into a hard test failure: the directory
+// lives under os.tmpdir(), which the OS reclaims on its own, so a final
+// failure here is downgraded to a named, errno-bearing console.warn instead
+// of a thrown error. Applied at every fs.rmSync(tmpDir) teardown site in this
+// file (previously only one had a retry loop at all; the rest threw
+// immediately on first failure).
+async function safeRmDir(dirPath: string, { attempts = 30, delayMs = 200 } = {}): Promise<void> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      fs.rmSync(dirPath, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      if (i === attempts - 1) {
+        const code = (err as NodeJS.ErrnoException)?.code ?? 'UNKNOWN';
+        // eslint-disable-next-line no-console -- deliberate operator-visible warning, not a log-noise leak.
+        console.warn(
+          `[check-sandbox-sync-remote.test] cleanup warning: could not remove '${dirPath}' `
+          + `after ${attempts} attempts (errno ${code}: ${(err as Error).message}). `
+          + 'Leaving it under os.tmpdir() for the OS to reclaim; not failing the test.',
+        );
+        return;
+      }
+      // eslint-disable-next-line no-await-in-loop -- retries must be serialized with a delay between them.
+      await new Promise((resolve) => { setTimeout(resolve, delayMs); });
+    }
+  }
+}
 
 // Tests for apra-fleet-eft.18.6: scripts/check-sandbox-sync-remote.mjs
 // retargeted from "sync.remote is commented out / real remote absent" (the
@@ -176,8 +212,8 @@ describe('checkSyncRemoteInert: sync.remote resolves-inside-sandbox (apra-fleet-
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sync-remote-test-'));
     sandboxRoot = tmpDir;
   });
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  afterEach(async () => {
+    await safeRmDir(tmpDir);
   });
 
   it('PASSES (vacuously) when config.yaml does not exist -- nothing wired yet', () => {
@@ -279,8 +315,8 @@ describe('checkNoOutboundCommits: sandbox-integrity sanity check, unchanged by t
     git(cloneDir, ['config', 'user.name', 'Test']);
   });
 
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  afterEach(async () => {
+    await safeRmDir(tmpDir);
   });
 
   it('PASSES when the sandbox clone has 0 commits ahead of origin/main', () => {
@@ -470,21 +506,13 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
       // handle on tmpDir under CI load (observed live: a loaded windows-latest
       // runner still held the lock past a 10x50ms=500ms budget -- see
       // EBUSY_RETRY_DELAY_MS=200 in src/cli/workflow-assets.ts for the same
-      // class of Windows EBUSY retry elsewhere in this codebase). 30x200ms=6s
-      // gives real headroom without slowing the common (already-released) case,
-      // since the loop exits on the first successful attempt.
+      // class of Windows EBUSY retry elsewhere in this codebase). safeRmDir's
+      // 30x200ms=6s default gives real headroom without slowing the common
+      // (already-released) case, and apra-fleet-50j6.4 downgrades a final
+      // still-held handle to a warning instead of re-throwing `err` here --
+      // this teardown alone must never red an otherwise-passing test.
       if (tmpDir) {
-        const cleanupAttempts = 30;
-        for (let i = 0; i < cleanupAttempts; i++) {
-          try {
-            fs.rmSync(tmpDir, { recursive: true, force: true });
-            break; // Success
-          } catch (err) {
-            if (i === cleanupAttempts - 1) throw err;
-            // Small delay before retry to allow file handles to be released
-            await new Promise((resolve) => setTimeout(resolve, 200));
-          }
-        }
+        await safeRmDir(tmpDir);
       }
     }
   }, 60000); // Increase timeout for this test due to retry logic
@@ -536,8 +564,8 @@ describe('checkGitOriginNotHazard: git-origin resolves-inside-sandbox (apra-flee
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-git-origin-sandbox-test-'));
   });
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  afterEach(async () => {
+    await safeRmDir(tmpDir);
   });
 
   it('against a REAL local git repo: PASSES when origin is a sandbox-local bare mirror', () => {
@@ -554,7 +582,7 @@ describe('checkGitOriginNotHazard: git-origin resolves-inside-sandbox (apra-flee
     expect(result.message).toMatch(/^OK/);
   });
 
-  it('against a REAL local git repo: FAILS when origin is a local remote outside the sandbox root', () => {
+  it('against a REAL local git repo: FAILS when origin is a local remote outside the sandbox root', async () => {
     const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-outside-sandbox-'));
     const hazardRemote = path.join(outsideRoot, 'fleet-e2e-toy.git');
     execFileSync('git', ['init', '--bare', '-b', 'main', hazardRemote]);
@@ -569,7 +597,7 @@ describe('checkGitOriginNotHazard: git-origin resolves-inside-sandbox (apra-flee
       expect(result.ok).toBe(false);
       expect(result.message).toMatch(/^FAIL/);
     } finally {
-      fs.rmSync(outsideRoot, { recursive: true, force: true });
+      await safeRmDir(outsideRoot);
     }
   });
 
@@ -584,5 +612,78 @@ describe('checkGitOriginNotHazard: git-origin resolves-inside-sandbox (apra-flee
 
     const result = checkGitOriginNotHazard(workDir);
     expect(result.ok).toBe(true);
+  });
+});
+
+describe('safeRmDir: the shared teardown helper (apra-fleet-50j6.4)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('removes a real directory on the first attempt with no warning (the common case)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-saferm-happy-'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await safeRmDir(tmpDir);
+    expect(fs.existsSync(tmpDir)).toBe(false);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('recovers once fs.rmSync starts succeeding again after transient EBUSY failures', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-saferm-retry-'));
+    const real = fs.rmSync.bind(fs);
+    let calls = 0;
+    const rmSpy = vi.spyOn(fs, 'rmSync').mockImplementation((...args) => {
+      calls += 1;
+      if (calls < 3) {
+        const err = new Error('EBUSY: resource busy or locked') as NodeJS.ErrnoException;
+        err.code = 'EBUSY';
+        throw err;
+      }
+      return real(...(args as Parameters<typeof fs.rmSync>));
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await safeRmDir(tmpDir, { attempts: 5, delayMs: 5 });
+
+    expect(calls).toBe(3);
+    expect(fs.existsSync(tmpDir)).toBe(false);
+    expect(warnSpy).not.toHaveBeenCalled();
+    rmSpy.mockRestore();
+  });
+
+  // apra-fleet-50j6.4 acceptance criterion (3), second half: "with a handle
+  // deliberately held on toy-repo during teardown, the run still exits 0 and
+  // prints the warning". A real cross-process OS handle is not reliably
+  // reproducible in-process/cross-platform (Windows opens are typically
+  // FILE_SHARE_DELETE by default), so this simulates the exact fault this
+  // helper exists for -- fs.rmSync throwing EBUSY on EVERY attempt, modeling
+  // a handle held for the helper's entire retry budget -- deterministically
+  // and on every OS/CI runner.
+  it('a handle held for the ENTIRE retry budget: does not throw, and warns by name+errno instead', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-saferm-stuck-'));
+    const err = new Error('EBUSY: resource busy or locked, rmdir') as NodeJS.ErrnoException;
+    err.code = 'EBUSY';
+    const rmSpy = vi.spyOn(fs, 'rmSync').mockImplementation(() => {
+      throw err;
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Small attempts/delayMs so this stays fast; the retry COUNT is what
+    // matters for this assertion, not the production 30x200ms budget (that
+    // budget is pinned unchanged by the "recovers" test above and by
+    // reading the real call sites, which all use the default).
+    await expect(safeRmDir(tmpDir, { attempts: 4, delayMs: 5 })).resolves.toBeUndefined();
+
+    expect(rmSpy).toHaveBeenCalledTimes(4);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [message] = warnSpy.mock.calls[0] as [string];
+    expect(message).toContain(tmpDir);
+    expect(message).toContain('EBUSY');
+    expect(message).toMatch(/not failing the test/i);
+
+    rmSpy.mockRestore();
+    // The mock prevented real removal; clean up for real now that it's
+    // restored, so this test itself leaves nothing behind.
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });

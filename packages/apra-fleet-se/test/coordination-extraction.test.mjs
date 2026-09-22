@@ -206,3 +206,122 @@ describe('sprintMutexId for a fixed branch matches the identity the supervisor r
         });
     });
 });
+
+// apra-fleet-50j6.2.1: HTTP coordination clients send Authorization: Bearer
+// header with the service token for every postJson call (acquire, renew,
+// release, allocate, confirm). Absent a token, the request still goes out
+// (server decides whether to reject it).
+describe('HTTP coordination clients send Authorization Bearer header (apra-fleet-50j6.2.1)', () => {
+    test('createHttpDoltPushMutexClient sends Authorization header with service token on acquire/release/renew', async () => {
+        const calls = [];
+        const fetchImpl = async (url, opts) => {
+            calls.push({ url, opts });
+            return { ok: true, status: 200, json: async () => ({ token: 'lease-tok', granted: true, released: true, renewed: true }) };
+        };
+        const client = createHttpDoltPushMutexClient({
+            serviceUrl: 'http://svc',
+            sprintId: 'sprint-1',
+            token: 'svc-token-abc',
+            fetch: fetchImpl,
+        });
+        await client.acquire('sprint-1', { pid: 123 });
+        await client.release('lease-tok');
+        await client.renew('lease-tok');
+
+        assert.equal(calls.length, 3, 'expected 3 HTTP calls (acquire, release, renew)');
+        for (let i = 0; i < calls.length; i++) {
+            const headers = calls[i].opts.headers;
+            assert.ok(headers, `call ${i}: headers object must exist`);
+            assert.equal(headers.Authorization, 'Bearer svc-token-abc', `call ${i}: must have Authorization header with service token`);
+        }
+    });
+
+    test('createHttpDoltPushMutexClient omits Authorization header when token is empty/undefined', async () => {
+        const calls = [];
+        const fetchImpl = async (url, opts) => {
+            calls.push({ url, opts });
+            return { ok: true, status: 200, json: async () => ({ token: 'lease-tok', granted: true, released: true }) };
+        };
+        const client = createHttpDoltPushMutexClient({
+            serviceUrl: 'http://svc',
+            sprintId: 'sprint-1',
+            token: undefined, // explicitly no token
+            fetch: fetchImpl,
+        });
+        await client.acquire('sprint-1', { pid: 123 });
+
+        assert.equal(calls.length, 1);
+        const headers = calls[0].opts.headers;
+        assert.ok(headers);
+        assert.equal(headers.Authorization, undefined, 'Authorization header must not be present when token is undefined');
+    });
+
+    test('createHttpDoltPushMutexClient reads FLEET_SE_SERVICE_TOKEN from env as fallback', async () => {
+        const calls = [];
+        const fetchImpl = async (url, opts) => {
+            calls.push({ opts });
+            return { ok: true, status: 200, json: async () => ({ token: 'lease-tok', granted: true }) };
+        };
+        // Save and clear the env var to ensure clean test state
+        const saved = process.env.FLEET_SE_SERVICE_TOKEN;
+        try {
+            delete process.env.FLEET_SE_SERVICE_TOKEN;
+            process.env.FLEET_SE_SERVICE_TOKEN = 'env-token-xyz';
+            const client = createHttpDoltPushMutexClient({
+                serviceUrl: 'http://svc',
+                sprintId: 'sprint-1',
+                // no token passed; should fall back to env
+                fetch: fetchImpl,
+            });
+            await client.acquire('sprint-1');
+            assert.equal(calls[0].opts.headers.Authorization, 'Bearer env-token-xyz');
+        } finally {
+            if (saved) process.env.FLEET_SE_SERVICE_TOKEN = saved;
+            else delete process.env.FLEET_SE_SERVICE_TOKEN;
+        }
+    });
+
+    test('createHttpChildIdAllocatorClient sends Authorization header with service token on allocate/confirm/release', async () => {
+        const calls = [];
+        const fetchImpl = async (url, opts) => {
+            calls.push({ url, opts });
+            return { ok: true, status: 200, json: async () => ({ childId: 'apra-fleet-x.1', seq: 1, token: 'lease-tok', confirmed: true, released: true }) };
+        };
+        const client = createHttpChildIdAllocatorClient({
+            serviceUrl: 'http://svc',
+            sprintId: 'sprint-1',
+            token: 'svc-token-def',
+            fetch: fetchImpl,
+        });
+        await client.allocate('apra-fleet-x');
+        await client.confirm('lease-tok');
+        await client.release('lease-tok');
+
+        assert.equal(calls.length, 3, 'expected 3 HTTP calls (allocate, confirm, release)');
+        for (let i = 0; i < calls.length; i++) {
+            const headers = calls[i].opts.headers;
+            assert.ok(headers, `call ${i}: headers object must exist`);
+            assert.equal(headers.Authorization, 'Bearer svc-token-def', `call ${i}: must have Authorization header with service token`);
+        }
+    });
+
+    test('createHttpChildIdAllocatorClient omits Authorization header when token is empty/undefined', async () => {
+        const calls = [];
+        const fetchImpl = async (url, opts) => {
+            calls.push({ opts });
+            return { ok: true, status: 200, json: async () => ({ childId: 'apra-fleet-x.1', seq: 1, token: 'lease-tok' }) };
+        };
+        const client = createHttpChildIdAllocatorClient({
+            serviceUrl: 'http://svc',
+            sprintId: 'sprint-1',
+            token: undefined, // explicitly no token
+            fetch: fetchImpl,
+        });
+        await client.allocate('apra-fleet-x');
+
+        assert.equal(calls.length, 1);
+        const headers = calls[0].opts.headers;
+        assert.ok(headers);
+        assert.equal(headers.Authorization, undefined, 'Authorization header must not be present when token is undefined');
+    });
+});

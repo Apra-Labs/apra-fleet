@@ -108,6 +108,19 @@ indexing positionally -- any new internal consumer of a wrapped tool's
 `content` array should call one of those two rather than re-deriving its own
 "read the first block" logic.
 
+That coverage stops at the process boundary: `resultText`/`toolErrorText`
+live in the MCP server's own source tree, so a consumer that talks to the
+server over a transport instead of calling the handler in-process (a
+short-lived `@apralabs/apra-fleet-client` connection, for example, which is
+how the fleet-se supervisor reads `list_members` without holding a standing
+fleet connection) has no access to them and must re-implement the same
+skip-the-banner filter itself. One such caller took `content[0]` directly and
+threw a JSON-parse error every time onboarding had something to say, until it
+was corrected to search the content array for the first non-`<apra-fleet-display>`
+block the same way `mcp-result.mjs` does. Any future cross-package or
+over-the-wire tool-result consumer needs the same filter, not just an
+in-process one.
+
 ---
 
 ## Decision 2: Sanitize the marker channel against injection

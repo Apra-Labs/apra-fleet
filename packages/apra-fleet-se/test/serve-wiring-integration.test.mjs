@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
+import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.8.3 -- verification for eft.4.8: boots the REAL
@@ -104,10 +105,16 @@ async function waitFor(pred, { timeoutMs = scaledTimeout(15000), intervalMs = 10
     }
 }
 
-/** GET a path against a given host:port, resolving `{ status, headers, body }`. */
-function httpGet(port, urlPath, host = '127.0.0.1') {
+/**
+ * GET a path against a given host:port, resolving `{ status, headers, body }`.
+ * apra-fleet-50j6.1.2: `serviceToken`, when provided, rides as a Bearer
+ * Authorization header -- the whole `/api/` surface (including /api/health)
+ * is guarded now, so every real-subprocess request in this suite needs it.
+ */
+function httpGet(port, urlPath, { host = '127.0.0.1', serviceToken } = {}) {
     return new Promise((resolve, reject) => {
-        const req = http.request({ host, port, path: urlPath, method: 'GET', timeout: scaledTimeout(5000) }, (res) => {
+        const headers = serviceToken ? { authorization: `Bearer ${serviceToken}` } : {};
+        const req = http.request({ host, port, path: urlPath, method: 'GET', timeout: scaledTimeout(5000), headers }, (res) => {
             let body = '';
             res.setEncoding('utf-8');
             res.on('data', (c) => { body += c; });
@@ -120,12 +127,16 @@ function httpGet(port, urlPath, host = '127.0.0.1') {
 }
 
 /** POST a JSON body against a given host:port, resolving `{ status, json }`. */
-function httpPostJson(port, urlPath, payload, host = '127.0.0.1') {
+function httpPostJson(port, urlPath, payload, { host = '127.0.0.1', serviceToken } = {}) {
     return new Promise((resolve, reject) => {
         const body = Buffer.from(JSON.stringify(payload ?? {}), 'utf-8');
+        const headers = {
+            'content-type': 'application/json',
+            'content-length': body.length,
+            ...(serviceToken ? { authorization: `Bearer ${serviceToken}` } : {}),
+        };
         const req = http.request({
-            host, port, path: urlPath, method: 'POST', timeout: scaledTimeout(5000),
-            headers: { 'content-type': 'application/json', 'content-length': body.length },
+            host, port, path: urlPath, method: 'POST', timeout: scaledTimeout(5000), headers,
         }, (res) => {
             let raw = '';
             res.setEncoding('utf-8');
@@ -145,6 +156,16 @@ function httpPostJson(port, urlPath, payload, host = '127.0.0.1') {
 describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real supervisor process', () => {
     let serve;
     let port;
+    // apra-fleet-50j6.1.2 / apra-fleet-ky2l.1.2 (DQ-20): the shared bearer
+    // service token bin/serve.mjs resolves via resolveServiceToken() --
+    // resolved here (before spawn) so this test process and the spawned
+    // subprocess deterministically agree on it via that resolver's
+    // idempotent create-or-reuse contract, instead of racing to read a file
+    // the child may not have written yet. Resolved with NO `home` override,
+    // deliberately -- the spawned child's env below is `{...process.env,
+    // ...}` with no HOME override, so it resolves against the REAL
+    // os.homedir() too; this precompute must match or every poll below 401s.
+    let serviceToken;
     // apra-fleet-7dir.18: flipped by the spawned `serve` subprocess's own
     // 'exit' event, so the readiness polls below (isAlive) can fail FAST if
     // the process has genuinely died, independent of however generous their
@@ -159,6 +180,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         const dataDir = await mkTmp('eft483-serve-data-');
         const seDataDir = await mkTmp('eft483-serve-se-');
         port = await getFreePort();
+        serviceToken = resolveServiceToken(seDataDir).token;
 
         serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
             cwd: SE_PKG_ROOT,
@@ -187,7 +209,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         // instead of silently eating the whole widened ceiling.
         await waitFor(async () => {
             try {
-                const res = await httpGet(port, '/api/health');
+                const res = await httpGet(port, '/api/health', { serviceToken });
                 return res.status === 200;
             } catch {
                 return false;
@@ -202,14 +224,14 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
     after(async () => {
         if (!serve) return;
         try {
-            await httpGet(port, '/api/health');
-            await httpPostJson(port, '/api/shutdown', {});
+            await httpGet(port, '/api/health', { serviceToken });
+            await httpPostJson(port, '/api/shutdown', {}, { serviceToken });
         } catch { /* already gone */ }
         if (serve.pid) forceKill(serve.pid);
     });
 
     test('GET /api/health reports the watchdog and dashboard seams as real modules, not stubs', async () => {
-        const res = await httpGet(port, '/api/health');
+        const res = await httpGet(port, '/api/health', { serviceToken });
         assert.equal(res.status, 200);
         const body = JSON.parse(res.body);
         assert.equal(body.status, 'ok');
@@ -310,7 +332,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         // and fails with a real 400 naming the missing field -- proving the
         // controller (and its ledger/spawner/history collaborators) is live
         // without needing to actually spawn a sprint child.
-        const res = await httpPostJson(port, '/api/sprints', {});
+        const res = await httpPostJson(port, '/api/sprints', {}, { serviceToken });
         assert.notEqual(res.status, 404, JSON.stringify(res.json));
         assert.equal(res.status, 400, JSON.stringify(res.json));
         assert.ok(res.json && typeof res.json.error === 'string' && res.json.error.length > 0);

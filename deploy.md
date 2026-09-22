@@ -16,6 +16,7 @@ compose_permissions tool delivers); a broader prefix entry counts as coverage:
   build-lock cleanup, see Deploy. Trailing `*` also covers `--dry-run`.
 - `Bash(npm ci)`
 - `Bash(npm run build)`
+- `Bash(npm run build:ui*)`
 - `Bash(npm run build:binary)`
 - `Bash(dist/apra-fleet-installer-* install *)`
 - `Bash(curl * localhost:8787/api/sprints*)` -- the active-sprints gate. 8787 is
@@ -119,7 +120,7 @@ your deploy; do not clear it yourself -- report it in `notes` so the
 orchestrator/operator can release it against the supervisor:
 
 ```bash
-curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release
+curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")"
 ```
 
 Same route the dashboard's Stop/Restart controls use. Force-release does not
@@ -149,6 +150,7 @@ node scripts/preflight-clear-build-locks.mjs
 # `npm run build`.
 npm ci
 npm run build
+npm run build:ui --if-present
 npm run build:binary
 
 # Active-sprints gate (rules above). Substitute your dispatch prompt's sprintId
@@ -158,7 +160,10 @@ npm run build:binary
 #   exit 1 -> usage error (fix the arguments, do not proceed)
 # Unreachable supervisor = exit 0 (no live sprint to collide with). Omit
 # --self-sprint-id only when given no identity: every reservation is then foreign.
-curl -s http://localhost:8787/api/sprints
+# The header carries the shared fleet.key service token (see the "Service
+# token" row below under Sandbox Deploy), the same one every playbook curl
+# authenticates with.
+curl -s http://localhost:8787/api/sprints -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")"
 node scripts/check-foreign-sprints.mjs --self-sprint-id "<your-sprint-id>"
 
 OS="$(uname -s)"
@@ -187,6 +192,12 @@ INSTALLER="dist/apra-fleet-installer-${PLATFORM}-${SEA_ARCH}"
 #          running: apra-fleet.exe run --transport http >> fleet.log 2>&1
 # Then poll fleet.log / port 7523 to confirm it actually came up.
 ```
+
+### Staging
+
+This deploy targets production ports (7523 and 8787). Console staging is owner-
+operated on separate ports (7601 and 8801); the deployer never configures or
+touches those ports.
 
 ## Sandbox Deploy (for integration/regression testing)
 
@@ -229,6 +240,8 @@ Env-var driven only; there are no port/data-dir CLI flags.
 | `APRA_FLEET_DATA_DIR` | Fleet MCP server data dir: `server.json`, `registry.json`, credentials, salt, logs (`FLEET_DIR` in `src/paths.ts`) | `~/.apra-fleet/data` |
 | `APRA_FLEET_PORT` | Fleet MCP server HTTP port (`DEFAULT_PORT` in `src/paths.ts`) | `7523` |
 | `FLEET_SE_DATA_DIR` | Supervisor data dir: reservation ledger, sprint history, logs | `~/.apra-fleet-se` |
+| Supervisor SQLite | Supervisor ledger and history: `<FLEET_SE_DATA_DIR>/supervisor.sqlite` | `~/.apra-fleet-se/supervisor.sqlite` |
+| Service token | Fleet authentication token: `<home>/.apra-fleet/fleet.key` (if present, falls back to `<FLEET_SE_DATA_DIR>/private/token`) | `~/.apra-fleet/fleet.key` |
 
 Two load-bearing consequences:
 
@@ -312,6 +325,7 @@ PowerShell:
 node scripts/preflight-clear-build-locks.mjs
 npm ci
 npm run build
+npm run build:ui --if-present
 ```
 
 ### Step 2: bring the sandbox up
@@ -352,9 +366,12 @@ own, for diagnosis, with the same `--sprint-id`):
   `$HOME/.apra-fleet/bin/apra-fleet` either -- that is production.
 
 Exit 0 = sandbox up; the values file is printed to stdout. Put its path,
-`APRA_FLEET_PORT` and `SUPERVISOR_PORT` in `notes`, return `deployed: true`,
-and LEAVE IT RUNNING. Exit 1 = failed; `up` has already torn down what it
-started -- return `deployed: false` with the stderr.
+`APRA_FLEET_PORT`, `SUPERVISOR_PORT`, and the service token path
+(`~/.apra-fleet/fleet.key`, real home, shared with production by design;
+falls back to `<FLEET_SE_DATA_DIR>/private/token` when absent) in `notes`,
+return `deployed: true`, and LEAVE IT RUNNING. Exit 1 = failed; `up` has
+already torn down what it started -- return `deployed: false` with the
+stderr.
 
 Not registered for OS auto-start is guaranteed by construction (consequence 1
 above: both env vars are set), so no `launchctl`/`schtasks` survey is needed.

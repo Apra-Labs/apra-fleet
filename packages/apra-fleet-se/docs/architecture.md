@@ -1070,6 +1070,104 @@ is out of scope for v1 and deferred to a later phase; likewise a manual
 through `POST /api/sprints`) -- this is confirmed acceptable for v1, not a
 bug.
 
+## Supervisor: loopback bind + bearer-token auth guard
+
+`fleet-se-serve` binds `127.0.0.1` only and guards its mutating/sensitive
+surface with a shared secret rather than any network-level ACL, because
+loopback-only binding stops off-host access but does nothing against another
+local user or process on a shared/multi-tenant host. The guard lives in
+`src/supervisor/auth.mjs`, deliberately free of any HTTP dependency so it is
+unit-testable and reusable by both the server and any future CLI probe.
+
+**Token lifecycle.** `resolveServiceToken()` prefers the shared
+`~/.apra-fleet/fleet.key` (the same file `src/services/jwt.ts` signs with) so
+the supervisor and the rest of the fleet's JWT-authenticated surface agree on
+one credential without any extra provisioning step; only when that file is
+absent or malformed does it fall through to `loadOrCreateToken()`, which mints
+a 32-byte random hex token under `<supervisor-data-root>/private/token` and
+reuses it on every subsequent start against the same data root. Minting is
+exclusive-create (`wx`) so two supervisors racing a cold data root converge on
+one token -- the loser of the create race adopts the winner's token instead of
+clobbering it. Whichever source wins, its name (`fleet-key` or `private-token`)
+is logged at startup; the token value itself is never logged.
+The one race this does not close: a peer reading the file in the open-then-
+write microsecond window between `wx`-create and the write sees it blank,
+treats it as a torn mint, and re-mints -- accepted as a bounded exception
+rather than traded away for the write-temp-then-rename approach, which would
+lose the atomic create-with-mode-0600 property. The token is never logged or
+included in any thrown error text.
+
+**Read-only resolution for probes that must never mint a credential as a side
+effect.** `resolveServiceToken(dir, { createIfMissing: false })` turns the
+private/token fallback read-only (no mkdir, no write, no mode healing) and
+returns `null` instead of minting when neither `fleet.key` nor an existing
+`private/token` is present, rather than the default (`createIfMissing: true`,
+preserved for every pre-existing caller) which mints-or-reuses as described
+above. Any caller that merely checks whether the supervisor is configured
+without intending to become its credential's owner -- deploy pre-flight
+checks, snapshot/verify/teardown probes against an already-running
+supervisor -- must pass `createIfMissing: false`; the previous default meant
+a passive read (e.g. `sandbox-deploy.mjs`'s drift-check probe) could
+silently mint and own a `private/token` file nobody asked it to create.
+
+**File protection is platform-asymmetric by necessity, not oversight.** On
+POSIX the token file is created 0600 and that mode is re-asserted (healed) on
+every load; a mode that cannot be forced to 0600 is a hard error, not a
+warning. Windows has no POSIX mode bits -- `fs.chmod` there only toggles the
+read-only attribute and `fs.stat` reports a synthesized mode, so asserting
+0600 would be theatre. Windows protection instead relies on the token
+directory inheriting the user profile's ACL, which cannot be verified from
+Node; rather than claim a guarantee that cannot be proven, the loader returns
+`aclVerified: false` on Windows (`true` on POSIX, where the mode assertion
+actually proved it), and `GET /api/health` surfaces the false case as the
+`token-file-acl-unverified` warning string for an operator to see.
+
+**What is guarded vs. open, and why.** The entire `/api/` prefix is guarded
+(it exposes ledger and member state, both read and write), plus `POST` to any
+sub-route of a sprint's live view (`/sprints/:id/live/...` -- pause, stop, and
+other mutating controls). The live view itself, the dashboard shell, `/state`,
+`/events`, and history stay open because the server is loopback-bound and
+those routes are read-only. `requiresAuth()` normalizes the request path
+through the exact same `new URL(path, 'http://localhost')` construction the
+HTTP router itself uses before matching, so a raw `req.url` and a pre-parsed
+`pathname` can never disagree about which route a URL names -- without that
+shared normalization, a dot-segment path like `/foo/../api/health` could
+answer "open" at the guard while the router still dispatched the guarded
+`/api/health` handler, an auth bypass through inconsistent path parsing. An
+unparseable path fails closed (treated as guarded).
+
+**Two credential channels, one guard.** A request is authorized if it carries
+`Authorization: Bearer <token>` (case-insensitive scheme match per RFC 7235,
+compared with `crypto.timingSafeEqual`) or the `se_token=<token>` cookie set
+by `GET /` for the dashboard's own same-origin fetches (`HttpOnly`,
+`SameSite=Strict`). Every other client speaks the header: the coordination
+HTTP clients (`fleet-sprint/coordination.mjs`) send the bearer on both calls
+they make, the spawner passes the token to spawned children via env only
+(never argv, which would leak it into `ps`/process listings), and
+`scripts/check-foreign-sprints.mjs` attaches it to every supervisor call it
+makes and turns a 401 into an actionable exit-1 hint rather than a false
+"no live sprints" read.
+
+**Known criteria gap, tracked as a follow-on rather than fixed here:** `GET /`
+must stay open (unauthenticated dashboard shell) AND must hand the token to
+the browser via the `se_token` cookie for same-origin fetches to work -- those
+two requirements together mean any loopback caller can hit `GET /` and harvest
+the token. Closing that gap needs a design decision (e.g. a first-use pairing
+flow) beyond this guard's scope.
+
+**Tooling callers must be updated in lockstep with the guard, or they will
+falsely read a healthy supervisor as down.** Any script that polls
+`/api/health` or another `/api/` route to decide whether the supervisor is up
+(deploy/smoke tooling, CI playbooks, ad hoc curl examples in docs) must send
+the bearer token once this guard exists -- a 401 response looks identical to
+"crashed" or "port in use" to a caller that only checks for a JSON `pid`
+field, producing a misleading failure diagnosis (timeout/EADDRINUSE) for a
+process that is actually healthy and simply rejecting an unauthenticated
+probe by design. Auditing every existing unauthenticated `/api/` caller
+against this guard is not optional cleanup done once per single call site --
+it is part of shipping the guard itself, since a missed caller silently
+regresses to reporting false negatives.
+
 ## Supervisor: process model
 
 `fleet-se-serve` boots one always-on process that owns the reservation ledger
@@ -1649,3 +1747,41 @@ added to this family must reuse the shared `maskComments()` /
 this heuristic locally -- two independent guards got this wrong before
 converging on the shared helpers, which is a strong signal it is not safe
 to hand-roll again.
+
+## Integration-branch merge gate (fleet-integrator)
+
+Multi-track sprints that all target one integration branch need something
+watching the resulting pull requests and merging the ones that are actually
+green, without a human polling GitHub. `fleet-integrator`
+(`fleet-sprint/skills/fleet-integrator/SKILL.md` +
+`scripts/integration-gate-status.mjs`) fills that role as a deliberately thin
+split between a read-only status script and an agent loop:
+
+- **Status computation is a pure, read-only script, not agent logic.** Given
+  `--repo`, `--base`, `--title-prefix` and `--required-checks`,
+  `integration-gate-status.mjs` calls `gh` to list candidate PRs and prints
+  one JSON object per PR with a computed `decision` (`merge` / `repair` /
+  `wait` / `skip`) and its `mergeStateStatus`/check results. It never mutates
+  anything -- no merge, no comment, no push -- which is what makes it
+  independently testable with fixtures instead of needing a live PR to
+  exercise the decision logic.
+- **The agent owns exactly one action per decision, per loop iteration.**
+  The SKILL.md loop reads the script's output and maps each decision to one
+  `gh` action (`merge`: squash-merge and delete the branch; `repair`: send a
+  fixed prompt to the sprint's own doer, once per head sha, tracked in a
+  local ledger so a slow-to-resolve PR isn't re-prompted every iteration;
+  `wait`: no-op; `skip`: report to the owner, never merge). Keeping the
+  mutating step outside the script means a bug in the agent's loop (a bad
+  prompt, a missed ledger write) cannot corrupt the status computation, and
+  a bug in the status script cannot accidentally trigger a merge.
+- **Identity is a short-lived GitHub App installation token, not a personal
+  PAT.** The loop authenticates via `provision_vcs_auth` so every merge is
+  attributable to the gate's bot identity and re-provisions automatically on
+  a 401 rather than falling back to a human's credentials -- a merge gate
+  that can silently start acting as a specific person is a worse failure
+  mode than one that stops and asks to be re-authenticated.
+- **The skill is written generic** (parameters supplied by the target's own
+  deploy.md/CLAUDE.md, never a hardcoded repo/branch/check-name) per the
+  [generic engine boundary](../../../docs/generic-engine-boundary.md) rule:
+  apra-fleet using this gate on its own integration branch is one target
+  among any number the same skill and script must serve unmodified.

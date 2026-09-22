@@ -124,6 +124,26 @@ describe('launch-form -- buildLaunchRequestBody', () => {
         assert.equal(result.ok, false);
         assert.ok(/member/i.test(result.error));
     });
+
+    // apra-fleet-ky2l.3.1 (DQ-11): sync is emitted only when the checkbox is
+    // checked (opts.sync === true) -- absent/false stays absent, matching the
+    // server's (api.mjs validateLaunchRequest) treatment of an absent field
+    // as "no --sync forwarded".
+    test('sync is emitted only when the checkbox is checked', () => {
+        const checked = buildLaunchRequestBody({ ...base, sync: true });
+        assert.equal(checked.ok, true);
+        assert.equal(checked.body.sync, true);
+    });
+
+    test('sync is omitted (not false) when the checkbox is unchecked or absent', () => {
+        const unchecked = buildLaunchRequestBody({ ...base, sync: false });
+        assert.equal(unchecked.ok, true);
+        assert.ok(!('sync' in unchecked.body));
+
+        const absent = buildLaunchRequestBody(base);
+        assert.equal(absent.ok, true);
+        assert.ok(!('sync' in absent.body));
+    });
 });
 
 describe('launch-form -- formatLaunchError', () => {
@@ -186,6 +206,14 @@ describe('launch-form -- renderLaunchFormHtml', () => {
 
     test('never throws', () => {
         assert.doesNotThrow(() => renderLaunchFormHtml());
+    });
+
+    // apra-fleet-ky2l.3.1 (DQ-11): the form gains a Synced topology (--sync)
+    // checkbox alongside the existing override-relaunch-gate checkbox.
+    test('renders a checkbox input for sync', () => {
+        const html = renderLaunchFormHtml();
+        assert.ok(html.includes('id="launch-sync"'));
+        assert.ok(/<input id="launch-sync" type="checkbox"/.test(html));
     });
 });
 

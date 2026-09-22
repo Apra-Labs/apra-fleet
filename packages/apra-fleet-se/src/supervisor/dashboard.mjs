@@ -44,6 +44,7 @@ import { EventEmitter } from 'node:events';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
+import { TOKEN_COOKIE_NAME } from './auth.mjs';
 import { renderBacklogPanelHtml, normalizeBead, expandScopeInMemory, buildChildIndex } from './backlog.mjs';
 // apra-fleet-72o0 (dashboard follow-up): progress bars and the structural
 // decomposedParentIds check below both need CLOSED beads present in the bulk
@@ -1313,10 +1314,29 @@ export function registerDashboardRoutes(supervisor, dashboard) {
     supervisor.route('GET', '/', async (req, res) => {
         const html = await dashboard.renderIndexPage();
         const body = Buffer.from(html, 'utf-8');
-        res.writeHead(200, {
+        const headers = {
             'content-type': 'text/html; charset=utf-8',
             'content-length': body.length,
-        });
+        };
+        // apra-fleet-50j6.2.2: hand the shared bearer service token back to
+        // the browser as an HttpOnly cookie rather than embedding it inline
+        // in the page (e.g. a <script> global or data attribute). The
+        // supervisor binds loopback-only (server.mjs's bindHost), so this
+        // cookie never crosses a network boundary -- but an inline token
+        // would still be readable by any script running in the page (XSS,
+        // a future embedded 3rd-party widget), while an HttpOnly cookie is
+        // invisible to page JS and is attached AUTOMATICALLY by the browser
+        // to the page's own same-origin fetches (dashboard.mjs's /api/*,
+        // /sprints/:id/live/* calls) with zero script change -- the exact
+        // property auth.mjs's isAuthorized() relies on (it accepts the
+        // se_token cookie as an alternative to the Authorization header).
+        // `supervisor.token` is null when auth was never configured (no
+        // deps.token/deps.dataDir), in which case no cookie is needed since
+        // the per-request guard is skipped entirely.
+        if (typeof supervisor.token === 'string' && supervisor.token.length > 0) {
+            headers['set-cookie'] = `${TOKEN_COOKIE_NAME}=${supervisor.token}; Path=/; SameSite=Strict; HttpOnly`;
+        }
+        res.writeHead(200, headers);
         res.end(body);
     });
 

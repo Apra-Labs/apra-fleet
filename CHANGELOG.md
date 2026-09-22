@@ -2,6 +2,196 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Groundwork for the v0.5 console integration branch: epic closed, all three CI legs green
+
+The final pass on the v0.5 console groundwork branch. Both Windows-only test
+failures the previous pass left open are now root-caused and fixed, closing
+out every P1 acceptance criterion for the epic; `ubuntu-latest`,
+`macos-latest` and `windows-latest` are all green on the same head.
+
+What shipped since the previous pass:
+
+- **`integration-gate-status.mjs`'s ESM entry-point guard now uses
+  `pathToFileURL(process.argv[1]).href`** instead of a raw `file://` string
+  built by template-literal interpolation, so `main()` actually runs on
+  win32 (see
+  [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md#windows-pitfalls-in-local-node-tooling-not-member-transport-but-the-same-failure-shape)
+  for the general failure shape and fix pattern).
+- **`supervisor-guard-e2e.test.mjs` is hardened against hosted-runner
+  contention** on Windows: every HTTP/TCP timeout is now derived from the
+  package's existing `scaledTimeout()` helper (explicit concurrency, since
+  a bare `node --test` invocation of a single file does not always inherit
+  the env var that helper reads), the first loopback health probe retries
+  until any response or a scaled deadline rather than a fixed 5s budget, and
+  every timeout/failure names its request and carries the child process's
+  stdout/stderr so a CI failure is actionable. No assertion was weakened and
+  nothing is skipped on Windows.
+- **`deploy.md`'s two remaining unauthenticated supervisor curls** (the
+  force-release call in the Active-sprints gate section, and the
+  `/api/sprints` gate curl in the Deploy build script) now carry the
+  `Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")` header,
+  matching the form already used throughout the other playbooks.
+- **The playbook auth-curl scan test now covers all three playbooks**
+  (`deploy.md`, `integ-test-playbook.md`, `regression-test-playbook.md`),
+  not just the regression playbook, so the "no unauthenticated supervisor
+  curl in any playbook" acceptance criterion is actually enforced across the
+  full set of operator-facing docs rather than one of three.
+
+Deferred (filed as open, low-priority backlog, not blocking this epic):
+
+- Supervisor auth's `aclVerified` reporting for an unprotected `fleet.key`.
+- Integration gate status treats terminal `SKIPPED`/`NEUTRAL` check
+  conclusions as pending rather than resolved.
+- No startup warning when the supervisor starts with no service token
+  configured.
+- The supervisor launch API still cannot express a synced multi-machine
+  topology (`--sync`), tracked separately from this epic.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $15.9796.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3051 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 21 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- Groundwork for the v0.5 console integration branch: follow-up pass on the open P1 gaps
+
+A follow-up pass on the same v0.5 console groundwork branch, closing most of
+the P1 gaps the previous pass left open and confirming the branch's CI
+blocker is now isolated to two Windows-only test failures.
+
+What shipped since the previous pass:
+
+- **The base-reviewer permission profile now grants `Bash(curl:*)`**,
+  matching what the integ-test-playbook's own Permissions section already
+  required; the reviewer stack can now run the playbook's curl-based
+  supervisor checks instead of failing on a missing grant.
+- **The sandbox-deploy smoke test now exercises the real `/ui` 404 branch**
+  instead of failing earlier at the `/health` check, closing the gap where
+  that branch was previously untested.
+- **`resolveServiceToken()` gained a read-only mode** (`createIfMissing:
+  false`): probes that only need to check whether the supervisor is
+  configured (`check-foreign-sprints.mjs`, `sandbox-deploy.mjs`'s
+  snapshot/verify/teardown checks) no longer mint a `private/token` file as
+  a side effect of a passive read.
+- **The documented sandbox service-token path was corrected** in `deploy.md`
+  and `integ-test-playbook.md` to match what `resolveServiceToken()` and
+  `jwt.ts` actually resolve (the real home directory, not a sandbox-local
+  path), and the root `package.json` trailing newline lost in an earlier
+  pass was restored.
+
+What is still open, and why the branch cannot merge yet:
+
+- **CI has never been green on this branch.** The `ubuntu-latest` and
+  `macos-latest` required checks pass; `windows-latest` fails, which is
+  enough by itself to block the PR under the integration branch's ruleset.
+- **Both Windows failures are in tests this branch added, and both are
+  root-caused, not flaky:**
+  - `integration-gate-status.mjs`'s ESM entry-point guard compares
+    `import.meta.url` against a raw `file://` string built from
+    `process.argv[1]`, which never matches on win32 (backslash path vs.
+    percent-encoded URL) -- so `main()` silently never runs on Windows. See
+    [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md#windows-pitfalls-in-local-node-tooling-not-member-transport-but-the-same-failure-shape)
+    for the fix pattern (`pathToFileURL(process.argv[1]).href`) already used
+    by every other script in this repo.
+  - The supervisor guard end-to-end test's real `serve.mjs` boot hits a 5s
+    HTTP timeout on Windows after the process reports it is listening; not
+    yet root-caused.
+- A known, already-tracked, deliberately-deferred gap remains: `GET /` on
+  the supervisor hands its bearer token to any loopback caller via the
+  `se_token` cookie, because the same route must stay unauthenticated for
+  the dashboard shell to load. No new work item was filed for this pass
+  since it is already tracked.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $5.0216.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3167 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 14 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- Groundwork for the v0.5 console integration branch
+
+Sprint goal: prepare every shared file the v0.5 console tracks will build on
+top of -- the loopback-bearer supervisor auth guard, the two test playbooks,
+`sandbox-deploy.mjs`, `CLAUDE.md` and CI -- so later console sprints can land
+without ever touching these files themselves, plus stand up the
+integration-branch merge gate that later sprints' PRs merge through.
+
+What shipped:
+
+- **Loopback-bearer supervisor auth guard landed on the branch with the
+  shared `fleet.key` as its preferred token source.** `resolveServiceToken()`
+  now tries `~/.apra-fleet/fleet.key` (the same key `src/services/jwt.ts`
+  signs with) before falling back to minting a `private/token` under the
+  supervisor's own data root, so the supervisor and the rest of the fleet's
+  JWT-authenticated surface can share one credential without an extra
+  provisioning step. The token source is logged; the value never is.
+- **Every playbook curl carries the bearer token**, and regression-playbook
+  teardown distinguishes a `401` (guard is up, as expected) from a refused
+  connection (supervisor actually down) instead of treating both as "already
+  stopped."
+- **The launch API forwards `sync` to the runner.** `POST /api/sprints`
+  validates `body.sync` as a boolean and, when true, appends `--sync` to the
+  spawned runner's `extraArgs`; the ledger records it so a synced-topology
+  launch is visible in sprint history.
+- **deploy.md, both test playbooks, `sandbox-deploy.mjs` and `CLAUDE.md`
+  prepared for the upcoming React/Vite console workspace**: a
+  `npm run build:ui` build step (tolerant of the script not existing yet),
+  staging ports `7601`/`8801` reserved and never touched by the sandbox
+  deployer, and an integration-branch rules block in `CLAUDE.md` (fork/PR
+  model, per-track shared-file ownership, tests only through the bounded
+  runner).
+- **CI builds UI workspaces when present, and stays green when none exist**
+  (`npm run build:ui --if-present` in both the Linux and packaging jobs).
+- **`fleet-integrator` merge gate added**: a generic SKILL.md agent loop plus
+  a read-only `integration-gate-status.mjs` status script that computes
+  merge/repair/wait/skip decisions for PRs into a configured integration
+  branch; the mutating action (squash-merge, one repair prompt per stuck
+  head sha, owner report) stays in the agent loop, never in the script.
+- **`check-generic-boundary.mjs` now scans `fleet-sprint/skills/**/*.md`**
+  for tracker-id leaks, closing the one gap in the dogfood-safety-net's file
+  coverage.
+- **`list_members` returns a parseable JSON envelope for an empty registry**
+  instead of a plain-text "No members registered." string, and the
+  supervisor's own short-lived fleet-members reader now skips the
+  `<apra-fleet-display>` onboarding preamble block before parsing, instead
+  of assuming the first content block is always the JSON payload.
+- **`resolveServiceToken()`'s read-only callers no longer mint a
+  `private/token` as a side effect of a read**: `check-foreign-sprints.mjs`
+  and `sandbox-deploy.mjs`'s snapshot/verify/teardown probes now pass
+  `createIfMissing: false` and return no token rather than creating one when
+  neither `fleet.key` nor an existing `private/token` is present.
+
+Known follow-on gaps (deliberately left open, not closed by this pass):
+
+- **`npm test` was RED at final review** (2 failed / 326 passed test files):
+  the composed reviewer permission profile grants no `curl` family despite
+  the integ-test-playbook Permissions section now requiring it, and the
+  sandbox-deploy smoke test's "/ui returns 404" case never reaches the /ui
+  probe because it fails an earlier /health check first. Both are filed as
+  open P1 issues for the next pass.
+- The sandbox service-token path documented in `deploy.md` and
+  `integ-test-playbook.md` still names a sandbox-local path; live sandboxes
+  resolve the token from the real home directory instead. Filed as an open
+  P2. Root `package.json` also lost its trailing newline despite this
+  epic's "root package.json is not touched here" rule.
+- README.md and this file previously described the auth-guard token as
+  always minted under `<data-root>/private/token`; corrected during harvest
+  now that `fleet.key` is the preferred source (see above).
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $25.5050.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.4806 across 4 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 47 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
 ## [Unreleased] -- apra-fleet-client catch-up and fleet-supervisor project-store skeleton
 
 Sprint goal: catch `@apralabs/apra-fleet-client` up with tool-registry
@@ -92,6 +282,74 @@ Note: dispatches using an unpriced model id are not reflected above (see N10, fe
   proceeds. The published `beadsIdentity` state carries `warnings` and a
   per-member `unresolved` list (rendered as "?" cells and warning rows in
   the viewer); the CLI banner's pre-flight probe warns instead of exiting.
+
+## [Unreleased] -- Supervisor: loopback-only bind + bearer-token auth guard
+
+Sprint goal: `fleet-se-serve` previously bound every interface with no
+authentication on its API surface. This sprint made it bind `127.0.0.1`
+only and put a shared bearer-token guard in front of the mutating/sensitive
+routes, while keeping every existing client (dashboard, sprint-runner
+coordination clients, spawned children, operator tooling) working
+unchanged from the user's point of view.
+
+What shipped:
+
+- **`src/supervisor/auth.mjs` (new)**: mints a 32-byte hex service token
+  under `<supervisor-data-root>/private/token` on first start (idempotent
+  reuse thereafter), enforces/heals 0600 on POSIX and reports an
+  `aclVerified` flag on Windows (where mode bits cannot be asserted), and
+  authorizes a request via `Authorization: Bearer <token>` or an
+  `se_token` cookie, compared with a constant-time check. The token is
+  never logged or included in error text.
+- **`server.mjs`** listens on `127.0.0.1` only and answers `401` with a
+  `WWW-Authenticate: Bearer` header before any route dispatch for every
+  guarded route. The entire `/api/` surface and `POST` to any
+  `/sprints/:id/live/*` sub-route are guarded; the dashboard shell, live
+  view, `/state`, `/events`, and history stay open (loopback-bound,
+  read-only).
+- **Every existing client updated to authenticate**: the dashboard's
+  `GET /` now sets the `se_token` cookie for same-origin fetches; the
+  sprint-runner's HTTP coordination clients send the bearer header; the
+  spawner passes the token into spawned children via environment (never
+  argv); `scripts/check-foreign-sprints.mjs` and
+  `scripts/sandbox-deploy.mjs` were updated to send the token on every
+  supervisor call they make; the fleet-supervisor skill's curl examples
+  got bash + PowerShell twins showing the bearer header.
+- **Test harness and coverage**: a new `test/helpers/supervisor-harness.mjs`
+  spins up an authenticated supervisor for tests; new/expanded suites
+  cover the bind + auth guard end to end, every client working with auth
+  on, and a set of path-normalization bypass classes (dot segments,
+  protocol-relative paths, percent-encoding) to prove the guard and the
+  HTTP router can never disagree about which route a URL names.
+- **Flake fix**: `check-sandbox-sync-remote.test.ts` teardown paths now
+  route through one shared non-throwing cleanup helper instead of several
+  bare, throwing `fs.rmSync` calls, fixing an intermittent Windows EBUSY
+  failure unrelated to the auth work but discovered alongside it.
+
+Known follow-on gaps (deliberately left open, not closed by this pass):
+
+- **Criteria defect**: `GET /` must stay open (unauthenticated dashboard
+  shell) and must hand the token to the browser via the `se_token` cookie
+  for same-origin fetches to work -- together those requirements mean any
+  loopback caller can harvest the token by hitting `GET /`. Needs a
+  design decision (e.g. a first-use pairing flow), not a one-file patch.
+- Deploy/regression tooling that polls `/api/health` unauthenticated
+  needs updating in lockstep with this guard, or it misreads a healthy,
+  now-authenticated supervisor as crashed/unreachable -- left to
+  follow-up rather than patched alongside the guard.
+- Authenticate or replace the remaining bare supervisor curl examples in
+  `deploy.md` and user docs; pin percent-encoded path forms in the
+  `requiresAuth` truth table; a test-harness temp-directory leak; add the
+  beads gate lock file to `.gitignore`.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $29.8612.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1913 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 36 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- fleet-sprint: child-bead creation refuses an id collision instead of silently overwriting
 

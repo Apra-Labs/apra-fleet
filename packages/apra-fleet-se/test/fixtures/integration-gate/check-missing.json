@@ -1,0 +1,15 @@
+[
+  {
+    "number": 106,
+    "title": "Auto-sprint [PASS]: feat/missing-check-example",
+    "headRefName": "feat/missing-check-example",
+    "headRefOid": "fff6666",
+    "baseRefName": "integration",
+    "isDraft": false,
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "statusCheckRollup": [
+      { "name": "check-a", "conclusion": "SUCCESS" }
+    ]
+  }
+]

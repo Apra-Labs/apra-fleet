@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,11 +17,17 @@ import {
   init,
   teardown,
   up,
+  smoke,
   getJson,
   lostPortRace,
+  RESERVED_PORTS,
   SandboxDeployError,
+  snapshotProduction,
+  checkProductionUnchanged,
   // @ts-expect-error -- plain .mjs helper, no type declarations
 } from '../scripts/sandbox-deploy.mjs';
+// @ts-expect-error -- plain .mjs helper, no type declarations
+import { resolveServiceToken } from '../packages/apra-fleet-se/src/supervisor/auth.mjs';
 
 // deploy.md's "## Sandbox Deploy" lifecycle (scripts/sandbox-deploy.mjs):
 // the values-file discovery channel, the pid-checked teardown order, and
@@ -56,7 +62,7 @@ http.createServer((req, res) => {
 }).listen(Number(port), '127.0.0.1', () => process.stdout.write('LISTENING\\n'));
 `;
 
-interface Fake { child: ChildProcess; pid: number; port: number }
+interface Fake { child: ChildProcess; pid: number; port: number; requests?: string[] }
 const fakes: Fake[] = [];
 
 function osPort(): Promise<number> {
@@ -145,6 +151,19 @@ describe('port allocation', () => {
     const seq = [7523, 8787, 18700, 40001, 40001, 40002, 18701, 40010];
     const ports = await allocatePorts(async () => seq.shift()!);
     expect(ports).toEqual({ fleetPort: 40001, supervisorPort: 40010 });
+  });
+
+  it('never allocates console staging ports 7601 and 8801', async () => {
+    // Verify that RESERVED_PORTS is exported and contains the console staging ports
+    expect(RESERVED_PORTS.has(7601)).toBe(true);
+    expect(RESERVED_PORTS.has(8801)).toBe(true);
+    // Test that allocatePorts skips them
+    const seq = [7601, 8801, 40001, 40010];
+    const ports = await allocatePorts(async () => seq.shift()!);
+    expect(ports.fleetPort).not.toBe(7601);
+    expect(ports.fleetPort).not.toBe(8801);
+    expect(ports.supervisorPort).not.toBe(7601);
+    expect(ports.supervisorPort).not.toBe(8801);
   });
 
   // apra-fleet-3swo.60/.63: a retry after a bind race excludes not just the
@@ -349,7 +368,15 @@ describe.skipIf(!fs.existsSync(DIST))('live: up / env / teardown across separate
       expect(Number(v.SUPERVISOR_PORT)).not.toBe(squatterPort);
       const health = await getJson(`http://127.0.0.1:${v.APRA_FLEET_PORT}/health`);
       expect(String(health?.pid)).toBe(v.MCP_PID);
-      const supHealth = await getJson(`http://127.0.0.1:${v.SUPERVISOR_PORT}/api/health`);
+      // apra-fleet-ky2l.1.2 (DQ-20): resolved with NO `home` override here,
+      // deliberately -- the spawned bin/serve.mjs child inherits this test
+      // process's real, un-overridden HOME (sandbox-deploy.mjs's own env for
+      // the child is `{...process.env, ...}` with no HOME override, matching
+      // production), so it resolves its token against the REAL os.homedir()
+      // too; this precompute must resolve the SAME way or the poll below
+      // sends the wrong bearer and every health check 401s.
+      const supervisorToken = resolveServiceToken(v.FLEET_SE_DATA_DIR).token;
+      const supHealth = await getJson(`http://127.0.0.1:${v.SUPERVISOR_PORT}/api/health`, 2000, supervisorToken);
       expect(String(supHealth?.pid)).toBe(v.SUPERVISOR_PID);
     } finally {
       // Tear down in-process (not via a separate CLI subprocess, unlike the
@@ -449,4 +476,187 @@ describe.skipIf(!fs.existsSync(DIST))('live: up / env / teardown across separate
     expect(readValues(id, home)).toBeNull();
     expect(fs.existsSync(sandboxRootPath(id, home))).toBe(false);
   }, 60000);
+});
+
+describe('smoke: /ui probe gated on shell dist', () => {
+  // Stub server that can serve both /health and /ui endpoints
+  // mode 'ui' (default) answers /health and /ui/ on the same port.
+  // mode 'no-ui' still answers /health but 404s /ui/ on that same port,
+  // so a single stub can exercise the "dist present but /ui returns 404" case
+  // without needing to point APRA_FLEET_PORT at a port nothing listens on.
+  const UI_STUB_SERVER = `
+    const http = require('node:http');
+    const [port, pidToReport, mode] = process.argv.slice(1);
+    const pid = pidToReport === 'self' ? process.pid : Number(pidToReport);
+    http.createServer((req, res) => {
+      process.stdout.write('REQ ' + req.url + '\\n');
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', pid, version: 'v0.0.0-test', uptime: 1 }));
+      } else if (req.url === '/ui/' && mode !== 'no-ui') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html></html>');
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    }).listen(Number(port), '127.0.0.1', () => process.stdout.write('LISTENING\\n'));
+  `;
+
+  async function spawnUiStub(reportPid: 'self' | number, mode: 'ui' | 'no-ui' = 'ui'): Promise<Fake> {
+    const port = await osPort();
+    const child = spawn(process.execPath, ['-e', UI_STUB_SERVER, String(port), String(reportPid), mode], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const requests: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('UI stub server did not start')), 5000);
+      child.stdout!.on('data', (d: Buffer) => {
+        const text = d.toString();
+        for (const line of text.split('\n')) {
+          if (line.startsWith('REQ ')) requests.push(line.slice(4).trim());
+        }
+        if (text.includes('LISTENING')) { clearTimeout(t); resolve(); }
+      });
+    });
+    const fake = { child, pid: child.pid!, port, requests };
+    fakes.push(fake);
+    return fake;
+  }
+
+  it('smoke with dist present: probes /ui/ and reports ui ok with 200 text/html', async () => {
+    const home = mkHome(); homes.push(home);
+    const id = 'test-smoke-with-ui';
+    const stub = await spawnUiStub('self');
+    const tempDist = path.join(home, 'packages', 'apra-fleet-shell-ui', 'dist');
+    fs.mkdirSync(tempDist, { recursive: true });
+    fs.writeFileSync(path.join(tempDist, 'index.html'), '<html></html>');
+
+    const values = {
+      APRA_FLEET_PORT: String(stub.port),
+      SUPERVISOR_PORT: '18701',
+      MCP_PID: String(stub.pid),
+      REPO_ROOT: home,
+      APRA_FLEET_DATA_DIR: path.join(home, 'mcp'),
+      SANDBOX_ROOT: home,
+      FLEET_SE_DATA_DIR: path.join(home, 'se'),
+    };
+    writeValues(id, values, home);
+    const result = await smoke(id, { home });
+    expect(result.ui).toBe('ok');
+    expect(result.pid).toBe(stub.pid);
+  });
+
+  it('smoke without dist: skips /ui probe and reports ui skipped', async () => {
+    const home = mkHome(); homes.push(home);
+    const id = 'test-smoke-no-dist';
+    const stub = await spawnUiStub('self');
+    // Do NOT create the dist directory
+
+    const values = {
+      APRA_FLEET_PORT: String(stub.port),
+      SUPERVISOR_PORT: '18701',
+      MCP_PID: String(stub.pid),
+      REPO_ROOT: home,
+      APRA_FLEET_DATA_DIR: path.join(home, 'mcp'),
+      SANDBOX_ROOT: home,
+      FLEET_SE_DATA_DIR: path.join(home, 'se'),
+    };
+    writeValues(id, values, home);
+    const result = await smoke(id, { home });
+    expect(result.ui).toBe('skipped');
+    expect(result.pid).toBe(stub.pid);
+  });
+
+  it('smoke with dist but /ui returns 404: throws SandboxDeployError naming /ui', async () => {
+    const home = mkHome(); homes.push(home);
+    const id = 'test-smoke-ui-404';
+    // Same stub answers /health AND 404s /ui/ on ONE port, so the /health
+    // check passes and the rejection is genuinely from the /ui probe.
+    const stub = await spawnUiStub('self', 'no-ui');
+    const tempDist = path.join(home, 'packages', 'apra-fleet-shell-ui', 'dist');
+    fs.mkdirSync(tempDist, { recursive: true });
+    fs.writeFileSync(path.join(tempDist, 'index.html'), '<html></html>');
+
+    const values = {
+      APRA_FLEET_PORT: String(stub.port),
+      SUPERVISOR_PORT: '18701',
+      MCP_PID: String(stub.pid),
+      REPO_ROOT: home,
+      APRA_FLEET_DATA_DIR: path.join(home, 'mcp'),
+      SANDBOX_ROOT: home,
+      FLEET_SE_DATA_DIR: path.join(home, 'se'),
+    };
+    writeValues(id, values, home);
+    let caught: unknown;
+    try {
+      await smoke(id, { home });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SandboxDeployError);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/\/ui\//);
+    expect(message).toMatch(/404/);
+    expect(message).not.toMatch(/did not answer \/health/);
+    expect(stub.requests).toContain('/ui/');
+  });
+});
+
+describe('apra-fleet-ky2l.13/16: production token probes are read-only (never mint private/token)', () => {
+  // Mirrors scripts/sandbox-deploy.mjs's own (unexported) productionSeDataDir(home):
+  // FLEET_SE_DATA_DIR is unset in this test process's env, so it always
+  // resolves to <home>/.apra-fleet-se here.
+  function prodSeDataDir(home: string): string {
+    expect(process.env.FLEET_SE_DATA_DIR).toBeUndefined();
+    return path.join(home, '.apra-fleet-se');
+  }
+
+  // tryLoadToken() deliberately never overrides `home` (it must resolve the
+  // SAME real os.homedir() a production supervisor would), so on any machine
+  // that already has a real ~/.apra-fleet/fleet.key (e.g. because this same
+  // suite's own "live:" tests booted a real server earlier and minted one),
+  // resolveServiceToken() would return via the fleet-key branch BEFORE ever
+  // reaching the private/token fallback this test targets -- making the
+  // "creates no private/token" assertion pass for the wrong reason even with
+  // the fix reverted. Force that one real file to read as absent (ENOENT) for
+  // the duration of the call so this test genuinely exercises (and can catch
+  // a regression in) the private/token createIfMissing:false path, without
+  // ever touching the real file's contents on disk.
+  async function withRealFleetKeyForcedAbsent<T>(fn: () => Promise<T>): Promise<T> {
+    const realFleetKeyPath = path.join(os.homedir(), '.apra-fleet', 'fleet.key');
+    const original = fs.readFileSync;
+    const spy = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, opts?: unknown) => {
+      if (file === realFleetKeyPath) {
+        const err = Object.assign(new Error(`ENOENT (forced absent for test): ${realFleetKeyPath}`), { code: 'ENOENT' });
+        throw err;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (original as any)(file, opts);
+    }) as typeof fs.readFileSync);
+    try {
+      return await fn();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('snapshotProduction against a home whose ~/.apra-fleet-se has never been started creates no private/token', async () => {
+    const home = mkHome(); homes.push(home);
+
+    await withRealFleetKeyForcedAbsent(() => snapshotProduction(home));
+
+    expect(fs.existsSync(path.join(prodSeDataDir(home), 'private'))).toBe(false);
+  });
+
+  it('checkProductionUnchanged against the same home creates no private/token (even when it does probe the supervisor)', async () => {
+    const home = mkHome(); homes.push(home);
+
+    // A PROD_SUPERVISOR_PID forces the function down its token-probing branch
+    // (tryLoadToken -> resolveServiceToken) rather than short-circuiting;
+    // nothing is actually listening on the production supervisor port from
+    // this isolated home, so the probe reports the pid as unreachable -- the
+    // assertion that matters is that no credential got minted along the way.
+    await withRealFleetKeyForcedAbsent(() => checkProductionUnchanged({ PROD_SUPERVISOR_PID: '999999' }, home));
+
+    expect(fs.existsSync(path.join(prodSeDataDir(home), 'private'))).toBe(false);
+  });
 });

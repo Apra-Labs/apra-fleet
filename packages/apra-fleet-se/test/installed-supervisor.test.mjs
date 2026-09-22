@@ -8,6 +8,7 @@ import net from 'node:net';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 
 // apra-fleet-7h6n.4 -- merged from n4lu2-packaged-supervisor-boot.test.mjs,
 // qqof-supervisor-selfcontained-audit.test.mjs, and
@@ -108,10 +109,16 @@ function getFreePort() {
     });
 }
 
-function httpRequest(port, pathname, method = 'GET') {
+/**
+ * apra-fleet-50j6.1.2: `serviceToken`, when provided, rides as a Bearer
+ * Authorization header -- the whole `/api/` surface (including /api/health)
+ * is guarded now, so every real-subprocess request in this suite needs it.
+ */
+function httpRequest(port, pathname, method = 'GET', serviceToken) {
     return new Promise((resolve, reject) => {
+        const headers = serviceToken ? { authorization: `Bearer ${serviceToken}` } : {};
         const req = http.request(
-            { host: '127.0.0.1', port, path: pathname, method, timeout: 3000 },
+            { host: '127.0.0.1', port, path: pathname, method, timeout: 3000, headers },
             (res) => {
                 let body = '';
                 res.on('data', (c) => { body += c; });
@@ -459,6 +466,21 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         let exited = false;
         serve.once('exit', () => { exited = true; });
 
+        // apra-fleet-50j6.2.3 criterion (4) / apra-fleet-ky2l.1.2 (DQ-20):
+        // resolve the SAME shared bearer service token the supervisor itself
+        // resolves, through the SAME resolveServiceToken() seam and with NO
+        // `home` override (the spawned child's env below is `{...process.env,
+        // ...}` with no HOME override, so it resolves against the real
+        // os.homedir() too -- see auth.mjs). Unlike the old direct-file-read
+        // this may resolve to the shared ~/.apra-fleet/fleet.key rather than
+        // ever minting a private/token file at all, so waiting on a
+        // private/token file's existence would hang forever when a fleet.key
+        // is present; resolveServiceToken() is idempotent and safe to call
+        // directly instead (mint-or-reuse for the private/token fallback
+        // case, a plain read for the fleet-key case).
+        const serviceToken = resolveServiceToken(seDataDir).token;
+        assert.ok(serviceToken.length > 0, 'resolveServiceToken() returned an empty token');
+
         // Poll for /api/health, but fail fast (with the captured stderr) if
         // the process exits first -- e.g. on a reintroduced ERR_MODULE_NOT_FOUND
         // or other source-repo-relative resolution failure.
@@ -471,7 +493,7 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
                 );
             }
             // eslint-disable-next-line no-await-in-loop
-            const health = await httpRequest(port, '/api/health').catch(() => null);
+            const health = await httpRequest(port, '/api/health', 'GET', serviceToken).catch(() => null);
             if (health && health.status === 200) break;
             if (Date.now() > deadline) {
                 assert.fail(`timed out waiting for /api/health from the installed supervisor.\nstderr so far:\n${stderrBuf}`);
@@ -482,9 +504,17 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
 
         assert.doesNotMatch(stderrBuf, /ERR_MODULE_NOT_FOUND/, `installed supervisor logged ERR_MODULE_NOT_FOUND:\n${stderrBuf}`);
 
+        // apra-fleet-50j6.2.3 criterion (4): a corrupted token (same length,
+        // one flipped char -- never mutate the on-disk file, which auth.mjs's
+        // readExistingToken() rejects as malformed on next mint/load) must be
+        // rejected 401 by the guarded /api/health route.
+        const corruptedToken = (serviceToken[0] === '0' ? '1' : '0') + serviceToken.slice(1);
+        const unauthorizedHealth = await httpRequest(port, '/api/health', 'GET', corruptedToken);
+        assert.equal(unauthorizedHealth.status, 401, 'a corrupted bearer token must be rejected, not silently accepted');
+
         // (n4lu.2 + qqof.2) GET /api/sprints: a fresh ledger, so an empty
         // (but well-formed) list.
-        const getSprints = await httpRequest(port, '/api/sprints');
+        const getSprints = await httpRequest(port, '/api/sprints', 'GET', serviceToken);
         assert.equal(getSprints.status, 200, `GET /api/sprints did not respond 200: ${getSprints.body}`);
         const sprintsBody = JSON.parse(getSprints.body);
         assert.deepEqual(sprintsBody.sprints, []);
@@ -495,7 +525,7 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         // the installed supervisor actually ROUTES and RESPONDS to the
         // request (never a connection failure / silent crash), not that it
         // launches.
-        const postSprints = await httpRequest(port, '/api/sprints', 'POST');
+        const postSprints = await httpRequest(port, '/api/sprints', 'POST', serviceToken);
         assert.equal(postSprints.status, 400, `POST /api/sprints (empty body) did not respond 400: ${postSprints.body}`);
         const postBody = JSON.parse(postSprints.body);
         assert.ok(postBody.error, 'POST /api/sprints error response is missing an "error" field');
@@ -507,7 +537,7 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         // all, proving the whole GET /api/members import path (api.mjs ->
         // fleet-members.mjs -> @apralabs/apra-fleet-client) resolved
         // cleanly inside the installed tree.
-        const getMembers = await httpRequest(port, '/api/members');
+        const getMembers = await httpRequest(port, '/api/members', 'GET', serviceToken);
         assert.equal(getMembers.status, 200, `GET /api/members did not respond 200: ${getMembers.body}`);
         const membersBody = JSON.parse(getMembers.body);
         assert.ok(Array.isArray(membersBody.members), `GET /api/members response is missing a "members" array: ${getMembers.body}`);
@@ -516,7 +546,7 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
 
         // Clean shutdown -- the in-band way to stop; confirms the process is
         // still fully alive and responsive after every request above.
-        const shutdown = await httpRequest(port, '/api/shutdown', 'POST');
+        const shutdown = await httpRequest(port, '/api/shutdown', 'POST', serviceToken);
         assert.equal(shutdown.status, 200);
 
         await waitForExit(serve, 10000);
