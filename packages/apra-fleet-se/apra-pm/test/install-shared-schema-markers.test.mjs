@@ -34,8 +34,13 @@ test('resolveAgentConditionals: claude keeps the if-branch for a frontmatter-les
   assert.equal(resolveAgentConditionals(body, 'claude', 'GRAPH-SEMANTICS.md'), 'keep-if');
 });
 
-test('resolveAgentConditionals: agy also keeps the if-branch (install.mjs has no agy frontmatter transform -- apra-fleet-oomh.6 -- so it gets claude semantics here, per the comment at the resolveAgentConditionals call site)', () => {
+test('resolveAgentConditionals: agy resolves against agyToolMap -- an invented tool name falls to the else-branch (apra-fleet-oomh.6)', () => {
   const body = '<!-- if-tool: Telepathy -->keep-if<!-- else-tool: Telepathy -->keep-else<!-- end-tool: Telepathy -->';
+  assert.equal(resolveAgentConditionals(body, 'agy', 'GRAPH-SEMANTICS.md'), 'keep-else');
+});
+
+test('resolveAgentConditionals: agy keeps the if-branch for a tool it maps (Bash)', () => {
+  const body = '<!-- if-tool: Bash -->keep-if<!-- else-tool: Bash -->keep-else<!-- end-tool: Bash -->';
   assert.equal(resolveAgentConditionals(body, 'agy', 'GRAPH-SEMANTICS.md'), 'keep-if');
 });
 
