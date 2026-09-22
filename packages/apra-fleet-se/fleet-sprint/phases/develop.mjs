@@ -139,8 +139,19 @@ export async function runDevelopPhase({
     // failed twice, then succeeded, from ever reading as a stuck bead.
     const recordStreakHealth = (streakOutcome, dispatchError) => {
         const failed = streakOutcome.outcome === 'failed';
+        // apra-fleet-mduk.1: a doer that reports status 'BLOCKED' (with its
+        // assigned bead(s) still open) is a distinct outcome, NOT an infra
+        // dispatch failure and NOT the generic "reported success but left
+        // beads open" contract failure below -- the doer completed its turn
+        // and is stating it CANNOT do the work from its seat (owner doctrine
+        // on bead apra-fleet-mduk; design doc section 1.2 T5). This can only
+        // be true on the no-dispatch-error path, where `report` is the
+        // doer's own parsed doerReport.
+        const blocked = failed && !dispatchError
+            && streakOutcome.report && streakOutcome.report.status === 'BLOCKED';
         const reasonOf = () => {
             if (!failed) return null;
+            if (blocked) return 'doer_blocked';
             if (dispatchError) {
                 return (dispatchError.details && dispatchError.details.reason) || 'dispatch_failed';
             }
@@ -151,6 +162,11 @@ export async function runDevelopPhase({
         };
         const messageOf = () => {
             if (!failed) return null;
+            // Captured VERBATIM -- this is the doctor's only record of WHY
+            // the doer refused, and the runner's re-lane bookkeeping (see
+            // runner.js's Develop-round caller) reads the same `report.notes`
+            // back off `streakOutcomes` to decide which bead ids to exclude.
+            if (blocked) return streakOutcome.report.notes || 'doer reported BLOCKED with no stated reason';
             if (dispatchError) return dispatchError.message;
             return `bead(s) still open after the streak: ${(streakOutcome.unclosedIds || []).join(', ')}`;
         };

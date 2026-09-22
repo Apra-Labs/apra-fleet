@@ -2467,6 +2467,18 @@ async function runSprintCycle(context) {
     // second spend accounting plane.
     let doctorSpendAtHighWaterMark = doctor.enabled && budget ? budget.spent() : 0;
 
+    // apra-fleet-mduk.1: bead ids a doer reported BLOCKED on (with the
+    // assigned bead(s) still open) THIS SPRINT -- scoped to the whole run
+    // (unlike `replanIds`/`replannedThisCycle` below, which reset every
+    // cycle), because the doctrine is "do not re-dispatch this bead
+    // unchanged for the rest of the sprint", not just for the rest of the
+    // cycle. A bead becomes eligible again only once a re-plan verdict has
+    // been applied to it (apra-fleet-mduk.2 -- not yet wired here); nothing
+    // in this run clears an id out of this set. Populated only when
+    // doctor.enabled (there is no health ledger to have raised the red-state
+    // trigger from otherwise); every ready-bead query below filters it out.
+    const doctorBlockedIds = new Set();
+
     // apra-fleet-jfo D6: per-parent count of verify-fail bounces this sprint
     // (a gap bug filed under the parent, making it ineligible again). Capped
     // at VERIFY_GAP_LIMIT -- a parent that keeps failing verification is
@@ -2635,7 +2647,7 @@ async function runSprintCycle(context) {
         // dispatches, never to make a sprint's own target unreachable.
         const targetIssueSet = new Set(targetIssues);
         let readyBeads = (await readyLeafBeads())
-            .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
+            .filter((b) => (targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task') && !doctorBlockedIds.has(b.id))
             .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
         // Per-cycle self-heal (not just pre-sprint, see reclaimStaleInProgress's
@@ -2656,7 +2668,7 @@ async function runSprintCycle(context) {
             if (cycleReclaimedIds.length > 0) {
                 log(`Cycle ${cycle} self-heal: reclaimed ${cycleReclaimedIds.length} orphaned bead(s), re-checking readiness: ${cycleReclaimedIds.join(', ')}.`);
                 readyBeads = (await readyLeafBeads())
-                    .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
+                    .filter((b) => (targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task') && !doctorBlockedIds.has(b.id))
                     .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
             }
         }
@@ -2738,7 +2750,7 @@ async function runSprintCycle(context) {
             // would otherwise land in a doer streak and burn a dispatch on a
             // contract-bound refusal. Same target-issue exemption as above.
             const currentReadyAll = (await readyLeafBeads())
-                .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
+                .filter((b) => (targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task') && !doctorBlockedIds.has(b.id))
                 .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
             if (currentReadyAll.length === 0) break;
@@ -2840,6 +2852,54 @@ async function runSprintCycle(context) {
                 // a parallel branch must never evaluate or dispatch.
                 doctor,
             });
+
+            // apra-fleet-mduk.1: a doer streak that reported status
+            // 'BLOCKED' (with its bead(s) still open -- streakOutcomes'
+            // `outcome` is 'failed' either way, see phases/develop.mjs's
+            // recordStreakHealth) is a planning/design defect, not a flaky
+            // dispatch: the doer is stating it cannot do the work from its
+            // seat. Back on the single serialized path (same reasoning as
+            // H4 below -- this must not run inside a parallel doer branch),
+            // so this is the first point after the round where it is safe to
+            // both raise the T5 red-state trigger and mutate the per-sprint
+            // exclusion set every ready-bead query above already filters.
+            // Idempotent per bead (the `doctorBlockedIds` guard), so a bead
+            // already excluded can never raise T5 a second time -- it is
+            // excluded from `currentReady`/`readyBeads` before it could be
+            // re-dispatched to produce a second BLOCKED report anyway. The
+            // set is never cleared here: a bead becomes eligible again only
+            // once a re-plan verdict has been applied to it, which is
+            // apra-fleet-mduk.2, not this task.
+            if (doctor.enabled) {
+                const blockedRedStateEvents = [];
+                for (const outcome of streakOutcomes) {
+                    if (outcome.outcome !== 'failed' || !outcome.report || outcome.report.status !== 'BLOCKED') continue;
+                    const blockedReason = outcome.report.notes || 'doer reported BLOCKED with no stated reason';
+                    for (const beadId of outcome.beadIds) {
+                        if (doctorBlockedIds.has(beadId)) continue;
+                        doctorBlockedIds.add(beadId);
+                        log(
+                            `${DOCTOR_LOG_PREFIX} doer on member '${outcome.doerMember}' reported BLOCKED for bead ${beadId}: ` +
+                            `${blockedReason} -- excluding it from re-lane for the rest of this sprint (a re-plan ` +
+                            'verdict must be applied before it is dispatched again).'
+                        );
+                        blockedRedStateEvents.push({
+                            eventId: `blocked:${beadId}:${cycle}:${devRounds}`,
+                            scope: 'bead',
+                            beadIds: [beadId],
+                            member: outcome.doerMember,
+                            evidenceRows: doctor.rows().filter((r) => r.beadIds.includes(beadId)),
+                            summary: `Doer on member '${outcome.doerMember}' reported BLOCKED for bead ${beadId}: ${blockedReason}`,
+                        });
+                    }
+                }
+                if (blockedRedStateEvents.length > 0) {
+                    doctor.evaluate(
+                        { isNewHighWaterMark: false, redStateEvents: blockedRedStateEvents },
+                        { only: ['T5'], hook: `Develop C${cycle} R${devRounds}` }
+                    );
+                }
+            }
 
             // H4 (mid-cycle fast path): the streak outcomes are folded and we
             // are back on the single serialized path, BEFORE Review. Evaluate
