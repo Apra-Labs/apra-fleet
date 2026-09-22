@@ -400,6 +400,22 @@ export const GUARDED_MODULES = [
     // caller -- no command()/agent() call, no dolt/git literal, no I/O of any
     // kind -- so it gets the same ZERO baseline as doctor-ledger.mjs above.
     'doctor-triggers.mjs',
+    // apra-fleet-iiny.2.3: the sprint-doctor consult layer (buildConsultInput,
+    // runConsult, the probe round). Unlike its two siblings above this module
+    // is NOT zero-baseline: it carries ONE real agent() dispatch (the zero-tool
+    // premium consult) and three member-bound command() probe call sites, every
+    // one of which names its member explicitly, so it scans clean under
+    // dispatch-safety-guard and is registered here -- not exempted -- precisely
+    // to keep those live sites guarded. Its git/bd probe strings carry no
+    // shell-level expansion and no dolt literal, so the other four guards see
+    // the same zero the siblings do.
+    'doctor-consult.mjs',
+    // apra-fleet-iiny.2.3: the Sprint Doctor consult PHASE (H2). It owns the
+    // phase() label and the evidence hand-off; the dispatch itself lives in
+    // doctor-consult.mjs above, so this module issues no command()/agent()
+    // call of its own and gets the same ZERO baseline as the other
+    // dispatch-free phase bodies.
+    'phases/sprint-doctor.mjs',
 ];
 
 /**

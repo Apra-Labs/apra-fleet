@@ -172,6 +172,12 @@ import { runDeployPhase } from './phases/deploy.mjs';
 // its boundary is drawn and why the surrounding `if`/exit-gate stayed here.
 import { runIntegTestPhase } from './phases/integ-test.mjs';
 import { runReReviewPhase } from './phases/re-review.mjs';
+// The sprint-doctor consult phase (H2). Unlike the twelve above it is NOT
+// part of the sprint's normal sequence: it runs only when a trigger has
+// already fired, so a healthy sprint never emits its label at all. Its body
+// lives in a phase module for the same reason every other phase body does --
+// runSprintCycle builds no phase() label of its own.
+import { runSprintDoctorPhase } from './phases/sprint-doctor.mjs';
 // apra-fleet-3swo.6.6: the next two phase() boundaries -- the sprint's closing
 // Final Review and the once-per-sprint Regression Test. Final Review runs from
 // its own phase() call to the findings D-push and RETURNS the sprint verdict
@@ -254,11 +260,27 @@ import {
 // The sprint-doctor OBSERVATION layer (fleet-sprint/docs/escalate-to-llm-
 // design.md sections 1.1-1.3). Two pure modules -- a recorder and a pure
 // trigger evaluator -- wired here at the catch/outcome sites the engine
-// already has. Nothing in this wiring dispatches anything: a fired trigger
+// already has. Nothing in that wiring dispatches anything: a fired trigger
 // is recorded and logged, and every existing outcome is left exactly as it
-// was. The consult itself is a later lane.
+// was.
 import { createSprintHealthLedger, normalizeErrorSignature } from './doctor-ledger.mjs';
 import { evaluateTriggers, DEFAULT_THRESHOLDS } from './doctor-triggers.mjs';
+// The sprint-doctor CONSULT layer (design doc sections 2.1, 2.2, 5, 6): the
+// zero-tool premium dispatch, its bounded input assembly and its single probe
+// round. Consulting is still strictly additive here -- the verdict is
+// validated, capped and LOGGED; executing it through the runner's own verbs
+// is the executor lane, so every existing outcome remains exactly what it was
+// before a consult ran, and a failed consult returns null rather than
+// throwing into the cycle loop.
+import {
+    buildConsultInput,
+    runConsult,
+    createConsultLimiter,
+    createLogTailBuffer,
+    applyNoRepeatRule,
+    loadRegistryEntries,
+    DEFAULT_CONSULT_LIMITS,
+} from './doctor-consult.mjs';
 // The reviewer-verdict bead transitions: the ONE goal-scope-guarded reopen
 // path all three verdict sites (per-round reviewer, Final Review, Re-Review)
 // now take, the replanIds fold, and the verdict-contract predicate. Extracted
@@ -832,11 +854,12 @@ const DOCTOR_LOG_PREFIX = '[sprint-doctor]';
  *   enabled: boolean,
  *   thresholds?: Partial<typeof DEFAULT_THRESHOLDS>,
  *   caps?: { maxConsults?: number, maxDefers?: number, maxPerClass?: number },
+ *   limits?: Partial<typeof DEFAULT_CONSULT_LIMITS>,
  *   artifactPath?: string|null,
  *   log?: (msg: string) => void,
  * }} opts
  */
-function createSprintDoctor({ enabled, thresholds = {}, caps = {}, artifactPath = null, log = () => {} } = {}) {
+function createSprintDoctor({ enabled, thresholds = {}, caps = {}, limits = {}, artifactPath = null, log = () => {} } = {}) {
     if (!enabled) {
         return Object.freeze({
             enabled: false,
@@ -846,6 +869,8 @@ function createSprintDoctor({ enabled, thresholds = {}, caps = {}, artifactPath 
             evaluate: () => [],
             rows: () => [],
             consults: () => [],
+            consult: async () => null,
+            verdicts: () => [],
         });
     }
 
@@ -858,6 +883,43 @@ function createSprintDoctor({ enabled, thresholds = {}, caps = {}, artifactPath 
     });
     const consults = [];
     let capAnnounced = false;
+
+    // --- consult-layer state (design doc sections 2.2, 6) ------------------
+    // The per-sprint circuit breakers (consult cap, per-error-class cap, the
+    // (bead, action.kind) no-repeat set) live in ONE object rather than being
+    // re-counted at each call site. `verdicts` is the doctor's own consult
+    // history, which is fed back into its next consult's input so it can see
+    // what it already prescribed -- and which the no-repeat rule enforces in
+    // code regardless of whether it reads it.
+    const limiter = createConsultLimiter({
+        maxConsults: effectiveCaps.maxConsults,
+        maxPerClass: effectiveCaps.maxPerClass,
+    });
+    // The caps the sprint's own args set always win over the consult module's
+    // documented defaults, so there is exactly ONE place a cap is configured.
+    const consultLimits = {
+        ...DEFAULT_CONSULT_LIMITS,
+        ...limits,
+        maxConsults: effectiveCaps.maxConsults,
+        maxPerClass: effectiveCaps.maxPerClass,
+    };
+    const verdicts = [];
+    // Per-member tail of the raw failure text the H1 record sites already
+    // carry. This is where the consult's "relevant member-side dispatch
+    // output" comes from: the message is ALREADY flowing through record()
+    // (it is what the errorSignature is normalized from), so keeping a
+    // bounded tail of it adds no new instrumentation plane -- it only stops
+    // throwing the detail away after the signature is derived.
+    const memberOutputTails = new Map();
+    function noteMemberOutput(member, message) {
+        if (!member || !message) return;
+        let tail = memberOutputTails.get(member);
+        if (!tail) {
+            tail = createLogTailBuffer();
+            memberOutputTails.set(member, tail);
+        }
+        tail.append(message);
+    }
 
     // The debounce key doctor-triggers.mjs itself derives for a pending
     // consult, recomputed here from the descriptor it returns (it reports the
@@ -878,6 +940,7 @@ function createSprintDoctor({ enabled, thresholds = {}, caps = {}, artifactPath 
      */
     function record(entry = {}) {
         const reason = entry.reason ?? null;
+        if (!entry.ok) noteMemberOutput(entry.member, entry.message);
         return ledger.recordDispatch({
             ...entry,
             reason,
@@ -930,14 +993,148 @@ function createSprintDoctor({ enabled, thresholds = {}, caps = {}, artifactPath 
         return accepted;
     }
 
+    /**
+     * H2's consult: assemble the bounded evidence, dispatch the zero-tool
+     * premium doctor, and return its schema-valid verdict -- or null.
+     *
+     * STRICTLY ADDITIVE, WITHOUT EXCEPTION. Every early return below is a
+     * logged null, every failure inside runConsult() is a logged null, and
+     * nothing here touches an existing outcome, a progress/stall counter or
+     * any bead. A caller that ignores the return value behaves exactly as it
+     * did before the doctor existed, which is precisely what makes wiring
+     * this in safe ahead of the action executor.
+     *
+     * NOT LEDGER-RECORDED (no recursion): this dispatch is an engine-internal
+     * step. It never calls record(), so a failed consult cannot satisfy T1-T5
+     * and summon another one.
+     *
+     * @param {object} pending a descriptor from evaluate()/evaluateTriggers()
+     * @param {object} deps runner-side verbs and sprint position (see below)
+     */
+    async function consult(pending, deps = {}) {
+        const evidenceRows = pending.evidenceRows || [];
+        // The class this consult is about, for the per-class cap: the most
+        // recent evidence row's normalized signature. Absent (a stagnation or
+        // spend trigger has no single failing dispatch behind it) means the
+        // per-class cap simply does not apply -- only the per-sprint cap does.
+        const errorSignature = [...evidenceRows].reverse().find((r) => r && r.errorSignature)?.errorSignature || null;
+
+        const allowed = limiter.check(errorSignature);
+        if (!allowed.allowed) {
+            log(`${DOCTOR_LOG_PREFIX} consult for ${pending.trigger} skipped: ${allowed.reason}.`);
+            return null;
+        }
+
+        const triggeringBeadIds = (pending.beadIds && pending.beadIds.length > 0)
+            ? pending.beadIds
+            : (deps.fallbackBeadIds || []);
+        if (triggeringBeadIds.length === 0) {
+            // The role's input contract requires at least one bead in scope,
+            // and honouring that is better than inventing a placeholder: a
+            // sprint with nothing open at goal priority has no work for any
+            // verdict to act on, so there is nothing a consult could buy.
+            log(`${DOCTOR_LOG_PREFIX} consult for ${pending.trigger} skipped: no bead is in scope for the incident.`);
+            return null;
+        }
+
+        const member = pending.member || null;
+        const input = buildConsultInput({
+            ...(deps.position || {}),
+            trigger: {
+                id: pending.trigger,
+                evidenceRows,
+                summary: pending.summary,
+                scope: pending.scope,
+                member,
+            },
+            triggeringBeadIds,
+            beadDetails: deps.beadDetails,
+            scopeSummary: deps.scopeSummary,
+            ledgerRows: ledger.rows(),
+            beadLedgerRows: triggeringBeadIds.flatMap((id) => ledger.rowsForBead(id)),
+            memberLedgerRows: member ? ledger.rowsForMember(member) : [],
+            errorSignatureFrequency: ledger.signatureFrequency(),
+            logTails: {
+                sprintLog: deps.sprintLogText || '',
+                memberDispatchOutput: member && memberOutputTails.has(member) ? memberOutputTails.get(member).text() : '',
+            },
+            consultHistory: verdicts,
+            registry: deps.registry || [],
+        }, consultLimits);
+
+        // Counted BEFORE the dispatch, not after a successful one: a consult
+        // that fails still cost a premium dispatch and still proves this
+        // incident is not yielding, so charging the cap only on success is
+        // exactly how a cap becomes a loop.
+        limiter.noteConsult(errorSignature);
+
+        const verdict = await runConsult({
+            agent: deps.agent,
+            command: deps.command,
+            callTool: deps.callTool,
+            log,
+            member: deps.consultMember,
+            probeMember: member,
+            orchestratorMember: deps.orchestratorMember,
+            rawLogTails: {
+                sprintLog: deps.sprintLogText || '',
+                memberDispatchOutput: member && memberOutputTails.has(member) ? memberOutputTails.get(member).text() : '',
+            },
+            limits: consultLimits,
+            label: deps.label || 'Sprint Doctor',
+        }, input);
+        if (!verdict) return null;
+
+        // The engine's no-repeat rule, applied in code: a verdict that
+        // re-prescribes an action already tried and failed for every bead in
+        // scope is overridden to the conservative defer path before any
+        // executor could ever see it.
+        const { verdict: finalVerdict, overridden, reason } = applyNoRepeatRule(verdict, triggeringBeadIds, limiter);
+        if (overridden) log(`${DOCTOR_LOG_PREFIX} verdict overridden: ${reason}.`);
+
+        // `evidence` is logged VERBATIM (design doc section 2.3) -- it is the
+        // doctor's factual basis and the thing a human reads first when
+        // auditing why the sprint did what it did.
+        log(
+            `${DOCTOR_LOG_PREFIX} verdict for ${pending.trigger}: ${finalVerdict.classification} `
+            + `(confidence ${finalVerdict.confidence}) -> action ${finalVerdict.action.kind}`
+            + `${finalVerdict.matchedRegistryEntry ? `, registry entry ${finalVerdict.matchedRegistryEntry}` : ''}.`
+        );
+        for (const bullet of finalVerdict.evidence) log(`${DOCTOR_LOG_PREFIX}   evidence: ${bullet}`);
+        if (finalVerdict.humanActionRequired) {
+            log(`${DOCTOR_LOG_PREFIX}   human action required: ${finalVerdict.humanActionRequired.summary}`);
+        }
+        log(
+            `${DOCTOR_LOG_PREFIX} recorded only -- executing a verdict's action is the executor lane, so this `
+            + 'sprint proceeds exactly as it would have without the consult.'
+        );
+
+        verdicts.push({
+            trigger: pending.trigger,
+            beadIds: triggeringBeadIds,
+            member,
+            errorSignature,
+            classification: finalVerdict.classification,
+            confidence: finalVerdict.confidence,
+            action: finalVerdict.action,
+            overridden,
+            // No outcome yet: nothing executes a verdict in this lane, and
+            // recording an optimistic one would lie to the next consult.
+            outcome: 'not_executed',
+        });
+        return finalVerdict;
+    }
+
     return {
         enabled: true,
         artifactPath: artifactPath || null,
         caps: effectiveCaps,
         record,
         evaluate,
+        consult,
         rows: ledger.rows,
         consults: () => consults.slice(),
+        verdicts: () => verdicts.slice(),
     };
 }
 export { createSprintDoctor };
@@ -974,7 +1171,21 @@ export { resolveDoctorArtifactPath };
 // ones (no phase body lives here; the facade re-exports everything). Read
 // that note before proposing an extraction of anything in the prelude.
 async function runSprintCycle(context) {
-    const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget, setPauseGuard } = context;
+    const { agent: agentRaw, command: rawCommand, parallel, log: rawLog, phase: rawPhase, group, endGroup, publishState, args, budget, setPauseGuard } = context;
+
+    // sprint-doctor (design doc section 2.2): a consult's evidence includes
+    // "the last N KB of the runner's own sprint log", and this engine writes
+    // no log FILE -- log() is the workflow engine's sink. So the one place
+    // every line already passes through is tapped into a bounded in-memory
+    // tail. Byte-bounded and allocation-lazy (see createLogTailBuffer), it is
+    // a strict pass-through: `rawLog`'s return value is handed straight back,
+    // so no existing caller can observe this wrapper at all, and a disabled
+    // doctor simply never reads the buffer.
+    const sprintLogTail = createLogTailBuffer();
+    const log = (msg) => {
+        sprintLogTail.append(msg);
+        return rawLog(msg);
+    };
     // apra-fleet-hzeb.3/.4.2: the engine's script-facing cooperative pause/
     // resume primitives, used by the usage-limit controller below. Absent for
     // direct/legacy runSprintCycle() callers that never go through
@@ -1512,6 +1723,36 @@ async function runSprintCycle(context) {
     // the implicit fallback (including this file's own test harness) breaks.
     // Land 6.2, update callers, THEN make this throw.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
+
+    /**
+     * Which member the sprint-doctor's own consult is dispatched ON.
+     *
+     * The doctor has no tools and touches no repo, so this pick is purely
+     * model-tier ROUTING -- the same reason Streak Assignment borrows the
+     * planner's member. `premium` resolves through that member's own
+     * registered model_tiers, so this stays mixed-provider-correct: it pins
+     * WHICH member answers, never which model.
+     *
+     * The one real constraint is `avoid`: when the incident IS a member (T2's
+     * wedged-member case, or any bead failure attributed to one), consulting
+     * about that member ON that member is the one avoidable way to lose the
+     * consult to the very fault being diagnosed. So a premium-tier role's
+     * member is preferred, then any other physical member, and only if
+     * nothing else exists does it fall back to the implicated member --
+     * a consult on a suspect host still beats no consult at all, and its
+     * failure is strictly additive anyway.
+     * @param {string|null|undefined} avoid
+     * @returns {string|undefined}
+     */
+    const resolveDoctorConsultMember = (avoid) => {
+        const candidates = [
+            getMemberForRole(ROLE_REVIEWER),
+            getMemberForRole('planner'),
+            ...physicalMembers,
+            orchestratorMember,
+        ].filter(Boolean);
+        return candidates.find((m) => m !== avoid) ?? candidates[0];
+    };
 
     // Beads identity precondition: prove which .beads every member's bd
     // resolves to BEFORE the first mutating bd command (the earliest bd
@@ -3199,13 +3440,52 @@ async function runSprintCycle(context) {
         // fires exactly as it did before.
         if (doctor.enabled) {
             const spentNow = budget ? budget.spent() : 0;
-            doctor.evaluate({
+            const pendingConsults = doctor.evaluate({
                 staleCycles,
                 isNewHighWaterMark,
                 budget: { total: budget ? budget.total : null, spent: spentNow },
                 spentSinceHighWaterMark: Math.max(0, spentNow - doctorSpendAtHighWaterMark),
             }, { hook: `Cycle Evaluation C${cycle}` });
             if (isNewHighWaterMark) doctorSpendAtHighWaterMark = spentNow;
+
+            // H2 (consult point), in phases/sprint-doctor.mjs. Placed AFTER
+            // the counters above are settled and BEFORE the stall-abort
+            // below, so a consult sees the same evidence the abort would
+            // report -- but it changes nothing the abort reads, so the abort
+            // still fires exactly as it did before. Consulting is an ASK, not
+            // an act: the phase logs a verdict and returns, and this call
+            // site deliberately ignores the return value, which is what makes
+            // the whole layer strictly additive today.
+            if (pendingConsults.length > 0) {
+                await runSprintDoctorPhase({
+                    phase, log, agent, command,
+                    callTool: args && typeof args.callTool === 'function' ? args.callTool : undefined,
+                    doctor,
+                    pendingConsults,
+                    cycle,
+                    position: {
+                        branch: validated.branch,
+                        base: validated.baseBranch,
+                        goal: validated.goal,
+                        cycle,
+                        maxCycles: MAX_CYCLES,
+                        members: validated.members,
+                        roleMap: validated.roleMap,
+                        budget: { total: budget ? budget.total : null, spent: spentNow },
+                    },
+                    openAtGoal,
+                    closedCount,
+                    goalMax,
+                    // Borrows a premium-tier ROLE's member for routing only
+                    // (the same convention Streak Assignment uses), and
+                    // prefers one NOT implicated by the trigger.
+                    consultMember: resolveDoctorConsultMember(pendingConsults[0].member),
+                    orchestratorMember,
+                    sprintLogText: sprintLogTail.text(),
+                    registry: await loadRegistryEntries(),
+                    maxBeadDetails: DEFAULT_CONSULT_LIMITS.maxBeadDetails,
+                });
+            }
         }
 
         if (staleCycles >= STALL_CYCLE_LIMIT) {

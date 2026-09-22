@@ -1117,6 +1117,72 @@ export function validateRoleInput(role, context) {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. sprint-doctor input/verdict validation
+// ---------------------------------------------------------------------------
+//
+// sprint-doctor gets its OWN two validators rather than going through
+// validateRoleInput()/validateVerdict() above, for the same reason section 3's
+// FALLBACK_sprintDoctorVerdict is kept out of the shared SCHEMAS/VALIDATORS
+// aggregate: sprint-doctor is deliberately NOT a contracts.ROLES member (it is
+// dispatched by the runner itself at trigger points, never assigned to a
+// member through a roleMap), and validateRoleInput() gates on ROLE_SET before
+// it ever reaches a schema, so it would throw "unknown role" on the one role
+// that most needs a pre-dispatch check. Adding sprint-doctor to ROLES to get
+// around that would also add it to the supervisor launch form's role picker,
+// which is exactly the leak that comment refuses.
+//
+// So: same PATTERN as validateRoleInput/validateVerdict (vendored-first
+// schema, version-pinned, ajv-compiled once and cached), different entry
+// point. When sprint-doctor does eventually join ROLES, these two collapse
+// into the generic helpers and this section goes away.
+
+const SPRINT_DOCTOR_INPUT_MAJOR_VERSION = 1;
+let sprintDoctorInputValidator;
+let sprintDoctorVerdictValidator;
+
+/**
+ * Validates the runner-assembled sprint-doctor dispatch context against
+ * apra-pm/agents/schemas/sprint-doctor-input.json, BEFORE any agent() call is
+ * made. No-ops (passes) when no schemas directory resolves at all, exactly as
+ * validateRoleInput() does for a role with no vendored input schema.
+ * @param {object} context the assembled consult input
+ * @returns {{ valid: boolean, errors: import('ajv').ErrorObject[] | null }}
+ */
+export function validateSprintDoctorInput(context) {
+    if (sprintDoctorInputValidator === undefined) {
+        const schema = loadVendorSchema('sprint-doctor-input');
+        if (schema === null) {
+            sprintDoctorInputValidator = null;
+        } else {
+            assertVersionPin('sprint-doctor-input', schema, SPRINT_DOCTOR_INPUT_MAJOR_VERSION);
+            sprintDoctorInputValidator = ajv.compile(schema);
+        }
+    }
+    if (sprintDoctorInputValidator === null) return { valid: true, errors: null };
+    const valid = sprintDoctorInputValidator(context);
+    return { valid, errors: valid ? null : sprintDoctorInputValidator.errors };
+}
+
+/**
+ * Validates a sprint-doctor verdict against the resolved output schema
+ * (`sprintDoctorVerdict` above -- vendored-first, fallback literal otherwise).
+ * The dispatch itself already hands that schema to agent(), whose bounded
+ * schema-repair loop is the model's only retry; this is the engine's own
+ * independent re-check of what came back, so a transport that returns an
+ * unvalidated payload cannot slip an out-of-contract verdict into the action
+ * executor.
+ * @param {unknown} data
+ * @returns {{ valid: boolean, errors: import('ajv').ErrorObject[] | null }}
+ */
+export function validateSprintDoctorVerdict(data) {
+    if (sprintDoctorVerdictValidator === undefined) {
+        sprintDoctorVerdictValidator = ajv.compile(sprintDoctorVerdict);
+    }
+    const valid = sprintDoctorVerdictValidator(data);
+    return { valid, errors: valid ? null : sprintDoctorVerdictValidator.errors };
+}
+
+// ---------------------------------------------------------------------------
 // 6. Prompt-block helpers
 // ---------------------------------------------------------------------------
 
