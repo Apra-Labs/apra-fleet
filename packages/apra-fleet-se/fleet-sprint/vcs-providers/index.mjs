@@ -81,7 +81,7 @@
  *                                          // literal -- out of the shared
  *                                          // callers. Only meaningful
  *                                          // alongside parseRepoRef.
- *     buildProvisionArgs: (ctx) => { args, note? }|{ error }   // OPTIONAL;
+ *     buildProvisionArgs: (ctx) => { args, note? }|{ skip: true, note? }|{ error }   // OPTIONAL;
  *                                          // provisioning axis. Build the
  *                                          // provision_vcs_auth argument
  *                                          // object for a member of this
@@ -112,6 +112,20 @@
  *                                          // optional `note` string next to
  *                                          // `args` is logged as an advisory,
  *                                          // never treated as a failure.
+ *                                          // A THIRD answer, `{ skip: true }`,
+ *                                          // means "nothing to provision for
+ *                                          // this request -- proceed on the
+ *                                          // credential already deployed":
+ *                                          // for a provider whose credential
+ *                                          // is deployed out of band and has
+ *                                          // no scope axis to widen, a
+ *                                          // just-in-time re-provision is
+ *                                          // both impossible and pointless,
+ *                                          // and failing it would abort the
+ *                                          // call it exists to enable (see
+ *                                          // ./bitbucket.mjs). Pair it with a
+ *                                          // `note` so the skip is never
+ *                                          // silent.
  *     defaultAuthMode: string|null        // OPTIONAL, but declaring it (even
  *                                          // as null) is what makes a provider
  *                                          // part of resolveProvider()'s/
