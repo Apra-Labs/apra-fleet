@@ -192,7 +192,10 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', legacy.exec, 'windows');
     await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', powershell5.exec, 'windows', 'powershell5');
 
-    expect(legacy.exec.mock.calls.map(c => c[0])).toEqual(powershell5.exec.mock.calls.map(c => c[0]));
+    // The staging file name carries a per-call token (GitHub #499); normalise it
+    // before comparing the two members' command sequences.
+    const normalise = (cmds: string[]) => cmds.map(c => c.replace(/fleet-trust-\d+-[a-z0-9]+\./g, 'fleet-trust-TOKEN.'));
+    expect(normalise(legacy.exec.mock.calls.map(c => c[0]))).toEqual(normalise(powershell5.exec.mock.calls.map(c => c[0])));
     expect(powershell5.calls.some(c => c.includes('Get-Content'))).toBe(true);
     expect(powershell5.calls.some(c => c.includes('WriteAllText') && c.includes('Move-Item'))).toBe(true);
   });

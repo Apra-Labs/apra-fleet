@@ -255,6 +255,20 @@ export interface RegisterMcpEndpointResult {
  *  services/strategy.ts. */
 export type WorkspaceTrustExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
 
+/** Optional file-delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted}
+ *  (GitHub #499). Writes `content` to `relPath`, resolved relative to the MEMBER's home
+ *  directory, without going through a shell command line: node:fs for a local member,
+ *  SFTP for an SSH member. A merged ~/.claude.json can be far larger than any command
+ *  line a Windows process may carry (CreateProcess caps it at 32767 chars; cmd.exe at
+ *  8191), so the adapter prefers this channel when present and only falls back to
+ *  exec-based delivery (chunked on Windows) when it is absent or fails. Must throw on
+ *  failure so the adapter can fall back. */
+export type WorkspaceTrustWriteHomeFileFn = (relPath: string, content: string) => Promise<void>;
+
+export interface WorkspaceTrustTransport {
+  writeHomeFile?: WorkspaceTrustWriteHomeFileFn;
+}
+
 export interface EnsureWorkspaceTrustedResult {
   /** true only when this call just wrote hasTrustDialogAccepted=true because it was
    *  missing. false when the provider no-ops, or when trust was already present. */
@@ -450,8 +464,11 @@ export interface ProviderAdapter {
    *  provider trust matrix). Callers should log distinctly on `seeded: true` vs `false`.
    *  `shell` is the member's REGISTERED shell and is only meaningful when `agentOs` is
    *  'windows': a member registered as Git-for-Windows bash needs POSIX command strings,
-   *  because the PowerShell ones are handed straight to bash.exe and fail (apra-fleet-7dir.2.8). */
-  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult>;
+   *  because the PowerShell ones are handed straight to bash.exe and fail (apra-fleet-7dir.2.8).
+   *  `transport.writeHomeFile`, when present, delivers the merged file without a shell
+   *  command line (node:fs / SFTP) so a large ~/.claude.json cannot overflow the Windows
+   *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows. */
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 

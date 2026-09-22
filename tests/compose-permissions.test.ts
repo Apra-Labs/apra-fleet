@@ -18,6 +18,10 @@ import type { SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
 
+// GitHub #499: seedWorkspaceTrust now also forwards a 5th `transport` argument (the
+// out-of-band file channel for a large ~/.claude.json) for every non-relay member.
+const TRUST_TRANSPORT = expect.objectContaining({ writeHomeFile: expect.any(Function) });
+
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 
 vi.mock('../src/services/strategy.js', () => ({
@@ -858,7 +862,7 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT);
     spy.mockRestore();
   });
 
@@ -874,7 +878,7 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT);
     spy.mockRestore();
   });
 
