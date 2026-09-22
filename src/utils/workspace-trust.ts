@@ -27,8 +27,9 @@ export function workspaceTrustTransportFor(agent: Agent, strat: AgentStrategy): 
   if (agent.agentType === 'relay') return undefined;
   return {
     writeHomeFile: async (relPath: string, content: string): Promise<void> => {
-      const home = await getMemberHomeDir(agent);
-      if (!home) throw new Error('member home directory could not be resolved');
+      const probed = await getMemberHomeDir(agent);
+      if (!probed) throw new Error('member home directory could not be resolved');
+      const home = sftpHomePath(probed, agent.os);
       const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-trust-'));
       const local = path.join(staging, path.basename(relPath));
       try {
@@ -42,6 +43,19 @@ export function workspaceTrustTransportFor(agent: Agent, strat: AgentStrategy): 
       }
     },
   };
+}
+
+/**
+ * A gitbash Windows member's probed home is an MSYS path (/c/Users/name). The
+ * SFTP server on that host is Win32-OpenSSH, which does NOT understand MSYS
+ * paths -- it would treat it as an absolute path and create C:\c\Users\name.
+ * Rewrite the drive prefix to the Windows form (C:/Users/name) before handing
+ * it to transferFiles; every other spelling passes through unchanged.
+ */
+export function sftpHomePath(home: string, agentOs: Agent['os']): string {
+  if (agentOs !== 'windows') return home;
+  const m = home.match(/^\/([A-Za-z])\/(.*)$/);
+  return m ? `${m[1].toUpperCase()}:/${m[2]}` : home;
 }
 
 /**

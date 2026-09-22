@@ -593,8 +593,12 @@ export class ClaudeProvider implements ProviderAdapter {
     const usePosix = isPosixShell(agentOs, shell);
     const isWindows = !usePosix;
     const homeFile = isWindows ? '$env:USERPROFILE\\.claude.json' : '$HOME/.claude.json';
-    // Same relative name transport.writeHomeFile stages under (see deliverWorkspaceTrustFile).
-    const tmpFile = isWindows ? `$env:USERPROFILE\\${TRUST_TMP_REL}` : `$HOME/${TRUST_TMP_REL}`;
+    // Per-call staging names: register_member and compose_permissions can seed the
+    // same home concurrently (or two local ephemeral members can), and fixed names
+    // would interleave chunk appends / clobber each other's tmp. The same names are
+    // used by the file channel and every exec command below.
+    const staging = workspaceTrustStagingNames();
+    const tmpFile = isWindows ? `$env:USERPROFILE\\${staging.tmpRel}` : `$HOME/${staging.tmpRel}`;
 
     // apra-fleet-9oo: the project's .mcp.json lives in the MEMBER's work folder, not on
     // the orchestrator host, so it must be read through the same execCommand channel --
@@ -696,7 +700,7 @@ export class ClaudeProvider implements ProviderAdapter {
     //   3. otherwise base64 chunks appended with several small execs, then one
     //      decode+move -- works for both PowerShell and gitbash members.
     // Non-Windows POSIX hosts keep the heredoc: their ARG_MAX is far larger.
-    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile });
+    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging });
 
     const mcpNote = serversToAdd.length > 0 ? `; enabled MCP servers: ${serversToAdd.join(', ')}` : '';
     // eft.40.1 requires logging distinctly when trust is SEEDED vs already present --
@@ -710,16 +714,32 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 }
 
-/** Member-side staging file names, relative to the member's home. Shared by the
- *  out-of-band (node:fs / SFTP) channel and the exec-based fallbacks so every path
- *  stages in the same place. */
-const TRUST_TMP_REL = '.claude.json.fleet-trust-tmp';
-const TRUST_B64_REL = '.claude.json.fleet-trust-b64';
+/** Member-side staging file names for one ensureWorkspaceTrusted call, relative to
+ *  the member's home. Unique per call (pid + random) so concurrent seeds of the same
+ *  home never share a staging file; shared by the out-of-band (node:fs / SFTP)
+ *  channel and the exec-based fallbacks so every path stages in the same place. */
+export interface WorkspaceTrustStagingNames {
+  tmpRel: string;
+  b64Rel: string;
+}
+
+export function workspaceTrustStagingNames(): WorkspaceTrustStagingNames {
+  const token = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+  return {
+    tmpRel: `.claude.json.fleet-trust-${token}.tmp`,
+    b64Rel: `.claude.json.fleet-trust-${token}.b64`,
+  };
+}
 
 /** Longest single command string ensureWorkspaceTrusted will hand to execCommand on
- *  a Windows host. cmd.exe (a Windows sshd's default shell unless changed) rejects
- *  anything over 8191 chars; CreateProcess itself caps at 32767. 8000 keeps every
- *  exec safely under BOTH, whichever shell ends up parsing it. */
+ *  a Windows host. The hard caps are CreateProcess's 32767 chars (LocalStrategy
+ *  spawns powershell.exe/bash.exe directly; a Windows sshd hands the command to
+ *  its default shell the same way) and cmd.exe's 8191 (only when sshd's default
+ *  shell is cmd.exe, where these PowerShell/bash commands would not run anyway).
+ *  8000 is deliberately conservative: it is under BOTH caps with room for any
+ *  wrapper a strategy may add, and the cost is only more round-trips on the
+ *  chunked FALLBACK path (the file channel is the primary path), e.g. ~31 execs
+ *  for a 128 KB file. */
 export const WORKSPACE_TRUST_MAX_COMMAND_CHARS = 8000;
 
 /** Base64 characters per chunk command: chunk + ~200 chars of PowerShell/bash
@@ -760,16 +780,30 @@ export function buildChunkedTrustWriteCommands(contentStr: string, opts: { posix
       cmds.push(`[System.IO.File]::${method}("${opts.b64File}", '${chunk}')`);
     });
     // WriteAllBytes of the decoded UTF-8 bytes: no BOM, no encoding round-trip.
-    cmds.push(`[System.IO.File]::WriteAllBytes("${opts.tmpFile}", [System.Convert]::FromBase64String([System.IO.File]::ReadAllText("${opts.b64File}"))); Remove-Item -Force "${opts.b64File}"; Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`);
+    // Error-gated (see psGated): a decode failure must never let the Move-Item run.
+    cmds.push(psGated(`[System.IO.File]::WriteAllBytes("${opts.tmpFile}", [System.Convert]::FromBase64String([System.IO.File]::ReadAllText("${opts.b64File}"))); Remove-Item -Force "${opts.b64File}"; Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`));
   }
   return cmds;
 }
 
+/**
+ * Gate a multi-statement PowerShell write so a failure in an earlier statement
+ * aborts the whole command with exit 1. Without this, a .NET exception (e.g. in
+ * WriteAllText/WriteAllBytes) is only STATEMENT-terminating: the trailing
+ * Move-Item still runs, moves whatever stale tmp exists over the real
+ * ~/.claude.json, and the command exits 0. The single-command write is the
+ * cheapest path; it is still gated by the same helper.
+ */
+function psGated(script: string): string {
+  return `$ErrorActionPreference = 'Stop'; try { ${script} } catch { Write-Error $_; exit 1 }`;
+}
+
 /** The single-exec write command ensureWorkspaceTrusted has always used -- still the
- *  cheapest path when it fits, and byte-identical to before for small files. */
+ *  cheapest path when it fits. The PowerShell form is error-gated (psGated); the
+ *  POSIX heredoc form is unchanged. */
 export function buildSingleTrustWriteCommand(contentStr: string, opts: { isWindows: boolean; homeFile: string; tmpFile: string }): string {
   return opts.isWindows
-    ? `[System.IO.File]::WriteAllText("${opts.tmpFile}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false))); Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`
+    ? psGated(`[System.IO.File]::WriteAllText("${opts.tmpFile}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false))); Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`)
     : `cat > "${opts.tmpFile}" << 'FLEET_TRUST_EOF'\n${contentStr}\nFLEET_TRUST_EOF\nmv "${opts.tmpFile}" "${opts.homeFile}"`;
 }
 
@@ -782,9 +816,10 @@ async function deliverWorkspaceTrustFile(
     transport?: WorkspaceTrustTransport;
     homeFile: string;
     tmpFile: string;
+    staging: WorkspaceTrustStagingNames;
   },
 ): Promise<WorkspaceTrustWritePlan> {
-  const { isWindows, agentOs, execCommand, transport, homeFile, tmpFile } = opts;
+  const { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging } = opts;
   const onWindowsHost = agentOs === 'windows';
 
   // 1. Out-of-band file channel: content never touches a command line. Stage under
@@ -792,7 +827,7 @@ async function deliverWorkspaceTrustFile(
   //    atomic from the member's point of view.
   if (transport?.writeHomeFile) {
     try {
-      await transport.writeHomeFile(TRUST_TMP_REL, contentStr);
+      await transport.writeHomeFile(staging.tmpRel, contentStr);
       const moveCmd = isWindows
         ? `Move-Item -Force "${tmpFile}" "${homeFile}"`
         : `mv "${tmpFile}" "${homeFile}"`;
@@ -814,11 +849,17 @@ async function deliverWorkspaceTrustFile(
   }
 
   // 3. Chunked delivery for a Windows host (either shell flavour).
-  const b64File = isWindows ? `$env:USERPROFILE\\${TRUST_B64_REL}` : `$HOME/${TRUST_B64_REL}`;
+  const b64File = isWindows ? `$env:USERPROFILE\\${staging.b64Rel}` : `$HOME/${staging.b64Rel}`;
   const cmds = buildChunkedTrustWriteCommands(contentStr, { posix: !isWindows, homeFile, tmpFile, b64File });
   for (const cmd of cmds) {
     const r = await execCommand(cmd, 10000);
     if (r.code !== 0) {
+      // Best-effort member-side cleanup of the partial staging files, mirroring
+      // the orchestrator-side temp-dir cleanup in the file channel.
+      const cleanup = isWindows
+        ? `Remove-Item -Force -ErrorAction SilentlyContinue "${b64File}", "${tmpFile}"`
+        : `rm -f "${b64File}" "${tmpFile}"`;
+      try { await execCommand(cleanup, 10000); } catch { /* best-effort */ }
       throw new Error(`chunked write of ~/.claude.json failed on a Windows member (exit ${r.code}, ${cmds.length} commands of <=${WORKSPACE_TRUST_MAX_COMMAND_CHARS} chars): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
     }
   }
