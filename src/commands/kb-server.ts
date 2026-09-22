@@ -4,10 +4,27 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { FLEET_DIR } from '../paths.js';
 import { createKbProviders } from '../services/knowledge/kb-providers.js';
+import { HttpKbProvider } from '../services/knowledge/http-provider.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
 import type { KBEntryInput } from '../services/knowledge/types.js';
+
+// my-beads-db-0cd.15 (reopened): startKbServer is an exported library function
+// that tests/knowledge/kb-server.test.ts imports and calls IN-PROCESS. The
+// http-provider refusal used to call process.exit(1) directly, which would
+// kill the vitest worker mid-suite on any host whose KB config selects
+// provider=http, instead of failing a test. Throwing a named error (mirroring
+// SelfHostedProductionDeployRefusedError, packages/apra-fleet-se/fleet-sprint/
+// phases/deploy.mjs) keeps the refusal testable in-process while the CLI
+// entry point (src/index.ts's `kb-server` branch) still exits nonzero before
+// binding via its existing .catch(err => { ...; process.exit(1); }).
+export class KbServerHttpProviderRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'KbServerHttpProviderRefusedError';
+  }
+}
 
 const MAX_BODY_SIZE = 1_048_576; // 1MB
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -100,6 +117,13 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     const overrideProvider = new SqliteProvider(dbPath, process.cwd());
     await overrideProvider.init();
     (providers as any).project = overrideProvider;
+  }
+  // KB server is a server, not a client: it must never silently become a
+  // self-proxying HttpKbProvider just because the local KB config selects
+  // provider=http. Fail fast with a single named error before binding rather
+  // than accept remote hop behavior no caller of this server asked for.
+  if (providers.project instanceof HttpKbProvider) {
+    throw new KbServerHttpProviderRefusedError('KB server refuses an http project provider');
   }
   const provider = providers.project;
   process.stderr.write('[kb-server] project=' + providers.projectSlug + '\n');
