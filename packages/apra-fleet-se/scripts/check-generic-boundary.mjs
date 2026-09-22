@@ -446,7 +446,15 @@ export const ALLOWED_EXCEPTIONS = [
         file: 'fleet-sprint/vcs-providers/azure-devops.mjs',
         ids: ['vcs-provider-branding'],
         anchorRe: /this file IS the Azure DevOps provider's own/,
-        window: 650,
+        // Was 650, sized to the file's length when this exception was added
+        // (2026-09-21). An unrelated main commit (6349c946, legacy
+        // *.visualstudio.com host support) grew the file past that window,
+        // pushing AUTH_REMEDY_HINT and the AzureDevOpsVCS registration
+        // object's own `name: 'azure-devops'` outside coverage. Set well
+        // past the file's current length (772 lines) rather than pinned to
+        // it exactly, so ordinary future growth doesn't silently re-break
+        // this exception the same way.
+        window: 1000,
         reason: "a provider's own implementation module may name itself freely throughout its own error/log text, registration string and doc-skill reference",
     },
     {
