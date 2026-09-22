@@ -386,6 +386,87 @@ describe('grandchild-pins-pipe: a dispatch completes when the process exits, not
     console.log(`[grandchild-pins-pipe] elapsed=${elapsed}ms grandchildPid=${grandchildPid} aliveAfterDispatch=true`);
   }, 60_000);
 
+  /**
+   * apra-fleet-qe83.8.1.1 / .8.1.2. Direct, explicit coverage of the two
+   * killPidTree/isPidAlive defects fixed in scripts/repro/win-orphan-pipe.mjs
+   * (as opposed to the implicit exercise via the afterEach teardown above,
+   * which is the same code path but does not name the tree-reaping property
+   * on its own): a process-group leader ("G") with a live descendant ("GG")
+   * that stayed in G's process group. Runs on POSIX only -- process groups
+   * and SIGKILL/zombie semantics are POSIX concepts; the Windows path
+   * (taskkill /F /T, tasklist) is covered separately by the "windows:" test
+   * above and is unchanged by this fix. This test executes on macos-latest
+   * and ubuntu-latest CI (both non-Windows runners), not on the Windows dev
+   * member this reproduction is normally run from -- see the task notes on
+   * apra-fleet-qe83.8.1.2 for which CI run this was confirmed against.
+   */
+  it.runIf(!isWindows)('POSIX: killPidTree reaps a live descendant that stayed in the process group, and isPidAlive does not report either as alive once gone', async () => {
+    const { getStrategy } = await vi.importActual<typeof import('../src/services/strategy.js')>('../src/services/strategy.js');
+    const agent = makeTestLocalAgent({ workFolder: process.cwd() });
+
+    // GG: the innermost process, alive until killed.
+    const ggScriptPath = path.join(os.tmpdir(), `fleet-posix-tree-gg-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`);
+    fs.writeFileSync(ggScriptPath, "setInterval(() => {}, 1000);\n");
+    tempScripts.push(ggScriptPath);
+
+    // G: spawned detached by P below, so it becomes the leader of a NEW
+    // process group; it spawns GG WITHOUT detaching, so GG stays in G's
+    // (new) process group rather than starting one of its own.
+    const gScriptPath = path.join(os.tmpdir(), `fleet-posix-tree-g-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`);
+    fs.writeFileSync(gScriptPath, [
+      "import { spawn } from 'node:child_process';",
+      `const gg = spawn(${JSON.stringify(process.execPath)}, [${JSON.stringify(ggScriptPath)}], { stdio: 'ignore' });`,
+      "process.stdout.write('GG_PID:' + gg.pid + '\\n');",
+      "setInterval(() => {}, 1000);",
+      '',
+    ].join('\n'));
+    tempScripts.push(gScriptPath);
+
+    // P: the dispatched process. Spawns G detached (new session/process
+    // group) with inherited stdio so G's (and GG's) writes reach P's own
+    // stdout, then exits immediately -- orphaning G+GG, exactly like the
+    // macOS CI failure shape (the dispatched process exits while a
+    // detached descendant tree keeps running).
+    const pScriptPath = path.join(os.tmpdir(), `fleet-posix-tree-p-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`);
+    fs.writeFileSync(pScriptPath, [
+      "import { spawn } from 'node:child_process';",
+      `const g = spawn(${JSON.stringify(process.execPath)}, [${JSON.stringify(gScriptPath)}], { detached: true, stdio: ['ignore', 1, 2] });`,
+      'g.unref();',
+      "process.stdout.write('G_PID:' + g.pid + '\\n');",
+      'process.exit(0);',
+      '',
+    ].join('\n'));
+    tempScripts.push(pScriptPath);
+
+    const result = await getStrategy(agent).execCommand(nodeScriptCommand(pScriptPath), 20_000);
+
+    const gMatch = /G_PID:(\d+)/.exec(result.stdout);
+    const ggMatch = /GG_PID:(\d+)/.exec(result.stdout);
+    expect(gMatch).not.toBeNull();
+    expect(ggMatch).not.toBeNull();
+    const gPid = Number(gMatch![1]);
+    const ggPid = Number(ggMatch![1]);
+    survivors.push(gPid, ggPid);
+
+    // Live process: the liveness check must report true for both.
+    expect(repro.isPidAlive(gPid)).toBe(true);
+    expect(repro.isPidAlive(ggPid)).toBe(true);
+
+    // killPidTree(gPid) is only ever given the process-group LEADER's pid
+    // (the same shape production uses); it must reach ggPid too, not just
+    // gPid, since ggPid stayed in gPid's process group.
+    repro.killPidTree(gPid);
+
+    // Actually gone: not just "kill(0) still succeeds because the zombie
+    // has not been reaped yet" -- this is the exact assertion that failed
+    // on macos-latest CI pre-fix.
+    expect(repro.isPidAlive(gPid)).toBe(false);
+    expect(repro.isPidAlive(ggPid)).toBe(false);
+
+    // eslint-disable-next-line no-console
+    console.log(`[posix-tree] platform=${process.platform} gPid=${gPid} ggPid=${ggPid} bothReapedAfterKillPidTree=true`);
+  }, 60_000);
+
   it.runIf(!isWindows)('non-windows: wrapper shape only -- process-exit completion is Windows-scoped and POSIX is untouched', async () => {
     const { completesOnProcessExit, exitDrainMs, DEFAULT_EXIT_DRAIN_MS } =
       await import('../src/services/exit-drain.js');
