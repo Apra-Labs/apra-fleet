@@ -466,6 +466,58 @@
  * @property {{ filename: string, content: string, contentType?: string }[]} [attachments] - Optional file attachments (base64-encoded content)
  */
 
+/**
+ * @typedef {Object} RevokeVcsAuthOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {"github" | "bitbucket" | "azure-devops"} provider - VCS provider whose credentials to revoke
+ * @property {string} [label] - Credential label to revoke (e.g. "work-github"). If omitted, revokes
+ *   the default (provider-named) credential.
+ * @property {string} [scope_url] - Git credential scope URL used when the credential was provisioned
+ *   (e.g. "https://github.com/my-org"). Defaults to "https://<host>".
+ */
+
+/**
+ * @typedef {Object} SetupGitAppOptions
+ * @property {string} app_id - The GitHub App ID (numeric string)
+ * @property {string} private_key_path - Path to the GitHub App private key (.pem) file. Supports
+ *   {{secret.NAME}} token -- if the resolved value starts with -----BEGIN it is treated as PEM key
+ *   content directly (no file needed).
+ * @property {number} installation_id - The GitHub App installation ID for your organization
+ */
+
+/**
+ * @typedef {Object} UpdateLlmCliOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {boolean} [install_if_missing] - Install the LLM agent CLI on the member if not already
+ *   installed (default: false)
+ */
+
+/**
+ * @typedef {Object} MonitorTaskOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {string} task_id - Task ID returned by execute_command with long_running=true. Must match
+ *   the pattern task-[a-z0-9]{4,20}.
+ * @property {boolean} [auto_stop] - Stop the cloud instance when the task completes (default: false)
+ */
+
+/**
+ * @typedef {Object} StopPromptOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ */
+
+/**
+ * @typedef {Object} KbSetupOptions
+ * @property {string} [repo_path] - Path to the git repository for post-commit hook installation
+ *   (default: current directory)
+ * @property {"sqlite" | "http"} [provider] - KB provider type (default: sqlite)
+ * @property {string} [remote] - Remote KB server URL (required when provider is "http")
+ * @property {string} [token] - Authentication token for the remote KB server (stored encrypted,
+ *   never logged)
+ */
 
 // Grace margin added on top of the payload's own timeout hint (timeout_s /
 // max_total_s) so the client doesn't race the server's own deadline -- the
@@ -714,6 +766,66 @@ export class ApraFleet {
      */
     async vcsCredentialExec(options) {
         return this.mcpClient.callTool('vcs_credential_exec', options);
+    }
+
+    /**
+     * Remove VCS credentials from a member.
+     * @param {RevokeVcsAuthOptions} options
+     */
+    async revokeVcsAuth(options) {
+        return this.mcpClient.callTool('revoke_vcs_auth', options);
+    }
+
+    /**
+     * One-time setup: register a GitHub App for git token minting. Requires a GitHub
+     * App ID, private key (.pem) file path, and installation ID. The app must already
+     * be created at github.com/organizations/{org}/settings/apps.
+     * @param {SetupGitAppOptions} options
+     */
+    async setupGitApp(options) {
+        return this.mcpClient.callTool('setup_git_app', options);
+    }
+
+    /**
+     * Update or install the AI provider CLI on members. Omit member to update all
+     * online members at once.
+     * @param {UpdateLlmCliOptions} [options]
+     */
+    async updateLlmCli(options = {}) {
+        return this.mcpClient.callTool('update_llm_cli', options);
+    }
+
+    /**
+     * Check status of a long-running background task on a cloud member. Optionally
+     * stop the cloud instance automatically when the task completes.
+     * @param {MonitorTaskOptions} options
+     */
+    async monitorTask(options) {
+        return this.mcpClient.callTool('monitor_task', options);
+    }
+
+    /**
+     * Kill the active LLM process on a member.
+     * @param {StopPromptOptions} options
+     */
+    async stopPrompt(options) {
+        return this.mcpClient.callTool('stop_prompt', options);
+    }
+
+    /**
+     * Get the installed apra-fleet server version.
+     */
+    async version() {
+        return this.mcpClient.callTool('version', {});
+    }
+
+    /**
+     * Set up KB: install git post-commit hook, write provider config, store remote
+     * credentials encrypted. Run once per repo.
+     * @param {KbSetupOptions} [options]
+     */
+    async kbSetup(options = {}) {
+        return this.mcpClient.callTool('kb_setup', options);
     }
 
     /**
