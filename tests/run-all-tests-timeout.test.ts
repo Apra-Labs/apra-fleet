@@ -200,9 +200,16 @@ describe('apra-fleet-se scripts/run-tests.mjs wall-clock bound (apra-fleet-qe83.
   let fixtureFile: string;
   const spawnedPids: number[] = [];
 
-  const setupFixture = () => {
+  const setupFixture = (marker: string) => {
     fixtureDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'qe83-3-hang-'));
-    fixtureFile = path.join(fixtureDir, 'hang-forever.test.mjs');
+    // The marker is embedded in the FIXTURE FILE NAME (not just an env var,
+    // which node's own `node --test` per-file worker subprocess does not
+    // echo back into its command line) -- node --test's default per-file
+    // process isolation spawns a separate node process per test file with
+    // that file's path as a literal argv entry, so this is what actually
+    // makes the WORKER (not just the top `node --test` invocation) visible
+    // to the process-table marker search below.
+    fixtureFile = path.join(fixtureDir, `hang-forever-${marker}.test.mjs`);
     // A bare `new Promise(() => {})` is NOT enough to reproduce a hang here:
     // node:test's own runner notices the event loop has gone idle with
     // nothing else keeping it alive and cancels the test itself ("Promise
@@ -229,8 +236,9 @@ describe('apra-fleet-se scripts/run-tests.mjs wall-clock bound (apra-fleet-qe83.
     if (fixtureDir) cleanupFixture();
   });
 
-  it('a hanging test file is killed by run-tests.mjs itself within its configured timeout', async () => {
-    setupFixture();
+  it('a hanging test file is killed by run-tests.mjs itself within its configured timeout, with no leftover worker process', async () => {
+    const marker = `APRA_QE83_3_SE_STUB_${process.pid}_${Date.now()}`;
+    setupFixture(marker);
 
     const child = spawn(process.execPath, [
       path.join(sePkgRoot, 'scripts', 'run-tests.mjs'),
@@ -247,6 +255,13 @@ describe('apra-fleet-se scripts/run-tests.mjs wall-clock bound (apra-fleet-qe83.
       child.on('exit', (code) => { exitCode = code; resolve(); });
     });
 
+    // The hanging worker really is alive shortly after spawn -- otherwise a
+    // "killed within timeout" result would be indistinguishable from "never
+    // actually ran". node --test's per-file process isolation means this is
+    // proving the WORKER survives, not just the top run-tests.mjs process.
+    await new Promise(resolve => setTimeout(resolve, 500));
+    expect(countMarkerProcesses(marker)).toBeGreaterThan(0);
+
     const timedOut = await Promise.race([
       exitPromise.then(() => false),
       new Promise<boolean>(resolve => setTimeout(() => resolve(true), 6_000)),
@@ -259,6 +274,133 @@ describe('apra-fleet-se scripts/run-tests.mjs wall-clock bound (apra-fleet-qe83.
 
     expect(timedOut).toBe(false); // run-tests.mjs must have exited on its own
     expect(exitCode).not.toBe(0); // the timed-out run counts as a failure
+    // The half that actually needs proving: no marker-matching process
+    // outlives run-tests.mjs's own exit. A manual Win32_Process trace
+    // confirmed the marker (embedded in the fixture file name) matches
+    // THREE distinct pids pre-kill on this Windows box: run-tests.mjs
+    // itself, its `node --test` child, and that child's own per-file worker
+    // grandchild (three spawn levels) -- so this is a genuine multi-process
+    // tree, not a single process matching its own argv.
+    //
+    // This assertion deliberately does NOT claim which kill path reaped
+    // that tree -- a separate manual run with BOTH killTree() and
+    // child.kill() turned into no-ops (the same APRA_TEST_SIMULATE_KILL_
+    // FAILURE=1 hatch apra-fleet-qe83.4 below exercises) still left zero
+    // marker matches after run-tests.mjs force-exited itself, so this
+    // specific assertion is empirically non-discriminating on Windows: it
+    // cannot tell "the explicit kill code reaped the tree" apart from "the
+    // tree was reaped some other way when the owning process went away".
+    // It is NOT safe to generalize that a non-detached descendant always
+    // survives its owner's exit either -- apra-fleet-qe83.4's own case
+    // below (`stillAliveAfterForcedExit` asserted `true`) is a stub spawned
+    // straight from run-all-tests.mjs's shell:true (so cmd.exe sits
+    // between it and the parent) that DOES survive the identical
+    // simulated-failure force-exit, so the two cases behave differently for
+    // reasons this test does not isolate. What this assertion does prove is
+    // the acceptance-criteria-relevant outcome for THIS shape (run-tests.mjs
+    // spawning node --test directly, no intervening shell): no leftover
+    // process after a normal (non-simulated) timeout-triggered kill.
+    expect(countMarkerProcesses(marker)).toBe(0);
+  }, 9_000);
+});
+
+/**
+ * apra-fleet-qe83.3.2 rework (reviewer round 2): `npm test --workspace=...`
+ * as run by scripts/run-all-tests.mjs nests TWO detached POSIX spawns --
+ * this outer runner's own child (the shell/npm process), then INSIDE that,
+ * run-tests.mjs's own `node --test` child, spawned with its own
+ * detached:true so run-tests.mjs's own killTree(-pid) can reach a
+ * grandchild tree. That makes the innermost `node --test` process the
+ * leader of a group disjoint from the outer runner's group, so the outer
+ * runner's bare SIGKILL-the-group timeout path (pre-rework) reaped the
+ * shell/npm/run-tests.mjs processes but orphaned the real hanging test
+ * worker still holding this process's inherited stdio open -- reintroducing
+ * the recorded 45-minute pipe-hold bug on POSIX. Windows has no such nested
+ * group (nothing detaches there; taskkill /T walks the intact PPID tree), so
+ * this is POSIX-only, exercised by driving run-all-tests.mjs at the REAL
+ * run-tests.mjs script (not a stub) to reproduce the exact nesting shape.
+ */
+describe.skipIf(isWindows)('run-all-tests.mjs reaps a nested detached grandchild on POSIX (apra-fleet-qe83.3.2 rework)', () => {
+  const sePkgRoot = path.join(repoRoot, 'packages', 'apra-fleet-se');
+  const spawnedPids: number[] = [];
+  let fixtureDir: string;
+  let fixtureFile: string;
+
+  afterEach(() => {
+    for (const pid of spawnedPids.splice(0)) killTree(pid);
+    if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
+  it('the se runner traps the outer SIGTERM and reaps its own detached node --test worker before the outer runner escalates to SIGKILL', async () => {
+    const marker = `APRA_QE83_3_2_NESTED_${process.pid}_${Date.now()}`;
+    fixtureDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'qe83-3-2-nested-'));
+    fixtureFile = path.join(fixtureDir, `hang-forever-${marker}.test.mjs`);
+    fs.writeFileSync(
+      fixtureFile,
+      "import test from 'node:test';\n" +
+      "test('never resolves', () => {\n" +
+      "  setInterval(() => {}, 1000);\n" +
+      "  return new Promise(() => {});\n" +
+      "});\n"
+    );
+
+    // Give the NESTED run-tests.mjs invocation a much longer timeout
+    // (10s) than the OUTER run-all-tests.mjs (1.5s) via an inline `env`
+    // prefix -- this proves the outer runner's own SIGTERM cascade is what
+    // reaps the grandchild, not the inner runner's own (much later) bound
+    // firing first. `env` + a POSIX-only describe block avoids needing a
+    // cross-platform env-injection mechanism through run-all-tests.mjs's
+    // shell:true suite spawn.
+    const runTestsPath = path.join(sePkgRoot, 'scripts', 'run-tests.mjs');
+    const suites = JSON.stringify([
+      {
+        name: 'apra-fleet-se-nested',
+        cmd: 'env',
+        args: ['APRA_TEST_TIMEOUT_MS=10000', 'node', runTestsPath, 'mock', fixtureFile],
+      },
+    ]);
+
+    const child = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'run-all-tests.mjs')], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        APRA_TEST_SUITES_JSON: suites,
+        APRA_TEST_TIMEOUT_MS: '1500',
+        APRA_TEST_SOFT_KILL_GRACE_MS: '1200',
+      },
+    });
+    if (child.pid) spawnedPids.push(child.pid);
+
+    let exited = false;
+    const exitPromise = new Promise<void>(resolve => {
+      child.on('exit', () => { exited = true; resolve(); });
+    });
+
+    // The nested worker really is alive shortly after spawn.
+    await new Promise(resolve => setTimeout(resolve, 800));
+    expect(countMarkerProcesses(marker)).toBeGreaterThan(0);
+
+    // Budget: outer timeout (1500) + soft-kill grace (1200) + kill latency,
+    // well inside this outer race deadline and well BEFORE the inner
+    // runner's own 10s bound could ever fire on its own.
+    const timedOut = await Promise.race([
+      exitPromise.then(() => false),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(true), 6_000)),
+    ]);
+
+    if (timedOut && child.pid) killTree(child.pid);
+    // Capture the survivor count BEFORE the cleanup sweep below -- sweeping
+    // first and then asserting on the post-sweep count would make this
+    // assertion vacuous (it could never fail, fixed tree or not).
+    const survivorsAfterRunnerExit = countMarkerProcesses(marker);
+    killMarkerProcesses(marker); // best-effort cleanup, now that the proof above is captured
+
+    expect(timedOut).toBe(false); // run-all-tests.mjs must have exited on its own
+    expect(exited).toBe(true);
+    // The half that actually needs proving: the DISJOINT nested process
+    // group (the real node --test worker, two spawn levels deep) was
+    // reaped too, not just the outer shell/npm/run-tests.mjs group.
+    expect(survivorsAfterRunnerExit).toBe(0);
   }, 9_000);
 });
 
