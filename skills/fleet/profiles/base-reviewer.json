@@ -8,7 +8,7 @@
       "Bash(bd:*)", "Bash(bd *)",
       "Bash(which:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)",
       "Bash(find:*)", "Bash(wc:*)", "Bash(sort:*)", "Bash(diff:*)",
-      "Bash(echo:*)", "Bash(grep:*)",
+      "Bash(echo:*)", "Bash(grep:*)", "Bash(curl:*)",
       "Bash(gh:*)", "Bash(jq:*)",
       "mcp__apra-fleet__kb_session_prime",
       "mcp__apra-fleet__kb_query",
