@@ -38,6 +38,7 @@ const registerMemberSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'regi
 const updateMemberSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'update-member.ts'), 'utf8');
 const resolveMemberSrc = readFileSync(path.join(repoRoot, 'src', 'utils', 'resolve-member.ts'), 'utf8');
 const memberDetailSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-detail.ts'), 'utf8');
+const credentialStoreSetSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'credential-store-set.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
 function extractBlock(source, startMarker, endMarker) {
@@ -136,6 +137,25 @@ function updateMemberSchemaFields() {
     return fields;
 }
 
+/**
+ * Field names declared on a TS `interface Name { field: type; ... }` block
+ * (apra-fleet-972p.2.2: `CredentialStoreSetUrlResult` in credential-store-
+ * set.ts has no zod schema -- it is a plain result interface, not an input).
+ * Only top-level (2-space indented) `name: type;` / `name?: type;` members
+ * are collected; an index signature (`[key: string]: unknown;`) is
+ * deliberately excluded since it carries no fixed field name to pin.
+ */
+function extractInterfaceFields(source, interfaceName) {
+    const block = extractBlock(source, `export interface ${interfaceName} {`, '\n}');
+    const fields = new Set();
+    const re = /^  ([a-zA-Z_][a-zA-Z0-9_]*)\??\s*:/gm;
+    let m;
+    while ((m = re.exec(block))) {
+        fields.add(m[1]);
+    }
+    return fields;
+}
+
 /** member_detail's json-format result object has no zod schema for its RESULT
  * shape (only the `format` input flag is validated) -- ground truth is the
  * imperative construction in member-detail.ts. */
@@ -211,5 +231,20 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.ok(typedefFields.has('shell'), 'sanity: MemberDetailResult should declare shell');
 
         assertFieldParity('MemberDetailResult vs member-detail.ts result object', resultFields, typedefFields);
+    });
+
+    // apra-fleet-972p.2.2 (F3): pins the client's CredentialStoreSetResult
+    // typedef (the return_url structuredContent shape) against the server's
+    // CredentialStoreSetUrlResult interface in credential-store-set.ts.
+    test('CredentialStoreSetResult matches the CredentialStoreSetUrlResult interface field-for-field', () => {
+        const interfaceFields = extractInterfaceFields(credentialStoreSetSrc, 'CredentialStoreSetUrlResult');
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'CredentialStoreSetResult');
+
+        assert.ok(interfaceFields.has('url'), 'sanity: CredentialStoreSetUrlResult should declare url');
+        assert.ok(interfaceFields.has('expiresAt'), 'sanity: CredentialStoreSetUrlResult should declare expiresAt');
+        assert.ok(typedefFields.has('url'), 'sanity: CredentialStoreSetResult should declare url');
+        assert.ok(typedefFields.has('expiresAt'), 'sanity: CredentialStoreSetResult should declare expiresAt');
+
+        assertFieldParity('CredentialStoreSetResult vs CredentialStoreSetUrlResult', interfaceFields, typedefFields);
     });
 });
