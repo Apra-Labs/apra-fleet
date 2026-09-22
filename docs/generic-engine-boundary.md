@@ -37,6 +37,7 @@ in the script):
 |------|------|-----------------|
 | `fleet-sprint/**/*.{js,mjs,cjs}` | engine code | string literals only, comments stripped (own-line comments inside template literals too) |
 | `apra-pm/agents/**/*.md` | role prompts | the whole file minus HTML comments |
+| `fleet-sprint/skills/**/*.md` | fleet-supervisor / fleet-sprint-cli / fleet-integrator skills | bead-id rule (`bead-id-in-llm-text`) only -- these skills legitimately document apra-fleet operating its OWN supervisor and CLI (`localhost:8787`, `packages/apra-fleet-se`, etc.), so the other signal patterns would be pure noise there; the "never cite a tracker id in LLM-facing text" rule is universal regardless of target, so it still applies |
 
 Everything there ships to every target. Only LLM-facing text is scanned, on
 purpose: `process.env.APRA_FLEET_DATA_DIR` as an identifier is the product

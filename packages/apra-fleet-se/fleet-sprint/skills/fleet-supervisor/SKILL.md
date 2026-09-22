@@ -13,7 +13,7 @@ Default port: **8787**. Never invoke `apra-fleet workflow fleet-sprint` or
 
 The supervisor binds loopback-only and guards its whole `/api/` surface (plus
 POST to any `/sprints/:id/live/...` sub-route) with a shared bearer service
-token. apra-fleet-ky2l.1.2 (DQ-20): the token source is the shared
+token. Per design decision DQ-20: the token source is the shared
 `~/.apra-fleet/fleet.key` -- the SAME key `src/services/jwt.ts` signs JWTs
 with -- when that file exists and holds a well-formed 64-hex-char value;
 otherwise the supervisor falls back to `<dataDir>/private/token`, a

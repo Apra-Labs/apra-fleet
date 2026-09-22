@@ -43,10 +43,22 @@ export const DESIGN_DOC = 'docs/generic-engine-boundary.md';
  * The generic engine file set, relative to packages/apra-fleet-se. Everything
  * here ships to EVERY fleet-sprint target, so nothing in its LLM-facing text
  * may assume the target is apra-fleet.
+ *
+ * An entry may carry an optional `ids` array to narrow which SIGNAL_PATTERNS
+ * (and the 'undocumented-target-section' heading rule) apply to its files --
+ * useful when a directory is legitimately full of apra-fleet-operating-itself
+ * content (this repo's own supervisor/CLI skills) except for one universal
+ * rule (never cite a tracker id in LLM-facing text). Omitting `ids` applies
+ * every pattern, as before.
  */
 export const ENGINE_FILE_SET = [
     { dir: 'fleet-sprint', match: /\.(?:js|mjs|cjs)$/, kind: 'js' },
     { dir: 'apra-pm/agents', match: /\.md$/, kind: 'md' },
+    // fleet-sprint/skills/*/SKILL.md documents apra-fleet operating its OWN
+    // supervisor/CLI (legitimate localhost:8787, packages/apra-fleet-se
+    // mentions), so only the bead-id rule -- which is universal regardless of
+    // target -- applies here. See docs/generic-engine-boundary.md.
+    { dir: 'fleet-sprint/skills', match: /\.md$/, kind: 'md', ids: ['bead-id-in-llm-text'] },
 ];
 
 /**
@@ -274,9 +286,12 @@ export function extractMarkdownText(src) {
  * @param {string} relFile  file path for reporting
  * @param {string} src      file content
  * @param {'js'|'md'} kind
+ * @param {string[]} [allowedIds]  when given, only findings whose id is in
+ *   this list are returned (narrows both SIGNAL_PATTERNS and the
+ *   'undocumented-target-section' heading rule); omit to apply every rule
  * @returns {Array<{file,line,id,match,excerpt,why,belongs}>}
  */
-export function scanSource(relFile, src, kind) {
+export function scanSource(relFile, src, kind, allowedIds) {
     const segments = kind === 'js' ? extractStringLiterals(src) : extractMarkdownText(src);
     const findings = [];
     const excerptOf = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 140);
@@ -321,10 +336,10 @@ export function scanSource(relFile, src, kind) {
             });
         }
     }
-    return findings;
+    return allowedIds ? findings.filter((f) => allowedIds.includes(f.id)) : findings;
 }
 
-/** Enumerate the engine file set. Returns [{abs, rel, kind}]. */
+/** Enumerate the engine file set. Returns [{abs, rel, kind, ids}]. */
 export function listEngineFiles(packageRoot = PACKAGE_ROOT) {
     const files = [];
     for (const entry of ENGINE_FILE_SET) {
@@ -335,7 +350,7 @@ export function listEngineFiles(packageRoot = PACKAGE_ROOT) {
                 const full = path.join(dir, d.name);
                 if (d.isDirectory()) { if (d.name !== 'node_modules') walk(full); continue; }
                 if (entry.match.test(d.name)) {
-                    files.push({ abs: full, rel: path.relative(packageRoot, full).split(path.sep).join('/'), kind: entry.kind });
+                    files.push({ abs: full, rel: path.relative(packageRoot, full).split(path.sep).join('/'), kind: entry.kind, ids: entry.ids });
                 }
             }
         };
@@ -419,7 +434,7 @@ export function scanFiles(files) {
     for (const f of files) {
         const src = fs.readFileSync(f.abs, 'utf8');
         contentsByRel[f.rel] = src;
-        findings.push(...scanSource(f.rel, src, f.kind));
+        findings.push(...scanSource(f.rel, src, f.kind, f.ids));
     }
     return { findings, contentsByRel };
 }

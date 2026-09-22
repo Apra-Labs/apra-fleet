@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -10,7 +11,9 @@ import {
     TARGET_FILE_CONTRACT,
     applyExceptions,
     extractStringLiterals,
+    listEngineFiles,
     runEngineScan,
+    scanFiles,
     scanSource,
 } from '../scripts/check-generic-boundary.mjs';
 
@@ -48,6 +51,10 @@ test('generic-boundary guard passes on the current engine file set (no undeclare
     check(files.length > 0, 'expected the engine file set to be non-empty');
     check(files.some((f) => f.rel === 'fleet-sprint/runner.js'), 'engine file set must include fleet-sprint/runner.js');
     check(files.some((f) => f.rel === 'apra-pm/agents/deployer.md'), 'engine file set must include apra-pm/agents/deployer.md');
+    check(
+        files.some((f) => f.rel === 'fleet-sprint/skills/fleet-supervisor/SKILL.md'),
+        'engine file set must include fleet-sprint/skills/fleet-supervisor/SKILL.md (bead-id rule only)'
+    );
     check(
         violations.length === 0,
         `Expected zero apra-fleet-specific assumptions in LLM-facing engine text, found:\n${JSON.stringify(violations, null, 2)}`
@@ -113,6 +120,42 @@ test('bead ids are findings in runtime strings but package names are not', () =>
     assert.deepStrictEqual(badFindings.map((f) => f.match), ['apra-fleet-417.5', 'apra-fleet-eft.37.5', 'apra-fleet-5co8']);
     const goodFindings = scanSource('fleet-sprint/x.mjs', good, 'js').filter((f) => f.id === 'bead-id-in-llm-text');
     check(goodFindings.length === 0, `package names must not match the bead-id shape, got: ${JSON.stringify(goodFindings)}`);
+});
+
+test('fixture: fleet-sprint/skills/*/SKILL.md is scanned for the bead-id rule only, not the other signal patterns', () => {
+    // A temp package root standing in for packages/apra-fleet-se, containing
+    // only a fleet-sprint/skills/x/SKILL.md fixture. Proves the ENGINE_FILE_SET
+    // entry's `ids: ['bead-id-in-llm-text']` narrowing actually applies: the
+    // fixture also carries localhost:8787 and packages/apra-fleet-se mentions
+    // (legitimate for this repo's own supervisor/CLI skills) which must be
+    // suppressed, while the tracker id must still be flagged.
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'generic-boundary-skills-'));
+    try {
+        const skillDir = path.join(tmpRoot, 'fleet-sprint/skills/x');
+        fs.mkdirSync(skillDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(skillDir, 'SKILL.md'),
+            [
+                '---',
+                'name: x',
+                '---',
+                '',
+                '# x',
+                '',
+                'See apra-fleet-abc1.2 for context. Talk to localhost:8787 and',
+                'packages/apra-fleet-se for the source layout.',
+                '',
+            ].join('\n')
+        );
+        const files = listEngineFiles(tmpRoot);
+        const skillEntry = files.find((f) => f.rel === 'fleet-sprint/skills/x/SKILL.md');
+        check(skillEntry, `expected listEngineFiles(${tmpRoot}) to include the fixture SKILL.md, got: ${JSON.stringify(files)}`);
+        const { findings } = scanFiles([skillEntry]);
+        assert.deepStrictEqual(findings.map((f) => f.id), ['bead-id-in-llm-text'], `expected only the bead-id rule, got: ${JSON.stringify(findings, null, 2)}`);
+        assert.strictEqual(findings[0].match, 'apra-fleet-abc1.2');
+    } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
 });
 
 test('reference target: every required contract heading exists as a `## ` line in the vendored fleet-e2e-toy files', () => {
