@@ -304,6 +304,18 @@ whole handoff in one call:
   quoted form -- using `{{vcs_token}}` in that position would double-escape
   the token and produce a broken command. Callers pick whichever placeholder
   matches the syntactic position the token needs to land in.
+- `{{vcs_username}}` / `{{vcs_username_inline}}` -- the same two dialects for
+  the basic-auth **username** half of the credential, for providers whose
+  REST API wants `user:token` rather than a bearer token (Bitbucket Cloud:
+  `-u '{{vcs_username_inline}}:{{vcs_token_inline}}'`). The value is read
+  from the `username=` line of the same helper stdout the token comes from,
+  so it costs no extra member round trip. Both are **optional** and neither
+  may appear alone: a command with no token placeholder is still refused
+  (`placeholder_missing`). A command that does reference one against a helper
+  printing no `username=` line fails with `username_empty` and dispatches
+  nothing, rather than silently sending `:<token>` and surfacing as a
+  confusing 401. Token-only commands never consult the username at all, so
+  the GitHub and Azure DevOps paths are untouched.
 
 The handoff itself:
 
@@ -313,8 +325,10 @@ The handoff itself:
 2. Substitutes `{{vcs_token}}` with the token, shell-escaped per
    `isPosixShell(agentOs, agentShell)` -- never assumed to be POSIX.
 3. Dispatches the substituted command.
-4. Redacts any occurrence of the token from stdout/stderr before returning,
-   the same defense `execute-command.ts`'s output redaction applies.
+4. Redacts any occurrence of the token -- and of the username, when one was
+   substituted, under its own `[REDACTED:vcs_username]` marker -- from
+   stdout/stderr before returning, the same defense `execute-command.ts`'s
+   output redaction applies.
 
 The tool refuses any command containing **neither** placeholder, so it
 cannot degrade into a second, unguarded `execute_command`. The plaintext
