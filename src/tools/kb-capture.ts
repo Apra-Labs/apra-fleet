@@ -100,10 +100,30 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
   let confidence = requestedConfidence;
   let content = input.content;
   let confidence_clamped = false;
-  if (requestedConfidence === 'CONFIRMED') {
+  if (requestedConfidence === 'CONFIRMED' && input.type !== 'user-directive') {
     confidence = 'INFERRED';
     confidence_clamped = true;
     content = content + '\n\n[confidence clamped: CONFIRMED requires kb_promote]';
+  }
+
+  // my-beads-db-0cd.14: the directive proposal-transformation is duplicated
+  // HERE, not left to SqliteProvider.capture() alone. That "single choke
+  // point" claim (see the F1 comment above) only holds when providers.project
+  // is a SqliteProvider. Now that it can be an HttpKbProvider, capture()
+  // forwards the payload to the remote verbatim -- the remote is not
+  // guaranteed to be a fleet SqliteProvider, so it would never apply the
+  // downgrade. Applying it here makes the quarantine (confidence UNVERIFIED,
+  // flagged_for_review true, tag 'directive:pending') hold for ANY provider.
+  // Harmless to duplicate against the SqliteProvider's own copy: same values,
+  // same dedup on the tag.
+  let tags = input.tags ?? [];
+  let flagged_for_review = false;
+  if (isUserDirective) {
+    confidence = 'UNVERIFIED';
+    flagged_for_review = true;
+    if (!tags.includes('directive:pending')) {
+      tags = [...tags, 'directive:pending'];
+    }
   }
 
   // D5 (T2.3) + F1 (D1): provenance is stamped by this handler, never accepted
@@ -129,10 +149,10 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
     source_files: input.source_files ?? [],
     symbols: input.symbols ?? [],
     module: input.module,
-    tags: input.tags ?? [],
+    tags,
     content_hash,
     content_hash_type,
-    flagged_for_review: false,
+    flagged_for_review,
     author,
     source,
     confidence,

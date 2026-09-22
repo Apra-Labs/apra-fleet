@@ -75,58 +75,75 @@ export async function kbStats(input: KbStatsInput): Promise<string> {
   // ALL live CONFIRMED entries, present = false. list({confidence:'CONFIRMED'})
   // already returns exactly the "live CONFIRMED" set (superseded_at IS NULL
   // AND stale = 0 are list()'s hardcoded defaults) without bumping use_count.
-  let bible = { present: false, entries: 0, drift: 0 };
+  //
+  // my-beads-db-0cd.13: the SqliteProvider-only guard is checked OUTSIDE the
+  // degraded-safe try block below, on purpose. Previously requireSqliteProject
+  // sat INSIDE that try, so its throw over an HttpKbProvider project was
+  // swallowed by the same catch that guards a merely-missing/malformed bible
+  // file, and the tool returned the ambiguous { present: false, entries: 0,
+  // drift: 0 } -- indistinguishable from an up-to-date bible. A remote
+  // provider now gets its own distinguishable, non-throwing shape instead.
+  let sqliteProvider;
   try {
-    // SqliteProvider-only operation. If the provider is not SqliteProvider
-    // (e.g., HttpKbProvider), requireSqliteProject throws and bible drift
-    // remains not computable.
-    const sqliteProvider = requireSqliteProject(providers.project, 'kb_stats');
-    const liveConfirmed = await sqliteProvider.list({ confidence: 'CONFIRMED' });
-    const liveUpdatedAts = liveConfirmed.map(e => e.promoted_at || e.created_at);
-    // Degraded-safe fallback shared by every "can't use the bible file" path
-    // below (absent, unreadable, malformed JSON, non-array shape): drift
-    // equals ALL live CONFIRMED entries per D5, never silently lost to 0.
-    bible = { present: false, entries: 0, drift: liveConfirmed.length };
-
-    const repoPath = resolveRepoPath(requestedRepo);
-    const biblePath = repoPath ? path.join(repoPath, '.fleet', 'kb-canonical.json') : null;
-
-    if (biblePath && fs.existsSync(biblePath)) {
-      try {
-        const raw = fs.readFileSync(biblePath, 'utf-8');
-        const parsed = JSON.parse(raw) as unknown;
-
-        // KB-TRUST PHASE 3a: the bible has two shapes -- a legacy bare array and
-        // the v2 { version, provenance, entries } envelope. Handle BOTH: reading
-        // only the array shape would silently report present:false and a drift
-        // of every live CONFIRMED entry against a perfectly good v2 bible, and
-        // this block degrades quietly by design, so that would never be noticed.
-        const entries = Array.isArray(parsed)
-          ? parsed
-          : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { entries?: unknown }).entries))
-            ? (parsed as { entries: unknown[] }).entries
-            : null;
-
-        if (entries !== null) {
-          let newest: string | null = null;
-          for (const entry of entries) {
-            const updatedAt = (entry as BibleEntryShape)?.updated_at;
-            if (typeof updatedAt === 'string' && (!newest || updatedAt > newest)) newest = updatedAt;
-          }
-          const drift = newest === null
-            ? liveConfirmed.length
-            : liveUpdatedAts.filter(u => u > (newest as string)).length;
-          bible = { present: true, entries: entries.length, drift };
-        }
-      } catch {
-        // Malformed/unreadable bible file: leave the absent-shape fallback
-        // (drift = all live CONFIRMED) set above.
-      }
-    }
+    sqliteProvider = requireSqliteProject(providers.project, 'kb_stats');
   } catch {
-    // Degraded-safe: kb_stats never throws over the bible file. Falls back to
-    // the "absent, drift 0" shape initialized above (only reachable if the
-    // list({confidence:'CONFIRMED'}) read itself failed).
+    sqliteProvider = null;
+  }
+
+  let bible: { present: boolean; entries: number; drift: number } | { computable: false; reason: string };
+
+  if (!sqliteProvider) {
+    bible = { computable: false, reason: 'bible drift is not computable over a remote HTTP provider' };
+  } else {
+    bible = { present: false, entries: 0, drift: 0 };
+    try {
+      const liveConfirmed = await sqliteProvider.list({ confidence: 'CONFIRMED' });
+      const liveUpdatedAts = liveConfirmed.map(e => e.promoted_at || e.created_at);
+      // Degraded-safe fallback shared by every "can't use the bible file" path
+      // below (absent, unreadable, malformed JSON, non-array shape): drift
+      // equals ALL live CONFIRMED entries per D5, never silently lost to 0.
+      bible = { present: false, entries: 0, drift: liveConfirmed.length };
+
+      const repoPath = resolveRepoPath(requestedRepo);
+      const biblePath = repoPath ? path.join(repoPath, '.fleet', 'kb-canonical.json') : null;
+
+      if (biblePath && fs.existsSync(biblePath)) {
+        try {
+          const raw = fs.readFileSync(biblePath, 'utf-8');
+          const parsed = JSON.parse(raw) as unknown;
+
+          // KB-TRUST PHASE 3a: the bible has two shapes -- a legacy bare array and
+          // the v2 { version, provenance, entries } envelope. Handle BOTH: reading
+          // only the array shape would silently report present:false and a drift
+          // of every live CONFIRMED entry against a perfectly good v2 bible, and
+          // this block degrades quietly by design, so that would never be noticed.
+          const entries = Array.isArray(parsed)
+            ? parsed
+            : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { entries?: unknown }).entries))
+              ? (parsed as { entries: unknown[] }).entries
+              : null;
+
+          if (entries !== null) {
+            let newest: string | null = null;
+            for (const entry of entries) {
+              const updatedAt = (entry as BibleEntryShape)?.updated_at;
+              if (typeof updatedAt === 'string' && (!newest || updatedAt > newest)) newest = updatedAt;
+            }
+            const drift = newest === null
+              ? liveConfirmed.length
+              : liveUpdatedAts.filter(u => u > (newest as string)).length;
+            bible = { present: true, entries: entries.length, drift };
+          }
+        } catch {
+          // Malformed/unreadable bible file: leave the absent-shape fallback
+          // (drift = all live CONFIRMED) set above.
+        }
+      }
+    } catch {
+      // Degraded-safe: kb_stats never throws over the bible file. Falls back to
+      // the "absent, drift 0" shape initialized above (only reachable if the
+      // list({confidence:'CONFIRMED'}) read itself failed).
+    }
   }
 
   return JSON.stringify({ ...providerStats, bible });

@@ -19,6 +19,7 @@ import { kbImport } from '../../src/tools/kb-import.js';
 import { kbExport } from '../../src/tools/kb-export.js';
 import { kbStats } from '../../src/tools/kb-stats.js';
 import { runKbDirectives } from '../../src/cli/kb-directives.js';
+import { kbCapture } from '../../src/tools/kb-capture.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
 // my-beads-db-0cd.8: the negative half of the http-provider-selection
@@ -169,6 +170,31 @@ describe('sqlite path stays byte-identical (my-beads-db-0cd.8 criterion 1-2)', (
       errorSpy.mockRestore();
     }
   });
+
+  it('user-directive capture on a sqlite-configured host is unchanged: still downgraded to UNVERIFIED/flagged/tagged (my-beads-db-0cd.14 criterion 3)', async () => {
+    expect(fs.existsSync(KB_CONFIG_PATH)).toBe(false);
+    const repoPath = makeRepoPath();
+    const remoteUrl = `https://example.invalid/kb-sqlite-directive-${crypto.randomUUID()}.git`;
+
+    const providers = await getKbProviders(repoPath, remoteUrl);
+    expect(providers.project).toBeInstanceOf(SqliteProvider);
+
+    const out = JSON.parse(await kbCapture({
+      repo_path: repoPath,
+      repo_remote_url: remoteUrl,
+      type: 'user-directive',
+      title: 'sqlite directive unchanged',
+      summary: 'proves the fix did not move the choke point',
+      content: 'The user said: never force-push to main.',
+      confidence: 'CONFIRMED', // attempt to smuggle an active directive
+    } as any));
+
+    const entry = (await providers.project.query({ ids: [out.id] })).results[0];
+    expect(entry.confidence).toBe('UNVERIFIED');
+    expect(entry.flagged_for_review).toBe(true);
+    expect(entry.tags).toContain('directive:pending');
+    expect(entry.scope).toBe('project');
+  });
 });
 
 describe('eight SqliteProvider-only entrypoints fail fast and named under an http config (my-beads-db-0cd.8 criterion 4)', () => {
@@ -259,6 +285,13 @@ describe('kb_stats is the deliberate exception: returns a not-computable bible i
 describe('operations MemorEYES X-1 depends on work over http: capture, query, context, prime, promote (my-beads-db-0cd.8 criterion 6)', () => {
   let server: http.Server;
   let port: number;
+  // my-beads-db-0cd.14 criterion 2: this mock server is deliberately NOT a
+  // fleet SqliteProvider -- it is a plain http.Server that echoes success. It
+  // records the raw JSON body of the last /api/kb/capture POST so tests can
+  // assert on the outgoing payload directly, proving the downgrade happened
+  // on OUR side (the handler) before the request left the process, not
+  // because the remote happened to enforce it.
+  let lastCaptureBody: Record<string, unknown> | null = null;
 
   beforeAll(async () => {
     token = loadTestToken();
@@ -269,6 +302,7 @@ describe('operations MemorEYES X-1 depends on work over http: capture, query, co
         const url = req.url ?? '';
         const method = req.method ?? 'GET';
         if (url === '/api/kb/capture' && method === 'POST') {
+          lastCaptureBody = JSON.parse(body);
           res.writeHead(201, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ id: 'guard-e2e-server-id', audn_decision: 'add' }));
         } else if (url.startsWith('/api/kb/query') && method === 'GET') {
@@ -308,6 +342,35 @@ describe('operations MemorEYES X-1 depends on work over http: capture, query, co
 
   beforeEach(() => {
     writeHttpConfig();
+    lastCaptureBody = null;
+  });
+
+  it('user-directive capture over http is quarantined before it reaches the remote: UNVERIFIED, flagged, tagged (my-beads-db-0cd.14 criteria 1-2, 4)', async () => {
+    const repoPath = makeRepoPath();
+    const remoteUrl = `https://example.invalid/kb-http-directive-${crypto.randomUUID()}.git`;
+    const providers = await getKbProviders(repoPath, remoteUrl);
+    expect(providers.project).toBeInstanceOf(HttpKbProvider);
+
+    const out = JSON.parse(await kbCapture({
+      repo_path: repoPath,
+      repo_remote_url: remoteUrl,
+      type: 'user-directive',
+      title: 'http directive quarantine',
+      summary: 'proves the handler downgrades before the POST, not the remote',
+      content: 'The user said: never force-push to main.',
+      confidence: 'CONFIRMED', // attempt to smuggle an active directive over the wire
+    } as any));
+    expect(out.id).toBe('guard-e2e-server-id');
+
+    // The assertion that matters: the mock remote above is a plain http.Server,
+    // NOT a fleet SqliteProvider, so if this payload were ever
+    // confidence=INFERRED / flagged_for_review=false, nothing on the remote
+    // side would have caught or corrected it.
+    expect(lastCaptureBody).not.toBeNull();
+    expect(lastCaptureBody?.confidence).toBe('UNVERIFIED');
+    expect(lastCaptureBody?.flagged_for_review).toBe(true);
+    expect(lastCaptureBody?.tags).toContain('directive:pending');
+    expect(lastCaptureBody?.scope).toBe('project');
   });
 
   it('capture, query, context, and prime reach the remote server and do not raise', async () => {
